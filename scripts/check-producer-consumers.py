@@ -1896,6 +1896,9 @@ def _returned_constant(
     path: Path,
     values: dict[str, str],
     path_functions: dict[str, PathFunction],
+    depth: int = 0,
+    context: dict[str, str] | None = None,
+    repo_root: Path | None = None,
 ) -> tuple[bool, object]:
     """The scalar a visible helper returns, when the value can be followed to a constant.
 
@@ -1914,48 +1917,74 @@ def _returned_constant(
     ``x = f()`` then ``open(x)``    yes         the assignment carries the typed constant
     ``y = 3`` … ``return y``        yes         the helper's own constant bindings, below
     ``def f(a): return a``, ``f(3)``  yes       the call's argument, bound to the parameter
-    ``return g()``                  no          nothing is folded through a second call
-    ``return <computed>``           no          only constant folding, never evaluation
+    ``return g()``                  yes         the same folding, one call deeper, bounded
+    ``return x + 1``, ``f(2)``      yes         constant folding over the bound parameter
+    ``return <anything else>``      no          only constant folding, never evaluation
     ==============================  ==========  ==========================================
 
-    The last two rows return "not established", which at the descriptor boundary means the value is
-    treated as a filename — the pre-existing behaviour. That is the honest state: this helper says
-    what it knows, and the caller decides what an unknown costs.
+    **Naming the last row as a limit is not enforcing it**, and an earlier revision of this
+    docstring said "the boundary treats it as it always has" as though that closed the case. The
+    resolver still follows those forms and still produces a bounded writer, so a prose limit does
+    not survive into the report's claim (root, 2026-09-07). The chain row above is repaired rather
+    than documented for that reason; what remains genuinely unfoldable stays a known gap in the
+    report, not a sentence here.
 
     The scope built here is the HELPER's, never the caller's: its own constant assignments plus the
     arguments this call site actually passes. Reading the caller's other bindings for a name that
     merely shares a spelling would be inventing a value rather than following one.
     """
 
-    if not isinstance(node, ast.Call) or not isinstance(path_functions, PathFunctionTable):
+    if depth > 4 or not isinstance(node, ast.Call):
         return False, None
+    if not isinstance(path_functions, PathFunctionTable):
+        return False, None
+    # Names are resolved in the CONTEXT (imports and lexical scope of the module holding the call),
+    # while constants come from `values`. Passing a helper's constant-only scope as both left the
+    # chained case unable to find the inner function at all, so the repair silently did nothing.
+    resolution = values if context is None else context
     function = path_functions.resolve(
-        _function_name(node, values), path, _lexical_scope(values), _import_aliases(values)
+        _function_name(node, resolution),
+        path,
+        _lexical_scope(resolution),
+        _import_aliases(resolution),
     )
     if function is None or function.return_expr is None:
         return False, None
-    scope: dict[str, str] = {}
     definition = function.node
-    if isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        for statement in definition.body:
-            if not isinstance(statement, ast.Assign):
-                continue
-            known, constant = _constant_value(statement.value, {})
-            for target in statement.targets:
-                if not isinstance(target, ast.Name):
-                    continue
-                key = f"{_CONSTANT_VALUE_PREFIX}{target.id}"
-                scope.pop(key, None)
-                if known:
-                    scope[key] = json.dumps(constant)
-        parameters = [argument.arg for argument in definition.args.args]
-        for name, argument in zip(parameters, node.args, strict=False):
-            key = f"{_CONSTANT_VALUE_PREFIX}{name}"
-            scope.pop(key, None)
-            known, constant = _constant_value(argument, values, path, path_functions)
-            if known:
-                scope[key] = json.dumps(constant)
-    return _constant_value(function.return_expr, scope)
+    if not isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False, None
+    # Built with the helper machinery the path resolver already uses, not a second approximation
+    # of Python. A hand-rolled version applied every body assignment and then overlaid the
+    # parameters, which reverses execution order — `def f(held): held = 3; return held` called
+    # with '3' returned the ARGUMENT — and visited assignments after the return, so a dead
+    # rebinding decided the type (review findings, root, 2026-09-07). Order is not a detail here:
+    # it is the difference between a descriptor and a filename.
+    repo_root = function.path.parent if repo_root is None else repo_root
+    scope = _scope_initial_values(
+        definition,
+        dict(resolution),
+        function.path,
+        repo_root,
+        path_functions,
+        function.lexical_prefixes,
+    )
+    supplied = _call_parameter_values(function, node, values, path, repo_root, path_functions)
+    _invalidate_names(scope, {name for name in supplied if not name.startswith("\0")})
+    scope.update(supplied)
+    for statement in definition.body:
+        if isinstance(statement, ast.Return):
+            break
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            scope = _apply_assignment(statement, scope, function.path, repo_root, path_functions)[0]
+    known, constant = _constant_value(function.return_expr, scope)
+    if known:
+        return True, constant
+    # `return inner()` is the same question one call deeper, and answering it in prose while the
+    # resolver kept following the chain left an unqualified bounded writer. Bounded, because a
+    # self-recursive helper would otherwise not terminate and because depth is not evidence.
+    return _returned_constant(
+        function.return_expr, path, scope, path_functions, depth + 1, resolution, repo_root
+    )
 
 
 def _resolve_path_helper(
@@ -2403,7 +2432,9 @@ def _classify_call(
         if not path_method:
             known, value = _constant_value(expression, values, path, path_functions)
             if not known:
-                known, value = _returned_constant(expression, path, values, path_functions)
+                known, value = _returned_constant(
+                    expression, path, values, path_functions, repo_root=repo_root
+                )
             if known and isinstance(value, int):
                 expression = None
         # A custom `opener` receives the path and returns a descriptor of its own choosing, so
@@ -2874,7 +2905,9 @@ def _apply_assignment(
             # later `open(fd, 'w')` saw a plain name and certified a file called `True` (review
             # finding, codex, 2026-09-07 — my previous round covered the direct call and stopped
             # at the assignment beside it). The typed evidence travels with the binding now.
-            known, constant = _returned_constant(statement.value, path, values, path_functions)
+            known, constant = _returned_constant(
+                statement.value, path, values, path_functions, repo_root=repo_root
+            )
         if known:
             assigned[constant_key] = json.dumps(constant)
         format_key = f"{_UNRESOLVED_FORMAT_PREFIX}{target.id}"

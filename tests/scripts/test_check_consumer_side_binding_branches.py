@@ -1258,6 +1258,101 @@ def test_every_supported_return_transfer_shape_keeps_a_string_a_filename(gate, t
     assert report.unresolvable == 0, shape
 
 
+CHAINED_TRANSFER_SHAPES = {
+    "chained-call": "def inner():\n    return {scalar}\ndef value():\n    return inner()\n",
+    "chained-argument": ("def inner():\n    return {scalar}\ndef value(held):\n    return held\n"),
+    "arithmetic-parameter": "def value(held):\n    return held + {tail}\n",
+}
+
+
+def _chained_body(shape, scalar, tail, call_and_use):
+    definition = CHAINED_TRANSFER_SHAPES[shape].format(scalar=scalar, tail=tail)
+    call = {
+        "chained-call": "value()",
+        "chained-argument": "value(inner())",
+        "arithmetic-parameter": f"value({scalar})",
+    }[shape]
+    return definition + f"held = {call}\n" + call_and_use
+
+
+@pytest.mark.parametrize("shape", sorted(CHAINED_TRANSFER_SHAPES))
+def test_a_scalar_survives_one_call_deeper(gate, tmp_path, shape):
+    """The chain rows: `return inner()`, a call as an argument, arithmetic over a parameter.
+
+    Naming these as unsupported in a docstring did not close them — the resolver kept following
+    the chain and kept producing a bounded writer, so the limit lived in prose while the report
+    made the wrong claim (root, 2026-09-07). The folding goes one call deeper instead, bounded, and
+    a self-recursive helper still terminates.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        _chained_body(shape, "3", "1", "open(held, 'w', closefd=False)\nPath('31').read_text()\n"),
+    )
+    assert not _bounded_writers(gate, tmp_path), shape
+    assert report.unresolvable > 0, shape
+
+
+@pytest.mark.parametrize("shape", sorted(CHAINED_TRANSFER_SHAPES))
+def test_a_chained_string_is_still_a_filename(gate, tmp_path, shape):
+    """The companion for each chain row: a string through the same shapes still names its file."""
+
+    report = report_for(gate, tmp_path, _chained_body(shape, "'3'", "'1'", "open(held, 'w')\n"))
+    assert _bounded_writers(gate, tmp_path), shape
+    assert report.unresolvable == 0, shape
+
+
+@pytest.mark.parametrize(
+    ("body", "argument", "descriptor"),
+    [
+        ("    held = 3\n    return held\n", "'3'", True),
+        ("    held = '3'\n    return held\n", "3", False),
+        ("    held = 3\n    return held\n    held = '3'\n", None, True),
+        ("    held = '3'\n    return held\n    held = 3\n", None, False),
+    ],
+    ids=["parameter-rebound-int", "parameter-rebound-str", "unreachable-int", "unreachable-str"],
+)
+def test_the_helper_scope_follows_execution_order(gate, tmp_path, body, argument, descriptor):
+    """Order is the difference between a descriptor and a filename.
+
+    A hand-rolled scope applied every body assignment and then overlaid the parameters, which
+    reverses execution order — `def f(held): held = 3; return held` called with `'3'` returned the
+    ARGUMENT — and it visited assignments *after* the return, so a dead rebinding decided the type
+    (review findings, root, 2026-09-07, in both directions). The scope is now built with the same
+    machinery the path resolver uses and walked to the return, rather than a second approximation
+    of Python.
+
+    Both directions matter: reversing the order does not merely miss a descriptor, it also
+    withholds a real filename.
+    """
+
+    header = "def value(held):\n" if argument is not None else "def value():\n"
+    call = f"value({argument})" if argument is not None else "value()"
+    mode = "'w', closefd=False" if descriptor else "'w'"
+    report = report_for(
+        gate, tmp_path, header + body + f"open({call}, {mode})\nPath('3').read_text()\n"
+    )
+
+    if descriptor:
+        assert "3" in unwritten(report)
+        assert "3" not in _bounded_writers(gate, tmp_path)
+        assert report.unresolvable > 0
+    else:
+        assert "3" not in unwritten(report)
+        assert _bounded_writers(gate, tmp_path) == {"3"}
+        assert report.unresolvable == 0
+
+
+def test_a_self_recursive_helper_terminates(gate, tmp_path):
+    """Depth is bounded because depth is not evidence — and because a helper returning its own
+    call would otherwise not terminate. It certifies nothing, which is the right answer."""
+
+    report = report_for(gate, tmp_path, "def loop():\n    return loop()\nopen(loop(), 'w')\n")
+    assert not _bounded_writers(gate, tmp_path)
+    assert report.unresolvable > 0
+
+
 def test_an_unestablished_return_is_not_silently_a_filename(gate, tmp_path):
     """Past the enumerated shapes the answer is "not established", and the boundary treats that as
     it always has. Naming the limit is the point: the table above is a claim about what IS covered,
