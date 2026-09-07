@@ -1542,7 +1542,7 @@ def test_the_plain_return_beside_it_is_unchanged(gate, tmp_path):
     ],
     ids=["read-then-assign", "assign-then-read", "addition-form"],
 )
-def test_an_order_dependent_walrus_certifies_nothing(gate, tmp_path, body, truth):
+def test_an_order_dependent_walrus_certifies_what_python_builds(gate, tmp_path, body, truth):
     """One expression that both assigns a name and reads it: operands are folded in order.
 
     Python evaluates operands left to right, so these three build `wrongactual`, `actualactual`
