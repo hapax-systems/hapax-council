@@ -155,6 +155,10 @@ DICT_ORDER = (
     ("value_then_key_then_plain", "d = {'a': (x := 'first'), (x := 'final'): 0, 'c': 1}"),
     ("unpacked_value_then_later_key", "d = {**{'a': (x := 'first')}, (x := 'final'): 0}"),
     ("pair_assigns_both_then_key", "d = {(x := 'k1'): (x := 'v1'), (x := 'final'): 0}"),
+    # WITHIN one pair: the value reads what its own key just bound. Reversing key and value
+    # inside the pair changes the answer, which the pair-ordering rows above cannot see — a
+    # negative control run against a value-before-key mutation passed all of them.
+    ("key_binds_what_its_value_reads", "d = {(x := 'k'): (x := x + '1')}"),
     # Already correct before the repair, and must stay so: the last assignment in source order is
     # also the last one a keys-then-values walk reaches.
     ("key_then_value_assign", "d = {(x := 'first'): 0, 'k': (x := 'final')}"),
