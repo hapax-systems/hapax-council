@@ -1498,6 +1498,19 @@ def _constant_value(node: ast.expr | None, values: dict[str, str]) -> tuple[bool
         encoded = values.get(f"{_CONSTANT_VALUE_PREFIX}{node.id}")
         if encoded is not None:
             return True, json.loads(encoded)
+    if isinstance(node, ast.Call) and _function_name(node) == "str" and not node.keywords:
+        # `str()` is the empty string and `str(<known scalar>)` is that scalar's text. The path
+        # resolver already knows both; the constant channel did not, so an interpolation of `str()`
+        # became an unknown and the whole f-string widened to a wildcard — which bounded a writer
+        # over `artifacts/*state.json` and silenced the orphan for `artifacts/alienstate.json`.
+        # Only this one builtin, and only over values that are already known: an unknown argument
+        # stays unknown, so an unknown interpolation stays unbounded.
+        if not node.args:
+            return True, ""
+        if len(node.args) == 1:
+            known, value = _constant_value(node.args[0], values)
+            if known:
+                return True, str(value)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         left_known, left = _constant_value(node.left, values)
         right_known, right = _constant_value(node.right, values)
@@ -1824,9 +1837,46 @@ def _resolve_path_expr(
             depth=depth + 1,
         )
         if base is not None and new_name is not None:
+            # The home root is a symbol, not a location: this scanner does not know whose home it
+            # is, so it does not know the parent either. Taking `PurePosixPath` of the sentinel
+            # yields the filesystem root and named `/state.json` for what Python evaluates as the
+            # home's sibling — a bounded writer at a path the code never touches, which then
+            # silenced the real reader's orphan. A home CHILD still has a known parent (the home
+            # itself), so `(Path.home() / 'x').with_name(...)` keeps working.
+            if base == _HOME_ROOT:
+                return None
             return _join_pattern(str(PurePosixPath(base).parent), new_name, repo_root)
 
     return _resolve_path_helper(node, values, path, repo_root, path_functions)[0]
+
+
+def _returned_constant(
+    node: ast.expr | None,
+    path: Path,
+    values: dict[str, str],
+    path_functions: dict[str, PathFunction],
+) -> tuple[bool, object]:
+    """The scalar a visible helper returns literally, when that is all it does.
+
+    `def descriptor(): return True` followed by `open(descriptor(), 'w')` resolved to the *text*
+    `True` and certified a file of that name, because the type was known only inside the helper and
+    the call site saw an unresolved expression. Descriptor identity is a property of the value, and
+    a value does not stop being an integer by being returned.
+
+    Deliberately narrow. Only the helper's own return expression is folded, and only against an
+    EMPTY scope: a name in the helper's body is not a constant this scanner has established, and
+    reading the caller's bindings for it would be inventing a value rather than propagating one.
+    `return '3'` therefore stays the filename it is.
+    """
+
+    if not isinstance(node, ast.Call) or not isinstance(path_functions, PathFunctionTable):
+        return False, None
+    function = path_functions.resolve(
+        _function_name(node, values), path, _lexical_scope(values), _import_aliases(values)
+    )
+    if function is None or function.return_expr is None:
+        return False, None
+    return _constant_value(function.return_expr, {})
 
 
 def _resolve_path_helper(
@@ -2273,6 +2323,8 @@ def _classify_call(
         # Descriptor identity is typed evidence; a numeric filename is still a path.
         if not path_method:
             known, value = _constant_value(expression, values)
+            if not known:
+                known, value = _returned_constant(expression, path, values, path_functions)
             if known and isinstance(value, int):
                 expression = None
         # A custom `opener` receives the path and returns a descriptor of its own choosing, so
@@ -5248,6 +5300,17 @@ def _declared_pattern(value: str, repo_root: Path) -> str:
         return "."
     if expanded.startswith(canonical_repo + "/"):
         return expanded[len(canonical_repo) + 1 :]
+    # Accesses keep the home SYMBOLIC (`~/…`), because this scanner does not know whose home a
+    # path will be resolved against. Expanding the declaration against the scanner host's home
+    # therefore produced two representations that could never meet, and a home-rooted producer
+    # declaration bound none of the home-rooted accesses it selects. Bring the declaration to the
+    # accesses' representation instead of the other way round: recognising that `~/x` and this
+    # host's `<home>/x` both denote the home is not a claim that every execution host shares it.
+    home = Path.home().as_posix()
+    if expanded == home:
+        return "~"
+    if expanded.startswith(home + "/"):
+        return "~/" + expanded[len(home) + 1 :]
     return _normalise_pattern(expanded, repo_root)
 
 

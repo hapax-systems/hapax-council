@@ -1073,3 +1073,177 @@ def test_explicit_scalar_conversion_preserves_the_real_filename(gate, tmp_path, 
         "write",
     }
     assert unresolved == report.unresolvable == 0
+
+
+# ------------------------------------------------------------------------------------------
+# Four report-level boundaries, all confirmed against the frozen original as well: none of them
+# is a regression from the scalar round. Each is paired with the neighbouring case that must keep
+# working, because every one of these repairs is a WITHHOLD or a re-spelling, and a withhold that
+# is one case too wide loses a real writer.
+# ------------------------------------------------------------------------------------------
+
+
+def _bounded_writers(gate, tmp_path):
+    accesses, _, _, _ = gate.collect_artifact_accesses(tmp_path)
+    return {access.pattern for access in accesses if access.action == "write" and access.bounded}
+
+
+def test_the_symbolic_home_has_no_known_parent(gate, tmp_path):
+    """`Path.home().with_name(...)` named the filesystem root's child.
+
+    The home is a symbol: this scanner does not know whose home it is, so it does not know the
+    home's parent either. Taking the sentinel's `PurePosixPath` parent produced `/state.json` — a
+    bounded writer at a path the code never touches, which then silenced the real reader's orphan.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "Path.home().with_name('state.json').write_text('{}')\nPath('/state.json').read_text()\n",
+    )
+    assert "/state.json" in unwritten(report)
+    assert "/state.json" not in _bounded_writers(gate, tmp_path)
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize(
+    ("writer", "reader"),
+    [
+        ("(Path.home() / 'old.json').with_name('state.json')", "Path.home() / 'state.json'"),
+        ("Path('/home/reviewer').with_name('state.json')", "Path('/home/state.json')"),
+    ],
+    ids=["home-child", "literal-absolute"],
+)
+def test_a_known_parent_still_supports_with_name(gate, tmp_path, writer, reader):
+    """The companion: a home CHILD has a known parent — the home — and a literal absolute path
+    has one too. Withholding those as well would have cost two correct writers."""
+
+    report = report_for(gate, tmp_path, f"{writer}.write_text('{{}}')\n({reader}).read_text()\n")
+    assert not unwritten(report)
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize(
+    ("returned", "label"),
+    [("True", "True"), ("3", "3"), ("1 + 2", "3")],
+)
+def test_a_returned_scalar_keeps_its_type_across_the_call(gate, tmp_path, returned, label):
+    """`def descriptor(): return True` then `open(descriptor(), 'w')` certified a file named
+    `True`. A value does not stop being an integer by being returned, and descriptor identity is
+    a property of the value rather than of where it was written down."""
+
+    report = report_for(
+        gate,
+        tmp_path,
+        f"def descriptor():\n    return {returned}\n"
+        f"open(descriptor(), 'w', closefd=False)\nPath({label!r}).read_text()\n",
+    )
+    assert label in unwritten(report)
+    assert label not in _bounded_writers(gate, tmp_path)
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("returned", ["'3'", "str(True)", "'state.json'"])
+def test_a_returned_string_is_still_a_filename(gate, tmp_path, returned):
+    """The companion: a helper returning a STRING names a real file, including a string that
+    merely looks numeric. Folding by spelling instead of by type is what this replaces."""
+
+    report = report_for(
+        gate,
+        tmp_path,
+        f"def filename():\n    return {returned}\nopen(filename(), 'w')\n",
+    )
+    assert _bounded_writers(gate, tmp_path), returned
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize("empty", ["str()", "''", "str('')"], ids=["call", "literal", "explicit"])
+def test_a_known_empty_interpolation_is_exact_not_a_wildcard(gate, tmp_path, empty):
+    """`Path(f'artifacts/{str()}state.json')` widened to `artifacts/*state.json` and bounded it,
+    which silenced the orphan for a genuinely different reader. The constant channel did not know
+    `str()` even though the path resolver did; the literal twin already behaved correctly."""
+
+    report = report_for(
+        gate,
+        tmp_path,
+        f"Path(f'artifacts/{{{empty}}}state.json').write_text('{{}}')\n"
+        "Path('artifacts/alienstate.json').read_text()\n",
+    )
+    assert "artifacts/alienstate.json" in unwritten(report)
+    assert _bounded_writers(gate, tmp_path) == {"artifacts/state.json"}
+
+
+@pytest.mark.parametrize("shape", ["tilde", "absolute-home"])
+def test_a_home_rooted_declaration_binds_home_rooted_accesses(gate, tmp_path, shape):
+    """A producer declared under the home bound none of the home paths it selects.
+
+    Accesses keep the home SYMBOLIC, because this scanner does not know whose home a path will be
+    resolved against. The declaration was expanded against the scanner host's home instead, so the
+    two representations could never meet and a scope-exited producer produced no warning at all.
+    Both spellings of the same declaration must bind; the repository-rooted twin below is the
+    control that this did not simply make everything match.
+    """
+
+    import json
+
+    import yaml
+
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "shared/example.py").write_text(
+        "from pathlib import Path\n"
+        "(Path.home() / '.cache/hapax/state.json').write_text('{}')\n"
+        "(Path.home() / '.cache/hapax/state.json').read_text()\n"
+    )
+    declared = "~/.cache/hapax" if shape == "tilde" else str(Path.home() / ".cache/hapax")
+    mass = tmp_path / "mass.yaml"
+    mass.write_text(
+        yaml.safe_dump(
+            {
+                "members": [
+                    {
+                        "id": "synthetic-producer",
+                        "location": {"path": declared, "patterns": ["*.json"]},
+                    }
+                ]
+            }
+        )
+    )
+    frame = tmp_path / "elements.json"
+    frame.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "frame:relevance-report",
+                    "kind": "relevance_report",
+                    "payload": {
+                        "verdicts": [
+                            {
+                                "subject": {"member_id": "synthetic-producer"},
+                                "relation": "scope_exited",
+                                "verdict": "TRUE",
+                            }
+                        ]
+                    },
+                }
+            ]
+        )
+    )
+
+    report = gate.analyse_consumer_side(tmp_path, [], frame_path=frame, mass_path=mass)
+    assert "consumer-reads-decayed-producer" in {finding.kind for finding in report.findings}
+
+
+def test_an_unknown_interpolation_stays_unbounded(gate, tmp_path):
+    """The companion, and the one I wrongly alleged was a certification defect: an unknown
+    component still widens to a wildcard, and that wildcard is **unbounded**, so it certifies
+    nothing and the reader keeps its orphan. Do not collapse empty into unknown, or upgrade
+    unknown into a bounded pattern."""
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "x = input()\nPath(f'{x}/a.json').write_text('{}')\nPath('anything/a.json').read_text()\n",
+    )
+    assert "anything/a.json" in unwritten(report)
+    assert "*/a.json" not in _bounded_writers(gate, tmp_path)
+    assert report.unresolvable > 0
