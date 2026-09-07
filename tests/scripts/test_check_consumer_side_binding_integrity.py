@@ -1436,18 +1436,43 @@ def test_an_enumeration_that_failed_is_unknown_not_a_clean_measurement(
     from a second one — a later success cannot certify an earlier empty set, and an earlier
     success cannot license a later failure. Unknown is `null`: not `[]`, which would read as a
     clean measurement, and not a fabricated list.
+
+    **`dirty` is unknown here too, and this row asserted otherwise until the coordinator caught
+    it.** It required `False`, on the reasoning that an unreadable index should not upgrade into
+    dirty — which is the day's own defect written into a test. `dirty` describes the measurement,
+    and the measurement has two inputs; with one of them unreadable, `False` is a claim of
+    cleanliness that nothing supports. The row below asserts `None`, and the tracked-modified
+    case keeps its `True` because a known-dirty status is sufficient on its own.
     """
 
     _write(tmp_path, "value = 1\n")
-    monkeypatch.setattr(gate, "_git_tracking", lambda _root: gate.GitTracking(frozenset(), False))
+    monkeypatch.setattr(gate, "_git_tracking", lambda _root: gate.NO_GIT_TRACKING)
     monkeypatch.setattr(gate, "_git_head", lambda _root: ("a" * 40, False))
 
     measured = gate.analyse_consumer_side(tmp_path, []).measured
     assert measured["head"] == "a" * 40, "the head is known and says so"
     assert measured["untracked_sources"] is None, "the enumeration is not"
-    assert measured["dirty"] is False, (
-        "an unreadable index does not upgrade into dirty, and does not invent a file list"
+    assert measured["dirty"] is None, (
+        "one unreadable observation leaves the measurement unknown, not clean"
     )
+
+
+def test_a_modified_tracked_file_is_dirty_even_when_enumeration_fails(
+    gate, tmp_path: Path, monkeypatch
+) -> None:
+    """The twin: either observation alone is enough for dirty, only both agreeing give clean.
+
+    A `git status` that reports modifications establishes a dirty measurement whatever happened to
+    `ls-files`, so this must not fall back to unknown along with its neighbour.
+    """
+
+    _write(tmp_path, "value = 1\n")
+    monkeypatch.setattr(gate, "_git_tracking", lambda _root: gate.NO_GIT_TRACKING)
+    monkeypatch.setattr(gate, "_git_head", lambda _root: ("b" * 40, True))
+
+    measured = gate.analyse_consumer_side(tmp_path, []).measured
+    assert measured["dirty"] is True
+    assert measured["untracked_sources"] is None, "still unknown, and still says so"
 
 
 def test_a_directory_that_is_no_checkout_claims_nothing(gate, tmp_path: Path) -> None:

@@ -8,9 +8,10 @@ breadth-first so an inner binding published after the outer one that contained i
 
 Transposed without changing its oracle from the coordinator's
 `coordination-20260904/test_scanner_expression_state_root.py`, which qualified the shared
-expression-state candidate this module now guards (2026-09-07). The three withheld rows are
-withheld because the branch that assigns is not the branch that runs, or is a lambda body that
-never runs at all; those are limits, named rather than silently passing.
+expression-state candidate this module now guards (2026-09-07). The withheld rows are withheld
+because the branch that assigns is not the branch that runs, is a lambda body that never runs at
+all, or is a shape the scanner does not model; those are limits, named rather than silently
+passing.
 """
 
 from __future__ import annotations
@@ -25,7 +26,20 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-producer-consu
 
 # The scanner must certify NOTHING for these: an assignment the taken branch never reaches, and a
 # lambda body that is compiled here and called nowhere.
-WITHHELD = {"unselected_assignment", "selected_assignment", "unselected_lambda"}
+WITHHELD = {
+    "unselected_assignment",
+    "selected_assignment",
+    "unselected_lambda",
+    # Subscripting a dict display is not modelled, so these certify nothing on either side of the
+    # evaluation-order question. They are here as the BOUNDARY, measured: four families report a
+    # dict-order shape that certifies a wrong file, and I could not construct one — so what these
+    # rows pin is that these particular dict shapes certify nothing at all, which a future change
+    # that starts certifying them wrongly would break.
+    "dict_value_assigns",
+    "dict_value_assigns_read_before",
+    "dict_key_read_before_its_value",
+    "dict_second_pair_reads_first",
+}
 
 EXPRESSIONS = (
     ("plain", "x"),
@@ -43,6 +57,22 @@ EXPRESSIONS = (
     ("outer_reads_before_inner_write", "f\"{(x := x + (x := 'a'))}{x}\""),
     ("outer_reads_after_inner_write", "f\"{(x := (x := 'a') + x)}{x}\""),
     ("outer_and_inner_read_old_values", "f\"{(x := x + (x := x + 'a'))}{x}\""),
+    # Dict displays evaluate key1, value1, key2, value2 — each key before its own value, in
+    # source order — while `ast.Dict` stores keys and values as two separate lists, so a walk over
+    # `ast.iter_child_nodes` yields every key and then every value. Four families reported that
+    # order producing a wrong certified filename (2026-09-07) and glm's minor recorded these
+    # shapes as missing from this matrix.
+    #
+    # **These four rows do not reproduce that report.** Measured at `93ac1ef0a` and with a
+    # corrected walk: both certify NOTHING here, because subscripting a dict display is not a
+    # modelled path — so the rows are in WITHHELD, pinning the boundary they actually establish
+    # rather than the defect they were written to catch. The reviewers' failing shape is asked
+    # for rather than guessed at; a repair with no reproducing case is how the last two withdrawn
+    # guards were written.
+    ("dict_value_assigns", "f\"{ {'k': (x := 'a')}['k'] }{x}\""),
+    ("dict_value_assigns_read_before", "f'{x}'+f\"{ {'k': (x := 'a')}['k'] }\""),
+    ("dict_key_read_before_its_value", "f\"{ {x: (x := 'a')}['wrong'] }{x}\""),
+    ("dict_second_pair_reads_first", "f\"{ {(x := 'a'): 'v', x: 'w'}['a'] }{x}\""),
 )
 
 MATRIX = [(name, expression, "wrong") for name, expression in EXPRESSIONS] + [

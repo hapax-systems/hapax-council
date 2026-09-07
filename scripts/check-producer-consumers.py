@@ -5269,14 +5269,21 @@ NO_GIT_TRACKING = GitTracking(frozenset(), False)
 
 def _git_tracking(repo_root: Path) -> GitTracking:
     if not (repo_root / ".git").exists():
-        return GitTracking(frozenset(), False)
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), "ls-files", "-z"],
-        check=False,
-        capture_output=True,
-    )
+        return NO_GIT_TRACKING
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-files", "-z"],
+            check=False,
+            capture_output=True,
+        )
+    except OSError:
+        # `_git_head` has always caught this; its sibling did not, so a missing git binary or a
+        # fork that could not be made escaped `analyse_consumer_side` as a traceback instead of
+        # reaching the report as an unknown (review finding, cx-blue, 2026-09-07). A failure to
+        # ASK is the same unknown as a failure to answer.
+        return NO_GIT_TRACKING
     if result.returncode != 0:
-        return GitTracking(frozenset(), False)
+        return NO_GIT_TRACKING
     return GitTracking(
         frozenset(
             item.decode("utf-8", errors="surrogateescape")
@@ -5641,23 +5648,38 @@ def measured_provenance(
     #   NOT enumerated         -> unknown. `null`, never `[]`: an unreadable index is not a clean
     #                             measurement, and inventing a list from it named a tracked file
     #                             as untracked when `ls-files` was made to exit 128
-    #   no head                -> no repository, so nothing is claimed either way
-    #
-    # `dirty` follows the same discipline: an untracked measured source makes it true, and an
-    # unknown enumeration leaves whatever `status` established about tracked paths rather than
-    # upgrading absence of knowledge into cleanliness.
+    #   no head                -> nothing is claimed. Not "no repository": an unborn repository
+    #                             has no head and is a repository, and a detached or unreadable
+    #                             head is a third thing again. What is true of all of them is
+    #                             that this consumer has no commit to describe.
     untracked: list[str] | None = (
         sorted(str(path) for path in measured_sources if str(path) not in tracking.paths)
         if head is not None and tracking.enumerated
         else None
     )
+    # **`dirty` is three-valued, because it describes the MEASUREMENT and two observations feed
+    # it.** An earlier version returned `False` whenever `status` was clean, including when the
+    # enumeration had failed — so a report read an untracked source, emitted its finding, and
+    # still said `dirty: false` while real git said `?? shared/untracked.py` (review finding,
+    # cx-blue, 2026-09-07, against the repair before this one; my own control asserted that
+    # `False`, which is the defect pinned in a test).
+    #
+    # Either observation is sufficient for TRUE. Only both, agreeing, establish FALSE. Anything
+    # less is unknown, and unknown is `None` — a report claiming a clean measurement is making a
+    # claim, and one unreadable half does not support it.
+    if dirty is True or untracked:
+        measurement_dirty: bool | None = True
+    elif dirty is False and untracked == []:
+        measurement_dirty = False
+    else:
+        measurement_dirty = None
     epoch = frame_path.expanduser().absolute().parent.name if frame_path is not None else None
     return {
         "instrument_rev": "check-producer-consumers/consumer-side/1",
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "repo_root": str(repo_root),
         "head": head,
-        "dirty": True if untracked else dirty,
+        "dirty": measurement_dirty,
         "untracked_sources": untracked,
         "frame": {
             "elements": str(frame_path) if frame_path is not None else None,
