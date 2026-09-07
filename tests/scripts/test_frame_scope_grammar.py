@@ -301,6 +301,53 @@ def test_row_n_a_uri_shaped_scope_keeps_its_local_reading(
     assert rc == expected
 
 
+@pytest.mark.parametrize("reader", LOCAL_READERS)
+@pytest.mark.parametrize("spelling", ["literal", "class"])
+def test_row_p3_an_external_alias_is_the_same_file_under_either_spelling(
+    tmp_path, monkeypatch, capsys, reader, spelling
+):
+    """P3: two spellings of one external hard link must not disagree, under either reader.
+
+    The query reader's glob path compares resolved pathnames and parents, so an external hard link
+    supplied no overlap witness: `outside/alias.txt` refused while `outside/[a-a]lias.txt` was
+    admitted (review finding, codex, 2026-09-07). The class spelling denotes exactly the same file.
+
+    A glob's identity hit is overlap, not whole containment, so it earns the undecidable refusal
+    the in-root class alias already gets — not a declaration that the glob is contained.
+    """
+
+    root = tmp_path / "surface"
+    root.mkdir()
+    selected = root / "selected.txt"
+    selected.write_bytes(b"NEEDLE\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    alias = outside / "alias.txt"
+    os.link(selected, alias)
+
+    location = {"patterns": ["selected.txt"]}
+    if reader == "fs.content_query":
+        location.update(roots=[str(root)], query="NEEDLE")
+    else:
+        location.update(path=str(root))
+    scope = str(alias) if spelling == "literal" else str(outside / "[a-a]lias.txt")
+
+    _pin_checkout_base(monkeypatch, tmp_path)
+    rc, err = _root_dispatch(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        location,
+        reader=reader,
+        cwd=tmp_path,
+        candidate=scope,
+    )
+    with capsys.disabled():
+        print(f"P3 {reader} {spelling} external alias: main()={rc}")
+
+    assert rc == 10, "an external hard link is the selected file under either spelling"
+
+
 def test_row_p2_one_aliased_file_does_not_make_a_mixed_glob_wholly_decayed(
     tmp_path, monkeypatch, capsys
 ):

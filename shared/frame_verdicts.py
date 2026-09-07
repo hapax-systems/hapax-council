@@ -2413,18 +2413,37 @@ def ref_within_member(
         # refuses under `fs.glob` was admitted here, and a write through it changes a file the
         # query selected (review finding, codex, 2026-09-07). The query decides its own surface;
         # identity decides whether this name IS one of the files in it.
+        # Only files the QUERY selects are the member's surface: an alias to a file whose bytes
+        # the predicate rejects is not inside it, and comparing inodes against the unfiltered
+        # entry set made one look contained. The predicate decides membership; identity decides
+        # only whether this name is one of those files.
+        query = member.content_query
+        selected = frozenset(
+            target
+            for entry, target in selected_entries.items()
+            if query is not None and _content_query_matches(entry, query)
+        )
         if not dirlike and scope_pattern is None:
-            # Only files the QUERY selects are the member's surface: an alias to a file whose
-            # bytes the predicate rejects is not inside it, and comparing inodes against the
-            # unfiltered entry set made one look contained. The predicate decides membership;
-            # identity decides only whether this name is one of those files.
-            query = member.content_query
-            selected = frozenset(
-                target
-                for entry, target in selected_entries.items()
-                if query is not None and _content_query_matches(entry, query)
-            )
             return _identity_reaches_surface((_resolve_external_scope_path(path), path), selected)
+        if scope_pattern is not None:
+            # This reader's glob path compares resolved pathnames and parents, so an EXTERNAL hard
+            # link supplied no overlap witness and `outside/[a-a]lias.txt` was admitted while the
+            # literal `outside/alias.txt` refused — two spellings of one file, two answers again
+            # (review finding, codex, 2026-09-07). An identity hit here is overlap, not whole
+            # containment, so it raises the same undecidable refusal the in-root class alias
+            # already gets rather than declaring the glob contained.
+            aliased = tuple(
+                target
+                for entry, target in _canonical_scope_entries(
+                    path, scope_pattern, member, include_directories=True
+                ).items()
+                if not entry.is_dir() and target not in selected
+            )
+            if aliased and _identity_reaches_surface(aliased, selected):
+                raise UndecidableScopeContainment(
+                    f"scope glob {scope_pattern!r} below {path} reaches a query-selected file "
+                    "through a hard link; whole-surface containment cannot be decided safely"
+                )
         return False
     surface = frozenset(selected_entries.values())
     expansions = (
