@@ -479,6 +479,29 @@ def _producer_working_directory(epoch_dir: Path) -> Path:
     )
 
 
+def _member_skip_dirs(member_id: str, location: object) -> tuple[str, ...]:
+    """The declared skipped directory names, or an actionable refusal naming the member.
+
+    ``tuple(location["skip_dirs"])`` accepts anything iterable and raises ``TypeError`` on
+    anything else, which left ``skip_dirs: true`` and ``skip_dirs: 42`` crashing the consumer with
+    an empty stderr — no diagnostic, no remedy, no refusal receipt (review finding, codex,
+    2026-09-07). A string is iterable and would silently become one entry per character, which is
+    worse than the crash: it decides quietly. Both refuse here, by name.
+    """
+
+    if not isinstance(location, dict):
+        return ()
+    raw = location.get("skip_dirs")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or any(not isinstance(entry, str) or not entry for entry in raw):
+        raise UncontainableMemberLocation(
+            f"member {member_id!r} location.skip_dirs must be a list of non-empty directory "
+            f"names; got {raw!r}"
+        )
+    return tuple(raw)
+
+
 def _member_host_aliases(member: dict[str, object]) -> tuple[tuple[str, str], ...]:
     location = member.get("location") or {}
     raw = (location.get("host_aliases") or {}) if isinstance(location, dict) else {}
@@ -1013,13 +1036,15 @@ def _load_epoch_verdicts(
                 lexical_files,
             ) = _member_location(member, epoch_dir=epoch_dir)
             host_aliases = _member_host_aliases(member) if reader_id == "ssh.glob" else ()
+            # Inside the handler on purpose: raising here without it produced an uncaught
+            # exception and an empty stderr, which is the failure this validation exists to end.
+            skip_dirs = _member_skip_dirs(member_id, member.get("location") or {})
         except NonCanonicalScopeRef as exc:
             raise FrameVerdictsUnavailable(
                 f"member {member_id!r} has an uncontainable scheme-qualified location: {exc}",
                 remedy=UncontainableMemberLocation.remedy,
             ) from exc
         location = member.get("location") or {}
-        skip_dirs = tuple(location.get("skip_dirs") or []) if isinstance(location, dict) else ()
         content_query = None
         if reader_id == "fs.content_query":
             content_query = _load_content_query(member, root, epoch_dir)

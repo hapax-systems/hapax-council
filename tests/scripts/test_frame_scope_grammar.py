@@ -298,6 +298,46 @@ def test_row_n_a_uri_shaped_scope_keeps_its_local_reading(
     assert rc == expected
 
 
+@pytest.mark.parametrize(
+    "skip_dirs",
+    [True, 42, "excluded", ["excluded", 7], [""], {"excluded": True}],
+    ids=["bool", "int", "string", "mixed-list", "empty-name", "mapping"],
+)
+def test_row_o_a_malformed_skip_dirs_refuses_by_name_rather_than_crashing(
+    tmp_path, monkeypatch, capsys, skip_dirs
+):
+    """O: a declaration the consumer cannot read is a refusal, not a traceback.
+
+    `tuple(location["skip_dirs"])` accepted anything iterable and raised `TypeError` on anything
+    else, so `skip_dirs: true` and `skip_dirs: 42` crashed the consumer with an empty stderr — no
+    diagnostic, no remedy, no refusal receipt (review finding, codex, 2026-09-07). The string case
+    is the one the crash was hiding: `"excluded"` is iterable, so it became one skipped directory
+    per character and decided quietly, which is worse than failing.
+    """
+
+    root = tmp_path / "legacy"
+    root.mkdir()
+    (root / "candidate.txt").write_bytes(b"NEEDLE\n")
+
+    _pin_checkout_base(monkeypatch, tmp_path)
+    rc, err = _root_dispatch(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        {"path": str(root), "patterns": ["*.txt"], "skip_dirs": skip_dirs},
+        reader="fs.glob",
+        cwd=tmp_path,
+        candidate=str(root / "candidate.txt"),
+    )
+    with capsys.disabled():
+        print(f"O skip_dirs={skip_dirs!r}: main()={rc} err={err.strip()[:90]!r}")
+
+    assert rc == 10, "an unreadable member declaration must refuse"
+    assert "skip_dirs" in err, "the refusal must name the field that cannot be read"
+    assert "legacy-surface" in err, "and the member it belongs to"
+    assert err.strip(), "an empty stderr is the failure this pins"
+
+
 @pytest.mark.parametrize("reader", LOCAL_READERS)
 def test_row_e_the_remedy_the_refusal_names_is_reachable(tmp_path, monkeypatch, capsys, reader):
     """E: the explicit local spelling the remedy names must actually admit when it is disjoint.
