@@ -811,6 +811,38 @@ def test_epoch_older_than_accepted_evidence_allowance_refuses_and_younger_does_n
         assert excinfo.value.remedy == _expected_stale_remedy(stale.resolve())
 
 
+@pytest.mark.parametrize("ahead_s", [1, 86400, 31536000], ids=["one-second", "one-day", "one-year"])
+def test_an_epoch_dated_after_the_reading_clock_is_refused(tmp_path: Path, ahead_s: int) -> None:
+    """Being impossibly fresh used to pass the freshness bound.
+
+    `age = now - produced_at` is negative for an epoch stamped after `now`, and a negative age is
+    not greater than any positive limit — so an epoch dated a YEAR ahead loaded, measured (review
+    finding, codex, 2026-09-07). The bound exists to say the accepted pointer is keeping up with
+    the producer; two clocks disagreeing establishes nothing about that, and is not a weaker form
+    of freshness.
+
+    No skew tolerance is asserted, because any constant here would be a number nothing measured.
+    The boundary rows beside this one are unchanged: an epoch exactly at the limit still loads and
+    one second past it still refuses, so this refuses a third state rather than moving either edge.
+    """
+
+    root = _procedure_root(
+        tmp_path,
+        members=[{"id": "m", "location": {"path": str(tmp_path / "m")}}],
+        verdicts=[_verdict("m", "scope_exited", False)],
+        at=NOW + timedelta(seconds=ahead_s),
+    )
+    with pytest.raises(
+        fv.FrameVerdictsUnavailable, match="in the future of the reading clock"
+    ) as excinfo:
+        fv.load_frame_verdicts(root, now=NOW)
+    assert f"{float(ahead_s):.6f} s in the future" in excinfo.value.reason
+    assert "compare the producer's clock with this reader's" in excinfo.value.remedy
+    assert "older than" not in excinfo.value.reason, (
+        "a future epoch is a different fact from a stale one and must not borrow its diagnosis"
+    )
+
+
 @pytest.mark.parametrize("age_s", [21599, 21600, 21601])
 def test_default_epoch_age_boundary_is_six_hours(tmp_path: Path, age_s: int) -> None:
     root = _procedure_root(

@@ -853,6 +853,29 @@ def _load_epoch_verdicts(
     assert produced_at is not None  # current_epoch_dir only returns a parseable epoch
     current = now if now is not None else datetime.now(UTC)
     age = current - produced_at
+    if age < timedelta(0):
+        # **The age limit was one-sided, so being impossibly fresh passed it.** A negative age is
+        # not greater than any positive bound, so an epoch stamped after `now` was accepted
+        # however far ahead it was dated — measured here at a year (review finding, codex,
+        # 2026-09-07). The bound exists to say the accepted pointer is keeping up with the
+        # producer; an epoch from the future says the two clocks disagree, which establishes
+        # nothing about that and is not a weaker version of freshness.
+        #
+        # No skew tolerance is invented here: any constant would be a number nothing measured.
+        # This estate has produced future-dated stamps by hand more than once, so the refusal is
+        # also the only thing that would make the next one visible.
+        raise FrameVerdictsUnavailable(
+            f"current frame epoch {epoch_dir.name} is dated "
+            f"{-age.total_seconds():.6f} s in the future of the reading clock "
+            f"({current.isoformat()}); an epoch cannot be newer than the moment it is read, so "
+            "its age against the evidence allowance cannot be evaluated",
+            remedy=(
+                f"compare the producer's clock with this reader's, then read {root / '_runs/current'} "
+                f"and the epoch's publish.json under {root / '_runs/epochs'} to see which run "
+                "stamped it; re-run the frame producer once the two clocks agree, and do not "
+                "hand-edit the epoch name"
+            ),
+        )
     if age > timedelta(seconds=max_age_s):
         raise FrameVerdictsUnavailable(
             f"current frame epoch {epoch_dir.name} is {age.total_seconds():.6f} s old, "
