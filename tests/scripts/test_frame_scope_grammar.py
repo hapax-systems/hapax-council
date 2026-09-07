@@ -495,6 +495,61 @@ def test_row_p_a_hard_link_to_a_selected_file_is_that_file(
     assert rc == expected
 
 
+@pytest.mark.parametrize("mixed", [False, True], ids=["only-the-alias", "alias-and-a-stranger"])
+def test_row_p7_three_spellings_of_one_scope_agree_about_disjointness(tmp_path, mixed):
+    """P7: the identity repair covers the broad spellings, not only the literal one.
+
+    `_local_disjoint_established` compares path STRINGS, so the literal repair left the two broad
+    spellings of the same directory still certifying disjointness over a hard link the literal
+    spelling refused. Four reviewer families called that critical on `d0ecbe35`/`2f7c6b42`, and it
+    reproduced at the predicate: `tool*` and `elsewhere/` answered `True` where `elsewhere/tool`
+    answered `None`. A predicate that gives one situation two answers depending on how the caller
+    spelled it is wrong in the spelling that says more, which is the one claiming disjointness.
+
+    **This is not the withdrawn `aa5939179` under another name.** That guard put the identity check
+    in the *witness*, which converted partial-scope admission into refusal — a policy change a
+    standing disposition forbade. This one withholds only the disjointness CLAIM: admission falls
+    through to the witness, which still says True for both broad spellings, so the mixed scope is
+    admitted exactly as before and the wholly-aliased one is still refused by containment. The two
+    assertions below are the pair that keeps those apart — the predicate changes, the outcome does
+    not.
+    """
+
+    base = tmp_path / "base"
+    root = base / "surface"
+    root.mkdir(parents=True)
+    selected = root / "tool"
+    selected.write_bytes(b"NEEDLE\n")
+    elsewhere = base / "elsewhere"
+    elsewhere.mkdir()
+    os.link(selected, elsewhere / "tool")
+    if mixed:
+        (elsewhere / "toolbug").write_bytes(b"DIFFERENT\n")
+
+    verdicts = _decayed(tmp_path, _local_member(root=root, patterns=("tool",)))
+    member = verdicts.decayed[0]
+    spellings = {
+        "literal": (elsewhere / "tool", False, None),
+        "glob": (elsewhere, False, "tool*"),
+        "dirlike": (elsewhere, True, None),
+    }
+    answers = {
+        name: fv._local_disjoint_established(path, dirlike, pattern, member)
+        for name, (path, dirlike, pattern) in spellings.items()
+    }
+    assert answers == {"literal": None, "glob": None, "dirlike": None}, (
+        f"one arrangement, three spellings, one answer: {answers}"
+    )
+
+    result = fv.scope_within_decayed(
+        [str(elsewhere / "tool*")], verdicts, council_root=base, vault_root=base
+    )
+    assert result.all_inside is not mixed, (
+        "withholding the disjointness claim must not move the admission: a glob expanding only to "
+        "aliases is still wholly inside, and one with a stranger beside them is still partial"
+    )
+
+
 @pytest.mark.parametrize(
     ("target", "expected"),
     [("kept.txt", 10), ("dropped.txt", 0)],

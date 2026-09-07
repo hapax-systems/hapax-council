@@ -2311,9 +2311,11 @@ def _same_existing_file(candidate: Path, declared: Path) -> bool | None:
 
     Existence is deliberately not the test for anything else. A name that does not exist yet has
     no identity to compare and keeps its lexical treatment, so a scope naming a file the work is
-    about to create is unaffected. A stat that fails leaves the lexical answer standing, which is
-    the behaviour that was there before this check — it is an additional way to recognise the same
-    file, never a way to stop recognising one.
+    about to create is unaffected. **A stat that FAILS is a different fact from a file that is
+    absent**, and this returns ``None`` for it. An earlier revision of this docstring said a failed
+    stat "leaves the lexical answer standing, which is the behaviour that was there before" — which
+    let an unreadable filesystem certify disjointness, the exact substitution this check exists to
+    stop (root, 2026-09-07; row Q pins it by faulting `Path.stat` around the real comparison).
 
     **What this observation is worth, stated rather than assumed.** It is a reading of the
     filesystem at decision time, so it inherits that reading's limits: a link created after the
@@ -2904,46 +2906,67 @@ def _form_language(form: _CanonicalPathForm) -> str:
     return str(form.base if form.remainder is None else form.base / form.remainder)
 
 
+def _member_selected_surface(member: DecayedMember) -> frozenset[Path]:
+    """The files this member's READER selects, canonicalised — not what its patterns match.
+
+    A content-query member's entry that fails its own predicate is off the surface; the
+    concrete-alias loop in `_local_disjoint_established` says so and skips it. Counting such an
+    entry here made one function give two answers about one file, and refused a candidate that
+    aliased something the member never selected (review finding, codex, 2026-09-07; measured as
+    `UndecidableScopeContainment` on an alias of a pattern-matched, query-rejected file).
+    Declared `location.files` are selected by declaration, so no predicate filters them.
+    """
+
+    return frozenset(
+        target
+        for entry, target in _canonical_member_entries(member).items()
+        if not (
+            member.reader == "fs.content_query"
+            and member.content_query is not None
+            and not _content_query_matches(entry, member.content_query)
+        )
+    ) | {_resolve_external_scope_path(file) for file in _selected_member_files(member)}
+
+
 def _local_disjoint_established(
     path: Path, dirlike: bool, scope_pattern: str | None, member: DecayedMember
 ) -> bool | None:
     """Compare all canonical candidate forms with every producer-spelled selection form."""
     if not member.roots and not member.files:
         return True  # Local and qualified namespaces are distinct.
-    if not dirlike and scope_pattern is None:
-        # Every comparison below is between path STRINGS, and `_resolve_external_scope_path`
-        # unifies symlinks but not hard links — two directory entries sharing an inode stay two
-        # distinct canonical names. So this predicate certified disjointness for a candidate that
-        # IS one of the member's selected files under another spelling, and said so while
-        # containment said the opposite about the same pair (review finding, glm/gemini/codex,
-        # 2026-09-07; measured here as contained=True and disjoint_established=True together).
-        #
-        # Only the disjointness claim is repaired. Partial-scope semantics are untouched: this
-        # predicate answers "is the candidate outside", never "is the scope wholly inside", and the
-        # witness loop asks it about synthetic paths that alias nothing.
-        #
-        # The surface is what this READER selects, not what the patterns match. A content-query
-        # member's entry that fails its own predicate is off the surface — the concrete-alias loop
-        # below says so and skips it — so counting it here made one function give two answers about
-        # one file, and refused a candidate that aliased something the member never selected
-        # (review finding, codex, 2026-09-07; measured as UndecidableScopeContainment on an alias
-        # of a pattern-matched, query-rejected file).
-        selected = frozenset(
-            target
-            for entry, target in _canonical_member_entries(member).items()
-            if not (
-                member.reader == "fs.content_query"
-                and member.content_query is not None
-                and not _content_query_matches(entry, member.content_query)
-            )
-        ) | {_resolve_external_scope_path(file) for file in _selected_member_files(member)}
-        if selected and _identity_reaches_surface((path,), selected):
-            return None
     if scope_pattern is not None:
         literal = _literal_scope_glob(scope_pattern)
         if literal is not None:
             path = path / literal
             dirlike, scope_pattern = path.is_dir(), None
+    # Every comparison below is between path STRINGS, and `_resolve_external_scope_path` unifies
+    # symlinks but not hard links — two directory entries sharing an inode stay two distinct
+    # canonical names. So this predicate certified disjointness for a scope holding a file that IS
+    # one of the member's selected files under another spelling, and said so while containment said
+    # the opposite about the same pair (review finding, glm/gemini/codex, 2026-09-07; measured as
+    # contained=True and disjoint_established=True together).
+    #
+    # A BROAD spelling makes the same false claim about the files it currently expands to: the
+    # literal repair alone left `tool*` and `elsewhere/` certifying disjointness over a directory
+    # holding a hard link the literal spelling of refused (four families, 2026-09-07; measured as
+    # disjoint=True for both broad spellings beside disjoint=None for the literal one).
+    #
+    # Only the disjointness CLAIM is repaired, which is why this belongs here and not in the
+    # witness. This predicate answers "is the candidate outside", never "is the scope wholly
+    # inside": withholding it leaves `_scope_admission_established` free to fall through to the
+    # partial-scope witness, which admits these scopes exactly as before, and containment keeps its
+    # own answer for the wholly-aliased case. Putting the same check in the witness is what made
+    # the withdrawn `aa5939179` a policy change instead of a repair.
+    surface = _member_selected_surface(member)
+    if surface:
+        if not dirlike and scope_pattern is None:
+            if _identity_reaches_surface((path,), surface):
+                return None
+        else:
+            expansion = _canonical_scope_entries(path, scope_pattern or "**/*", member)
+            concrete = tuple(target for target in expansion.values() if target not in surface)
+            if concrete and _identity_reaches_surface(concrete, surface):
+                return None
     candidate_forms = _canonical_path_forms(
         path, scope_pattern if scope_pattern is not None else ("**/*" if dirlike else None)
     )
