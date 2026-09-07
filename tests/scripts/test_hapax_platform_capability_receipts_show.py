@@ -385,12 +385,20 @@ def _quota_probe(monkeypatch, tmp_path: Path, module, *, admission_at: datetime)
 
 
 @pytest.mark.parametrize(
-    ("ledger_readable", "reason", "supersedes"),
-    [(False, "quota_telemetry_unknown", False), (True, "account_live_quota_receipt_absent", True)],
-    ids=["stale-ledger-over-the-same-admission", "readable-ledger-reports-the-admission-gone"],
+    ("ledger_readable", "ledger_behind", "reason", "supersedes"),
+    [
+        (False, False, "quota_telemetry_unknown", False),
+        (True, True, "quota_telemetry_unknown", False),
+        (True, False, "account_live_quota_receipt_absent", True),
+    ],
+    ids=[
+        "unreadable-ledger-over-the-same-admission",
+        "readable-ledger-that-has-not-looked-yet",
+        "readable-ledger-that-looked-and-reports-it-gone",
+    ],
 )
 def test_a_failed_ledger_read_is_not_a_later_negative_observation(
-    tmp_path: Path, monkeypatch, ledger_readable, reason, supersedes
+    tmp_path: Path, monkeypatch, ledger_readable, ledger_behind, reason, supersedes
 ) -> None:
     """An UNOBSERVABLE built from a stale ledger revoked a renewal derived from one admission.
 
@@ -421,8 +429,12 @@ def test_a_failed_ledger_read_is_not_a_later_negative_observation(
                     )
                 },
                 True,
+                admission_at + timedelta(seconds=1),
             )
-        return {}, ledger_readable
+        captured = None
+        if ledger_readable:
+            captured = base if ledger_behind else now - timedelta(seconds=1)
+        return {}, ledger_readable, captured
 
     monkeypatch.setattr(module, "_ledger_fresh_routes", ledger)
     route = type("Route", (), {"route_id": "glmcp.review.direct"})()
@@ -522,7 +534,12 @@ def test_an_unreadable_stored_receipt_is_quarantined_not_a_permanent_block(
     kept = sorted(path for path in out.iterdir() if "unreadable" in path.name)
     assert len(kept) == 1, kept
     assert kept[0].read_text() == stored, "the unreadable bytes are preserved, never discarded"
-    assert "unreadable_receipt_quarantined" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "unreadable_receipt_quarantined" in err
+    # The diagnostic names where and what kind, never the bytes: a parser's message quotes the
+    # input it choked on, and stderr reaches logs and journals the receipt directory does not.
+    assert "cause=" in err
+    assert not stored or stored not in err.replace("glmcp.json", ""), err
 
 
 def test_a_readable_older_receipt_is_still_retained(tmp_path: Path, capsys) -> None:

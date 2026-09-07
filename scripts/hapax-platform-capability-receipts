@@ -516,7 +516,7 @@ QUOTA_RECEIPT_FUTURE_SKEW_SECONDS = 60
 
 def _ledger_fresh_routes(
     route_ids: set[str], *, now: datetime
-) -> tuple[dict[str, tuple[tuple[str, ...], datetime | None]], bool]:
+) -> tuple[dict[str, tuple[tuple[str, ...], datetime | None]], bool, datetime | None]:
     """Routes the live ledger's own fail-closed validator reports FRESH: route_id -> (refs, bound).
 
     The state comes from ``subscription_quota_state_for_route`` — the ledger's validator, which
@@ -530,7 +530,7 @@ def _ledger_fresh_routes(
     try:
         ledger = load_quota_spend_ledger(QUOTA_LEDGER_LIVE)
     except (OSError, ValueError, QuotaSpendLedgerError):
-        return {}, False
+        return {}, False, None
     fresh: dict[str, tuple[tuple[str, ...], datetime | None]] = {}
     for route_id in sorted(route_ids):
         try:
@@ -548,7 +548,11 @@ def _ledger_fresh_routes(
             tuple(_typed_evidence_ref(ref) for ref in refs),
             min(bounds) if bounds else None,
         )
-    return fresh, True
+    # The ledger's own capture instant travels with its verdict. Readable is not current: a
+    # ledger that parses but was captured before an admission has not SEEN that admission, and
+    # its silence about the route is not an observation of the admission's absence (review
+    # finding, codex, 2026-09-07).
+    return fresh, True, ensure_utc(ledger.captured_at)
 
 
 def _typed_evidence_ref(ref: str) -> str:
@@ -652,21 +656,42 @@ def observe_quota(
             current = best_by_route.get(route_id)
             if current is None or observed > current[0]:
                 best_by_route[route_id] = (observed, doc, path)
-    ledger_fresh, ledger_readable = _ledger_fresh_routes(route_ids, now=now)
+    ledger_fresh, ledger_readable, ledger_captured_at = _ledger_fresh_routes(route_ids, now=now)
     # Observed only where a fresh relay receipt AND the ledger's validator agree on the route.
     observed_routes = sorted(route_id for route_id in best_by_route if route_id in ledger_fresh)
     if not observed_routes:
         # No fresh receipt for any route: the producer wrote nothing — receipt absent. Receipts
-        # present but the validated ledger unreadable: telemetry unknown. Receipts present and the
-        # ledger readable but not fresh for those routes: the admission is absent per the ledger.
-        telemetry_unknown = bool(best_by_route) and not ledger_readable
+        # present but the validated ledger unreadable, or readable and captured before those
+        # receipts: telemetry unknown. Receipts present and a ledger that has actually looked
+        # since, still not fresh for those routes: the admission is absent per the ledger.
+        newest_admission = (
+            max(observed for observed, _doc, _path in best_by_route.values())
+            if best_by_route
+            else None
+        )
+        # **Readable is not current.** A ledger that parses but was captured BEFORE the admission
+        # this run is holding has not seen that admission, so its silence about the route is not
+        # an observation of the admission's absence — it is the same unknown as an unreadable
+        # ledger, reached by a different route (review finding, codex, 2026-09-07: a readable old
+        # ledger still revoked a renewal after the unreadable one stopped). A ledger captured at
+        # or after the admission HAS looked, and its silence is a real absence.
+        ledger_behind = (
+            newest_admission is not None
+            and ledger_captured_at is not None
+            and ledger_captured_at < newest_admission
+        )
+        telemetry_unknown = bool(best_by_route) and (not ledger_readable or ledger_behind)
         reason = (
             "quota_telemetry_unknown" if telemetry_unknown else "account_live_quota_receipt_absent"
         )
         unobserved_refs = [f"local:{platform}:quota-probe:unobservable"]
         if telemetry_unknown:
+            # Which unknown it is, named: a ledger nobody could read is a different fact from one
+            # that read fine and had not looked yet, and a reference that says "unreadable" for
+            # both would misdescribe the second to anyone auditing the receipt.
             unobserved_refs.append(
-                f"quota-spend-ledger:{display_path(QUOTA_LEDGER_LIVE)}:unreadable"
+                f"quota-spend-ledger:{display_path(QUOTA_LEDGER_LIVE)}:"
+                + ("older-than-admission" if ledger_readable else "unreadable")
             )
         # **A failed observation is dated by what it examined, not by when it failed.** Two
         # distinct facts were sharing one timestamp rule. `account_live_quota_receipt_absent` is
@@ -1008,9 +1033,15 @@ def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path
                     f"{path.name}.unreadable-{receipt.observed_at:%Y%m%dT%H%M%SZ}"
                 )
                 os.replace(path, quarantine)
+                # The diagnostic names WHERE and WHAT KIND, never the bytes. A parser's message
+                # quotes the input it choked on, so printing `exc` would republish the contents
+                # of an unreadable receipt into logs and journals — every artifact a guard emits
+                # is a disclosure channel (review finding, codex, 2026-09-07). The quarantined
+                # file is the place to read it, under whatever protects that directory.
                 print(
                     f"hapax-platform-capability-receipts: unreadable_receipt_quarantined "
-                    f"platform={receipt.platform}; moved to {display_path(quarantine)}; {exc}",
+                    f"platform={receipt.platform}; moved to {display_path(quarantine)}; "
+                    f"cause={type(exc.__cause__ or exc).__name__}",
                     file=sys.stderr,
                 )
         if previous is not None and not observation_supersedes(receipt, previous):
