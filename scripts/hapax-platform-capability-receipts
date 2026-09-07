@@ -675,10 +675,17 @@ def observe_quota(
         # ledger, reached by a different route (review finding, codex, 2026-09-07: a readable old
         # ledger still revoked a renewal after the unreadable one stopped). A ledger captured at
         # or after the admission HAS looked, and its silence is a real absence.
+        # `<=`, not `<`: both stamps are second-resolution, so an equal capture cannot show the
+        # ledger looked AFTER the admission was written — it is indistinguishable from looking
+        # before (review finding, codex, 2026-09-07). `observation_supersedes` two hundred lines
+        # below already decides ties this way and says why: "at equal observation times positive
+        # evidence wins: failure/absence has not established a later distinct observation
+        # (admissions have second precision)." This is that same sentence applied one step
+        # earlier, so the two agree instead of contradicting each other.
         ledger_behind = (
             newest_admission is not None
             and ledger_captured_at is not None
-            and ledger_captured_at < newest_admission
+            and ledger_captured_at <= newest_admission
         )
         telemetry_unknown = bool(best_by_route) and (not ledger_readable or ledger_behind)
         reason = (

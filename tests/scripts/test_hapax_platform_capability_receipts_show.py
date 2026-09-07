@@ -385,20 +385,22 @@ def _quota_probe(monkeypatch, tmp_path: Path, module, *, admission_at: datetime)
 
 
 @pytest.mark.parametrize(
-    ("ledger_readable", "ledger_behind", "reason", "supersedes"),
+    ("ledger_readable", "ledger_capture", "reason", "supersedes"),
     [
-        (False, False, "quota_telemetry_unknown", False),
-        (True, True, "quota_telemetry_unknown", False),
-        (True, False, "account_live_quota_receipt_absent", True),
+        (False, None, "quota_telemetry_unknown", False),
+        (True, "before", "quota_telemetry_unknown", False),
+        (True, "same-second", "quota_telemetry_unknown", False),
+        (True, "after", "account_live_quota_receipt_absent", True),
     ],
     ids=[
         "unreadable-ledger-over-the-same-admission",
         "readable-ledger-that-has-not-looked-yet",
+        "readable-ledger-captured-in-the-admissions-own-second",
         "readable-ledger-that-looked-and-reports-it-gone",
     ],
 )
 def test_a_failed_ledger_read_is_not_a_later_negative_observation(
-    tmp_path: Path, monkeypatch, ledger_readable, ledger_behind, reason, supersedes
+    tmp_path: Path, monkeypatch, ledger_readable, ledger_capture, reason, supersedes
 ) -> None:
     """An UNOBSERVABLE built from a stale ledger revoked a renewal derived from one admission.
 
@@ -408,10 +410,18 @@ def test_a_failed_ledger_read_is_not_a_later_negative_observation(
     identical positive was then refused as older — the coordinator's reproduction, 2026-09-07,
     against the real parser, observer, lock, publisher and loader.
 
-    The two rows are the two facts that were sharing one timestamp rule. A readable ledger
-    reporting the admission gone is an absence this run really observed, and it must still be
-    able to supersede a renewal; that is the second row, and it is unchanged. Only the failed
-    read moves, to the date of the evidence it failed to validate.
+    Four rows, because "readable" turned out to be three facts, not one:
+
+    * unreadable — nothing was established, so the negative is dated by the admissions it could
+      not validate and cannot revoke them;
+    * readable but captured BEFORE the admission — the ledger has not seen it, same answer
+      (review finding, codex, 2026-09-07);
+    * readable and captured in the admission's OWN second — indistinguishable from before at
+      this resolution, so it establishes nothing either, and `observation_supersedes` already
+      decides equal-second ties the same way two hundred lines below (codex again, after the
+      first two were repaired with a strict `<`);
+    * readable and captured after — an absence this run really observed, which must still be
+      able to supersede a renewal. That row is the control, and it never moves.
     """
 
     module = _script_module()
@@ -433,7 +443,11 @@ def test_a_failed_ledger_read_is_not_a_later_negative_observation(
             )
         captured = None
         if ledger_readable:
-            captured = base if ledger_behind else now - timedelta(seconds=1)
+            captured = {
+                "before": base,
+                "same-second": admission_at,
+                "after": now - timedelta(seconds=1),
+            }[ledger_capture]
         return {}, ledger_readable, captured
 
     monkeypatch.setattr(module, "_ledger_fresh_routes", ledger)
