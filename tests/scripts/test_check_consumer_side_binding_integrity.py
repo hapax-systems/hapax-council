@@ -1391,6 +1391,48 @@ def test_provenance_names_the_sources_git_does_not_track(gate, tmp_path: Path) -
     assert report.measured["dirty"] is True, "so the head does not describe what was measured"
 
 
+def test_a_commit_that_tracks_nothing_is_still_a_checkout(gate, tmp_path: Path) -> None:
+    """An empty tracked set is a fact about the commit, not about there being no commit.
+
+    The first version of this repair guarded on a non-empty tracked set, which is what
+    `_non_python_source_paths` does for a different purpose. A repository whose commit tracks
+    nothing is still a repository: its untracked source was reported as `dirty: false` with an
+    empty list beside a real HEAD (review finding, cx-blue, 2026-09-07). The discriminator is
+    whether there is a head at all.
+
+    Both neighbours are pinned here so the fix cannot drift into either: the same empty commit
+    with nothing untracked still reports clean, and a directory that is no checkout claims nothing
+    rather than calling every file untracked.
+    """
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "empty")
+
+    clean = gate.analyse_consumer_side(tmp_path, []).measured
+    assert clean["head"] is not None
+    assert clean["dirty"] is False
+    assert clean["untracked_sources"] == []
+
+    _write(tmp_path, "value = 1\n")
+    measured = gate.analyse_consumer_side(tmp_path, []).measured
+    assert measured["head"] == clean["head"]
+    assert measured["untracked_sources"] == ["shared/consumer.py"]
+    assert measured["dirty"] is True
+
+
+def test_a_directory_that_is_no_checkout_claims_nothing(gate, tmp_path: Path) -> None:
+    """The twin of the row above: no head, so no untracked claim about anything."""
+
+    _write(tmp_path, "value = 1\n")
+    measured = gate.analyse_consumer_side(tmp_path, []).measured
+    assert measured["head"] is None
+    assert measured["dirty"] is None
+    assert measured["untracked_sources"] == []
+
+
 def test_a_walk_error_from_outside_the_tree_is_recorded_not_raised(gate, tmp_path: Path) -> None:
     """`os.walk` does not catch what its `onerror` callback raises.
 

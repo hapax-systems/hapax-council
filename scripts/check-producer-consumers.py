@@ -5601,11 +5601,17 @@ def measured_provenance(
     #
     # The sources that were actually read decide this, not a second opinion about the tree: any
     # measured file git does not track is named, and its presence makes the tree dirty whatever
-    # `status` said about tracked paths. Outside a checkout `tracked` is empty and nothing is
-    # claimed, which is the same guard `_non_python_source_paths` already uses.
+    # `status` said about tracked paths.
+    #
+    # Whether this is a checkout is `head`, not `tracked`. Guarding on a non-empty tracked set —
+    # which is what `_non_python_source_paths` does for a different purpose — collapsed two facts:
+    # a repository whose commit tracks nothing is still a repository, and an untracked source in
+    # one was reported as `dirty: false` with an empty list beside a real HEAD (review finding,
+    # cx-blue, 2026-09-07, on the first version of this repair). An empty tracked set is a fact
+    # about the commit; the absence of a head is the fact about there being no commit at all.
     untracked = (
         sorted(str(path) for path in measured_sources if str(path) not in tracked)
-        if tracked
+        if head is not None
         else []
     )
     epoch = frame_path.expanduser().absolute().parent.name if frame_path is not None else None
