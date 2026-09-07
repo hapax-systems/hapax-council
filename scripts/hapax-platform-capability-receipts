@@ -1029,9 +1029,22 @@ def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path
                 # properly observed evidence, and the quarantine is announced rather than
                 # silent. This is not a fallback that widens: it does less, because it stops
                 # treating an unreadable file as a prior observation at all.
-                quarantine = path.with_name(
-                    f"{path.name}.unreadable-{receipt.observed_at:%Y%m%dT%H%M%SZ}"
-                )
+                # A second-resolution stamp is not a unique name. Two quarantines inside one
+                # second landed on the same path and `os.replace` overwrote the first, so the
+                # repair that exists to PRESERVE unreadable bytes destroyed a set of them
+                # (review finding, cx-blue, 2026-09-07 13:30). The name is claimed with O_EXCL
+                # under the publication lock, so the filesystem decides rather than a pre-check,
+                # and a losing candidate is never written over.
+                stamp = f"{receipt.observed_at:%Y%m%dT%H%M%SZ}"
+                attempt = 0
+                while True:
+                    suffix = f".unreadable-{stamp}" + (f".{attempt}" if attempt else "")
+                    quarantine = path.with_name(path.name + suffix)
+                    try:
+                        os.close(os.open(quarantine, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+                        break
+                    except FileExistsError:
+                        attempt += 1
                 os.replace(path, quarantine)
                 # The diagnostic names WHERE and WHAT KIND, never the bytes. A parser's message
                 # quotes the input it choked on, so printing `exc` would republish the contents

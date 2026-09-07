@@ -542,6 +542,41 @@ def test_an_unreadable_stored_receipt_is_quarantined_not_a_permanent_block(
     assert not stored or stored not in err.replace("glmcp.json", ""), err
 
 
+def test_two_quarantines_in_one_second_keep_both_sets_of_bytes(tmp_path: Path, capsys) -> None:
+    """The stamp is second-resolution, so it is not a unique name.
+
+    Two unreadable receipts quarantined within one second produced the same target path and
+     overwrote the first — the repair that exists to preserve unreadable bytes
+    destroyed a set of them (review finding, cx-blue, 2026-09-07 13:30). The name is now claimed
+    with O_EXCL under the publication lock, so the filesystem decides and a losing candidate is
+    never written over.
+    """
+
+    write_receipt = runpy.run_path(str(SCRIPT))["write_receipt"]
+    from shared.platform_capability_receipts import SurfaceEvidence
+
+    out = tmp_path / "receipts"
+    out.mkdir()
+    at = datetime(2026, 9, 5, tzinfo=UTC) + timedelta(seconds=10)
+    surface = SurfaceEvidence.model_validate(
+        {
+            "status": "observed",
+            "source": "test",
+            "observed_at": at,
+            "stale_after": "900s",
+            "evidence_refs": ["relay-receipt:glmcp.review.direct:present"],
+        }
+    )
+    for corpse in ("first-corrupt", "second-corrupt"):
+        (out / "glmcp.json").write_text(corpse)
+        assert write_receipt(_receipt_for(surface, at), out) is not None
+
+    kept = sorted(path for path in out.iterdir() if "unreadable" in path.name)
+    assert len(kept) == 2, kept
+    assert sorted(path.read_text() for path in kept) == ["first-corrupt", "second-corrupt"]
+    capsys.readouterr()
+
+
 def test_a_readable_older_receipt_is_still_retained(tmp_path: Path, capsys) -> None:
     """The control for the row above: a prior this loader CAN read still orders publication."""
 
