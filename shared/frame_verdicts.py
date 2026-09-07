@@ -2202,6 +2202,34 @@ def _local_member_file_matches(path: Path, root: Path, pattern: str) -> bool:
         ) from exc
 
 
+def _same_existing_file(candidate: Path, declared: Path) -> bool:
+    """Whether two names that both exist today are one file.
+
+    ``resolve()`` collapses symlinks, so string comparison already catches those. It cannot see a
+    **hard link**: two directory entries pointing at one inode are different strings naming the
+    same bytes, and an in-place write through either changes the other (review finding, codex,
+    2026-09-07, reproduced on the installed tree with ``gawk`` and ``gawk-5.4.0``).
+
+    Existence is deliberately not the test for anything else. A name that does not exist yet has
+    no identity to compare and keeps its lexical treatment, so a scope naming a file the work is
+    about to create is unaffected. A stat that fails leaves the lexical answer standing, which is
+    the behaviour that was there before this check — it is an additional way to recognise the same
+    file, never a way to stop recognising one.
+
+    **What this observation is worth, stated rather than assumed.** It is a reading of the
+    filesystem at decision time, so it inherits that reading's limits: a link created after the
+    check is not seen, one removed after it is still refused, and nothing here is a guarantee about
+    the state at the moment work actually runs. It closes the case where the link already exists
+    when the scope is declared, which is the case that was measured. It is not a proof of
+    non-aliasing, and it must not be cited as one.
+    """
+
+    try:
+        return candidate.samefile(declared)
+    except (OSError, ValueError):
+        return False
+
+
 def ref_within_member(
     path: Path,
     dirlike: bool,
@@ -2213,7 +2241,7 @@ def ref_within_member(
     broad = dirlike or scope_pattern is not None
     selected_files = _selected_member_files(member)
     file_path = _resolve_member_path(path) if member.files else path
-    if any(file_path == file for file in selected_files):
+    if any(file_path == file or _same_existing_file(file_path, file) for file in selected_files):
         if broad:
             _refuse_directory_spelled_file(file_path)
         return True
@@ -2371,6 +2399,13 @@ def ref_within_member(
             _refuse_in_root_alias_reaching_surface(
                 path, scope_pattern, member, root=root, lexical_path=lexical_path
             )
+            if any(_same_existing_file(path, target) for target in surface):
+                # Nothing above sees a hard link: `resolve()` collapses symlinks, not links, so
+                # this candidate misses every declared pattern by spelling while naming the
+                # selected bytes. Last, so the symlink refusals above keep their own diagnosis —
+                # they say traversal is unproven, which is a different and more careful answer
+                # than saying this file is that file.
+                return True
             continue
         has_excluded_entry = _check_member_symlinks(
             path, root, member, scope_pattern=(scope_pattern or "**/*") if broad else None

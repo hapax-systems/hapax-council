@@ -37,6 +37,8 @@ assertion is load-bearing for the same reason: a refusal that does not name the 
 the contract's refusal.
 """
 
+import os
+
 import pytest
 import yaml
 
@@ -294,6 +296,52 @@ def test_row_n_a_uri_shaped_scope_keeps_its_local_reading(
     )
     with capsys.disabled():
         print(f"N scope={scope!r}: main()={rc} (expected {expected})")
+
+    assert rc == expected
+
+
+@pytest.mark.parametrize(
+    ("scope_name", "expected"),
+    [("alias.txt", 10), ("selected.txt", 10), ("distinct.txt", 0)],
+    ids=["hard-link-alias", "the-selected-name", "a-genuinely-different-file"],
+)
+def test_row_p_a_hard_link_to_a_selected_file_is_that_file(
+    tmp_path, monkeypatch, capsys, scope_name, expected
+):
+    """P: two names for one inode are one file, and only the filesystem knows.
+
+    `resolve()` collapses symlinks, so the string comparison catches those. It cannot see a hard
+    link: `alias.txt` and `selected.txt` are different strings naming the same bytes, and an
+    in-place write through the admitted name changes the decayed file the guard was protecting
+    (review finding, codex, 2026-09-07, reproduced with `gawk`/`gawk-5.4.0` on the installed tree).
+
+    The third row is the one that keeps this honest: a distinct file in the same directory, under
+    the same declaration, must still admit. Identity is the test, not neighbourhood.
+    """
+
+    root = tmp_path / "surface"
+    root.mkdir()
+    selected = root / "selected.txt"
+    selected.write_bytes(b"NEEDLE\n")
+    alias = root / "alias.txt"
+    os.link(selected, alias)
+    assert alias.samefile(selected), "the fixture must actually hard-link, not copy"
+    distinct = root / "distinct.txt"
+    distinct.write_bytes(b"NEEDLE\n")
+    assert not distinct.samefile(selected)
+
+    _pin_checkout_base(monkeypatch, tmp_path)
+    rc, err = _root_dispatch(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        {"path": str(root), "patterns": ["selected.txt"]},
+        reader="fs.glob",
+        cwd=tmp_path,
+        candidate=str(root / scope_name),
+    )
+    with capsys.disabled():
+        print(f"P scope={scope_name!r}: main()={rc} (expected {expected})")
 
     assert rc == expected
 
