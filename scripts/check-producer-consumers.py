@@ -1230,6 +1230,46 @@ def _expression_value_name(node: ast.AST) -> str:
     )
 
 
+def _published_bindings(
+    node: ast.expr | None,
+    values: dict[str, str],
+    path: Path | None = None,
+    path_functions: object | None = None,
+) -> dict[str, str]:
+    """`values` extended with every constant an operand's `:=` binds, for LATER operands.
+
+    Python evaluates operands left to right, so `(x := 'a') + x` is `'aa'` while
+    `f"{x}{(x := 'a')}"` keeps the earlier binding for its first operand. Folding both operands
+    against one snapshot gets one of those wrong whichever way the walrus itself is read: the
+    coordinator measured twelve helper cases where four filenames were certified wrong at
+    `54b818b93`, and reading the assignment's value rather than its target fixes only the two
+    where nothing reads the target afterwards (2026-09-07).
+
+    This is the same move the module already makes for a call's receiver and callee, which are
+    frozen before a later argument rebinds their source — threaded through the two places that
+    fold a sequence of operands rather than a single one. An operand whose assigned value is not
+    a known constant publishes nothing, so an unknown stays unknown.
+    """
+
+    published = values
+    for item in ast.walk(node) if node is not None else ():
+        if not isinstance(item, ast.NamedExpr) or not isinstance(item.target, ast.Name):
+            continue
+        known, bound = _constant_value(item.value, values, path, path_functions)
+        if not known:
+            continue
+        if published is values:
+            published = dict(values)
+        published[f"{_CONSTANT_VALUE_PREFIX}{item.target.id}"] = json.dumps(bound)
+        # The path channel reads a name's text directly, so a constant published only to the
+        # typed channel is invisible to `_resolve_path_expr` and the later operand keeps the
+        # stale spelling. Only str/int have a path spelling; anything else stays unpublished
+        # there rather than being given one.
+        if isinstance(bound, (str, int)) and not isinstance(bound, bool):
+            published[item.target.id] = _literal_path(str(bound))
+    return published
+
+
 def _evaluated_expression(node: ast.expr | None, values: dict[str, str]) -> ast.expr | None:
     """Reuse an operand's value after a later operand has changed its source binding."""
     if isinstance(node, ast.Name) and node.id.startswith(_EXPRESSION_VALUE_PREFIX):
@@ -1522,7 +1562,12 @@ def _constant_value(
     """Keep scalar types for formatting; a path-shaped abstract string is not a constant."""
     node = _evaluated_expression(node, values)
     if isinstance(node, ast.NamedExpr):
-        return _constant_value(node.target, values, path, path_functions)
+        # `(x := v)` IS `v`. Reading the target instead is a proxy that holds only once the
+        # walker has applied the binding, and a return statement is summarised before that
+        # happens — so the target still carried its PREVIOUS value and the scanner certified
+        # the old filename with nothing unresolved (review finding, codex, 2026-09-07;
+        # reproduced at this head and at 54b818b93, so it predates the shared-walk adoption).
+        return _constant_value(node.value, values, path, path_functions)
     if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, float, type(None))):
         return True, node.value
     if isinstance(node, ast.Name):
@@ -1554,7 +1599,12 @@ def _constant_value(
                 return True, str(value)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         left_known, left = _constant_value(node.left, values, path, path_functions)
-        right_known, right = _constant_value(node.right, values, path, path_functions)
+        right_known, right = _constant_value(
+            node.right,
+            _published_bindings(node.left, values, path, path_functions),
+            path,
+            path_functions,
+        )
         if (
             left_known
             and right_known
@@ -1697,8 +1747,10 @@ def _resolve_path_expr(
     if node is None or depth > 12:
         return None
     if isinstance(node, ast.NamedExpr):
+        # The walrus's value, not its target: see `_constant_value` for why the target is stale
+        # exactly where it matters.
         return _resolve_path_expr(
-            node.target, values, path, repo_root, path_functions, depth=depth + 1
+            node.value, values, path, repo_root, path_functions, depth=depth + 1
         )
     # An unbounded closure cell is not a dynamic path component. In particular, formatting
     # it must not turn an obsolete binding into a wildcard producer.
@@ -1714,13 +1766,18 @@ def _resolve_path_expr(
         return values.get(node.id)
     if isinstance(node, ast.JoinedStr):
         parts: list[str] = []
+        # Interpolations are evaluated in order, so an earlier one's `:=` is visible to the later
+        # ones and to nothing before it. See `_published_bindings`.
+        scope = values
         for item in node.values:
             if isinstance(item, ast.Constant) and isinstance(item.value, str):
                 parts.append(_literal_path(item.value))
             elif isinstance(item, ast.FormattedValue):
-                formatted = _format_constant(item, values, path, path_functions, repo_root)
+                formatted = _format_constant(item, scope, path, path_functions, repo_root)
+                published = _published_bindings(item.value, scope, path, path_functions)
                 if formatted is not None:
                     parts.append(_literal_path(formatted))
+                    scope = published
                     continue
                 if item.format_spec is not None or item.conversion != -1:
                     return None
@@ -1728,12 +1785,13 @@ def _resolve_path_expr(
                 # formatting cannot use this approximation: its type/spec must be known.
                 resolved = _resolve_path_expr(
                     item.value,
-                    values,
+                    scope,
                     path,
                     repo_root,
                     path_functions,
                     depth=depth + 1,
                 )
+                scope = published
                 parts.append(resolved if resolved and resolved != "*" else "*")
         return "".join(parts)
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
@@ -1741,7 +1799,12 @@ def _resolve_path_expr(
             node.left, values, path, repo_root, path_functions, depth=depth + 1
         )
         right = _resolve_path_expr(
-            node.right, values, path, repo_root, path_functions, depth=depth + 1
+            node.right,
+            _published_bindings(node.left, values, path, path_functions),
+            path,
+            repo_root,
+            path_functions,
+            depth=depth + 1,
         )
         if left is None or right is None:
             return None
@@ -2053,7 +2116,7 @@ def _is_path_valued_expr(
     if node is None or depth > 12:
         return False
     if isinstance(node, ast.NamedExpr):
-        return _is_path_valued_expr(node.target, values, path, path_functions, depth=depth + 1)
+        return _is_path_valued_expr(node.value, values, path, path_functions, depth=depth + 1)
     if isinstance(node, ast.Name):
         return _path_value_key(node.id) in values
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):

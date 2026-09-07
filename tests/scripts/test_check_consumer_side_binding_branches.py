@@ -1484,3 +1484,96 @@ def test_an_unknown_interpolation_stays_unbounded(gate, tmp_path):
     assert "anything/a.json" in unwritten(report)
     assert "*/a.json" not in _bounded_writers(gate, tmp_path)
     assert report.unresolvable > 0
+
+
+def test_a_lone_walrus_return_is_its_value_not_its_targets_old_binding(gate, tmp_path):
+    """`(x := v)` IS `v`, and the target still held its previous value when the summary ran.
+
+    All three resolvers read `NamedExpr.target`, which works only once the walker has applied the
+    binding — and a return statement is summarised before that happens. So this helper's returned
+    name was certified as `artifacts/lexical.json`, a file the code never writes, with nothing
+    unresolved to show for it (review finding, codex, 2026-09-07, `check-producer-consumers.py`
+    :4454; reproduced identically at `54b818b93`, so it predates the shared-walk adoption).
+
+    The control below is the same helper without the walrus: it certified the right name before
+    and after, which is what makes the pair a measurement of the assignment expression rather than
+    of returning a constant.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "def value():\n"
+        "    name = 'artifacts/lexical.json'\n"
+        "    return (name := 'artifacts/walrus.json')\n"
+        "open(value(), 'w').close()\n"
+        "Path('artifacts/walrus.json').read_text()\n"
+        "Path('artifacts/lexical.json').read_text()\n",
+    )
+    writers = _bounded_writers(gate, tmp_path)
+    assert "artifacts/walrus.json" in writers, "the walrus's value is what the helper returns"
+    assert "artifacts/lexical.json" not in writers, "the target's stale binding is not written"
+    assert "artifacts/lexical.json" in unwritten(report), "so its reader keeps its orphan"
+
+
+def test_the_plain_return_beside_it_is_unchanged(gate, tmp_path):
+    """The twin of the row above: no assignment expression, same shape, same two readers."""
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "def value():\n"
+        "    name = 'artifacts/lexical.json'\n"
+        "    return 'artifacts/plain.json'\n"
+        "open(value(), 'w').close()\n"
+        "Path('artifacts/plain.json').read_text()\n"
+        "Path('artifacts/lexical.json').read_text()\n",
+    )
+    assert "artifacts/plain.json" in _bounded_writers(gate, tmp_path)
+    assert "artifacts/lexical.json" in unwritten(report)
+
+
+@pytest.mark.parametrize(
+    ("body", "truth"),
+    [
+        ("return f'{x}{(x := \"actual\")}'", "wrongactual"),
+        ("return f'{(x := \"actual\")}{x}'", "actualactual"),
+        ("return (x := 'actual') + x", "actualactual"),
+    ],
+    ids=["read-then-assign", "assign-then-read", "addition-form"],
+)
+def test_an_order_dependent_walrus_certifies_nothing(gate, tmp_path, body, truth):
+    """One expression that both assigns a name and reads it: operands are folded in order.
+
+    Python evaluates operands left to right, so these three build `wrongactual`, `actualactual`
+    and `actualactual`. Folding every operand against one binding snapshot certified `wrongwrong`
+    for all three at `54b818b93` and `858e387bd` alike — four wrong filenames across the
+    coordinator's twelve helper cases (2026-09-07 12:18), pre-existing rather than introduced by
+    the shared-walk adoption.
+
+    **A guard I wrote for these was withdrawn before it shipped.** Recognising "assigns a name and
+    reads it" syntactically and withholding everywhere broke three committed controls — the nested
+    receiver operands and the callee-identity capture — which are the same syntax and which this
+    module *already resolves correctly*, by freezing an operand's value before a later operand
+    rebinds its source. Refusing to model evaluation order was not available as a policy while the
+    module already modelled it where it mattered; a rule that cannot tell those apart is the wrong
+    rule, and "certify nothing" would have been a loss of precision sold as safety.
+
+    `_published_bindings` extends the freezing the call path already does to the two places that
+    fold a *sequence* of operands: an earlier interpolation's or operand's `:=` is visible to the
+    later ones and to nothing before it. Reading the assignment's value rather than its target is
+    the other half, and neither half alone gets all four cases right.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        f"def value(x):\n    {body}\nopen(value('wrong'), 'w').close()\n"
+        f"Path({truth!r}).read_text()\n",
+    )
+    assert [
+        pattern
+        for pattern in _bounded_writers(gate, tmp_path)
+        if pattern.startswith(("wrong", "actual"))
+    ] == [truth], "the certified writer is the string Python actually builds"
+    assert truth not in unwritten(report), "so the reader of that file is not an orphan"
