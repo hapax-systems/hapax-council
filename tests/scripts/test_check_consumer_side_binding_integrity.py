@@ -6,6 +6,7 @@ import ast
 import importlib.util
 import itertools
 import json
+import os
 import re
 import subprocess
 import sys
@@ -1351,6 +1352,51 @@ def test_all_source_gaps_are_retained(gate, tmp_path: Path) -> None:
         ("shared/consumer.py", "SyntaxError"),
         ("shared/binary.py", "UnicodeDecodeError"),
     }
+
+
+def test_a_walk_error_from_outside_the_tree_is_recorded_not_raised(gate, tmp_path: Path) -> None:
+    """ does not catch what its  callback raises.
+
+    The callback exists to RECORD an unreadable directory, and it called , which
+    raises  for any path the OS reports from outside the root. Nothing promises the
+    error's filename is under the tree being walked — that is a fact about the OS's report, not
+    about our arguments — so the scanner died exactly where it was written to describe a gap
+    (review finding, gemini, 2026-09-07). A failure path that fails is worse than the gap it was
+    meant to name.
+
+    The ordinary in-tree case below is the twin: it must keep its relative path and its class.
+    """
+
+    _write(tmp_path, "value = 1\n")
+    blocked = tmp_path / "shared" / "locked"
+    blocked.mkdir()
+    os.chmod(blocked, 0o000)
+    try:
+        report = gate.analyse_consumer_side(tmp_path, [])
+        assert ("shared/locked", "PermissionError") in {
+            (str(gap.path), gap.error_class) for gap in report.source_gaps
+        }
+    finally:
+        os.chmod(blocked, 0o700)
+
+    foreign = PermissionError(13, "denied")
+    foreign.filename = "/proc/1/root/elsewhere"
+    real_walk = gate.os.walk
+
+    def one_foreign_error(top, onerror=None, **kwargs):
+        if onerror is not None:
+            onerror(foreign)
+        return iter(())
+
+    gate.os.walk = one_foreign_error
+    try:
+        gaps: list = []
+        gate._iter_python_sources(tmp_path, source_gaps=gaps)
+    finally:
+        gate.os.walk = real_walk
+    assert [(str(gap.path), gap.error_class) for gap in gaps] == [
+        ("/proc/1/root/elsewhere", "PermissionError")
+    ], "a path that cannot be made relative is recorded absolute, never dropped and never raised"
 
 
 def _conditional(leaves: list[str]) -> str:

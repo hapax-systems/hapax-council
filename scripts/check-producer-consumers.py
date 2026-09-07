@@ -2193,9 +2193,21 @@ def _iter_python_sources(
     files: set[Path] = set()
 
     def unread_directory(exc: OSError) -> None:
-        if source_gaps is not None:
-            failed = Path(exc.filename) if exc.filename else repo_root
-            source_gaps.append(SourceGap(failed.relative_to(repo_root), "read", type(exc).__name__))
+        if source_gaps is None:
+            return
+        failed = Path(exc.filename) if exc.filename else repo_root
+        # `os.walk` does not catch what its `onerror` callback raises, so a callback that can
+        # raise defeats its own purpose: this one exists to RECORD an unreadable directory, and
+        # `relative_to` raises `ValueError` for any path the OS reports from outside the root
+        # (review finding, gemini, 2026-09-07). Nothing here promises the error's filename is
+        # under the tree being walked — that is a fact about the OS's report, not about our
+        # arguments — so the gap is recorded under the absolute path when it cannot be relative.
+        # A failure path that fails is worse than the gap it was written to describe.
+        try:
+            recorded = failed.relative_to(repo_root)
+        except ValueError:
+            recorded = failed
+        source_gaps.append(SourceGap(recorded, "read", type(exc).__name__))
 
     # Prune excluded trees before descending. os.walk's error callback also makes unreadable
     # source directories visible; pathlib glob silently suppresses directory-listing failures.
