@@ -673,8 +673,18 @@ def _member_location(
             if not local_filesystem_reader and _has_qualifier(item):
                 qualified_files.append(_qualified_location(item)[0])
             else:
-                lexical_files.append(Path(item).expanduser())
-                files.append(local_path(item).resolve())
+                # `location.roots` converts its expansion and resolution failures; this sibling
+                # did not, so `~no-such-user/x` raised RuntimeError straight out of the loader —
+                # the caller converts only NonCanonicalScopeRef here, so no diagnostic, no remedy
+                # and no receipt (review finding, codex, 2026-09-07). Third time in this family
+                # tonight, each in the branch next to the one repaired.
+                try:
+                    lexical_files.append(Path(item).expanduser())
+                    files.append(local_path(item).resolve())
+                except (OSError, RuntimeError) as exc:
+                    raise UncontainableMemberLocation(
+                        f"location.files entry {item!r} cannot be resolved: {exc}"
+                    ) from exc
     return (
         tuple(roots),
         globs,
@@ -2396,7 +2406,26 @@ def ref_within_member(
             return True
     selected_entries = _canonical_member_entries(member)
     if member.reader == "fs.content_query":
-        return _content_query_within_member(path, dirlike, member, scope_pattern, selected_entries)
+        if _content_query_within_member(path, dirlike, member, scope_pattern, selected_entries):
+            return True
+        # Falling through rather than returning: this reader has its own containment path, and
+        # returning from it skipped the identity comparison entirely — so the same hard link that
+        # refuses under `fs.glob` was admitted here, and a write through it changes a file the
+        # query selected (review finding, codex, 2026-09-07). The query decides its own surface;
+        # identity decides whether this name IS one of the files in it.
+        if not dirlike and scope_pattern is None:
+            # Only files the QUERY selects are the member's surface: an alias to a file whose
+            # bytes the predicate rejects is not inside it, and comparing inodes against the
+            # unfiltered entry set made one look contained. The predicate decides membership;
+            # identity decides only whether this name is one of those files.
+            query = member.content_query
+            selected = frozenset(
+                target
+                for entry, target in selected_entries.items()
+                if query is not None and _content_query_matches(entry, query)
+            )
+            return _identity_reaches_surface((_resolve_external_scope_path(path), path), selected)
+        return False
     surface = frozenset(selected_entries.values())
     expansions = (
         _canonical_scope_entries(path, scope_pattern, member, include_directories=True)
@@ -2561,16 +2590,30 @@ def ref_within_member(
     # glob's expansion, which is how `[a-a]lias.txt` names exactly the alias. Placed here rather
     # than in the root loop: a hard link outside the declared root is still that file, and the
     # earlier placement could only see candidates inside it.
-    concrete = (
-        tuple(target for entry, target in expansions.items() if not entry.is_dir())
-        if broad
-        else (canonical, lexical_path)
-    )
     # An explicit-files member declares no roots, so the canonical-entry surface built from roots
     # is empty for it. Its declared files are the surface, and a class-shaped scope naming a link
     # to one of them was reaching neither set.
     identity_surface = surface | {_resolve_external_scope_path(file) for file in selected_files}
-    return _identity_reaches_surface(concrete, identity_surface)
+    if not broad:
+        return _identity_reaches_surface((canonical, lexical_path), identity_surface)
+    # A BROAD scope is different: an identity hit on one expansion entry is overlap, not
+    # containment of the whole scope. Returning True here made `bin/gawk*` wholly decayed because
+    # one of its files is a link to the selected one, while the same glob's `gawkbug` is
+    # independently admitted — a partial scope reported as a total one (review finding, codex,
+    # 2026-09-07, on my own round-41 repair). So the aliases join the surface and the existing
+    # partial-scope rules decide, which is what they are for.
+    aliased = tuple(
+        target
+        for entry, target in expansions.items()
+        if not entry.is_dir() and target not in identity_surface
+    )
+    if aliased and _identity_reaches_surface(aliased, identity_surface):
+        return all(
+            target in identity_surface or _identity_reaches_surface((target,), identity_surface)
+            for entry, target in expansions.items()
+            if not entry.is_dir()
+        )
+    return False
 
 
 def _ssh_glob_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:

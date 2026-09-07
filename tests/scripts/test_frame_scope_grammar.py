@@ -301,13 +301,50 @@ def test_row_n_a_uri_shaped_scope_keeps_its_local_reading(
     assert rc == expected
 
 
+def test_row_p2_one_aliased_file_does_not_make_a_mixed_glob_wholly_decayed(
+    tmp_path, monkeypatch, capsys
+):
+    """P2: an identity hit on one expansion entry is overlap, not containment of the whole scope.
+
+    My first identity repair returned True as soon as any file the glob expands to aliased a
+    selected one, and `ref_within_member`'s caller reads True as whole-scope containment — so a
+    glob covering a link to the selected file **and** an independently admitted distinct file was
+    refused as wholly decayed (review finding, codex, 2026-09-07, against round 41). A partial
+    scope reported as a total one is the same error as admitting one: both replace a measurement
+    with a convenient answer.
+    """
+
+    root = tmp_path / "surface"
+    root.mkdir()
+    selected = root / "tool"
+    selected.write_bytes(b"NEEDLE\n")
+    os.link(selected, root / "tool-1.0")
+    (root / "toolbug").write_bytes(b"DIFFERENT\n")
+
+    _pin_checkout_base(monkeypatch, tmp_path)
+    rc, err = _root_dispatch(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        {"path": str(root), "patterns": ["tool"]},
+        reader="fs.glob",
+        cwd=tmp_path,
+        candidate=str(root / "tool*"),
+    )
+    with capsys.disabled():
+        print(f"P2 mixed glob over an alias and a distinct file: main()={rc}")
+
+    assert rc == 0, "a glob whose expansion includes an outside file is a partial scope"
+
+
+@pytest.mark.parametrize("reader", LOCAL_READERS)
 @pytest.mark.parametrize(
     ("scope_name", "expected"),
     [("alias.txt", 10), ("selected.txt", 10), ("distinct.txt", 0)],
     ids=["hard-link-alias", "the-selected-name", "a-genuinely-different-file"],
 )
 def test_row_p_a_hard_link_to_a_selected_file_is_that_file(
-    tmp_path, monkeypatch, capsys, scope_name, expected
+    tmp_path, monkeypatch, capsys, scope_name, expected, reader
 ):
     """P: two names for one inode are one file, and only the filesystem knows.
 
@@ -331,13 +368,21 @@ def test_row_p_a_hard_link_to_a_selected_file_is_that_file(
     distinct.write_bytes(b"NEEDLE\n")
     assert not distinct.samefile(selected)
 
+    location = {"patterns": ["selected.txt"]}
+    if reader == "fs.content_query":
+        # The query reader has its own containment path, and it returned before the identity
+        # comparison — so the same alias that refuses under fs.glob was admitted here.
+        location.update(roots=[str(root)], query="NEEDLE")
+    else:
+        location.update(path=str(root))
+
     _pin_checkout_base(monkeypatch, tmp_path)
     rc, err = _root_dispatch(
         tmp_path,
         monkeypatch,
         capsys,
-        {"path": str(root), "patterns": ["selected.txt"]},
-        reader="fs.glob",
+        location,
+        reader=reader,
         cwd=tmp_path,
         candidate=str(root / scope_name),
     )
@@ -452,6 +497,38 @@ def test_row_q2_a_genuinely_absent_path_still_admits(tmp_path, monkeypatch, caps
         print(f"Q2 absent {scope_name!r}: main()={rc}")
 
     assert rc == 0, "a not-yet-created path outside the member is not an unreadable comparison"
+
+
+@pytest.mark.parametrize(
+    "declared",
+    ["~frame-review-user-that-does-not-exist/selected.txt", "no-such/relative/selected.txt"],
+    ids=["unknown-user-home", "unresolvable-relative"],
+)
+def test_row_r2_an_unresolvable_declared_file_is_an_actionable_refusal(tmp_path, declared):
+    """R2: `location.roots` converts its resolution failures and `location.files` did not.
+
+    `~no-such-user/x` raises `RuntimeError` out of `expanduser`, and the loader converts only
+    `NonCanonicalScopeRef` at that point, so it escaped as a traceback with no diagnostic, no
+    remedy and no receipt. **Third time tonight in this family, each in the branch beside the one
+    just repaired** — which is the finding worth keeping, more than the fix.
+    """
+
+    member = {
+        "id": "legacy-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"files": [declared], "patterns": ["*.txt"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("legacy-surface", "scope_exited")],
+    )
+
+    with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
+        fv.load_frame_verdicts(procedure, now=NOW)
+
+    assert "legacy-surface" in str(caught.value)
+    assert caught.value.remedy
 
 
 @pytest.mark.parametrize("spelling", ["plain", "trailing-star"])
