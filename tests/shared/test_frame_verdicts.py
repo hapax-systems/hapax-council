@@ -568,7 +568,13 @@ def test_content_query_terminal_glob_does_not_read_unselected_files(tmp_path: Pa
 @pytest.mark.parametrize(
     "location",
     [
-        {"roots": ["podium:store"]},
+        # `{"roots": ["podium:store"]}` used to sit here. It is not an invalid declaration: the
+        # local readers give a colon no meaning, so it is a legal relative directory name, and
+        # whether it refuses depends entirely on whether an anchor is available. Leaving it in a
+        # list of malformed inputs made this test pass or fail on an ambient property of the
+        # environment — the presence of a declared-vault fallback — rather than on the
+        # declaration. It is pinned deliberately, with both fallback states controlled, in
+        # `test_a_colon_bearing_relative_root_anchors_when_a_fallback_exists` below.
         {"roots": []},
         {"query": ""},
         {"query": "two\nlines"},
@@ -581,6 +587,41 @@ def test_content_query_invalid_declaration_has_producer_remedy(
 ) -> None:
     with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
         _content_query_member(tmp_path, location=location)
+    assert "fs.content_query" in str(caught.value)
+    assert "run the frame producer" in caught.value.remedy
+
+
+def test_a_colon_bearing_relative_root_anchors_when_a_fallback_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A colon is part of the name, so anchoring is the only question — and it is environmental.
+
+    `_producer_working_directory` honours a recorded absolute cwd first and otherwise the
+    declared vault binding. With a vault present this legal relative root anchors and nothing
+    refuses; with **both** absent it refuses for want of an anchor. Both states are controlled
+    here rather than inherited, because inheriting one of them is what made the old
+    invalid-declaration case pass in one environment and fail in another.
+    """
+
+    vault = tmp_path / "vault"
+    (vault / "30-areas" / "hapax").mkdir(parents=True)
+    monkeypatch.setenv(fv.FRAME_VAULT_ROOT_ENV, str(vault))
+
+    member, _root = _content_query_member(tmp_path, location={"roots": ["podium:store"]})
+    assert member is not None
+
+
+def test_a_colon_bearing_relative_root_refuses_when_no_anchor_is_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the same contract, with the fallback explicitly absent."""
+
+    monkeypatch.setenv(fv.FRAME_VAULT_ROOT_ENV, str(tmp_path / "no-such-vault"))
+
+    with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
+        _content_query_member(tmp_path, location={"roots": ["podium:store"]})
+
+    assert "cannot be anchored" in str(caught.value)
     assert "fs.content_query" in str(caught.value)
     assert "run the frame producer" in caught.value.remedy
 
