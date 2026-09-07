@@ -3919,7 +3919,28 @@ class _BlockScanner:
             for item in ast.walk(node)
             if item is not node
         )
-        for child in ast.iter_child_nodes(node):
+        # `ast.iter_child_nodes` yields a node's fields in DECLARATION order, and `ast.Dict`
+        # declares `keys` then `values` as two separate lists — so it yields every key and then
+        # every value. Python evaluates key1, value1, key2, value2: each key before its own value,
+        # in source order. The declaration order let an assignment in an earlier VALUE land after
+        # one in a later KEY, and four reviewer families reported the wrong filename that
+        # produces (2026-09-07):
+        #
+        #     x = 'wrong'
+        #     d = {'first': (x := 'actual'), (x := 'final'): 0}
+        #     return x            # Python leaves 'final'; the scanner certified 'actual'
+        #
+        # A `None` key is `**unpacking`, where only the value is evaluated — and an assignment
+        # inside an unpacked value is one of the four cases, so the pairing has to keep it.
+        if isinstance(node, ast.Dict):
+            children: list[ast.AST] = [
+                item
+                for key, value in zip(node.keys, node.values, strict=True)
+                for item in ((key, value) if key is not None else (value,))
+            ]
+        else:
+            children = list(ast.iter_child_nodes(node))
+        for child in children:
             self._scan_expression(child, states)
             if ordered and isinstance(child, ast.expr):
                 self._freeze_expression(child, states)

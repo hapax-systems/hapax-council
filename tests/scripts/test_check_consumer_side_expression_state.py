@@ -139,3 +139,52 @@ def test_expression_result_and_binding_agree(gate, tmp_path, name, expression, a
     else:
         assert writers == {actual}, f"{name}: the writer is the string Python built"
         assert actual not in orphans
+
+
+# A dict display evaluates key1, value1, key2, value2 — each key before its OWN value, in source
+# order — and `**` unpacking evaluates only its value. `ast.Dict` declares `keys` then `values` as
+# two lists, so any walk over `ast.iter_child_nodes` sees every key and then every value.
+#
+# The shapes above could not show this, because they read the dict back by subscript and that is
+# not a modelled path. These return the BINDING after the display instead (coordinator, 2026-09-07,
+# supplying the shape after mine failed to reach it), which is what makes the ordering observable.
+DICT_ORDER = (
+    # Discriminating: an assignment in a VALUE precedes one in a later KEY, so a keys-then-values
+    # walk lets the earlier assignment land last.
+    ("value_then_key_assign", "d = {'first': (x := 'actual'), (x := 'final'): 0}"),
+    ("value_then_key_then_plain", "d = {'a': (x := 'first'), (x := 'final'): 0, 'c': 1}"),
+    ("unpacked_value_then_later_key", "d = {**{'a': (x := 'first')}, (x := 'final'): 0}"),
+    ("pair_assigns_both_then_key", "d = {(x := 'k1'): (x := 'v1'), (x := 'final'): 0}"),
+    # Already correct before the repair, and must stay so: the last assignment in source order is
+    # also the last one a keys-then-values walk reaches.
+    ("key_then_value_assign", "d = {(x := 'first'): 0, 'k': (x := 'final')}"),
+    ("both_keys_assign", "d = {(x := 'first'): 0, (x := 'final'): 1}"),
+    ("both_values_assign", "d = {'a': (x := 'first'), 'b': (x := 'final')}"),
+    ("unpack_after_assigning_key", "d = {(x := 'final'): 0, **{'a': 1}}"),
+    ("value_assigns_key_reads_later", "d = {'a': (x := 'final'), x: 0}"),
+    ("control_no_assignment", "d = {'a': 0, 'b': 1}\n    x = 'final'"),
+)
+
+
+@pytest.mark.parametrize(("name", "body"), DICT_ORDER, ids=[row[0] for row in DICT_ORDER])
+def test_dict_displays_are_walked_in_evaluation_order(gate, tmp_path, name, body):
+    """The certified writer is the binding Python leaves behind, not the one the walk saw last.
+
+    Every row starts `x = 'wrong'` and ends `return x`, so the answer is entirely decided by which
+    assignment inside the display ran last. Four families reported the wrong filename this
+    produces; the executed helper is the oracle, so no row here encodes my reading of the order.
+    """
+
+    helper = f"def value():\n    x = 'wrong'\n    {body}\n    return x\n"
+    namespace: dict = {"__builtins__": {}}
+    exec(compile(helper, "<dict-order-oracle>", "exec"), namespace)  # noqa: S102
+    actual = namespace["value"]()
+    assert isinstance(actual, str)
+
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        helper + f"open(value(), 'w', closefd=False)\nPath({actual!r}).read_text()",
+    )
+    assert writers == {actual}, f"{name}: the writer is the binding Python actually leaves"
+    assert actual not in orphans
