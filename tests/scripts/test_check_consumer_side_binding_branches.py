@@ -1173,6 +1173,84 @@ def test_a_known_empty_interpolation_is_exact_not_a_wildcard(gate, tmp_path, emp
     assert _bounded_writers(gate, tmp_path) == {"artifacts/state.json"}
 
 
+@pytest.mark.parametrize(
+    ("returned", "label"),
+    [("True", "True"), ("3", "3")],
+)
+def test_a_returned_scalar_survives_an_assignment(gate, tmp_path, returned, label):
+    """The binding kept the helper's resolved TEXT and dropped its type.
+
+    `fd = descriptor()` then `open(fd, 'w')` certified a file named `True` where Python opens
+    descriptor 1. The previous round covered the direct call and stopped at the assignment
+    immediately beside it — which is this file's recurring shape, not a new one.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        f"def descriptor():\n    return {returned}\nfd = descriptor()\n"
+        f"open(fd, 'w', closefd=False)\nPath({label!r}).read_text()\n",
+    )
+    assert label in unwritten(report)
+    assert label not in _bounded_writers(gate, tmp_path)
+    assert report.unresolvable > 0
+
+
+def test_an_assigned_returned_filename_is_still_a_filename(gate, tmp_path):
+    """The companion: a helper returning a string, through a binding, still names a real file."""
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "def filename():\n    return '3'\nname = filename()\nopen(name, 'w')\n",
+    )
+    assert _bounded_writers(gate, tmp_path) == {"3"}
+    assert report.unresolvable == 0
+
+
+def test_a_glob_error_reaches_the_durable_report(gate, tmp_path):
+    """The console said [REPORT-ERROR] and the JSON said `status=complete, errors=[]`.
+
+    `_report_glob_error` only printed and updated a process-wide dedup set, so the artifact a
+    later reader consumes carried a completeness claim the run had already contradicted — and the
+    status field is computed from `report.errors`, so the claim was not merely missing detail, it
+    was wrong. The second analysis matters too: the translator is memoised, so a run after the
+    first would have produced an error-free report for the same defect.
+    """
+
+    (tmp_path / "shared").mkdir()
+    (tmp_path / "shared/example.py").write_text(
+        "from pathlib import Path\n"
+        "Path('cache/a.json').write_text('{}')\n"
+        "Path('cache').glob('[z-a].json')\n"
+    )
+
+    for attempt in (1, 2):
+        report = gate.analyse_consumer_side(tmp_path, [])
+        assert report.errors, f"analysis {attempt} lost the glob error"
+        assert any("[z-a]" in error for error in report.errors), attempt
+
+
+def test_a_shadowed_str_is_not_the_builtin(gate, tmp_path):
+    """Folding `str` by its spelling certified a file Python never writes.
+
+    `def str(value): return 'actual'` makes `f'{str(1)}'` produce `actual`, and the constant
+    channel folded the raw name — a defect I introduced one round earlier while teaching it the
+    builtin. The resolver canonicalises names through the function table for exactly this reason;
+    the constant channel now asks the same table before folding.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "def str(value):\n    return 'actual'\n"
+        "Path(f'artifacts/{str(1)}.json').write_text('{}')\n"
+        "Path('artifacts/1.json').read_text()\n",
+    )
+    assert "artifacts/1.json" in unwritten(report)
+    assert "artifacts/1.json" not in _bounded_writers(gate, tmp_path)
+
+
 @pytest.mark.parametrize("shape", ["tilde", "absolute-home"])
 def test_a_home_rooted_declaration_binds_home_rooted_accesses(gate, tmp_path, shape):
     """A producer declared under the home bound none of the home paths it selects.

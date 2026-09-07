@@ -1487,18 +1487,51 @@ def _resolve_path_expr_variants(
     return tuple(dict.fromkeys(variants))
 
 
-def _constant_value(node: ast.expr | None, values: dict[str, str]) -> tuple[bool, object]:
+def _builtin_str_call(
+    node: ast.Call,
+    values: dict[str, str],
+    path: Path | None,
+    path_functions: object | None,
+) -> bool:
+    """Whether this call is the BUILTIN `str`, rather than something wearing its name.
+
+    `def str(value): return 'actual'` makes `f'{str(1)}'` produce `actual`, and folding the raw
+    spelling certified `artifacts/1.json` for a file Python never writes (review finding, codex,
+    2026-09-07 — a defect I introduced one round earlier by folding on the name alone). The
+    resolver canonicalises names through the function table for exactly this reason; the constant
+    channel did not, so it is given the same table here.
+
+    Without a table the answer is "not established", and the fold does not happen: a missed
+    constant costs a wildcard, a wrong one costs a certification.
+    """
+
+    if node.keywords or _function_name(node, values) != "str":
+        return False
+    if not isinstance(path_functions, PathFunctionTable) or path is None:
+        return False
+    shadow = path_functions.resolve(
+        "str", path, _lexical_scope(values), _import_aliases(values), retain_uncertain=True
+    )
+    return shadow is None
+
+
+def _constant_value(
+    node: ast.expr | None,
+    values: dict[str, str],
+    path: Path | None = None,
+    path_functions: object | None = None,
+) -> tuple[bool, object]:
     """Keep scalar types for formatting; a path-shaped abstract string is not a constant."""
     node = _evaluated_expression(node, values)
     if isinstance(node, ast.NamedExpr):
-        return _constant_value(node.target, values)
+        return _constant_value(node.target, values, path, path_functions)
     if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, float, type(None))):
         return True, node.value
     if isinstance(node, ast.Name):
         encoded = values.get(f"{_CONSTANT_VALUE_PREFIX}{node.id}")
         if encoded is not None:
             return True, json.loads(encoded)
-    if isinstance(node, ast.Call) and _function_name(node) == "str" and not node.keywords:
+    if isinstance(node, ast.Call) and _builtin_str_call(node, values, path, path_functions):
         # `str()` is the empty string and `str(<known scalar>)` is that scalar's text. The path
         # resolver already knows both; the constant channel did not, so an interpolation of `str()`
         # became an unknown and the whole f-string widened to a wildcard — which bounded a writer
@@ -1508,12 +1541,12 @@ def _constant_value(node: ast.expr | None, values: dict[str, str]) -> tuple[bool
         if not node.args:
             return True, ""
         if len(node.args) == 1:
-            known, value = _constant_value(node.args[0], values)
+            known, value = _constant_value(node.args[0], values, path, path_functions)
             if known:
                 return True, str(value)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left_known, left = _constant_value(node.left, values)
-        right_known, right = _constant_value(node.right, values)
+        left_known, left = _constant_value(node.left, values, path, path_functions)
+        right_known, right = _constant_value(node.right, values, path, path_functions)
         if (
             left_known
             and right_known
@@ -1526,14 +1559,19 @@ def _constant_value(node: ast.expr | None, values: dict[str, str]) -> tuple[bool
         ):
             return True, left + right
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
-        known, value = _constant_value(node.operand, values)
+        known, value = _constant_value(node.operand, values, path, path_functions)
         if known and isinstance(value, (int, float)):
             return True, -value if isinstance(node.op, ast.USub) else +value
     return False, None
 
 
-def _format_constant(node: ast.FormattedValue, values: dict[str, str]) -> str | None:
-    known, value = _constant_value(node.value, values)
+def _format_constant(
+    node: ast.FormattedValue,
+    values: dict[str, str],
+    path: Path | None = None,
+    path_functions: object | None = None,
+) -> str | None:
+    known, value = _constant_value(node.value, values, path, path_functions)
     if not known:
         return None
     spec = ""
@@ -1619,7 +1657,10 @@ def _has_unbounded_format(
             result, unbounded = _resolve_path_helper(item, values, path, repo_root, path_functions)
             if unbounded or "*" in (result or ""):
                 return True
-        if isinstance(item, ast.FormattedValue) and _format_constant(item, values) is None:
+        if (
+            isinstance(item, ast.FormattedValue)
+            and _format_constant(item, values, path, path_functions) is None
+        ):
             if (
                 item.format_spec is not None
                 or item.conversion != -1
@@ -1664,7 +1705,7 @@ def _resolve_path_expr(
             if isinstance(item, ast.Constant) and isinstance(item.value, str):
                 parts.append(_literal_path(item.value))
             elif isinstance(item, ast.FormattedValue):
-                formatted = _format_constant(item, values)
+                formatted = _format_constant(item, values, path, path_functions)
                 if formatted is not None:
                     parts.append(_literal_path(formatted))
                     continue
@@ -1753,7 +1794,7 @@ def _resolve_path_expr(
     if name in _PATH_CONSTRUCTORS:
         components: list[str] = []
         for argument in node.args:
-            known, value = _constant_value(argument, values)
+            known, value = _constant_value(argument, values, path, path_functions)
             if known and not isinstance(value, str):
                 return None
             component = _resolve_path_expr(
@@ -2322,7 +2363,7 @@ def _classify_call(
         expression = receiver if path_method else _call_argument(call, 0, "file") if name else None
         # Descriptor identity is typed evidence; a numeric filename is still a path.
         if not path_method:
-            known, value = _constant_value(expression, values)
+            known, value = _constant_value(expression, values, path, path_functions)
             if not known:
                 known, value = _returned_constant(expression, path, values, path_functions)
             if known and isinstance(value, int):
@@ -2789,7 +2830,13 @@ def _apply_assignment(
         assigned[target.id] = resolved if resolved is not None else "*"
         constant_key = f"{_CONSTANT_VALUE_PREFIX}{target.id}"
         assigned.pop(constant_key, None)
-        known, constant = _constant_value(statement.value, values)
+        known, constant = _constant_value(statement.value, values, path, path_functions)
+        if not known:
+            # `fd = descriptor()` kept the helper's resolved TEXT and dropped its type, so the
+            # later `open(fd, 'w')` saw a plain name and certified a file called `True` (review
+            # finding, codex, 2026-09-07 — my previous round covered the direct call and stopped
+            # at the assignment beside it). The typed evidence travels with the binding now.
+            known, constant = _returned_constant(statement.value, path, values, path_functions)
         if known:
             assigned[constant_key] = json.dumps(constant)
         format_key = f"{_UNRESOLVED_FORMAT_PREFIX}{target.id}"
@@ -4915,6 +4962,9 @@ def _glob_has_artifact_identity(pattern: str) -> bool:
 
 
 _REPORTED_GLOB_ERRORS: set[tuple[str, str]] = set()
+#: Drained into each report's `errors`. Reset per analysis, unlike the print-dedup set above,
+#: whose process lifetime would have made a second analysis in one process silently error-free.
+_GLOB_ERRORS: list[str] = []
 
 
 def _report_glob_error(pattern: str, detail: str) -> None:
@@ -4922,6 +4972,12 @@ def _report_glob_error(pattern: str, detail: str) -> None:
     if issue in _REPORTED_GLOB_ERRORS:
         return
     _REPORTED_GLOB_ERRORS.add(issue)
+    # The durable report carried none of this: the JSON said status=complete with an empty errors
+    # list while the console showed [REPORT-ERROR], so a reader consuming the artifact rather than
+    # the terminal saw a completeness claim the run had already contradicted (review finding,
+    # codex, 2026-09-07). A diagnostic that exists only on stdout is a diagnostic the next reader
+    # does not get.
+    _GLOB_ERRORS.append(f"glob pattern {pattern!r}: {detail}; treated as a no-match")
     print(
         f"[REPORT-ERROR] glob pattern {pattern!r}: {detail}; treating it as a no-match; "
         "next action: correct or remove the bracket expression and rerun; "
@@ -5438,6 +5494,12 @@ def analyse_consumer_side(
     mass_path: Path | None = None,
 ) -> ConsumerSideReport:
     tracked = _git_tracked_paths(repo_root)
+    _REPORTED_GLOB_ERRORS.clear()
+    _GLOB_ERRORS.clear()
+    # `_glob_regex` is memoised, so a second analysis in one process never re-enters the
+    # translator and would have produced a report with no error where the first had one. The
+    # cache is an optimisation; the report's completeness is a claim, and the claim wins.
+    _glob_regex.cache_clear()
     source_gaps: list[SourceGap] = []
     capped_expressions: set[str] = set()
     unresolved_closures: set[str] = set()
@@ -5624,8 +5686,11 @@ def analyse_consumer_side(
         unrecognised_path_calls=unrecognised,
         measured=measured_provenance(repo_root, frame_path, decayed_member_ids),
         errors=tuple(
-            f"{gap.path}: {gap.operation} failed ({gap.error_class})"
-            for gap in dict.fromkeys(source_gaps)
+            [
+                f"{gap.path}: {gap.operation} failed ({gap.error_class})"
+                for gap in dict.fromkeys(source_gaps)
+            ]
+            + list(dict.fromkeys(_GLOB_ERRORS))
         ),
         source_gaps=tuple(dict.fromkeys(source_gaps)),
         capped_expressions=tuple(sorted(capped_expressions)),
