@@ -547,6 +547,66 @@ def test_row_q2_a_genuinely_absent_path_still_admits(tmp_path, monkeypatch, caps
 
 
 @pytest.mark.parametrize(
+    "unreadable",
+    ["_runs/current", "epoch-dir", "publish.json", "coverage.json", "root"],
+    ids=["pointer", "epoch-dir", "publish", "coverage", "procedure-root"],
+)
+@pytest.mark.parametrize(
+    "fault", [PermissionError(13, "denied"), OSError(5, "I/O error")], ids=["permission", "io"]
+)
+def test_row_r4_an_unreadable_load_observation_is_a_refusal_not_a_traceback(
+    tmp_path, monkeypatch, unreadable, fault
+):
+    """R4: the loader's own observations, which my static enumeration said were covered.
+
+    Root's native fault check found five sites reaching `Path.stat` and escaping as
+    `PermissionError` rather than `FrameVerdictsUnavailable` — the procedure root, the published
+    pointer, the epoch directory, `publish.json` and `coverage.json`. Four of them sit in the two
+    loader functions my hand-written `LOAD_PATH` omitted; the fifth sits inside a handler that
+    catches only `FrameVerdictsUnavailable`, so a converting raise beside it proved nothing.
+
+    **`exists()` and `is_file()` answer "no" for a path they cannot read as well as for one that
+    is not there**, and raise for the failures they cannot answer at all. Missing, unreadable and
+    malformed are three facts; this row asserts the middle one has its own refusal, and the
+    absent/malformed controls elsewhere in the suite keep the other two distinct.
+    """
+
+    root = tmp_path / "surface"
+    root.mkdir()
+    (root / "selected.txt").write_bytes(b"NEEDLE\n")
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[_local_member(root=root, patterns=("selected.txt",))],
+        verdicts=[_verdict("legacy-surface", "scope_exited")],
+    )
+    if unreadable == "root":
+        target = procedure
+    elif unreadable == "epoch-dir":
+        # The guarded observation is on the RESOLVED epoch directory, not on `_runs/epochs`; a
+        # first version faulted the parent and reached nothing, which is a fixture fault rather
+        # than a source gap and would have read as one.
+        target = next(iter((procedure / "_runs/epochs").iterdir()))
+    else:
+        target = procedure / unreadable
+    fired = []
+    real_stat = pathlib.Path.stat
+
+    def refuse(self, *args, **kwargs):
+        if self == target or (unreadable != "root" and self.name == target.name):
+            fired.append(self)
+            raise fault
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "stat", refuse)
+
+    with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
+        fv.load_frame_verdicts(procedure, now=NOW)
+
+    assert fired, "the fault never reached a stat, so this row measured nothing"
+    assert caught.value.remedy, "an unreadable observation still owes a next action"
+
+
+@pytest.mark.parametrize(
     "declared",
     ["~frame-review-user-that-does-not-exist/selected.txt", "no-such/relative/selected.txt"],
     ids=["unknown-user-home", "unresolvable-relative"],

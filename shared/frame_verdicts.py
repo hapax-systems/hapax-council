@@ -270,7 +270,18 @@ def current_epoch_dir(procedure_root: Path) -> Path:
     """
     runs = procedure_root / "_runs"
     current = runs / "current"
-    if not (current.exists() or current.is_symlink()):
+    # `exists()` answers "no" for a path it cannot read as well as for one that is not there, and
+    # raises for the failures it cannot answer at all — so the three states this guard must keep
+    # apart, **missing / unreadable / malformed**, were collapsing into the first or escaping as a
+    # bare PermissionError (root's fault check, 2026-09-07: five sites, all reaching `Path.stat`).
+    try:
+        published = current.exists() or current.is_symlink()
+    except (OSError, RuntimeError) as exc:
+        raise FrameVerdictsUnavailable(
+            f"published frame pointer {current} cannot be inspected: {exc}",
+            remedy=_producer_remedy(procedure_root),
+        ) from exc
+    if not published:
         raise FrameVerdictsUnavailable(
             f"no frame epoch is published at {current}", remedy=_producer_remedy(procedure_root)
         )
@@ -282,7 +293,14 @@ def current_epoch_dir(procedure_root: Path) -> Path:
             f"published frame pointer {current} is broken or unreadable: {exc}",
             remedy=_producer_remedy(procedure_root),
         ) from exc
-    if not epoch_dir.is_dir() or epoch_dir.parent != epochs:
+    try:
+        resolves_to_epoch = epoch_dir.is_dir() and epoch_dir.parent == epochs
+    except (OSError, RuntimeError) as exc:
+        raise FrameVerdictsUnavailable(
+            f"published frame epoch {epoch_dir} cannot be inspected: {exc}",
+            remedy=_producer_remedy(procedure_root),
+        ) from exc
+    if not resolves_to_epoch:
         raise FrameVerdictsUnavailable(
             f"published frame pointer {current} resolves outside the epoch directory {epochs}",
             remedy=_producer_remedy(procedure_root),
@@ -294,7 +312,14 @@ def current_epoch_dir(procedure_root: Path) -> Path:
         )
 
     publish_path = epoch_dir / "publish.json"
-    if not publish_path.is_file():
+    try:
+        publish_present = publish_path.is_file()
+    except (OSError, RuntimeError) as exc:
+        raise FrameVerdictsUnavailable(
+            f"{publish_path} cannot be inspected: {exc}",
+            remedy=_producer_remedy(procedure_root),
+        ) from exc
+    if not publish_present:
         raise FrameVerdictsUnavailable(
             f"current epoch {epoch_dir.name} publish.json is missing",
             remedy=_producer_remedy(procedure_root),
@@ -791,7 +816,19 @@ def load_frame_verdicts(
         ) from exc
     epoch_dir: Path | None = None
     try:
-        if not root.is_dir():
+        # This `try` catches `FrameVerdictsUnavailable` only, so an OSError from the very first
+        # observation went straight past the refusal contract — a converting raise elsewhere in a
+        # handler proves nothing about an exception that handler does not catch, which is also the
+        # unsoundness that made my static enumeration claim this path was covered.
+        try:
+            root_present = root.is_dir()
+        except (OSError, RuntimeError) as exc:
+            raise FrameVerdictsUnavailable(
+                f"frame procedure root {root} cannot be inspected: {exc}",
+                remedy=f"repair filesystem access for {root} (check {FRAME_PROCEDURE_ROOT_ENV}), "
+                "then retry the dispatch",
+            ) from exc
+        if not root_present:
             raise FrameVerdictsUnavailable(
                 f"frame procedure root {root} does not exist (set {FRAME_PROCEDURE_ROOT_ENV} or "
                 "restore the vault)"
@@ -908,7 +945,14 @@ def _load_epoch_verdicts(
         members_by_id[member_id] = member
 
     coverage_path = epoch_dir / "coverage.json"
-    if not coverage_path.is_file():
+    try:
+        coverage_present = coverage_path.is_file()
+    except (OSError, RuntimeError) as exc:
+        raise FrameVerdictsUnavailable(
+            f"{coverage_path} cannot be inspected: {exc}; the verdicts cannot be bound to the "
+            "declaration they were computed against"
+        ) from exc
+    if not coverage_present:
         raise FrameVerdictsUnavailable(
             f"{coverage_path} is missing; the verdicts cannot be bound to the declaration they "
             "were computed against"
