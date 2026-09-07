@@ -496,6 +496,60 @@ def test_row_p_a_hard_link_to_a_selected_file_is_that_file(
 
 
 @pytest.mark.parametrize(
+    ("target", "expected"),
+    [("kept.txt", 10), ("dropped.txt", 0)],
+    ids=["alias-of-a-selected-file", "alias-of-a-query-rejected-file"],
+)
+def test_row_p6_the_query_decides_the_surface_the_identity_check_compares_against(
+    tmp_path, monkeypatch, capsys, target, expected
+):
+    """P6: a content-query member's surface is what its predicate accepts, not what globs match.
+
+    The identity repair built the member's surface from every canonical entry, while the
+    concrete-alias loop ten lines below it skips an entry whose content fails the query — *"a
+    negative content predicate does establish that a literal file is outside this reader's
+    surface"*, in the module's own words. So one function held two answers about one file, and a
+    candidate hard-linking a pattern-matched but query-rejected file was refused as undecidable
+    (review finding, codex, 2026-09-07, `shared/frame_verdicts.py:2924`; measured here as
+    `UndecidableScopeContainment` before the repair, `disjoint_established=True` after).
+
+    Both files sit in the same directory under the same pattern and differ only in whether the
+    query accepts them, so the pair isolates the predicate and nothing else. The accepted arm is
+    what stops the repair from being a blanket exemption: aliasing a file the member really did
+    select still refuses.
+    """
+
+    root = tmp_path / "surface"
+    root.mkdir()
+    accepted = root / "kept.txt"
+    accepted.write_bytes(b"NEEDLE\n")
+    rejected = root / "dropped.txt"
+    rejected.write_bytes(b"NOTHING HERE\n")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    alias = elsewhere / "alias.txt"
+    os.link(root / target, alias)
+    assert alias.samefile(root / target), "the fixture must actually hard-link, not copy"
+
+    _pin_checkout_base(monkeypatch, tmp_path)
+    rc, err = _root_dispatch(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        {"patterns": ["*.txt"], "roots": [str(root)], "query": "NEEDLE"},
+        reader="fs.content_query",
+        cwd=tmp_path,
+        candidate=str(alias),
+    )
+    with capsys.disabled():
+        print(f"P6 alias of {target}: main()={rc} (expected {expected})")
+
+    assert rc == expected, (
+        f"an alias of {target} must follow the query's own verdict about that file"
+    )
+
+
+@pytest.mark.parametrize(
     "fault",
     [PermissionError(13, "denied"), OSError(5, "I/O error"), RuntimeError("symlink loop")],
     ids=["permission", "oserror", "runtime"],

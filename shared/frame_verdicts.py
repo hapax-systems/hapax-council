@@ -2921,9 +2921,22 @@ def _local_disjoint_established(
         # Only the disjointness claim is repaired. Partial-scope semantics are untouched: this
         # predicate answers "is the candidate outside", never "is the scope wholly inside", and the
         # witness loop asks it about synthetic paths that alias nothing.
-        selected = frozenset(_canonical_member_entries(member).values()) | {
-            _resolve_external_scope_path(file) for file in _selected_member_files(member)
-        }
+        #
+        # The surface is what this READER selects, not what the patterns match. A content-query
+        # member's entry that fails its own predicate is off the surface — the concrete-alias loop
+        # below says so and skips it — so counting it here made one function give two answers about
+        # one file, and refused a candidate that aliased something the member never selected
+        # (review finding, codex, 2026-09-07; measured as UndecidableScopeContainment on an alias
+        # of a pattern-matched, query-rejected file).
+        selected = frozenset(
+            target
+            for entry, target in _canonical_member_entries(member).items()
+            if not (
+                member.reader == "fs.content_query"
+                and member.content_query is not None
+                and not _content_query_matches(entry, member.content_query)
+            )
+        ) | {_resolve_external_scope_path(file) for file in _selected_member_files(member)}
         if selected and _identity_reaches_surface((path,), selected):
             return None
     if scope_pattern is not None:
