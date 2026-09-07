@@ -1208,6 +1208,70 @@ def test_an_assigned_returned_filename_is_still_a_filename(gate, tmp_path):
     assert report.unresolvable == 0
 
 
+RETURN_TRANSFER_SHAPES = {
+    "literal": "def value():\n    return {scalar}\n",
+    "local": "def value():\n    held = {scalar}\n    return held\n",
+    "parameter": "def value(held):\n    return held\n",
+    "assigned-call": "def value():\n    return {scalar}\n",
+}
+
+
+def _transfer_body(shape, scalar, call_and_use):
+    definition = RETURN_TRANSFER_SHAPES[shape].format(scalar=scalar)
+    call = f"value({scalar})" if shape == "parameter" else "value()"
+    if shape == "assigned-call":
+        return definition + f"held = {call}\n" + call_and_use.format(call="held")
+    return definition + call_and_use.format(call=call)
+
+
+@pytest.mark.parametrize("shape", sorted(RETURN_TRANSFER_SHAPES))
+def test_every_supported_return_transfer_shape_keeps_the_scalar_type(gate, tmp_path, shape):
+    """The transfer shapes, enumerated instead of discovered one reviewer at a time.
+
+    Three consecutive rounds each closed the shape they were shown — a literal return, then the
+    assignment beside it — and left the next one certifying a wrong filename. The supported set is
+    now written down in `_returned_constant` and asserted here as a set: a helper's own constant
+    bindings and the argument a call actually passes both carry the type, and everything past that
+    is honestly "not established" rather than quietly a filename.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        _transfer_body(shape, "3", "open({call}, 'w', closefd=False)\nPath('3').read_text()\n"),
+    )
+    assert "3" in unwritten(report), shape
+    assert "3" not in _bounded_writers(gate, tmp_path), shape
+    assert report.unresolvable > 0, shape
+
+
+@pytest.mark.parametrize("shape", sorted(RETURN_TRANSFER_SHAPES))
+def test_every_supported_return_transfer_shape_keeps_a_string_a_filename(gate, tmp_path, shape):
+    """The companion for each shape. A withhold one case too wide loses a real writer, and these
+    four are the cases the withhold above runs closest to."""
+
+    report = report_for(
+        gate, tmp_path, _transfer_body(shape, "'3'", "open({call}, 'w')\nPath('3').read_text()\n")
+    )
+    assert "3" not in unwritten(report), shape
+    assert _bounded_writers(gate, tmp_path) == {"3"}, shape
+    assert report.unresolvable == 0, shape
+
+
+def test_an_unestablished_return_is_not_silently_a_filename(gate, tmp_path):
+    """Past the enumerated shapes the answer is "not established", and the boundary treats that as
+    it always has. Naming the limit is the point: the table above is a claim about what IS covered,
+    so it needs a row that is deliberately outside it."""
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "def value(held):\n    return held\nopen(value(input()), 'w')\n",
+    )
+    assert not _bounded_writers(gate, tmp_path)
+    assert report.unresolvable > 0
+
+
 def test_a_glob_error_reaches_the_durable_report(gate, tmp_path):
     """The console said [REPORT-ERROR] and the JSON said `status=complete, errors=[]`.
 

@@ -1897,17 +1897,34 @@ def _returned_constant(
     values: dict[str, str],
     path_functions: dict[str, PathFunction],
 ) -> tuple[bool, object]:
-    """The scalar a visible helper returns literally, when that is all it does.
+    """The scalar a visible helper returns, when the value can be followed to a constant.
 
     `def descriptor(): return True` followed by `open(descriptor(), 'w')` resolved to the *text*
     `True` and certified a file of that name, because the type was known only inside the helper and
     the call site saw an unresolved expression. Descriptor identity is a property of the value, and
-    a value does not stop being an integer by being returned.
+    a value does not stop being an integer by being returned — or by passing through a name.
 
-    Deliberately narrow. Only the helper's own return expression is folded, and only against an
-    EMPTY scope: a name in the helper's body is not a constant this scanner has established, and
-    reading the caller's bindings for it would be inventing a value rather than propagating one.
-    `return '3'` therefore stays the filename it is.
+    **The transfer shapes, enumerated rather than discovered one reviewer at a time.** Each earlier
+    round closed the shape it was shown and left the next one certifying a wrong filename:
+
+    ==============================  ==========  ==========================================
+    shape                           supported   established by
+    ==============================  ==========  ==========================================
+    ``return <literal>``            yes         the return expression itself
+    ``x = f()`` then ``open(x)``    yes         the assignment carries the typed constant
+    ``y = 3`` … ``return y``        yes         the helper's own constant bindings, below
+    ``def f(a): return a``, ``f(3)``  yes       the call's argument, bound to the parameter
+    ``return g()``                  no          nothing is folded through a second call
+    ``return <computed>``           no          only constant folding, never evaluation
+    ==============================  ==========  ==========================================
+
+    The last two rows return "not established", which at the descriptor boundary means the value is
+    treated as a filename — the pre-existing behaviour. That is the honest state: this helper says
+    what it knows, and the caller decides what an unknown costs.
+
+    The scope built here is the HELPER's, never the caller's: its own constant assignments plus the
+    arguments this call site actually passes. Reading the caller's other bindings for a name that
+    merely shares a spelling would be inventing a value rather than following one.
     """
 
     if not isinstance(node, ast.Call) or not isinstance(path_functions, PathFunctionTable):
@@ -1917,7 +1934,28 @@ def _returned_constant(
     )
     if function is None or function.return_expr is None:
         return False, None
-    return _constant_value(function.return_expr, {})
+    scope: dict[str, str] = {}
+    definition = function.node
+    if isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        for statement in definition.body:
+            if not isinstance(statement, ast.Assign):
+                continue
+            known, constant = _constant_value(statement.value, {})
+            for target in statement.targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                key = f"{_CONSTANT_VALUE_PREFIX}{target.id}"
+                scope.pop(key, None)
+                if known:
+                    scope[key] = json.dumps(constant)
+        parameters = [argument.arg for argument in definition.args.args]
+        for name, argument in zip(parameters, node.args, strict=False):
+            key = f"{_CONSTANT_VALUE_PREFIX}{name}"
+            scope.pop(key, None)
+            known, constant = _constant_value(argument, values, path, path_functions)
+            if known:
+                scope[key] = json.dumps(constant)
+    return _constant_value(function.return_expr, scope)
 
 
 def _resolve_path_helper(
