@@ -157,3 +157,34 @@ def test_main_unrelated_non_decayed_bad_root_unchanged(tmp_path, monkeypatch, ca
     )
     assert rc == 0
     assert "unsupported entry" not in err
+
+
+def test_unexpandable_root_refuses_with_the_member_named(tmp_path, monkeypatch) -> None:
+    """A `~`-relative root whose home cannot be resolved must refuse, not raise.
+
+    ``expanduser`` is a resolution step that can fail on its own terms: with no resolvable
+    home it raises ``RuntimeError``, and before this repair that message reached a reader as
+    an unhandled traceback while the ``resolve()`` immediately after it was already
+    converted. An absolute root failed *inside* the refusal contract and a `~`-relative one
+    failed *outside* it, for the same class of environmental fault.
+    """
+
+    real_expanduser = Path.expanduser
+
+    def refusing_expanduser(self):
+        if str(self).startswith("~"):
+            raise RuntimeError("Could not determine home directory")
+        return real_expanduser(self)
+
+    monkeypatch.setattr(Path, "expanduser", refusing_expanduser)
+
+    with pytest.raises(fv.FrameVerdictsUnavailable) as excinfo:
+        fv._member_location(
+            {"id": "m1", "location": {"roots": ["~/declared"], "query": "NEEDLE"}},
+            epoch_dir=tmp_path,
+        )
+
+    message = str(excinfo.value)
+    assert "cannot be expanded" in message
+    assert "'m1'" in message
+    assert "~/declared" in message

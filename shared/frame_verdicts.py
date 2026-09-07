@@ -99,6 +99,10 @@ MASS_DECLARATION_LOCATION = (
 
 _EPOCH_NAME = re.compile(r"^(\d{8}T\d{6}Z)-[0-9a-f]+$")
 _NON_FILESYSTEM_ROOT = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
+#: Producer readers whose declared roots are filesystem paths, so a colon in one is part of the
+#: name. Enumerated from the installed `procedure/builtin.py` reader registrations rather than
+#: assumed from the `fs.` prefix, so a future reader must be added deliberately.
+_LOCAL_FILESYSTEM_READERS = frozenset({"fs.glob", "fs.content_query", "fs.witness", "fs.filelist"})
 _AUTHORITY = re.compile(
     r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*"
 )
@@ -516,7 +520,23 @@ def _member_location(
     if not isinstance(location, dict):
         return (), (), (), (), (), (), ()
     reader = member.get("reader")
-    content_query = isinstance(reader, dict) and reader.get("id") == "fs.content_query"
+    reader_id = reader.get("id") if isinstance(reader, dict) else None
+    content_query = reader_id == "fs.content_query"
+    # The declared reader carries the grammar; the string does not. Every `fs.*` reader in the
+    # installed producer takes its declared root as a filesystem path and never partitions on a
+    # colon — `fs.glob` (builtin.py:34) and `fs.witness` (:521) via `Path(root_raw).expanduser()`,
+    # `fs.content_query` (:1056) via `Path(str(raw_root)).expanduser()` per root, `fs.filelist`
+    # (:1272) over `location.roots`. Only `ssh.glob` (:769) partitions, and it *requires* the
+    # form: "ssh.glob requires location.path as '<host>:<remote-path>'". `ssh.jsonl_meta` (:642)
+    # does not partition either; it reads `location.host` and `location.remote_path` as separate
+    # declared fields and refuses without them.
+    #
+    # Reading a colon as a scheme regardless of reader therefore judged a legal relative
+    # directory — `notes:archive` — in a namespace its producer never used. Scoped to the local
+    # family by name rather than applied as a general gate: remote and qualified-reference
+    # semantics are untouched, and a reader this consumer does not know keeps its existing
+    # handling rather than acquiring a new refusal it was never subject to.
+    local_filesystem_reader = reader_id in _LOCAL_FILESYSTEM_READERS
     raw_roots: list[str] = []
     if not content_query and isinstance(location.get("path"), str):
         raw_roots.append(str(location["path"]))
@@ -543,13 +563,42 @@ def _member_location(
         return path
 
     for raw in raw_roots:
-        if _has_qualifier(raw.strip()):
+        if not local_filesystem_reader and _has_qualifier(raw.strip()):
             qualified_roots.append(_qualified_location(raw.strip())[0])
             continue
         # Both filesystem readers preserve whitespace in the declared root name.
-        producer_root = Path(raw).expanduser()
+        #
+        # `expanduser` is a resolution step and can fail on its own terms: with no resolvable
+        # home directory it raises RuntimeError, and the message it carries ("Could not
+        # determine home directory") reaches a reader as an unhandled traceback rather than as
+        # a frame refusal naming the member and a remedy. The resolve below was already
+        # converted; the expansion that precedes it was not, so a `~`-relative root failed
+        # outside the refusal contract while an absolute one failed inside it.
+        # Two distinct faults, kept distinct: `expanduser` fails when no home directory can be
+        # resolved, and anchoring a *relative* root fails when the producer's working directory
+        # is unavailable. Wrapping both in one message named the wrong cause for half the cases —
+        # the same one-message-for-two-conditions shape this file exists to refuse.
+        try:
+            producer_root = Path(raw).expanduser()
+        except (OSError, RuntimeError) as exc:
+            raise FrameVerdictsUnavailable(
+                f"member {member.get('id')!r} reader {reader_id or 'unknown'} root {raw!r} "
+                f"cannot be expanded: {exc}",
+                remedy=f"declare an absolute root, or repair home-directory resolution, for "
+                f"member {member.get('id')!r} root {raw!r} in {MASS_DECLARATION_LOCATION}; "
+                + PRODUCER_REMEDY,
+            ) from exc
+        try:
+            absolute_root = local_path(raw)
+        except (OSError, RuntimeError) as exc:
+            raise FrameVerdictsUnavailable(
+                f"member {member.get('id')!r} reader {reader_id or 'unknown'} root {raw!r} "
+                f"cannot be anchored: {exc}",
+                remedy=f"declare an absolute root for member {member.get('id')!r} in "
+                f"{MASS_DECLARATION_LOCATION}, or repair the producer working directory this "
+                f"relative root is resolved against; " + PRODUCER_REMEDY,
+            ) from exc
         lexical_roots.append(producer_root)
-        absolute_root = local_path(raw)
         try:
             roots.append(absolute_root.resolve())
         except (OSError, RuntimeError) as exc:
