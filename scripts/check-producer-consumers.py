@@ -1749,7 +1749,11 @@ def _resolve_path_expr(
         return str(PurePosixPath(*components))
     if name == "str":
         if not node.args:
-            return "."
+            # `str()` is the empty string, not the current directory. Returning "." named a
+            # real, different location and certified a writer against it; the empty string is
+            # not a usable path at all, so the only honest answer is to withhold and let the
+            # access stay unresolved.
+            return None
         return _resolve_path_expr(
             node.args[0], values, path, repo_root, path_functions, depth=depth + 1
         )
@@ -2248,6 +2252,18 @@ def _classify_call(
         )
         known_function = name in {"open", "builtins.open", "codecs.open", "io.open"}
         expression = receiver if path_method else _call_argument(call, 0, "file") if name else None
+        # `open()` accepts an integer file descriptor as well as a path. An fd names no file
+        # this scanner can bind — the descriptor's target was established elsewhere, at a call
+        # this expression does not carry — so certifying it as a literal filename names the
+        # wrong file. Only a literal integer is withheld here: that is the case that is
+        # provable from the expression alone, and widening it to name-tracked values would
+        # withhold real filenames on a guess.
+        if (
+            isinstance(expression, ast.Constant)
+            and isinstance(expression.value, int)
+            and not isinstance(expression.value, bool)
+        ):
+            expression = None
         operation = "Path.open" if path_method else name or raw_name
         _record_access(
             accesses,
@@ -2295,11 +2311,23 @@ def _classify_call(
                 append=suffix,
             )
     elif name in {"os.replace", "os.rename", "os.renames"}:
+        # `os.rename`/`os.replace` accept `src_dir_fd` and `dst_dir_fd`. When either is
+        # supplied, that operand is interpreted relative to the open directory descriptor —
+        # not to the working directory this scanner resolves against — so the literal it
+        # carries names a different file than the one written. The descriptor's directory is
+        # established at a call this expression does not carry, so the operand is withheld
+        # and its access stays unresolved rather than certifying a wrong target.
+        # Both are keyword-only in `os.rename`/`os.replace`, so a keyword scan is exact.
+        supplied_fds = {
+            keyword.arg for keyword in call.keywords if keyword.arg in {"src_dir_fd", "dst_dir_fd"}
+        }
+        src_fd = "src_dir_fd" in supplied_fds
+        dst_fd = "dst_dir_fd" in supplied_fds
         _record_access(
             accesses,
             unresolved,
             action="read",
-            expression=_call_argument(call, 0, "src"),
+            expression=None if src_fd else _call_argument(call, 0, "src"),
             call=call,
             values=values,
             path=path,
@@ -2312,7 +2340,7 @@ def _classify_call(
             accesses,
             unresolved,
             action="write",
-            expression=_call_argument(call, 1, "dst"),
+            expression=None if dst_fd else _call_argument(call, 1, "dst"),
             call=call,
             values=values,
             path=path,

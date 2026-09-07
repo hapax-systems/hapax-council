@@ -800,3 +800,68 @@ def test_capped_loop_retains_known_sibling_of_dynamic_component(gate, tmp_path: 
     }
     assert report.unresolvable > 0
     assert any("literal loop iteration cap" in site for site in report.capped_expressions)
+
+
+def test_empty_str_call_is_withheld_rather_than_read_as_the_current_directory(
+    gate, tmp_path: Path
+) -> None:
+    """``str()`` is the empty string, not ``.``.
+
+    Resolving it to the current directory named a real, different location and certified a
+    writer against it. The empty string is not a usable path at all, so the access must stay
+    unresolved.
+    """
+
+    import ast
+
+    node = ast.parse("str()", mode="eval").body
+    resolved = gate._resolve_path_expr(node, {}, tmp_path / "shared/consumer.py", tmp_path, {})
+
+    # Pinned at the resolver rather than through the report: a lone withheld write produces no
+    # finding or pair, so the report cannot distinguish "withheld" from "certified as `.`" —
+    # the two states differ only in this return value, and asserting anything downstream of it
+    # would pass in both.
+    assert resolved is None
+
+
+def test_an_integer_file_descriptor_is_not_certified_as_a_filename(gate, tmp_path: Path) -> None:
+    """``open(3, 'w')`` names no file this scanner can bind.
+
+    The descriptor's target was established at a call this expression does not carry, so
+    treating the integer as a literal filename certifies a wrong file.
+    """
+
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "def emit():\n"
+        "    open(3, 'w').close()\n"
+        "def load():\n"
+        "    return Path('3').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "3" in _unwritten_patterns(report, "shared/consumer.py")
+    assert not [pair for pair in report.pairs if pair.writer.pattern == "3"]
+
+
+def test_a_descriptor_relative_rename_destination_is_withheld(gate, tmp_path: Path) -> None:
+    """``dst`` under ``dst_dir_fd`` is relative to the descriptor, not to this scanner's root.
+
+    The literal it carries therefore names a different file than the one written, and the
+    directory the descriptor refers to is established elsewhere.
+    """
+
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "import os\n"
+        "from pathlib import Path\n"
+        "def promote(fd):\n"
+        "    os.rename('artifacts/tmp.json', 'artifacts/final.json', dst_dir_fd=fd)\n"
+        "def load():\n"
+        "    return Path('artifacts/final.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/final.json" in _unwritten_patterns(report, "shared/consumer.py")
+    assert not [pair for pair in report.pairs if pair.writer.pattern == "artifacts/final.json"]
