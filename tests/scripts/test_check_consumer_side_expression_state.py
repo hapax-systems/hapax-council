@@ -192,3 +192,61 @@ def test_dict_displays_are_walked_in_evaluation_order(gate, tmp_path, name, body
     )
     assert writers == {actual}, f"{name}: the writer is the binding Python actually leaves"
     assert actual not in orphans
+
+
+# `and`, `or` and CHAINED comparisons stop early. `a < b < c` evaluates `a < b` and, only if that
+# is true, `b < c` — so an assignment in a later operand may never run while the walk still reaches
+# it. Reported critical by the codex reader at b96341134 with the first row below, where the
+# scanner certified `artifacts/actual.json`, a file the program never writes, and then suppressed
+# the orphan reader that would have exposed it.
+#
+# Every row here is decided by CONSTANTS, because only a constant makes one continuation
+# unreachable. A dynamic operand leaves both genuinely possible, and both must keep being
+# certified — that is the same contract as an if/else binding two different paths, and it is held
+# by test_function_inherits_module_post_flow_bindings in the branch module rather than duplicated
+# here. Narrowing a dynamic short circuit would break it, which is how a first attempt at this
+# repair was caught.
+SHORT_CIRCUIT = (
+    # Skipped: the assignment never runs, so the earlier binding is what gets written.
+    ("codex_chained_comparison", "2 < 1 < (x := 'actual')"),
+    ("chain_decided_false_at_second_link", "1 < 2 < 1 < (x := 'actual')"),
+    ("and_false_skips", "False and (x := 'actual')"),
+    ("or_true_skips", "True or (x := 'actual')"),
+    ("zero_is_falsy_and_skips", "0 and (x := 'actual')"),
+    # Run: the twins that must KEEP certifying, so the repair cannot be a blanket refusal.
+    ("chain_continues", "'a' < 'b' < (x := 'actual')"),
+    ("and_true_runs", "True and (x := 'actual')"),
+    ("or_false_runs", "False or (x := 'actual')"),
+    ("empty_string_is_falsy_so_or_runs", "'' or (x := 'actual')"),
+    ("empty_tuple_is_falsy_so_or_runs", "() or (x := 'actual')"),
+)
+
+
+@pytest.mark.parametrize(("name", "body"), SHORT_CIRCUIT, ids=[row[0] for row in SHORT_CIRCUIT])
+def test_short_circuited_operands_do_not_certify_a_writer(gate, tmp_path, name, body):
+    """The certified writer is the file Python writes, not the one the walk happened to bind.
+
+    Each row starts `x = 'wrong'` and ends `return x`, so the answer is decided entirely by
+    whether the short-circuited operand ran. The executed helper is the oracle, so no row
+    encodes my reading of Python's evaluation rules — which is the point, because I spent two
+    hours probing `BoolOp` shapes for this and the reproducing case was a chained comparison.
+
+    Both halves of the finding are asserted: the writer's identity, and that the reader stays an
+    orphan when nothing wrote its file. Certifying a phantom writer is worse than certifying
+    none, because it silently removes the orphan that would have shown the gap.
+    """
+
+    helper = f"def value():\n    x = 'wrong'\n    {body}\n    return x\n"
+    namespace: dict = {"__builtins__": {}}
+    exec(compile(helper, "<short-circuit-oracle>", "exec"), namespace)  # noqa: S102
+    actual = namespace["value"]()
+    assert actual in {"wrong", "actual"}, "the oracle only speaks about these two spellings"
+    never_written = "actual" if actual == "wrong" else "wrong"
+
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        helper + f"open(value(), 'w', closefd=False)\nPath({never_written!r}).read_text()",
+    )
+    assert writers == {actual}, f"{name}: certified a file the program does not write"
+    assert never_written in orphans, f"{name}: the orphan reader must survive"

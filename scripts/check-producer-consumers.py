@@ -43,13 +43,14 @@ import ast
 import copy
 import fnmatch
 import json
+import operator as operator_module
 import os
 import re
 import subprocess
 import sys
 import tomllib
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -3220,6 +3221,61 @@ def _fork(states: list[dict[str, str]]) -> list[dict[str, str]]:
     return [dict(state) for state in states]
 
 
+def _literal_operand(node: ast.expr) -> tuple[bool, object]:
+    """``(True, value)`` when the operand is a compile-time constant, else ``(False, None)``."""
+    if isinstance(node, ast.Constant):
+        return True, node.value
+    try:
+        return True, ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+        return False, None
+
+
+def _boolop_stops_after(op: ast.boolop, value: ast.expr) -> bool | None:
+    """Does this operand decide an ``and``/``or``? ``True`` stops, ``False`` continues.
+
+    ``None`` means only the runtime knows, and BOTH continuations are genuinely reachable —
+    those are the disjunctive states the branch model already keeps, the same way an
+    ``if``/``else`` binding really can produce either of two writers. Deciding is reserved for
+    a compile-time constant, where one of the two alternatives is not cautious but impossible.
+    """
+    known, constant = _literal_operand(value)
+    if not known:
+        return None
+    return not constant if isinstance(op, ast.And) else bool(constant)
+
+
+def _comparison_outcome(left: ast.expr, op: ast.cmpop, right: ast.expr) -> bool | None:
+    """``left op right`` decided from constants alone, or ``None`` when only runtime knows.
+
+    A chain stops on the first FALSE comparison, so a decided ``False`` ends it and a decided
+    ``True`` means it certainly continues — and the "stopped here" alternative is then just as
+    unreachable as the "kept going" one is after a decided false.
+    """
+    comparison = _CONSTANT_COMPARISONS.get(type(op))
+    if comparison is None:
+        return None
+    left_known, left_value = _literal_operand(left)
+    right_known, right_value = _literal_operand(right)
+    if not (left_known and right_known):
+        return None
+    try:
+        return bool(comparison(left_value, right_value))
+    except TypeError:
+        # An ill-typed comparison raises at runtime; it does not quietly take a branch.
+        return None
+
+
+_CONSTANT_COMPARISONS: dict[type, Callable[[object, object], object]] = {
+    ast.Lt: operator_module.lt,
+    ast.LtE: operator_module.le,
+    ast.Gt: operator_module.gt,
+    ast.GtE: operator_module.ge,
+    ast.Eq: operator_module.eq,
+    ast.NotEq: operator_module.ne,
+}
+
+
 def _merge_states(states: list[dict[str, str]], *, collapse: bool = False) -> list[dict[str, str]]:
     """Deduplicate branch maps, joining excess maps without losing known values.
 
@@ -3872,10 +3928,44 @@ class _BlockScanner:
             return
         if isinstance(node, ast.BoolOp):
             continued = _fork(states)
-            alternatives = []
-            for value in node.values:
+            alternatives: list[dict[str, str]] = []
+            for index, value in enumerate(node.values):
                 self._scan_expression(value, continued)
-                alternatives.extend(_fork(continued))
+                # A CONSTANT operand decides the operator. Keeping the alternative it rules
+                # out is not caution: it invents a state the program cannot reach, and a
+                # binding made there certifies an artifact that is never written.
+                decided = _boolop_stops_after(node.op, value)
+                if decided is not False or index == len(node.values) - 1:
+                    alternatives.extend(_fork(continued))
+                if decided is True:
+                    break
+            states[:] = _merge_states(alternatives)
+            return
+        if isinstance(node, ast.Compare) and len(node.comparators) > 1:
+            # A CHAIN short-circuits: `a < b < c` stops at the first false comparison and
+            # never evaluates `c`. A single comparison cannot, so it keeps the ordinary walk
+            # below and this handler stays off the common path entirely.
+            #
+            # Reported by codex at b96341134 with `2 < 1 < (x := 'actual')`: the walker bound
+            # the operand Python skips, then certified `artifacts/actual.json` — a file the
+            # program never writes — and suppressed the orphan reader that would have shown it.
+            #
+            # `left` and the first comparator always evaluate; only the rest are conditional.
+            operands = [node.left, *node.comparators]
+            self._scan_expression(node.left, states)
+            self._scan_expression(node.comparators[0], states)
+            continued = _fork(states)
+            alternatives = []
+            for index in range(1, len(node.comparators)):
+                decided = _comparison_outcome(
+                    operands[index - 1], node.ops[index - 1], operands[index]
+                )
+                if decided is not True:
+                    alternatives.extend(_fork(continued))  # stopping here is reachable
+                if decided is False:
+                    break  # nothing after a decided-false comparison can run
+                self._scan_expression(node.comparators[index], continued)
+            alternatives.extend(_fork(continued))
             states[:] = _merge_states(alternatives)
             return
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
