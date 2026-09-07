@@ -551,14 +551,27 @@ def test_row_q2_a_genuinely_absent_path_still_admits(tmp_path, monkeypatch, caps
     ["~frame-review-user-that-does-not-exist/selected.txt", "no-such/relative/selected.txt"],
     ids=["unknown-user-home", "unresolvable-relative"],
 )
-def test_row_r2_an_unresolvable_declared_file_is_an_actionable_refusal(tmp_path, declared):
+def test_row_r2_an_unresolvable_declared_file_is_an_actionable_refusal(
+    tmp_path, monkeypatch, declared
+):
     """R2: `location.roots` converts its resolution failures and `location.files` did not.
 
     `~no-such-user/x` raises `RuntimeError` out of `expanduser`, and the loader converts only
     `NonCanonicalScopeRef` at that point, so it escaped as a traceback with no diagnostic, no
     remedy and no receipt. **Third time tonight in this family, each in the branch beside the one
     just repaired** — which is the finding worth keeping, more than the fix.
+
+    **The vault binding is controlled here, not inherited.** A plain relative file is LEGAL when the
+    declared vault fallback exists, so as first written this row asserted a refusal that depended on
+    the ambient environment: root measured it passing with the binding absent and failing with it
+    present. That is the same defect I repaired in another test earlier tonight — reading an
+    environmental property and reporting it as a property of the declaration — committed again in a
+    row written to catch environmental confusion. The unknown-user case refuses either way; the
+    relative case is asserted only under the absent binding, and its positive counterpart is below.
     """
+
+    monkeypatch.delenv(fv.FRAME_VAULT_ROOT_ENV, raising=False)
+    monkeypatch.setattr(fv, "DEFAULT_FRAME_VAULT_ROOT", tmp_path / "absent-vault")
 
     member = {
         "id": "legacy-surface",
@@ -576,6 +589,37 @@ def test_row_r2_an_unresolvable_declared_file_is_an_actionable_refusal(tmp_path,
 
     assert "legacy-surface" in str(caught.value)
     assert caught.value.remedy
+
+
+def test_row_r3_a_relative_declared_file_resolves_against_a_present_vault(tmp_path, monkeypatch):
+    """R3: the positive counterpart, and the reason R2 must control its binding.
+
+    A relative `location.files` entry is legal when the declared vault fallback exists — that is
+    the producer's own convention, repaired for `location.roots` before and now shared by its
+    sibling. Converting resolution failures must not turn a legal relative declaration into a
+    refusal, so the two rows differ only in whether the fallback is there.
+    """
+
+    vault = tmp_path / "vault"
+    (vault / "30-areas/hapax").mkdir(parents=True)
+    (vault / "surface").mkdir()
+    (vault / "surface/selected.txt").write_bytes(b"NEEDLE\n")
+    monkeypatch.setenv(fv.FRAME_VAULT_ROOT_ENV, str(vault))
+
+    member = {
+        "id": "legacy-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"files": ["surface/selected.txt"], "patterns": ["*.txt"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("legacy-surface", "scope_exited")],
+    )
+
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+    assert [member.member_id for member in verdicts.decayed] == ["legacy-surface"]
+    assert verdicts.decayed[0].files, "a legal relative declaration keeps its declared file"
 
 
 @pytest.mark.parametrize("spelling", ["plain", "trailing-star"])
