@@ -866,26 +866,27 @@ def test_a_custom_opener_withholds_the_written_path(gate, tmp_path: Path) -> Non
     assert not [pair for pair in report.pairs if pair.writer.pattern == "a/final.json"]
 
 
-def test_empty_str_call_is_withheld_rather_than_read_as_the_current_directory(
-    gate, tmp_path: Path
-) -> None:
-    """``str()`` is the empty string, not ``.``.
+def test_empty_str_component_preserves_the_actual_report(gate, tmp_path: Path) -> None:
+    """``str()`` is the empty string, and an empty component is not ``.``.
 
-    Resolving it to the current directory named a real, different location and certified a
-    writer against it. The empty string is not a usable path at all, so the access must stay
-    unresolved.
+    The earlier pin asserted a withhold at the resolver, on the reasoning that a lone withheld
+    write produces no finding or pair so the report could not tell "withheld" from "certified as
+    `.`". That reasoning was right about a *lone* write and wrong as a general rule: concatenating
+    the component onto a real name makes the two states differ downstream, which is what this
+    asserts. Reading `str()` as the current directory would write `.artifacts/old.json` and pair
+    with the reader below.
     """
 
-    import ast
-
-    node = ast.parse("str()", mode="eval").body
-    resolved = gate._resolve_path_expr(node, {}, tmp_path / "shared/consumer.py", tmp_path, {})
-
-    # Pinned at the resolver rather than through the report: a lone withheld write produces no
-    # finding or pair, so the report cannot distinguish "withheld" from "certified as `.`" —
-    # the two states differ only in this return value, and asserting anything downstream of it
-    # would pass in both.
-    assert resolved is None
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\n"
+        "Path(str() + 'artifacts/old.json').write_text('{}')\n"
+        "Path('.artifacts/old.json').read_text()\n",
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert ".artifacts/old.json" in _unwritten_patterns(report, "shared/consumer.py")
+    assert not [pair for pair in report.pairs if pair.reader.pattern == ".artifacts/old.json"]
 
 
 def test_an_integer_file_descriptor_is_not_certified_as_a_filename(gate, tmp_path: Path) -> None:
@@ -929,3 +930,146 @@ def test_a_descriptor_relative_rename_destination_is_withheld(gate, tmp_path: Pa
     report = gate.analyse_consumer_side(tmp_path, [])
     assert "artifacts/final.json" in _unwritten_patterns(report, "shared/consumer.py")
     assert not [pair for pair in report.pairs if pair.writer.pattern == "artifacts/final.json"]
+
+
+# ------------------------------------------------------------------------------------------
+# Scalar evidence: what a value's TYPE establishes about whether it names a file. Descriptor
+# identity is typed evidence; a numeric filename is still a path; and an explicit conversion of
+# a known scalar is a real name, not a guess. The pairs below are deliberate — each withhold has
+# a companion asserting the neighbouring case is still resolved, because the old rule withheld
+# by spelling and lost correct readers along with the descriptors.
+# ------------------------------------------------------------------------------------------
+
+
+def report_for(gate, tmp_path, body):
+    source = tmp_path / "shared/example.py"
+    source.parent.mkdir()
+    source.write_text("from pathlib import Path\nimport io\n" + body)
+    return gate.analyse_consumer_side(tmp_path, [])
+
+
+def unwritten(report):
+    return {
+        finding.reader.pattern
+        for finding in report.findings
+        if finding.kind == "consumer-reads-unwritten-artifact"
+    }
+
+
+@pytest.mark.parametrize("prefix", ["str()", "''", "str('')"])
+def test_empty_component_cannot_hide_different_reader(gate, tmp_path, prefix):
+    report = report_for(
+        gate,
+        tmp_path,
+        f"Path({prefix} + 'artifacts/old.json').write_text('{{}}')\n"
+        "Path('.artifacts/old.json').read_text()\n",
+    )
+    assert ".artifacts/old.json" in unwritten(report)
+    assert not [pair for pair in report.pairs if pair.reader.pattern == ".artifacts/old.json"]
+
+
+@pytest.mark.parametrize(
+    "path_expr", ["Path(str()) / 'artifacts/old.json'", "Path(str() + 'artifacts/old.json')"]
+)
+def test_empty_component_preserves_correct_writer(gate, tmp_path, path_expr):
+    report = report_for(
+        gate,
+        tmp_path,
+        f"({path_expr}).write_text('{{}}')\nPath('artifacts/old.json').read_text()\n",
+    )
+    assert "artifacts/old.json" not in unwritten(report)
+    assert any(
+        pair.writer.pattern == pair.reader.pattern == "artifacts/old.json" for pair in report.pairs
+    )
+
+
+@pytest.mark.parametrize("value", ["3", "True", "False", "0", "-3"])
+@pytest.mark.parametrize("binding", [False, True], ids=["literal", "variable"])
+@pytest.mark.parametrize("function", ["open", "io.open"])
+def test_typed_descriptor_never_certifies_its_printed_name(
+    gate, tmp_path, value, binding, function
+):
+    setup = f"fd = {value}\n" if binding else ""
+    expression = "fd" if binding else value
+    label = value
+    report = report_for(
+        gate,
+        tmp_path,
+        setup + f"{function}({expression}, 'w', closefd=False).close()\n"
+        f"Path({label!r}).read_text()\n",
+    )
+    assert label in unwritten(report)
+    assert not [pair for pair in report.pairs if pair.writer.pattern == label]
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize("filename", ["3", "2024", "True"])
+@pytest.mark.parametrize("reader", ["open({name}).read()", "Path({name}).open().read()"])
+def test_numeric_filename_reader_remains_visible(gate, tmp_path, filename, reader):
+    report = report_for(gate, tmp_path, reader.format(name=repr(filename)) + "\n")
+    assert filename in unwritten(report)
+    assert report.unresolvable == 0
+
+
+@pytest.mark.parametrize(
+    "writer",
+    [
+        "open('3', 'w').write('{}')",
+        "Path('3').open('w').write('{}')",
+        "name = '3'\nopen(name, 'w').write('{}')",
+    ],
+)
+def test_numeric_filename_writer_is_not_a_descriptor(gate, tmp_path, writer):
+    report = report_for(gate, tmp_path, writer + "\nPath('3').read_text()\n")
+    assert "3" not in unwritten(report)
+    accesses, unresolved, _, _ = gate.collect_artifact_accesses(tmp_path)
+    assert {access.action for access in accesses if access.pattern == "3" and access.bounded} == {
+        "read",
+        "write",
+    }
+    assert unresolved == report.unresolvable == 0
+
+
+@pytest.mark.parametrize(
+    "writer",
+    ["open(1 + 2, 'w', closefd=False)", "fd = 1 + 2\nopen(fd, 'w', closefd=False)"],
+)
+def test_numeric_addition_is_not_string_concatenation(gate, tmp_path, writer):
+    report = report_for(gate, tmp_path, writer + "\nPath('12').read_text()\n")
+    assert "12" in unwritten(report)
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize(
+    ("setup", "expression", "label"),
+    [("", "Path(3)", "3"), ("", "Path(True)", "True"), ("fd = 3\n", "Path(fd)", "3")],
+)
+def test_invalid_scalar_path_constructor_cannot_certify_a_writer(
+    gate, tmp_path, setup, expression, label
+):
+    report = report_for(
+        gate,
+        tmp_path,
+        setup + f"{expression}.open('w').write('{{}}')\nPath({label!r}).read_text()\n",
+    )
+    assert label in unwritten(report)
+    assert report.unresolvable > 0
+
+
+@pytest.mark.parametrize(
+    ("writer", "label"),
+    [
+        ("open(str(1 + 2), 'w')", "3"),
+        ("Path(str(1 + 2)).open('w')", "3"),
+        ("name = '1' + '2'\nopen(name, 'w')", "12"),
+    ],
+)
+def test_explicit_scalar_conversion_preserves_the_real_filename(gate, tmp_path, writer, label):
+    report = report_for(gate, tmp_path, writer + f"\nPath({label!r}).read_text()\n")
+    assert label not in unwritten(report)
+    accesses, unresolved, _, _ = gate.collect_artifact_accesses(tmp_path)
+    assert {access.action for access in accesses if access.pattern == label and access.bounded} == {
+        "read",
+        "write",
+    }
+    assert unresolved == report.unresolvable == 0

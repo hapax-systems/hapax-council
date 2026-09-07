@@ -1498,6 +1498,20 @@ def _constant_value(node: ast.expr | None, values: dict[str, str]) -> tuple[bool
         encoded = values.get(f"{_CONSTANT_VALUE_PREFIX}{node.id}")
         if encoded is not None:
             return True, json.loads(encoded)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left_known, left = _constant_value(node.left, values)
+        right_known, right = _constant_value(node.right, values)
+        if (
+            left_known
+            and right_known
+            and (
+                isinstance(left, str)
+                and isinstance(right, str)
+                or isinstance(left, (int, float))
+                and isinstance(right, (int, float))
+            )
+        ):
+            return True, left + right
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
         known, value = _constant_value(node.operand, values)
         if known and isinstance(value, (int, float)):
@@ -1726,6 +1740,9 @@ def _resolve_path_expr(
     if name in _PATH_CONSTRUCTORS:
         components: list[str] = []
         for argument in node.args:
+            known, value = _constant_value(argument, values)
+            if known and not isinstance(value, str):
+                return None
             component = _resolve_path_expr(
                 argument, values, path, repo_root, path_functions, depth=depth + 1
             )
@@ -1749,11 +1766,12 @@ def _resolve_path_expr(
         return str(PurePosixPath(*components))
     if name == "str":
         if not node.args:
-            # `str()` is the empty string, not the current directory. Returning "." named a
-            # real, different location and certified a writer against it; the empty string is
-            # not a usable path at all, so the only honest answer is to withhold and let the
-            # access stay unresolved.
-            return None
+            # Empty is a known string component, not an unknown path or current directory.
+            return "" if not node.keywords else None
+        if len(node.args) == 1 and not node.keywords:
+            known, value = _constant_value(node.args[0], values)
+            if known:
+                return _literal_path(str(value))
         return _resolve_path_expr(
             node.args[0], values, path, repo_root, path_functions, depth=depth + 1
         )
@@ -2252,27 +2270,10 @@ def _classify_call(
         )
         known_function = name in {"open", "builtins.open", "codecs.open", "io.open"}
         expression = receiver if path_method else _call_argument(call, 0, "file") if name else None
-        # `open()` accepts an integer file descriptor as well as a path. An fd names no file
-        # this scanner can bind — the descriptor's target was established elsewhere, at a call
-        # this expression does not carry — so certifying it as a literal filename names the
-        # wrong file. Only a literal integer is withheld here: that is the case that is
-        # provable from the expression alone, and widening it to name-tracked values would
-        # withhold real filenames on a guess.
-        if (
-            isinstance(expression, ast.Constant)
-            and isinstance(expression.value, int)
-            and not isinstance(expression.value, bool)
-        ):
-            expression = None
-        elif expression is not None:
-            # A literal is not the only way an fd arrives: `fd = 3; open(fd, "w")` resolves to
-            # the pattern "3" and was certified as a file of that name. The scanner cannot tell
-            # a descriptor from a path by value alone, so a resolved name with no separator and
-            # only digits is treated as the descriptor it almost certainly is. This withholds
-            # rather than certifies, which is the safe direction: a real file named "3" becomes
-            # an unresolved access that stays visible, while an fd stops naming a wrong file.
-            resolved = _resolve_path_expr(expression, values, path, repo_root, path_functions)
-            if resolved is not None and resolved.isdigit():
+        # Descriptor identity is typed evidence; a numeric filename is still a path.
+        if not path_method:
+            known, value = _constant_value(expression, values)
+            if known and isinstance(value, int):
                 expression = None
         # A custom `opener` receives the path and returns a descriptor of its own choosing, so
         # the literal in the call is not evidence of what was written. Same for `**` unpacking,
