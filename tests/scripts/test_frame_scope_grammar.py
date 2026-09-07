@@ -38,6 +38,7 @@ the contract's refusal.
 """
 
 import os
+import pathlib
 
 import pytest
 import yaml
@@ -344,6 +345,137 @@ def test_row_p_a_hard_link_to_a_selected_file_is_that_file(
         print(f"P scope={scope_name!r}: main()={rc} (expected {expected})")
 
     assert rc == expected
+
+
+def test_row_q_an_unreadable_identity_is_not_evidence_of_disjointness(
+    tmp_path, monkeypatch, capsys
+):
+    """Q: a filesystem that will not answer has not answered "different".
+
+    Admission here is affirmative — it requires disjointness to be *established* — so a comparison
+    that could not be made supplies no admission evidence. The first version of the identity check
+    returned False on any OSError and called that "the behaviour that was there before", which is
+    the fallback-discipline failure exactly: a precondition asserted away rather than checked.
+
+    A genuinely absent path is the other case and must stay separable: it answers, and its answer
+    is that nothing is there. Row D already depends on that.
+    """
+
+    root = tmp_path / "surface"
+    root.mkdir()
+    selected = root / "selected.txt"
+    selected.write_bytes(b"NEEDLE\n")
+    alias = root / "alias.txt"
+    os.link(selected, alias)
+
+    unreadable = {alias.resolve(), alias}
+    real_identity = fv._file_identity
+    monkeypatch.setattr(
+        fv,
+        "_file_identity",
+        lambda path: fv._UNREADABLE if path in unreadable else real_identity(path),
+    )
+
+    _pin_checkout_base(monkeypatch, tmp_path)
+    rc, err = _root_dispatch(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        {"path": str(root), "patterns": ["selected.txt"]},
+        reader="fs.glob",
+        cwd=tmp_path,
+        candidate=str(alias),
+    )
+    with capsys.disabled():
+        print(f"Q unreadable identity: main()={rc}")
+
+    assert rc == 10, "an unreadable comparison must not admit"
+    assert "identity" in err, "and the refusal must say what could not be read"
+
+
+@pytest.mark.parametrize("spelling", ["plain", "trailing-star"])
+@pytest.mark.parametrize("failure", [PermissionError(13, "denied"), RuntimeError("symlink loop")])
+def test_row_r_an_unresolvable_exclusion_is_an_actionable_refusal(
+    tmp_path, monkeypatch, spelling, failure
+):
+    """R: resolving an exclusion touches the filesystem, and a refusal to answer is not an empty
+    exclusion.
+
+    `load_frame_verdicts` converts only `FrameVerdictsUnavailable` here, so a `PermissionError` or
+    a symlink-loop `RuntimeError` escaped the refusal path entirely — no diagnostic, no remedy, no
+    receipt (review finding, codex, 2026-09-07). Both resolution branches now convert, and both
+    name the exclusion and its path. The trailing-star branch is separate code and was separately
+    unguarded.
+    """
+
+    base = tmp_path / "base"
+    root = base / "surface"
+    root.mkdir(parents=True)
+    (root / "selected.txt").write_bytes(b"NEEDLE\n")
+    excluded = base / "unreadable-exclusion"
+    excluded.mkdir()
+
+    real_resolve = pathlib.Path.resolve
+
+    def refuse(self, *args, **kwargs):
+        if self.name == excluded.name:
+            raise failure
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", refuse)
+
+    member = _local_member(root=root, patterns=("selected.txt",))
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("legacy-surface", "scope_exited")],
+        exclusions=[
+            {
+                "id": "unreadable",
+                # The trailing-star branch resolves the PARENT and keeps the last segment lexical,
+                # so the unreadable directory has to be that parent for this row to exercise it.
+                "paths": [
+                    str(excluded / "generated") + "*"
+                    if spelling == "trailing-star"
+                    else str(excluded)
+                ],
+            }
+        ],
+    )
+
+    with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
+        fv.load_frame_verdicts(procedure, now=NOW)
+
+    assert "exclusion" in str(caught.value), "the refusal must name the exclusion"
+    assert caught.value.remedy, "and carry a next action rather than escaping as a traceback"
+
+
+def test_row_s_a_proven_outside_ref_survives_an_undecidable_sibling(tmp_path):
+    """S: one ref's unresolved comparison is not the whole scope's answer.
+
+    `all_inside` is false as soon as any one ref is provably outside, so raising at the first
+    undecidable ref discarded a witness that had already settled the question — and two spellings
+    of the same path then disagreed, because one of them happened to be undecidable. Only
+    valid-but-undecidable containment defers; a malformed ref or an evidence fault still raises.
+    """
+
+    base = tmp_path / "base"
+    root = base / "surface"
+    root.mkdir(parents=True)
+    (root / "selected.txt").write_bytes(b"NEEDLE\n")
+    outside = base / "elsewhere.txt"
+    outside.write_bytes(b"NEEDLE\n")
+
+    verdicts = _decayed(tmp_path, _local_member(root=root, patterns=("selected.txt",)))
+    undecidable = "surface/[s-s]elected.txt"
+
+    with pytest.raises(fv.UndecidableScopeContainment):
+        fv.scope_within_decayed([undecidable], verdicts, council_root=base, vault_root=base)
+
+    for refs in ([undecidable, str(outside)], [str(outside), undecidable]):
+        result = fv.scope_within_decayed(refs, verdicts, council_root=base, vault_root=base)
+        assert result.outside == (str(outside),), refs
+        assert result.all_inside is False, refs
 
 
 @pytest.mark.parametrize(

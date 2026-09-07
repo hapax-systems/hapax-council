@@ -435,10 +435,25 @@ def _exclusion_locations(
             text = raw[:-1] if prefix else raw
             path = Path(text)
             base = declaration_dir / path if not path.is_absolute() else path
-            if prefix:
-                prefixes.append(base.parent.resolve() / base.name)
-            else:
-                roots.append(base.resolve())
+            # Resolving an exclusion touches the filesystem, and a filesystem that will not answer
+            # is not an empty exclusion. `load_frame_verdicts` catches only FrameVerdictsUnavailable
+            # around this, so a PermissionError or a symlink-loop RuntimeError escaped the refusal
+            # path entirely: no diagnostic, no remedy, no receipt (review finding, codex,
+            # 2026-09-07). Both branches convert, and both name the exclusion and its path.
+            try:
+                if prefix:
+                    prefixes.append(base.parent.resolve() / base.name)
+                else:
+                    roots.append(base.resolve())
+            except (OSError, RuntimeError) as exc:
+                raise FrameVerdictsUnavailable(
+                    f"mass exclusion {index} path {raw!r} cannot be resolved: {exc}; its "
+                    "effective surface is undecidable",
+                    remedy=(
+                        f"repair filesystem access or symlinks for exclusion path {base}, or "
+                        f"amend {MASS_DECLARATION_LOCATION}; " + PRODUCER_REMEDY
+                    ),
+                ) from exc
     return tuple(roots), tuple(prefixes)
 
 
@@ -2202,8 +2217,38 @@ def _local_member_file_matches(path: Path, root: Path, pattern: str) -> bool:
         ) from exc
 
 
-def _same_existing_file(candidate: Path, declared: Path) -> bool:
-    """Whether two names that both exist today are one file.
+#: Distinct from ``None``: the filesystem refused to answer, rather than answering "absent".
+_UNREADABLE = object()
+
+
+def _file_identity(path: Path) -> tuple[int, int] | None | object:
+    """``(device, inode)`` for an existing file, ``None`` when absent, ``_UNREADABLE`` when unknown.
+
+    **A genuinely absent path and a failed stat are different evidence** and are kept apart here.
+    Absence is an answer: the file is not there, nothing can be the same as it, and the lexical
+    comparison stands — which is what keeps a not-yet-created leaf working. A refusal to answer is
+    not an answer, and collapsing the two would let an unreadable comparison count as proof of
+    disjointness (review finding, codex, 2026-09-07).
+    """
+
+    try:
+        status = path.stat()
+    except FileNotFoundError:
+        return None
+    except NotADirectoryError:
+        # A component of the path is a file, so nothing exists at this name either.
+        return None
+    except (OSError, RuntimeError, ValueError):
+        return _UNREADABLE
+    return status.st_dev, status.st_ino
+
+
+def _same_existing_file(candidate: Path, declared: Path) -> bool | None:
+    """Whether two names are one file: ``True``/``False``, or ``None`` when it cannot be told.
+
+    Callers must treat ``None`` as a refusal, never as ``False``. Admission in this consumer is
+    affirmative — it requires disjointness to be *established* — so a comparison that could not be
+    made supplies no admission evidence at all.
 
     ``resolve()`` collapses symlinks, so string comparison already catches those. It cannot see a
     **hard link**: two directory entries pointing at one inode are different strings naming the
@@ -2224,10 +2269,50 @@ def _same_existing_file(candidate: Path, declared: Path) -> bool:
     non-aliasing, and it must not be cited as one.
     """
 
-    try:
-        return candidate.samefile(declared)
-    except (OSError, ValueError):
+    left = _file_identity(candidate)
+    right = _file_identity(declared)
+    if left is _UNREADABLE or right is _UNREADABLE:
+        return None
+    if left is None or right is None:
         return False
+    return left == right
+
+
+def _identity_reaches_surface(candidates: tuple[Path, ...], surface: frozenset[Path]) -> bool:
+    """Whether any concrete candidate is the same file as any selected member target.
+
+    Runs after every other refusal has had its say, so a symlink case keeps its own, more careful
+    diagnosis — "traversal is unproven" says something different from "this file is that file".
+    A comparison that cannot be made raises rather than returning False: this predicate's negative
+    answer is used as admission evidence, and an unreadable filesystem is not evidence.
+    """
+
+    unreadable: tuple[Path, Path] | None = None
+    for candidate in candidates:
+        if candidate in surface:
+            # Already accounted for by the lexical and canonical comparisons, which decide overlap
+            # and partial scope on their own terms. Identity is only asked about a name those rules
+            # found nothing for; asking it here would turn "this glob overlaps the surface" into
+            # "this glob IS the surface" and refuse every partial scope.
+            continue
+        for target in surface:
+            same = _same_existing_file(candidate, target)
+            if same is True:
+                return True
+            if same is None and unreadable is None:
+                unreadable = (candidate, target)
+    if unreadable is not None:
+        candidate, target = unreadable
+        error = UndecidableScopeContainment(
+            f"file identity of {candidate} against declared member target {target} cannot be "
+            "read; an unreadable comparison is not evidence of disjointness"
+        )
+        error.remedy = (
+            f"repair filesystem access for {candidate} and {target}, then retry the dispatch; "
+            "or re-declare the scope as a path whose identity can be compared"
+        )
+        raise error
+    return False
 
 
 def ref_within_member(
@@ -2399,13 +2484,8 @@ def ref_within_member(
             _refuse_in_root_alias_reaching_surface(
                 path, scope_pattern, member, root=root, lexical_path=lexical_path
             )
-            if any(_same_existing_file(path, target) for target in surface):
-                # Nothing above sees a hard link: `resolve()` collapses symlinks, not links, so
-                # this candidate misses every declared pattern by spelling while naming the
-                # selected bytes. Last, so the symlink refusals above keep their own diagnosis —
-                # they say traversal is unproven, which is a different and more careful answer
-                # than saying this file is that file.
-                return True
+            # The identity comparison that used to sit here is now at the end of this function,
+            # where it also reaches candidates outside the root and a glob's expansion.
             continue
         has_excluded_entry = _check_member_symlinks(
             path, root, member, scope_pattern=(scope_pattern or "**/*") if broad else None
@@ -2475,7 +2555,22 @@ def ref_within_member(
     # The member's own entries may be aliases, so canonical targets must be considered
     # even when the candidate itself has no symlink components or matching lexical pattern.
     canonical = _resolve_external_scope_path(lexical_path)
-    return not broad and canonical in surface
+    if not broad and canonical in surface:
+        return True
+    # Identity last, and over every concrete path the scope denotes — the literal candidate, or a
+    # glob's expansion, which is how `[a-a]lias.txt` names exactly the alias. Placed here rather
+    # than in the root loop: a hard link outside the declared root is still that file, and the
+    # earlier placement could only see candidates inside it.
+    concrete = (
+        tuple(target for entry, target in expansions.items() if not entry.is_dir())
+        if broad
+        else (canonical, lexical_path)
+    )
+    # An explicit-files member declares no roots, so the canonical-entry surface built from roots
+    # is empty for it. Its declared files are the surface, and a class-shaped scope naming a link
+    # to one of them was reaching neither set.
+    identity_surface = surface | {_resolve_external_scope_path(file) for file in selected_files}
+    return _identity_reaches_surface(concrete, identity_surface)
 
 
 def _ssh_glob_patterns(patterns: tuple[str, ...]) -> tuple[str, ...]:
@@ -3027,39 +3122,54 @@ def scope_within_decayed(
             f"{list(verdicts.unmatchable)} have no containable declared location; the scope "
             "cannot be compared safely"
         )
+    # One ref's unresolved comparison is not the whole scope's answer. A declared scope can carry
+    # several refs, and `all_inside` is false as soon as any ONE of them is provably outside — so
+    # raising at the first undecidable ref discarded an outside witness that had already settled
+    # the question, and two spellings of the same path disagreed because one of them happened to
+    # be undecidable (review finding, codex, 2026-09-07). Deferred, and raised only if nothing
+    # else settles it. **Only valid-but-undecidable containment defers**: a malformed reference, an
+    # uncontainable declaration or an evidence fault is a fact about the whole request and still
+    # raises where it occurs.
+    deferred: UndecidableScopeContainment | None = None
     for ref in declared_refs:
         text = str(ref).strip()
-        readings, unreadable = _scope_readings(
-            text, verdicts, council_root=council_root, vault_root=vault_root
-        )
-        hit = next(
-            (
-                member
-                for candidates, dirlike, scope_pattern in readings
-                for member in verdicts.decayed
-                for candidate in candidates
-                if _candidate_within_member(candidate, dirlike, member, scope_pattern)
-            ),
-            None,
-        )
-        if hit is None:
-            for candidates, dirlike, scope_pattern in readings:
-                if (
-                    _scope_admission_established(
-                        candidates, dirlike, scope_pattern, verdicts.decayed
-                    )
-                    is not True
-                ):
-                    raise UndecidableScopeContainment(
-                        f"scope_containment_undecidable: admission not established for {ref}"
-                    )
-            # Nothing that parsed refuses this ref, so a spelling no grammar accepts is now the
-            # whole answer and is raised on its own terms.
-            if unreadable is not None:
-                raise unreadable
-            outside.append(str(ref))
-        else:
-            matches.append(ScopeMatch(str(ref), hit.member_id, hit.relation))
+        try:
+            readings, unreadable = _scope_readings(
+                text, verdicts, council_root=council_root, vault_root=vault_root
+            )
+            hit = next(
+                (
+                    member
+                    for candidates, dirlike, scope_pattern in readings
+                    for member in verdicts.decayed
+                    for candidate in candidates
+                    if _candidate_within_member(candidate, dirlike, member, scope_pattern)
+                ),
+                None,
+            )
+            if hit is None:
+                for candidates, dirlike, scope_pattern in readings:
+                    if (
+                        _scope_admission_established(
+                            candidates, dirlike, scope_pattern, verdicts.decayed
+                        )
+                        is not True
+                    ):
+                        raise UndecidableScopeContainment(
+                            f"scope_containment_undecidable: admission not established for {ref}"
+                        )
+                # Nothing that parsed refuses this ref, so a spelling no grammar accepts is now
+                # the whole answer and is raised on its own terms.
+                if unreadable is not None:
+                    raise unreadable
+                outside.append(str(ref))
+            else:
+                matches.append(ScopeMatch(str(ref), hit.member_id, hit.relation))
+        except UndecidableScopeContainment as exc:
+            if deferred is None:
+                deferred = exc
+    if deferred is not None and not outside:
+        raise deferred
     declared = bool(matches or outside)
     return ScopeVerdict(
         all_inside=declared and not outside,
