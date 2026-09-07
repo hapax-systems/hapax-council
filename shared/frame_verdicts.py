@@ -3104,25 +3104,71 @@ def _local_partial_scope_established(
     One path outside every decayed member suffices for the partial-scope predicate.
     Per-member witnesses do not compose: resolve the same path against every selection.
     No witness, or an unresolved comparison, supplies no admission evidence.
+
+    **Two search strategies, one predicate.** `_glob_witnesses` samples the first choice in each
+    character class rather than exhausting it, so `alias[123]` and `alias[312]` name one finite
+    language and got two answers — the first refused, the second admitted, on identical files
+    (root, 2026-09-07). Generating names is a heuristic for finding a witness; it is not what the
+    predicate means. An entry the scope ACTUALLY expands to is a witness in exactly the same
+    sense, and observing one costs no glob-language solving at all. Observed entries are tried
+    first for that reason.
+
+    This is a second way to find the same witness, not a second rule: the entry still has to be a
+    file, still has to be the same relative tail under every checkout projection, and still has to
+    be established outside EVERY member. A scope whose entries are all decayed finds nothing here.
     """
     if not dirlike and scope_pattern is None:
         return False
     pattern = scope_pattern or "**/*"
-    for witness in _glob_witnesses(pattern):
-        if not _pattern_matches(witness, pattern):
-            continue
+
+    def _witnessed(witness: str) -> bool:
         # The same relative tail must work in every equivalent checkout. Independent
         # witnesses per checkout can each land inside another projection's decayed union.
         candidates = tuple(root / witness for root in (path, *projections))
         if any(candidate.is_dir() for candidate in candidates):
-            continue
-        if all(
+            return False
+        return all(
             _local_disjoint_established(candidate, False, None, member) is True
             for candidate in candidates
             for member in members
-        ):
+        )
+
+    for witness in sorted(_observed_scope_tails(path, pattern, members)):
+        if _witnessed(witness):
+            return True
+    for witness in _glob_witnesses(pattern):
+        if not _pattern_matches(witness, pattern):
+            continue
+        if _witnessed(witness):
             return True
     return False
+
+
+def _observed_scope_tails(
+    path: Path, pattern: str, members: tuple[DecayedMember, ...]
+) -> frozenset[str]:
+    """Relative tails the scope currently expands to, agreed by every member's expansion.
+
+    Expansion is validated per member — a traversal one member refuses is not evidence about that
+    member's surface — so only tails every member's expansion produced are offered as witnesses.
+    An expansion that cannot be made yields nothing rather than a smaller set: a failed
+    observation is not a shorter list of files.
+    """
+
+    agreed: frozenset[str] | None = None
+    for member in members:
+        try:
+            entries = _canonical_scope_entries(path, pattern, member)
+        except (OSError, RuntimeError, UndecidableScopeContainment):
+            return frozenset()
+        tails = set()
+        for entry in entries:
+            try:
+                tails.add(entry.relative_to(path).as_posix())
+            except ValueError:
+                continue
+        agreed = frozenset(tails) if agreed is None else (agreed & frozenset(tails))
+    return agreed or frozenset()
 
 
 def _scope_admission_established(

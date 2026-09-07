@@ -495,6 +495,70 @@ def test_row_p_a_hard_link_to_a_selected_file_is_that_file(
     assert rc == expected
 
 
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    [
+        ("alias[12]", True),
+        ("alias[123]", False),
+        ("alias[312]", False),
+        ("alias[321]", False),
+        ("alias3", False),
+        ("alias1", True),
+    ],
+    ids=[
+        "both-aliases",
+        "aliases-then-stranger",
+        "stranger-first",
+        "stranger-first-reversed",
+        "the-stranger-alone",
+        "one-alias-alone",
+    ],
+)
+def test_row_p8_a_character_class_is_one_language_however_it_is_written(
+    tmp_path, pattern, expected
+):
+    """P8: `alias[123]` and `alias[312]` name the same six files and must get the same answer.
+
+    `_glob_witnesses` samples the FIRST choice in each character class rather than exhausting it,
+    so the generated witness for `[123]` was `alias1` — a decayed file under another name, which
+    is no witness — while `[312]` generated `alias3` and admitted. One finite language, two
+    verdicts, decided by the order the author happened to type (coordinator, 2026-09-07 12:26;
+    reproduced here at `1f8439bb3` as refused/admitted on identical files).
+
+    My previous round said withholding broad disjointness left the partial-scope outcome
+    unchanged. That was measured on two shapes and stated about all of them, and this is the case
+    that shows it was too strong: before the broad repair these globs never reached the witness at
+    all, so its sampling could not be seen.
+
+    The repair gives the witness a second way to look — the entries the scope actually expands to
+    — and changes nothing about what counts as one: still a file, still the same relative tail
+    under every projection, still established outside every member. `alias[12]`, whose every entry
+    is a decayed file, still finds none and is still refused; `alias1` alone is still contained.
+    """
+
+    base = tmp_path / "base"
+    root = base / "surface"
+    root.mkdir(parents=True)
+    first = root / "selected1"
+    first.write_bytes(b"NEEDLE ONE\n")
+    second = root / "selected2"
+    second.write_bytes(b"NEEDLE TWO\n")
+    elsewhere = base / "elsewhere"
+    elsewhere.mkdir()
+    os.link(first, elsewhere / "alias1")
+    os.link(second, elsewhere / "alias2")
+    (elsewhere / "alias3").write_bytes(b"INDEPENDENT\n")
+
+    verdicts = _decayed(tmp_path, _local_member(root=root, patterns=("selected1", "selected2")))
+    result = fv.scope_within_decayed(
+        [str(elsewhere / pattern)], verdicts, council_root=base, vault_root=base
+    )
+
+    assert result.all_inside is expected, (
+        f"{pattern}: a character class is one language however its choices are ordered"
+    )
+
+
 @pytest.mark.parametrize("mixed", [False, True], ids=["only-the-alias", "alias-and-a-stranger"])
 def test_row_p7_three_spellings_of_one_scope_agree_about_disjointness(tmp_path, mixed):
     """P7: the identity repair covers the broad spellings, not only the literal one.
