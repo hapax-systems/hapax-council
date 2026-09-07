@@ -1230,66 +1230,6 @@ def _expression_value_name(node: ast.AST) -> str:
     )
 
 
-def _completion_order(node: ast.AST | None) -> Iterator[ast.AST]:
-    """Sub-expressions in the order their evaluation FINISHES: children first, left to right.
-
-    `ast.walk` is breadth-first, which visits an assignment expression before the one nested
-    inside it — the reverse of the order they complete, so the inner binding overwrote the outer
-    one and `f"{(x := (x := 'a') + 'b')}{x}"` reported `aba` where Python builds `abab` (root,
-    2026-09-07).
-    """
-
-    if node is None:
-        return
-    for child in ast.iter_child_nodes(node):
-        yield from _completion_order(child)
-    yield node
-
-
-def _published_bindings(
-    node: ast.expr | None,
-    values: dict[str, str],
-    path: Path | None = None,
-    path_functions: object | None = None,
-) -> dict[str, str]:
-    """`values` extended with every constant an operand's `:=` binds, for LATER operands.
-
-    Python evaluates operands left to right, so `(x := 'a') + x` is `'aa'` while
-    `f"{x}{(x := 'a')}"` keeps the earlier binding for its first operand. Folding both operands
-    against one snapshot gets one of those wrong whichever way the walrus itself is read: the
-    coordinator measured twelve helper cases where four filenames were certified wrong at
-    `54b818b93`, and reading the assignment's value rather than its target fixes only the two
-    where nothing reads the target afterwards (2026-09-07).
-
-    This is the same move the module already makes for a call's receiver and callee, which are
-    frozen before a later argument rebinds their source — threaded through the two places that
-    fold a sequence of operands rather than a single one. An operand whose assigned value is not
-    a known constant publishes nothing, so an unknown stays unknown.
-    """
-
-    published = values
-    for item in _completion_order(node):
-        if not isinstance(item, ast.NamedExpr) or not isinstance(item.target, ast.Name):
-            continue
-        # Against what has been published SO FAR, not against the scope this operand started in:
-        # `(x := 'a') + (x := x + 'b')` binds twice, and the second read of `x` is the first
-        # binding's value. Folding it against the entry scope reported `aabwrongb` for a string
-        # Python builds as `aabab` (root, 2026-09-07).
-        known, bound = _constant_value(item.value, published, path, path_functions)
-        if not known:
-            continue
-        if published is values:
-            published = dict(values)
-        published[f"{_CONSTANT_VALUE_PREFIX}{item.target.id}"] = json.dumps(bound)
-        # The path channel reads a name's text directly, so a constant published only to the
-        # typed channel is invisible to `_resolve_path_expr` and the later operand keeps the
-        # stale spelling. Only str/int have a path spelling; anything else stays unpublished
-        # there rather than being given one.
-        if isinstance(bound, (str, int)) and not isinstance(bound, bool):
-            published[item.target.id] = _literal_path(str(bound))
-    return published
-
-
 def _evaluated_expression(node: ast.expr | None, values: dict[str, str]) -> ast.expr | None:
     """Reuse an operand's value after a later operand has changed its source binding."""
     if isinstance(node, ast.Name) and node.id.startswith(_EXPRESSION_VALUE_PREFIX):
@@ -1582,11 +1522,7 @@ def _constant_value(
     """Keep scalar types for formatting; a path-shaped abstract string is not a constant."""
     node = _evaluated_expression(node, values)
     if isinstance(node, ast.NamedExpr):
-        # `(x := v)` IS `v`. Reading the target instead is a proxy that holds only once the
-        # walker has applied the binding, and a return statement is summarised before that
-        # happens — so the target still carried its PREVIOUS value and the scanner certified
-        # the old filename with nothing unresolved (review finding, codex, 2026-09-07;
-        # reproduced at this head and at 54b818b93, so it predates the shared-walk adoption).
+        # The walker freezes this value before rebinding its target.
         return _constant_value(node.value, values, path, path_functions)
     if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, float, type(None))):
         return True, node.value
@@ -1621,7 +1557,7 @@ def _constant_value(
         left_known, left = _constant_value(node.left, values, path, path_functions)
         right_known, right = _constant_value(
             node.right,
-            _published_bindings(node.left, values, path, path_functions),
+            values,
             path,
             path_functions,
         )
@@ -1786,18 +1722,15 @@ def _resolve_path_expr(
         return values.get(node.id)
     if isinstance(node, ast.JoinedStr):
         parts: list[str] = []
-        # Interpolations are evaluated in order, so an earlier one's `:=` is visible to the later
-        # ones and to nothing before it. See `_published_bindings`.
+        # The shared walker has frozen each interpolation before later effects.
         scope = values
         for item in node.values:
             if isinstance(item, ast.Constant) and isinstance(item.value, str):
                 parts.append(_literal_path(item.value))
             elif isinstance(item, ast.FormattedValue):
                 formatted = _format_constant(item, scope, path, path_functions, repo_root)
-                published = _published_bindings(item.value, scope, path, path_functions)
                 if formatted is not None:
                     parts.append(_literal_path(formatted))
-                    scope = published
                     continue
                 if item.format_spec is not None or item.conversion != -1:
                     return None
@@ -1811,7 +1744,6 @@ def _resolve_path_expr(
                     path_functions,
                     depth=depth + 1,
                 )
-                scope = published
                 parts.append(resolved if resolved and resolved != "*" else "*")
         return "".join(parts)
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Div, ast.Add)):
@@ -1820,7 +1752,7 @@ def _resolve_path_expr(
         )
         right = _resolve_path_expr(
             node.right,
-            _published_bindings(node.left, values, path, path_functions),
+            values,
             path,
             repo_root,
             path_functions,
@@ -3895,6 +3827,12 @@ class _BlockScanner:
             self.path_functions.helper_results.clear()
 
     def _scan_expression(self, node: ast.AST, states: list[dict[str, str]]) -> None:
+        if isinstance(node, ast.FormattedValue):
+            self._scan_expression(node.value, states)
+            self._freeze_expression(node.value, states)
+            if node.format_spec is not None:
+                self._scan_expression(node.format_spec, states)
+            return
         if isinstance(node, ast.Call) and any(
             isinstance(item, (ast.NamedExpr, ast.Call))
             for item in ast.walk(node)
@@ -3920,6 +3858,8 @@ class _BlockScanner:
             return
         if isinstance(node, ast.NamedExpr):
             self._scan_expression(node.value, states)
+            # Preserve the evaluated RHS before its target changes that RHS's inputs.
+            self._freeze_expression(node.value, states)
             self._bind(node.target, node.value, states)
             return
         if isinstance(node, ast.IfExp):
@@ -4541,6 +4481,8 @@ class _PathHelperScanner(_BlockScanner):
         for call in _statement_calls(statement):
             self._classify(call, states)
         if isinstance(statement, ast.Return):
+            # Project the shared walk's completed state, including frozen operand values.
+            result = super()._scan_statement(statement, states, exception_states, exit_states)
             for state in states:
                 if _HELPER_EFFECT_KEY in state:
                     self.return_values.add(None)
@@ -4579,6 +4521,7 @@ class _PathHelperScanner(_BlockScanner):
                             statement.value, state, self.path, self.repo_root, self.path_functions
                         )
                     )
+            return result
         return super()._scan_statement(statement, states, exception_states, exit_states)
 
 

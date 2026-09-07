@@ -1355,10 +1355,10 @@ def test_all_source_gaps_are_retained(gate, tmp_path: Path) -> None:
 
 
 def test_a_walk_error_from_outside_the_tree_is_recorded_not_raised(gate, tmp_path: Path) -> None:
-    """ does not catch what its  callback raises.
+    """`os.walk` does not catch what its `onerror` callback raises.
 
-    The callback exists to RECORD an unreadable directory, and it called , which
-    raises  for any path the OS reports from outside the root. Nothing promises the
+    The callback exists to RECORD an unreadable directory, and it called `relative_to`, which
+    raises `ValueError` for any path the OS reports from outside the root. Nothing promises the
     error's filename is under the tree being walked — that is a fact about the OS's report, not
     about our arguments — so the scanner died exactly where it was written to describe a gap
     (review finding, gemini, 2026-09-07). A failure path that fails is worse than the gap it was
