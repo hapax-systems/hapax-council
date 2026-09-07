@@ -1,0 +1,506 @@
+#!/usr/bin/env python3
+"""One bounded same-thread continuation for a coordinator lane at its quota reset.
+
+WHY THIS EXISTS, AND WHY A LIVENESS SUPERVISOR IS NOT ENOUGH
+    ``hapax-lane-supervisor`` restarts a lane that is gone. This answers a
+    different condition: the process is alive and healthy and only its provider
+    quota is spent. *Process alive* is not *quota available*, so a liveness
+    supervisor cannot see this wall and cannot clear it. Its Codex path also
+    starts a lane without an exact resume UUID, which produces a second copy of
+    a thread rather than a continuation of one.
+
+WHAT IT DOES
+    At or after a declared reset, issues ONE bounded continuation through the
+    existing admitted sender and records delivery/ACK evidence. It retries on a
+    bounded schedule, capped, preserving every attempt separately.
+
+WHAT IT DELIBERATELY DOES NOT DO — each is a refusal, not an omission:
+    * It never probes before the reset. Checking whether a wall is still there
+      costs the quota being conserved.
+    * It never launches a lane. Resuming an exact thread requires inspecting
+      live and protected lanes first, which is a judgement, not a cron job.
+    * It never sends to a lane it cannot prove is the expected thread. A lane
+      NAME is not a thread identity: another Codex thread can occupy the same
+      tmux session, and the sender checks for a Codex process, not for which
+      conversation that process is continuing.
+    * It never marks a handback complete. The sender's ACK proves the message
+      was delivered and the session emitted the token. Role resumption is the
+      coordinator's own new-turn acknowledgement plus a state readback, which
+      this script cannot witness and must not assert.
+
+HOW THREAD IDENTITY IS ESTABLISHED
+    From the live process, not from configuration. A running Codex process holds
+    its rollout transcript open, so ``/proc/<pid>/fd`` names the thread UUID the
+    process is *currently writing*. A configured UUID or a recorded relay
+    assertion states only what was once intended; the open descriptor states
+    what is true now. Exactly one distinct rollout UUID must be found and it
+    must equal the expected thread, or the run refuses.
+
+STATE AND THE ATTEMPT BUDGET
+    The budget only bounds anything if it survives damage. An unreadable or
+    malformed state file is an UNKNOWN, and an unknown must hold rather than
+    silently restart the budget from zero — a retry ceiling that resets itself
+    whenever the ceiling's own record is corrupt is not a ceiling. Attempts are
+    therefore reserved and durably persisted BEFORE the send, so a crash costs
+    an attempt rather than licensing an unbounded repeat, and a persistence
+    failure means no send at all.
+
+Ordinary outcomes, including every refusal above, exit 0 so a no-op tick is not
+rendered as a unit failure. Only real faults exit non-zero.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+#: 2026-09-14T01:21:34Z, as reported by the lane's own native telemetry.
+DEFAULT_DUE_EPOCH = 1789348894
+DEFAULT_SESSION = "cx-blue"
+DEFAULT_THREAD = "01a06eeb-3eef-75a1-93ec-f48da5d20560"
+DEFAULT_MAX_ATTEMPTS = 8
+DEFAULT_ACK_TIMEOUT = 300
+
+HOME = Path.home()
+DEFAULT_STATE_DIR = HOME / ".cache" / "hapax" / "codex-quota-wakeup"
+DEFAULT_LANEBUS = HOME / "Documents" / "Personal" / "30-areas" / "hapax" / "lanebus" / "cx-mnemonic"
+DEFAULT_SENDER = HOME / ".cache" / "hapax" / "source-activation" / "worktree" / "scripts" / "hapax-codex-send"
+
+NOTE_REL = "30-areas/hapax/frame/coordination-20260904/QUOTA-CONTINUITY-20260907.md"
+
+_ROLLOUT_UUID = re.compile(
+    r"rollout-[0-9T:\-]+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$"
+)
+
+MESSAGE = (
+    "Quota-reset continuation. Read ~/Documents/Personal/{note} and the acting "
+    "coordinator's absence delta, reorient against current live evidence, "
+    "acknowledge resumption, resume the retained coordinating role, then resolve "
+    "the most consequential outstanding decision. Delivery is not resumption: "
+    "reply with a new-turn ACK and a short readback of current decisions, owners "
+    "and constraints."
+).format(note=NOTE_REL)
+
+
+def _env(name: str, fallback: str) -> str:
+    return os.environ.get(name, fallback)
+
+
+def now_iso() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class Refusal(Exception):
+    """A named, recorded reason not to send. Never a crash, never a silent skip."""
+
+    def __init__(self, outcome: str, detail: str, *, fault: bool = False) -> None:
+        super().__init__(detail)
+        self.outcome = outcome
+        self.detail = detail
+        self.fault = fault
+
+
+# --------------------------------------------------------------------------- #
+# Thread identity, from the live process
+# --------------------------------------------------------------------------- #
+def _descendant_pids(root_pid: int) -> list[int]:
+    pids = [root_pid]
+    seen = {root_pid}
+    index = 0
+    while index < len(pids):
+        try:
+            children = (
+                Path(f"/proc/{pids[index]}/task").glob("*/children")
+                if Path(f"/proc/{pids[index]}/task").is_dir()
+                else []
+            )
+            for child_file in children:
+                for token in child_file.read_text().split():
+                    pid = int(token)
+                    if pid not in seen:
+                        seen.add(pid)
+                        pids.append(pid)
+        except (OSError, ValueError):
+            pass
+        index += 1
+    return pids
+
+
+def observed_thread_uuids(pane_pid: int) -> set[str]:
+    """Every rollout transcript UUID held open by the pane's process tree.
+
+    The open descriptor is the evidence: it says which conversation the process
+    is writing right now. Configuration says only what was once intended.
+    """
+    found: set[str] = set()
+    for pid in _descendant_pids(pane_pid):
+        fd_dir = Path(f"/proc/{pid}/fd")
+        try:
+            entries = list(fd_dir.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                target = os.readlink(entry)
+            except OSError:
+                continue
+            match = _ROLLOUT_UUID.search(target)
+            if match:
+                found.add(match.group(1))
+    return found
+
+
+def verify_thread(session: str, expected_thread: str) -> str:
+    """Return the proven thread UUID, or raise a named Refusal."""
+    probe = subprocess.run(
+        ["tmux", "list-panes", "-t", f"hapax-codex-{session}", "-F", "#{pane_pid}"],
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        raise Refusal(
+            "session_absent",
+            f"tmux session hapax-codex-{session} absent; refusing to launch a second copy",
+        )
+    pane_pids = [int(line) for line in probe.stdout.split() if line.strip().isdigit()]
+    if not pane_pids:
+        raise Refusal("thread_unverifiable", "session present but reported no pane pid")
+
+    observed: set[str] = set()
+    for pane_pid in pane_pids:
+        observed |= observed_thread_uuids(pane_pid)
+
+    if not observed:
+        raise Refusal(
+            "thread_unverifiable",
+            "no rollout transcript is held open by the session's process tree; "
+            "the running thread's identity cannot be established",
+        )
+    if len(observed) > 1:
+        raise Refusal(
+            "thread_ambiguous",
+            f"session holds {len(observed)} distinct rollout transcripts open; refusing ambiguity",
+        )
+    seen = observed.pop()
+    if seen != expected_thread:
+        raise Refusal(
+            "wrong_thread",
+            f"session hapax-codex-{session} is continuing thread {seen}, not the expected thread",
+        )
+    return seen
+
+
+# --------------------------------------------------------------------------- #
+# State: damaged is not empty, and an attempt is spent before it is used
+# --------------------------------------------------------------------------- #
+class Campaign:
+    """One bounded run of attempts, identified by its target and its reset.
+
+    A different expected thread or a different reset is a different campaign
+    with its own budget. That is deliberate: it means the budget can only be
+    reset by changing the declared target, never by damaging a file.
+    """
+
+    def __init__(self, state_dir: Path, expected_thread: str, due_epoch: int) -> None:
+        self.state_dir = state_dir
+        self.expected_thread = expected_thread
+        self.due_epoch = due_epoch
+        digest = hashlib.sha256(f"{expected_thread}@{due_epoch}".encode()).hexdigest()
+        self.campaign_id = digest[:12]
+        self.state_path = state_dir / f"campaign-{self.campaign_id}.json"
+        self.attempts_dir = state_dir / f"campaign-{self.campaign_id}-attempts"
+
+    def load(self) -> dict[str, object]:
+        if not self.state_path.exists():
+            return {
+                "campaign_id": self.campaign_id,
+                "expected_thread": self.expected_thread,
+                "due_epoch": self.due_epoch,
+                "attempts": 0,
+                "done": False,
+                "attempt_open": None,
+            }
+        try:
+            raw = self.state_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise Refusal(
+                "state_unreadable",
+                f"existing state could not be read ({type(exc).__name__}); holding rather "
+                "than restarting the attempt budget",
+            ) from exc
+        try:
+            state = json.loads(raw)
+        except ValueError as exc:
+            raise Refusal(
+                "state_malformed",
+                f"existing state is not valid JSON ({type(exc).__name__}); holding rather "
+                "than restarting the attempt budget",
+            ) from exc
+        if not isinstance(state, dict) or not isinstance(state.get("attempts"), int):
+            raise Refusal(
+                "state_malformed",
+                "existing state has no usable attempt count; holding rather than "
+                "restarting the attempt budget",
+            )
+        return state
+
+    def persist(self, state: dict[str, object]) -> None:
+        """Atomic, durable, and loud on failure — a lost write must stop a send."""
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.state_path.with_suffix(".json.tmp")
+        payload = json.dumps(state, indent=2, sort_keys=True)
+        try:
+            handle = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(handle, payload.encode("utf-8"))
+                os.fsync(handle)
+            finally:
+                os.close(handle)
+            os.replace(tmp, self.state_path)
+            dir_fd = os.open(self.state_dir, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError as exc:
+            raise Refusal(
+                "state_unpersistable",
+                f"attempt could not be durably recorded ({type(exc).__name__}); "
+                "refusing to send an attempt the budget would not remember",
+                fault=True,
+            ) from exc
+
+    def write_attempt(self, number: int, record: dict[str, object]) -> None:
+        """Per-attempt evidence, never overwritten by a later attempt."""
+        self.attempts_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        path = self.attempts_dir / f"attempt-{number:02d}-{stamp}.json"
+        try:
+            path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+        except OSError:
+            # Evidence loss must not also lose the outcome already in state.
+            pass
+
+
+def announce(lanebus: Path, session: str, outcome: str, detail: str, attempts: int, cap: int) -> None:
+    if not lanebus.is_dir():
+        return
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    path = lanebus / f"{stamp}-codex-quota-wakeup-{outcome.replace('_', '-')}.md"
+    body = (
+        "---\n"
+        "from: hapax-codex-quota-wakeup\n"
+        "to: cx-mnemonic\n"
+        f"created: {now_iso()}\n"
+        "type: coordination\n"
+        "---\n\n"
+        f"Reset-time continuation for lane `{session}`: **{outcome}**\n\n"
+        f"- attempt: {attempts} of {cap}\n"
+        f"- detail: {detail}\n"
+        "- evidence: `~/.cache/hapax/codex-quota-wakeup/`\n\n"
+        "Delivery and a sender ACK are not role resumption. Handback completes only\n"
+        "on the coordinator's own new-turn ACK plus a current-state readback.\n"
+    )
+    try:
+        path.write_text(body, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, add_help=True)
+    parser.add_argument("--status", action="store_true", help="report gates and state, send nothing")
+    parser.add_argument("--dry-run", action="store_true", help="show what would be sent, send nothing")
+    args = parser.parse_args(argv)
+
+    due_epoch = int(_env("HAPAX_CODEX_WAKEUP_DUE_EPOCH", str(DEFAULT_DUE_EPOCH)))
+    session = _env("HAPAX_CODEX_WAKEUP_SESSION", DEFAULT_SESSION)
+    expected_thread = _env("HAPAX_CODEX_WAKEUP_THREAD", DEFAULT_THREAD)
+    max_attempts = int(_env("HAPAX_CODEX_WAKEUP_MAX_ATTEMPTS", str(DEFAULT_MAX_ATTEMPTS)))
+    ack_timeout = int(_env("HAPAX_CODEX_WAKEUP_ACK_TIMEOUT", str(DEFAULT_ACK_TIMEOUT)))
+    state_dir = Path(_env("HAPAX_CODEX_WAKEUP_STATE_DIR", str(DEFAULT_STATE_DIR)))
+    lanebus = Path(_env("HAPAX_CODEX_WAKEUP_LANEBUS", str(DEFAULT_LANEBUS)))
+    sender = Path(_env("HAPAX_CODEX_WAKEUP_SENDER", str(DEFAULT_SENDER)))
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    campaign = Campaign(state_dir, expected_thread, due_epoch)
+    now = int(time.time())
+
+    if args.status:
+        print(f"session   : {session}")
+        print(f"thread    : {expected_thread}")
+        print(f"campaign  : {campaign.campaign_id}")
+        due = datetime.fromtimestamp(due_epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        print(f"due       : {due} (epoch {due_epoch})")
+        print(f"now       : {now_iso()}")
+        if now < due_epoch:
+            print(f"gate      : before_reset ({(due_epoch - now) // 3600}h remaining)")
+        else:
+            print("gate      : due")
+        try:
+            state = campaign.load()
+            print(f"attempts  : {state.get('attempts')} of {max_attempts}")
+            print(f"done      : {state.get('done')}")
+            print(json.dumps(state, indent=2, sort_keys=True))
+        except Refusal as refusal:
+            print(f"state     : {refusal.outcome} — {refusal.detail}")
+        return 0
+
+    # One runner at a time. A manual invocation must not race the timer.
+    lock_path = state_dir / "lock"
+    lock_handle = os.open(lock_path, os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        try:
+            fcntl.flock(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0  # another runner holds it; this tick is simply not needed
+
+        attempts = 0
+        try:
+            state = campaign.load()
+            attempts = int(state.get("attempts", 0))
+
+            # Gate 1 — already delivered and acknowledged.
+            if state.get("done"):
+                return 0
+
+            # Gate 2 — before the declared reset. No probe of any kind.
+            if now < due_epoch:
+                return 0
+
+            # An attempt reserved but never resolved is an UNKNOWN. It stays
+            # counted, so a crash costs an attempt rather than licensing repeats.
+            open_attempt = state.get("attempt_open")
+            if open_attempt is not None:
+                campaign.write_attempt(
+                    int(open_attempt),
+                    {
+                        "attempt": open_attempt,
+                        "outcome": "unresolved_after_reserve",
+                        "detail": "a previous run reserved this attempt and did not record "
+                        "its outcome; the send may or may not have landed",
+                        "observed_at": now_iso(),
+                    },
+                )
+                state["attempt_open"] = None
+                campaign.persist(state)
+
+            # Gate 3 — bounded budget spent.
+            if attempts >= max_attempts:
+                if not state.get("exhausted_announced"):
+                    state["exhausted_announced"] = True
+                    campaign.persist(state)
+                    announce(
+                        lanebus,
+                        session,
+                        "attempts_exhausted",
+                        f"no ACK after {max_attempts} bounded attempts; the acting "
+                        "coordinator must decide",
+                        attempts,
+                        max_attempts,
+                    )
+                return 0
+
+            # Gate 4 — the lane must be provably the expected thread.
+            verify_thread(session, expected_thread)
+
+            if not os.access(sender, os.X_OK):
+                raise Refusal(
+                    "sender_missing",
+                    f"sender is not executable at {sender}",
+                    fault=True,
+                )
+
+            if args.dry_run:
+                print(f"would send to hapax-codex-{session} (thread verified live)")
+                print(f"  attempt     : {attempts + 1} of {max_attempts}")
+                print(f"  ack timeout : {ack_timeout}s, nudge limit 0")
+                print("--- message ---")
+                print(MESSAGE)
+                return 0
+
+            # Reserve the attempt durably BEFORE spending it. A persistence
+            # failure raises, and no send happens.
+            attempts += 1
+            state["attempts"] = attempts
+            state["attempt_open"] = attempts
+            state["last_reserved_at"] = now_iso()
+            campaign.persist(state)
+
+        except Refusal as refusal:
+            record = {
+                "outcome": refusal.outcome,
+                "detail": refusal.detail,
+                "observed_at": now_iso(),
+            }
+            campaign.write_attempt(attempts, record)
+            announce(lanebus, session, refusal.outcome, refusal.detail, attempts, max_attempts)
+            return 1 if refusal.fault else 0
+
+        env = os.environ.copy()
+        env["HAPAX_CODEX_SEND_ACK_NUDGE_LIMIT"] = "0"
+        env["HAPAX_CODEX_SEND_ACK_TIMEOUT"] = str(ack_timeout)
+        completed = subprocess.run(
+            [
+                str(sender),
+                "--session",
+                session,
+                "--transport",
+                "tmux",
+                "--require-ack",
+                "--",
+                MESSAGE,
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        outcomes = {
+            0: ("delivered_and_acked", "sender ack token observed"),
+            12: ("ack_timeout", f"delivered, no ack within {ack_timeout}s"),
+            14: ("session_busy", "session busy; not forcing"),
+        }
+        outcome, detail = outcomes.get(
+            completed.returncode,
+            ("send_failed", f"sender exited {completed.returncode}"),
+        )
+
+        campaign.write_attempt(
+            attempts,
+            {
+                "attempt": attempts,
+                "outcome": outcome,
+                "detail": detail,
+                "sender_exit": completed.returncode,
+                "stdout": completed.stdout[-4000:],
+                "stderr": completed.stderr[-4000:],
+                "observed_at": now_iso(),
+            },
+        )
+
+        state["attempt_open"] = None
+        state["last_outcome"] = outcome
+        state["last_exit"] = completed.returncode
+        state["last_attempt_at"] = now_iso()
+        if outcome == "delivered_and_acked":
+            state["done"] = True
+            state["delivered_ack_at"] = now_iso()
+        campaign.persist(state)
+        announce(lanebus, session, outcome, detail, attempts, max_attempts)
+        return 0
+    finally:
+        os.close(lock_handle)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

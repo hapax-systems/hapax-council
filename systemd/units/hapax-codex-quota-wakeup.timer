@@ -1,0 +1,20 @@
+[Unit]
+Description=Fire the coordinator quota-reset continuation at, and only after, the declared reset
+
+[Timer]
+# 01:22 UTC is the first tick at or after the declared reset 2026-09-14T01:21:34Z
+# — 26 seconds after it. The same expression then supplies the bounded 6-hourly
+# backoff, so one line gives both the precise first attempt and the retries.
+# Every tick before the reset is a no-op that costs nothing: the script's own
+# gate exits before it touches tmux, the sender or the network.
+OnCalendar=*-*-* 01,07,13,19:22:00 UTC
+# A missed window (host asleep or rebooted across the reset) still fires once on
+# the next start. Without this the whole mechanism is lost to a reboot.
+Persistent=true
+# The wall is a wall-clock event shared by every lane on the account; spreading
+# the attempt would only delay it.
+AccuracySec=1s
+Unit=hapax-codex-quota-wakeup.service
+
+[Install]
+WantedBy=timers.target

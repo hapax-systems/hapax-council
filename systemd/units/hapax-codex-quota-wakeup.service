@@ -1,0 +1,22 @@
+[Unit]
+Description=Bounded same-thread continuation for a coordinator lane at its quota reset
+Documentation=file:%h/Documents/Personal/30-areas/hapax/frame/coordination-20260904/QUOTA-CONTINUITY-20260907.md
+# Deliberately no dependency on the lane supervisor: this unit answers a
+# different condition. The supervisor restarts a lane that is gone; this fires
+# when the lane is alive and only its provider quota was spent.
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-codex-quota-wakeup
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+# The sender waits for an ACK token; 300s plus slack, and no nudges, so a walled
+# session is never keyboard-poked into a retry storm.
+TimeoutStartSec=420
+# Every ordinary outcome, including each refusal, exits 0. A non-zero exit is a
+# real fault and should be visible as one.
+SuccessExitStatus=0
+
+[Install]
+WantedBy=default.target
