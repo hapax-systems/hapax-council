@@ -1354,6 +1354,43 @@ def test_all_source_gaps_are_retained(gate, tmp_path: Path) -> None:
     }
 
 
+def test_provenance_names_the_sources_git_does_not_track(gate, tmp_path: Path) -> None:
+    """A report cannot say the tree was clean while measuring a file in no commit.
+
+    git status is asked with --untracked-files=no, and the scan walks the filesystem, so an
+    untracked .py file was read like any other and its findings appeared beside dirty=false. A
+    later reader checking out that head measures a different tree than the report describes
+    (review finding, codex, 2026-09-07).
+
+    The committed twin is what keeps this from being a blanket dirty flag: a tree whose measured
+    sources are all tracked still reports clean, and the untracked list stays empty.
+    """
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    _write(tmp_path, "value = 1\n")
+    git("init", "-q")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "base")
+
+    clean = gate.analyse_consumer_side(tmp_path, []).measured
+    assert clean["dirty"] is False
+    assert clean["untracked_sources"] == []
+
+    (tmp_path / "shared" / "untracked.py").write_text(
+        "from pathlib import Path\nPath('artifacts/uncommitted.json').read_text()\n"
+    )
+    report = gate.analyse_consumer_side(tmp_path, [])
+    assert "artifacts/uncommitted.json" in {
+        finding.reader.pattern
+        for finding in report.findings
+        if finding.kind == "consumer-reads-unwritten-artifact"
+    }, "the untracked file is measured"
+    assert report.measured["untracked_sources"] == ["shared/untracked.py"]
+    assert report.measured["dirty"] is True, "so the head does not describe what was measured"
+
+
 def test_a_walk_error_from_outside_the_tree_is_recorded_not_raised(gate, tmp_path: Path) -> None:
     """`os.walk` does not catch what its `onerror` callback raises.
 

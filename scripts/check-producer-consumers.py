@@ -49,7 +49,7 @@ import subprocess
 import sys
 import tomllib
 from collections import Counter
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -5585,16 +5585,37 @@ def _git_head(repo_root: Path) -> tuple[str | None, bool | None]:
 
 
 def measured_provenance(
-    repo_root: Path, frame_path: Path | None, decayed_members: list[str]
+    repo_root: Path,
+    frame_path: Path | None,
+    decayed_members: list[str],
+    *,
+    measured_sources: Iterable[Path] = (),
+    tracked: frozenset[str] = frozenset(),
 ) -> dict[str, object]:
     head, dirty = _git_head(repo_root)
+    # **`dirty` described the commit, not the measurement.** `git status` is asked with
+    # `--untracked-files=no`, while the scan walks the filesystem and reads untracked `.py` files
+    # like any other — so a report could carry findings from a file in no commit beside
+    # `dirty: false`, and a later reader checking out that head would measure a different tree
+    # than the report describes (review finding, codex, 2026-09-07).
+    #
+    # The sources that were actually read decide this, not a second opinion about the tree: any
+    # measured file git does not track is named, and its presence makes the tree dirty whatever
+    # `status` said about tracked paths. Outside a checkout `tracked` is empty and nothing is
+    # claimed, which is the same guard `_non_python_source_paths` already uses.
+    untracked = (
+        sorted(str(path) for path in measured_sources if str(path) not in tracked)
+        if tracked
+        else []
+    )
     epoch = frame_path.expanduser().absolute().parent.name if frame_path is not None else None
     return {
         "instrument_rev": "check-producer-consumers/consumer-side/1",
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "repo_root": str(repo_root),
         "head": head,
-        "dirty": dirty,
+        "dirty": True if untracked else dirty,
+        "untracked_sources": untracked,
         "frame": {
             "elements": str(frame_path) if frame_path is not None else None,
             "epoch": epoch,
@@ -5801,7 +5822,14 @@ def analyse_consumer_side(
         unresolved,
         dict(exclusions),
         unrecognised_path_calls=unrecognised,
-        measured=measured_provenance(repo_root, frame_path, decayed_member_ids),
+        measured=measured_provenance(
+            repo_root,
+            frame_path,
+            decayed_member_ids,
+            # What the scan actually read: every source that parsed, plus every one it could not.
+            measured_sources=[*imports_by_path, *(gap.path for gap in source_gaps)],
+            tracked=tracked,
+        ),
         errors=tuple(
             [
                 f"{gap.path}: {gap.operation} failed ({gap.error_class})"
