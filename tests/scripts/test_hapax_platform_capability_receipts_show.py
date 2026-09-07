@@ -347,6 +347,213 @@ def test_plain_text_mode_prints_a_quota_line_per_receipt(tmp_path: Path, present
         )
 
 
+def _script_module():
+    """The script as a real module, so its own globals can be steered.
+
+    `runpy.run_path` hands back a COPY of the globals; the functions keep looking things up in
+    the originals, so patching that dict changes nothing the code reads. The rows below replace
+    the ledger reader and the raw-receipt parser, which only works through a module object.
+    """
+
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader(
+        "platform_capability_receipts_script", str(SCRIPT)
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def _quota_probe(monkeypatch, tmp_path: Path, module, *, admission_at: datetime):
+    """One fresh relay admission, seen through `observe_quota`'s own glob and parser."""
+    receipts = tmp_path / "relay"
+    receipts.mkdir(exist_ok=True)
+    (receipts / "glmcp-quota-admission-0001.yaml").write_text("route_id: glmcp.review.direct\n")
+    monkeypatch.setattr(module, "QUOTA_RECEIPT_DIR", receipts)
+    monkeypatch.setattr(
+        module,
+        "_fresh_quota_receipt",
+        lambda path, *, route_ids, now: {
+            "route_id": "glmcp.review.direct",
+            "_observed": admission_at,
+            "stale_after_seconds": 900,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("ledger_readable", "reason", "supersedes"),
+    [(False, "quota_telemetry_unknown", False), (True, "account_live_quota_receipt_absent", True)],
+    ids=["stale-ledger-over-the-same-admission", "readable-ledger-reports-the-admission-gone"],
+)
+def test_a_failed_ledger_read_is_not_a_later_negative_observation(
+    tmp_path: Path, monkeypatch, ledger_readable, reason, supersedes
+) -> None:
+    """An UNOBSERVABLE built from a stale ledger revoked a renewal derived from one admission.
+
+    `observe_quota` dated every negative `now` while dating a positive by the admissions it read.
+    So a t+6 run whose relay admissions were unchanged but whose validated ledger could not be
+    read outranked the t+5-dated positive published from those same admissions, and a later
+    identical positive was then refused as older — the coordinator's reproduction, 2026-09-07,
+    against the real parser, observer, lock, publisher and loader.
+
+    The two rows are the two facts that were sharing one timestamp rule. A readable ledger
+    reporting the admission gone is an absence this run really observed, and it must still be
+    able to supersede a renewal; that is the second row, and it is unchanged. Only the failed
+    read moves, to the date of the evidence it failed to validate.
+    """
+
+    module = _script_module()
+    base = datetime(2026, 9, 5, tzinfo=UTC)
+    admission_at = base + timedelta(seconds=5)
+    _quota_probe(monkeypatch, tmp_path, module, admission_at=admission_at)
+
+    def ledger(route_ids, *, now):
+        if now == base + timedelta(seconds=8):
+            return (
+                {
+                    "glmcp.review.direct": (
+                        ["relay-receipt:glmcp.review.direct:validated"],
+                        admission_at + timedelta(seconds=900),
+                    )
+                },
+                True,
+            )
+        return {}, ledger_readable
+
+    monkeypatch.setattr(module, "_ledger_fresh_routes", ledger)
+    route = type("Route", (), {"route_id": "glmcp.review.direct"})()
+    observe_quota, write_receipt = module.observe_quota, module.write_receipt
+
+    positive = observe_quota("glmcp", [route], now=base + timedelta(seconds=8))
+    assert positive.status.value == "observed"
+    assert positive.observed_at == admission_at, "a positive is dated by its admissions"
+
+    negative_at = base + timedelta(seconds=20)
+    negative = observe_quota("glmcp", [route], now=negative_at)
+    assert negative.status.value == "unobservable"
+    assert negative.reason_codes == [reason]
+    assert (negative.observed_at == negative_at) is supersedes, (
+        "an observed absence is dated now; a failed read is dated by what it examined"
+    )
+
+    out = tmp_path / "receipts"
+    write_receipt(_receipt_for(positive, base + timedelta(seconds=8)), out)
+    published = write_receipt(_receipt_for(negative, negative_at), out)
+    from shared.platform_capability_receipts import load_platform_capability_receipt
+
+    stored = load_platform_capability_receipt(out / "glmcp.json")
+    assert bool(published) is supersedes
+    assert stored.quota.status.value == ("unobservable" if supersedes else "observed")
+
+
+def _receipt_for(quota, observed_at: datetime):
+    from shared.platform_capability_receipts import PlatformCapabilityReceipt
+
+    surface = {
+        "status": "observed",
+        "source": "test",
+        "observed_at": observed_at,
+        "stale_after": "900s",
+        "evidence_refs": ["local:glmcp:present"],
+    }
+    return PlatformCapabilityReceipt.model_validate(
+        {
+            "receipt_id": f"probe-{observed_at:%Y%m%dT%H%M%SZ}",
+            "platform": "glmcp",
+            "routes": ["glmcp.review.direct"],
+            "observed_at": observed_at,
+            "stale_after": "900s",
+            "cli": {"binary": "test", "available": True},
+            "wrapper": {"path": "test", "exists": True, "executable": True},
+            "capability": surface,
+            "resource": surface,
+            "quota": quota,
+            "provider_docs": {
+                "refs": ["test:docs"],
+                "fetched_at": observed_at,
+                "stale_after": "30d",
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize("stored", ["{", ""], ids=["truncated-json", "empty-file"])
+def test_an_unreadable_stored_receipt_is_quarantined_not_a_permanent_block(
+    tmp_path: Path, capsys, stored
+) -> None:
+    """One corrupt file stopped this platform's receipts from ever being regenerated.
+
+    `write_receipt` re-reads the stored receipt under the lock, and the loader's
+    `PlatformCapabilityReceiptError` escaped: the run died, the broken bytes stayed, and every
+    later run died the same way (coordinator's reproduction with a `glmcp.json` holding one `{`).
+    A file that cannot be parsed supplies no ordering evidence — it cannot show it is newer, and
+    refusing forever protects nothing, because the plural loader cannot read it for any consumer
+    either.
+
+    So it is moved aside, not trusted and not destroyed: the bytes survive under a dated name,
+    publication proceeds on properly observed evidence, and the quarantine is announced. The
+    valid-prior control below is what keeps this from becoming an overwrite.
+    """
+
+    write_receipt = runpy.run_path(str(SCRIPT))["write_receipt"]
+    from shared.platform_capability_receipts import load_platform_capability_receipt
+
+    out = tmp_path / "receipts"
+    out.mkdir()
+    (out / "glmcp.json").write_text(stored)
+    at = datetime(2026, 9, 5, tzinfo=UTC) + timedelta(seconds=10)
+    surface = {
+        "status": "observed",
+        "source": "test",
+        "observed_at": at,
+        "stale_after": "900s",
+        "evidence_refs": ["relay-receipt:glmcp.review.direct:present"],
+    }
+    from shared.platform_capability_receipts import SurfaceEvidence
+
+    published = write_receipt(_receipt_for(SurfaceEvidence.model_validate(surface), at), out)
+
+    assert published is not None, "properly observed evidence must still reach disk"
+    assert load_platform_capability_receipt(out / "glmcp.json").quota.status.value == "observed"
+    kept = sorted(path for path in out.iterdir() if "unreadable" in path.name)
+    assert len(kept) == 1, kept
+    assert kept[0].read_text() == stored, "the unreadable bytes are preserved, never discarded"
+    assert "unreadable_receipt_quarantined" in capsys.readouterr().err
+
+
+def test_a_readable_older_receipt_is_still_retained(tmp_path: Path, capsys) -> None:
+    """The control for the row above: a prior this loader CAN read still orders publication."""
+
+    write_receipt = runpy.run_path(str(SCRIPT))["write_receipt"]
+    from shared.platform_capability_receipts import (
+        SurfaceEvidence,
+        load_platform_capability_receipt,
+    )
+
+    out = tmp_path / "receipts"
+    base = datetime(2026, 9, 5, tzinfo=UTC)
+    newer = SurfaceEvidence.model_validate(
+        {
+            "status": "observed",
+            "source": "test",
+            "observed_at": base + timedelta(seconds=30),
+            "stale_after": "900s",
+            "evidence_refs": ["relay-receipt:glmcp.review.direct:present"],
+        }
+    )
+    older = newer.model_copy(update={"observed_at": base + timedelta(seconds=5)})
+    write_receipt(_receipt_for(newer, base + timedelta(seconds=30)), out)
+    assert write_receipt(_receipt_for(older, base + timedelta(seconds=5)), out) is None
+    stored = load_platform_capability_receipt(out / "glmcp.json")
+    assert stored.quota.observed_at == base + timedelta(seconds=30)
+    assert not [path for path in out.iterdir() if "unreadable" in path.name]
+    assert "stale_observation_not_published" in capsys.readouterr().err
+
+
 def test_an_unloadable_receipt_directory_is_not_accepted(tmp_path: Path) -> None:
     home = tmp_path / "home"
     (home / ".cache" / "hapax").mkdir(parents=True)

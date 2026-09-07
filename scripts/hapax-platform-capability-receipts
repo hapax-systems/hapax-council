@@ -659,20 +659,37 @@ def observe_quota(
         # No fresh receipt for any route: the producer wrote nothing — receipt absent. Receipts
         # present but the validated ledger unreadable: telemetry unknown. Receipts present and the
         # ledger readable but not fresh for those routes: the admission is absent per the ledger.
+        telemetry_unknown = bool(best_by_route) and not ledger_readable
         reason = (
-            "quota_telemetry_unknown"
-            if best_by_route and not ledger_readable
-            else "account_live_quota_receipt_absent"
+            "quota_telemetry_unknown" if telemetry_unknown else "account_live_quota_receipt_absent"
         )
         unobserved_refs = [f"local:{platform}:quota-probe:unobservable"]
-        if best_by_route and not ledger_readable:
+        if telemetry_unknown:
             unobserved_refs.append(
                 f"quota-spend-ledger:{display_path(QUOTA_LEDGER_LIVE)}:unreadable"
             )
+        # **A failed observation is dated by what it examined, not by when it failed.** Two
+        # distinct facts were sharing one timestamp rule. `account_live_quota_receipt_absent` is
+        # an absence this run really did observe at `now` — the producer wrote nothing, or the
+        # readable ledger says the admission is gone — and a later negative like that must still
+        # be able to supersede an earlier renewal, which `observation_supersedes` allows.
+        # `quota_telemetry_unknown` is the other fact: the relay admissions ARE here and the
+        # validated ledger could not be read, so this run established nothing about the quota at
+        # `now`. Dating it `now` let a stale ledger revoke a positive built from the very same
+        # admissions — measured by the coordinator on 2026-09-07: a positive at t=5 published,
+        # then a t=6 run with a stale ledger stamped UNOBSERVABLE at t=6 and superseded it, and a
+        # later run's identical positive was then refused as older. Dating it by the same
+        # admissions the positive path uses (their oldest observation, as there) makes the two
+        # readings of one admission set tie, and the existing equal-time rule keeps the positive.
+        observed_at = (
+            min(observed for observed, _doc, _path in best_by_route.values())
+            if telemetry_unknown
+            else now
+        )
         return surface_evidence(
             status=EvidenceStatus.UNOBSERVABLE,
             source="local_receipt_probe",
-            observed_at=now,
+            observed_at=observed_at,
             stale_after="15m",
             evidence_refs=unobserved_refs,
             reason_codes=[reason],
@@ -969,7 +986,33 @@ def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path
         receipt_dir.mkdir(parents=True, exist_ok=True)
         path = receipt_dir / f"{receipt.platform}.json"
         # Re-read AFTER flock, including for an observation built before another producer ran.
-        previous = load_platform_capability_receipt(path) if path.exists() else None
+        previous = None
+        if path.exists():
+            try:
+                previous = load_platform_capability_receipt(path)
+            except PlatformCapabilityReceiptError as exc:
+                # **Unreadable is a third fact, and it was being handled as neither.** The raise
+                # escaped `write_receipt`, so a single corrupt file — the coordinator reproduced
+                # it with a `glmcp.json` containing one `{` — stopped this platform's receipt
+                # from ever being regenerated, and the broken bytes stayed in place while every
+                # later run failed the same way. A file that cannot be parsed supplies no
+                # ordering evidence: it cannot show it is newer, and refusing forever protects
+                # nothing, because the plural loader cannot read it for any consumer either.
+                #
+                # So it is moved aside rather than trusted or destroyed. The bytes are preserved
+                # under a dated name for whoever has to explain them, publication proceeds on
+                # properly observed evidence, and the quarantine is announced rather than
+                # silent. This is not a fallback that widens: it does less, because it stops
+                # treating an unreadable file as a prior observation at all.
+                quarantine = path.with_name(
+                    f"{path.name}.unreadable-{receipt.observed_at:%Y%m%dT%H%M%SZ}"
+                )
+                os.replace(path, quarantine)
+                print(
+                    f"hapax-platform-capability-receipts: unreadable_receipt_quarantined "
+                    f"platform={receipt.platform}; moved to {display_path(quarantine)}; {exc}",
+                    file=sys.stderr,
+                )
         if previous is not None and not observation_supersedes(receipt, previous):
             print(
                 f"hapax-platform-capability-receipts: stale_observation_not_published "
