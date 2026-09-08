@@ -518,6 +518,25 @@ COMPREHENSION_NEVER_RUNS = (
         "consumed_body_conditional_arm",
         "[open('artifacts/never.json', 'w', closefd=False) if x else None for x in [False]]",
     ),
+    # `shadow is None` means NOT ESTABLISHED. The function table answers about DEFINITIONS, so a
+    # rebinding by import alias or plain assignment left the name looking unshadowed and the
+    # predicate spent that as proof. Neither of these defines a function anywhere.
+    (
+        "consumer_name_rebound_by_import_alias",
+        "from builtins import iter as list\n"
+        "list(open('artifacts/never.json', 'w', closefd=False) for _ in [1])",
+    ),
+    (
+        "consumer_name_rebound_by_assignment",
+        "list = iter\nlist(open('artifacts/never.json', 'w', closefd=False) for _ in [1])",
+    ),
+    # The call FORM matters as well as the callee and the slot: `max` with two positionals
+    # compares the objects and iterates neither.
+    (
+        "max_compares_two_generators_without_iterating",
+        "max((open('artifacts/never.json', 'w', closefd=False) for _ in [1]), "
+        "(x for x in [1]), key=id)",
+    ),
     # POSITION, not just callee. A proven consumer iterates its FIRST POSITIONAL argument and
     # nothing else, so neither of these iterates anything — and neither shadows a builtin, which
     # is what makes them independent of the shadowing rows above.
@@ -542,39 +561,28 @@ COMPREHENSION_NEVER_RUNS = (
         "filter_from_a_comparison",
         "[open('artifacts/never.json', 'w', closefd=False) for _ in [1] if 1 == 2]",
     ),
-)
-
-#: Named gap, not silence. `def empty(): return []` supplying a comprehension's iterable is the
-#: third shape in codex's 2026-09-08 filter/iterable critical, and it is the one still open. The
-#: clause now asks the resolver — measured — and the resolver still answers "not established"
-#: for this helper, while `def stop(): return False` in the filter position resolves. So the gap
-#: is in the helper-return channel rather than in the clause handler I repaired: `_literal_operand`
-#: folds a bare `[]` correctly, and JSON round-trips a list, so the break is somewhere between
-#: `_helper_return_summary` registering a list-returning helper and `_returned_constant` reading
-#: it back. Carried as a strict xfail so it fails the moment it starts working, rather than
-#: sitting green: the same marker caught the frame row's repair the moment it landed today.
-COMPREHENSION_NEVER_RUNS_OPEN = (
+    # The three shapes that were carried as a strict xfail one commit ago, now closed by
+    # withholding rather than by resolving each one. They differ in WHY the clause could not be
+    # decided — a list-returning helper the constant channel does not carry, a name bound to an
+    # empty literal, and a helper whose `not True` is a UnaryOp nothing folds — and that is the
+    # point: three separate resolution gaps, one rule. **Unresolved is not permission.**
     (
         "iterable_from_a_constant_helper",
         "def empty():\n"
         "    return []\n"
         "[open('artifacts/never.json', 'w', closefd=False) for _ in empty()]",
     ),
+    (
+        "iterable_from_a_bound_empty_name",
+        "items = []\n[open('artifacts/never.json', 'w', closefd=False) for _ in items]",
+    ),
+    (
+        "filter_from_a_helper_returning_not_true",
+        "def stop():\n"
+        "    return not True\n"
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in [1] if stop()]",
+    ),
 )
-
-
-@pytest.mark.xfail(strict=True, reason="open: list-returning helper not resolved by the channel")
-@pytest.mark.parametrize(
-    ("name", "body"),
-    COMPREHENSION_NEVER_RUNS_OPEN,
-    ids=[row[0] for row in COMPREHENSION_NEVER_RUNS_OPEN],
-)
-def test_a_comprehension_body_that_never_runs_certifies_nothing_open(gate, tmp_path, name, body):
-    writers, orphans = observed(
-        gate, tmp_path, f"{body}\nPath('artifacts/never.json').read_text()\n"
-    )
-    assert writers == set(), f"{name}: certified a writer whose comprehension body never runs"
-    assert "artifacts/never.json" in orphans, f"{name}: the orphan reader must survive"
 
 
 @pytest.mark.parametrize(

@@ -3502,6 +3502,14 @@ def _call_consumes_generator_argument(
         return False
     if not isinstance(path_functions, PathFunctionTable) or path is None:
         return False
+    # **`shadow is None` means NOT ESTABLISHED, and spending it as proof is the same collapse
+    # this predicate was written to repair.** The table answers about function DEFINITIONS, so
+    # it says nothing about `from builtins import iter as list` or a bare `list = iter` — both
+    # of which certified a phantom writer while Python iterated nothing (review finding, codex,
+    # at `4d13c27c8`). A rebinding of any kind means the name is not the builtin, whether or not
+    # this scanner can say what it is instead.
+    if func.id in _import_aliases(values) or func.id in values:
+        return False
     shadow = path_functions.resolve(
         func.id, path, _lexical_scope(values), _import_aliases(values), retain_uncertain=True
     )
@@ -4136,10 +4144,20 @@ class _BlockScanner:
                 # writer without shadowing anything (review finding, codex, at `5e5331e7c`).
                 # Marking every argument of a proven consumer was a second name-shaped
                 # over-approximation sitting behind the first one I had just repaired.
+                # `min`/`max` iterate ONE positional argument and COMPARE several: with two
+                # generators and a `key=`, Python compares the objects and iterates neither, so
+                # the first-positional rule certified a phantom on its own (review finding,
+                # codex, at `4d13c27c8`). The call FORM decides, not just the callee and the
+                # slot — a third thing the name alone was standing in for.
                 if (
                     isinstance(argument, ast.GeneratorExp)
                     and node.args
                     and argument is node.args[0]
+                    and not (
+                        isinstance(node.func, ast.Name)
+                        and node.func.id in {"min", "max"}
+                        and len(node.args) > 1
+                    )
                     and states
                     and all(
                         _call_consumes_generator_argument(
@@ -4341,10 +4359,31 @@ class _BlockScanner:
                 # iterable that produces no element.
                 # Resolver here too: `def empty(): return []` supplying the iterable is the same
                 # case as the filter above, and was named in the same finding.
-                known, constant = _literal_operand(generator.iter, self._constant_resolver(inner))
+                iterable_probe = generator.iter
+                if isinstance(iterable_probe, ast.Name) and iterable_probe.id in self.literal_names:
+                    iterable_probe = self.literal_names[iterable_probe.id]
+                known, constant = _literal_operand(iterable_probe, self._constant_resolver(inner))
+                if not known:
+                    # **UNRESOLVED IS NOT PERMISSION.** Leaving `body_runs` enabled here meant an
+                    # iterable this scanner cannot evaluate certified everything inside it — and
+                    # `def empty(): return []`, `items = []` and a helper returning `not True`
+                    # each did exactly that while Python called nothing (review findings, codex
+                    # and claude, at `4d13c27c8`). The deliverable's claim is that no certified
+                    # producer is a wrong file, so the unresolved case must cost a wildcard
+                    # rather than a certification.
+                    #
+                    # Recorded, not silent: the uncertainty is what distinguishes withholding
+                    # from having quietly decided the other way.
+                    body_runs = False
+                    self.unresolved[0] += 1
+                    if isinstance(self.path_functions, PathFunctionTable):
+                        self.path_functions.unresolved_paths.add(
+                            f"{self.path}:{node.lineno}:{node.col_offset}: comprehension "
+                            f"iterable not resolvable expression={ast.unparse(generator.iter)}"
+                        )
+                    continue
                 if (
-                    known
-                    and isinstance(constant, (list, tuple, set, frozenset, dict, str, bytes))
+                    isinstance(constant, (list, tuple, set, frozenset, dict, str, bytes))
                     and len(constant) == 0
                 ):
                     body_runs = False
@@ -4377,7 +4416,21 @@ class _BlockScanner:
                         )
                         if outcome is not None:
                             known, constant = True, outcome
-                    if known and not constant:
+                    if not known:
+                        # Same rule as the iterable above: an unresolved GUARD is not permission
+                        # to certify what it guards. `def stop(): return not True` reproduced a
+                        # phantom writer through it — the helper's `not True` is a UnaryOp the
+                        # constant channel does not fold, so the resolver answered "not
+                        # established" and the filter admitted anyway.
+                        body_runs = False
+                        self.unresolved[0] += 1
+                        if isinstance(self.path_functions, PathFunctionTable):
+                            self.path_functions.unresolved_paths.add(
+                                f"{self.path}:{node.lineno}:{node.col_offset}: comprehension "
+                                f"filter not resolvable expression={ast.unparse(condition)}"
+                            )
+                        break
+                    if not constant:
                         body_runs = False
                         break
             if body_runs:
@@ -4693,6 +4746,29 @@ class _BlockScanner:
                 self._bind(target, None, states)
             return states
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            # Remember a name bound to a FOLDABLE literal, so a comprehension whose iterable or
+            # filter is that bare name can be decided by the same constant machinery as the
+            # literal spelling. Withholding on every unresolved iterable is correct and too
+            # blunt on its own: it turned `items = [1]` — a real producer with a committed twin
+            # — into a lost certification, while `items = []` needed the withholding. Resolving
+            # what CAN be resolved is the other half of the same instruction, and it makes the
+            # two cases differ by their value rather than by their spelling.
+            for target in (
+                statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+            ):
+                if not isinstance(target, ast.Name):
+                    continue
+                # `x: int` is an AnnAssign with NO value, and binding None here reached
+                # `ast.unparse` through the substitution and crashed the real-tree scan. An
+                # annotation without a value binds nothing at runtime either.
+                if statement.value is None:
+                    self.literal_names.pop(target.id, None)
+                    continue
+                known, _ = _literal_operand(statement.value)
+                if known:
+                    self.literal_names[target.id] = statement.value
+                else:
+                    self.literal_names.pop(target.id, None)
             assigned: list[dict[str, str]] = []
             for state in states:
                 targets = (

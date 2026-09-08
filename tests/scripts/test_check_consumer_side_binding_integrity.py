@@ -2355,7 +2355,21 @@ def test_round_ten_ordered_outer_effects_without_walrus(gate, tmp_path, expressi
     assert {a.pattern for a in accesses if a.action == "write" and a.bounded} == {
         "artifacts/old.json"
     }
-    assert unresolved == 0
+    # The comprehension row now carries ONE named uncertainty, and the other two carry none.
+    #
+    # This clause used to read `unresolved == 0` for all three. That was accurate only while an
+    # unresolved comprehension iterable silently permitted certification; three reviewer
+    # families independently found that shape admitting phantom writers, and the repair is that
+    # an iterable this scanner cannot evaluate withholds and RECORDS why. `configure()` returns
+    # a list the constant channel does not carry, so this row's iterable is genuinely
+    # unresolved and the scanner now says so instead of proceeding.
+    #
+    # **The subject of this round-ten control is unaffected**: the ordered outer effect still
+    # binds the write to `old.json`, which is what the row exists to pin, and that assertion is
+    # untouched above. Only the claim that the scanner had NO gap on this input changed, and it
+    # changed because the claim was false.
+    expected_unresolved = 1 if expression.startswith("write_state(ARTIFACT, [") else 0
+    assert unresolved == expected_unresolved
     assert not _unwritten(gate.analyse_consumer_side(tmp_path, []))
 
 
