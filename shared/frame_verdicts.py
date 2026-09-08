@@ -1375,15 +1375,22 @@ def resolve_scope_ref(ref: str, *, council_root: Path, vault_root: Path) -> tupl
         # other instance of this family made a surface smaller; this one moves the question to
         # another checkout entirely, which is why it is worth naming separately.
         #
-        # `is_symlink` is left native deliberately: it answers about the LINK rather than its
-        # target, so an unreadable target is not its concern, and it is only consulted when
-        # `_classified_exists` has already answered False without raising.
+        # **`is_symlink` is asked FIRST, and the order is the whole repair.** It is `lstat`-based
+        # so it answers about the LINK rather than its target and cannot fault on an unreadable
+        # target. Putting the unsuppressed read first — as I did on the previous attempt —
+        # raises on a genuinely self-referential link before `is_symlink` is ever consulted,
+        # which replaced the specific "names the link and its target" refusal with the generic
+        # anchor one. A committed row caught that, and it is the same pre-empting-a-better-
+        # diagnosis mistake as the scope-side over-conversion earlier today.
+        #
+        # So: a link anchors on being a link, and only a NON-link candidate is stat-ed — where
+        # an unreadable answer is genuinely unknown rather than a decided negative.
         try:
             base = next(
                 (
                     b
                     for b in (council_root, vault_root)
-                    if _classified_exists(b / first) or (b / first).is_symlink()
+                    if (b / first).is_symlink() or _classified_exists(b / first)
                 ),
                 council_root,
             )
