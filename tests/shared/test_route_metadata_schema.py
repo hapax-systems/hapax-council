@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import date
 from pathlib import Path
 
@@ -986,6 +987,26 @@ def test_scope_refs_differing_only_in_whitespace_bind_to_distinct_evidence(tmp_p
 
     assert bound == [str(first), str(second), str(plain)]
     assert len(set(bound)) == 3, "three declared subjects must bind to three distinct artifacts"
+
+    # **The HASH, not only the path.** As first written this row checked paths alone, and a
+    # reviewer executed it with every mutation-scope source hash replaced by the hash of
+    # unrelated bytes: it still passed. The amended acceptance predicate requires an exact
+    # source-hash comparison, so a row that discards the digest does not discharge it — the
+    # digest is the whole reason two whitespace-differing names must stay distinct subjects.
+    refs = {
+        ref.artifact_path: ref
+        for ref in build_demand_vector(frontmatter).source_refs
+        if ref.source_id.startswith("mutation_scope_ref_")
+    }
+    for declared in (first, second, plain):
+        expected = "sha256:" + hashlib.sha256(declared.read_bytes()).hexdigest()
+        assert refs[str(declared)].hash == expected, (
+            f"{declared.name!r}: the digest must be taken over THIS file's bytes"
+        )
+    assert len({ref.hash for ref in refs.values()}) == 3, (
+        "distinct content must produce distinct digests; equal ones would let a digest bound to "
+        "one declaration match another"
+    )
 
 
 def test_the_resolver_has_one_drop_rule_and_it_is_the_path_shape(tmp_path) -> None:
