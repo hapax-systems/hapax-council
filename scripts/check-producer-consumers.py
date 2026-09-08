@@ -1442,7 +1442,9 @@ def _conditional_expr_variants(node: ast.expr | None) -> tuple[list[ast.expr], b
     return resolved, truncated
 
 
-def _reachable_alternatives(conditional: ast.expr) -> tuple[ast.expr, ...]:
+def _reachable_alternatives(
+    conditional: ast.expr, resolve: _ConstantResolver | None = None
+) -> tuple[ast.expr, ...]:
     """Which arms of a conditional can actually be evaluated — ONE decision, every caller.
 
     This exists because writing the decision twice is exactly how it went wrong. Reachability
@@ -1453,17 +1455,19 @@ def _reachable_alternatives(conditional: ast.expr) -> tuple[ast.expr, ...]:
     it in several places.
     """
     if isinstance(conditional, ast.IfExp):
-        known, constant = _literal_operand(conditional.test)
+        known, constant = _literal_operand(conditional.test, resolve)
         if known:
             return (conditional.body,) if constant else (conditional.orelse,)
         return (conditional.body, conditional.orelse)
     assert isinstance(conditional, ast.BoolOp)
     if isinstance(conditional.op, ast.Or):
-        return _reachable_or_operands(tuple(conditional.values))
+        return _reachable_or_operands(tuple(conditional.values), resolve)
     return tuple(conditional.values)
 
 
-def _reachable_or_operands(values: tuple[ast.expr, ...]) -> tuple[ast.expr, ...]:
+def _reachable_or_operands(
+    values: tuple[ast.expr, ...], resolve: _ConstantResolver | None = None
+) -> tuple[ast.expr, ...]:
     """Which operands of an ``or`` can actually be its value.
 
     ``a or b or c`` yields the first truthy operand, or the last one if none is truthy. So a
@@ -1473,7 +1477,7 @@ def _reachable_or_operands(values: tuple[ast.expr, ...]) -> tuple[ast.expr, ...]
     """
     reachable: list[ast.expr] = []
     for index, value in enumerate(values):
-        known, constant = _literal_operand(value)
+        known, constant = _literal_operand(value, resolve)
         last = index == len(values) - 1
         if known and not constant and not last:
             continue  # a falsy constant is never what `or` returns
@@ -3261,7 +3265,12 @@ def _fork(states: list[dict[str, str]]) -> list[dict[str, str]]:
     return [dict(state) for state in states]
 
 
-def _literal_operand(node: ast.expr) -> tuple[bool, object]:
+_ConstantResolver = Callable[[ast.Call], tuple[bool, object]]
+
+
+def _literal_operand(
+    node: ast.expr, resolve: _ConstantResolver | None = None
+) -> tuple[bool, object]:
     """``(True, value)`` when the operand is a compile-time constant, else ``(False, None)``.
 
     `ast.literal_eval` is NOT a sufficient test on its own. It special-cases ``set()`` —
@@ -3285,6 +3294,16 @@ def _literal_operand(node: ast.expr) -> tuple[bool, object]:
     if isinstance(node, ast.Constant):
         return True, node.value
     if any(isinstance(item, ast.Call) for item in ast.walk(node)):
+        # A call is still refused BY DEFAULT, and the paragraph above is why. `resolve` is the
+        # one exception, supplied only by the walker, which alone holds the binding table this
+        # question needs: a call to a UNIQUELY BOUND helper whose return is a constant is not
+        # "a name that could be anything at all" — it is a value the existing summary machinery
+        # already computes for path resolution. Nothing is evaluated and no source is executed.
+        #
+        # Restricted to a node that IS a call, never one that merely contains one: the summary
+        # answers "what does this helper return", not "what does this expression evaluate to".
+        if resolve is not None and isinstance(node, ast.Call):
+            return resolve(node)
         return False, None
     try:
         return True, ast.literal_eval(node)
@@ -3292,7 +3311,9 @@ def _literal_operand(node: ast.expr) -> tuple[bool, object]:
         return False, None
 
 
-def _boolop_stops_after(op: ast.boolop, value: ast.expr) -> bool | None:
+def _boolop_stops_after(
+    op: ast.boolop, value: ast.expr, resolve: _ConstantResolver | None = None
+) -> bool | None:
     """Does this operand decide an ``and``/``or``? ``True`` stops, ``False`` continues.
 
     ``None`` means only the runtime knows, and the analysis keeps both continuations as
@@ -3306,9 +3327,12 @@ def _boolop_stops_after(op: ast.boolop, value: ast.expr) -> bool | None:
     a scanner start certifying files nothing ever writes.
 
     Deciding is reserved for a compile-time constant, where one alternative is not merely
-    unlikely but impossible.
+    unlikely but impossible — or, when `resolve` is supplied, for a call to a uniquely bound
+    helper whose constant return the existing summary machinery already computes. That is the
+    same standard, not a weaker one: a helper with one binding and a constant return has one
+    value, and refusing to read it is what left the shadowed-call case certifying a phantom.
     """
-    known, constant = _literal_operand(value)
+    known, constant = _literal_operand(value, resolve)
     if not known:
         return None
     return not constant if isinstance(op, ast.And) else bool(constant)
@@ -3952,6 +3976,50 @@ class _BlockScanner:
             )[0]
             self.path_functions.helper_results.clear()
 
+    def _constant_resolver(self, states: list[dict[str, str]]) -> _ConstantResolver:
+        """Let a conditional read a uniquely bound helper's constant return, through the EXISTING
+        `_returned_constant`/`_helper_return_summary` machinery.
+
+        This is the seam the shadowed-`set()` defect needs. `_literal_operand` refuses every call
+        because a name resolved from the enclosing module could be anything — true of a bare
+        name, and NOT true of a call whose helper this scanner has already summarised. The walker
+        is the only place holding the binding table that answers it, so the resolver is passed
+        down rather than a pure AST helper reaching for the table.
+
+        **Every state must agree.** `states` is a DISJUNCTION, and a call can summarise
+        differently under different bindings; taking the first would decide one branch on the
+        strength of one arm of an earlier one. Disagreement, or any state that cannot answer,
+        yields `(False, None)` — exactly the current behaviour — so this only narrows
+        uncertainty and never invents a decision.
+
+        Nothing is evaluated and no estate source is executed: the summary reads a return
+        expression registration already parsed.
+        """
+
+        def resolve(node: ast.Call) -> tuple[bool, object]:
+            answers: list[tuple[bool, object]] = []
+            for values in states or [{}]:
+                try:
+                    answers.append(
+                        _returned_constant(
+                            node,
+                            self.path,
+                            values,
+                            self.path_functions,
+                            repo_root=self.repo_root,
+                        )
+                    )
+                except RecursionError:
+                    return False, None
+            if not answers or not all(known for known, _ in answers):
+                return False, None
+            first = answers[0][1]
+            if all(type(value) is type(first) and value == first for _, value in answers):
+                return True, first
+            return False, None
+
+        return resolve
+
     def _scan_expression(self, node: ast.AST, states: list[dict[str, str]]) -> None:
         if isinstance(node, ast.FormattedValue):
             self._scan_expression(node.value, states)
@@ -3990,7 +4058,7 @@ class _BlockScanner:
             return
         if isinstance(node, ast.IfExp):
             self._scan_expression(node.test, states)
-            reachable = _reachable_alternatives(node)
+            reachable = _reachable_alternatives(node, self._constant_resolver(states))
             if len(reachable) == 1:
                 # A constant test decides the arm, so the other one is never evaluated — and
                 # scanning it does more than blur a binding, it CLASSIFIES its calls. Reported
@@ -4022,7 +4090,7 @@ class _BlockScanner:
                 # no reachable stop and is skipped; in `Compare`, `decided is True` means the
                 # chain CONTINUES, so it is the True case that has no reachable stop. Both
                 # reduce to the one sentence above; neither may be inverted on its own.
-                decided = _boolop_stops_after(node.op, value)
+                decided = _boolop_stops_after(node.op, value, self._constant_resolver(continued))
                 if decided is not False or index == len(node.values) - 1:
                     alternatives.extend(_fork(continued))  # stopping here is reachable
                 if decided is True:

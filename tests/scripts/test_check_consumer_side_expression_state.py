@@ -335,18 +335,31 @@ def test_a_shadowed_set_call_is_not_a_falsy_constant(gate, tmp_path):
         tmp_path,
         helper + "open(value(), 'w', closefd=False)\nPath('artifacts/actual.json').read_text()",
     )
-    # The finding is specifically that the scanner certified `wrong.json` — the arm Python does
-    # NOT take — and suppressed the orphan reader of the file that really is written. So that is
-    # what this forbids, and only that.
+    # TIGHTENED 2026-09-08. This row used to assert only `writers != {"artifacts/wrong.json"}`,
+    # which PERMITS `{wrong, actual}` — and all four reviewer families reported that as still
+    # allowing the phantom the row was written to forbid. They were right, and the harm is
+    # measurable rather than theoretical: with a reader of `wrong.json` present, certifying it
+    # suppressed the `consumer-reads-unwritten-artifact` finding entirely, so a real orphan
+    # disappeared behind a file nothing writes.
     #
-    # A shadowed call is genuinely unknowable, so two other outcomes are both acceptable and the
-    # scanner produces each depending on scope: keeping both arms (module scope, the estate's
-    # ordinary treatment of an undecided condition) or withholding entirely (function scope, the
-    # safe direction). Asserting `actual in writers` instead would have demanded a resolution the
-    # scanner has no basis for, which is the opposite error.
-    assert writers != {"artifacts/wrong.json"}, "certified only the branch Python does not take"
-    if not writers:
-        assert actual in orphans, "withheld, so the reader of the written file stays an orphan"
+    # The old reasoning — that a shadowed call is unknowable, so both keeping both arms and
+    # withholding were acceptable — is superseded, not overruled by preference. The scanner now
+    # RESOLVES this case through the existing helper-summary machinery: `set` is uniquely bound
+    # here and returns a constant, so the walrus provably runs. Measured across all four cells
+    # of module/function scope x wrong-path/written-path reader.
+    #
+    # Withholding was not the safe direction either. At function scope it certified nothing, so
+    # `actual.json` — a file the program really does write — was reported as an orphan: a
+    # fabricated finding, which is the same defect pointed the other way.
+    assert "artifacts/wrong.json" not in writers, (
+        "certified a phantom writer; with a reader present it suppresses that reader's genuine "
+        "consumer-reads-unwritten-artifact finding"
+    )
+    assert actual in writers, (
+        "the arm Python takes is decidable here — `set` is uniquely bound with a constant "
+        "return — and withholding it fabricates an orphan for a file that IS written"
+    )
+    assert actual not in orphans
 
 
 def test_an_unreachable_conditional_arm_cannot_carry_an_effect(gate, tmp_path):
