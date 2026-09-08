@@ -2090,6 +2090,24 @@ def _refuse_unobservable_enumeration(root: Path, pattern: str) -> UndecidableSco
     return error
 
 
+#: **What the canonical-family conversions do and do not close, measured rather than claimed.**
+#:
+#: Every `canonical_*` classification is downstream of `_resolve_external_scope_path`, whose
+#: `resolve(strict=True)` does NOT suppress — so a steady fault raises there first, at the
+#: resolution, and never reaches the classifier. Reverting any of these three conversions
+#: (`ref_within_member`'s candidate, and the two in `_refuse_in_root_alias_reaching_surface`)
+#: leaves every control green, measured on each.
+#:
+#: What they close is the window between a successful resolve and a later stat — a real hazard
+#: with the same shape as the intermittent-enumeration finding, and one that existing controls
+#: cannot reach without injecting on call ORDINAL, which is the fragile approach that produced
+#: two rows earlier today that measured nothing.
+#:
+#: So they are kept as correct-in-principle and labelled UNPINNED, not presented as repairs.
+#: The discovery, identity, selected-file and canonical-forms conversions are different: those
+#: are pinned by controls that go red when reverted.
+
+
 def _classified_exists(entry: Path) -> bool:
     """``entry.exists()`` from an UNSUPPRESSED stat. Absence answers False; unreadable raises.
 
@@ -2588,8 +2606,14 @@ def _refuse_in_root_alias_reaching_surface(
         # Whether the canonical path is a file decides whether this returns without refusing, so
         # an unreadable answer here is not a negative one. Same family as the anchor and identity
         # reads; found by the method sweep rather than by a report.
+        #
+        # **And the sentence above was written beside a call that could not honour it.**
+        # `Path.is_file` suppresses the ignorable errnos and answers False, so the handler
+        # beneath never fired and an unreadable answer became exactly the negative one the
+        # comment forbids. I wrote that comment, naming this family, and used the suppressing
+        # method anyway — which is the same defect the comment describes, one line above itself.
         try:
-            canonical_is_file = canonical_path.is_file()
+            canonical_is_file = _classified_is_file(canonical_path)
         except (OSError, RuntimeError) as exc:
             raise _unresolved_scope_component(canonical_path, exc) from exc
         if canonical_is_file:
@@ -2674,7 +2698,11 @@ def _refuse_in_root_alias_reaching_surface(
                 )
         if ref_within_member(
             canonical_path,
-            canonical_pattern is not None or canonical_path.is_dir(),
+            # Decides WHICH containment question is asked, like the candidate classification in
+            # `ref_within_member` itself, so it reads the stat rather than the suppressing
+            # method. Unlike that one this site has no earlier strict resolution in front of it,
+            # so the hazard is reachable here.
+            canonical_pattern is not None or _classified_is_dir(canonical_path),
             member,
             scope_pattern=canonical_pattern,
         ):
