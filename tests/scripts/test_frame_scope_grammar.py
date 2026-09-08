@@ -2210,3 +2210,249 @@ def test_row_s2c_a_nul_in_a_declared_path_is_a_named_refusal(tmp_path, field):
     assert "NUL" in str(caught.value)
     assert f"location.{field}" in str(caught.value)
     assert caught.value.remedy
+
+
+def test_row_s2c2_a_nul_in_a_mass_exclusion_path_is_the_same_named_refusal(tmp_path):
+    """S2c2: the same `ValueError`, at the declaration site S2c did not reach.
+
+    Review finding (codex, 2026-09-08, `shared/frame_verdicts.py:480`): a mass EXCLUSION path
+    containing a NUL reaches `base.resolve()` under a handler that catches only `OSError` and
+    `RuntimeError`, so it raised `'lstat: embedded null character in path'` instead of
+    `FrameVerdictsUnavailable` — past the dispatcher's named refusal, next action and receipt.
+
+    S2c covers `location.roots` and `location.files` because those are where the first finding
+    landed. **The docstring that fix carries already names `ValueError` as the third type in
+    this family**, and a second site in the same file still met it uncaught — which is the part
+    worth keeping in front of the next reader: naming a family is not sweeping it, and the two
+    member fields were the two I had been shown rather than the set that exists.
+    """
+    member = {
+        "id": "legacy-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(tmp_path / "surface"), "patterns": ["*.txt"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("legacy-surface", "scope_exited")],
+        exclusions=[{"paths": ["/tmp/bad\x00exclusion.txt"]}],
+    )
+
+    with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
+        fv.load_frame_verdicts(procedure, now=NOW)
+
+    assert "NUL" in str(caught.value)
+    assert "mass exclusion" in str(caught.value)
+    assert caught.value.remedy
+
+
+class _EntryWithFailingIsDir:
+    """A `DirEntry` whose `is_dir()` raises, delegating everything else to the real one."""
+
+    def __init__(self, entry, error: OSError) -> None:
+        self._entry = entry
+        self._error = error
+
+    def __getattr__(self, name):
+        return getattr(self._entry, name)
+
+    def is_dir(self, *args, **kwargs):
+        raise self._error
+
+
+class _ScandirFaultingOneName:
+    """`os.scandir` replacement that faults `is_dir()` for one entry name only.
+
+    Written as a context manager because both callers use `with os.scandir(...) as entries`,
+    and `pathlib` reaches the same entries — which is the whole point of the row below: when
+    `Path.glob` suppresses the identical failure, there is no downstream diagnosis left to
+    defer to.
+    """
+
+    def __init__(self, name: str, error: OSError) -> None:
+        self._name = name
+        self._error = error
+        self._real = os.scandir
+
+    def __call__(self, path="."):
+        real_iter = self._real(path)
+        entries = []
+        with real_iter:
+            for entry in real_iter:
+                if entry.name == self._name:
+                    entries.append(_EntryWithFailingIsDir(entry, self._error))
+                else:
+                    entries.append(entry)
+        return _ScandirResult(entries)
+
+
+class _ScandirResult:
+    def __init__(self, entries) -> None:
+        self._entries = entries
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        return None
+
+    def __iter__(self):
+        return iter(self._entries)
+
+
+def test_row_s2h_a_fault_on_a_selected_component_is_recorded_not_deferred(tmp_path, monkeypatch):
+    """S2h: `is_dir()` failing on a component the pattern NAMES must refuse, not skip.
+
+    Review finding (codex, 2026-09-08, `shared/frame_verdicts.py:1865`), reproduced here: the
+    handler skipped the entry and a comment claimed the fault was "already diagnosed
+    downstream". **It is not, when `pathlib` suppresses the same failure** — `Path.glob` drops
+    the entry just as silently, the member surface comes back short, and the decayed hard link
+    is ADMITTED on missing filesystem evidence. A comment asserting a mitigation that does not
+    run is the same defect as no mitigation, stated more confidently.
+
+    The reason the skip was there is real but belongs to a different case. Raising on EVERY
+    component fault reddened ten committed dispatch controls, twice — but those are faults on
+    UNRELATED SIBLINGS, and the name match two lines above now excludes them. What reaches this
+    handler has already matched the declared segment, so it is a fault on a component the scope
+    actually traverses. Row S2e is the sibling case and must stay green; if this repair ever
+    reddens it, the name filter has been lost.
+
+    Codex's own arrangement: an `fs.glob` member rooted where `[s-s]bin/fsck.ext2` selects a
+    file through a directory alias, with the scope naming a hard link that shares its inode.
+    """
+    base = tmp_path / "base"
+    root = base / "usr"
+    real = root / "bin"
+    real.mkdir(parents=True)
+    selected = real / "fsck.ext2"
+    selected.write_bytes(b"e2fsck NEEDLE\n")
+    scope_alias = real / "e2fsck"
+    os.link(selected, scope_alias)
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+
+    member = {
+        "id": "aliased-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["[s-s]bin/fsck.ext2"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("aliased-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    readable = fv.scope_within_decayed(
+        [str(scope_alias)], verdicts, council_root=base, vault_root=base
+    )
+    assert readable.all_inside is True, (
+        "with everything readable the scope's hard link is inside the member through the alias"
+    )
+
+    monkeypatch.setattr(
+        os, "scandir", _ScandirFaultingOneName("sbin", OSError(40, "Too many levels of symlinks"))
+    )
+
+    with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+        fv.scope_within_decayed([str(scope_alias)], verdicts, council_root=base, vault_root=base)
+    assert "cannot enumerate" in str(caught.value)
+    assert caught.value.remedy
+
+
+@pytest.mark.parametrize(
+    ("reader", "patterns", "refuses"),
+    [
+        ("fs.glob", ["**/*.txt"], True),
+        ("fs.content_query", ["*.txt"], True),
+        ("fs.glob", ["readable/*.txt"], False),
+    ],
+    ids=["fs.glob-recursive", "content-query-recursive", "fs.glob-never-reaches-it"],
+)
+def test_row_s2g_an_interior_fault_in_the_member_enumeration_cannot_be_survived_by_a_sibling(
+    tmp_path, monkeypatch, reader, patterns, refuses
+):
+    """S2g: fault a directory BELOW the member root while a readable sibling still yields.
+
+    Review finding (glm, 2026-09-08, `shared/frame_verdicts.py:2490`): the member-side
+    enumeration was said to read only the root, so an unreadable interior directory would drop
+    the selected entry while the sibling's entries survived — a short surface, `all_inside`
+    False, and a decayed hard link admitted. The finding also observed that **no committed row
+    injected a mid-tree fault during the member enumeration** with a readable sibling present,
+    which was true, and is the reason this row exists whichever way the claim resolves.
+
+    The two recursive rows are the reproduction. They pass only because the guard is handed the
+    pattern the enumeration actually used — `rglob(p)` is `glob("**/" + p)`, and the `**` branch
+    walks the whole subtree with a per-directory `onerror`. Erase either half of that
+    correspondence and these two admit.
+
+    The third row is the must-NOT-refuse control, and it is what keeps this from being a blanket:
+    a pattern that never names the faulting directory must not be refused by it. Without that row
+    a "fix" that refuses on any unreadable corner of the tree would look correct here — the same
+    over-wide shape that reddened ten committed dispatch controls when `_children` asked
+    `is_dir()` before matching the name.
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    readable = root / "readable"
+    interior = root / "interior"
+    readable.mkdir(parents=True)
+    interior.mkdir(parents=True)
+    (readable / "keep.txt").write_bytes(b"sibling NEEDLE\n")
+    selected = interior / "selected.txt"
+    selected.write_bytes(b"selected NEEDLE\n")
+    elsewhere = base / "elsewhere"
+    elsewhere.mkdir()
+    alias = elsewhere / "alias.txt"
+    os.link(selected, alias)
+
+    if reader == "fs.content_query":
+        location = {"roots": [str(root)], "patterns": patterns, "query": "NEEDLE"}
+    else:
+        location = {"path": str(root), "patterns": patterns}
+    member = {
+        "id": "interior-fault-surface",
+        "reader": {"id": reader, "version": "^1.0.0"},
+        "location": location,
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("interior-fault-surface", "scope_exited")],
+    )
+    (procedure / "declaration/params.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "profile_id": "fixture",
+                "parameters": {
+                    "max_unit_bytes": {"value": 1 << 20, "why": "test bound"},
+                    "encoding_error_policy": {"value": "strict", "why": "test decoding"},
+                },
+            }
+        )
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    if refuses:
+        # With everything readable the alias really is inside, so the refusal below is about the
+        # fault and not about a member that never selected the file.
+        clean = fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+        assert clean.all_inside is True, "readable baseline must reach the selected file"
+
+    real_scandir = os.scandir
+
+    def refusing(path=".", *args, **kwargs):
+        if str(path).rstrip("/") == str(interior):
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", refusing)
+
+    if refuses:
+        with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+            fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+        assert "cannot enumerate" in str(caught.value)
+    else:
+        result = fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+        assert result.all_inside is False, (
+            "a pattern that never traverses the faulting directory must not be refused by it"
+        )

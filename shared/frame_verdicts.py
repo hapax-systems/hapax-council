@@ -463,6 +463,11 @@ def _exclusion_locations(
                     f"mass exclusion {index} contains a non-string or empty path; its effective "
                     "surface is undecidable"
                 )
+            _refuse_unrepresentable_path(
+                raw,
+                subject=f"mass exclusion {index} path",
+                repair=f"repair the path of mass exclusion {index}",
+            )
             prefix = raw.endswith("*")
             text = raw[:-1] if prefix else raw
             path = Path(text)
@@ -593,14 +598,29 @@ def _refuse_unrepresentable_declaration(raw: str, member: Mapping[str, Any], fie
     time: `OSError` for access, `RuntimeError` for expansion and loops, `ValueError` for
     unrepresentable spellings.
     """
+    _refuse_unrepresentable_path(
+        raw,
+        subject=f"member {member.get('id')!r} {field} entry",
+        repair=f"repair {field} for member {member.get('id')!r}",
+    )
+
+
+def _refuse_unrepresentable_path(raw: str, *, subject: str, repair: str) -> None:
+    """The NUL check itself, phrased by whichever declaration site is asking.
+
+    Split out because the reasoning above is about the declaration, not about members: a mass
+    EXCLUSION path is not a member field and had no such guard, so its `base.resolve()` raised
+    the same `ValueError` past a handler catching only `OSError` and `RuntimeError` and left the
+    dispatcher without its refusal, remedy or receipt (review finding, codex, at `f74f36cf6`).
+
+    That the docstring above already names ValueError as the third type in this family, while a
+    second site in the same file still met it uncaught, is the point worth keeping: naming a
+    family is not the same as having swept it.
+    """
     if "\x00" in raw:
         raise FrameVerdictsUnavailable(
-            f"member {member.get('id')!r} {field} entry {raw!r} contains a NUL, which no "
-            "filesystem path can represent",
-            remedy=(
-                f"repair {field} for member {member.get('id')!r} in {MASS_DECLARATION_LOCATION}; "
-                + PRODUCER_REMEDY
-            ),
+            f"{subject} {raw!r} contains a NUL, which no filesystem path can represent",
+            remedy=(f"{repair} in {MASS_DECLARATION_LOCATION}; " + PRODUCER_REMEDY),
         )
 
 
@@ -1785,8 +1805,30 @@ def _scope_intersects_exclusions(
     return False
 
 
-def _require_scannable(root: Path, pattern: str) -> None:
+def _require_scannable(root: Path, pattern: str, *, component_faults_recorded: bool) -> None:
     """Refuse when the directories a glob must read cannot be read.
+
+    ``component_faults_recorded`` is REQUIRED, with no default, because the two enumerations this
+    guards need opposite answers and a default would silently give a new call site the wrong one:
+
+    * **The member enumeration passes True.** Nothing downstream of it diagnoses a fault on a
+      selected component: `Path.glob` suppresses the same `DirEntry.is_dir()` failure, so the
+      entry leaves the member's surface with no trace, the comparison is made against a short
+      surface, and a decayed hard link is ADMITTED (review finding, codex, at `f74f36cf6`,
+      reproduced with `[s-s]bin/fsck.ext2` over a directory alias; row S2h). An earlier comment
+      here asserted that such a fault was "already diagnosed downstream" — it is not, on this
+      path, and a comment asserting a mitigation that does not run is the same defect as no
+      mitigation.
+    * **The scope expansions pass False.** They DO resolve every component explicitly afterwards,
+      through `_canonical_path_forms` and `_resolve_scope_directory_prefix`, and that refusal is
+      strictly better: it names the declared scope ref and the member root the operator must act
+      on, where this function can only name a root and a pattern. Recording here pre-empts it and
+      loses the ref — measured, as the `unresolved-directory` dispatch control going red on a
+      self-referential `lbin` symlink.
+
+    The difference is structural, not a belief about runtime state: one enumeration resolves its
+    components and one does not. Splitting is what the third fallback rule prescribes for a
+    handler whose single flag was standing in for two distinct conditions.
 
     **`Path.glob` and `Path.rglob` SUPPRESS the scan errors underneath them.** `os.scandir`
     raising `PermissionError` on a directory yields no entries and no exception, so an unreadable
@@ -1862,17 +1904,14 @@ def _require_scannable(root: Path, pattern: str) -> None:
                     try:
                         if not entry.is_dir():
                             continue
-                    except OSError:  # noqa: PERF203
-                        # A fault on a selected COMPONENT — a symlink loop, a dangling link — is
-                        # already diagnosed downstream, by a refusal that names the scope ref and
-                        # carries its own remedy. Skipping here lets that reach the caller intact;
-                        # raising instead replaced it with a worse message and reddened ten
-                        # committed dispatch controls, twice, in two different ways.
-                        #
-                        # This function's job is the narrow one nothing else can do: tell an EMPTY
-                        # enumeration apart from an UNREADABLE DIRECTORY, because `Path.glob`
-                        # returns the same thing for both and says nothing. Component faults are
-                        # not that case and are not its business.
+                    except OSError as exc:  # noqa: PERF203
+                        # A fault on a component the pattern NAMES — the name match two lines up
+                        # has already run, so an unrelated sibling never reaches here. Whether
+                        # losing it is survivable depends entirely on whether the caller resolves
+                        # its components afterwards, which is what the parameter states; see the
+                        # docstring for the two cases and the control that holds each.
+                        if component_faults_recorded:
+                            _record(exc)
                         continue
                     selected.append(Path(entry.path))
         except (OSError, RuntimeError) as exc:
@@ -2324,7 +2363,9 @@ def _check_member_symlinks(
         # surface is contained. pathlib uses the same traversal rules as the producer here.
         try:
             found = list(path.glob(scope_pattern))
-            _require_scannable(path, scope_pattern)
+            # Scope side: the declared components are resolved below, and that refusal names the
+            # ref. See `_require_scannable`'s docstring for why this half must not record.
+            _require_scannable(path, scope_pattern, component_faults_recorded=False)
             paths.extend(found)
         except (OSError, RuntimeError, ValueError) as exc:
             raise UndecidableScopeContainment(
@@ -2487,7 +2528,13 @@ def _canonical_member_entries_uncached(member: DecayedMember) -> dict[Path, Path
         for pattern in patterns:
             try:
                 entries = list(root.rglob(pattern) if content_query else root.glob(pattern))
-                _require_scannable(root, f"**/{pattern}" if content_query else pattern)
+                # Member side: nothing below resolves these components, so a lost one leaves a
+                # short surface and a silently weaker comparison. Row S2h holds it.
+                _require_scannable(
+                    root,
+                    f"**/{pattern}" if content_query else pattern,
+                    component_faults_recorded=True,
+                )
             except (OSError, RuntimeError, ValueError) as exc:
                 raise UndecidableScopeContainment(
                     f"cannot enumerate member pattern {pattern!r} below {root}: {exc}; "
@@ -2525,7 +2572,9 @@ def _canonical_scope_entries(
     """Expand in the producer tree before resolving every entry, including broken links."""
     try:
         entries = list(path.glob(pattern))
-        _require_scannable(path, pattern)
+        # Scope side, as above: `_resolve_scope_directory_prefix` diagnoses a component fault
+        # here with the ref in hand, so recording it would replace a better refusal with a worse.
+        _require_scannable(path, pattern, component_faults_recorded=False)
     except (OSError, RuntimeError, ValueError) as exc:
         raise UndecidableScopeContainment(
             f"cannot inspect scope glob {pattern!r} below {path}: {exc}; containment is undecidable"
