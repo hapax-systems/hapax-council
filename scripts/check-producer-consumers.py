@@ -4495,6 +4495,9 @@ class _BlockScanner:
                         f"{self.path}:{node.lineno}:{node.col_offset}: deferred generator "
                         f"body not scheduled here expression={ast.unparse(node)}"
                     )
+            # Where the target's value stops being known. Everything recorded from here on is a
+            # site whose reachability this scanner has not established, and is demoted below.
+            unreached_from: int | None = None
             for index, generator in enumerate(node.generators):
                 # Once nothing reaches this point, nothing LATER is evaluated either — not a
                 # subsequent generator's iterable, and not a filter after a false one. The
@@ -4583,7 +4586,28 @@ class _BlockScanner:
                     else:
                         self.literal_names[generator.target.id] = bound
                 if sized and len(constant) > 1 and _target_is_read_by(node, generator):
-                    body_runs = False
+                    # **THE BODY RUNS. What is unknown is the TARGET'S VALUE.** The source is a
+                    # resolved, non-empty literal, so Python enters the body once per element —
+                    # the uncertainty is only about which sub-expressions inside it are reached.
+                    # Refusing to scan at all confused those two, and the cost was measured:
+                    # `[x or Path(...).read_text() for x in [False, False]]` executes its READER
+                    # twice and the reader vanished from the report entirely, along with five
+                    # writers that really do run (review finding, codex, at `120d38d9b`, three
+                    # reader shapes; the writer shapes found while measuring it).
+                    #
+                    # So the region is scanned and its accesses are demoted to unbounded rather
+                    # than dropped. That is the existing channel for "a site exists here whose
+                    # reachability is not established" — certification already requires
+                    # `bounded`, and an orphan reader survives as evidence instead of
+                    # disappearing. **Withholding a producer is defensible; asserting that no
+                    # producer exists is not**, and silence was the second thing.
+                    #
+                    # NOT exact, and stated as such: with the elements known, the exact answer is
+                    # to scan the body once per element and union the results, the way the `for`
+                    # statement handler has always bound its literal elements. That is the
+                    # follow-on. This step is the sound one — it converts a silent loss into a
+                    # named uncertainty and cannot certify what the old code certified before the
+                    # withholding was added.
                     self.unresolved[0] += 1
                     if isinstance(self.path_functions, PathFunctionTable):
                         self.path_functions.unresolved_paths.add(
@@ -4591,7 +4615,8 @@ class _BlockScanner:
                             f"consulted over several resolved elements "
                             f"expression={ast.unparse(generator.iter)}"
                         )
-                    break
+                    if unreached_from is None:
+                        unreached_from = len(self.accesses)
                 if domain == SOURCE_UNDECIDED:
                     # **UNRESOLVED IS NOT PERMISSION.** Leaving `body_runs` enabled here meant an
                     # iterable this scanner cannot evaluate certified everything inside it — and
@@ -4690,6 +4715,14 @@ class _BlockScanner:
                     (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
                 ):
                     self._scan_expression(value, inner)
+            if unreached_from is not None:
+                # The demotion, applied once over everything the region recorded — the filters
+                # after the multi-element clause, every later clause, and the element expression,
+                # including any nested comprehension inside them. `bounded` is what certification
+                # requires, so this keeps each site as evidence without asserting it runs.
+                self.accesses[unreached_from:] = [
+                    replace(access, bounded=False) for access in self.accesses[unreached_from:]
+                ]
             self.literal_names = outer_literal_names
             # Otherwise the element expression is NOT scanned. Reported critical by glm at
             # `455612d07`: `[open('artifacts/never.json','w') for _ in []]`, a `if False`

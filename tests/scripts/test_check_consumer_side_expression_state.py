@@ -123,6 +123,21 @@ def observed(gate, tmp_path: Path, body: str) -> tuple[set[str], set[str]]:
     return writers, orphans
 
 
+def recorded(gate, tmp_path: Path, body: str) -> list:
+    """Every access as recorded, `bounded` included — not just the certified ones.
+
+    `observed` filters on `bounded`, which is the right question for certification and the wrong
+    one for "did this site survive at all". The distinction is the whole point of the rows below:
+    a site can be present-and-uncertain, and that is a different answer from absent.
+    """
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "example.py").write_text("from pathlib import Path\n" + body + "\n")
+    accesses, _, _, _ = gate.collect_artifact_accesses(tmp_path)
+    return list(accesses)
+
+
 @pytest.mark.parametrize(("name", "expression", "argument"), MATRIX, ids=[row[0] for row in MATRIX])
 def test_expression_result_and_binding_agree(gate, tmp_path, name, expression, argument):
     """The certified writer is what the helper returns when Python runs it.
@@ -903,6 +918,72 @@ def test_a_loop_statement_that_does_run_still_certifies(gate, tmp_path, name, bo
         body.format(write=write) + "Path('artifacts/never.json').read_text()\n",
     )
     assert writers == {"artifacts/actual.json"}, f"{name}: lost a producer that really runs"
+    assert "artifacts/never.json" in orphans
+
+
+# The multi-element withholding stopped scanning, not just stopped certifying, and a reader in
+# the body went with the writer. Python executes each of these readers twice.
+WITHHELD_REGION_READERS = (
+    (
+        "element_expression",
+        "[x or Path('artifacts/reader.json').read_text() for x in [False, False]]",
+    ),
+    ("filter", "[x for x in [False, False] if x or Path('artifacts/reader.json').read_text()]"),
+    (
+        "later_clause_iterable",
+        "[y for x in [False, False] for y in [x or Path('artifacts/reader.json').read_text()]]",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "body"), WITHHELD_REGION_READERS, ids=[row[0] for row in WITHHELD_REGION_READERS]
+)
+def test_a_reader_in_an_unreached_region_survives_as_evidence(gate, tmp_path, name, body):
+    """A reader Python really runs must not disappear because a WRITER could not be decided."""
+
+    reads = [
+        access
+        for access in recorded(gate, tmp_path, body)
+        if access.action == "read" and access.pattern == "artifacts/reader.json"
+    ]
+    assert reads, f"{name}: the reader vanished with the withheld writer"
+
+
+def test_an_undecided_writer_is_recorded_uncertain_rather_than_dropped(gate, tmp_path):
+    """Withholding a producer is defensible; asserting no producer exists is not.
+
+    `[x or open(...) for x in [True, False]]` opens the file once at runtime — the second element
+    is falsy, so `or` evaluates its right operand. The scanner cannot pick an element, so it must
+    not certify; what it must also not do is leave no trace, which is what a skipped body did.
+    """
+
+    accesses = recorded(
+        gate,
+        tmp_path,
+        "[x or open('artifacts/actual.json', 'w', closefd=False) for x in [True, False]]",
+    )
+    writes = [
+        access
+        for access in accesses
+        if access.action == "write" and access.pattern == "artifacts/actual.json"
+    ]
+    assert writes, "the write site must survive as evidence"
+    assert all(not access.bounded for access in writes), (
+        "an undecided element must not certify the writer"
+    )
+
+
+def test_a_decided_multi_element_body_still_certifies(gate, tmp_path):
+    """The twin: withholding must stay confined to the case where the target is consulted."""
+
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        "[open('artifacts/actual.json', 'w', closefd=False) for _ in [1, 2]]\n"
+        "Path('artifacts/never.json').read_text()",
+    )
+    assert writers == {"artifacts/actual.json"}
     assert "artifacts/never.json" in orphans
 
 
