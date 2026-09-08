@@ -469,6 +469,55 @@ COMPREHENSION_NEVER_RUNS = (
     ),
     ("generator_to_zip", "zip(open('artifacts/never.json', 'w', closefd=False) for _ in [1])"),
     ("generator_to_iter", "iter(open('artifacts/never.json', 'w', closefd=False) for _ in [1])"),
+    # Root readback 2026-09-08, second pass. The proven-consumer table matched on the NAME, so
+    # a locally shadowed builtin and an arbitrary method spelled `join` were both spent as
+    # proof. Python writes nothing in either. The same fold on a bare name was corrected for
+    # `str` a round earlier in `_builtin_str_call`; this is that defect in a second channel.
+    (
+        "shadowed_list_identity",
+        "def list(g):\n"
+        "    return g\n"
+        "list(open('artifacts/never.json', 'w', closefd=False) for _ in [1])",
+    ),
+    (
+        "shadowed_sum_identity",
+        "def sum(g):\n"
+        "    return g\n"
+        "sum(open('artifacts/never.json', 'w', closefd=False) for _ in [1])",
+    ),
+    (
+        "arbitrary_receiver_join",
+        "class Holder:\n"
+        "    def join(self, g):\n"
+        "        return g\n"
+        "Holder().join(open('artifacts/never.json', 'w', closefd=False) for _ in [1])",
+    ),
+    (
+        "arbitrary_receiver_writelines",
+        "class Holder:\n"
+        "    def writelines(self, g):\n"
+        "        return g\n"
+        "Holder().writelines(open('artifacts/never.json', 'w', closefd=False) for _ in [1])",
+    ),
+    # A PROVEN consumer still does not make the whole body reachable: the body has its own
+    # short-circuit, and the element the iterable yields decides it. `any`/`all` really do run
+    # the body — these are not iteration-stop cases — so certifying the consumption and then
+    # certifying every call inside it are two separate steps, and the second was missing.
+    (
+        "consumed_body_short_circuits_or",
+        "any(x or open('artifacts/never.json', 'w', closefd=False) for x in [True])",
+    ),
+    (
+        "consumed_body_short_circuits_and",
+        "all(x and open('artifacts/never.json', 'w', closefd=False) for x in [False])",
+    ),
+    # The conditional-expression twin of the same binding. Kept because the substitution was
+    # written for `BoolOp` and the arm-selection site is a different handler: a rule that holds
+    # in one operator and not its neighbour is a rule stated at the wrong level.
+    (
+        "consumed_body_conditional_arm",
+        "[open('artifacts/never.json', 'w', closefd=False) if x else None for x in [False]]",
+    ),
 )
 
 

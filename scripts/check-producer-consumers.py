@@ -3456,19 +3456,56 @@ _GENERATOR_CONSUMING_BUILTINS = frozenset(
     {"all", "any", "dict", "frozenset", "list", "max", "min", "set", "sorted", "sum", "tuple"}
 )
 
-#: Attribute calls that consume an iterable argument outright. `str.join` is the common one and
-#: is spelled on a literal often enough to be worth naming; the receiver's type is not known
-#: here, so this is a name match and nothing stronger.
-_GENERATOR_CONSUMING_METHODS = frozenset({"join", "extend", "update", "writelines"})
 
+def _call_consumes_generator_argument(
+    func: ast.expr,
+    values: dict[str, str],
+    path: Path | None,
+    path_functions: object | None,
+) -> bool:
+    """Whether passing a generator to this callable is PROOF that its body runs.
 
-def _call_consumes_generator_argument(func: ast.expr) -> bool:
-    """Whether passing a generator to this callable is PROOF that its body runs."""
-    if isinstance(func, ast.Name):
-        return func.id in _GENERATOR_CONSUMING_BUILTINS
+    **A name match is not proof, and an attribute match is not even a name match.** The first
+    revision of this predicate returned True for any `ast.Name` in the table and for any
+    attribute called `join`/`extend`/`update`/`writelines`. Root measured both against Python:
+    a locally shadowed `def list(g): return g` writes nothing while the scanner certified a
+    writer, and an arbitrary `Holder.join` that returns its argument without iterating did the
+    same in eight more. The comment beside the attribute table admitted the receiver was
+    unknown — and the predicate's result was then used as PROOF. Stating a limit in prose while
+    the code spends the value anyway is the same defect as not knowing the limit.
+
+    It is also the SECOND time this file has folded on a bare name: `_builtin_str_call` carries
+    the same correction for `str`, made a round earlier, and its resolver is reused here rather
+    than re-derived. A defect repaired in one channel is a defect to look for in the others.
+
+    So: builtins only, and only where the name is not shadowed; the one attribute kept is a
+    `join` on a string LITERAL, where the receiver's type is established by the source rather
+    than assumed. Everything unproven falls through to the deferred branch, which already
+    records a named uncertainty rather than certifying — the direction that costs a wildcard
+    instead of a phantom.
+
+    Without a table the answer is "not established" and nothing is certified.
+    """
+
     if isinstance(func, ast.Attribute):
-        return func.attr in _GENERATOR_CONSUMING_METHODS
-    return False
+        # The ONE attribute case where the receiver's type is established rather than assumed:
+        # a string literal. `''.join(...)` really does drive the generator, and knowing that
+        # costs nothing because the receiver is right there in the source. Any other receiver —
+        # a name, an attribute, a call — is unknown, and `Holder.join` returning its argument
+        # without iterating is a real shape root measured, so nothing else qualifies.
+        return (
+            func.attr == "join"
+            and isinstance(func.value, ast.Constant)
+            and isinstance(func.value.value, str)
+        )
+    if not isinstance(func, ast.Name) or func.id not in _GENERATOR_CONSUMING_BUILTINS:
+        return False
+    if not isinstance(path_functions, PathFunctionTable) or path is None:
+        return False
+    shadow = path_functions.resolve(
+        func.id, path, _lexical_scope(values), _import_aliases(values), retain_uncertain=True
+    )
+    return shadow is None
 
 
 class _BlockScanner:
@@ -3510,6 +3547,13 @@ class _BlockScanner:
         #: (review finding, codex). Consumption is a property of the PARENT, which is why it is
         #: recorded by the handlers that hold one rather than inferred inside the body handler.
         self.consumed_generators: set[int] = set()
+        #: Comprehension targets bound to a literal element, for reachability INSIDE the body.
+        #: A proven consumer establishes that the body runs; it says nothing about which
+        #: expressions in it are reached, and `any(x or open(...) for x in [True])` writes
+        #: nothing because `x` is True and the `or` never evaluates its right operand (root
+        #: readback, 2026-09-08). `_literal_operand` reads literals and calls, never the value
+        #: map, so the binding has to reach the operator handlers as a node substitution.
+        self.literal_names: dict[str, ast.expr] = {}
 
     def scan_block(
         self,
@@ -4082,8 +4126,19 @@ class _BlockScanner:
                 # the certifying direction: a generator handed to a helper that merely stores it
                 # had its body certified, which absorbed a real orphan reader. Unknown stays
                 # unknown here and is recorded as such by the comprehension handler.
-                if isinstance(argument, ast.GeneratorExp) and _call_consumes_generator_argument(
-                    node.func
+                # Every disjunctive state must agree the name is unshadowed. One arm binding a
+                # local `list` is enough to make the call not-proven, the same rule the constant
+                # resolver already applies: deciding one branch on another's binding is how a
+                # shadow gets spent as a builtin.
+                if (
+                    isinstance(argument, ast.GeneratorExp)
+                    and states
+                    and all(
+                        _call_consumes_generator_argument(
+                            node.func, values, self.path, self.path_functions
+                        )
+                        for values in states
+                    )
                 ):
                     self.consumed_generators.add(id(argument))
                 self._scan_expression(argument, states)
@@ -4103,7 +4158,17 @@ class _BlockScanner:
             return
         if isinstance(node, ast.IfExp):
             self._scan_expression(node.test, states)
-            reachable = _reachable_alternatives(node, self._constant_resolver(states))
+            # Same substitution as the `BoolOp` handler, and it is here because leaving it there
+            # alone was a rule stated at the wrong level: `[open(...) if x else None for x in
+            # [False]]` certified a writer for exactly the reason the `or` case did. The arms
+            # are shared with the original node, so the returned alternative is still the real
+            # one; only the test is replaced.
+            probe = node
+            if isinstance(node.test, ast.Name) and node.test.id in self.literal_names:
+                probe = ast.IfExp(
+                    test=self.literal_names[node.test.id], body=node.body, orelse=node.orelse
+                )
+            reachable = _reachable_alternatives(probe, self._constant_resolver(states))
             if len(reachable) == 1:
                 # A constant test decides the arm, so the other one is never evaluated — and
                 # scanning it does more than blur a binding, it CLASSIFIES its calls. Reported
@@ -4135,7 +4200,13 @@ class _BlockScanner:
                 # no reachable stop and is skipped; in `Compare`, `decided is True` means the
                 # chain CONTINUES, so it is the True case that has no reachable stop. Both
                 # reduce to the one sentence above; neither may be inverted on its own.
-                decided = _boolop_stops_after(node.op, value, self._constant_resolver(continued))
+                # A comprehension target bound to a one-element literal source decides this
+                # operator exactly as the literal would; substituting the node is how that
+                # reaches a helper which reads literals and calls but never the value map.
+                probe = self.literal_names.get(value.id) if isinstance(value, ast.Name) else None
+                decided = _boolop_stops_after(
+                    node.op, probe or value, self._constant_resolver(continued)
+                )
                 if decided is not False or index == len(node.values) - 1:
                     alternatives.extend(_fork(continued))  # stopping here is reachable
                 if decided is True:
@@ -4176,6 +4247,9 @@ class _BlockScanner:
             return
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             inner = _fork(states)
+            # A comprehension target is scoped to the comprehension. Restored below so a name
+            # bound here cannot decide an operator outside it, or in a sibling comprehension.
+            outer_literal_names = dict(self.literal_names)
             # A list/set/dict comprehension runs at once. A GENERATOR does not: its body runs
             # only when something iterates it, so `g = (open(...) for _ in [1])` writes nothing
             # until `g` is consumed, and certifying it at the definition site invented a
@@ -4231,7 +4305,29 @@ class _BlockScanner:
                 self._scan_expression(generator.iter, inner)
                 if not body_runs:
                     break
-                self._bind(generator.target, None, inner)
+                # Bind the target to the element when the source is a ONE-element literal, so
+                # the body's own short-circuits are decided by the same constant machinery the
+                # filters and the walker already use. `any(x or open(...) for x in [True])`
+                # writes nothing — `x` is True and the `or` never evaluates its right operand —
+                # and binding `x` to nothing left that call certified against Python (root
+                # readback, 2026-09-08). A proven consumer establishes that the body RUNS; it
+                # says nothing about which expressions inside it are reached.
+                #
+                # One element only. With more, the body runs once per value and no single
+                # binding describes it; guessing there would decide a branch on an arbitrary
+                # element, which is the shape this file keeps having to repair.
+                bound: ast.expr | None = None
+                if (
+                    isinstance(generator.iter, (ast.List, ast.Tuple))
+                    and len(generator.iter.elts) == 1
+                ):
+                    bound = generator.iter.elts[0]
+                self._bind(generator.target, bound, inner)
+                if isinstance(generator.target, ast.Name):
+                    if bound is None:
+                        self.literal_names.pop(generator.target.id, None)
+                    else:
+                        self.literal_names[generator.target.id] = bound
                 # A constant EMPTY iterable yields nothing, so nothing after it evaluates —
                 # checked BEFORE the filters, because Python evaluates no filter for an
                 # iterable that produces no element.
@@ -4262,6 +4358,7 @@ class _BlockScanner:
                     (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
                 ):
                     self._scan_expression(value, inner)
+            self.literal_names = outer_literal_names
             # Otherwise the element expression is NOT scanned. Reported critical by glm at
             # `455612d07`: `[open('artifacts/never.json','w') for _ in []]`, a `if False`
             # filter, and an unexecuted generator each certified a produced artifact and
