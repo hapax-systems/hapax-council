@@ -1402,7 +1402,19 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
     # Same family as the whitespace findings this row has already closed: a declared subject
     # silently equated with a different one. A member selecting `a.txt` was treated as selecting
     # `a.txt\n` too, so a scope naming the newline twin compared against the wrong surface.
-    return re.compile(r"\A" + "".join(out) + r"\Z")
+    # `re.DOTALL`, because a newline is a legal character in a path COMPONENT and `.` does not
+    # match one by default. Without it `**/` compiles to `(?:.*/)?` and never matched a file
+    # under a directory whose name contains a newline, so `**/*.txt` did not select `a.txt`
+    # below `dir\nwith-newline/` — and the unselected file then drove a mutual recursion between
+    # `_canonical_member_entries` and `_check_member_symlinks` to a RecursionError (review
+    # finding, cx-blue, at `93f5fceb1`; twelve reader fixtures, 10/2 -> 12/0 with DOTALL alone).
+    #
+    # This does NOT weaken the `\A`/`\Z` anchoring above, and the two answer different questions.
+    # DOTALL governs what `.` may match INSIDE the pattern; the anchors govern where the match
+    # may end. `*` already compiles to `[^/]*`, which a character class makes newline-permitting
+    # regardless of DOTALL, so `*.txt` still refuses `a.txt\n` — that negative control is
+    # deliberately preserved and is asserted in row S1.
+    return re.compile(r"\A" + "".join(out) + r"\Z", re.DOTALL)
 
 
 def _pattern_matches(relative: str, pattern: str) -> bool:
@@ -2208,6 +2220,24 @@ def _check_member_symlinks(
     return has_excluded_entry
 
 
+#: Members whose canonical surface is being computed right now. `_canonical_member_entries` and
+#: `_check_member_symlinks` are MUTUALLY RECURSIVE — the first calls the second per entry, and the
+#: second rebuilds the whole surface when an entry is lexically disjoint — and nothing bounded
+#: that cycle structurally. It terminated only because some entry usually matches the member's
+#: patterns, which is a fact about the data, not about the code.
+#:
+#: Measured at `93f5fceb1`: with `**/*` failing to match under a directory whose name contains a
+#: newline, EVERY entry became disjoint and the pair recursed 478 times each into a RecursionError
+#: (review finding, cx-blue). A RecursionError is a crash, not a refusal, so it escaped the
+#: contract entirely — the same shape as the unguarded filesystem faults, arrived at differently.
+#:
+#: The `re.DOTALL` repair removes that trigger. This removes the CYCLE, which is what makes the
+#: family closed rather than one instance repaired: any future gap between what a member's
+#: patterns select and what its root contains re-enters here, and re-entry is now a named
+#: undecidable refusal instead of a stack overflow.
+_SURFACE_IN_PROGRESS: set[int] = set()
+
+
 def _canonical_member_entries(member: DecayedMember) -> dict[Path, Path]:
     """Close the producer's selected file entries over their canonical byte targets.
 
@@ -2215,6 +2245,29 @@ def _canonical_member_entries(member: DecayedMember) -> dict[Path, Path]:
     evaluated on the selected entries at comparison time. Resolve before is_file(), which
     silently drops dangling links, and retain fs.glob's traversal/escape remedies.
     """
+    token = id(member)
+    if token in _SURFACE_IN_PROGRESS:
+        # The surface is being asked for as part of computing itself. A partial answer is not a
+        # smaller surface, it is a wrong one — a weaker comparison that would silently admit —
+        # so this refuses by name rather than returning what has been collected so far.
+        error = UndecidableScopeContainment(
+            f"member {member.member_id!r} canonical surface depends on itself; its declared "
+            "patterns select none of the entries under its root, so containment cannot be decided"
+        )
+        error.remedy = (
+            f"repair location.patterns for member {member.member_id!r} in "
+            f"{MASS_DECLARATION_LOCATION} so they select the entries under its declared root; "
+            + PRODUCER_REMEDY
+        )
+        raise error
+    _SURFACE_IN_PROGRESS.add(token)
+    try:
+        return _canonical_member_entries_uncached(member)
+    finally:
+        _SURFACE_IN_PROGRESS.discard(token)
+
+
+def _canonical_member_entries_uncached(member: DecayedMember) -> dict[Path, Path]:
     surface: dict[Path, Path] = {}
     content_query = member.reader == "fs.content_query"
     patterns = member.patterns if content_query else member.patterns or ("**/*",)

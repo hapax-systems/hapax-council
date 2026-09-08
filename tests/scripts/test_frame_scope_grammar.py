@@ -50,6 +50,7 @@ the contract's refusal.
 
 import os
 import pathlib
+import re
 import subprocess
 
 import pytest
@@ -1783,6 +1784,79 @@ def test_row_s1_a_trailing_newline_filename_is_not_its_plain_twin(pattern, plain
     """
     assert fv._pattern_matches("a.txt", pattern) is plain
     assert fv._pattern_matches("a.txt\n", pattern) is newline
+
+
+@pytest.mark.parametrize("patterns", [("**/*.txt",), ("**/*",)], ids=["suffixed", "any"])
+def test_row_s1b_a_recursive_glob_reaches_below_a_newline_directory(tmp_path, patterns):
+    """S1b: a newline is legal in a path COMPONENT, and `.` does not match one by default.
+
+    `**/` compiles to `(?:.*/)?`, so without `re.DOTALL` a recursive glob never matched a file
+    under a directory whose NAME contains a newline — `**/*.txt` did not select `a.txt` below
+    `dir\\nwith-newline/` (review finding, cx-blue, at `93f5fceb1`, with twelve reader fixtures
+    at 10/2 -> 12/0 on DOTALL alone).
+
+    **This is the opposite question from S1 above, and both answers must hold.** DOTALL governs
+    what `.` may match INSIDE a pattern; the `\\A`/`\\Z` anchors govern where a match may END.
+    `*` compiles to `[^/]*`, a character class, which is newline-permitting regardless — so
+    `*.txt` still refuses `a.txt\\n`, and S1 is the control that keeps this repair from becoming
+    "newline names match anything".
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    inner = root / "dir\nwith-newline"
+    inner.mkdir(parents=True)
+    target = inner / "a.txt"
+    target.write_bytes(b"NEEDLE\n")
+
+    verdicts = _decayed(tmp_path, _local_member(root=root, patterns=patterns))
+    result = fv.scope_within_decayed([str(target)], verdicts, council_root=base, vault_root=base)
+
+    assert result.all_inside is True, (
+        "a recursive glob selects below a directory whose name contains a newline; that file is "
+        "inside the member and the scope naming it must be refused"
+    )
+
+
+def test_row_s1c_a_self_dependent_member_surface_refuses_instead_of_recursing(
+    tmp_path, monkeypatch
+):
+    """S1c: the CYCLE, not the trigger. `re.DOTALL` closed one way in; this closes the way out.
+
+    `_canonical_member_entries` calls `_check_member_symlinks` for each entry, and
+    `_check_member_symlinks` rebuilds the whole surface whenever an entry is lexically disjoint.
+    Nothing bounded that pair. It terminated only because some entry usually matches the
+    member's patterns — a fact about the data, not about the code — so when `**/*` matched
+    NOTHING under the root, every entry became disjoint and the two recursed 478 times each into
+    a RecursionError. A RecursionError is a crash, not a refusal: it escaped the contract
+    entirely, the same shape as the unguarded filesystem faults arrived at differently.
+
+    cx-blue's instruction was that repairing one trigger does not establish the family closed.
+    This row holds the CYCLE rather than the newline: the pattern is compiled without DOTALL in
+    memory, which is the measured way to make every entry disjoint, and the requirement is a
+    named refusal with a remedy rather than a stack overflow. Any future gap between what a
+    member's patterns select and what its root contains arrives here.
+    """
+    real = fv._glob_to_regex
+
+    def without_dotall(pattern: str):
+        return re.compile(real(pattern).pattern)
+
+    monkeypatch.setattr(fv, "_glob_to_regex", without_dotall)
+
+    base = tmp_path / "base"
+    root = base / "surface"
+    inner = root / "dir\nwith-newline"
+    inner.mkdir(parents=True)
+    target = inner / "a.txt"
+    target.write_bytes(b"NEEDLE\n")
+
+    verdicts = _decayed(tmp_path, _local_member(root=root, patterns=("**/*.txt",)))
+
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.scope_within_decayed([str(target)], verdicts, council_root=base, vault_root=base)
+
+    assert "depends on itself" in str(caught.value)
+    assert caught.value.remedy, "a refusal must name its remedy"
 
 
 @pytest.mark.parametrize(
