@@ -1635,6 +1635,61 @@ def test_row_r5_an_unreadable_repository_identity_cannot_establish_disjointness(
     assert caught.value.remedy, "a refusal must name its remedy"
 
 
+@pytest.mark.parametrize(
+    ("stderr", "refuses"),
+    [
+        ("fatal: not a git repository (or any parent up to mount point /)\n", False),
+        ("fatal: detected dubious ownership in repository at '/x'\n", True),
+        ("fatal: unable to read tree abc123\n", True),
+        ("error: object file .git/objects/ab/cdef is empty\n", True),
+        ("", True),
+    ],
+    ids=["not-a-repository", "dubious-ownership", "corrupt-tree", "empty-object", "silent"],
+)
+def test_row_r5a_a_nonzero_git_exit_is_not_automatically_a_decided_negative(
+    tmp_path, monkeypatch, stderr, refuses
+):
+    """R5a: exit status does not distinguish "not a repository" from "cannot read this one".
+
+    My first split at `862a46ce9` put the line at the EXCEPTION TYPE and read
+    `CalledProcessError` as "git ran and said no". All four families reported that as still
+    fail-open, and they were right: git exits 128 both for a directory that is not a repository
+    and for one it cannot read — dubious ownership, a corrupt object store, a permission fault.
+    A checkout that exists and cannot be read had its projections erased, and work wholly inside
+    it was admitted.
+
+    So git is ASKED rather than inferred from: only its own "not a git repository" is a decided
+    negative. Every other failure is unknown, and unknown cannot establish disjointness.
+
+    The `silent` row matters most — an empty stderr carries no evidence of anything, and the
+    permissive reading of "no marker found" would have been to treat it as a repository that is
+    simply absent.
+    """
+    running, verdicts = _equivalent_checkouts(tmp_path)
+    real_run = subprocess.run
+
+    def failing(command, *args, **kwargs):
+        if isinstance(command, list) and command[:1] == ["git"]:
+            raise subprocess.CalledProcessError(128, command, output="", stderr=stderr)
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", failing)
+
+    if refuses:
+        with pytest.raises(fv.UndecidableScopeContainment) as caught:
+            fv.scope_within_decayed(
+                ["scripts/x.py"], verdicts, council_root=running, vault_root=running
+            )
+        assert "repository identity" in str(caught.value)
+    else:
+        result = fv.scope_within_decayed(
+            ["scripts/x.py"], verdicts, council_root=running, vault_root=running
+        )
+        assert result.all_inside is False, (
+            "git's own 'not a git repository' is a decided negative and supplies no candidates"
+        )
+
+
 def test_row_r5b_a_verified_unrelated_history_still_supplies_no_candidates(tmp_path):
     """R5b: the twin. A checkout git CAN read and that genuinely differs is a decided negative.
 

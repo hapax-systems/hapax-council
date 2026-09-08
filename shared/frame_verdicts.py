@@ -3002,6 +3002,19 @@ def qualified_ref_within_member(
     return False
 
 
+def _unreadable_repository_identity(checkout: Path, exc: Exception) -> UndecidableScopeContainment:
+    """One refusal for every way the identity read can fail to answer."""
+    error = UndecidableScopeContainment(
+        f"repository identity of {checkout} cannot be read: {exc}; an unreadable history is "
+        "not evidence that two checkouts are unrelated"
+    )
+    error.remedy = (
+        f"repair git access for {checkout} (it must answer `git rev-parse --show-toplevel` "
+        "and `git rev-list --max-parents=0 HEAD`), then retry the dispatch"
+    )
+    return error
+
+
 def _repository_identity(checkout: Path) -> frozenset[str] | None:
     """Verify a checkout root and identify its history without reading remote credentials.
 
@@ -3020,11 +3033,18 @@ def _repository_identity(checkout: Path) -> frozenset[str] | None:
     is the same verified/refuted/unknown collapse the rest of this module refuses elsewhere.
     """
     try:
+        # A path that is not a directory cannot be a checkout, and git cannot even be asked: it
+        # fails with "cannot change to ...", which carries no "not a git repository" and would
+        # otherwise be read as unknown. Decided here, from the filesystem, before running git.
+        if not checkout.is_dir():
+            return None
+    except (OSError, RuntimeError) as exc:
+        raise _unreadable_repository_identity(checkout, exc) from exc
+    try:
         top = subprocess.run(
             ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"],
             check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
             text=True,
             timeout=5,
         ).stdout.strip()
@@ -3033,26 +3053,34 @@ def _repository_identity(checkout: Path) -> frozenset[str] | None:
         roots = subprocess.run(
             ["git", "-C", str(checkout), "rev-list", "--max-parents=0", "HEAD"],
             check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
             text=True,
             timeout=5,
         ).stdout.splitlines()
-    except subprocess.CalledProcessError:
-        # git RAN and answered no: this is not a repository root, or it has no reachable history.
-        # A decided negative, and the common case for a `.git` that is not a working checkout.
-        return None
+    except subprocess.CalledProcessError as exc:
+        # A NONZERO EXIT IS NOT AN ANSWER (review finding, all four families, at `e6fe8780c`).
+        # My first split put the line at the exception type and read `CalledProcessError` as
+        # "git ran and said no". It does not say that: git exits 128 both for a directory that
+        # is not a repository AND for a repository it cannot read — a corrupt object store, a
+        # permission fault, an unborn HEAD. Treating the exit status as a verdict erased the
+        # projections of a checkout that exists and could not be read, and admitted work wholly
+        # inside it.
+        #
+        # So ASK GIT, which is the authority on the question, rather than inferring from the
+        # exit code or guessing at `.git`'s shape. Measured:
+        #
+        #     empty `.git` dir   rc=128  "fatal: not a git repository ..."
+        #     no `.git` at all   rc=128  "fatal: not a git repository ..."
+        #     real, unborn HEAD  rev-parse rc=0; rev-list "ambiguous argument 'HEAD'"
+        #
+        # Only git's own "not a git repository" is a decided negative. Every other failure is
+        # unknown, and unknown cannot establish disjointness.
+        if "not a git repository" in (exc.stderr or ""):
+            return None
+        raise _unreadable_repository_identity(checkout, exc) from exc
     except (OSError, subprocess.TimeoutExpired) as exc:
         # git could not run or did not finish. Nothing was answered, so nothing is refuted.
-        error = UndecidableScopeContainment(
-            f"repository identity of {checkout} cannot be read: {exc}; an unreadable history is "
-            "not evidence that two checkouts are unrelated"
-        )
-        error.remedy = (
-            f"repair git access for {checkout} (it must answer `git rev-parse --show-toplevel` "
-            "and `git rev-list --max-parents=0 HEAD`), then retry the dispatch"
-        )
-        raise error from exc
+        raise _unreadable_repository_identity(checkout, exc) from exc
     if not roots or any(re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", root) is None for root in roots):
         return None
     return frozenset(roots)
