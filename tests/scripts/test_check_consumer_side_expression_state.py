@@ -681,6 +681,72 @@ COMPREHENSION_NEVER_RUNS = (
         "    return not True\n"
         "[open('artifacts/never.json', 'w', closefd=False) for _ in [1] if stop()]",
     ),
+    # RESOLVING A VALUE IS NOT REACHING ITS BODY. Every one of these sources is a constant this
+    # scanner reads perfectly, and none of them is something Python can iterate: `iter()` raises
+    # TypeError before the first element, so the body runs zero times. The handler had one
+    # boolean where the domain has three cases — enumerable, not iterable, undecided — and read
+    # "I cannot count this" as "I cannot count this yet", then certified (review finding, root,
+    # at `120d38d9b`, 36 counterexamples with a runtime oracle recording zero opens).
+    #
+    # Six values because six TYPES fail differently in principle and identically in fact:
+    # `None`, a bool, a zero and a non-zero int, a float and a complex. Truthiness is not the
+    # question here — `3` and `1.25` are truthy and still never yield an element.
+    (
+        "noniterable_none",
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in None]",
+    ),
+    (
+        "noniterable_bool",
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in True]",
+    ),
+    (
+        "noniterable_zero",
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in 0]",
+    ),
+    (
+        "noniterable_truthy_int",
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in 3]",
+    ),
+    (
+        "noniterable_float",
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in 1.25]",
+    ),
+    (
+        "noniterable_complex",
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in 2j]",
+    ),
+    # The same value arriving by the two other roads the source resolver already travels: a name
+    # bound once to a literal, and a uniquely bound helper's constant return.
+    (
+        "noniterable_from_a_bound_name",
+        "items = None\n[open('artifacts/never.json', 'w', closefd=False) for _ in items]",
+    ),
+    (
+        "noniterable_from_a_constant_helper",
+        "def source():\n"
+        "    return 0\n"
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in source()]",
+    ),
+    # The other comprehension kinds and the eager-consumer shape, because one handler serves all
+    # four and a repair that only covered the list form would look complete.
+    (
+        "noniterable_under_a_consuming_builtin",
+        "any(open('artifacts/never.json', 'w', closefd=False) for _ in None)",
+    ),
+    (
+        "noniterable_dict_comprehension",
+        "{_: open('artifacts/never.json', 'w', closefd=False) for _ in 3}",
+    ),
+    (
+        "noniterable_set_comprehension",
+        "{open('artifacts/never.json', 'w', closefd=False) for _ in 1.25}",
+    ),
+    # Not only the first clause: the chain stops at whichever source cannot be iterated, and the
+    # filter after it is never evaluated either.
+    (
+        "noniterable_second_generator_clause",
+        "[y for x in [1] for y in None if open('artifacts/never.json', 'w', closefd=False)]",
+    ),
 )
 
 
@@ -754,6 +820,19 @@ COMPREHENSION_RUNS = (
         "multi_element_literal_whose_target_is_never_read",
         "[open('artifacts/actual.json', 'w', closefd=False) for _ in [1, 2]]",
     ),
+    # The twins for the non-iterable refusal. A string and a bytes object are ITERABLE, and both
+    # were already in the enumerable set — so a refusal keyed on "has no length I recognise", or
+    # on truthiness, or on "is not a container", would redden these while the non-iterable rows
+    # above stayed green. They are what makes that refusal a discrimination rather than a
+    # blanket.
+    (
+        "single_character_string_source",
+        "[open('artifacts/actual.json', 'w', closefd=False) for _ in 'a']",
+    ),
+    (
+        "single_byte_source",
+        "[open('artifacts/actual.json', 'w', closefd=False) for _ in b'a']",
+    ),
 )
 
 
@@ -766,6 +845,136 @@ def test_a_comprehension_body_that_does_run_still_certifies(gate, tmp_path, name
     )
     assert writers == {"artifacts/actual.json"}, f"{name}: lost a producer that really runs"
     assert "artifacts/never.json" in orphans
+
+
+# The SAME defect at the statement boundary. It was found in the comprehension handler and was
+# present here too, in all three spellings — inline, through a bound name, and through a helper's
+# constant return. Closing only the boundary the finding named is the shape that has cost this
+# work a whole day: one defect, reported closed, found again next door.
+LOOP_STATEMENT_NEVER_RUNS = (
+    ("noniterable_loop_inline", "for _ in None:\n    {write}\n"),
+    ("noniterable_loop_bound_name", "items = 0\nfor _ in items:\n    {write}\n"),
+    (
+        "noniterable_loop_constant_helper",
+        "def source():\n    return None\nfor _ in source():\n    {write}\n",
+    ),
+    # `for ... else` runs its `else` when the loop finishes — and this loop never starts, so the
+    # `else` is as unreached as the body. Modelling a non-iterable as merely EMPTY would leave
+    # this half certified.
+    ("noniterable_loop_else_clause", "for _ in 2j:\n    pass\nelse:\n    {write}\n"),
+    ("noniterable_async_loop", "async def run():\n    async for _ in None:\n        {write}\n"),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "body"), LOOP_STATEMENT_NEVER_RUNS, ids=[row[0] for row in LOOP_STATEMENT_NEVER_RUNS]
+)
+def test_a_loop_statement_that_never_runs_certifies_nothing(gate, tmp_path, name, body):
+    write = "open('artifacts/never.json', 'w', closefd=False)"
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        body.format(write=write) + "Path('artifacts/never.json').read_text()\n",
+    )
+    assert writers == set(), f"{name}: certified a writer whose loop body never runs"
+    assert "artifacts/never.json" in orphans, f"{name}: the orphan reader must survive"
+
+
+LOOP_STATEMENT_RUNS = (
+    ("literal_loop", "for _ in [1]:\n    {write}\n"),
+    ("bound_literal_loop", "items = [1]\nfor _ in items:\n    {write}\n"),
+    # An UNRESOLVED source keeps its body scanned. The statement boundary does not withhold on
+    # unknown the way the comprehension boundary does, and that asymmetry is deliberate: nearly
+    # every real producer in this estate writes inside a loop over a value no scanner can see.
+    # The repair added a decided negative; it did not add a withholding here.
+    ("unresolved_source_loop", "import os\nfor _ in os.listdir('.'):\n    {write}\n"),
+    ("loop_else_after_a_real_iterable", "for _ in [1]:\n    pass\nelse:\n    {write}\n"),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "body"), LOOP_STATEMENT_RUNS, ids=[row[0] for row in LOOP_STATEMENT_RUNS]
+)
+def test_a_loop_statement_that_does_run_still_certifies(gate, tmp_path, name, body):
+    write = "open('artifacts/actual.json', 'w', closefd=False)"
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        body.format(write=write) + "Path('artifacts/never.json').read_text()\n",
+    )
+    assert writers == {"artifacts/actual.json"}, f"{name}: lost a producer that really runs"
+    assert "artifacts/never.json" in orphans
+
+
+class _LegacyIterable:
+    """Iterable through the OLD protocol only: `iter()` accepts it, `__iter__` is absent."""
+
+    def __getitem__(self, index: int) -> int:
+        if index > 0:
+            raise IndexError
+        return 1
+
+
+ITERATION_DOMAIN = (
+    # Unresolved stays unresolved: the value channel cannot answer what the resolver could not.
+    ("unresolved", False, None, "SOURCE_UNDECIDED"),
+    # The enumerable set, one per spelling the element count is read from.
+    ("list", True, [1], "SOURCE_ENUMERABLE"),
+    ("tuple", True, (1,), "SOURCE_ENUMERABLE"),
+    ("set", True, {1}, "SOURCE_ENUMERABLE"),
+    ("dict", True, {1: 0}, "SOURCE_ENUMERABLE"),
+    ("str", True, "ab", "SOURCE_ENUMERABLE"),
+    ("bytes", True, b"ab", "SOURCE_ENUMERABLE"),
+    # Decided negatives. `iter()` raises on each, so the body runs zero times.
+    ("none", True, None, "SOURCE_NOT_ITERABLE"),
+    ("bool", True, True, "SOURCE_NOT_ITERABLE"),
+    ("int", True, 3, "SOURCE_NOT_ITERABLE"),
+    ("float", True, 1.25, "SOURCE_NOT_ITERABLE"),
+    ("complex", True, 2j, "SOURCE_NOT_ITERABLE"),
+    ("ellipsis", True, ..., "SOURCE_NOT_ITERABLE"),
+    # ITERABLE but not enumerable here. These are the rows that make the predicate a THREE-way
+    # answer rather than "enumerable or dead": calling them non-iterable would deny a body that
+    # really runs. `range` has `__iter__`; the legacy object has only `__getitem__`, which is
+    # exactly what a check written against `__iter__` alone would get wrong.
+    ("range", True, range(3), "SOURCE_UNDECIDED"),
+    ("generator", True, (n for n in [1]), "SOURCE_UNDECIDED"),
+    ("legacy_getitem_protocol", True, _LegacyIterable(), "SOURCE_UNDECIDED"),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "known", "constant", "expected"),
+    ITERATION_DOMAIN,
+    ids=[row[0] for row in ITERATION_DOMAIN],
+)
+def test_iteration_domain_separates_all_three_cases(gate, name, known, constant, expected):
+    """The predicate at its own boundary, because two of its three answers have no source road.
+
+    `_literal_operand` resolves only what `ast.literal_eval` accepts, so no comprehension or loop
+    in any estate file can hand it a `range`, a generator or a legacy-protocol object today. The
+    arm is still the difference between refusing a live body and refusing a dead one, so it is
+    pinned where it is reachable — here — and reported as unit-pinned rather than claimed to be
+    exercised end to end.
+    """
+
+    assert gate._iteration_domain(known, constant) == getattr(gate, expected), name
+    # Iterability is the question, and the runtime is the oracle for it.
+    if expected != "SOURCE_UNDECIDED" or not known:
+        return
+    iter(constant)
+
+
+@pytest.mark.parametrize(
+    ("name", "known", "constant", "expected"),
+    [row for row in ITERATION_DOMAIN if row[3] == "SOURCE_NOT_ITERABLE"],
+    ids=[row[0] for row in ITERATION_DOMAIN if row[3] == "SOURCE_NOT_ITERABLE"],
+)
+def test_a_decided_negative_is_one_python_agrees_with(gate, name, known, constant, expected):
+    """Never assert a value is un-iterable without asking the interpreter."""
+
+    with pytest.raises(TypeError):
+        iter(constant)
+    assert gate._iteration_domain(known, constant) == gate.SOURCE_NOT_ITERABLE, name
 
 
 def test_a_genuine_falsy_literal_still_short_circuits(gate, tmp_path):

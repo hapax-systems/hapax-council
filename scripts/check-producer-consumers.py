@@ -3311,6 +3311,59 @@ def _literal_operand(
         return False, None
 
 
+#: The value types this scanner can enumerate as a loop or comprehension source. Deliberately
+#: narrow: membership is what licenses counting the elements and binding a single one.
+_ENUMERABLE_TYPES = (list, tuple, set, frozenset, dict, str, bytes)
+
+#: A source this scanner can enumerate: element count and single-element binding are exact.
+SOURCE_ENUMERABLE = "enumerable"
+#: A source Python CANNOT iterate. `iter()` raises TypeError, so the body runs zero times —
+#: a decided negative, on the same footing as a constant-empty source, not an uncertainty.
+SOURCE_NOT_ITERABLE = "not-iterable"
+#: Either unresolved, or a value that iterates in ways this scanner does not model.
+SOURCE_UNDECIDED = "undecided"
+
+
+def _iteration_domain(known: bool, constant: object) -> str:
+    """Which of the THREE iteration cases a resolved loop/comprehension source falls in.
+
+    `known` answers "can this scanner see the value". It does not answer "can Python iterate
+    it", and the comprehension handler spent one for the other: every value it could resolve
+    was allowed to certify the body, so `[open(...) for x in None]` — and the same with `True`,
+    `0`, `3`, `1.25` and `2j`, inline, via a name, and behind an eager `any()` — produced a
+    bounded writer for a file Python never opens, because `iter()` raises TypeError before the
+    first element (review finding, root, at `120d38d9b`, 36 counterexamples, runtime oracle
+    recording zero opens in every one).
+
+    That is the recurring collapse in this file, in a new place: a domain with three cases
+    forced through one boolean. `sized` said "I can count this", the code read its False as
+    "I cannot count this *yet*", and the fall-through certified. The three cases are:
+
+    * `SOURCE_ENUMERABLE` — decide from the value: empty, single, or several.
+    * `SOURCE_NOT_ITERABLE` — the body cannot run. **Proven, not assumed**: this is the same
+      kind of answer as a constant-empty source, so it costs no uncertainty.
+    * `SOURCE_UNDECIDED` — unresolved, or iterable in a way not modelled here. The caller
+      decides what withholding means at its own boundary.
+
+    Iterability is read off the type's PROTOCOL, the way `iter()` itself decides, rather than
+    from a list of non-iterable types. An enumeration of what is excluded is only ever as
+    complete as the day it was written — the same reason `_literal_binding_is_unchallenged`
+    inverted its escape routes — and a value type this predicate has never seen must land in
+    `SOURCE_UNDECIDED`, never in a certifying default.
+
+    Nothing is evaluated here: the constant is already a value, and the lookup is on its type.
+    """
+    if not known:
+        return SOURCE_UNDECIDED
+    if isinstance(constant, _ENUMERABLE_TYPES):
+        return SOURCE_ENUMERABLE
+    source_type = type(constant)
+    if hasattr(source_type, "__iter__") or hasattr(source_type, "__getitem__"):
+        # Iterable, but outside what this scanner enumerates. Not a negative.
+        return SOURCE_UNDECIDED
+    return SOURCE_NOT_ITERABLE
+
+
 def _boolop_stops_after(
     op: ast.boolop, value: ast.expr, resolve: _ConstantResolver | None = None
 ) -> bool | None:
@@ -3511,8 +3564,16 @@ def _literal_binding_is_unchallenged(name: str, scope: ast.AST | None) -> bool:
     alias like `holder = [items]`, both slipped past (source-review concern, coordinator, on the
     uncommitted repair). **Enumerating the escape routes is the losing game** — a call, a
     container, a starred argument, a default, a yield, a return — so the rule is inverted:
-    a read is safe only where this predicate can see the whole use, which is a comprehension's
-    own ``iter``. Everything else is an escape whether or not it is on anyone's list.
+    a read is safe only where this predicate can see the whole use, which is an iteration source
+    — a comprehension clause's ``iter``, or a ``for`` statement's. Everything else is an escape
+    whether or not it is on anyone's list.
+
+    Note which direction that list runs. Enumerating ESCAPES is the losing game because a route
+    left off certifies. Enumerating provably-whole USES is the inverse: a form left off — a
+    ``while``, an unpacking, a ``yield from``, an ``in`` test — costs a refusal, never a wrong
+    certification. The ``for`` statement was left off at first, and the cost was exactly that
+    shape: `items = 0` followed by `for x in items:` kept the loop body certified, because the
+    binding never became a literal for the non-iterable check to read (measured, not inferred).
 
     Conservative by construction: True only where it can be shown, because the caller spends a
     True as "this name still denotes that literal" and a wrong True certifies a phantom writer.
@@ -3520,11 +3581,16 @@ def _literal_binding_is_unchallenged(name: str, scope: ast.AST | None) -> bool:
     if scope is None:
         return False
     safe_reads = {
-        id(generator.iter)
+        id(source)
         for node in ast.walk(scope)
-        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp))
-        for generator in node.generators
-        if isinstance(generator.iter, ast.Name) and generator.iter.id == name
+        for source in (
+            [generator.iter for generator in node.generators]
+            if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp))
+            else [node.iter]
+            if isinstance(node, (ast.For, ast.AsyncFor))
+            else []
+        )
+        if isinstance(source, ast.Name) and source.id == name
     }
     stores = 0
     for node in ast.walk(scope):
@@ -3943,6 +4009,24 @@ class _BlockScanner:
         exception_states: list[dict[str, str]] | None,
         exit_states: list[dict[str, str]] | None,
     ) -> list[dict[str, str]]:
+        if isinstance(statement, (ast.For, ast.AsyncFor)):
+            # A source Python cannot iterate enters neither the body nor the `else`: `iter()`
+            # raises before the first element. The comprehension boundary was repaired for this
+            # first and this one had the identical defect — `for x in None:` certified a bounded
+            # writer for a file the runtime oracle never opened, inline, through a name bound to
+            # `0`, and through a helper returning `None`.
+            #
+            # **This is a decided negative and it only ever narrows**: an unresolved or merely
+            # unmodelled source keeps scanning the body, because a statement loop over a value
+            # this scanner cannot see is the ordinary case and refusing it would withhold nearly
+            # every real writer. That asymmetry with the comprehension boundary — which does
+            # withhold on unknown — is deliberate and is not what this repair changes.
+            #
+            # `async for` needs `__aiter__` rather than `__iter__`, so a value failing even the
+            # sync protocol fails that one too. Whether a sync-iterable value satisfies `async
+            # for` is a separate question this predicate does not answer and does not claim to.
+            if self._resolved_iteration_source(statement.iter, states)[2] == SOURCE_NOT_ITERABLE:
+                return states
         literal = isinstance(statement, (ast.For, ast.AsyncFor)) and isinstance(
             statement.iter, (ast.List, ast.Tuple, ast.Set)
         )
@@ -4155,6 +4239,25 @@ class _BlockScanner:
                 snapshots, collapse=True
             )[0]
             self.path_functions.helper_results.clear()
+
+    def _resolved_iteration_source(
+        self, source: ast.expr, states: list[dict[str, str]]
+    ) -> tuple[bool, object, str]:
+        """Resolve a loop or comprehension source, and say which iteration case it is in.
+
+        ONE resolution rule for both boundaries. They were written apart — the comprehension
+        clause resolving names and helper returns, the `for` statement keying on `ast.List` /
+        `ast.Tuple` / `ast.Set` syntax — and the non-iterable defect was found at the first and
+        present at the second, in all three spellings (measured, not inferred: an inline `None`,
+        a name bound to `0`, and a helper returning `None`). Two sites deciding the same question
+        by different rules is how the spelling/value confusions in this file keep recurring, so
+        the question is asked in one place.
+        """
+        probe = source
+        if isinstance(probe, ast.Name) and probe.id in self.literal_names:
+            probe = self.literal_names[probe.id]
+        known, constant = _literal_operand(probe, self._constant_resolver(states))
+        return known, constant, _iteration_domain(known, constant)
 
     def _constant_resolver(self, states: list[dict[str, str]]) -> _ConstantResolver:
         """Let a conditional read a uniquely bound helper's constant return, through the EXISTING
@@ -4458,15 +4561,15 @@ class _BlockScanner:
                 #
                 # Resolver here too: `def empty(): return []` supplying the iterable is the same
                 # case as the filter below, and was named in an earlier finding.
-                iterable_probe = generator.iter
-                if isinstance(iterable_probe, ast.Name) and iterable_probe.id in self.literal_names:
-                    iterable_probe = self.literal_names[iterable_probe.id]
-                known, constant = _literal_operand(iterable_probe, self._constant_resolver(inner))
+                known, constant, domain = self._resolved_iteration_source(generator.iter, inner)
 
                 bound: ast.expr | None = None
-                sized = known and isinstance(
-                    constant, (list, tuple, set, frozenset, dict, str, bytes)
-                )
+                # **RESOLVING A VALUE IS NOT REACHING ITS BODY.** `known` is a fact about this
+                # scanner; whether `iter()` succeeds is a fact about the value, and reading the
+                # first as the second let every non-iterable constant certify the body it can
+                # never enter (see `_iteration_domain`). Three cases, one predicate, each
+                # dispositioned below rather than left to a fall-through.
+                sized = domain == SOURCE_ENUMERABLE
                 if sized and len(constant) == 1:
                     # One element, whatever spelled it: bind the value the loop will take. A
                     # `set` or `dict` is unordered, but with exactly one element there is only
@@ -4489,10 +4592,7 @@ class _BlockScanner:
                             f"expression={ast.unparse(generator.iter)}"
                         )
                     break
-                # A constant EMPTY iterable yields nothing, so nothing after it evaluates —
-                # checked BEFORE the filters, because Python evaluates no filter for an
-                # iterable that produces no element.
-                if not known:
+                if domain == SOURCE_UNDECIDED:
                     # **UNRESOLVED IS NOT PERMISSION.** Leaving `body_runs` enabled here meant an
                     # iterable this scanner cannot evaluate certified everything inside it — and
                     # `def empty(): return []`, `items = []` and a helper returning `not True`
@@ -4502,16 +4602,42 @@ class _BlockScanner:
                     # rather than a certification.
                     #
                     # Recorded, not silent: the uncertainty is what distinguishes withholding
-                    # from having quietly decided the other way.
+                    # from having quietly decided the other way. A value this scanner resolved
+                    # but does not know how to enumerate is the same uncertainty arriving by a
+                    # different road, so it is recorded as what it is rather than as a failure
+                    # to resolve.
                     body_runs = False
                     self.unresolved[0] += 1
                     if isinstance(self.path_functions, PathFunctionTable):
+                        detail = (
+                            "iterable not resolvable"
+                            if not known
+                            else f"resolved iterable outside enumerable domain "
+                            f"type={type(constant).__name__}"
+                        )
                         self.path_functions.unresolved_paths.add(
                             f"{self.path}:{node.lineno}:{node.col_offset}: comprehension "
-                            f"iterable not resolvable expression={ast.unparse(generator.iter)}"
+                            f"{detail} expression={ast.unparse(generator.iter)}"
                         )
                     continue
-                if sized and len(constant) == 0:
+                if domain == SOURCE_NOT_ITERABLE:
+                    # `iter()` raises TypeError before the first element, so the body runs zero
+                    # times and no filter or later clause is evaluated. **Decided, not withheld**
+                    # — the count of elements is known exactly, and it is none — so this costs no
+                    # uncertainty, exactly like the constant-empty source below.
+                    #
+                    # What this does NOT claim is that the code after the comprehension is dead.
+                    # It is, unless something catches the TypeError, and this scanner does not
+                    # model an expression that raises. Saying so here rather than leaving it
+                    # implied: the residual is a false producer in the TAIL, not in the body,
+                    # and it is narrower than what stood before this repair rather than a new
+                    # permission.
+                    body_runs = False
+                    continue
+                # A constant EMPTY iterable yields nothing, so nothing after it evaluates —
+                # checked BEFORE the filters, because Python evaluates no filter for an
+                # iterable that produces no element.
+                if len(constant) == 0:
                     body_runs = False
                     continue
                 for condition in generator.ifs:
