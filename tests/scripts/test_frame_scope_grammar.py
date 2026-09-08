@@ -2287,8 +2287,15 @@ class _ScandirFaultingOneName:
 
 
 class _ScandirResult:
+    """Both an iterator and a context manager, because the two callers use it each way.
+
+    `os.walk` calls `next()` on the object directly, while `_require_scannable` and `pathlib`
+    use `with os.scandir(...) as entries`. Returning something that satisfies only one of those
+    silently exercises one caller and raises in the other.
+    """
+
     def __init__(self, entries) -> None:
-        self._entries = entries
+        self._entries = iter(entries)
 
     def __enter__(self):
         return self
@@ -2297,7 +2304,13 @@ class _ScandirResult:
         return None
 
     def __iter__(self):
-        return iter(self._entries)
+        return self
+
+    def __next__(self):
+        return next(self._entries)
+
+    def close(self) -> None:
+        return None
 
 
 def test_row_s2h_a_fault_on_a_selected_component_is_recorded_not_deferred(tmp_path, monkeypatch):
@@ -2356,7 +2369,164 @@ def test_row_s2h_a_fault_on_a_selected_component_is_recorded_not_deferred(tmp_pa
     with pytest.raises(fv.NonCanonicalScopeRef) as caught:
         fv.scope_within_decayed([str(scope_alias)], verdicts, council_root=base, vault_root=base)
     assert "cannot enumerate" in str(caught.value)
-    assert caught.value.remedy
+    _assert_filesystem_remedy_survived(caught.value)
+
+
+def test_row_s2i_a_classification_fault_during_recursive_traversal_is_recorded(
+    tmp_path, monkeypatch
+):
+    """S2i: the fourth cell — RECURSIVE traversal times an ENTRY-CLASSIFICATION fault.
+
+    Review finding (codex, 2026-09-08, `shared/frame_verdicts.py:1948`), reproduced: the `**`
+    branch delegated to `os.walk`, and `os.walk` suppresses an `OSError` from
+    `DirEntry.is_dir()` WITHOUT calling `onerror` — it simply treats the entry as a
+    non-directory and never descends. So the repaired `_children` handler, which does record
+    such a fault, was bypassed on exactly the recursive path where the whole subtree is in
+    scope, and a decayed hard link was ADMITTED.
+
+    Codex named the gap in the two rows added with that repair, and named it correctly: S2h
+    faults entry classification but not recursively, S2g faults `scandir` recursively but not
+    entry classification. Three of four cells. **The pair looked like coverage of a surface
+    because each row covered one axis of it** — the same shape as the `Path`-method sweep that
+    reported the `os.scandir` layer as covered.
+
+    The repair replaces `os.walk` here with a traversal that records both kinds of failure, so
+    the recursive and non-recursive paths now share one mechanism rather than agreeing by
+    coincidence.
+    """
+    base = tmp_path / "base"
+    root = base / "usr"
+    real = root / "bin"
+    real.mkdir(parents=True)
+    selected = real / "fsck.ext2"
+    selected.write_bytes(b"e2fsck NEEDLE\n")
+    scope_alias = real / "e2fsck"
+    os.link(selected, scope_alias)
+
+    member = {
+        "id": "recursive-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["**/fsck.ext2"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("recursive-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    readable = fv.scope_within_decayed(
+        [str(scope_alias)], verdicts, council_root=base, vault_root=base
+    )
+    assert readable.all_inside is True, "readable baseline reaches the selected file"
+
+    monkeypatch.setattr(
+        os, "scandir", _ScandirFaultingOneName("bin", OSError(40, "Too many levels of symlinks"))
+    )
+
+    with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+        fv.scope_within_decayed([str(scope_alias)], verdicts, council_root=base, vault_root=base)
+    assert "cannot enumerate" in str(caught.value)
+    _assert_filesystem_remedy_survived(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("arrangement", "refuses"),
+    [("zero_level", True), ("behind_a_symlink", False)],
+    ids=["zero-level-** reaches the base's own children", "** does not follow a symlink"],
+)
+def test_row_s2j_the_recursive_descent_states_its_own_traversal_rule(
+    tmp_path, monkeypatch, arrangement, refuses
+):
+    """S2j: `_descend` traverses a symlinked directory no more than `**` itself does.
+
+    `_descend` passes `follow_symlinks=False`, matching both `os.walk` and `pathlib`'s own
+    `**`. A directory reachable only THROUGH a symlink is therefore outside what the pattern
+    traverses, and a fault there must neither refuse nor change the answer. Without this row,
+    "record more failures" would read as a strict improvement, and widening the descent to
+    follow links would pass every other control in this file.
+
+    The `zero_level` arrangement is the twin that keeps the rule from being read as "faults
+    under `**` are ignored": a directory directly under the root IS traversed, and faulting it
+    refuses.
+
+    **Two earlier drafts of this row measured nothing, and the mutation runs are what said so.**
+    Dropping the base from the descent reddened row S2f, not this one — S2f is the control that
+    isolates base-in-frontier, because its alias is a symlink `_descend` will not enter and only
+    `_children` reaches. And faulting the symlink's TARGET left the following-symlinks mutant
+    green, because the traversal scans the link path, not the resolved one. The fault is
+    injected on the link path here for that reason.
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    direct = root / "direct"
+    direct.mkdir(parents=True)
+    selected = direct / "leaf.txt"
+    selected.write_bytes(b"NEEDLE\n")
+    hidden = base / "hidden"
+    hidden.mkdir()
+    (hidden / "unreachable.txt").write_bytes(b"NEEDLE\n")
+    (root / "link").symlink_to(hidden, target_is_directory=True)
+    elsewhere = base / "elsewhere"
+    elsewhere.mkdir()
+    alias = elsewhere / "alias.txt"
+    os.link(selected, alias)
+
+    member = {
+        "id": "descent-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["**/direct/leaf.txt"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("descent-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    readable = fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+    assert readable.all_inside is True, "readable baseline reaches the selected file"
+
+    # The LINK path, not its target: the traversal scans `root/link`, so faulting `hidden`
+    # would leave a following-symlinks mutant green — measured, and it did.
+    faulting = direct if arrangement == "zero_level" else root / "link"
+    real_scandir = os.scandir
+
+    def refusing(path=".", *args, **kwargs):
+        if str(path).rstrip("/") == str(faulting):
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", refusing)
+
+    if refuses:
+        with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+            fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+        assert "cannot enumerate" in str(caught.value)
+        _assert_filesystem_remedy_survived(caught.value)
+    else:
+        result = fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+        assert result.all_inside is True, (
+            "a directory reachable only through a symlink is not traversed by `**`, so its "
+            "fault must neither refuse nor change the answer"
+        )
+
+
+def _assert_filesystem_remedy_survived(error: fv.NonCanonicalScopeRef) -> None:
+    """The refusal must still name the FILESYSTEM repair, not the class's glob advice.
+
+    Review finding (codex, 2026-09-08, `shared/frame_verdicts.py:2538` and `:2578`):
+    `UndecidableScopeContainment` inherits `ValueError`, so the enumeration wrappers caught the
+    typed refusal `_require_scannable` had just raised and re-wrapped it. The fact survived and
+    the REMEDY did not — a broken read permission was reported as advice to use explicit paths
+    or narrower globs, when the scope in the reproduction is already explicit and the access is
+    what is broken. An operator following that remedy would edit a correct declaration.
+    """
+    assert error.remedy, "a refusal must carry a remedy"
+    assert "repair read access" in error.remedy, (
+        f"the filesystem remedy was replaced by the generic one: {error.remedy!r}"
+    )
+    assert "narrower globs" not in error.remedy
 
 
 @pytest.mark.parametrize(
@@ -2451,6 +2621,7 @@ def test_row_s2g_an_interior_fault_in_the_member_enumeration_cannot_be_survived_
         with pytest.raises(fv.NonCanonicalScopeRef) as caught:
             fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
         assert "cannot enumerate" in str(caught.value)
+        _assert_filesystem_remedy_survived(caught.value)
     else:
         result = fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
         assert result.all_inside is False, (

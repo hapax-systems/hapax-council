@@ -1886,6 +1886,54 @@ def _require_scannable(root: Path, pattern: str, *, component_faults_recorded: b
             return
         failures.append(error)
 
+    def _descend(base: Path) -> list[Path]:
+        """Every directory below `base`, recording BOTH scan and classification failures.
+
+        This replaced `os.walk`, which reports a scan failure through `onerror` but suppresses
+        an `OSError` from `DirEntry.is_dir()` WITHOUT reporting it at all — it silently treats
+        the entry as a non-directory and never descends. So the recursive branch bypassed the
+        classification handler `_children` had just been repaired to keep, on exactly the path
+        where `**` puts the whole subtree in scope, and a decayed hard link was ADMITTED (review
+        finding, codex, at `4863a74f8`, reproduced with `**/fsck.ext2` and a fault on `bin`).
+
+        Two rows added with that repair looked like they covered this and did not: one faults
+        entry classification without recursion, the other faults `scandir` recursively. Three
+        of four cells, and the pair read as coverage of the surface because each held one axis.
+        Doing the descent here rather than delegating is what makes the recursive and
+        non-recursive paths share one mechanism instead of agreeing by coincidence.
+
+        `follow_symlinks=False` keeps `os.walk`'s traversal rule deliberately: a directory alias
+        is reached by `_children` on the segments AFTER `**`, which is the repair at
+        `f74f36cf6`, not by descending into it here.
+        """
+        reached: list[Path] = []
+        seen: set[Path] = set()
+        stack = [base]
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            reached.append(current)
+            try:
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        try:
+                            is_directory = entry.is_dir(follow_symlinks=False)
+                        except OSError as exc:  # noqa: PERF203
+                            # `**` selects every entry, so there is no unrelated sibling here:
+                            # anything that cannot be classified is inside the declared grammar.
+                            if component_faults_recorded:
+                                _record(exc)
+                            continue
+                        if is_directory:
+                            stack.append(Path(entry.path))
+            except (OSError, RuntimeError) as exc:
+                _record(exc if isinstance(exc, OSError) else OSError(str(exc)))
+            if failures:
+                break
+        return reached
+
     def _children(base: Path, segment: str) -> list[Path]:
         """Scan one directory, recording a failure, and return the subdirectories it selects."""
         selected: list[Path] = []
@@ -1933,7 +1981,7 @@ def _require_scannable(root: Path, pattern: str, *, component_faults_recorded: b
     for segment in segments[:-1]:
         if segment == "**":
             # From here down the grammar can reach anything, so the whole subtree must be
-            # readable. `os.walk` reports per-directory failures through `onerror`.
+            # readable AND classifiable. `_descend` records both, which `os.walk` does not.
             #
             # It does NOT follow symlinks, and the remaining segments must still be walked
             # from every directory it reached: `**` matches zero or more levels, so an
@@ -1945,12 +1993,22 @@ def _require_scannable(root: Path, pattern: str, *, component_faults_recorded: b
             # continuing the walk is what reaches it.
             reached: list[Path] = []
             for base in frontier:
-                for current, _dirs, _files in os.walk(base, onerror=_record):
-                    reached.append(Path(current))
-                    if failures:
-                        break
-            # `**` also matches zero levels, so the bases themselves stay in the frontier.
-            frontier = list(dict.fromkeys([*frontier, *reached]))
+                reached.extend(_descend(base))
+                if failures:
+                    break
+            # `**` matches zero levels too, so the bases must stay reachable for the segments
+            # after it — and they do because `_descend` yields each base as its own first
+            # entry, which is the mechanism.
+            #
+            # An earlier revision carried the bases separately, as `[*frontier, *reached]`, and
+            # said in a comment that the extra term was what handled zero-level matching. That
+            # was false: `os.walk` yields its own top as well, so the term never changed the
+            # frontier and deleting it left 516 rows green. Measured three ways before removing
+            # it — a walk yields its top first, does so even when the top is a symlinked
+            # directory, and when the top is unreadable it yields nothing and reports the
+            # failure, which breaks out above. A stated mechanism that does no work is worth
+            # more to remove than to keep, because the next reader preserves it as load-bearing.
+            frontier = list(dict.fromkeys(reached))
             if failures:
                 break
             continue
@@ -2367,6 +2425,9 @@ def _check_member_symlinks(
             # ref. See `_require_scannable`'s docstring for why this half must not record.
             _require_scannable(path, scope_pattern, component_faults_recorded=False)
             paths.extend(found)
+        except NonCanonicalScopeRef:
+            # As at the other two sites: do not re-wrap a refusal that names its own repair.
+            raise
         except (OSError, RuntimeError, ValueError) as exc:
             raise UndecidableScopeContainment(
                 f"cannot inspect scope glob {scope_pattern!r} below {path}: {exc}; "
@@ -2535,6 +2596,13 @@ def _canonical_member_entries_uncached(member: DecayedMember) -> dict[Path, Path
                     f"**/{pattern}" if content_query else pattern,
                     component_faults_recorded=True,
                 )
+            except NonCanonicalScopeRef:
+                # `UndecidableScopeContainment` IS a `ValueError`, so this broad handler used to
+                # catch the typed refusal `_require_scannable` had just raised and replace it —
+                # keeping the fact but discarding the remedy, so a broken read-permission was
+                # reported as advice to narrow the glob (review finding, codex, at `4863a74f8`).
+                # A refusal that names its own repair must reach the caller as itself.
+                raise
             except (OSError, RuntimeError, ValueError) as exc:
                 raise UndecidableScopeContainment(
                     f"cannot enumerate member pattern {pattern!r} below {root}: {exc}; "
@@ -2575,6 +2643,10 @@ def _canonical_scope_entries(
         # Scope side, as above: `_resolve_scope_directory_prefix` diagnoses a component fault
         # here with the ref in hand, so recording it would replace a better refusal with a worse.
         _require_scannable(path, pattern, component_faults_recorded=False)
+    except NonCanonicalScopeRef:
+        # As at the member site: the typed refusal carries its own remedy and must not be
+        # re-wrapped by a handler that catches ValueError.
+        raise
     except (OSError, RuntimeError, ValueError) as exc:
         raise UndecidableScopeContainment(
             f"cannot inspect scope glob {pattern!r} below {path}: {exc}; containment is undecidable"
