@@ -134,8 +134,11 @@ def reported_readers(gate, tmp_path: Path, body: str) -> set[str]:
     two questions in two helpers is what stops the second from being blurred into the first.
     """
 
+    # `exist_ok` so a row may ask BOTH questions of one arrangement — `observed` for what was
+    # certified, this for whether the reader survived — without a second temporary tree whose
+    # only difference would be its name.
     shared = tmp_path / "shared"
-    shared.mkdir()
+    shared.mkdir(exist_ok=True)
     (shared / "example.py").write_text("from pathlib import Path\n" + body + "\n")
     gate.collect_artifact_accesses(tmp_path)
     report = gate.analyse_consumer_side(tmp_path, [])
@@ -180,7 +183,22 @@ def test_expression_result_and_binding_agree(gate, tmp_path, name, expression, a
     )
     if name in WITHHELD or not isinstance(actual, str):
         assert writers == set(), f"{name}: nothing may be certified here"
-        assert str(actual) in orphans, f"{name}: the reader keeps its orphan"
+        # **"Keeps its orphan" is a claim about the READER surviving, not about which absence
+        # kind it survives under.** These rows read the orphan set from `observed`, which
+        # collects only `consumer-reads-unwritten-artifact`; once the report learned to tell a
+        # decided absence from an undetermined execution, four of them — the dict-display rows,
+        # whose writers are unbounded — moved to the weaker kind and failed while measuring
+        # nothing that had changed (review finding, codex, at `9f8f9d192`, run against the
+        # pinned tests with in-memory fixture I/O, which is the run I could not do).
+        #
+        # Asserted through `reported_readers` for the same reason the comprehension rows are:
+        # survival here, classification in `REPORT_BOUNDARY`. Two helpers, two questions.
+        assert str(actual) in reported_readers(
+            gate,
+            tmp_path,
+            helper
+            + f"open(value({argument!r}), 'w', closefd=False)\nPath({str(actual)!r}).read_text()",
+        ), f"{name}: the reader keeps its orphan"
     else:
         assert writers == {actual}, f"{name}: the writer is the string Python built"
         assert actual not in orphans
