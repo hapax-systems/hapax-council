@@ -927,12 +927,21 @@ def test_two_scope_refs_differing_only_in_whitespace_stay_distinct() -> None:
     assert len(set(refs)) == 3, "three declarations must not collapse into fewer subjects"
 
 
-def test_an_empty_scope_ref_is_dropped_here_and_refused_by_name_at_the_gate() -> None:
-    """`""` cannot name a surface, so this helper still drops it and its contract is unchanged.
+def test_an_empty_scope_ref_is_dropped_by_this_helper() -> None:
+    """`""` cannot name a surface, so this helper drops it and its contract is unchanged.
 
-    The frame gate is where that becomes dangerous, and that is where it is now refused BY NAME:
-    an emptied scope there is indistinguishable from declaring no scope at all, which skips the
-    uncontainable-member guard. See `scope_within_decayed`.
+    **Scope of this row, corrected.** It was titled "…and refused by name at the gate" and its
+    prose said so, which implied it exercised the dropped ref reaching a frame refusal. It does
+    not: everything here is the metadata helper, and a ref this helper drops never reaches
+    `scope_within_decayed` from this call path at all (cx-blue, 2026-09-08). A title claiming a
+    second subsystem is the same fault as a spelling parameter that only reaches a print.
+
+    The gate's own empty-ref refusal is a DIRECT-PREDICATE claim and is asserted where it
+    happens, on `scope_within_decayed` in `tests/shared/test_frame_verdicts.py`
+    (`test_scope_matching_by_containment_patterns_files_and_wildcard_tails`), which calls that
+    function with `""` and requires `NonCanonicalScopeRef`. The `main()` claim in this family is
+    narrower still and is the uncontainable-guard bypass, in
+    `tests/scripts/test_frame_file_spelling.py`. Three different levels, three different rows.
     """
     payload = _dispatchable_metadata()
     payload["mutation_scope_refs"] = ""

@@ -38,10 +38,25 @@ rows are unnecessary.
 
 What these rows do pin is the end-to-end behaviour for hard links, which genuinely had none.
 
-What the guard actually buys is the pair below: **`elsewhere/` refuses when the alias is the only
-thing in it, and admits when an unselected file sits beside it.** Nothing about the NAMES differs
-between those two cases — only identity can tell them apart, and only partial-scope semantics can
-admit the second.
+**What the rows below actually establish, corrected.** An earlier draft of this paragraph claimed
+the guard buys a pair — "`aliased/` refuses when the alias is the only thing in it, and admits
+when an unselected file sits beside it". **The first half is false and the final row measures the
+opposite** (cx-blue, 2026-09-08): a dirlike scope over an alias-only directory is ADMITTED. The
+sentence was written from what I expected before measuring and left standing after the
+measurement contradicted it, in the same file as the row that contradicts it.
+
+The line that does hold is narrower and is about SPELLING, not about what the directory contains:
+a scope denoting exactly one name that is the decayed file under another name refuses (literal,
+and a single-choice character class), while a scope denoting unboundedly many names is partial and
+admits. Both directories in this module hold an alias; what separates the rows is how much the
+scope denotes.
+
+That admission is the ruled semantics, not a tolerated gap: **effect scope is prospective**, and
+an outside witness need not already exist, because the scope for creating a file is not its
+present filesystem expansion (coordinator ruling, 2026-09-08, `FRAME-SCALAR-HARDLINK-READBACK-
+20260908`). It does not establish that any actual operation is outside the member, nor that the
+alias is healthy, and a declaration broadened merely to manufacture admission still misstates the
+demand.
 """
 
 import os
@@ -161,29 +176,29 @@ def test_main_an_independent_file_beside_the_alias_is_admitted(tmp_path, monkeyp
 
 
 def test_the_alias_only_directory_is_recorded_not_asserted(tmp_path, monkeypatch, capsys):
-    """A dirlike scope over a directory holding ONLY the alias is admitted. Open question.
+    """A dirlike scope over a directory holding ONLY the alias is admitted, and that is the rule.
 
-    This row asserts the MEASUREMENT and deliberately does not assert that it is correct, in
-    either direction, because which answer is right is a policy question I cannot settle:
+    Committed first as a recorded measurement I declined to endorse, because deciding it either
+    way was the move that got `aa5939179` withdrawn. **The coordinator has since ruled it**
+    (2026-09-08, `FRAME-SCALAR-HARDLINK-READBACK-20260908`): effect scope is PROSPECTIVE, an
+    outside witness need not already exist, and the scope for creating a file is not that
+    directory's present filesystem expansion. So the admission is the semantics, not a gap, and
+    this row now asserts it as such.
 
-    - Under the language reading it is right. `aliased/` denotes unboundedly many names, most of
-      which no member selects, so it is a partial scope — and partial scopes are admitted because
-      moving things out of a decayed member is legitimate work.
-    - Under the filesystem reading it is wrong. Every file the directory currently holds is the
-      decayed file under another name, so the dispatch proceeds over a wholly decayed surface.
+    What the ruling does NOT establish, kept explicit because the admission is easy to over-read:
+    that any actual operation is outside the member, or that the existing alias is healthy. A
+    declaration broadened merely to manufacture admission still misstates the demand.
 
-    The mechanism is measured and is not in doubt: the observed-entry strategy correctly finds no
-    witness (`selected-alias.txt` -> disjoint_established=None), and the generated-name strategy
-    then supplies `scope`, which does not exist, as the outside witness. That also falsified the
-    claim `_local_partial_scope_established` used to make in its own docstring, corrected in the
-    same commit.
+    The mechanism, measured: the observed-entry strategy correctly finds no witness
+    (`selected-alias.txt` -> disjoint_established=None), and the generated-name strategy supplies
+    `scope`, a name that does not exist. That is the prospective reading in the code. It also
+    falsified the claim `_local_partial_scope_established` made in its own docstring — "a scope
+    whose entries are all decayed finds nothing here" — corrected in the same commit, since the
+    sentence is false even under the ruling that keeps the behaviour.
 
-    Asserting a refusal here would substitute an alias-overlap veto for the partial-scope
-    predicate, which is the withdrawn `aa5939179` — root reproduced it as a regression through
-    receipt-only `main()` (6/1 committed, 7 pass guard-removed, 6/1 restored), and
-    FRAME-REVIEW-SCOPE-DISPOSITION-20260907 states no superseding any-overlap policy is
-    established. Two families reporting this does not make it a policy decision; it makes it a
-    measurement, which is what this row is.
+    Refusing here would substitute an alias-overlap veto for the partial-scope predicate: root
+    reproduced that as a regression through receipt-only `main()` (6/1 committed, 7 pass
+    guard-removed, 6/1 restored), and no superseding any-overlap policy is established.
     """
     base, surface, aliased, _alias = _linked(tmp_path, beside=False)
     assert sorted(p.name for p in aliased.iterdir()) == ["selected-alias.txt"], (
@@ -192,10 +207,11 @@ def test_the_alias_only_directory_is_recorded_not_asserted(tmp_path, monkeypatch
 
     rc, err = _dispatch(tmp_path, monkeypatch, capsys, surface, base, f"{aliased}/")
     with capsys.disabled():
-        print(f"alias-only directory, dirlike: main()={rc}  (recorded, not endorsed)")
+        print(f"alias-only directory, dirlike: main()={rc}  (prospective effect scope)")
 
     assert rc == 0 and not err, (
-        "MEASUREMENT CHANGED: the alias-only dirlike scope no longer admits. That may be the "
-        "right answer, but it is a policy change and must be made deliberately with the "
-        "disposition amended — not arrive as a side effect. See this row's docstring."
+        "the alias-only dirlike scope no longer admits: effect scope is prospective, so an "
+        "outside witness need not already exist. Refusing here reinstates the alias-overlap "
+        "veto withdrawn at aa5939179; it is a policy change and must be made deliberately with "
+        "the ruling amended, not arrive as a side effect. See this row's docstring."
     )
