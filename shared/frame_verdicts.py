@@ -511,7 +511,21 @@ def _producer_working_directory(epoch_dir: Path) -> Path:
     )
     hypothesis = epoch_dir / "hypothesis.json"
     try:
-        if hypothesis.exists():
+        # **UNREADABLE IS NOT ABSENT, and here the difference redirects a root.** `Path.exists`
+        # swallows the ignorable errnos and answers False, so a hypothesis file that is present
+        # but cannot be read — a symlink loop, a bad descriptor — took the same branch as one
+        # that was never written, and this function silently substituted the declared vault base
+        # for the producer's own recorded working directory. Every member location below is then
+        # resolved against a root the producer never used, with no refusal and no evidence
+        # binding (review findings, gemini, glm and codex, at `f9836f8ec`, three families on one
+        # site).
+        #
+        # `_classified_exists` keeps the decided negatives — ENOENT and ENOTDIR still fall
+        # through to the vault base, because "nothing is there" really is an answer — and lets
+        # everything else raise into the handler below, which already carries the remedy. A
+        # DANGLING symlink stays on the absent side: `stat` reports ENOENT for it, and treating
+        # a decided-absent target as unknown would be widening past what was reported.
+        if _classified_exists(hypothesis):
             payload = json.loads(hypothesis.read_text(encoding="utf-8"))
             environment = payload.get("iteration", {}).get("environment", {})
             if "cwd" in environment:
@@ -521,7 +535,13 @@ def _producer_working_directory(epoch_dir: Path) -> Path:
                 raise ValueError("recorded cwd must be a non-empty absolute path")
         vault = frame_vault_root().expanduser()
         base = vault / "30-areas/hapax"
-        if vault.is_absolute() and base.is_dir():
+        # Same reading of the same method at the fallback: an unreadable vault base answered
+        # False and became the generic "no available declared vault base" refusal at the bottom,
+        # which names neither the base nor the fault. Unsuppressed, it raises into the handler
+        # and the refusal says which component could not be read. A base that genuinely is not
+        # there still answers False and still reaches the generic refusal, which is correct —
+        # that one really is an absence.
+        if vault.is_absolute() and _classified_is_dir(base):
             return base.resolve()
     except (OSError, ValueError, AttributeError, TypeError) as exc:
         raise FrameVerdictsUnavailable(
@@ -807,7 +827,17 @@ def _load_content_query(
             raise ValueError("multiline or non-ASCII case-insensitive query is unsupported")
         profile = yaml.safe_load((procedure_root / "declaration/params.yaml").read_text("utf-8"))
         hypothesis = epoch_dir / "hypothesis.json"
-        if hypothesis.exists():
+        # **The SECOND site of the same suppression, and the one codex's wording pointed at.**
+        # gemini and glm wrote "bypasses evidence binding" and codex wrote "bypasses PROFILE
+        # binding" — different halves, and I read the report as naming one line. Here a
+        # suppressed `exists()` skips the `parameter_profile_digest` comparison entirely, so an
+        # unreadable hypothesis does not merely lose a recorded value: it silently drops the
+        # check that the epoch was produced under the profile being read.
+        #
+        # Found by a two-match replacement failing, not by reading the report carefully enough.
+        # The rule is the one this file keeps relearning: repair the site a finding cites and the
+        # neighbours keep the defect.
+        if _classified_exists(hypothesis):
             recorded = json.loads(hypothesis.read_text("utf-8")).get("iteration", {})
             digest = recorded.get("parameter_profile_digest")
             canonical = json.dumps(

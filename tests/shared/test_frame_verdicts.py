@@ -628,6 +628,75 @@ def test_a_colon_bearing_relative_root_refuses_when_no_anchor_is_available(
     assert "run the frame producer" in caught.value.remedy
 
 
+PRODUCER_CWD_ARRANGEMENTS = (
+    # Decided negatives. Nothing readable is there, and the declared vault binding is the
+    # documented fallback for exactly that case, so each of these must still anchor.
+    ("absent", "vault"),
+    ("dangling_symlink", "vault"),  # `stat` reports ENOENT for the target: a decided absence
+    ("blocked_by_a_file_component", "vault"),  # ENOTDIR, likewise decided
+    # UNREADABLE. The file is there and cannot be read, so the recorded working directory is
+    # unknown — and substituting the vault base for it resolves every member location below
+    # against a root the producer never used.
+    ("symlink_loop", "refuse"),
+)
+
+
+@pytest.mark.parametrize(
+    ("arrangement", "expected"),
+    PRODUCER_CWD_ARRANGEMENTS,
+    ids=[row[0] for row in PRODUCER_CWD_ARRANGEMENTS],
+)
+def test_an_unreadable_hypothesis_refuses_instead_of_redirecting_the_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arrangement: str, expected: str
+) -> None:
+    """`hypothesis.exists()` answered False for a file that exists and cannot be read.
+
+    Three review families reported this on one line. The fault is injected at the FILESYSTEM —
+    a real symlink loop, which is what `Path.exists` suppresses — rather than by patching the
+    method, so the control measures the mitigation and not a stand-in for it. The three decided
+    negatives beside it are what keeps the refusal a discrimination: a repair that refused for
+    every unhappy stat would redden them.
+    """
+
+    vault = tmp_path / "vault"
+    (vault / "30-areas" / "hapax").mkdir(parents=True)
+    monkeypatch.setenv(fv.FRAME_VAULT_ROOT_ENV, str(vault))
+
+    epoch = tmp_path / "epoch"
+    epoch.mkdir()
+    hypothesis = epoch / "hypothesis.json"
+    if arrangement == "dangling_symlink":
+        hypothesis.symlink_to(tmp_path / "nowhere")
+    elif arrangement == "symlink_loop":
+        hypothesis.symlink_to(hypothesis)
+    elif arrangement == "blocked_by_a_file_component":
+        (epoch / "blocker").write_text("not a directory")
+        epoch = epoch / "blocker"
+
+    if expected == "vault":
+        assert fv._producer_working_directory(epoch) == (vault / "30-areas/hapax").resolve()  # noqa: SLF001
+        return
+
+    with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
+        fv._producer_working_directory(epoch)  # noqa: SLF001
+    assert "undecidable" in str(caught.value)
+    assert "hypothesis.json" in caught.value.remedy
+
+
+def test_a_recorded_working_directory_still_wins_over_the_vault_binding(tmp_path: Path) -> None:
+    """The twin the refusal must not cost: a readable hypothesis is still honoured."""
+
+    epoch = tmp_path / "epoch"
+    epoch.mkdir()
+    recorded = tmp_path / "recorded"
+    recorded.mkdir()
+    (epoch / "hypothesis.json").write_text(
+        json.dumps({"iteration": {"environment": {"cwd": str(recorded)}}}), encoding="utf-8"
+    )
+
+    assert fv._producer_working_directory(epoch) == recorded.resolve()  # noqa: SLF001
+
+
 def test_latest_epoch_is_the_newest_parseable_dir_that_carries_elements(tmp_path: Path) -> None:
     epochs = tmp_path / "_runs" / "epochs"
     (epochs / "20260903T112609Z-0c5d7a85").mkdir(parents=True)
