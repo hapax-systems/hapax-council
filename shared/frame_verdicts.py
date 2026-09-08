@@ -3051,8 +3051,27 @@ def _repo_relative_candidates(
     for member in verdicts.decayed:
         for location in (*member.roots, *member.files):
             for candidate in (location, *location.parents):
-                if (candidate / ".git").exists():
-                    roots.add(candidate.resolve())
+                # Discovering the checkout is itself a filesystem question, and it decides which
+                # candidates exist at all: a permission fault on one ancestor silently yields a
+                # SHORTER root set, so containment is never tried under the checkout that was
+                # skipped and the scope is admitted (review finding, codex, at `850ccfdbb`).
+                # Seventh instance of this family in this module, and the same shape as the
+                # identity read directly below — an unreadable answer becoming a negative one.
+                try:
+                    discovered = (candidate / ".git").exists()
+                    resolved = candidate.resolve() if discovered else None
+                except (OSError, RuntimeError) as exc:
+                    error = UndecidableScopeContainment(
+                        f"checkout discovery for declared location {location} cannot inspect "
+                        f"{candidate}: {exc}; a checkout that cannot be found is not a checkout "
+                        "that is absent"
+                    )
+                    error.remedy = (
+                        f"repair filesystem access for {candidate}, then retry the dispatch"
+                    )
+                    raise error from exc
+                if resolved is not None:
+                    roots.add(resolved)
                     break
     roots.discard(council_root.resolve())
     if not roots or (identity := _repository_identity(council_root)) is None:

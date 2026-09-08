@@ -1668,3 +1668,33 @@ def test_row_r5b_a_verified_unrelated_history_still_supplies_no_candidates(tmp_p
         "a checkout with a verified DIFFERENT root history supplies no candidates, and that is "
         "an answer rather than an absence of one"
     )
+
+
+def test_row_r5c_checkout_discovery_failures_are_an_actionable_refusal(tmp_path, monkeypatch):
+    """R5c: finding the checkout is itself a filesystem question, and it decides the candidates.
+
+    The discovery loop walks each declared location's ancestors looking for `.git`, and an
+    unreadable ancestor silently yielded a SHORTER root set — so containment was never tried
+    under the checkout that was skipped, and the scope was admitted (review finding, codex, at
+    `850ccfdbb`). Same shape as the identity read directly below it: an unreadable answer
+    becoming a negative one.
+
+    Seventh instance of this family in this module. R5 above is the sixth.
+    """
+    running, verdicts = _equivalent_checkouts(tmp_path)
+    real_exists = pathlib.Path.exists
+
+    def refusing_exists(self, *args, **kwargs):
+        if self.name == ".git":
+            raise PermissionError(13, "Permission denied")
+        return real_exists(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "exists", refusing_exists)
+
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.scope_within_decayed(
+            ["scripts/x.py"], verdicts, council_root=running, vault_root=running
+        )
+
+    assert "checkout discovery" in str(caught.value)
+    assert caught.value.remedy, "a refusal must name its remedy"

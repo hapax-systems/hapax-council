@@ -259,7 +259,17 @@ def _coerce_scope_ref_list(value: object) -> list[str]:
         # was quoted deliberately and names a subject.
         return [] if value == "" else [value]
     if isinstance(value, (list, tuple, set, frozenset)):
-        return [str(item) for item in value if str(item)]
+        # A `None` ITEM is a true absence, exactly as a `None` value is on the branch above:
+        # YAML spells it `[~]` or `[null]`, and it names no surface. `str(item)` turned it into
+        # the literal filename "None" — a subject nobody declared — which then resolved, bound
+        # evidence and could be compared against a member (review finding, gemini, at
+        # `850ccfdbb`, reported against the generic helper; the same line was in this
+        # field-specific copy, which is the half that is mine).
+        #
+        # Dropped rather than refused by name: absence is what YAML `~` MEANS here, unlike `""`,
+        # which is a string an author wrote and which the frame gate refuses because emptying a
+        # declared scope is indistinguishable from declaring none.
+        return [str(item) for item in value if item is not None and str(item)]
     return [str(value)] if str(value) else []
 
 

@@ -1091,3 +1091,35 @@ def test_a_quoted_tilde_is_a_declaration_because_quoting_is_how_you_say_so() -> 
     payload = _dispatchable_metadata()
     payload["mutation_scope_refs"] = document["mutation_scope_refs"]
     assert list(validate_route_metadata(payload).mutation_scope_refs) == ["~"]
+
+
+def test_a_null_list_item_is_absent_and_does_not_become_the_filename_none() -> None:
+    """`mutation_scope_refs: [~]` declares nothing; it used to declare a file called "None".
+
+    `str(item)` over the list turned a YAML null into the literal string `'None'`, which is
+    truthy, so it survived the blank filter and became a declared subject — one that then
+    resolved, bound evidence and could be compared against a member (review finding, gemini, at
+    `850ccfdbb`). A `None` ITEM is a true absence exactly as a `None` VALUE is.
+
+    Dropped rather than refused by name, unlike `""`: absence is what `~` MEANS in YAML, whereas
+    `""` is a string an author wrote.
+
+    **The same line is in the generic `_coerce_string_list`, and I have not touched it.** gemini
+    reported it there — `evidence_refs` on `PublicReleaseProjection` — and the standing
+    instruction on this row is no general string-coercion rewrite. The generic helper still turns
+    `[None]` into `['None']` for every field it serves; that is pre-existing, out of this
+    contract, and recorded here rather than silently fixed or silently left.
+    """
+    document = yaml.safe_load("mutation_scope_refs: [~, 'kept.md', null]\n")
+    assert document["mutation_scope_refs"] == [None, "kept.md", None]
+
+    payload = _dispatchable_metadata()
+    payload["mutation_scope_refs"] = document["mutation_scope_refs"]
+    assert list(validate_route_metadata(payload).mutation_scope_refs) == ["kept.md"]
+
+    from shared.route_metadata_schema import _coerce_string_list
+
+    assert _coerce_string_list([None]) == ["None"], (
+        "the GENERIC helper is deliberately unchanged; if this starts dropping None the "
+        "no-general-rewrite instruction has been crossed and the change needs its own authority"
+    )
