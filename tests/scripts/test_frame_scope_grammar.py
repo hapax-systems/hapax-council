@@ -2602,6 +2602,251 @@ def test_row_s2k_an_intermittent_fault_is_not_cleared_by_a_later_clean_traversal
     assert caught.value.remedy
 
 
+class _ClassificationFaultingOnFirstAttempt:
+    """`os.scandir` whose ENTRY CLASSIFICATION fails only the FIRST time an entry is classified.
+
+    The scan itself always succeeds; only `DirEntry.is_dir()` raises, only for the named entry,
+    and only once. Every later attempt — including the readability walk's — succeeds, which is
+    what makes the fault invisible to any check that is a second traversal.
+
+    **Counting `is_dir` attempts rather than traversals was measured, not assumed.** Gating on
+    "the first pass over the tree" does not work here: pathlib's recursive selector yields the
+    parent before walking it, so the first scan of the root classifies nothing and the first
+    classification of a child lands in the SECOND scan. A gate written against the intuition
+    silently never fired and the row passed for the wrong reason.
+    """
+
+    def __init__(self, name: str, error: OSError) -> None:
+        self._name = name
+        self._error = error
+        self._real = os.scandir
+        self.attempts = 0
+
+    def _classify_once(self, entry):  # noqa: ANN001, ANN202
+        outer = self
+
+        class _FailsFirstAttempt:
+            __slots__ = ("_entry",)
+
+            def __init__(self, wrapped) -> None:  # noqa: ANN001
+                self._entry = wrapped
+
+            def __getattr__(self, name):  # noqa: ANN001, ANN204
+                return getattr(self._entry, name)
+
+            def is_dir(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN204
+                outer.attempts += 1
+                if outer.attempts == 1:
+                    raise outer._error
+                return self._entry.is_dir(*args, **kwargs)
+
+        return _FailsFirstAttempt(entry)
+
+    def __call__(self, path="."):
+        entries = []
+        with self._real(path) as scan:
+            for entry in scan:
+                entries.append(self._classify_once(entry) if entry.name == self._name else entry)
+        return _ScandirResult(entries)
+
+
+def test_row_s2m_an_intermittent_classification_fault_is_captured_by_the_supplying_traversal(
+    tmp_path, monkeypatch
+):
+    """S2m: the classification layer has the SAME observation problem as the scan layer.
+
+    Coordinator hold on `7d3a6e8d4`: leaving `DirEntry` classification to the later readability
+    walk "cannot certify classification inside the supplying traversal" — the walk is again a
+    re-run, so an intermittent classification fault is invisible exactly as an intermittent scan
+    fault was. I had reasoned that relevance made capturing them unsafe; the correct order is
+    the one they gave: **capture the actual error, then prove it irrelevant or refuse. Unknown
+    relevance is not demonstrated disjointness.**
+
+    Here `is_dir()` fails only on the FIRST classification of the directory holding the selected
+    file. `Path.glob` suppresses it and returns a short surface; the later walk classifies
+    cleanly and reports the tree healthy. The observing enumerator sees the fault at the moment
+    the surface is built, so no later success can clear it.
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    inner = root / "inner"
+    inner.mkdir(parents=True)
+    selected = inner / "leaf.txt"
+    selected.write_bytes(b"NEEDLE\n")
+    elsewhere = base / "elsewhere"
+    elsewhere.mkdir()
+    alias = elsewhere / "alias.txt"
+    os.link(selected, alias)
+
+    member = {
+        "id": "classification-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["**/*.txt"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("classification-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    readable = fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+    assert readable.all_inside is True, "readable baseline reaches the selected file"
+
+    monkeypatch.setattr(
+        os,
+        "scandir",
+        _ClassificationFaultingOnFirstAttempt("inner", OSError(40, "Too many levels of symlinks")),
+    )
+
+    with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+        fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+    assert "cannot enumerate" in str(caught.value)
+    assert caught.value.remedy
+
+
+class _IteratorFaultingOnFirstAttempt:
+    """`os.scandir` whose ITERATOR raises once, mid-walk, after opening cleanly."""
+
+    def __init__(self, target: str, error: OSError) -> None:
+        self._target = target
+        self._error = error
+        self._real = os.scandir
+        self.attempts = 0
+
+    def __call__(self, path="."):
+        entries = []
+        with self._real(path) as scan:
+            entries.extend(scan)
+        if str(path).rstrip("/") == self._target:
+            self.attempts += 1
+            if self.attempts == 1:
+                return _ScandirRaisingMidIteration(entries, self._error)
+        return _ScandirResult(entries)
+
+
+class _ScandirRaisingMidIteration(_ScandirResult):
+    """Yields nothing and raises on the first `__next__`, as a failing iterator does."""
+
+    def __init__(self, entries, error: OSError) -> None:
+        super().__init__(entries)
+        self._error = error
+        self._raised = False
+
+    def __next__(self):
+        if not self._raised:
+            self._raised = True
+            raise self._error
+        return super().__next__()
+
+
+def test_row_s2n_a_fault_while_iterating_the_scan_is_captured_too(tmp_path, monkeypatch):
+    """S2n: opening a scan, ITERATING it, and classifying an entry fail separately.
+
+    Review finding (codex, 2026-09-08, at `7d3a6e8d4`): the observing enumerator caught only
+    errors *opening* the iterator, so a scandir that opened cleanly and then raised mid-walk
+    still shortened the surface with nothing recorded. Three layers, and the repair had covered
+    one and then two of them — the same one-at-a-time pattern as the `OSError`/`RuntimeError`/
+    `ValueError` family this module met three times.
+
+    Relevance is not attempted for this layer, deliberately: the entry an iteration failure
+    would have yielded is exactly what was not produced, so there is nothing to test for
+    disjointness. Unknown relevance is not demonstrated disjointness, so it refuses.
+    """
+    base = tmp_path / "base"
+    root = base / "bin"
+    root.mkdir(parents=True)
+    selected = root / "fsck.ext2"
+    selected.write_bytes(b"e2fsck NEEDLE\n")
+    scope_alias = root / "e2fsck"
+    os.link(selected, scope_alias)
+
+    member = {
+        "id": "iteration-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["fsck.ext[234]"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("iteration-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    readable = fv.scope_within_decayed(
+        [str(scope_alias)], verdicts, council_root=base, vault_root=base
+    )
+    assert readable.all_inside is True, "readable baseline reaches the selected file"
+
+    monkeypatch.setattr(
+        os,
+        "scandir",
+        _IteratorFaultingOnFirstAttempt(str(root), PermissionError(13, "Permission denied")),
+    )
+
+    with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+        fv.scope_within_decayed([str(scope_alias)], verdicts, council_root=base, vault_root=base)
+    assert "cannot enumerate" in str(caught.value)
+    assert caught.value.remedy
+
+
+def test_row_s2l_an_observed_failure_must_belong_to_the_declared_grammar(tmp_path, monkeypatch):
+    """S2l: exception RELEVANCE for `_observed_glob`, which the coordinator asked be qualified.
+
+    Observing the supplying traversal only helps if what it observes is the scope's business.
+    The claim that makes it sound is that `Path.glob` visits exactly the directories its pattern
+    reaches — so a failure it reports is inside the declared grammar by construction, and no
+    relevance filter is needed on top. **That is an argument until a row holds it**, and the
+    failure mode it guards against is the one that reddened ten dispatch controls this morning:
+    a fault on an unrelated directory refusing a scope that never reads it.
+
+    Here the member is rooted at `surface` with a recursive pattern, and the faulting directory
+    is a SIBLING of that root, outside it entirely. The glob never scans it, so nothing is
+    recorded and the answer is unchanged — including `all_inside`, which must still be True
+    rather than merely un-refused.
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    inner = root / "inner"
+    inner.mkdir(parents=True)
+    selected = inner / "leaf.txt"
+    selected.write_bytes(b"NEEDLE\n")
+    unrelated = base / "unrelated"
+    unrelated.mkdir()
+    (unrelated / "other.txt").write_bytes(b"NEEDLE\n")
+    elsewhere = base / "elsewhere"
+    elsewhere.mkdir()
+    alias = elsewhere / "alias.txt"
+    os.link(selected, alias)
+
+    member = {
+        "id": "relevance-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["**/*.txt"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("relevance-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    real_scandir = os.scandir
+
+    def refusing(path=".", *args, **kwargs):
+        if str(path).rstrip("/") == str(unrelated):
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", refusing)
+
+    result = fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+    assert result.all_inside is True, (
+        "a fault outside the member root is not this scope's concern and must not change the "
+        "answer, let alone refuse"
+    )
+
+
 def _assert_filesystem_remedy_survived(error: fv.NonCanonicalScopeRef) -> None:
     """The refusal must still name the FILESYSTEM repair, not the class's glob advice.
 

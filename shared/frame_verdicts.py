@@ -2040,9 +2040,32 @@ def _require_scannable(root: Path, pattern: str, *, component_faults_recorded: b
 #: reaches its directory scans through ``type(parent)._scandir`` and preserves the receiver's
 #: class down the tree via ``with_segments``, so a subclass sees the glob's OWN scans. That is a
 #: PRIVATE binding, pinned to the interpreter this was measured on (3.12.13) and not a portable
-#: guarantee — hence a checked capability rather than an assumption. Where it is absent the
-#: enumeration falls back to the separate readability walk, whose bound is stated at its caller.
+#: guarantee — hence a checked capability rather than an assumption.
+#:
+#: **Absence REFUSES; it does not fall back.** An earlier revision degraded to the separate
+#: readability walk here and offered, as evidence the fallback was safe, that forcing the seam
+#: off left every row passing but S2k. The coordinator's reading is the correct one: that
+#: measurement is a discriminator AGAINST the fallback, not a justification for it — it says in
+#: one line that the known intermittent-fault fail-open returns wherever the seam is missing. A
+#: stated bound on a fail-open is still a fail-open, which is this row's own most-repeated
+#: finding, and I reproduced it in the repair for it.
 _GLOB_SCAN_SEAM = hasattr(Path, "_scandir")
+
+
+def _refuse_unobservable_enumeration(root: Path, pattern: str) -> UndecidableScopeContainment:
+    """Refuse by name where the supplying traversal cannot be observed on this runtime."""
+    error = UndecidableScopeContainment(
+        f"cannot decide containment for member pattern {pattern!r} below {root} on this "
+        f"interpreter: expanding it uses pathlib's own directory scans, which suppress their "
+        "errors, and this runtime does not expose the seam that observes them — so a short "
+        "surface could not be told from a complete one"
+    )
+    error.remedy = (
+        "run governed dispatch on an interpreter whose pathlib exposes Path._scandir "
+        "(measured on 3.12), or qualify and bind the equivalent seam for this runtime; "
+        "do not disable the check"
+    )
+    return error
 
 
 def _observed_glob(root: Path, pattern: str) -> tuple[list[Path], list[OSError]]:
@@ -2064,21 +2087,125 @@ def _observed_glob(root: Path, pattern: str) -> tuple[list[Path], list[OSError]]
     concurrent invocations, which is the bound the re-entrancy guard already had to state once;
     there is no reason to acquire a second one.
 
-    **Bound, stated because it is real:** this observes directory SCANS, not pathlib's per-entry
-    `DirEntry` classification, which happens before the name is matched and is not visible here.
-    That layer keeps its existing cover, and the older walk is deliberately not removed.
+    **Classification is captured too, and relevance is decided separately from capture.** An
+    earlier revision observed only directory scans and left per-entry `DirEntry` classification
+    to the later walk — which reproduces the very defect one layer down, because that walk is
+    again a re-run. The coordinator's rule is the right one: *preserve the actual
+    supplying-traversal error, then prove it irrelevant to the selected grammar or refuse;
+    unknown relevance is not demonstrated disjointness.* So a classification fault is recorded
+    unless the entry can be shown definitely outside what the pattern selects, and
+    `_definitely_outside_pattern` claims that only where it can prove it.
     """
     failures: list[OSError] = []
+
+    class _ObservedEntry:
+        """A `DirEntry` whose classification faults are recorded before they are suppressed."""
+
+        __slots__ = ("_entry",)
+
+        def __init__(self, entry: os.DirEntry) -> None:
+            self._entry = entry
+
+        def __getattr__(self, name: str):  # noqa: ANN202
+            return getattr(self._entry, name)
+
+        def is_dir(self, *args, **kwargs):  # noqa: ANN202
+            try:
+                return self._entry.is_dir(*args, **kwargs)
+            except OSError as exc:
+                if not _definitely_outside_pattern(Path(self._entry.path), root, pattern):
+                    failures.append(exc)
+                raise
+
+        def is_file(self, *args, **kwargs):  # noqa: ANN202
+            try:
+                return self._entry.is_file(*args, **kwargs)
+            except OSError as exc:
+                if not _definitely_outside_pattern(Path(self._entry.path), root, pattern):
+                    failures.append(exc)
+                raise
+
+    class _ObservedScan:
+        """Wraps one scandir result, preserving the context-manager and iterator protocols."""
+
+        def __init__(self, inner) -> None:
+            self._inner = inner
+
+        def __enter__(self):  # noqa: ANN204
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc_info) -> None:
+            self._inner.__exit__(*exc_info)
+
+        def __iter__(self):  # noqa: ANN204
+            return self
+
+        def __next__(self):  # noqa: ANN204
+            try:
+                return _ObservedEntry(next(self._inner))
+            except StopIteration:
+                raise
+            except OSError as exc:
+                # THE THIRD LAYER. Opening a scandir, ITERATING it, and classifying an entry
+                # each fail separately, and an earlier revision caught only the first — so an
+                # iterator that raised mid-walk still shortened the surface silently (review
+                # finding, codex, at `7d3a6e8d4`). Relevance cannot be established for an
+                # iteration failure, because the entry it would have yielded is precisely what
+                # was not produced; unknown relevance is not demonstrated disjointness, so it
+                # is recorded.
+                failures.append(exc)
+                raise
+
+        def close(self) -> None:
+            close = getattr(self._inner, "close", None)
+            if close is not None:
+                close()
 
     class _ObservedPath(type(root)):  # type: ignore[misc]
         def _scandir(self):  # noqa: ANN202
             try:
-                return super()._scandir()
+                return _ObservedScan(super()._scandir())
             except OSError as exc:
                 failures.append(exc)
                 raise
 
     return list(_ObservedPath(root).glob(pattern)), failures
+
+
+def _definitely_outside_pattern(entry: Path, root: Path, pattern: str) -> bool:
+    """Whether ``entry`` provably cannot be on any path ``pattern`` selects beneath ``root``.
+
+    **Conservative by construction: it answers True only where it can prove it**, because the
+    caller spends a False as "record this failure" and a wrong True is a fail-open. Unknown
+    relevance is not demonstrated disjointness.
+
+    A `**` at or before the entry's own depth can reach any descendant, INCLUDING descendants of
+    a directory whose own name matches nothing in the pattern — so once one is in play nothing
+    below is provably outside and this answers False. Without one, each segment must match its
+    positional counterpart, and an entry deeper than the pattern is only outside if the pattern
+    cannot extend to it.
+
+    Native matching is untouched: this decides only whether a FAILURE is the scope's business,
+    never which files are selected.
+    """
+    try:
+        relative = entry.relative_to(root)
+    except ValueError:
+        return True
+    segments = [segment for segment in pattern.split("/") if segment]
+    parts = relative.parts
+    if not segments:
+        return False
+    for index, part in enumerate(parts):
+        if index >= len(segments):
+            # Deeper than the pattern reaches, and no `**` was passed on the way down.
+            return "**" not in segments
+        if segments[index] == "**":
+            return False
+        if not fnmatch.fnmatch(part, segments[index]):
+            return True
+    return False
 
 
 def _scope_pattern_from_base(relative: str, scope_pattern: str | None) -> str:
@@ -2634,24 +2761,23 @@ def _canonical_member_entries_uncached(member: DecayedMember) -> dict[Path, Path
         for pattern in patterns:
             try:
                 glob_pattern = f"**/{pattern}" if content_query else pattern
-                if _GLOB_SCAN_SEAM:
-                    entries, enumeration_failures = _observed_glob(root, glob_pattern)
-                    if enumeration_failures:
-                        # The failure came from THIS enumeration, so no later traversal can
-                        # clear it — which is the whole point of observing from inside.
-                        error = UndecidableScopeContainment(
-                            f"cannot enumerate member pattern {pattern!r} below {root}: "
-                            f"{enumeration_failures[0]}; the expansion that produced this "
-                            "surface could not read every directory it traversed, and a short "
-                            "surface is not a smaller answer but a wrong one"
-                        )
-                        error.remedy = (
-                            f"repair read access for {root} and the directories beneath it, "
-                            "then retry the dispatch"
-                        )
-                        raise error
-                else:
-                    entries = list(root.glob(glob_pattern))
+                if not _GLOB_SCAN_SEAM:
+                    raise _refuse_unobservable_enumeration(root, pattern)
+                entries, enumeration_failures = _observed_glob(root, glob_pattern)
+                if enumeration_failures:
+                    # The failure came from THIS enumeration, so no later traversal can clear
+                    # it — which is the whole point of observing from inside.
+                    error = UndecidableScopeContainment(
+                        f"cannot enumerate member pattern {pattern!r} below {root}: "
+                        f"{enumeration_failures[0]}; the expansion that produced this surface "
+                        "could not read or classify every entry it traversed, and a short "
+                        "surface is not a smaller answer but a wrong one"
+                    )
+                    error.remedy = (
+                        f"repair read access for {root} and the directories beneath it, "
+                        "then retry the dispatch"
+                    )
+                    raise error
                 # Member side: nothing below resolves these components, so a lost one leaves a
                 # short surface and a silently weaker comparison. Row S2h holds it.
                 _require_scannable(
