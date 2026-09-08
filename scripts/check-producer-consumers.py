@@ -3457,6 +3457,62 @@ _GENERATOR_CONSUMING_BUILTINS = frozenset(
 )
 
 
+def _literal_binding_is_unchallenged(name: str, scope: ast.AST | None) -> bool:
+    """Whether ``name`` is bound exactly once in ``scope`` and nothing there can have changed it.
+
+    **Conservative by construction: True only when it can be shown.** The caller spends a True as
+    "this name still denotes that literal", and a wrong True certifies a writer for a file
+    nothing writes — which is what the stateful version did in ten measured ways.
+
+    Anything that could rebind the name, mutate the object it denotes, or hand it to something
+    that might, disqualifies it: a second ``Store`` or any ``Del`` — including one in a branch
+    this scan does not take — an augmented assignment, an attribute or subscript reached through
+    it, and **any read at all other than the comprehension iterables it is being consulted for**.
+
+    That last clause is the one that matters and it was wrong on the first attempt. The prose
+    said "hands it to something that might change it" while the predicate checked only bare-name
+    `Assign`/`AnnAssign` values, so `empty(items)` with a callee that clears it, and a container
+    alias like `holder = [items]`, both slipped past (source-review concern, coordinator, on the
+    uncommitted repair). **Enumerating the escape routes is the losing game** — a call, a
+    container, a starred argument, a default, a yield, a return — so the rule is inverted:
+    a read is safe only where this predicate can see the whole use, which is a comprehension's
+    own ``iter``. Everything else is an escape whether or not it is on anyone's list.
+
+    Conservative by construction: True only where it can be shown, because the caller spends a
+    True as "this name still denotes that literal" and a wrong True certifies a phantom writer.
+    """
+    if scope is None:
+        return False
+    safe_reads = {
+        id(generator.iter)
+        for node in ast.walk(scope)
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp))
+        for generator in node.generators
+        if isinstance(generator.iter, ast.Name) and generator.iter.id == name
+    }
+    stores = 0
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Name) and node.id == name:
+            if isinstance(node.ctx, ast.Store):
+                stores += 1
+                if stores > 1:
+                    return False
+            elif isinstance(node.ctx, ast.Del):
+                return False
+            elif id(node) not in safe_reads:
+                # Any other read can hand the object somewhere this predicate cannot follow.
+                return False
+        elif isinstance(node, ast.AugAssign):
+            target = node.target
+            if isinstance(target, ast.Name) and target.id == name:
+                return False
+            if isinstance(target, (ast.Attribute, ast.Subscript)):
+                value = target.value
+                if isinstance(value, ast.Name) and value.id == name:
+                    return False
+    return stores == 1
+
+
 def _call_consumes_generator_argument(
     func: ast.expr,
     values: dict[str, str],
@@ -4765,7 +4821,15 @@ class _BlockScanner:
                     self.literal_names.pop(target.id, None)
                     continue
                 known, _ = _literal_operand(statement.value)
-                if known:
+                # **The binding is admitted only when NOTHING in the scope can have changed it.**
+                # Recording it on assignment and dropping it on re-assignment was a parallel
+                # state channel that escaped the binding, mutation and branch model this scanner
+                # already has: `items.clear()`, `alias = items; alias.clear()`, `items *= 0`,
+                # `del items[:]` and an untaken-branch assignment each left a STALE LITERAL PROOF
+                # and certified a phantom writer (review finding, root, at `44238fb5c`, ten
+                # cases). Threading invalidation through every one of those was the alternative,
+                # and it is how a second state model drifts from the first.
+                if known and _literal_binding_is_unchallenged(target.id, self.scope_node):
                     self.literal_names[target.id] = statement.value
                 else:
                     self.literal_names.pop(target.id, None)

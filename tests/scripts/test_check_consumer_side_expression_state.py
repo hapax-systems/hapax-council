@@ -576,6 +576,49 @@ COMPREHENSION_NEVER_RUNS = (
         "iterable_from_a_bound_empty_name",
         "items = []\n[open('artifacts/never.json', 'w', closefd=False) for _ in items]",
     ),
+    # A literal binding is only a proof while NOTHING can have changed it. Each of these leaves
+    # the name denoting something other than the literal it was assigned, and the stateful
+    # version kept vouching for the original — ten measured ways, of which these are five.
+    # Python writes in none of them, because in every one the iterable is empty by the time the
+    # comprehension runs.
+    (
+        "literal_binding_mutated_in_place",
+        "items = [1]\nitems.clear()\n"
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in items]",
+    ),
+    (
+        "literal_binding_mutated_through_an_alias",
+        "items = [1]\nalias = items\nalias.clear()\n"
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in items]",
+    ),
+    (
+        "literal_binding_emptied_by_augmented_assignment",
+        "items = [1]\nitems *= 0\n"
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in items]",
+    ),
+    (
+        "literal_binding_emptied_by_slice_delete",
+        "items = [1]\ndel items[:]\n"
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in items]",
+    ),
+    # ESCAPE routes, which the first version of the predicate missed while its prose claimed
+    # them. Neither hands the name to an attribute or a bare-name assignment, and both let the
+    # object be emptied out of sight — a callee that clears it, and a container alias.
+    (
+        "literal_binding_passed_to_a_mutating_callee",
+        "items = [1]\ndef empty(value):\n    value.clear()\nempty(items)\n"
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in items]",
+    ),
+    (
+        "literal_binding_escaped_through_a_container",
+        "items = [1]\nholder = [items]\nholder[0].clear()\n"
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in items]",
+    ),
+    (
+        "literal_binding_rebound_in_an_untaken_branch",
+        "items = [1]\nif not True:\n    items = [2]\nelse:\n    items = []\n"
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in items]",
+    ),
     (
         "filter_from_a_helper_returning_not_true",
         "def stop():\n"
