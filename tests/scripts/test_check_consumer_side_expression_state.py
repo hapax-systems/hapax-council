@@ -921,6 +921,82 @@ def test_a_loop_statement_that_does_run_still_certifies(gate, tmp_path, name, bo
     assert "artifacts/never.json" in orphans
 
 
+# ONE QUESTION — "is this condition constantly false?" — was answered by four code paths at three
+# capability levels. The comprehension filter decided literals, comparisons and helper returns;
+# the `if` statement decided literals only; the `while` statement decided NOTHING; BoolOp and
+# IfExp decided literals only. Every row here opened a file Python never opens.
+#
+# The rule now lives under `_literal_operand` instead of beside one of its callers, so a widening
+# reaches all of them at once. That is the repair; these are what say it happened.
+CONSTANT_CONDITION_NEVER_RUNS = (
+    ("boolop_and_false_comparison", "(1 == 2) and {write}"),
+    ("boolop_or_true_comparison", "(1 == 1) or {write}"),
+    ("ifexp_false_comparison", "{write} if 1 == 2 else 'n'"),
+    # A CHAIN, which the single-operator fallback this replaces could not decide at all.
+    ("boolop_chained_comparison", "(1 < 0 < 5) and {write}"),
+    ("if_statement_false_comparison", "if 1 == 2:\n    {write}\n"),
+    # The `if` handler inlined its own copy of the call refusal and `literal_eval`, so it never
+    # received the uniquely-bound-helper resolver either.
+    ("if_statement_constant_helper", "def stop():\n    return False\nif stop():\n    {write}\n"),
+    ("if_statement_name_bound_to_comparison", "x = 1 == 2\nif x:\n    {write}\n"),
+    # The `while` handler had no constant check of any kind — not even for a plain literal.
+    ("while_literal_false", "while False:\n    {write}\n"),
+    ("while_zero", "while 0:\n    {write}\n"),
+    ("while_empty_container", "while []:\n    {write}\n"),
+    ("while_none", "while None:\n    {write}\n"),
+    ("while_false_comparison", "while 1 == 2:\n    {write}\n"),
+    (
+        "while_constant_helper",
+        "def stop():\n    return False\nwhile stop():\n    {write}\n",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "body"),
+    CONSTANT_CONDITION_NEVER_RUNS,
+    ids=[row[0] for row in CONSTANT_CONDITION_NEVER_RUNS],
+)
+def test_a_constantly_false_condition_certifies_nothing(gate, tmp_path, name, body):
+    write = "open('artifacts/never.json', 'w', closefd=False)"
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        body.format(write=write) + "\nPath('artifacts/never.json').read_text()\n",
+    )
+    assert writers == set(), f"{name}: certified a writer behind a decided-false condition"
+    assert "artifacts/never.json" in orphans, f"{name}: the orphan reader must survive"
+
+
+CONSTANT_CONDITION_RUNS = (
+    ("if_true_comparison_chain", "if 1 < 2 < 3:\n    {write}\n"),
+    ("boolop_true_comparison", "(1 == 1) and {write}"),
+    # The branch that IS taken must still be scanned — deciding a condition narrows which branch
+    # runs, it does not drop the statement.
+    ("if_false_comparison_runs_its_else", "if 1 == 2:\n    pass\nelse:\n    {write}\n"),
+    # A `while` whose condition is false still runs its `else`, which is why the falsy case
+    # returns the `orelse` scan rather than the entry states.
+    ("while_false_runs_its_else", "while False:\n    pass\nelse:\n    {write}\n"),
+    # A constant-TRUTHY loop is an infinite one whose body does run. Deliberately not modelled,
+    # and this row is what keeps the falsy repair from quietly growing into the truthy case.
+    ("while_true_with_break", "while True:\n    {write}\n    break\n"),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "body"), CONSTANT_CONDITION_RUNS, ids=[row[0] for row in CONSTANT_CONDITION_RUNS]
+)
+def test_a_decided_condition_still_certifies_the_branch_that_runs(gate, tmp_path, name, body):
+    write = "open('artifacts/actual.json', 'w', closefd=False)"
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        body.format(write=write) + "\nPath('artifacts/never.json').read_text()\n",
+    )
+    assert writers == {"artifacts/actual.json"}, f"{name}: lost a producer that really runs"
+    assert "artifacts/never.json" in orphans
+
+
 # The multi-element withholding stopped scanning, not just stopped certifying, and a reader in
 # the body went with the writer. Python executes each of these readers twice.
 WITHHELD_REGION_READERS = (

@@ -3305,6 +3305,24 @@ def _literal_operand(
         if resolve is not None and isinstance(node, ast.Call):
             return resolve(node)
         return False, None
+    if isinstance(node, ast.Compare):
+        # **A comparison is a constant when its operands are.** `literal_eval` refuses an
+        # `ast.Compare` outright, so every caller that asked this function "is this decided" got
+        # False for `1 == 2` — and the module has carried `_comparison_outcome` for exactly this
+        # question since the chain repair, consulted by the chain handler and by ONE filter.
+        #
+        # Measured cost of that, thirteen shapes against a runtime oracle: `(1 == 2) and open()`,
+        # `(1 == 1) or open()`, `open() if 1 == 2 else n`, `(1 < 0 < 5) and open()` and
+        # `if 1 == 2:` each certified a writer Python never calls. Folding it HERE rather than at
+        # each of those sites is the point — the sites had drifted to three different capability
+        # levels precisely because the rule lived beside them instead of under them.
+        #
+        # After the call refusal, so `f() == 2` is still refused and the shadowed-`set()` case is
+        # untouched: `_comparison_outcome` resolves its operands without the resolver.
+        outcome = _decided_comparison(node)
+        if outcome is not None:
+            return True, outcome
+        return False, None
     try:
         return True, ast.literal_eval(node)
     except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
@@ -3410,6 +3428,25 @@ def _comparison_outcome(left: ast.expr, op: ast.cmpop, right: ast.expr) -> bool 
     except TypeError:
         # An ill-typed comparison raises at runtime; it does not quietly take a branch.
         return None
+
+
+def _decided_comparison(node: ast.Compare) -> bool | None:
+    """A whole comparison, chain included, decided from constants alone — or ``None``.
+
+    A chain is one `Compare` node, and it is FALSE as soon as any link is a decided false;
+    it is TRUE only when every link is a decided true. One undecided link before a decided
+    false leaves the whole thing undecided, because the chain short-circuits and the earlier
+    link may already have stopped it.
+    """
+    operands = [node.left, *node.comparators]
+    outcome = True
+    for index, op in enumerate(node.ops):
+        link = _comparison_outcome(operands[index], op, operands[index + 1])
+        if link is False:
+            return False
+        if link is None:
+            outcome = None
+    return outcome
 
 
 _CONSTANT_COMPARISONS: dict[type, Callable[[object, object], object]] = {
@@ -3588,6 +3625,12 @@ def _literal_binding_is_unchallenged(name: str, scope: ast.AST | None) -> bool:
             if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp))
             else [node.iter]
             if isinstance(node, (ast.For, ast.AsyncFor))
+            # A branch or loop TEST reads the name for truthiness and hands the object nowhere.
+            # Added for the same reason the `for` source was: `x = (1 == 2)` followed by `if x:`
+            # kept the guarded writer certified, because the binding never became a literal for
+            # the condition check to read.
+            else [node.test]
+            if isinstance(node, (ast.If, ast.While, ast.IfExp))
             else []
         )
         if isinstance(source, ast.Name) and source.id == name
@@ -4009,6 +4052,21 @@ class _BlockScanner:
         exception_states: list[dict[str, str]] | None,
         exit_states: list[dict[str, str]] | None,
     ) -> list[dict[str, str]]:
+        if isinstance(statement, ast.While):
+            # **This handler had NO constant-condition check at all** — not for a comparison, and
+            # not for a plain literal either. `while False:`, `while 0:`, `while []:`,
+            # `while None:`, `while 1 == 2:` and `while stop():` each certified their body while
+            # Python entered none of them (measured, thirteen shapes). The `if` handler decided
+            # literals and the comprehension filter decided everything; this one decided nothing,
+            # which is the same one-question-many-sites drift the comparison folding repairs.
+            #
+            # FALSY ONLY. A constant-truthy condition is an infinite loop whose body does run and
+            # after which nothing runs except through a `break` — modelling that is a separate
+            # claim about termination, and `while True: ... break` is too common to guess at.
+            # Narrowing here, nothing else.
+            known, condition = self._resolved_constant(statement.test, states)
+            if known and not condition:
+                return self.scan_block(statement.orelse, states, exception_states, exit_states)
         if isinstance(statement, (ast.For, ast.AsyncFor)):
             # A source Python cannot iterate enters neither the body nor the `else`: `iter()`
             # raises before the first element. The comprehension boundary was repaired for this
@@ -4244,6 +4302,21 @@ class _BlockScanner:
             )[0]
             self.path_functions.helper_results.clear()
 
+    def _resolved_constant(
+        self, expression: ast.expr, states: list[dict[str, str]]
+    ) -> tuple[bool, object]:
+        """`_literal_operand` with the one-binding name substitution in front of it.
+
+        The substitution and the resolution belong together and are wanted at four sites now —
+        the comprehension's source and filters, the `for` statement's source, and the `if` and
+        `while` tests. Each of those had grown its own answer to "is this decided", which is the
+        drift the comparison folding repairs; this is the same repair one level up.
+        """
+        probe = expression
+        if isinstance(probe, ast.Name) and probe.id in self.literal_names:
+            probe = self.literal_names[probe.id]
+        return _literal_operand(probe, self._constant_resolver(states))
+
     def _resolved_iteration_source(
         self, source: ast.expr, states: list[dict[str, str]]
     ) -> tuple[bool, object, str]:
@@ -4257,10 +4330,7 @@ class _BlockScanner:
         by different rules is how the spelling/value confusions in this file keep recurring, so
         the question is asked in one place.
         """
-        probe = source
-        if isinstance(probe, ast.Name) and probe.id in self.literal_names:
-            probe = self.literal_names[probe.id]
-        known, constant = _literal_operand(probe, self._constant_resolver(states))
+        known, constant = self._resolved_constant(source, states)
         return known, constant, _iteration_domain(known, constant)
 
     def _constant_resolver(self, states: list[dict[str, str]]) -> _ConstantResolver:
@@ -4683,20 +4753,14 @@ class _BlockScanner:
                     # defect, not a bound — the same shape as three other comments repaired
                     # today.
                     #
-                    # A comparison is decided too: `if 1 == 2` is not an `ast.Constant`, so
-                    # `_literal_operand` alone never folded it, while the module has carried
-                    # `_comparison_outcome` for exactly this since the chain repair.
+                    # A comparison is decided too — **by `_literal_operand` now, not by a second
+                    # spelling here.** This site carried its own `_comparison_outcome` fallback,
+                    # bolted on when the filter case was the only one anyone had measured; the
+                    # fold moved under `_literal_operand` once four other condition sites turned
+                    # out to need it, and the local copy went with it. Two spellings of one rule
+                    # is how these sites drifted apart in the first place. Chains are decided now
+                    # as well, which the single-op fallback here could not do.
                     known, constant = _literal_operand(condition, self._constant_resolver(inner))
-                    if (
-                        not known
-                        and isinstance(condition, ast.Compare)
-                        and (len(condition.ops) == 1)
-                    ):
-                        outcome = _comparison_outcome(
-                            condition.left, condition.ops[0], condition.comparators[0]
-                        )
-                        if outcome is not None:
-                            known, constant = True, outcome
                     if not known:
                         # Same rule as the iterable above: an unresolved GUARD is not permission
                         # to certify what it guards. `def stop(): return not True` reproduced a
@@ -5090,15 +5154,17 @@ class _BlockScanner:
                 assigned.extend(stored)
             return _merge_states(assigned)
         if isinstance(statement, ast.If):
-            try:
-                # literal_eval accepts set(), but a source call may shadow that name.
-                if any(isinstance(node, ast.Call) for node in ast.walk(statement.test)):
-                    raise ValueError("condition contains a call")
-                literal_condition = ast.literal_eval(statement.test)
-            except (ValueError, TypeError, RecursionError):
-                pass
-            else:
-                branch = statement.body if literal_condition else statement.orelse
+            # **Through `_literal_operand`, not a private copy of it.** This handler had inlined
+            # that function's shadowed-call refusal and its `literal_eval`, and so never received
+            # any of the widenings the shared one has had: not the comparison folding above, and
+            # not the uniquely-bound helper's constant return. Measured: `if 1 == 2:` and
+            # `if stop():` with `def stop(): return False` both certified the guarded writer.
+            #
+            # This only ever scans LESS — a decided condition takes one branch where both were
+            # merged before — and the refusals it inherits are the stricter ones.
+            known, condition = self._resolved_constant(statement.test, states)
+            if known:
+                branch = statement.body if condition else statement.orelse
                 return self.scan_block(branch, states, exception_states, exit_states)
             taken = self.scan_block(statement.body, _fork(states), exception_states, exit_states)
             not_taken = (
