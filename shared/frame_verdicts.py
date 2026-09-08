@@ -2090,6 +2090,41 @@ def _refuse_unobservable_enumeration(root: Path, pattern: str) -> UndecidableSco
     return error
 
 
+def _classified_exists(entry: Path) -> bool:
+    """``entry.exists()`` from an UNSUPPRESSED stat. Absence answers False; unreadable raises.
+
+    Companion to :func:`_classified_is_file` and :func:`_classified_is_dir`, and added for the
+    same reason at a third pair of sites: `Path.exists` and `Path.is_dir` swallow the ignorable
+    errnos, so the `except OSError` handlers around them **cannot fire**, and an unreadable
+    answer silently becomes a negative one — a shorter checkout set, an identity read that never
+    happens, and a scope admitted (review finding, codex, at `eda8b35a0`). Both of those sites
+    carried a comment saying an unreadable answer must not become a negative one; neither could
+    detect the case the comment described.
+    """
+    try:
+        entry.stat()
+    except OSError as exc:
+        if exc.errno in _DECIDED_ABSENCE_ERRNOS:
+            return False
+        raise
+    except ValueError:
+        return False
+    return True
+
+
+def _classified_is_dir(entry: Path) -> bool:
+    """``entry.is_dir()`` from an UNSUPPRESSED stat; see :func:`_classified_exists`."""
+    try:
+        status = entry.stat()
+    except OSError as exc:
+        if exc.errno in _DECIDED_ABSENCE_ERRNOS:
+            return False
+        raise
+    except ValueError:
+        return False
+    return stat_module.S_ISDIR(status.st_mode)
+
+
 def _classified_is_file(entry: Path) -> bool:
     """``entry.is_file()`` from an UNSUPPRESSED stat, so a classification fault can be refused.
 
@@ -2384,8 +2419,30 @@ def _canonical_path_forms(
     for length in range(1 if recursive else len(prefix) + 1, len(parts)):
         directory_pattern = "/".join(parts[:length])
         try:
-            entries = path.rglob(directory_pattern) if recursive else path.glob(directory_pattern)
-            for entry in entries:
+            # OBSERVED, like the member enumeration. This is the seventh place the same
+            # pathlib suppression was found, and the sixth time I repaired one call site while
+            # leaving its siblings: these forms are what disjointness is established against, so
+            # a scan failure here omits an ALIAS from the declaration and admits a scope the
+            # complete forms would have refused (review finding, codex, at `eda8b35a0`).
+            #
+            # Enumerating the remaining call sites rather than waiting for the next one to be
+            # reported is the correction; `_pattern_matches` at :1490 is prose, `_observed_glob`
+            # is the observer itself, and the other three are converted alongside this one.
+            observed, glob_failures = _observed_glob(
+                path, f"**/{directory_pattern}" if recursive else directory_pattern
+            )
+            if glob_failures:
+                error = UndecidableScopeContainment(
+                    f"cannot enumerate canonical forms for {pattern!r} below {path}: "
+                    f"{glob_failures[0]}; a declaration missing one of its own aliases cannot "
+                    "establish disjointness"
+                )
+                error.remedy = (
+                    f"repair read access for {path} and the directories beneath it, then retry "
+                    "the dispatch"
+                )
+                raise error
+            for entry in observed:
                 canonical = _resolve_external_scope_path(entry)
                 if canonical.is_dir():
                     bases.append((entry, "/".join(parts[length:]), parts[:length]))
@@ -2702,8 +2759,17 @@ def _check_member_symlinks(
         # surface is contained. pathlib uses the same traversal rules as the producer here.
         try:
             found = list(path.glob(scope_pattern))
-            # Scope side: the declared components are resolved below, and that refusal names the
-            # ref. See `_require_scannable`'s docstring for why this half must not record.
+            # **NOT observed, and that is the same split as `component_faults_recorded`.**
+            # Enumerating this module's glob call sites was the right move after six rounds of
+            # repairing one at a time; converting them uniformly was not. This is the SCOPE
+            # side: the declared components are resolved below and that refusal names the ref,
+            # so observing here pre-empts a better diagnosis — measured, as two committed
+            # controls going red the moment I converted it, including the self-referential
+            # `lbin` row that caught the same over-reach earlier today.
+            #
+            # The member enumeration and the canonical FORMS are observed, because those decide
+            # containment and have nothing better downstream. Per-site, not per-file.
+            _require_scannable(path, scope_pattern, component_faults_recorded=False)
             _require_scannable(path, scope_pattern, component_faults_recorded=False)
             paths.extend(found)
         except NonCanonicalScopeRef:
@@ -3124,8 +3190,19 @@ def _local_member_file_matches(path: Path, root: Path, pattern: str) -> bool:
     # In Python 3.12 terminal ** selects only directories. Use the producer's exact
     # selection and is_file filter rather than expanding its surface with an added /*.
     try:
-        return any(p == path and p.is_file() for p in root.glob(pattern))
+        # Observed, and classified without pathlib's suppression: this decides whether a file is
+        # in the member's surface, so a lost entry or a hidden classification fault is the same
+        # silently-smaller-surface hazard as the enumeration site. Last of the module's glob
+        # call sites; `_pattern_matches` mentions `glob` only in prose.
+        selected, glob_failures = _observed_glob(root, pattern)
+        if glob_failures:
+            raise UndecidableScopeContainment(
+                f"cannot enumerate member pattern {pattern!r} below {root}: {glob_failures[0]}"
+            )
+        return any(p == path and _classified_is_file(p) for p in selected)
     except (OSError, RuntimeError, ValueError) as exc:
+        if isinstance(exc, UndecidableScopeContainment):
+            raise
         raise UndecidableScopeContainment(
             f"cannot enumerate member pattern {pattern!r} below {root}: {exc}"
         ) from exc
@@ -3730,7 +3807,10 @@ def _repository_identity(checkout: Path) -> frozenset[str] | None:
         # A path that is not a directory cannot be a checkout, and git cannot even be asked: it
         # fails with "cannot change to ...", which carries no "not a git repository" and would
         # otherwise be read as unknown. Decided here, from the filesystem, before running git.
-        if not checkout.is_dir():
+        # UNSUPPRESSED, for the same reason as the discovery check: `Path.is_dir` answers False
+        # for an unreadable directory and this handler would never see it, so "cannot read"
+        # became "not a directory" and the identity read was skipped entirely.
+        if not _classified_is_dir(checkout):
             return None
     except (OSError, RuntimeError) as exc:
         raise _unreadable_repository_identity(checkout, exc) from exc
@@ -3811,7 +3891,10 @@ def _repo_relative_candidates(
                 # Seventh instance of this family in this module, and the same shape as the
                 # identity read directly below — an unreadable answer becoming a negative one.
                 try:
-                    discovered = (candidate / ".git").exists()
+                    # UNSUPPRESSED. `Path.exists` swallows the ignorable errnos, so the handler
+                    # below could not fire and the comment above described a case the code could
+                    # not detect (review finding, codex, at `eda8b35a0`).
+                    discovered = _classified_exists(candidate / ".git")
                     resolved = candidate.resolve() if discovered else None
                 except (OSError, RuntimeError) as exc:
                     error = UndecidableScopeContainment(

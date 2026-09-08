@@ -1736,16 +1736,23 @@ def test_row_r5c_checkout_discovery_failures_are_an_actionable_refusal(tmp_path,
     becoming a negative one.
 
     Seventh instance of this family in this module. R5 above is the sixth.
+
+    **The fault moved down a layer, and codex predicted why before I hit it.** This row used to
+    replace `Path.exists`, which is not what production calls any more and — more to the point —
+    was never the layer where the suppression lives: `Path.exists` swallows the ignorable errnos
+    itself, so faulting the METHOD proved the handler works while leaving the case where the
+    method silently answers False completely untested. Faulting `os.stat` is the supplying
+    boundary, and the row now fails if discovery stops observing it.
     """
     running, verdicts = _equivalent_checkouts(tmp_path)
-    real_exists = pathlib.Path.exists
+    real_stat = os.stat
 
-    def refusing_exists(self, *args, **kwargs):
-        if self.name == ".git":
+    def refusing_stat(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        if str(path).endswith("/.git"):
             raise PermissionError(13, "Permission denied")
-        return real_exists(self, *args, **kwargs)
+        return real_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(pathlib.Path, "exists", refusing_exists)
+    monkeypatch.setattr(os, "stat", refusing_stat)
 
     with pytest.raises(fv.UndecidableScopeContainment) as caught:
         fv.scope_within_decayed(
@@ -3033,6 +3040,58 @@ def test_row_s2u_a_selected_file_cannot_leave_the_surface_on_a_suppressed_classi
 
     # And a genuinely absent path is still a decided negative under the same fault injector.
     assert fv._classified_is_file(absent) is False
+
+
+def test_row_s2v_the_selected_file_classifier_is_the_one_production_actually_calls(
+    tmp_path, monkeypatch
+):
+    """S2v: the WIRING, which S2u deliberately does not cover and therefore left unpinned.
+
+    Review finding (codex, 2026-09-08): S2u exercises `_classified_is_file` directly and says so,
+    which pins the boundary but not the fact that the member enumeration calls it. **A present
+    but unwired helper would pass S2u** — and that is exactly the "merely present unused helper"
+    case the coordinator's own campaign added a caller-bypass mutation for.
+
+    The correction is not to move the row back end-to-end. S2u's first draft WAS end-to-end and
+    measured nothing, because no single stat index flips the outcome. Both are needed: one row
+    that pins the boundary exactly, and one that pins the call. This is the second.
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    root.mkdir(parents=True)
+    (root / "leaf.txt").write_bytes(b"NEEDLE\n")
+    elsewhere = base / "elsewhere"
+    elsewhere.mkdir()
+    alias = elsewhere / "alias.txt"
+    os.link(root / "leaf.txt", alias)
+
+    member = {
+        "id": "wiring-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["*.txt"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("wiring-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    calls: list[str] = []
+    real_classifier = fv._classified_is_file
+
+    def recording(entry):  # noqa: ANN001, ANN202
+        calls.append(str(entry))
+        return real_classifier(entry)
+
+    monkeypatch.setattr(fv, "_classified_is_file", recording)
+
+    result = fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+    assert result.all_inside is True, "the readable arrangement still decides normally"
+    assert str(root / "leaf.txt") in calls, (
+        "the member enumeration must classify its selected entries through the unsuppressed "
+        f"classifier; it called it for {calls}"
+    )
 
 
 def test_row_s2t_the_observed_glob_reads_no_more_than_the_plain_one(tmp_path):
