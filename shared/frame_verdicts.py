@@ -690,7 +690,10 @@ def _member_location(
         for item in files_raw:
             if not isinstance(item, str):
                 continue
-            item = item.strip()
+            # No-trim rule, stated at _filesystem_scope_parts. Only a genuinely empty
+            # declaration is skipped: "" cannot name a file, while " " can.
+            if not item:
+                continue
             # The same reader grammar governs `location.files`, not only `location.roots` — a
             # declared file under a local reader is a filesystem path whose name may contain a
             # colon. Gating only the roots loop left this sibling with the original defect, in
@@ -1207,8 +1210,27 @@ def _normalise_glob_spelling(
 
 
 def _filesystem_scope_parts(ref: str) -> tuple[list[str], str | None, bool]:
-    """Split a pathlib-normalised filesystem ref into its literal prefix and glob tail."""
-    text = ref.strip().replace("\\", "/")
+    """Split a pathlib-normalised filesystem ref into its literal prefix and glob tail.
+
+    THE NO-TRIM RULE, stated here once and referenced from the other four sites that take a
+    declared subject (`:1243`, `:2870`, `:3369`, and `location.files` in `_member_location`):
+
+    **A declared path is never trimmed.** Leading and trailing whitespace are part of a POSIX
+    filename, so trimming changes the subject the operator declared — which is the obligation
+    `FRAME-SCOPE-SPELLING-DISPOSITION-20260907.md` names: the same subject through scope
+    parsing, member declaration, RouteMetadata, DemandVector and the source path and digest, or
+    a refusal by name.
+
+    Both sides used to trim, so a member declaring `"…/zz-review-future "` and a ref naming it
+    matched *because two errors cancelled*, while the glob spelling `…future[ ]` was admitted
+    against a decayed member (gemini and codex at `63bf526e4`). Repairing one side alone breaks
+    the cancellation and turns a refusing case into an admitting one — measured, which is why
+    this lands on every site at once rather than on the one the finding pointed at.
+
+    Blank-skipping is a different question and stays with the callers: `""` cannot name a file,
+    while `" "` can. Backslash spelling is separately held and is untouched here.
+    """
+    text = ref.replace("\\", "/")
     normalised = _normalise_glob_spelling(text, allow_absolute=True)
     segments = [segment for segment in normalised.split("/") if segment]
     wildcard_at = next(
@@ -1240,7 +1262,7 @@ def resolve_scope_ref(ref: str, *, council_root: Path, vault_root: Path) -> tupl
     tried against the council checkout and then the vault; a ref that exists under neither resolves
     under the council root and will simply not match.
     """
-    text = ref.strip().replace("\\", "/")
+    text = ref.replace("\\", "/")  # no-trim rule, stated at _filesystem_scope_parts
     segments, scope_pattern, dirlike = _filesystem_scope_parts(ref)
     absolute = text.startswith("/")
     dirlike = dirlike or scope_pattern is not None
@@ -2867,7 +2889,7 @@ def _repo_relative_candidates(
     resolves to ``releases/<sha>`` and that basename is the release hash. An unverified checkout
     supplies no additional candidates.
     """
-    text = ref.strip().replace("\\", "/")
+    text = ref.replace("\\", "/")  # no-trim rule, stated at _filesystem_scope_parts
     if text.startswith("/") or text.startswith("~"):
         return []
     segments, _, _ = _filesystem_scope_parts(ref)
@@ -3366,7 +3388,9 @@ def scope_within_decayed(
     # raises where it occurs.
     deferred: UndecidableScopeContainment | None = None
     for ref in declared_refs:
-        text = str(ref).strip()
+        # No-trim rule, stated at _filesystem_scope_parts. `declared_refs` above already
+        # dropped blank entries, which is the separate question; this must not edit a name.
+        text = str(ref)
         try:
             readings, unreadable = _scope_readings(
                 text, verdicts, council_root=council_root, vault_root=vault_root
