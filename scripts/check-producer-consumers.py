@@ -3433,20 +3433,35 @@ def _comparison_outcome(left: ast.expr, op: ast.cmpop, right: ast.expr) -> bool 
 def _decided_comparison(node: ast.Compare) -> bool | None:
     """A whole comparison, chain included, decided from constants alone — or ``None``.
 
-    A chain is one `Compare` node, and it is FALSE as soon as any link is a decided false;
-    it is TRUE only when every link is a decided true. One undecided link before a decided
-    false leaves the whole thing undecided, because the chain short-circuits and the earlier
-    link may already have stopped it.
+    A chain evaluates left to right and stops at its first false link, so the links are read in
+    that order and the FIRST one that is not a decided true ends the reading:
+
+    * an undecided link ends it as ``None``. Nothing after it is reached in any decided way, and
+      — this is the part that makes it more than caution — ``_comparison_outcome`` returns
+      ``None`` for an ill-typed comparison as well as for an unresolvable one. An ill-typed link
+      RAISES, so the chain has no truth value at all, and a later decided-false link does not
+      supply one.
+    * a decided false link ends it as ``False``. The chain genuinely stops there, so whatever
+      follows — including an unresolvable operand — is never evaluated. ``2 < 1 < missing`` is
+      False.
+    * every link a decided true ends it as ``True``.
+
+    **The first version of this function stated exactly that rule and did not implement it.** It
+    tracked the undecided case in a variable and then returned ``False`` unconditionally on a
+    later false link, so ``missing < 1 < 0`` and ``None < 1 < 0`` came back False against their
+    own docstring (review finding, root, at `fb590f991`, isolated direct-helper test, eight
+    orders). Same ordering fault as the anchor read earlier today: once one side can raise, the
+    order carries the whole meaning — and the same comment-names-its-own-defect shape, since the
+    paragraph above the loop said what the loop should have done.
     """
     operands = [node.left, *node.comparators]
-    outcome = True
     for index, op in enumerate(node.ops):
         link = _comparison_outcome(operands[index], op, operands[index + 1])
+        if link is None:
+            return None
         if link is False:
             return False
-        if link is None:
-            outcome = None
-    return outcome
+    return True
 
 
 _CONSTANT_COMPARISONS: dict[type, Callable[[object, object], object]] = {

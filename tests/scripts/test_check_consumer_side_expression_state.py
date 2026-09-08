@@ -16,6 +16,7 @@ passing.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -1061,6 +1062,56 @@ def test_a_decided_multi_element_body_still_certifies(gate, tmp_path):
     )
     assert writers == {"artifacts/actual.json"}
     assert "artifacts/never.json" in orphans
+
+
+# A chain evaluates left to right and stops at its first false link, so the FIRST link that is
+# not a decided true ends the reading. The distinction that matters is between the two things
+# `_comparison_outcome` returns `None` for: an operand it cannot resolve, and an ill-typed
+# comparison that RAISES. A chain whose first link may raise has no truth value at all, and a
+# later decided-false link does not supply one — which is why `missing < 1 < 0` is undecided even
+# though both of its branches would evaluate to False if nothing raised.
+#
+# The first version of the helper stated exactly that rule in its docstring and did not implement
+# it: it tracked the undecided case in a variable and then returned False unconditionally on a
+# later false link.
+COMPARISON_CHAINS = (
+    ("unknown_then_false_name", "missing < 1 < 0", None),
+    ("unknown_then_false_illtyped", "None < 1 < 0", None),
+    # A decided false genuinely stops the chain, so what follows is never evaluated and an
+    # unresolvable operand after it costs nothing.
+    ("false_then_unknown", "2 < 1 < missing", False),
+    ("false_then_illtyped", "2 < 1 < None", False),
+    ("true_then_unknown", "1 < 2 < missing", None),
+    ("all_true", "1 < 2 < 3", True),
+    ("first_false", "1 < 0 < 5", False),
+    ("single_false", "1 == 2", False),
+    ("single_true", "1 == 1", True),
+    ("single_unknown", "missing == 1", None),
+    # Longer chains, because "first link that is not a decided true" is a claim about ORDER and
+    # two links cannot tell a left-to-right reading from a scan of the whole list.
+    ("true_true_false", "1 < 2 < 3 < 0", False),
+    ("true_unknown_false", "1 < 2 < missing < 0", None),
+    ("false_unknown_unknown", "2 < 1 < missing < other", False),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "source", "expected"), COMPARISON_CHAINS, ids=[row[0] for row in COMPARISON_CHAINS]
+)
+def test_a_comparison_chain_is_read_left_to_right(gate, name, source, expected):
+    node = ast.parse(source, mode="eval").body
+    assert gate._decided_comparison(node) is expected, name  # noqa: SLF001
+
+
+def test_an_ill_typed_comparison_really_does_raise(gate):
+    """The oracle for the rows above: `None < 1` is not merely unresolvable, it raises.
+
+    Without this, "undecided" reads as excess caution about a comparison whose value is plainly
+    False in both branches. It is not caution — the expression has no value.
+    """
+
+    with pytest.raises(TypeError):
+        None < 1  # noqa: B015
 
 
 class _LegacyIterable:
