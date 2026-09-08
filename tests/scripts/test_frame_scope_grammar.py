@@ -2790,6 +2790,60 @@ def test_row_s2n_a_fault_while_iterating_the_scan_is_captured_too(tmp_path, monk
     assert caught.value.remedy
 
 
+def test_row_s2o_absent_observation_refuses_by_name_instead_of_falling_back(tmp_path, monkeypatch):
+    """S2o: capability ABSENCE, which nothing exercised and which is not hypothetical.
+
+    Review finding (codex, 2026-09-08, `shared/frame_verdicts.py:2654`) and the coordinator's
+    first hold, which are the same point: when the pathlib seam is missing, an earlier revision
+    silently used the enumerate-then-verify-separately approach the repair beside it had just
+    identified as unsafe. **Reproduced by codex on the installed Python 3.14.4**, where
+    `_GLOB_SCAN_SEAM` is false — and `pyproject.toml` permits `>=3.12`, so this is a runtime the
+    estate may actually select, not a thought experiment.
+
+    Measured before accepting refusal as the answer: 3.14's `Path.glob` builds a `_StringGlobber`
+    inside the call and scans through `os.scandir` on plain strings, with no `Path._scandir` and
+    no per-call injection point on the class. So there is no equivalent invocation-local binding
+    to qualify there, and the instruction's other branch — a named unsupported refusal — is the
+    one that applies. It refuses with the interpreter property named and says not to disable the
+    check, rather than degrading to a known fail-open with a comment about it.
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    root.mkdir(parents=True)
+    (root / "leaf.txt").write_bytes(b"NEEDLE\n")
+    elsewhere = base / "elsewhere"
+    elsewhere.mkdir()
+    alias = elsewhere / "alias.txt"
+    os.link(root / "leaf.txt", alias)
+
+    member = {
+        "id": "unobservable-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["*.txt"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("unobservable-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    assert (
+        fv.scope_within_decayed(
+            [str(alias)], verdicts, council_root=base, vault_root=base
+        ).all_inside
+        is True
+    ), "with the seam present the surface is decided normally"
+
+    monkeypatch.setattr(fv, "_GLOB_SCAN_SEAM", False)
+
+    with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+        fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+    assert "cannot decide containment" in str(caught.value)
+    assert "interpreter" in str(caught.value)
+    assert "do not disable the check" in caught.value.remedy
+
+
 def test_row_s2l_an_observed_failure_must_belong_to_the_declared_grammar(tmp_path, monkeypatch):
     """S2l: exception RELEVANCE for `_observed_glob`, which the coordinator asked be qualified.
 
