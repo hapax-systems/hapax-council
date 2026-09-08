@@ -2807,17 +2807,15 @@ def ref_within_member(
         for entry, target in expansions.items()
         if not entry.is_dir() and target not in identity_surface
     )
-    aliased = tuple(
-        target
-        for entry, target in expansions.items()
-        if not entry.is_dir() and target not in identity_surface
-    )
     if aliased:
-        # Identity is ASKED, and only for its refusal: an unreadable comparison must raise rather
-        # than quietly become "not contained". Its positive answer is deliberately NOT a
-        # containment proof.
+        # CURRENT STATE: identity is ASKED, and only for its refusal — an unreadable comparison
+        # must raise rather than quietly become "not contained". Its positive answer is NOT a
+        # containment proof. The paragraph below is the repaired defect's history, in the past
+        # tense; it is not a record of an outstanding contradiction. A reviewer read an earlier
+        # version of this block as recording one, which is a fair reading of prose that narrates
+        # a defect at the site of its fix, so the state is now stated before the story.
         #
-        # It was. `return all(...)` over the CURRENT expansion declared the whole scope contained
+        # HISTORY. `return all(...)` over the CURRENT expansion declared the whole scope contained
         # whenever every file the directory happened to hold today was a selection or an alias of
         # one. Reproduced by codex at `81962feab` on a real pair — an `fs.glob` member rooted at
         # `/usr/bin` with patterns `['fsck.ext2']` and its hard link `e2fsck`, where the scope
@@ -2974,7 +2972,22 @@ def qualified_ref_within_member(
 
 
 def _repository_identity(checkout: Path) -> frozenset[str] | None:
-    """Verify a checkout root and identify its history without reading remote credentials."""
+    """Verify a checkout root and identify its history without reading remote credentials.
+
+    THREE states, and only two of them are answers (review finding, claude, at `850ccfdbb`,
+    reproduced by injecting `TimeoutExpired` into the identity read):
+
+    - a verified history -> the frozenset of root commits;
+    - **not this repository's root**, or no root commits -> ``None``, a decided negative;
+    - the identity CANNOT BE READ -> raises, because it is not a negative at all.
+
+    Collapsing the third into ``None`` made an unreadable git call establish disjointness. The
+    caller drops non-matching checkouts, so a timeout silently removed the declared member's
+    checkout from the candidate list, containment was never tried there, and a scope the guard
+    refuses with git working was ADMITTED with git unavailable — measured as all_inside True then
+    False on one arrangement. Unknown repository identity cannot establish disjointness, and this
+    is the same verified/refuted/unknown collapse the rest of this module refuses elsewhere.
+    """
     try:
         top = subprocess.run(
             ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"],
@@ -2994,8 +3007,21 @@ def _repository_identity(checkout: Path) -> frozenset[str] | None:
             text=True,
             timeout=5,
         ).stdout.splitlines()
-    except (OSError, subprocess.SubprocessError):
+    except subprocess.CalledProcessError:
+        # git RAN and answered no: this is not a repository root, or it has no reachable history.
+        # A decided negative, and the common case for a `.git` that is not a working checkout.
         return None
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        # git could not run or did not finish. Nothing was answered, so nothing is refuted.
+        error = UndecidableScopeContainment(
+            f"repository identity of {checkout} cannot be read: {exc}; an unreadable history is "
+            "not evidence that two checkouts are unrelated"
+        )
+        error.remedy = (
+            f"repair git access for {checkout} (it must answer `git rev-parse --show-toplevel` "
+            "and `git rev-list --max-parents=0 HEAD`), then retry the dispatch"
+        )
+        raise error from exc
     if not roots or any(re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", root) is None for root in roots):
         return None
     return frozenset(roots)

@@ -50,6 +50,7 @@ the contract's refusal.
 
 import os
 import pathlib
+import subprocess
 
 import pytest
 import yaml
@@ -1512,3 +1513,158 @@ def test_row_m_the_local_reading_keeps_its_checkout_projections(tmp_path):
 
     assert result.all_inside is True
     assert [match.member_id for match in result.matches] == ["legacy-surface"]
+
+
+@pytest.mark.parametrize(
+    ("member_patterns", "scope_pattern", "contained"),
+    [
+        (("*.txt",), "*.txt", True),
+        (("**/*",), "*.txt", True),
+        (("a.txt",), "*.txt", False),
+        (("a.txt",), "*", False),
+        (("a.txt",), "**/*", False),
+        (("*.txt",), "*.md", False),
+    ],
+    ids=[
+        "same-language",
+        "member-selects-everything",
+        "wider-txt",
+        "wider-star",
+        "wider-recursive",
+        "disjoint",
+    ],
+)
+def test_root_loop_containment_rests_on_the_language_not_the_listing(
+    tmp_path, member_patterns, scope_pattern, contained
+):
+    """The broad root loop proves containment from the LANGUAGE, never from what exists today.
+
+    claude read the source at `850ccfdbb` and reported that after the comment *existing files can
+    disprove containment, but cannot establish the proof*, the loop still falls through to
+    `return True` whenever every current expansion entry resolves into the member surface — a
+    present directory listing standing in for an unbounded glob's whole language.
+
+    **It does not, and this row is why claude was right that nothing said so.** The fall-through
+    is gated on `canonical_covered or _scope_glob_covered(...)`, so `return True` is reached only
+    when the scope's language is a subset of the member's; the expansions check above it can only
+    disprove. The rows below hold the directory FIXED — one file, `a.txt`, which the member
+    selects in every case — and vary only the two languages. If the listing could establish
+    containment, the three `wider-*` rows would be True, because their single existing file is
+    selected. They are False.
+
+    The finding was confirmed from a source excerpt rather than by running it, and it cited this
+    module's own repair comment — which narrates a fixed defect in the past tense at the site of
+    its fix — as evidence of an outstanding contradiction. Both halves of that are now addressed:
+    the comment states its current state first, and the behaviour is pinned here instead of being
+    inferrable only by reading the gate.
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    root.mkdir(parents=True)
+    (root / "a.txt").write_bytes(b"ONE\n")
+
+    verdicts = _decayed(tmp_path, _local_member(root=root, patterns=member_patterns))
+    member = verdicts.decayed[0]
+
+    assert fv.ref_within_member(root, False, member, scope_pattern=scope_pattern) is contained, (
+        f"member {member_patterns} / scope {scope_pattern!r}: containment must follow the "
+        "language relation, not the one file that happens to exist"
+    )
+
+
+def _equivalent_checkouts(tmp_path):
+    """A running checkout and a declared one with the SAME root history, plus a decayed member."""
+    running = tmp_path / "running"
+    declared = tmp_path / "declared"
+    git_checkout(running, history="frame scope grammar")
+    git_checkout(declared, history="frame scope grammar")
+    surface = declared / "scripts"
+    surface.mkdir(parents=True, exist_ok=True)
+    (surface / "x.py").write_bytes(b"NEEDLE\n")
+
+    member = {
+        "id": "legacy-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(surface), "patterns": ["*.py"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("legacy-surface", "scope_exited")],
+    )
+    return running, fv.load_frame_verdicts(procedure, now=NOW)
+
+
+def test_row_r5_an_unreadable_repository_identity_cannot_establish_disjointness(
+    tmp_path, monkeypatch
+):
+    """R5: git failing is not git answering no.
+
+    A repo-relative ref is tried under each decayed member's declared checkout, but only after
+    verifying equivalent root histories — and `_repository_identity` returned `None` both when
+    git said "not a repository" and when git could not be run at all. The caller drops
+    non-matching checkouts, so an unreadable identity silently removed the declared member's
+    checkout from the candidate list, containment was never tried there, and a scope the guard
+    refuses with git working was ADMITTED with git unavailable (review finding, claude, at
+    `850ccfdbb`; reproduced here as all_inside True then False on one arrangement).
+
+    Unknown repository identity cannot establish disjointness. The split is between git RUNNING
+    and answering no — a decided negative, and the ordinary case for a `.git` that is not a
+    working checkout — and git not running at all, which answers nothing.
+    """
+    running, verdicts = _equivalent_checkouts(tmp_path)
+    ref = "scripts/x.py"
+    assert not (running / ref).exists(), "the running checkout must not hold the ref itself"
+
+    readable = fv.scope_within_decayed([ref], verdicts, council_root=running, vault_root=running)
+    assert readable.all_inside is True, "the declared checkout's copy is inside the decayed member"
+
+    real_run = subprocess.run
+
+    def timing_out(command, *args, **kwargs):
+        if isinstance(command, list) and command[:1] == ["git"]:
+            raise subprocess.TimeoutExpired(command, 5)
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", timing_out)
+
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.scope_within_decayed([ref], verdicts, council_root=running, vault_root=running)
+
+    assert "repository identity" in str(caught.value)
+    assert caught.value.remedy, "a refusal must name its remedy"
+
+
+def test_row_r5b_a_verified_unrelated_history_still_supplies_no_candidates(tmp_path):
+    """R5b: the twin. A checkout git CAN read and that genuinely differs is a decided negative.
+
+    Without this, R5 above would be satisfied by refusing whenever any git question is asked, and
+    the repair would have turned a working discrimination into a blanket refusal.
+    """
+    running = tmp_path / "running"
+    declared = tmp_path / "declared"
+    git_checkout(running, history="frame scope grammar")
+    git_checkout(declared, history="an unrelated history")
+
+    surface = declared / "scripts"
+    surface.mkdir(parents=True, exist_ok=True)
+    (surface / "x.py").write_bytes(b"NEEDLE\n")
+    member = {
+        "id": "legacy-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(surface), "patterns": ["*.py"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("legacy-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    result = fv.scope_within_decayed(
+        ["scripts/x.py"], verdicts, council_root=running, vault_root=running
+    )
+    assert result.all_inside is False, (
+        "a checkout with a verified DIFFERENT root history supplies no candidates, and that is "
+        "an answer rather than an absence of one"
+    )
