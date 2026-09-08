@@ -2036,6 +2036,51 @@ def _require_scannable(root: Path, pattern: str, *, component_faults_recorded: b
         raise error
 
 
+#: Whether this runtime exposes the seam :func:`_observed_glob` needs. `pathlib.Path.glob`
+#: reaches its directory scans through ``type(parent)._scandir`` and preserves the receiver's
+#: class down the tree via ``with_segments``, so a subclass sees the glob's OWN scans. That is a
+#: PRIVATE binding, pinned to the interpreter this was measured on (3.12.13) and not a portable
+#: guarantee — hence a checked capability rather than an assumption. Where it is absent the
+#: enumeration falls back to the separate readability walk, whose bound is stated at its caller.
+_GLOB_SCAN_SEAM = hasattr(Path, "_scandir")
+
+
+def _observed_glob(root: Path, pattern: str) -> tuple[list[Path], list[OSError]]:
+    """Expand ``pattern`` under ``root`` and return the failures THAT expansion hit.
+
+    **A check of a re-run is not a check of the run.** `Path.glob` suppresses its own scan
+    errors, and the readability walk beside it is a second, independent traversal of the same
+    tree — so an INTERMITTENT fault, present for the enumeration and gone for the check, left a
+    short surface vouched for as complete and admitted a decayed hard link (review finding,
+    codex, at `87ae8c419`, reproduced with `os.scandir` failing on calls 1 and 3; row S2k).
+
+    Every earlier candidate was unsound: enumerating ourselves risks diverging from the
+    producer's own `Path.glob` selection, checking before and after closes one call pattern and
+    is two guards on one hazard, and globbing twice agrees with itself on the reported case. The
+    route that works is to observe the supplying traversal from inside — which the coordinator
+    found in the installed pathlib and is measured here rather than assumed.
+
+    **The subclass is built per call.** Class-level collection would be shared state across
+    concurrent invocations, which is the bound the re-entrancy guard already had to state once;
+    there is no reason to acquire a second one.
+
+    **Bound, stated because it is real:** this observes directory SCANS, not pathlib's per-entry
+    `DirEntry` classification, which happens before the name is matched and is not visible here.
+    That layer keeps its existing cover, and the older walk is deliberately not removed.
+    """
+    failures: list[OSError] = []
+
+    class _ObservedPath(type(root)):  # type: ignore[misc]
+        def _scandir(self):  # noqa: ANN202
+            try:
+                return super()._scandir()
+            except OSError as exc:
+                failures.append(exc)
+                raise
+
+    return list(_ObservedPath(root).glob(pattern)), failures
+
+
 def _scope_pattern_from_base(relative: str, scope_pattern: str | None) -> str:
     tail = scope_pattern or "**/*"
     return "/".join(part for part in (relative, tail) if part)
@@ -2588,7 +2633,25 @@ def _canonical_member_entries_uncached(member: DecayedMember) -> dict[Path, Path
     for root in member.roots:
         for pattern in patterns:
             try:
-                entries = list(root.rglob(pattern) if content_query else root.glob(pattern))
+                glob_pattern = f"**/{pattern}" if content_query else pattern
+                if _GLOB_SCAN_SEAM:
+                    entries, enumeration_failures = _observed_glob(root, glob_pattern)
+                    if enumeration_failures:
+                        # The failure came from THIS enumeration, so no later traversal can
+                        # clear it — which is the whole point of observing from inside.
+                        error = UndecidableScopeContainment(
+                            f"cannot enumerate member pattern {pattern!r} below {root}: "
+                            f"{enumeration_failures[0]}; the expansion that produced this "
+                            "surface could not read every directory it traversed, and a short "
+                            "surface is not a smaller answer but a wrong one"
+                        )
+                        error.remedy = (
+                            f"repair read access for {root} and the directories beneath it, "
+                            "then retry the dispatch"
+                        )
+                        raise error
+                else:
+                    entries = list(root.glob(glob_pattern))
                 # Member side: nothing below resolves these components, so a lost one leaves a
                 # short surface and a silently weaker comparison. Row S2h holds it.
                 _require_scannable(

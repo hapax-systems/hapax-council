@@ -2535,15 +2535,6 @@ class _ScandirFaultingOnCalls:
         return self._real(path)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "REPRODUCED AND UNREPAIRED: codex's 2026-09-08 critical at `shared/frame_verdicts.py:2591`. "
-        "Marked strict so it fails the moment the defect is fixed, rather than sitting green. "
-        "Not repaired yet because every candidate fix is unsound in a way worth deciding "
-        "deliberately — see the docstring."
-    ),
-)
 def test_row_s2k_an_intermittent_fault_is_not_cleared_by_a_later_clean_traversal(
     tmp_path, monkeypatch
 ):
@@ -2560,29 +2551,19 @@ def test_row_s2k_an_intermittent_fault_is_not_cleared_by_a_later_clean_traversal
     they all pass: a steady fault is seen by whichever traversal is checked. The defect is not
     that the check is too weak — it is that *a check of a re-run is not a check of the run*.
 
-    **Why this is xfail rather than repaired.** Three candidate fixes, each unsound in a
-    different way, and the choice is a design decision rather than a patch:
+    **This row shipped as `xfail(strict=True)` for one commit, and that was the right shape.**
+    I had three candidate repairs and all three were unsound — enumerating ourselves risks
+    diverging from the producer's own `Path.glob` selection, checking before and after closes
+    one call pattern while being two guards on one hazard, and globbing twice agrees with itself
+    on codex's own (1, 3) pattern. Rather than pick one to turn the row green, it was committed
+    strict and returned for a decision. The coordinator then found a fourth route in the
+    installed pathlib, and the marker did exactly what strict is for: the row XPASSed the moment
+    the real repair landed, so the fix announced itself instead of sitting green.
 
-    1. *Enumerate with my own traversal instead of `Path.glob`.* Closes it completely, and
-       risks the worse defect: the producer selects with `Path.glob`, so any divergence in
-       matching semantics changes which files the member is taken to contain. Trading an
-       intermittent-fault hole for a permanent selection mismatch is not an improvement.
-    2. *Run the readability check before AND after the glob.* Closes codex's exact call
-       pattern and not the general case — a fault present only during the glob passes both.
-       It is also two guards on one hazard, which the third fallback rule names as the signal
-       to change the shape rather than add a mitigation.
-    3. *Glob twice and require the results to agree.* Uses pathlib for both, so no semantic
-       divergence — but on codex's own (1, 3) pattern both globs are short and EQUAL, so it
-       does not even close the reported case.
-
-    What the defect actually asks for is that the entries used for the decision come from a
-    traversal whose failures were observed. Doing that without reimplementing glob means
-    observing the glob's own syscalls, and the only hook for that is process-global — this
-    module already carries one global with a stated concurrency bound, and adding a second is
-    the shape the third rule warns about.
-
-    So: reproduced, named here, and returned for a decision. A gap visible in the test surface
-    survives; a gap in a docstring does not.
+    **The repair is `_observed_glob`**: `Path.glob` reaches its scans through
+    `type(parent)._scandir` and preserves the receiver's class down the tree, so a per-call
+    subclass sees the failures of the traversal that actually supplies the entries. Native
+    matching is untouched, and nothing process-global is rebound.
     """
     base = tmp_path / "base"
     root = base / "bin"
