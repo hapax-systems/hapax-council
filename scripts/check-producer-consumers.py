@@ -3469,7 +3469,17 @@ def _target_is_read_by(comprehension: ast.expr, generator: ast.comprehension) ->
     if not isinstance(generator.target, ast.Name):
         return True  # a tuple or starred target is not analysed here; assume it matters
     name = generator.target.id
+    # **Every clause AFTER this generator, not only its own filters and the final body.** The
+    # first version checked `generator.ifs` and the element, and omitted the iterables and
+    # filters of SUBSEQUENT generators — so `[y for x in [True, True] for y in [x or open(...)]]`
+    # left the outer target unknown while the next iterable certified its conditional call
+    # (review finding, codex, at `187bbe1f2`). A dependency check that stops at its own clause
+    # is not a dependency check; the target is in scope for everything downstream of it.
     bodies: list[ast.expr] = list(generator.ifs)
+    following = comprehension.generators[comprehension.generators.index(generator) + 1 :]
+    for later in following:
+        bodies.append(later.iter)
+        bodies.extend(later.ifs)
     if isinstance(comprehension, ast.DictComp):
         bodies.extend((comprehension.key, comprehension.value))
     elif isinstance(

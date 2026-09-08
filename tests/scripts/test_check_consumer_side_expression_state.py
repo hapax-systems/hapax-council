@@ -658,6 +658,18 @@ COMPREHENSION_NEVER_RUNS = (
         "inline_bytes",
         "[x or open('artifacts/never.json', 'w', closefd=False) for x in b'ab']",
     ),
+    # The target is in scope for every clause DOWNSTREAM of its own generator, not just for its
+    # filters and the final element. Checking only the near clauses left the outer target
+    # unknown while the next iterable certified its conditional call.
+    (
+        "later_generator_iterable_reads_the_target",
+        "[y for x in [True, True] for y in [x or open('artifacts/never.json', 'w', closefd=False)]]",
+    ),
+    (
+        "later_generator_filter_reads_the_target",
+        "[y for x in [True, True] for y in [1] "
+        "if x or open('artifacts/never.json', 'w', closefd=False)]",
+    ),
     (
         "literal_binding_rebound_in_an_untaken_branch",
         "items = [1]\nif not True:\n    items = [2]\nelse:\n    items = []\n"
