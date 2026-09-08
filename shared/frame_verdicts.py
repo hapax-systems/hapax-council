@@ -2155,10 +2155,12 @@ def _refuse_unobservable_enumeration(root: Path, pattern: str) -> UndecidableSco
 #:   first, which is arranging for a desired branch rather than testing one. Recorded as
 #:   unreached rather than engineered around.
 #:
-#: **Three sites of role 4's shape are NOT converted** — the two `canonical_path.is_dir()`
-#: calls inside `ref_within_member` and, by the same argument, any future one. Converting them
-#: would add unpinned changes of a role whose only converted instance kills nothing, which is
-#: uniform replacement by spelling wearing a role's name.
+#: **TWO sites of role 4's shape are NOT converted** — the two `canonical_path.is_dir()` calls
+#: inside `ref_within_member`, found while rolling role 4 back. Converting them would add
+#: unpinned changes of a role whose only converted instance kills nothing, which is uniform
+#: replacement by spelling wearing a role's name. The same argument would apply to a future
+#: third, but a hypothetical one is not a site and counting it as though it were made the
+#: sentence say three where the tree holds two (coordinator correction, at `7293a1ee9`).
 #:
 #: The discovery, identity, selected-file and canonical-forms conversions are different: those
 #: are pinned by controls that go red when reverted.
