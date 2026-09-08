@@ -2444,7 +2444,13 @@ def _canonical_path_forms(
                 raise error
             for entry in observed:
                 canonical = _resolve_external_scope_path(entry)
-                if canonical.is_dir():
+                # Unsuppressed, and note WHERE this sits: directly beside the enumeration
+                # observed in the previous commit. I converted the glob and left the
+                # classification of its own results suppressed one line later, so an ELOOP here
+                # still removed the alias from the forms disjointness is established against
+                # (review finding, codex, at `45b076c53`). Eighth boundary of this family, and
+                # the second time the repair stopped one layer short of its own neighbour.
+                if _classified_is_dir(canonical):
                     bases.append((entry, "/".join(parts[length:]), parts[:length]))
         except (OSError, RuntimeError, ValueError) as exc:
             if isinstance(exc, UndecidableScopeContainment):

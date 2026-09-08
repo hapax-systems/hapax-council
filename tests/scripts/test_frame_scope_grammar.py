@@ -48,6 +48,7 @@ assertion is load-bearing for the same reason: a refusal that does not name the 
 the contract's refusal.
 """
 
+import errno
 import os
 import pathlib
 import re
@@ -1737,19 +1738,27 @@ def test_row_r5c_checkout_discovery_failures_are_an_actionable_refusal(tmp_path,
 
     Seventh instance of this family in this module. R5 above is the sixth.
 
-    **The fault moved down a layer, and codex predicted why before I hit it.** This row used to
-    replace `Path.exists`, which is not what production calls any more and — more to the point —
-    was never the layer where the suppression lives: `Path.exists` swallows the ignorable errnos
-    itself, so faulting the METHOD proved the handler works while leaving the case where the
-    method silently answers False completely untested. Faulting `os.stat` is the supplying
-    boundary, and the row now fails if discovery stops observing it.
+    **This row took three tries to discriminate anything, and the sequence is the lesson.**
+
+    1. It replaced `Path.exists` — the method that does the suppressing — so it proved the
+       handler works while leaving untested the case where the method silently answers False.
+    2. Moved to `os.stat`, the supplying boundary, but injecting `PermissionError`. **EACCES is
+       not in pathlib's ignored set**, so `Path.exists` propagates it anyway and the unrepaired
+       expression still satisfied every assertion here (review finding, codex, at `45b076c53`,
+       confirmed by an in-memory rollback). Right layer, wrong errno: a fault the mitigation
+       does not apply to measures nothing about the mitigation.
+    3. ELOOP, which IS suppressed — so without `_classified_exists` discovery answers False,
+       finds no checkout, and never refuses.
+
+    The general form: **a control must inject a fault the repaired code path actually changes
+    the handling of.** Layer and errno are two separate choices and both have to be right.
     """
     running, verdicts = _equivalent_checkouts(tmp_path)
     real_stat = os.stat
 
     def refusing_stat(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
         if str(path).endswith("/.git"):
-            raise PermissionError(13, "Permission denied")
+            raise OSError(errno.ELOOP, "Too many levels of symbolic links")
         return real_stat(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "stat", refusing_stat)
