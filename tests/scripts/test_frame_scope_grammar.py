@@ -2051,7 +2051,8 @@ def test_row_s2d_scan_readability_follows_the_declared_grammar(
         )
 
 
-def test_row_s2e_a_partial_listing_cannot_decide_containment(tmp_path, monkeypatch):
+@pytest.mark.parametrize("pattern", ["*/fs*", "*/*.txt", "**/*.txt"])
+def test_row_s2e_a_partial_listing_cannot_decide_containment(tmp_path, monkeypatch, pattern):
     """S2e: some entries survive while a faulted directory suppresses others.
 
     `_require_scannable` was restricted to run only when enumeration returned NOTHING, and that
@@ -2076,14 +2077,16 @@ def test_row_s2e_a_partial_listing_cannot_decide_containment(tmp_path, monkeypat
     faulting.mkdir(parents=True)
     readable.mkdir(parents=True)
 
-    selected = faulting / "fsck.ext2"
+    # Named so every pattern selects them: `fs*` for the /usr arrangement the finding used, and
+    # `*.txt` for the coordinator's own two, which are the same shape stated differently.
+    selected = faulting / "fsck.ext2.txt"
     selected.write_bytes(b"NEEDLE\n")
-    alias = faulting / "e2fsck"
+    alias = faulting / "e2fsck.txt"
     os.link(selected, alias)
     # The readable SIBLING: its entry survives the fault and keeps the enumeration non-empty.
-    (readable / "fstab.h").write_bytes(b"UNRELATED\n")
+    (readable / "fstab.h.txt").write_bytes(b"UNRELATED\n")
 
-    verdicts = _decayed(tmp_path, _local_member(root=root, patterns=("*/fs*",)))
+    verdicts = _decayed(tmp_path, _local_member(root=root, patterns=(pattern,)))
     normal = fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
     assert normal.all_inside is True, "with everything readable the alias is inside the member"
 
