@@ -7075,9 +7075,14 @@ def _finding_line(finding: ConsumerSideFinding) -> str:
     elif finding.kind == "consumer-reads-artifact-with-unresolved-writer":
         next_action = (
             "decide the guard or source that leaves the named writer's execution undetermined, "
-            "or record that the reader tolerates the artifact being absent; do NOT add a "
-            "producer — one is named above"
+            "or record that the reader tolerates the artifact being absent; a candidate producer "
+            "is already named above, so adding one is not the first step here"
         )
+        # Scoped to THIS finding rather than stated as a rule. "do NOT add a producer" was
+        # categorical, and a located undecidable writer does not prove that writer suffices for
+        # every actual demand — a reader may legitimately need one this site cannot supply
+        # (coordinator correction, at `448edef1a`). What the remedy owes is that a producer is
+        # already named, so nobody is sent looking for something the report is holding.
     else:
         next_action = (
             "bind the consumer to a live producer output or add a reasoned "
