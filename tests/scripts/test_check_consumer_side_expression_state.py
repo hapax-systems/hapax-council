@@ -614,6 +614,17 @@ COMPREHENSION_NEVER_RUNS = (
         "items = [1]\nholder = [items]\nholder[0].clear()\n"
         "[open('artifacts/never.json', 'w', closefd=False) for _ in items]",
     ),
+    # MULTI-ELEMENT literals. Refusing to guess which element binds the target is right;
+    # letting the body certify anyway while refusing is not. Every element short-circuits in
+    # both of these and Python opens nothing.
+    (
+        "multi_element_literal_every_element_short_circuits",
+        "[x or open('artifacts/never.json', 'w', closefd=False) for x in [True, True]]",
+    ),
+    (
+        "multi_element_literal_under_a_consuming_builtin",
+        "any(x or open('artifacts/never.json', 'w', closefd=False) for x in [True, False])",
+    ),
     (
         "literal_binding_rebound_in_an_untaken_branch",
         "items = [1]\nif not True:\n    items = [2]\nelse:\n    items = []\n"
@@ -690,6 +701,13 @@ COMPREHENSION_RUNS = (
     (
         "generator_consumed_by_join",
         "''.join(str(open('artifacts/actual.json', 'w', closefd=False)) for _ in [1])",
+    ),
+    # The twin for the multi-element withholding: when the target is NEVER READ, the elements
+    # cannot change what runs, so this still certifies. Without this row the withholding would
+    # look correct while quietly costing every ordinary `for _ in [a, b]` producer.
+    (
+        "multi_element_literal_whose_target_is_never_read",
+        "[open('artifacts/actual.json', 'w', closefd=False) for _ in [1, 2]]",
     ),
 )
 

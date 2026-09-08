@@ -3457,6 +3457,32 @@ _GENERATOR_CONSUMING_BUILTINS = frozenset(
 )
 
 
+def _target_is_read_by(comprehension: ast.expr, generator: ast.comprehension) -> bool:
+    """Whether the comprehension's body or filters READ this generator's target name.
+
+    Withholding on a multi-element literal is right only where the elements can change what
+    runs. `[open(...) for _ in [1, 2]]` never consults `_`, so certifying it is still correct;
+    `[x or open(...) for x in [True, True]]` consults `x` in a position that decides whether the
+    call happens at all. Checking for the read is what keeps the withholding from becoming a
+    blanket over every multi-element source.
+    """
+    if not isinstance(generator.target, ast.Name):
+        return True  # a tuple or starred target is not analysed here; assume it matters
+    name = generator.target.id
+    bodies: list[ast.expr] = list(generator.ifs)
+    if isinstance(comprehension, ast.DictComp):
+        bodies.extend((comprehension.key, comprehension.value))
+    elif isinstance(
+        comprehension, (ast.ListComp, ast.SetComp, ast.GeneratorExp)
+    ):  # pragma: no branch
+        bodies.append(comprehension.elt)
+    return any(
+        isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)
+        for body in bodies
+        for node in ast.walk(body)
+    )
+
+
 def _literal_binding_is_unchallenged(name: str, scope: ast.AST | None) -> bool:
     """Whether ``name`` is bound exactly once in ``scope`` and nothing there can have changed it.
 
@@ -4398,7 +4424,24 @@ class _BlockScanner:
                 # One element only. With more, the body runs once per value and no single
                 # binding describes it; guessing there would decide a branch on an arbitrary
                 # element, which is the shape this file keeps having to repair.
+                #
+                # **But refusing to guess is not the same as permitting.** With a MULTI-element
+                # literal I left the target unknown and then let the body certify anyway, so
+                # `[x or open(...) for x in [True, True]]` produced a bounded writer for a file
+                # Python never opens — every element short-circuits (review finding, codex, at
+                # `7f5794f4b`). That is "unresolved is not permission" again, in the one place I
+                # had explicitly reasoned about the ambiguity and still resolved it the
+                # certifying way.
+                #
+                # So: withhold, but only when the target's VALUE can actually reach a decision —
+                # that is, when the body or the filters read the name. `[open(...) for _ in
+                # [1, 2]]` never consults `_`, so the elements cannot change what runs and it
+                # certifies as before.
                 bound: ast.expr | None = None
+                multi_element_literal = (
+                    isinstance(generator.iter, (ast.List, ast.Tuple))
+                    and len(generator.iter.elts) > 1
+                )
                 if (
                     isinstance(generator.iter, (ast.List, ast.Tuple))
                     and len(generator.iter.elts) == 1
@@ -4410,6 +4453,16 @@ class _BlockScanner:
                         self.literal_names.pop(generator.target.id, None)
                     else:
                         self.literal_names[generator.target.id] = bound
+                if multi_element_literal and _target_is_read_by(node, generator):
+                    body_runs = False
+                    self.unresolved[0] += 1
+                    if isinstance(self.path_functions, PathFunctionTable):
+                        self.path_functions.unresolved_paths.add(
+                            f"{self.path}:{node.lineno}:{node.col_offset}: comprehension target "
+                            f"consulted over several literal elements "
+                            f"expression={ast.unparse(generator.iter)}"
+                        )
+                    break
                 # A constant EMPTY iterable yields nothing, so nothing after it evaluates —
                 # checked BEFORE the filters, because Python evaluates no filter for an
                 # iterable that produces no element.
