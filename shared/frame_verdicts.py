@@ -2108,30 +2108,58 @@ def _refuse_unobservable_enumeration(root: Path, pattern: str) -> UndecidableSco
     return error
 
 
-#: **What the canonical-family conversions do and do not close, measured rather than claimed.**
+#: **SITE LEDGER for the canonical/anchor family — four roles, each rolled back on its own.**
 #:
-#: Every `canonical_*` classification is downstream of `_resolve_external_scope_path`, whose
-#: `resolve(strict=True)` does NOT suppress — so a steady fault raises there first, at the
-#: resolution, and never reaches the classifier. Reverting any of these three conversions
-#: (`ref_within_member`'s candidate, and the two in `_refuse_in_root_alias_reaching_surface`)
-#: leaves every control green, measured on each.
+#: Measured 2026-09-08 against `tests/scripts/test_frame_scope_grammar.py` and
+#: `tests/shared/test_frame_verdicts.py` (458 baseline), one site reverted to the suppressing
+#: method at a time, source restored between each:
 #:
-#: What they close is the window between a successful resolve and a later stat — a real hazard
-#: with the same shape as the intermittent-enumeration finding.
+#: === ==================================== ============================== ==================
+#: #   site and role                          rollback                       disposition
+#: === ==================================== ============================== ==================
+#: 1   `resolve_scope_ref`: which BASE the    2 killed: `R2c[suppressed-    PINNED
+#:     ref anchors to                         eloop]`, `S2w`
+#: 2   `ref_within_member`: which containment 1 killed: `S2w`               PINNED
+#:     QUESTION the literal-glob candidate
+#:     is asked
+#: 3   `_refuse_in_root_alias_reaching_       0 killed (458 pass)           UNPINNED
+#:     surface`: is the resolved alias
+#:     target a FILE, with no scope pattern
+#: 4   `_refuse_in_root_alias_reaching_       0 killed (458 pass)           UNPINNED
+#:     surface`: the `dirlike` argument of
+#:     its recursive containment call
+#: === ==================================== ============================== ==================
 #:
-#: **"Reachable only by call-ordinal injection" was my claim and it was too strong.** The
-#: coordinator proposed a stage-triggered discriminator instead: run the real resolver, then arm
-#: a path-specific BACKEND fault after its successful return, so the injection is still present
-#: under a rollback to the native classifier and arming does not touch the mitigation. Built and
-#: run exactly that way — and the refusal still arrives from a LATER `resolve`, with the same
-#: `cannot resolve scope component` message under both the converted and the rolled-back source.
-#: A legitimate decision intercepts the fault.
+#: **Roles 3 and 4 are unpinned, and that is all that is established about them.** An earlier
+#: revision of this note called them "correct in principle" and said they "cost nothing"; the
+#: coordinator withdrew both, and they are withdrawn here. Neither is supported: no control
+#: distinguishes the converted source from the native one at either site, so their correctness
+#: is untested rather than principled, and a conversion whose behaviour is unmeasured has an
+#: unmeasured cost. Role 4 additionally carried a comment asserting the hazard was "reachable
+#: here" because no strict resolution precedes it — the rollback kills nothing, so that
+#: sentence claimed more than anything demonstrates and has been corrected at the site.
 #:
-#: That outcome is recorded rather than engineered around. Reaching the classifier from here
-#: would mean relaxing the resolution that refuses first, which is arranging for a desired
-#: branch rather than testing one.
+#: **History, preserved rather than rewritten.** What was tried, and what it showed:
 #:
-#: So they are kept as correct-in-principle and labelled UNPINNED, not presented as repairs.
+#: * Every `canonical_*` classification is downstream of `_resolve_external_scope_path`, whose
+#:   `resolve(strict=True)` does NOT suppress, so a steady fault raises there first and never
+#:   reaches the classifier. That much is measured and still holds.
+#: * "Reachable only by call-ordinal injection" was my claim and it was too strong. The
+#:   coordinator proposed a stage-triggered discriminator: run the real resolver, then arm a
+#:   path-specific BACKEND fault after its successful return, so the injection survives a
+#:   rollback and arming does not touch the mitigation. Built and run exactly that way — the
+#:   refusal still arrives from a LATER `resolve`, same `cannot resolve scope component`
+#:   message under both the converted and the rolled-back source. A legitimate decision
+#:   intercepts the fault.
+#: * Reaching the classifier from either site would mean relaxing the resolution that refuses
+#:   first, which is arranging for a desired branch rather than testing one. Recorded as
+#:   unreached rather than engineered around.
+#:
+#: **Three sites of role 4's shape are NOT converted** — the two `canonical_path.is_dir()`
+#: calls inside `ref_within_member` and, by the same argument, any future one. Converting them
+#: would add unpinned changes of a role whose only converted instance kills nothing, which is
+#: uniform replacement by spelling wearing a role's name.
+#:
 #: The discovery, identity, selected-file and canonical-forms conversions are different: those
 #: are pinned by controls that go red when reverted.
 
@@ -2640,6 +2668,12 @@ def _refuse_in_root_alias_reaching_surface(
         # beneath never fired and an unreadable answer became exactly the negative one the
         # comment forbids. I wrote that comment, naming this family, and used the suppressing
         # method anyway — which is the same defect the comment describes, one line above itself.
+        #
+        # **UNPINNED — role 3 in the ledger above; 0 controls killed by a rollback.** The branch
+        # is guarded by `scope_pattern is None`, and across four arrangements — root and in-root
+        # alias, with and without a pattern, matching and non-matching — this function is either
+        # not entered or returns before reaching here, so no caller obligation is demonstrated
+        # either. Reaching it would mean relaxing a guard to arrive at a chosen branch.
         try:
             canonical_is_file = _classified_is_file(canonical_path)
         except (OSError, RuntimeError) as exc:
@@ -2728,8 +2762,15 @@ def _refuse_in_root_alias_reaching_surface(
             canonical_path,
             # Decides WHICH containment question is asked, like the candidate classification in
             # `ref_within_member` itself, so it reads the stat rather than the suppressing
-            # method. Unlike that one this site has no earlier strict resolution in front of it,
-            # so the hazard is reachable here.
+            # method.
+            #
+            # **UNPINNED — role 4 in the ledger above; 0 controls killed by a rollback.** This
+            # comment used to end "unlike that one this site has no earlier strict resolution in
+            # front of it, so the hazard is reachable here." Reverting the call leaves all 458
+            # controls green, so nothing demonstrates that reachability and the sentence is
+            # withdrawn. The absence of a preceding strict resolve is a fact about the code
+            # path; it is not evidence that a fault arrives here, and reading it as though it
+            # were is the same step this file has had to retract at several other sites.
             canonical_pattern is not None or _classified_is_dir(canonical_path),
             member,
             scope_pattern=canonical_pattern,
@@ -3441,15 +3482,16 @@ def ref_within_member(
                 # candidate, so a swallowed ELOOP answering False would reframe a directory as
                 # a file. Converted by decision ROLE, not as a blanket substitution.
                 #
-                # **UNPINNED, and stated because I could not pin it.** Asked for a killed
-                # rollback at this call, I could not produce one: in every arrangement I could
-                # construct, `_resolve_external_scope_path`'s `resolve(strict=True)` — which
-                # does NOT suppress — raises on the same fault first, at `:2385` for a literal
-                # spelling and through the scope-glob wrapper at `:3055` otherwise. So the
-                # hazard here may be unreachable, and this conversion may be unnecessary rather
-                # than load-bearing. It is kept because it is correct in principle and costs
-                # nothing, and it is labelled because an unpinned change presented as a repair
-                # is how a suite acquires decoration.
+                # **PINNED — role 2 in the ledger above.** Rolling this call back to
+                # `candidate.is_dir()` reddens `S2w`, which pins the caller obligation: this
+                # function, not some later one, must make the classification it decides on.
+                #
+                # It was carried as UNPINNED for several rounds and the label was right at the
+                # time: a steady fault raises in `_resolve_external_scope_path`'s
+                # `resolve(strict=True)` first — at `:2385` for a literal spelling, through the
+                # scope-glob wrapper at `:3055` otherwise — so no fault-injecting arrangement
+                # reached it. The caller obligation is a different claim from end-to-end
+                # reachability, and it is the one that could be pinned.
                 candidate_is_dir = _classified_is_dir(candidate)
             except (OSError, RuntimeError) as exc:
                 raise _unresolved_scope_component(candidate, exc) from exc
