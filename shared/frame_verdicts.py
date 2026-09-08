@@ -3148,9 +3148,32 @@ def _canonical_scope_entries(
 ) -> dict[Path, Path]:
     """Expand in the producer tree before resolving every entry, including broken links."""
     try:
-        entries = list(path.glob(pattern))
-        # Scope side, as above: `_resolve_scope_directory_prefix` diagnoses a component fault
-        # here with the ref in hand, so recording it would replace a better refusal with a worse.
+        # **THE CLAIMED DOWNSTREAM DIAGNOSIS DOES NOT OCCUR.** This site kept plain `Path.glob`
+        # on my reasoning that `_resolve_scope_directory_prefix` diagnoses a component fault here
+        # with the ref in hand, so observing would replace a better refusal with a worse. Codex
+        # measured that reasoning false at the pinned head: decay `/usr/bin` with patterns
+        # `['fsck.ext2']` and scope `/usr/bin/[e-e]2fsck`, whose target is the SAME INODE, then
+        # fail only the scope-glob scans — receipt-only `main()` goes from exit 10 to exit 0,
+        # "eligible", and restoring the scans restores 10. No downstream refusal fires.
+        #
+        # The fault it takes is TRANSIENT, which is why `_require_scannable` cannot stand in for
+        # observing: its walk happens after the glob's, and a fault that is gone by then was
+        # never visible to it. That is the same sentence I wrote into the member side this
+        # morning — a check of a re-run is not a check of the run — and I reasoned about this
+        # side using only steady faults, which its later walk does catch.
+        if not _GLOB_SCAN_SEAM:
+            raise _refuse_unobservable_enumeration(path, pattern)
+        entries, enumeration_failures = _observed_glob(path, pattern)
+        if enumeration_failures:
+            raise UndecidableScopeContainment(
+                f"cannot enumerate scope glob {pattern!r} below {path}: "
+                f"{enumeration_failures[0]}; the expansion that produced this scope could not "
+                "read or classify every entry it traversed, and a short scope is not a smaller "
+                "answer but a wrong one"
+            )
+        # Kept: the readability walk still runs, because it diagnoses steady component faults
+        # with a remedy the enumeration failure above does not carry. Observing does not replace
+        # it; it covers the window the walk cannot see.
         _require_scannable(path, pattern, component_faults_recorded=False)
     except NonCanonicalScopeRef:
         # As at the member site: the typed refusal carries its own remedy and must not be
@@ -3165,13 +3188,26 @@ def _canonical_scope_entries(
         try:
             # The producer reads files. Terminal ** can yield only directories; those
             # entries supply no evidence about containment of the recursive file language.
-            if entry.is_dir() and not include_directories:
+            #
+            # **A SEPARATE BOUNDARY FROM THE ENUMERATION, and codex says so explicitly:
+            # observing glob errors alone will not fix it.** `Path.is_file` suppresses ELOOP and
+            # answers False, so an entry that exists and cannot be classified dropped silently
+            # out of the canonical scope even when the enumeration succeeded — and a missing
+            # entry removes the identity witness, which lets disjointness be asserted over a
+            # wholly decayed singleton scope. Measured on the same hard-link fixture: injecting
+            # ELOOP only into the stat this classification consumes takes receipt-only `main()`
+            # from exit 10 to exit 0, and restoring it returns 10.
+            #
+            # The consequence is at `_local_disjoint_established`, which consults the branch that
+            # returns the undecidable answer only `if denoted` — so an emptied expansion skips
+            # the refusal rather than triggering it.
+            if _classified_is_dir(entry) and not include_directories:
                 continue
             for root in member.roots:
                 if member.reader != "fs.content_query" and root in entry.parents:
                     _check_member_symlinks(entry, root, member, scope_pattern=None)
             target = _resolve_external_scope_path(entry)
-            if entry.is_file() or (include_directories and entry.is_dir()):
+            if _classified_is_file(entry) or (include_directories and _classified_is_dir(entry)):
                 canonical[entry] = target
         except (UndecidableScopeContainment, OSError, RuntimeError) as exc:
             cause = (

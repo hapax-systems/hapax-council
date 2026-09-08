@@ -628,6 +628,101 @@ def test_a_colon_bearing_relative_root_refuses_when_no_anchor_is_available(
     assert "run the frame producer" in caught.value.remedy
 
 
+def _fault_once(monkeypatch: pytest.MonkeyPatch, operation: str, name: str, index: int) -> dict:
+    """Fault `operation` ONCE, at the INDEXth call touching `name`, then let it recover.
+
+    Transient on purpose. A steady fault is caught by the later readability walk, so it cannot
+    tell an observed enumeration from an unobserved one — the walk sees the fault because it is
+    still there. Only a fault that is gone by then distinguishes them, which is the same sentence
+    as "a check of a re-run is not a check of the run".
+
+    Injected at `os.scandir` / `os.stat`, the operations BOTH the suppressing method and the
+    unsuppressed classifier reach. Patching `Path.is_file` would measure only the old source and
+    would pass vacuously against the repair.
+    """
+
+    state = {"count": 0, "seen": 0}
+    real = {"scandir": os.scandir, "stat": os.stat}
+
+    def faulted(kind: str, error: OSError):  # noqa: ANN202
+        def call(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+            if kind == operation and name in str(path):
+                if state["seen"] == index and state["count"] == 0:
+                    state["count"] += 1
+                    state["seen"] += 1
+                    raise error
+                state["seen"] += 1
+            return real[kind](path, *args, **kwargs)
+
+        return call
+
+    monkeypatch.setattr(
+        os, "scandir", faulted("scandir", PermissionError(errno.EACCES, "injected once"))
+    )
+    monkeypatch.setattr(os, "stat", faulted("stat", OSError(errno.ELOOP, "injected once")))
+    return state
+
+
+# TWO observation boundaries reaching one consequence, and they need separate controls: observing
+# the supplying enumeration does not fix the classification suppression, and vice versa. Both were
+# reproduced against receipt-only dispatch before this repair — a transient scandir fault and an
+# independent transient classification fault each turned a decayed scope into an eligible one.
+#
+# **The stat index is MEASURED, not guessed.** `alias.txt` is stat'ed four times here —
+# `_classified_is_dir`, two `lstat`s from the symlink and resolution checks, then
+# `_classified_is_file` — so faulting the first call lands on the DIRECTORY classifier and the
+# control passes against the repair for the wrong reason. My first version did exactly that and
+# its rollback did not redden it. Index 0 is kept beside index 3 so the pair shows the index is
+# what discriminates.
+SCOPE_OBSERVATION_FAULTS = (
+    ("transient_enumeration", "scandir", "branch", 0),
+    ("transient_file_classification", "stat", "alias.txt", 3),
+    ("transient_dir_classification", "stat", "alias.txt", 0),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "operation", "target", "index"),
+    SCOPE_OBSERVATION_FAULTS,
+    ids=[row[0] for row in SCOPE_OBSERVATION_FAULTS],
+)
+def test_a_transient_scope_fault_refuses_instead_of_shortening_the_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    operation: str,
+    target: str,
+    index: int,
+) -> None:
+    """A short scope is not a smaller answer but a wrong one."""
+
+    root = tmp_path / "producer"
+    branch = root / "branch"
+    branch.mkdir(parents=True)
+    alias = branch / "alias.txt"
+    alias.write_bytes(b"decayed\n")
+    member = fv.DecayedMember("m", "scope_exited", (root,), ("branch/*.txt",), (alias,))
+
+    state = _fault_once(monkeypatch, operation, target, index)
+    with pytest.raises(fv.UndecidableScopeContainment):
+        fv._canonical_scope_entries(root, "branch/[a-a]lias.txt", member)  # noqa: SLF001
+    assert state["count"] == 1, f"{name}: the fault must actually have fired"
+
+
+def test_a_healthy_scope_expansion_still_returns_its_entry(tmp_path: Path) -> None:
+    """The twin: three refusals beside it mean nothing without one arrangement that succeeds."""
+
+    root = tmp_path / "producer"
+    branch = root / "branch"
+    branch.mkdir(parents=True)
+    alias = branch / "alias.txt"
+    alias.write_bytes(b"decayed\n")
+    member = fv.DecayedMember("m", "scope_exited", (root,), ("branch/*.txt",), (alias,))
+
+    found = fv._canonical_scope_entries(root, "branch/[a-a]lias.txt", member)  # noqa: SLF001
+    assert sorted(path.name for path in found) == ["alias.txt"]
+
+
 PRODUCER_CWD_ARRANGEMENTS = (
     # Decided negatives. Nothing readable is there, and the declared vault binding is the
     # documented fallback for exactly that case, so each of these must still anchor.
