@@ -2979,6 +2979,62 @@ class _StatFaultingOnFirstAttempts:
         return self._real(path, *args, **kwargs)
 
 
+def test_row_s2u_a_selected_file_cannot_leave_the_surface_on_a_suppressed_classification(
+    tmp_path, monkeypatch
+):
+    """S2u: `Path.is_file` hides a fault the same way `is_dir` does, one step further along.
+
+    Review finding (codex, 2026-09-08, at `538e5bcd5`): the selected entries are classified with
+    `entry.is_file()` AFTER `enumeration_failures` has been checked, so the observing enumerator
+    does not cover it — and `Path.is_file` suppresses an ignorable `OSError` and answers False.
+    A selected file whose classification faulted therefore left the member's surface silently,
+    and a smaller surface is a weaker comparison that admits.
+
+    **A comment two lines above that call said the sibling had been brought inside the
+    conversion.** It had been given a `try` — which is not the same thing, because nothing was
+    ever raised into it. That is the fourth comment today whose stated mitigation did not run.
+
+    Classification is now done from an unsuppressed stat, with absence still a decided negative:
+    ENOENT and ENOTDIR mean the entry genuinely is not a file and dropping it is right.
+
+    **This row pins the classifier itself rather than a dispatch outcome, and that is a
+    correction to my first draft.** I wrote it end-to-end and it passed under the mutation —
+    enumerating the outcomes showed the selected file is stat-ed five times and no single-index
+    fault flips `all_inside`, so the row proved something other than what it named. A boundary
+    this small is pinned exactly by calling it, and stays pinned when the code around it moves.
+    """
+    present = tmp_path / "present.txt"
+    present.write_bytes(b"NEEDLE\n")
+    directory = tmp_path / "adir"
+    directory.mkdir()
+    absent = tmp_path / "absent.txt"
+
+    assert fv._classified_is_file(present) is True
+    assert fv._classified_is_file(directory) is False
+    assert fv._classified_is_file(absent) is False, "absence is a decided negative"
+    assert present.is_file() is True, "the healthy answers agree with pathlib's"
+    assert directory.is_file() is False
+    assert absent.is_file() is False
+
+    real_stat = os.stat
+
+    def faulting(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        if str(path).rstrip("/") == str(present):
+            raise OSError(40, "Too many levels of symlinks")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", faulting)
+
+    # pathlib answers False and loses the fault; the classifier raises it for conversion.
+    assert present.is_file() is False, "pathlib suppresses ELOOP, which is the whole problem"
+    with pytest.raises(OSError) as caught:
+        fv._classified_is_file(present)
+    assert caught.value.errno == 40
+
+    # And a genuinely absent path is still a decided negative under the same fault injector.
+    assert fv._classified_is_file(absent) is False
+
+
 def test_row_s2t_the_observed_glob_reads_no_more_than_the_plain_one(tmp_path):
     """S2t: the read that DECIDES must be the read that is OBSERVED, so there is only one.
 

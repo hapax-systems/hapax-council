@@ -2090,6 +2090,30 @@ def _refuse_unobservable_enumeration(root: Path, pattern: str) -> UndecidableSco
     return error
 
 
+def _classified_is_file(entry: Path) -> bool:
+    """``entry.is_file()`` from an UNSUPPRESSED stat, so a classification fault can be refused.
+
+    `Path.is_file` swallows the same ignorable errnos as `Path.is_dir` and answers False, which
+    makes a faulting entry indistinguishable from an absent one — and this classification decides
+    whether a selected file is in the member's surface at all. A silently smaller surface is not
+    a smaller answer but a wrong one.
+
+    **Absence stays a decided negative** (ENOENT, ENOTDIR): the entry is genuinely not a file and
+    dropping it is correct. Everything else in pathlib's ignore set — a bad descriptor, a symlink
+    loop — is the unknown, and is raised for the caller to convert into a named refusal.
+    Non-ignorable errors propagate exactly as pathlib would raise them.
+    """
+    try:
+        status = entry.stat()
+    except OSError as exc:
+        if exc.errno in _DECIDED_ABSENCE_ERRNOS:
+            return False
+        raise
+    except ValueError:
+        return False
+    return stat_module.S_ISREG(status.st_mode)
+
+
 def _observed_glob(root: Path, pattern: str) -> tuple[list[Path], list[OSError]]:
     """Expand ``pattern`` under ``root`` and return the failures THAT expansion hit.
 
@@ -2899,8 +2923,16 @@ def _canonical_member_entries_uncached(member: DecayedMember) -> dict[Path, Path
                 # smaller surface is a weaker comparison, and this one decides what the member
                 # is taken to select. The `try` a few lines above already converts the traversal
                 # faults; this sibling call was outside it.
+                # **The handler above could never fire.** `Path.is_file` suppresses an ignorable
+                # `OSError` internally and answers False, exactly as `Path.is_dir` does, so a
+                # selected file whose classification faulted DROPPED OUT of the surface with no
+                # exception to convert — and this runs after `enumeration_failures` is checked,
+                # so the observing enumerator does not cover it either (review finding, codex,
+                # at `538e5bcd5`, reproduced with transient faults on the selected file's stat).
+                # A comment two lines up said this sibling call had been brought inside the
+                # conversion; it had been given a handler, which is not the same thing.
                 try:
-                    entry_is_file = entry.is_file()
+                    entry_is_file = _classified_is_file(entry)
                 except (OSError, RuntimeError) as exc:
                     raise _unresolved_scope_component(entry, exc) from exc
                 if entry_is_file and not _member_path_is_excluded(entry, root, member):
