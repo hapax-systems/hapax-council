@@ -3167,7 +3167,30 @@ def _local_partial_scope_established(
 
     This is a second way to find the same witness, not a second rule: the entry still has to be a
     file, still has to be the same relative tail under every checkout projection, and still has to
-    be established outside EVERY member. A scope whose entries are all decayed finds nothing here.
+    be established outside EVERY member.
+
+    **Correction, 2026-09-08.** This docstring used to end "a scope whose entries are all decayed
+    finds nothing here", and that is false — measured, not argued. It holds for the OBSERVED
+    strategy only. For a dirlike scope over a directory whose single entry is a hard link to a
+    member's selected file, the observed tail yields `None` exactly as intended, and the
+    generated strategy below then supplies `scope` — a name that does not exist — which is
+    trivially outside every selection, so the scope is admitted:
+
+        observed  'selected-alias.txt'  exists=True   disjoint_established=None
+        generated 'scope'               exists=False  disjoint_established=True
+
+    The two strategies do not answer the same question. An observed entry is a fact about what
+    the scope holds; a generated name is a fact about the scope's LANGUAGE — that it can name
+    files no member selects, including future ones. Under the language reading this admission is
+    correct and consistent: `selected-alias[.]txt` denotes one name and is refused as wholly
+    decayed, while `aliased/` denotes unboundedly many and is partial.
+
+    Whether that is the RIGHT reading when every file the directory currently holds is a decayed
+    file under another name is a policy question, and it is not settled here. Substituting an
+    alias-overlap veto for this predicate is the withdrawn `aa5939179`, which root reproduced as
+    a regression through receipt-only `main()`; reviewer convergence is evidence about a
+    mechanism, not authority over a policy. Raised for the owner with the measurement above
+    rather than decided by editing this function.
     """
     if not dirlike and scope_pattern is None:
         return False
