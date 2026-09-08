@@ -4437,41 +4437,51 @@ class _BlockScanner:
                 # that is, when the body or the filters read the name. `[open(...) for _ in
                 # [1, 2]]` never consults `_`, so the elements cannot change what runs and it
                 # certifies as before.
+                # **RESOLVE FIRST, then decide from the VALUE — never from the spelling.** The
+                # first version keyed the element count on `ast.List`/`ast.Tuple` syntax while
+                # the resolution below accepts a far wider domain, so a NAMED `[True]`, a named
+                # or inline tuple, `{1, 2}`, `{1: 0, 2: 0}`, `'ab'` and `b'ab'` all escaped the
+                # withholding and certified a phantom writer — seven forms, two readers, no
+                # runtime `open` at all (review finding, root, at `d70936cff`). Anchoring a
+                # decision on AST syntax when the value channel is wider is the same error as
+                # matching a consumer by name.
+                #
+                # Resolver here too: `def empty(): return []` supplying the iterable is the same
+                # case as the filter below, and was named in an earlier finding.
+                iterable_probe = generator.iter
+                if isinstance(iterable_probe, ast.Name) and iterable_probe.id in self.literal_names:
+                    iterable_probe = self.literal_names[iterable_probe.id]
+                known, constant = _literal_operand(iterable_probe, self._constant_resolver(inner))
+
                 bound: ast.expr | None = None
-                multi_element_literal = (
-                    isinstance(generator.iter, (ast.List, ast.Tuple))
-                    and len(generator.iter.elts) > 1
+                sized = known and isinstance(
+                    constant, (list, tuple, set, frozenset, dict, str, bytes)
                 )
-                if (
-                    isinstance(generator.iter, (ast.List, ast.Tuple))
-                    and len(generator.iter.elts) == 1
-                ):
-                    bound = generator.iter.elts[0]
+                if sized and len(constant) == 1:
+                    # One element, whatever spelled it: bind the value the loop will take. A
+                    # `set` or `dict` is unordered, but with exactly one element there is only
+                    # one value to take, so the binding is exact rather than a choice.
+                    only = next(iter(constant))
+                    bound = ast.copy_location(ast.Constant(value=only), generator.iter)
                 self._bind(generator.target, bound, inner)
                 if isinstance(generator.target, ast.Name):
                     if bound is None:
                         self.literal_names.pop(generator.target.id, None)
                     else:
                         self.literal_names[generator.target.id] = bound
-                if multi_element_literal and _target_is_read_by(node, generator):
+                if sized and len(constant) > 1 and _target_is_read_by(node, generator):
                     body_runs = False
                     self.unresolved[0] += 1
                     if isinstance(self.path_functions, PathFunctionTable):
                         self.path_functions.unresolved_paths.add(
                             f"{self.path}:{node.lineno}:{node.col_offset}: comprehension target "
-                            f"consulted over several literal elements "
+                            f"consulted over several resolved elements "
                             f"expression={ast.unparse(generator.iter)}"
                         )
                     break
                 # A constant EMPTY iterable yields nothing, so nothing after it evaluates —
                 # checked BEFORE the filters, because Python evaluates no filter for an
                 # iterable that produces no element.
-                # Resolver here too: `def empty(): return []` supplying the iterable is the same
-                # case as the filter above, and was named in the same finding.
-                iterable_probe = generator.iter
-                if isinstance(iterable_probe, ast.Name) and iterable_probe.id in self.literal_names:
-                    iterable_probe = self.literal_names[iterable_probe.id]
-                known, constant = _literal_operand(iterable_probe, self._constant_resolver(inner))
                 if not known:
                     # **UNRESOLVED IS NOT PERMISSION.** Leaving `body_runs` enabled here meant an
                     # iterable this scanner cannot evaluate certified everything inside it — and
@@ -4491,10 +4501,7 @@ class _BlockScanner:
                             f"iterable not resolvable expression={ast.unparse(generator.iter)}"
                         )
                     continue
-                if (
-                    isinstance(constant, (list, tuple, set, frozenset, dict, str, bytes))
-                    and len(constant) == 0
-                ):
+                if sized and len(constant) == 0:
                     body_runs = False
                     continue
                 for condition in generator.ifs:

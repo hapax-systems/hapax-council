@@ -625,6 +625,39 @@ COMPREHENSION_NEVER_RUNS = (
         "multi_element_literal_under_a_consuming_builtin",
         "any(x or open('artifacts/never.json', 'w', closefd=False) for x in [True, False])",
     ),
+    # The SPELLINGS the first version missed, because it keyed the element count on
+    # `ast.List`/`ast.Tuple` syntax while the value channel resolves a wider domain. Every one
+    # of these short-circuits for every element and Python opens nothing.
+    (
+        "named_single_element_list",
+        "items = [True]\n[x or open('artifacts/never.json', 'w', closefd=False) for x in items]",
+    ),
+    (
+        "named_multi_element_list",
+        "items = [True, True]\n"
+        "[x or open('artifacts/never.json', 'w', closefd=False) for x in items]",
+    ),
+    (
+        "named_tuple",
+        "items = (True, True)\n"
+        "[x or open('artifacts/never.json', 'w', closefd=False) for x in items]",
+    ),
+    (
+        "inline_set",
+        "[x or open('artifacts/never.json', 'w', closefd=False) for x in {1, 2}]",
+    ),
+    (
+        "inline_dict",
+        "[x or open('artifacts/never.json', 'w', closefd=False) for x in {1: 0, 2: 0}]",
+    ),
+    (
+        "inline_str",
+        "[x or open('artifacts/never.json', 'w', closefd=False) for x in 'ab']",
+    ),
+    (
+        "inline_bytes",
+        "[x or open('artifacts/never.json', 'w', closefd=False) for x in b'ab']",
+    ),
     (
         "literal_binding_rebound_in_an_untaken_branch",
         "items = [1]\nif not True:\n    items = [2]\nelse:\n    items = []\n"
