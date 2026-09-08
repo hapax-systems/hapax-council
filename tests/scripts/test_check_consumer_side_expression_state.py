@@ -407,6 +407,56 @@ def test_reachability_survives_the_variant_cap(gate, tmp_path, operands):
     assert "artifacts/never.json" in orphans, f"{operands} operands: orphan reader must survive"
 
 
+# A comprehension body that never runs was the FIFTH place deciding reachability blind, after
+# the walker's BoolOp/Compare/IfExp, path expansion and the capped union. Reported critical by
+# glm at `455612d07`: `[open('artifacts/never.json','w') for _ in []]`, a `if False` filter and
+# an unexecuted generator each certified a produced artifact and absorbed its orphan reader,
+# with no recorded uncertainty, while Python wrote nothing.
+COMPREHENSION_NEVER_RUNS = (
+    ("empty_list_iterable", "[open('artifacts/never.json', 'w', closefd=False) for _ in []]"),
+    ("empty_tuple_iterable", "[open('artifacts/never.json', 'w', closefd=False) for _ in ()]"),
+    ("empty_string_iterable", "[open('artifacts/never.json', 'w', closefd=False) for _ in '']"),
+    ("false_filter", "[open('artifacts/never.json', 'w', closefd=False) for _ in [1] if False]"),
+    ("generator_never_iterated", "(open('artifacts/never.json', 'w', closefd=False) for _ in [])"),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "body"), COMPREHENSION_NEVER_RUNS, ids=[row[0] for row in COMPREHENSION_NEVER_RUNS]
+)
+def test_a_comprehension_body_that_never_runs_certifies_nothing(gate, tmp_path, name, body):
+    """Both halves, because certifying a phantom producer also swallows the orphan."""
+
+    writers, orphans = observed(
+        gate, tmp_path, f"{body}\nPath('artifacts/never.json').read_text()\n"
+    )
+    assert writers == set(), f"{name}: certified a writer whose comprehension body never runs"
+    assert "artifacts/never.json" in orphans, f"{name}: the orphan reader must survive"
+
+
+COMPREHENSION_RUNS = (
+    ("nonempty_iterable", "[open('artifacts/actual.json', 'w', closefd=False) for _ in [1]]"),
+    ("true_filter", "[open('artifacts/actual.json', 'w', closefd=False) for _ in [1] if True]"),
+    # The twin that matters most: an iterable the scanner cannot evaluate must keep certifying,
+    # so this repair stays a constant-decided one and does not become a blanket refusal.
+    (
+        "dynamic_iterable",
+        "items = [1]\n[open('artifacts/actual.json', 'w', closefd=False) for _ in items]",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "body"), COMPREHENSION_RUNS, ids=[row[0] for row in COMPREHENSION_RUNS]
+)
+def test_a_comprehension_body_that_does_run_still_certifies(gate, tmp_path, name, body):
+    writers, orphans = observed(
+        gate, tmp_path, f"{body}\nPath('artifacts/never.json').read_text()\n"
+    )
+    assert writers == {"artifacts/actual.json"}, f"{name}: lost a producer that really runs"
+    assert "artifacts/never.json" in orphans
+
+
 def test_a_genuine_falsy_literal_still_short_circuits(gate, tmp_path):
     """The twin: refusing calls must not cost the real constants their decision."""
 

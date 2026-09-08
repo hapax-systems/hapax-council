@@ -4063,13 +4063,32 @@ class _BlockScanner:
             return
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             inner = _fork(states)
+            body_runs = True
             for generator in node.generators:
                 self._scan_expression(generator.iter, inner)
                 self._bind(generator.target, None, inner)
                 for condition in generator.ifs:
                     self._scan_expression(condition, inner)
-            for value in (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,):
-                self._scan_expression(value, inner)
+                    # A constant-false filter admits nothing, so nothing after it evaluates.
+                    known, constant = _literal_operand(condition)
+                    if known and not constant:
+                        body_runs = False
+                # A constant EMPTY iterable yields nothing, so the body never runs at all.
+                known, constant = _literal_operand(generator.iter)
+                if known and isinstance(constant, (list, tuple, set, frozenset, dict, str, bytes)):
+                    if len(constant) == 0:
+                        body_runs = False
+            if body_runs:
+                for value in (
+                    (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
+                ):
+                    self._scan_expression(value, inner)
+            # Otherwise the element expression is NOT scanned. Reported critical by glm at
+            # `455612d07`: `[open('artifacts/never.json','w') for _ in []]`, a `if False`
+            # filter, and an unexecuted generator each certified a produced artifact and
+            # absorbed its orphan reader while Python wrote nothing. This is the same
+            # constant-decided reachability the walker and path expansion already honour —
+            # the comprehension body was simply a fifth place deciding it blind.
             # Do not export comprehension values. We also refuse to use a pre-comprehension
             # snapshot for these targets outside it; deferred iteration is not scheduled here.
             names = set().union(*(_target_names(g.target) for g in node.generators))
