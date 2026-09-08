@@ -3598,6 +3598,13 @@ def _target_is_read_by(comprehension: ast.expr, generator: ast.comprehension) ->
     )
 
 
+def _comparison_operands(test: ast.expr | None) -> list[ast.expr]:
+    """The operands of a test that is a comparison, or nothing. One level, never recursive."""
+    if not isinstance(test, ast.Compare):
+        return []
+    return [test.left, *test.comparators]
+
+
 def _literal_binding_is_unchallenged(name: str, scope: ast.AST | None) -> bool:
     """Whether ``name`` is bound exactly once in ``scope`` and nothing there can have changed it.
 
@@ -3644,7 +3651,15 @@ def _literal_binding_is_unchallenged(name: str, scope: ast.AST | None) -> bool:
             # Added for the same reason the `for` source was: `x = (1 == 2)` followed by `if x:`
             # kept the guarded writer certified, because the binding never became a literal for
             # the condition check to read.
-            else [node.test]
+            #
+            # **And the operands of a test that IS a comparison, because the read is nested one
+            # level down.** Registering only `node.test` matched `if x:` and missed
+            # `if v < 1 < 2:` — the `Name` there sits inside the `Compare`, so the read was never
+            # on the safe list and the binding was disqualified by its own guard. Comparison
+            # reads an operand's value and hands the object nowhere, which is the same
+            # whole-use argument; nothing deeper than one comparison is admitted, so
+            # `if f(x):` and `if x.y:` still disqualify.
+            else [node.test, *_comparison_operands(node.test)]
             if isinstance(node, (ast.If, ast.While, ast.IfExp))
             else []
         )
@@ -4317,6 +4332,48 @@ class _BlockScanner:
             )[0]
             self.path_functions.helper_results.clear()
 
+    def _demote_from(self, mark: int | None) -> None:
+        """Everything recorded since ``mark`` is a site whose reachability is not established.
+
+        `bounded` is what certification requires, so demoting keeps each access as evidence
+        without asserting that it runs — the distinction between "withheld" and "absent" that
+        skipping the scan destroys. **Withholding a producer is defensible; asserting that no
+        producer exists is not.**
+
+        One method rather than the same three lines at each site, for the reason the condition
+        fold moved under `_literal_operand`: a rule written beside one of its callers is a rule
+        the other callers do not get.
+        """
+        if mark is None:
+            return
+        self.accesses[mark:] = [replace(access, bounded=False) for access in self.accesses[mark:]]
+
+    def _substituted(self, expression: ast.expr) -> ast.expr:
+        """One-binding literal names replaced, for a DECISION only — never for a scan.
+
+        Bounded to two forms on purpose. A bare `Name` is what the operator handlers already
+        substituted, each with its own copy of the line. A `Compare` needs it at DEPTH, because
+        the decision is made per link and the links hold the names: `v = 5` then `if v < 1 < 2:`
+        could not be decided while only the whole test was checked for being a name, so the guard
+        certified a body Python never enters (review findings, claude and codex, at `397535afe`).
+
+        NOT a general rewriter. Anything else is returned as it came, so this cannot drift into a
+        second value model beside the walker's — it substitutes exactly what
+        `_literal_binding_is_unchallenged` has already proved unchanged, and nothing else.
+        """
+        if isinstance(expression, ast.Name):
+            return self.literal_names.get(expression.id, expression)
+        if isinstance(expression, ast.Compare):
+            return ast.copy_location(
+                ast.Compare(
+                    left=self._substituted(expression.left),
+                    ops=expression.ops,
+                    comparators=[self._substituted(item) for item in expression.comparators],
+                ),
+                expression,
+            )
+        return expression
+
     def _resolved_constant(
         self, expression: ast.expr, states: list[dict[str, str]]
     ) -> tuple[bool, object]:
@@ -4327,10 +4384,7 @@ class _BlockScanner:
         `while` tests. Each of those had grown its own answer to "is this decided", which is the
         drift the comparison folding repairs; this is the same repair one level up.
         """
-        probe = expression
-        if isinstance(probe, ast.Name) and probe.id in self.literal_names:
-            probe = self.literal_names[probe.id]
-        return _literal_operand(probe, self._constant_resolver(states))
+        return _literal_operand(self._substituted(expression), self._constant_resolver(states))
 
     def _resolved_iteration_source(
         self, source: ast.expr, states: list[dict[str, str]]
@@ -4489,14 +4543,25 @@ class _BlockScanner:
                 # an unreachable arm can carry an effect.
                 self._scan_expression(reachable[0], states)
                 return
+            # An undecided test reaches exactly ONE arm and this scanner does not know which, so
+            # both are evidence and neither is certified — the same rule as the operator, chain
+            # and comprehension sites. `def f(): return not True` before
+            # `open(...) if f() else 0` opened nothing at runtime and certified the writer.
+            #
+            # Note what this does NOT say: it is not that the arms are unreachable. One of them
+            # runs. Demoting both is the honest reading of "one of these two, unknown which",
+            # and it is why the decided case above still certifies its single arm.
+            arms_from = len(self.accesses)
             taken, not_taken = _fork(states), _fork(states)
             self._scan_expression(node.body, taken)
             self._scan_expression(node.orelse, not_taken)
+            self._demote_from(arms_from)
             states[:] = _merge_states(taken + not_taken)
             return
         if isinstance(node, ast.BoolOp):
             continued = _fork(states)
             alternatives: list[dict[str, str]] = []
+            unreached_from: int | None = None
             for index, value in enumerate(node.values):
                 self._scan_expression(value, continued)
                 # THE INVARIANT, held identically in the `ast.Compare` handler below:
@@ -4521,6 +4586,16 @@ class _BlockScanner:
                     alternatives.extend(_fork(continued))  # stopping here is reachable
                 if decided is True:
                     break  # nothing after a deciding operand can run
+                # **UNRESOLVED IS NOT PERMISSION, at the operator too.** An operand this scanner
+                # cannot decide may stop the operator, so everything after it is scanned as
+                # evidence rather than certified: `def f(): return not True` before
+                # `f() and open(...)` opened nothing at runtime and certified a writer (review
+                # finding, codex, at `7824ec9ea`, raised at the chain handler and present at
+                # three more operator sites). The mark is taken AFTER the decision, so it is the
+                # NEXT operand's scan that falls inside it.
+                if decided is None and unreached_from is None:
+                    unreached_from = len(self.accesses)
+            self._demote_from(unreached_from)
             states[:] = _merge_states(alternatives)
             return
         if isinstance(node, ast.Compare) and len(node.comparators) > 1:
@@ -4539,19 +4614,41 @@ class _BlockScanner:
             # the opposite polarity to `BoolOp`, which is why the predicate reads
             # `is not True` here and `is not False` there. Both say the one sentence above.
             operands = [node.left, *node.comparators]
+            # **The same substitution `BoolOp` and `IfExp` have, and this handler did not.** A
+            # comprehension target bound to a one-element literal decides a link exactly as the
+            # literal would, and without it `[x < 1 < open(...) for x in [5]]` could not see that
+            # `5 < 1` stops the chain — so the write became an undecided-link demotion at best,
+            # and a certification before that (review findings, claude and codex, at
+            # `397535afe`, phrased as "does not resolve comprehension-target operands" and
+            # "writes skipped by a bound comprehension target").
+            #
+            # Third site of one substitution rule, two of which had it. Deciding the link is
+            # strictly better than demoting past it: the false case stops the scan entirely and
+            # the true case keeps its certification, where demotion loses both.
+            #
+            # Substituted for the DECISION only. The scan below still walks the original nodes,
+            # so nothing is classified against a rewritten tree.
+            probes = [self._substituted(item) for item in operands]
             self._scan_expression(node.left, states)
             self._scan_expression(node.comparators[0], states)
             continued = _fork(states)
             alternatives = []
+            chain_unreached_from: int | None = None
             for index in range(1, len(node.comparators)):
-                decided = _comparison_outcome(
-                    operands[index - 1], node.ops[index - 1], operands[index]
-                )
+                decided = _comparison_outcome(probes[index - 1], node.ops[index - 1], probes[index])
                 if decided is not True:
                     alternatives.extend(_fork(continued))  # stopping here is reachable
                 if decided is False:
                     break  # nothing after a decided-false comparison can run
+                # An UNDECIDED link may stop the chain, so what follows it is evidence rather
+                # than certification — the site codex named, and the same rule as the operator
+                # above. `def size(): return 5` before `size() < 1 < open(...)` opens nothing at
+                # runtime (`5 < 1` is False) and certified the write. The decided-true case is
+                # untouched: the chain definitely continues, so the next operand definitely runs.
+                if decided is None and chain_unreached_from is None:
+                    chain_unreached_from = len(self.accesses)
                 self._scan_expression(node.comparators[index], continued)
+            self._demote_from(chain_unreached_from)
             alternatives.extend(_fork(continued))
             states[:] = _merge_states(alternatives)
             return
@@ -4720,7 +4817,16 @@ class _BlockScanner:
                     # but does not know how to enumerate is the same uncertainty arriving by a
                     # different road, so it is recorded as what it is rather than as a failure
                     # to resolve.
-                    body_runs = False
+                    #
+                    # **And "not silent" now means the region is still SCANNED and demoted, not
+                    # skipped.** Withholding here used to stop the scan, which erased every
+                    # reader and writer below it — `def go(): return not False` guarding a
+                    # comprehension whose body really runs lost both (review finding, codex, at
+                    # `7824ec9ea`). Three cases, not two: a DECIDED negative below drops the
+                    # region because nothing runs, an UNDECIDED one keeps it as unbounded
+                    # evidence because something might.
+                    if unreached_from is None:
+                        unreached_from = len(self.accesses)
                     self.unresolved[0] += 1
                     if isinstance(self.path_functions, PathFunctionTable):
                         detail = (
@@ -4782,7 +4888,14 @@ class _BlockScanner:
                         # phantom writer through it — the helper's `not True` is a UnaryOp the
                         # constant channel does not fold, so the resolver answered "not
                         # established" and the filter admitted anyway.
-                        body_runs = False
+                        #
+                        # Scanned and demoted rather than skipped, for the same reason as the
+                        # unresolved iterable above: an unresolved guard is not permission to
+                        # CERTIFY what it guards, and it is not grounds to assert that what it
+                        # guards is absent either. The guard's own truth is unknown, so the
+                        # region below it is unbounded evidence.
+                        if unreached_from is None:
+                            unreached_from = len(self.accesses)
                         self.unresolved[0] += 1
                         if isinstance(self.path_functions, PathFunctionTable):
                             self.path_functions.unresolved_paths.add(
@@ -4798,14 +4911,11 @@ class _BlockScanner:
                     (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
                 ):
                     self._scan_expression(value, inner)
-            if unreached_from is not None:
-                # The demotion, applied once over everything the region recorded — the filters
-                # after the multi-element clause, every later clause, and the element expression,
-                # including any nested comprehension inside them. `bounded` is what certification
-                # requires, so this keeps each site as evidence without asserting it runs.
-                self.accesses[unreached_from:] = [
-                    replace(access, bounded=False) for access in self.accesses[unreached_from:]
-                ]
+            # Applied once over everything the region recorded — the filters after the clause
+            # that could not be decided, every later clause, and the element expression,
+            # including any nested comprehension inside them. Shared with the operator and chain
+            # handlers, which answer the same question about their own operands.
+            self._demote_from(unreached_from)
             self.literal_names = outer_literal_names
             # Otherwise the element expression is NOT scanned. Reported critical by glm at
             # `455612d07`: `[open('artifacts/never.json','w') for _ in []]`, a `if False`
