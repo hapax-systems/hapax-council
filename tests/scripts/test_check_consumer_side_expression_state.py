@@ -553,6 +553,14 @@ COMPREHENSION_NEVER_RUNS = (
         "max((open('artifacts/never.json', 'w', closefd=False) for _ in [1]), "
         "(x for x in [1]), key=id)",
     ),
+    # The rule names TWO callees and only one was pinned. A guard written as `{"min", "max"}` with
+    # a control for `max` alone is the same one-site-current shape this file keeps repairing, one
+    # level down: nothing would have caught `min` being dropped from the set.
+    (
+        "min_compares_two_generators_without_iterating",
+        "min((open('artifacts/never.json', 'w', closefd=False) for _ in [1]), "
+        "(x for x in [1]), key=id)",
+    ),
     # POSITION, not just callee. A proven consumer iterates its FIRST POSITIONAL argument and
     # nothing else, so neither of these iterates anything — and neither shadows a builtin, which
     # is what makes them independent of the shadowing rows above.
