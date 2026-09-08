@@ -27,21 +27,20 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-producer-consu
 # The scanner must certify NOTHING for these: an assignment the taken branch never reaches, and a
 # lambda body that is compiled here and called nowhere.
 WITHHELD = {
-    "unselected_assignment",
-    "selected_assignment",
-    # `unselected_lambda` was here, and moved OUT when path expansion learned reachability:
-    # `('prefix' if True else (lambda: ...))` has a constant test, so only `'prefix'` is
-    # reachable and the row now certifies `prefixwrong` — exactly what the executed helper
-    # builds. This block's own note says the danger is a change that starts certifying these
-    # "wrongly"; certifying correctly retires the boundary rather than breaching it, and the
-    # row is a stronger control outside this set, where it asserts the file rather than the
-    # absence of one.
+    # All three `IfExp` rows that used to sit here — `unselected_lambda`,
+    # `unselected_assignment` and `selected_assignment` — moved OUT once reachability was
+    # decided in one place and consulted by the walker as well as by path expansion. Each has a
+    # constant test, so only the taken arm is evaluated, and each now certifies exactly what the
+    # executed helper builds: `prefixwrong`, `prefixwrong` and `actualactual`. This block's own
+    # note says the danger is a change that starts certifying these *wrongly*; certifying
+    # correctly retires the boundary rather than breaching it, and outside this set the rows are
+    # stronger, asserting a file instead of the absence of one.
     #
-    # `unselected_assignment` stays: its unselected branch holds a walrus, and the expression
-    # WALKER still forks both arms of an `IfExp` regardless of a constant test, so the binding
-    # is ambiguous and nothing is certified. That is imprecision, not the wrong-certification
-    # defect repaired here, and withholding is the safe direction — so it is left alone rather
-    # than repaired speculatively.
+    # I had written here that `unselected_assignment` would stay, on the reasoning that the
+    # walker's `IfExp` fork "only withholds, and withholding is the safe direction". That was
+    # wrong twice over: an unreachable arm can carry an EFFECT, not merely a binding — codex's
+    # `open('never.json','w') if False else None` certified a phantom producer — and once the
+    # walker honours the test, the binding resolves too.
     # Subscripting a dict display is not modelled, so these certify nothing on either side of the
     # evaluation-order question. They are here as the BOUNDARY, measured: four families report a
     # dict-order shape that certifies a wrong file, and I could not construct one — so what these
@@ -348,6 +347,64 @@ def test_a_shadowed_set_call_is_not_a_falsy_constant(gate, tmp_path):
     assert writers != {"artifacts/wrong.json"}, "certified only the branch Python does not take"
     if not writers:
         assert actual in orphans, "withheld, so the reader of the written file stays an orphan"
+
+
+def test_an_unreachable_conditional_arm_cannot_carry_an_effect(gate, tmp_path):
+    """An arm a constant test rules out must not be SCANNED, never mind certified.
+
+    I argued the walker's `IfExp` fork only blurred bindings, so withholding made it safe to
+    leave. That reasoning missed the case codex reported at `45a37aeda`: an unreachable arm can
+    hold a call with an effect, and scanning it classifies that call. `open(...) if False else
+    None` therefore certified a producer for a file the program never opens, and absorbed the
+    orphan reader that would have shown it.
+    """
+
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        "open('artifacts/never.json', 'w', closefd=False) if False else None\n"
+        "Path('artifacts/never.json').read_text()\n",
+    )
+    assert writers == set(), "certified a writer inside an arm the test rules out"
+    assert "artifacts/never.json" in orphans, "the orphan reader must survive"
+
+
+def test_a_reachable_conditional_arm_still_carries_its_effect(gate, tmp_path):
+    """The twin: the arm that IS taken must keep being certified."""
+
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        "open('artifacts/actual.json', 'w', closefd=False) if True else None\n"
+        "Path('artifacts/never.json').read_text()\n",
+    )
+    assert writers == {"artifacts/actual.json"}
+    assert "artifacts/never.json" in orphans
+
+
+@pytest.mark.parametrize("operands", [7, 8], ids=["under_the_cap", "over_the_cap"])
+def test_reachability_survives_the_variant_cap(gate, tmp_path, operands):
+    """The capped fallback re-expands the node, and used to re-expand what was filtered out.
+
+    codex's boundary, verbatim: seven empty operands stay under the variant cap and certified
+    only `actual.json`; eight tripped it, `_expand_conditional_union` derived the arms again
+    without reachability, and both filenames became bounded writers while a reader of
+    `never.json` disappeared. Both sides are pinned so the cap cannot silently become a bypass.
+    """
+
+    assigns = "".join(f"x{index} = ''\n" for index in range(operands))
+    chain = " or ".join(f"x{index}" for index in range(operands))
+    tail = "('artifacts/actual.json' if True else 'artifacts/never.json')"
+
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        assigns
+        + f"open({chain} or {tail}, 'w', closefd=False)\n"
+        + "Path('artifacts/never.json').read_text()\n",
+    )
+    assert writers == {"artifacts/actual.json"}, f"{operands} operands: unreachable arm restored"
+    assert "artifacts/never.json" in orphans, f"{operands} operands: orphan reader must survive"
 
 
 def test_a_genuine_falsy_literal_still_short_circuits(gate, tmp_path):

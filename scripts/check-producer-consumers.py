@@ -1428,15 +1428,7 @@ def _conditional_expr_variants(node: ast.expr | None) -> tuple[list[ast.expr], b
         # certified both filenames and suppressed an orphan reader of the one Python never
         # writes (codex, at `c01c645d2`). Repairing the walker alone left this path deciding
         # the same question the opposite way, one layer over.
-        if isinstance(conditional, ast.IfExp):
-            known, constant = _literal_operand(conditional.test)
-            if known:
-                alternatives = (conditional.body,) if constant else (conditional.orelse,)
-            else:
-                alternatives = (conditional.body, conditional.orelse)
-        else:
-            assert isinstance(conditional, ast.BoolOp) and isinstance(conditional.op, ast.Or)
-            alternatives = _reachable_or_operands(tuple(conditional.values))
+        alternatives = _reachable_alternatives(conditional)
         if len(pending) + len(resolved) + len(alternatives) > _MAX_PATH_EXPR_VARIANTS:
             truncated = True
             # Keep the remaining disjunction as a compact union. The cap bounds expanded ASTs,
@@ -1448,6 +1440,27 @@ def _conditional_expr_variants(node: ast.expr | None) -> tuple[list[ast.expr], b
             for alternative in reversed(alternatives)
         )
     return resolved, truncated
+
+
+def _reachable_alternatives(conditional: ast.expr) -> tuple[ast.expr, ...]:
+    """Which arms of a conditional can actually be evaluated — ONE decision, every caller.
+
+    This exists because writing the decision twice is exactly how it went wrong. Reachability
+    filtering was added to `_conditional_expr_variants` and NOT to `_expand_conditional_union`,
+    which re-expands the same node when the variant cap trips, so past the eight-variant
+    boundary the filtered-out arms came straight back and certified phantom writers
+    (codex, at `45a37aeda`). The scanner decides this in several places; it must not *derive*
+    it in several places.
+    """
+    if isinstance(conditional, ast.IfExp):
+        known, constant = _literal_operand(conditional.test)
+        if known:
+            return (conditional.body,) if constant else (conditional.orelse,)
+        return (conditional.body, conditional.orelse)
+    assert isinstance(conditional, ast.BoolOp)
+    if isinstance(conditional.op, ast.Or):
+        return _reachable_or_operands(tuple(conditional.values))
+    return tuple(conditional.values)
 
 
 def _reachable_or_operands(values: tuple[ast.expr, ...]) -> tuple[ast.expr, ...]:
@@ -1477,11 +1490,9 @@ def _expand_conditional_union(expression: ast.expr) -> Iterator[ast.expr]:
         yield expression
         return
     conditional = _ast_node_at(expression, conditional_path)
-    alternatives = (
-        (conditional.body, conditional.orelse)
-        if isinstance(conditional, ast.IfExp)
-        else conditional.values
-    )
+    # The SAME decision as the uncapped path. Deriving it separately here is what let the
+    # cap fallback restore arms that reachability had already ruled out.
+    alternatives = _reachable_alternatives(conditional)
     for alternative in alternatives:
         yield from _expand_conditional_union(
             _replace_ast_node(expression, conditional_path, alternative)
@@ -3971,6 +3982,17 @@ class _BlockScanner:
             return
         if isinstance(node, ast.IfExp):
             self._scan_expression(node.test, states)
+            reachable = _reachable_alternatives(node)
+            if len(reachable) == 1:
+                # A constant test decides the arm, so the other one is never evaluated — and
+                # scanning it does more than blur a binding, it CLASSIFIES its calls. Reported
+                # critical by codex at `45a37aeda`:
+                #     open('artifacts/never.json', 'w') if False else None
+                # certified never.json as a producer and absorbed its orphan reader. I had
+                # argued this path only withheld, reasoning about bindings and forgetting that
+                # an unreachable arm can carry an effect.
+                self._scan_expression(reachable[0], states)
+                return
             taken, not_taken = _fork(states), _fork(states)
             self._scan_expression(node.body, taken)
             self._scan_expression(node.orelse, not_taken)
