@@ -1037,6 +1037,69 @@ def test_a_decided_condition_still_certifies_the_branch_that_runs(gate, tmp_path
     assert "artifacts/never.json" in orphans
 
 
+# **The FILTERS were the half the earlier repair missed.** Making the two unresolved branches
+# scan-and-demote instead of skip fixed the body and the later clauses and left the sibling
+# filters behind a `continue` and a `break` respectively — so a reader in a filter still vanished
+# while the identical reader one line further into the body survived. Each row below executes its
+# reader at runtime.
+UNRESOLVED_CLAUSE_FILTER_READERS = (
+    # The undecided SOURCE branch `continue`d past `generator.ifs`. An unresolved source may still
+    # yield elements — `def src(): return [1]` does — so its filters may run.
+    (
+        "undecided_source_reader_in_its_own_filter",
+        "def src():\n    return [1]\n[1 for _ in src() if Path('artifacts/reader.json').read_text()]",
+    ),
+    # The undecided FILTER branch `break`s, taking the filters after it with the one it could not
+    # decide.
+    (
+        "undecided_filter_reader_in_a_later_filter",
+        "def go():\n    return not False\n"
+        "[1 for _ in [1] if go() if Path('artifacts/reader.json').read_text()]",
+    ),
+    # The twin one line over, which already worked: without it these rows could pass on a repair
+    # that scanned filters and stopped scanning bodies.
+    (
+        "undecided_source_reader_in_the_body",
+        "def src():\n    return [1]\n[Path('artifacts/reader.json').read_text() for _ in src()]",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "body"),
+    UNRESOLVED_CLAUSE_FILTER_READERS,
+    ids=[row[0] for row in UNRESOLVED_CLAUSE_FILTER_READERS],
+)
+def test_an_unresolved_clause_keeps_the_readers_in_its_filters(gate, tmp_path, name, body):
+    reads = [
+        access
+        for access in recorded(gate, tmp_path, body)
+        if access.action == "read" and access.pattern == "artifacts/reader.json"
+    ]
+    assert reads, (
+        f"{name}: a reader that runs must not vanish with the clause that could not be decided"
+    )
+
+
+def test_a_writer_in_a_later_filter_is_evidence_and_not_a_certification(gate, tmp_path):
+    """The other side of the same repair: scanning the filters must not certify through them."""
+
+    writes = [
+        access
+        for access in recorded(
+            gate,
+            tmp_path,
+            "def go():\n    return not False\n"
+            "[1 for _ in [1] if go() if open('artifacts/actual.json', 'w', closefd=False)]",
+        )
+        if access.action == "write" and access.pattern == "artifacts/actual.json"
+    ]
+    assert writes, "the write site must survive as evidence"
+    assert all(not access.bounded for access in writes), (
+        "an undecided guard must not certify the writer behind it"
+    )
+
+
 # The multi-element withholding stopped scanning, not just stopped certifying, and a reader in
 # the body went with the writer. Python executes each of these readers twice.
 WITHHELD_REGION_READERS = (

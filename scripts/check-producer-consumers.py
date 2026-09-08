@@ -4849,6 +4849,14 @@ class _BlockScanner:
                             f"{self.path}:{node.lineno}:{node.col_offset}: comprehension "
                             f"{detail} expression={ast.unparse(generator.iter)}"
                         )
+                    # **The `continue` jumps over this clause's own filters, and they are
+                    # evidence.** An unresolved source may still yield elements — `def src():
+                    # return [1]` does — so its filters may run, and skipping them erased a
+                    # reader that executes at runtime (review finding, codex, at `da1cb13c7`).
+                    # Scanned here rather than below, because the checks between this branch and
+                    # the filter loop assume a sized constant this domain does not have.
+                    for condition in generator.ifs:
+                        self._scan_expression(condition, inner)
                     continue
                 if domain == SOURCE_NOT_ITERABLE:
                     # `iter()` raises TypeError before the first element, so the body runs zero
@@ -4912,7 +4920,14 @@ class _BlockScanner:
                                 f"{self.path}:{node.lineno}:{node.col_offset}: comprehension "
                                 f"filter not resolvable expression={ast.unparse(condition)}"
                             )
-                        break
+                        # **The remaining filters are evidence too, and `break` erased them.**
+                        # An undecided guard leaves the filters after it undetermined, not
+                        # absent: `[1 for _ in [1] if go() if Path(...).read_text()]` with `go`
+                        # returning `not False` reads once at runtime and lost its reader
+                        # entirely. My earlier repair here stopped the SKIP for the body and the
+                        # later clauses and left the sibling filters behind the same `break`
+                        # (review finding, codex, at `da1cb13c7`).
+                        continue
                     if not constant:
                         body_runs = False
                         break
