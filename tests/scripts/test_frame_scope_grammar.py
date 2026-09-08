@@ -2512,6 +2512,115 @@ def test_row_s2j_the_recursive_descent_states_its_own_traversal_rule(
         )
 
 
+class _ScandirFaultingOnCalls:
+    """`os.scandir` replacement that fails only on the listed call numbers for one directory.
+
+    An INTERMITTENT fault is the case a steady one cannot reach: the enumeration and the
+    readability check are two separate traversals of the same tree, so a fault present for the
+    first and absent for the second leaves a short enumeration and a clean check.
+    """
+
+    def __init__(self, target: str, failing_calls: set[int], error: OSError) -> None:
+        self._target = target
+        self._failing = failing_calls
+        self._error = error
+        self._real = os.scandir
+        self.calls = 0
+
+    def __call__(self, path="."):
+        if str(path).rstrip("/") == self._target:
+            self.calls += 1
+            if self.calls in self._failing:
+                raise self._error
+        return self._real(path)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "REPRODUCED AND UNREPAIRED: codex's 2026-09-08 critical at `shared/frame_verdicts.py:2591`. "
+        "Marked strict so it fails the moment the defect is fixed, rather than sitting green. "
+        "Not repaired yet because every candidate fix is unsound in a way worth deciding "
+        "deliberately — see the docstring."
+    ),
+)
+def test_row_s2k_an_intermittent_fault_is_not_cleared_by_a_later_clean_traversal(
+    tmp_path, monkeypatch
+):
+    """S2k: the readability check verifies a DIFFERENT traversal than the one it vouches for.
+
+    Review finding (codex, 2026-09-08, `shared/frame_verdicts.py:2591`), reproduced on their
+    arrangement: `Path.glob` collects the entries while suppressing its scan errors, and
+    `_require_scannable` then walks the tree AGAIN. If the fault is present for the first
+    traversal and gone for the second — scandir failing on calls 1 and 3 but not 2 — the
+    enumeration comes back short and the check reports the tree readable. `all_inside` flips
+    true to false and the dispatcher's refusal becomes None.
+
+    **Every existing scan-fault row keeps the fault active for both traversals**, which is why
+    they all pass: a steady fault is seen by whichever traversal is checked. The defect is not
+    that the check is too weak — it is that *a check of a re-run is not a check of the run*.
+
+    **Why this is xfail rather than repaired.** Three candidate fixes, each unsound in a
+    different way, and the choice is a design decision rather than a patch:
+
+    1. *Enumerate with my own traversal instead of `Path.glob`.* Closes it completely, and
+       risks the worse defect: the producer selects with `Path.glob`, so any divergence in
+       matching semantics changes which files the member is taken to contain. Trading an
+       intermittent-fault hole for a permanent selection mismatch is not an improvement.
+    2. *Run the readability check before AND after the glob.* Closes codex's exact call
+       pattern and not the general case — a fault present only during the glob passes both.
+       It is also two guards on one hazard, which the third fallback rule names as the signal
+       to change the shape rather than add a mitigation.
+    3. *Glob twice and require the results to agree.* Uses pathlib for both, so no semantic
+       divergence — but on codex's own (1, 3) pattern both globs are short and EQUAL, so it
+       does not even close the reported case.
+
+    What the defect actually asks for is that the entries used for the decision come from a
+    traversal whose failures were observed. Doing that without reimplementing glob means
+    observing the glob's own syscalls, and the only hook for that is process-global — this
+    module already carries one global with a stated concurrency bound, and adding a second is
+    the shape the third rule warns about.
+
+    So: reproduced, named here, and returned for a decision. A gap visible in the test surface
+    survives; a gap in a docstring does not.
+    """
+    base = tmp_path / "base"
+    root = base / "bin"
+    root.mkdir(parents=True)
+    selected = root / "fsck.ext2"
+    selected.write_bytes(b"e2fsck NEEDLE\n")
+    scope_alias = root / "e2fsck"
+    os.link(selected, scope_alias)
+
+    member = {
+        "id": "intermittent-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["fsck.ext[234]"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("intermittent-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    readable = fv.scope_within_decayed(
+        [str(scope_alias)], verdicts, council_root=base, vault_root=base
+    )
+    assert readable.all_inside is True, "readable baseline reaches the selected file"
+
+    monkeypatch.setattr(
+        os,
+        "scandir",
+        _ScandirFaultingOnCalls(str(root), {1, 3}, PermissionError(13, "Permission denied")),
+    )
+
+    with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+        fv.scope_within_decayed([str(scope_alias)], verdicts, council_root=base, vault_root=base)
+    assert "cannot" in str(caught.value)
+    assert caught.value.remedy
+
+
 def _assert_filesystem_remedy_survived(error: fv.NonCanonicalScopeRef) -> None:
     """The refusal must still name the FILESYSTEM repair, not the class's glob advice.
 
