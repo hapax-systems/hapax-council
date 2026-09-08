@@ -1441,6 +1441,18 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
     # `_canonical_member_entries` and `_check_member_symlinks` to a RecursionError (review
     # finding, cx-blue, at `93f5fceb1`; twelve reader fixtures, 10/2 -> 12/0 with DOTALL alone).
     #
+    # **This gap PREDATES the `\A`/`\Z` anchoring below and was not caused by it** (cx-blue,
+    # 2026-09-08; I claimed the opposite in the `b420f26c9` commit message and was wrong).
+    # Measured against the same path, holding the regex body fixed and varying only anchors and
+    # flags:
+    #
+    #     ^...$   no DOTALL   ->  no match     <- the state before the anchor repair
+    #     \A..\Z  no DOTALL   ->  no match
+    #     \A..\Z  DOTALL      ->  match
+    #
+    # The anchors are orthogonal: `.` has never matched a newline here. The commit message
+    # stands as written because history is not rewritten; this is the correction beside it.
+    #
     # This does NOT weaken the `\A`/`\Z` anchoring above, and the two answer different questions.
     # DOTALL governs what `.` may match INSIDE the pattern; the anchors govern where the match
     # may end. `*` already compiles to `[^/]*`, which a character class makes newline-permitting
@@ -2324,6 +2336,18 @@ def _check_member_symlinks(
 #: family closed rather than one instance repaired: any future gap between what a member's
 #: patterns select and what its root contains re-enters here, and re-entry is now a named
 #: undecidable refusal instead of a stack overflow.
+#:
+#: **What re-entry proves, stated precisely (cx-blue, 2026-09-08).** It proves this CONSUMER's
+#: calculation is self-dependent for this member. It does NOT prove that none of the member's
+#: entries match, and it does NOT establish that the producer's `location.patterns` are
+#: defective — the counterexample that reaches it perturbs the consumer's own regex and leaves a
+#: perfectly valid declaration in place. The refusal below therefore diagnoses the consumer and
+#: explicitly tells the reader the declaration needs no change; an earlier wording sent them to
+#: repair a correct one.
+#:
+#: **Bound, not a claim:** this is module-global state, so its behaviour under CONCURRENT calls
+#: into the consumer is unqualified. Nothing here asserts that a current caller is concurrent —
+#: only that if one ever is, this guard has not been reasoned about for that case.
 _SURFACE_IN_PROGRESS: set[int] = set()
 
 
@@ -2340,13 +2364,13 @@ def _canonical_member_entries(member: DecayedMember) -> dict[Path, Path]:
         # smaller surface, it is a wrong one — a weaker comparison that would silently admit —
         # so this refuses by name rather than returning what has been collected so far.
         error = UndecidableScopeContainment(
-            f"member {member.member_id!r} canonical surface depends on itself; its declared "
-            "patterns select none of the entries under its root, so containment cannot be decided"
+            f"this consumer cannot compute member {member.member_id!r} canonical surface: the "
+            "calculation re-entered itself, so containment cannot be decided for this dispatch"
         )
         error.remedy = (
-            f"repair location.patterns for member {member.member_id!r} in "
-            f"{MASS_DECLARATION_LOCATION} so they select the entries under its declared root; "
-            + PRODUCER_REMEDY
+            "report this consumer defect with the member id and the scope ref; the declaration "
+            "is not implicated and needs no change. Re-run the dispatch once the consumer is "
+            "repaired"
         )
         raise error
     _SURFACE_IN_PROGRESS.add(token)

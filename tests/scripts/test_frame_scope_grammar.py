@@ -1855,8 +1855,16 @@ def test_row_s1c_a_self_dependent_member_surface_refuses_instead_of_recursing(
     with pytest.raises(fv.UndecidableScopeContainment) as caught:
         fv.scope_within_decayed([str(target)], verdicts, council_root=base, vault_root=base)
 
-    assert "depends on itself" in str(caught.value)
+    assert "re-entered itself" in str(caught.value)
     assert caught.value.remedy, "a refusal must name its remedy"
+    # The diagnosis must point at the CONSUMER. This fixture perturbs the consumer's own regex
+    # and leaves a valid producer declaration in place, so a remedy sending the operator to
+    # repair `location.patterns` would send them to repair something correct (cx-blue,
+    # 2026-09-08). Re-entry proves a self-dependent calculation here, not a defective
+    # declaration and not that none of the member's entries match.
+    assert "consumer" in str(caught.value)
+    assert "declaration is not implicated" in caught.value.remedy
+    assert "location.patterns" not in caught.value.remedy
 
 
 @pytest.mark.parametrize(
