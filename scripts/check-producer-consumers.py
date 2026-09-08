@@ -3474,6 +3474,12 @@ class _BlockScanner:
         self.context_family = context_family
         self.nested_scope_values = nested_scope_values
         self.scope_node = scope_node
+        #: GeneratorExp nodes seen in a CONSUMING position. A generator expression's body does
+        #: not run when it is created — only when something iterates it — so certifying its
+        #: effects at the definition site invented a producer for a file nothing writes
+        #: (review finding, codex). Consumption is a property of the PARENT, which is why it is
+        #: recorded by the handlers that hold one rather than inferred inside the body handler.
+        self.consumed_generators: set[int] = set()
 
     def scan_block(
         self,
@@ -4041,6 +4047,13 @@ class _BlockScanner:
             if isinstance(node.func, ast.Attribute):
                 self._freeze_expression(node.func.value, states)
             for argument in (*node.args, *(keyword.value for keyword in node.keywords)):
+                # Passing a generator to a call is a consuming position for the purposes of
+                # this scanner. It over-approximates — a callee could store it rather than
+                # iterate it — and that is the deliberate direction: the alternative treats
+                # `list(open(...) for _ in [1])` as never running and fabricates an orphan for
+                # a file that IS written.
+                if isinstance(argument, ast.GeneratorExp):
+                    self.consumed_generators.add(id(argument))
                 self._scan_expression(argument, states)
                 self._freeze_expression(argument, states)
             self._classify(node, states)
@@ -4131,21 +4144,75 @@ class _BlockScanner:
             return
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             inner = _fork(states)
-            body_runs = True
+            # A list/set/dict comprehension runs at once. A GENERATOR does not: its body runs
+            # only when something iterates it, so `g = (open(...) for _ in [1])` writes nothing
+            # until `g` is consumed, and certifying it at the definition site invented a
+            # producer and absorbed that file's orphan reader (review finding, codex, at
+            # `07757da06`). The consuming positions record themselves on the way in; anything
+            # else is deferred, and deferred is not evidence of an effect.
+            body_runs = not isinstance(node, ast.GeneratorExp) or id(node) in (
+                self.consumed_generators
+            )
+            if not body_runs:
+                # NAMED UNCERTAINTY, not silence. Not scanning the body stops the phantom, but
+                # going quiet would also drop the fact that something here was not analysed —
+                # and "retain alternatives as unresolved evidence; prefer a named uncertainty to
+                # a false producer match" is the standing contract for this row. A committed
+                # control caught the difference: it counts the unresolved sites in
+                # `(artifact.write_text('{}') for artifact in items)` as a bare statement, and
+                # silently skipping the body lost one. The generator really is unanalysed, so
+                # the count was right and my silence was wrong.
+                self.unresolved[0] += 1
+                if isinstance(self.path_functions, PathFunctionTable):
+                    self.path_functions.unresolved_paths.add(
+                        f"{self.path}:{node.lineno}:{node.col_offset}: deferred generator "
+                        f"body not scheduled here expression={ast.unparse(node)}"
+                    )
             for generator in node.generators:
+                # Once nothing reaches this point, nothing LATER is evaluated either — not a
+                # subsequent generator's iterable, and not a filter after a false one. The
+                # previous version scanned every generator and every condition regardless, so a
+                # call in either was classified although Python never runs it (review finding,
+                # codex, at `07757da06`; measured as `[y for x in [] for y in [open(...)]]` and
+                # `[x for x in [1] if False if open(...)]` each certifying a phantom writer and
+                # absorbing its orphan reader).
+                #
+                # This is the same constant-decided reachability the walker, the path expansion
+                # and the comprehension BODY already honour. The body was the fifth place
+                # deciding it blind; the generator chain and the filter chain were the sixth and
+                # seventh, in the same handler as the repair.
+                if not body_runs:
+                    break
+                # A comprehension iterates its own source, so a generator there is consumed.
+                if isinstance(generator.iter, ast.GeneratorExp):
+                    self.consumed_generators.add(id(generator.iter))
                 self._scan_expression(generator.iter, inner)
                 self._bind(generator.target, None, inner)
+                # A constant EMPTY iterable yields nothing, so nothing after it evaluates —
+                # checked BEFORE the filters, because Python evaluates no filter for an
+                # iterable that produces no element.
+                known, constant = _literal_operand(generator.iter)
+                if (
+                    known
+                    and isinstance(constant, (list, tuple, set, frozenset, dict, str, bytes))
+                    and len(constant) == 0
+                ):
+                    body_runs = False
+                    continue
                 for condition in generator.ifs:
                     self._scan_expression(condition, inner)
                     # A constant-false filter admits nothing, so nothing after it evaluates.
+                    #
+                    # No resolver is passed here, deliberately. The walker could supply one — it
+                    # is the same object the BoolOp and IfExp sites use — and a filter calling a
+                    # uniquely bound constant helper would then decide. That is a widening of the
+                    # same candidate, not part of it, and this row is returned for checking
+                    # before adoption; extending its reach unasked is how a bounded change stops
+                    # being reviewable. Left as a stated limit rather than an oversight.
                     known, constant = _literal_operand(condition)
                     if known and not constant:
                         body_runs = False
-                # A constant EMPTY iterable yields nothing, so the body never runs at all.
-                known, constant = _literal_operand(generator.iter)
-                if known and isinstance(constant, (list, tuple, set, frozenset, dict, str, bytes)):
-                    if len(constant) == 0:
-                        body_runs = False
+                        break
             if body_runs:
                 for value in (
                     (node.key, node.value) if isinstance(node, ast.DictComp) else (node.elt,)
@@ -4405,6 +4472,13 @@ class _BlockScanner:
                     and child not in getattr(statement, "decorator_list", ())
                     and not isinstance(child, (ast.stmt, ast.ExceptHandler, ast.match_case))
                 ):
+                    # `for x in (genexp):` iterates it, so its body runs. This is the third
+                    # consuming position, and the only one reached through the generic child
+                    # walk rather than a dedicated handler.
+                    if isinstance(child, ast.GeneratorExp) and child is getattr(
+                        statement, "iter", None
+                    ):
+                        self.consumed_generators.add(id(child))
                     self._scan_expression(child, states)
         for scope in _statement_scopes(statement):
             self.nested_scope_values.setdefault(scope, []).extend(

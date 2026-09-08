@@ -431,6 +431,27 @@ COMPREHENSION_NEVER_RUNS = (
     ("empty_string_iterable", "[open('artifacts/never.json', 'w', closefd=False) for _ in '']"),
     ("false_filter", "[open('artifacts/never.json', 'w', closefd=False) for _ in [1] if False]"),
     ("generator_never_iterated", "(open('artifacts/never.json', 'w', closefd=False) for _ in [])"),
+    # codex's three remaining shapes at `07757da06`, each reproduced certifying a phantom AND
+    # absorbing its orphan reader. The first repair stopped at the comprehension BODY; these are
+    # the clauses around it, which were still scanned unconditionally.
+    #
+    # A filter AFTER a constant-false one never evaluates — Python stops at the first false.
+    (
+        "filter_after_a_false_filter",
+        "[x for x in [1] if False if open('artifacts/never.json', 'w', closefd=False)]",
+    ),
+    # The SECOND generator's iterable never evaluates when the first yields nothing.
+    (
+        "iterable_after_an_empty_generator",
+        "[y for x in [] for y in [open('artifacts/never.json', 'w', closefd=False)]]",
+    ),
+    # A generator BOUND but never consumed runs no body. Distinct from `generator_never_iterated`
+    # above, whose iterable is empty: this one's iterable is non-empty, so only consumption
+    # decides it, and nothing here consumes `g`.
+    (
+        "generator_bound_but_unconsumed",
+        "g = (open('artifacts/never.json', 'w', closefd=False) for _ in [1])",
+    ),
 )
 
 
@@ -455,6 +476,22 @@ COMPREHENSION_RUNS = (
     (
         "dynamic_iterable",
         "items = [1]\n[open('artifacts/actual.json', 'w', closefd=False) for _ in items]",
+    ),
+    # The twins for the deferred-generator repair, and they are what keep it from becoming
+    # "generators never certify". A CONSUMED generator does run its body, so withholding here
+    # would fabricate an orphan for a file that really is written — the same defect pointed the
+    # other way, which is exactly how the earlier function-scope withholding went wrong.
+    (
+        "generator_consumed_by_list",
+        "list(open('artifacts/actual.json', 'w', closefd=False) for _ in [1])",
+    ),
+    (
+        "generator_consumed_by_for",
+        "for _h in (open('artifacts/actual.json', 'w', closefd=False) for _ in [1]):\n    pass",
+    ),
+    (
+        "generator_consumed_by_a_comprehension",
+        "[v for v in (open('artifacts/actual.json', 'w', closefd=False) for _ in [1])]",
     ),
 )
 
