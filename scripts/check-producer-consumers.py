@@ -1423,11 +1423,20 @@ def _conditional_expr_variants(node: ast.expr | None) -> tuple[list[ast.expr], b
             resolved.append(expression)
             continue
         conditional = _ast_node_at(expression, conditional_path)
+        # Reachability is decided here too, not only in the expression walker. This expander
+        # used to emit EVERY alternative, so `open('wrong.json' or 'actual.json', 'w')`
+        # certified both filenames and suppressed an orphan reader of the one Python never
+        # writes (codex, at `c01c645d2`). Repairing the walker alone left this path deciding
+        # the same question the opposite way, one layer over.
         if isinstance(conditional, ast.IfExp):
-            alternatives = (conditional.body, conditional.orelse)
+            known, constant = _literal_operand(conditional.test)
+            if known:
+                alternatives = (conditional.body,) if constant else (conditional.orelse,)
+            else:
+                alternatives = (conditional.body, conditional.orelse)
         else:
             assert isinstance(conditional, ast.BoolOp) and isinstance(conditional.op, ast.Or)
-            alternatives = tuple(conditional.values)
+            alternatives = _reachable_or_operands(tuple(conditional.values))
         if len(pending) + len(resolved) + len(alternatives) > _MAX_PATH_EXPR_VARIANTS:
             truncated = True
             # Keep the remaining disjunction as a compact union. The cap bounds expanded ASTs,
@@ -1439,6 +1448,26 @@ def _conditional_expr_variants(node: ast.expr | None) -> tuple[list[ast.expr], b
             for alternative in reversed(alternatives)
         )
     return resolved, truncated
+
+
+def _reachable_or_operands(values: tuple[ast.expr, ...]) -> tuple[ast.expr, ...]:
+    """Which operands of an ``or`` can actually be its value.
+
+    ``a or b or c`` yields the first truthy operand, or the last one if none is truthy. So a
+    **constant falsy** operand can never be the result unless it is last, and a **constant
+    truthy** one always is — nothing after it is reachable. Only constants decide; a dynamic
+    operand leaves everything from it onward possible, which is the existing behaviour.
+    """
+    reachable: list[ast.expr] = []
+    for index, value in enumerate(values):
+        known, constant = _literal_operand(value)
+        last = index == len(values) - 1
+        if known and not constant and not last:
+            continue  # a falsy constant is never what `or` returns
+        reachable.append(value)
+        if known and constant:
+            break  # a truthy constant is the value; later operands do not evaluate
+    return tuple(reachable) if reachable else (values[-1],)
 
 
 def _expand_conditional_union(expression: ast.expr) -> Iterator[ast.expr]:
@@ -3222,9 +3251,30 @@ def _fork(states: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 def _literal_operand(node: ast.expr) -> tuple[bool, object]:
-    """``(True, value)`` when the operand is a compile-time constant, else ``(False, None)``."""
+    """``(True, value)`` when the operand is a compile-time constant, else ``(False, None)``.
+
+    `ast.literal_eval` is NOT a sufficient test on its own. It special-cases ``set()`` —
+    the empty set has no literal spelling — so it accepts a *call* and returns a falsy
+    value for it. A module that shadows the name then decides the branch differently
+    from this scanner (codex, at `c01c645d2`)::
+
+        def set(): return 'nonempty'
+        x = 'artifacts/wrong.json'
+        set() and (x := 'artifacts/actual.json')
+        open(x, 'w')
+
+    Python calls the shadow, gets a truthy string, runs the assignment and writes
+    `actual.json`; the scanner read `set()` as an empty set, took the short circuit and
+    certified `wrong.json` — a file never written — while suppressing its orphan reader.
+
+    So a call is refused outright rather than evaluated. A name resolved from the
+    enclosing module could be anything at all, and "constant" here has to mean *no
+    binding can change it*, not merely "literal_eval accepted it".
+    """
     if isinstance(node, ast.Constant):
         return True, node.value
+    if any(isinstance(item, ast.Call) for item in ast.walk(node)):
+        return False, None
     try:
         return True, ast.literal_eval(node)
     except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):

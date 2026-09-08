@@ -29,7 +29,19 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "check-producer-consu
 WITHHELD = {
     "unselected_assignment",
     "selected_assignment",
-    "unselected_lambda",
+    # `unselected_lambda` was here, and moved OUT when path expansion learned reachability:
+    # `('prefix' if True else (lambda: ...))` has a constant test, so only `'prefix'` is
+    # reachable and the row now certifies `prefixwrong` — exactly what the executed helper
+    # builds. This block's own note says the danger is a change that starts certifying these
+    # "wrongly"; certifying correctly retires the boundary rather than breaching it, and the
+    # row is a stronger control outside this set, where it asserts the file rather than the
+    # absence of one.
+    #
+    # `unselected_assignment` stays: its unselected branch holds a walrus, and the expression
+    # WALKER still forks both arms of an `IfExp` regardless of a constant test, so the binding
+    # is ambiguous and nothing is certified. That is imprecision, not the wrong-certification
+    # defect repaired here, and withholding is the safe direction — so it is left alone rather
+    # than repaired speculatively.
     # Subscripting a dict display is not modelled, so these certify nothing on either side of the
     # evaluation-order question. They are here as the BOUNDARY, measured: four families report a
     # dict-order shape that certifies a wrong file, and I could not construct one — so what these
@@ -250,3 +262,112 @@ def test_short_circuited_operands_do_not_certify_a_writer(gate, tmp_path, name, 
     )
     assert writers == {actual}, f"{name}: certified a file the program does not write"
     assert never_written in orphans, f"{name}: the orphan reader must survive"
+
+
+# Reachability is decided in TWO places, and repairing the expression walker left the other
+# one answering the same question the opposite way. Reported critical by codex at `c01c645d2`:
+#
+#   * PATH EXPANSION expanded every arm of an `or` / `IfExp` regardless of a constant test, so
+#     `open('wrong.json' or 'actual.json', 'w')` certified both names and suppressed an orphan
+#     reader of the file Python never writes.
+#   * `ast.literal_eval` special-cases `set()` — the empty set has no literal spelling — so a
+#     module SHADOWING that name had its branch decided by this scanner differently from
+#     Python, certifying a file that is never written.
+#
+# Each row states what Python really writes; the executed helper remains the oracle.
+PATH_REACHABILITY = (
+    # Decided by a constant, so only one arm can be the path.
+    ("or_first_operand_is_truthy", "'artifacts/actual.json' or 'artifacts/never.json'"),
+    ("or_first_operand_is_falsy", "'' or 'artifacts/actual.json'"),
+    ("ifexp_constant_true", "'artifacts/actual.json' if True else 'artifacts/never.json'"),
+    ("ifexp_constant_false", "'artifacts/never.json' if False else 'artifacts/actual.json'"),
+    ("or_chain_stops_at_first_truthy", "'' or 'artifacts/actual.json' or 'artifacts/never.json'"),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "expression"), PATH_REACHABILITY, ids=[row[0] for row in PATH_REACHABILITY]
+)
+def test_path_expansion_respects_reachability(gate, tmp_path, name, expression):
+    """The certified writer is the path Python resolves, not every arm the expander can reach.
+
+    The reader below names a file the program never writes, so a run that expands unreachable
+    arms both certifies a phantom producer AND silently absorbs this orphan — which is the
+    half of the finding that makes a wrong certification worse than no certification.
+    """
+
+    helper = f"def value():\n    return {expression}\n"
+    namespace: dict = {"__builtins__": {}}
+    exec(compile(helper, "<path-reachability-oracle>", "exec"), namespace)  # noqa: S102
+    actual = namespace["value"]()
+    assert actual == "artifacts/actual.json", f"{name}: oracle disagrees with the row"
+
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        helper + "open(value(), 'w', closefd=False)\nPath('artifacts/never.json').read_text()",
+    )
+    assert writers == {actual}, f"{name}: certified an arm Python never evaluates"
+    assert "artifacts/never.json" in orphans, f"{name}: the orphan reader must survive"
+
+
+def test_a_shadowed_set_call_is_not_a_falsy_constant(gate, tmp_path):
+    """`ast.literal_eval('set()')` returns an empty set, so a call must be refused outright.
+
+    With `set` shadowed to return a truthy string, Python runs the assignment and writes
+    `actual.json`. A scanner that read `set()` as an empty set took the short circuit and
+    certified `wrong.json` — a file never written — while suppressing its orphan reader.
+    """
+
+    helper = (
+        "def set():\n    return 'nonempty'\n"
+        "def value():\n"
+        "    x = 'artifacts/wrong.json'\n"
+        "    set() and (x := 'artifacts/actual.json')\n"
+        "    return x\n"
+    )
+    namespace: dict = {"__builtins__": {}}
+    exec(compile(helper, "<shadowed-set-oracle>", "exec"), namespace)  # noqa: S102
+    actual = namespace["value"]()
+    assert actual == "artifacts/actual.json"
+
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        helper + "open(value(), 'w', closefd=False)\nPath('artifacts/actual.json').read_text()",
+    )
+    # The finding is specifically that the scanner certified `wrong.json` — the arm Python does
+    # NOT take — and suppressed the orphan reader of the file that really is written. So that is
+    # what this forbids, and only that.
+    #
+    # A shadowed call is genuinely unknowable, so two other outcomes are both acceptable and the
+    # scanner produces each depending on scope: keeping both arms (module scope, the estate's
+    # ordinary treatment of an undecided condition) or withholding entirely (function scope, the
+    # safe direction). Asserting `actual in writers` instead would have demanded a resolution the
+    # scanner has no basis for, which is the opposite error.
+    assert writers != {"artifacts/wrong.json"}, "certified only the branch Python does not take"
+    if not writers:
+        assert actual in orphans, "withheld, so the reader of the written file stays an orphan"
+
+
+def test_a_genuine_falsy_literal_still_short_circuits(gate, tmp_path):
+    """The twin: refusing calls must not cost the real constants their decision."""
+
+    helper = (
+        "def value():\n"
+        "    x = 'artifacts/actual.json'\n"
+        "    () and (x := 'artifacts/never.json')\n"
+        "    return x\n"
+    )
+    namespace: dict = {"__builtins__": {}}
+    exec(compile(helper, "<falsy-literal-oracle>", "exec"), namespace)  # noqa: S102
+    actual = namespace["value"]()
+    assert actual == "artifacts/actual.json"
+
+    writers, orphans = observed(
+        gate,
+        tmp_path,
+        helper + "open(value(), 'w', closefd=False)\nPath('artifacts/never.json').read_text()",
+    )
+    assert writers == {actual}, "a genuine falsy literal must still decide its operator"
+    assert "artifacts/never.json" in orphans
