@@ -2928,6 +2928,39 @@ def test_row_s2q_relevance_reads_the_pattern_the_way_the_selector_does(
     assert "cannot enumerate" in str(caught.value)
 
 
+@pytest.mark.parametrize(
+    "pattern", ["branch/leaf.txt", "./branch/leaf.txt"], ids=["plain", "dot-prefixed"]
+)
+def test_row_s2r_the_readability_walk_reads_the_same_normalized_pattern(tmp_path, pattern):
+    """S2r: `_require_scannable` had the SAME dot defect, one function away from the repair.
+
+    Codex named both sites in one finding (at `a465c0a99`): "the separate readability walk
+    likewise retains the dot segment". Splitting on "/" keeps a `.` that `Path.glob` normalizes
+    away, so `_children` matched the literal `"."` against real directory names, the frontier
+    emptied, and the walk checked nothing at all for a dot-prefixed pattern.
+
+    I had just repaired the relevance filter for exactly this and left its twin unrepaired in
+    the next function — the "fix the instance shown and leave the next one" shape, inside the
+    same commit that named it. Exercised directly here rather than through a member, because the
+    walk also serves the scope expansions, where nothing else in this file would reach it.
+    """
+    root = tmp_path / "surface"
+    branch = root / "branch"
+    branch.mkdir(parents=True)
+    (branch / "leaf.txt").write_bytes(b"NEEDLE\n")
+
+    fv._require_scannable(root, pattern, component_faults_recorded=True)
+
+    branch.chmod(0)
+    try:
+        with pytest.raises(fv.UndecidableScopeContainment) as caught:
+            fv._require_scannable(root, pattern, component_faults_recorded=True)
+    finally:
+        branch.chmod(0o755)
+    assert "cannot enumerate" in str(caught.value)
+    assert "repair read access" in caught.value.remedy
+
+
 def test_row_s2o_absent_observation_refuses_by_name_instead_of_falling_back(tmp_path, monkeypatch):
     """S2o: capability ABSENCE, which nothing exercised and which is not hypothetical.
 

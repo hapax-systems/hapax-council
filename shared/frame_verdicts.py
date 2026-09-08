@@ -1976,7 +1976,13 @@ def _require_scannable(root: Path, pattern: str, *, component_faults_recorded: b
     # It is also the narrow form: only directories the pattern actually reaches are required to
     # be readable, so an unrelated unreadable corner of the tree does not refuse a scope that
     # never looks at it.
-    segments = [segment for segment in pattern.split("/") if segment]
+    # The SELECTOR's reading of the pattern, for the same reason `_definitely_outside_pattern`
+    # uses it: splitting on "/" keeps a `.` that `Path.glob` normalizes away, so `_children`
+    # matched the literal "." against real directory names, the frontier emptied, and this walk
+    # silently checked nothing for a dot-prefixed pattern. Codex named both sites in one finding
+    # (at `a465c0a99`) — I had repaired the relevance filter and left its twin here, which is
+    # the "fix the instance shown" shape this row keeps meeting.
+    segments = list(PurePosixPath(pattern).parts)
     frontier = [root]
     for segment in segments[:-1]:
         if segment == "**":
