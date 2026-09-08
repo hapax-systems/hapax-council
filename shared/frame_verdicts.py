@@ -1895,12 +1895,26 @@ def _require_scannable(root: Path, pattern: str) -> None:
         if segment == "**":
             # From here down the grammar can reach anything, so the whole subtree must be
             # readable. `os.walk` reports per-directory failures through `onerror`.
+            #
+            # It does NOT follow symlinks, and the remaining segments must still be walked
+            # from every directory it reached: `**` matches zero or more levels, so an
+            # EXPLICIT component after it — `**/sbin/fsck.ext2` — resolves through a directory
+            # alias that `os.walk` itself will not descend. Discarding the suffix here left
+            # such an alias unchecked, and faulting it admitted a decayed hard link (review
+            # finding, at `0b2d8e6fb`, reproduced with a content-query member and `usr/sbin`
+            # aliasing `bin`). `_children` asks `is_dir()`, which follows the link, so
+            # continuing the walk is what reaches it.
+            reached: list[Path] = []
             for base in frontier:
-                for _current, _dirs, _files in os.walk(base, onerror=_record):
+                for current, _dirs, _files in os.walk(base, onerror=_record):
+                    reached.append(Path(current))
                     if failures:
                         break
-            frontier = []
-            break
+            # `**` also matches zero levels, so the bases themselves stay in the frontier.
+            frontier = list(dict.fromkeys([*frontier, *reached]))
+            if failures:
+                break
+            continue
         frontier = [child for base in frontier for child in _children(base, segment)]
         if failures or not frontier:
             break

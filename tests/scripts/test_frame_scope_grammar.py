@@ -2051,6 +2051,74 @@ def test_row_s2d_scan_readability_follows_the_declared_grammar(
         )
 
 
+def test_row_s2f_a_directory_alias_matched_after_a_double_star_is_still_checked(
+    tmp_path, monkeypatch
+):
+    """S2f: `**` does not follow symlinks, but an explicit component after it does.
+
+    `**` matches zero or more levels, so `**/sbin/fsck.ext2` reaches `sbin` as an EXPLICIT
+    component — and `sbin` may be a directory alias that `os.walk` will not descend. The
+    readability walk discarded the remaining segments once it saw `**`, so that alias went
+    unchecked; faulting it left the enumeration short and ADMITTED a decayed hard link (review
+    finding at `0b2d8e6fb`, reproduced with a content-query member whose `usr/sbin` aliases
+    `bin`).
+
+    Content-query members are the case that reaches it, because their pattern is prefixed with
+    `**/` on the way in — so the suffix after `**` is exactly where their declared grammar
+    lives.
+    """
+    base = tmp_path / "base"
+    root = base / "usr"
+    real = root / "bin"
+    real.mkdir(parents=True)
+    selected = real / "fsck.ext2"
+    selected.write_bytes(b"e2fsck NEEDLE\n")
+    alias_target = real / "e2fsck"
+    os.link(selected, alias_target)
+    (root / "sbin").symlink_to("bin", target_is_directory=True)
+
+    member = {
+        "id": "legacy-surface",
+        "reader": {"id": "fs.content_query", "version": "^1.0.0"},
+        "location": {"roots": [str(root)], "patterns": ["sbin/fsck.ext2"], "query": "e2fsck"},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("legacy-surface", "scope_exited")],
+    )
+    (procedure / "declaration/params.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "profile_id": "fixture",
+                "parameters": {
+                    "max_unit_bytes": {"value": 1 << 20, "why": "test bound"},
+                    "encoding_error_policy": {"value": "strict", "why": "test decoding"},
+                },
+            }
+        )
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    readable = fv.scope_within_decayed(
+        [str(alias_target)], verdicts, council_root=base, vault_root=base
+    )
+    assert readable.all_inside is True, "with everything readable the alias is inside the member"
+
+    real_scandir = os.scandir
+
+    def refusing(path=".", *args, **kwargs):
+        if str(path).rstrip("/") == str(root / "sbin"):
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", refusing)
+
+    with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+        fv.scope_within_decayed([str(alias_target)], verdicts, council_root=base, vault_root=base)
+    assert "cannot enumerate" in str(caught.value)
+
+
 @pytest.mark.parametrize("pattern", ["*/fs*", "*/*.txt", "**/*.txt"])
 def test_row_s2e_a_partial_listing_cannot_decide_containment(tmp_path, monkeypatch, pattern):
     """S2e: some entries survive while a faulted directory suppresses others.
