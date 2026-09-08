@@ -880,6 +880,34 @@ def test_row_r2_an_unresolvable_declared_file_is_an_actionable_refusal(
     assert caught.value.remedy
 
 
+def test_row_r2b_an_unexpandable_scope_ref_is_also_an_actionable_refusal(tmp_path):
+    """R2b: the same fault in the SCOPE ref, which R2's repair did not reach.
+
+    R2 above converted `location.files`; `resolve_scope_ref` still called `expanduser` outside
+    its own refusal contract, so a `~`-relative SCOPE ref raised `RuntimeError` straight out
+    while an absolute one failed inside the contract with a diagnostic and a remedy (review
+    finding, codex, at `069e726dc`).
+
+    **Fourth time in this family, and again in the branch beside the one repaired.** R2's own
+    docstring says that is the finding worth keeping, more than the fix — and then this row had
+    to be written anyway, which is the strongest evidence that noting a pattern is not the same
+    as searching for its other instances.
+    """
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.resolve_scope_ref(
+            "~frame-review-user-that-does-not-exist/selected.txt",
+            council_root=tmp_path,
+            vault_root=tmp_path,
+        )
+
+    assert "cannot expand scope ref" in str(caught.value)
+    assert caught.value.remedy, "a refusal must name its remedy"
+    assert "home-directory resolution" in caught.value.remedy, (
+        "the remedy must name the actual cause; folding expansion into component resolution "
+        "names the wrong repair for half the cases"
+    )
+
+
 def test_row_r3_a_relative_declared_file_resolves_against_a_present_vault(tmp_path, monkeypatch):
     """R3: the positive counterpart, and the reason R2 must control its binding.
 

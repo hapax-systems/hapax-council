@@ -1267,7 +1267,26 @@ def resolve_scope_ref(ref: str, *, council_root: Path, vault_root: Path) -> tupl
     absolute = text.startswith("/")
     dirlike = dirlike or scope_pattern is not None
     joined = ("/" if absolute else "") + "/".join(segments)
-    path = Path(joined).expanduser() if joined else Path(".")
+    # `expanduser` is a resolution step and fails on its own terms: with no resolvable home
+    # directory it raises RuntimeError, which reached the caller as an unhandled traceback rather
+    # than as a refusal naming the ref and a remedy (review finding, codex, at `069e726dc`). The
+    # `is_dir` block below was already inside the contract; the expansion that precedes it was
+    # not, so a `~`-relative SCOPE ref failed outside the refusal contract while an absolute one
+    # failed inside it — the same gap the member-roots loop closed at `_member_location`, left in
+    # its sibling. Kept as its own cause and remedy rather than folded into
+    # `_unresolved_scope_component`: a missing home directory is repaired differently from an
+    # unresolved component, and one message for two conditions names the wrong one for half.
+    try:
+        path = Path(joined).expanduser() if joined else Path(".")
+    except (OSError, RuntimeError) as exc:
+        error = UndecidableScopeContainment(
+            f"cannot expand scope ref {ref!r}: {exc}; containment is undecidable"
+        )
+        error.remedy = (
+            f"declare {ref!r} as an absolute path in mutation_scope_refs, or repair "
+            "home-directory resolution, then retry the dispatch"
+        )
+        raise error from exc
     if not path.is_absolute():
         # The base is the checkout whose tree already holds the ref's first segment: a ref names
         # a file that may not exist yet (the work is about to create it), so the decision is made

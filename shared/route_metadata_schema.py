@@ -2318,8 +2318,20 @@ def _resolve_scope_ref_path(raw: str) -> Path | None:
     Field-specific by design. `parent_spec` and `parent_request` keep the generic resolver:
     they are not filesystem subjects whose whitespace carries meaning, and rewriting the shared
     helper is out of scope for this contract.
+
+    **ONE drop rule, not two (review finding, claude, at `069e726dc`).** This used to re-test
+    absence here — `raw.strip().lower() in {"", "none", "null", "~"}` — which disagreed with the
+    coercion it accompanies once that stopped reading a quoted `"null"` or `" "` as an absence.
+    Whether a declaration is PRESENT is settled upstream; the only question left here is whether
+    the present declaration is a filesystem path this binding can take a digest over, and
+    `_looks_like_path` is the one rule that answers it.
+
+    Nothing that reaches `_source_ref` can vanish silently: a path that does not exist binds as
+    `MISSING` and a path that is not a file binds as `UNPARSEABLE`, each with its own message. A
+    named row saying the declared subject is absent beats no row at all, which is why `~` now
+    binds (as `UNPARSEABLE`, "source artifact is not a file") rather than disappearing.
     """
-    if not raw or raw.strip().lower() in {"", "none", "null", "~"}:
+    if not raw:
         return None
     if not _looks_like_path(raw):
         return None

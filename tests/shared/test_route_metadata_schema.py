@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -939,3 +940,89 @@ def test_an_empty_scope_ref_is_dropped_here_and_refused_by_name_at_the_gate() ->
 
     payload["mutation_scope_refs"] = ["", "/tmp/real"]
     assert list(validate_route_metadata(payload).mutation_scope_refs) == ["/tmp/real"]
+
+
+def _bound_paths(frontmatter: dict[str, object]) -> list[str]:
+    """The artifact paths the evidence binding actually took a digest over."""
+    return [
+        ref.artifact_path
+        for ref in build_demand_vector(frontmatter).source_refs
+        if ref.source_id.startswith("mutation_scope_ref_")
+    ]
+
+
+def test_scope_refs_differing_only_in_whitespace_bind_to_distinct_evidence(tmp_path) -> None:
+    """The digest must be taken over the declared name, not a trimmed substitute.
+
+    This is the half of the combined repair that had no regression at all: restoring the strip
+    in `_resolve_scope_ref_path` left 170 tests green across every suite reaching its public
+    entry points, which is how a repair ships and then quietly stops holding. Two declarations
+    differing only in trailing whitespace are two subjects, and a digest bound to one must not
+    match the other.
+    """
+    first = tmp_path / "selected "
+    first.write_bytes(b"ONE\n")
+    second = tmp_path / "selected\t"
+    second.write_bytes(b"TWO\n")
+    plain = tmp_path / "selected"
+    plain.write_bytes(b"THREE\n")
+
+    frontmatter = _demand_frontmatter()
+    frontmatter["mutation_scope_refs"] = [str(first), str(second), str(plain)]
+
+    bound = _bound_paths(frontmatter)
+
+    assert bound == [str(first), str(second), str(plain)]
+    assert len(set(bound)) == 3, "three declared subjects must bind to three distinct artifacts"
+
+
+def test_the_resolver_has_one_drop_rule_and_it_is_the_path_shape(tmp_path) -> None:
+    """Absence is settled upstream; the only question here is whether this is a path.
+
+    The resolver used to re-test absence with its own sentinel set, which disagreed with the
+    coercion it accompanies once that stopped reading a quoted `"null"` or `" "` as absent
+    (review finding, claude, at `069e726dc`). `~` is a path and now binds — as a named
+    `UNPARSEABLE` row, because it is not a file, which is the point: nothing that reaches the
+    binding disappears without saying so.
+    """
+    frontmatter = _demand_frontmatter()
+    frontmatter["mutation_scope_refs"] = ["~"]
+    assert _bound_paths(frontmatter) == [str(Path("~").expanduser())]
+
+    states = {
+        ref.artifact_path: ref.freshness_state
+        for ref in build_demand_vector(frontmatter).source_refs
+        if ref.source_id.startswith("mutation_scope_ref_")
+    }
+    assert all(state == FreshnessState.UNPARSEABLE for state in states.values()), (
+        "a declared scope ref that is not a file must bind as a named row, not vanish"
+    )
+
+
+def test_a_bare_filename_still_does_not_bind_and_that_is_recorded_not_endorsed() -> None:
+    """RECORDED, not asserted-as-correct: `zz-plain` survives coercion and binds nothing.
+
+    `_looks_like_path` requires a separator or a leading `/`, `~` or `.`, so an ordinary bare
+    filename is not recognised as a path and gets no evidence row — while the frame gate happily
+    resolves bare refs against the council and vault roots. One declaration, two subsystems, two
+    answers (review finding, codex, at `069e726dc`).
+
+    I have NOT changed it here, because the fix is not obvious and the wrong one does damage.
+    `_looks_like_path` is what separates filesystem subjects from identifier subjects — the
+    `isap:CASE-…` refs these very fixtures use — and a bare token like `CASE-CAPACITY-ROUTING-001`
+    is shaped exactly like a bare filename. Binding those as paths would make each one a MISSING
+    source, and a MISSING source contributes a `stale_reason`, so the change would newly block
+    dispatches that declare identifier-shaped scopes. That is a grammar decision about what a
+    scope ref IS, and it belongs to the owner rather than to this repair.
+    """
+    frontmatter = _demand_frontmatter()
+    frontmatter["mutation_scope_refs"] = ["zz-plain", "zz-review-future "]
+
+    assert list(build_demand_vector(frontmatter).mutation_scope_refs) == [
+        "zz-plain",
+        "zz-review-future ",
+    ], "the declarations themselves survive; it is only the binding that drops them"
+    assert _bound_paths(frontmatter) == [], (
+        "MEASUREMENT CHANGED: bare filenames now bind. That may be right, but it changes which "
+        "declarations produce stale_reasons and must be a deliberate grammar decision."
+    )
