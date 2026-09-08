@@ -228,6 +228,32 @@ def _coerce_string_list(value: object) -> list[str]:
     return [str(value).strip()]
 
 
+def _coerce_scope_ref_list(value: object) -> list[str]:
+    """Like :func:`_coerce_string_list`, but a declared scope ref keeps its exact subject.
+
+    `mutation_scope_refs` names filesystem surfaces, and whitespace is part of a POSIX
+    filename — so the generic coercion's `.strip()` edits the declared subject here, where
+    every other field it serves wants trimming. Measured at `4ff1b3131`: the two distinct
+    declarations `['/tmp/selected ', '/tmp/selected\\t']` both became `/tmp/selected`, which
+    destroys the subject *and* makes two different declarations indistinguishable, so a digest
+    bound to one matches the other.
+
+    This is deliberately a SECOND, field-specific coercion rather than a change to
+    `_coerce_string_list`: that helper serves many fields that are not scope subjects, and
+    rewriting generic frontmatter normalization is out of scope for this contract.
+
+    Blank-dropping is kept and is a different question from trimming: `""` cannot name a
+    surface, while `" "` can, so only genuinely empty entries are dropped.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [] if value.strip() in {"", "null", "None"} else [value]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [str(item) for item in value if str(item)]
+    return [str(value)] if str(value) else []
+
+
 _CLASSIFICATION_VALIDITY_KEYS = (
     "label",
     "source",
@@ -948,7 +974,7 @@ class DemandVector(_RouteModel):
     @field_validator("mutation_scope_refs", mode="before")
     @classmethod
     def _mutation_scope_refs_are_strings(cls, value: object) -> list[str]:
-        return _coerce_string_list(value)
+        return _coerce_scope_ref_list(value)
 
 
 class DemandVectorFreshness(_RouteModel):
@@ -1030,7 +1056,7 @@ class RouteMetadata(_RouteModel):
     @field_validator("mutation_scope_refs", mode="before")
     @classmethod
     def _mutation_scope_refs_are_strings(cls, value: object) -> list[str]:
-        return _coerce_string_list(value)
+        return _coerce_scope_ref_list(value)
 
     @model_validator(mode="after")
     def _support_outputs_need_review(self) -> Self:
@@ -2031,7 +2057,9 @@ def _demand_source_refs(
 
     seen = {ref.artifact_path for ref in refs}
     for index, raw_ref in enumerate(mutation_scope_refs):
-        path = _resolve_optional_path(raw_ref)
+        # Field-specific: a scope ref's whitespace is part of its subject, and this path feeds
+        # the evidence digest. See _resolve_scope_ref_path.
+        path = _resolve_scope_ref_path(str(raw_ref))
         if path is None:
             continue
         path_text = str(path)
@@ -2242,6 +2270,30 @@ def _optional_frontmatter_string(value: object) -> str | None:
     if text.lower() in {"", "none", "null", "~"}:
         return None
     return text
+
+
+def _resolve_scope_ref_path(raw: str) -> Path | None:
+    """Resolve a declared scope ref to a path WITHOUT editing its subject.
+
+    `_resolve_optional_path` routes through `_optional_frontmatter_string`, which strips — so
+    the evidence binding re-trimmed every `mutation_scope_refs` entry even once the validators
+    preserved it, and the digest was taken over a name the operator never declared. Two
+    declarations differing only in trailing whitespace resolved to one path, so a digest bound
+    to either matched the other.
+
+    Field-specific by design. `parent_spec` and `parent_request` keep the generic resolver:
+    they are not filesystem subjects whose whitespace carries meaning, and rewriting the shared
+    helper is out of scope for this contract.
+    """
+    if not raw or raw.strip().lower() in {"", "none", "null", "~"}:
+        return None
+    if not _looks_like_path(raw):
+        return None
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    repo_root = Path(__file__).resolve().parents[1]
+    return repo_root / path
 
 
 def _resolve_optional_path(value: object) -> Path | None:
