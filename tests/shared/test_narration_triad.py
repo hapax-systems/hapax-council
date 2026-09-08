@@ -253,3 +253,39 @@ def test_speech_event_id_is_stable_for_same_inputs() -> None:
     first = speech_event_id_for_utterance(impulse_id="impulse", text="hello", now=10.0)
     second = speech_event_id_for_utterance(impulse_id="impulse", text="hello", now=10.0)
     assert first == second
+
+
+def test_root_sink_chronicle_and_durable_write(tmp_path):
+    from shared.chronicle import ChronicleEvent, record
+    from shared.durable_jsonl_sink import validate_chain
+
+    # Seed the unconfigured fallback too: removing the root fixture must expose
+    # a misplaced durable row, rather than just a missing-directory exception.
+    Path.home().joinpath(".cache", "hapax", "stage0-durable-sink").mkdir(
+        parents=True, exist_ok=True
+    )
+    event = ChronicleEvent(
+        ts=100.0,
+        source="narration_triad",
+        event_type="speech.fixture",
+        trace_id="a" * 32,
+        span_id="b" * 16,
+        parent_span_id=None,
+        payload={"fixture": "chronicle"},
+    )
+    record(event)
+    row = json.loads((tmp_path / "chronicle.jsonl").read_text())
+    assert row["event_id"] == event.event_id
+    path = tmp_path / "durable-sink" / "chronicle.jsonl"
+    durable = json.loads(path.read_text())
+    assert durable["payload"]["event_id"] == event.event_id
+    assert durable["source_receipt_ref"] == f"chronicle:event:{event.event_id}"
+    assert validate_chain(path, stream_id="chronicle").valid
+
+
+def test_root_sink_subprocess_pin_chronicle(sink_subprocess):
+    sink_subprocess("chronicle")
+
+
+def test_root_sink_subprocess_pin_durable(sink_subprocess):
+    sink_subprocess("durable")

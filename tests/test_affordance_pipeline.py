@@ -950,3 +950,45 @@ def test_interrupt_path_runs_monetization_gate():
     with patch.object(GATE, "candidate_filter", return_value=[]):
         results = p.select(imp)
         assert results == [], "Interrupt candidates must be blocked when monetization gate denies"
+
+
+def test_root_sink_dispatch_write(tmp_path, monkeypatch):
+    import json
+
+    from shared.affordance_pipeline import AffordancePipeline
+
+    monkeypatch.delenv("HAPAX_DISPATCH_TRACE", raising=False)
+    trace = {"dropout_at": "threshold", "source": "test.fixture"}
+    AffordancePipeline()._emit_dispatch_trace(trace)
+    assert json.loads((tmp_path / "dispatch.jsonl").read_text()) == trace
+
+
+def test_root_sink_embed_write(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import MagicMock
+
+    from shared.affordance_pipeline import AffordancePipeline
+    from shared.config import EXPECTED_EMBED_DIMENSIONS
+
+    embedding = [0.25] * EXPECTED_EMBED_DIMENSIONS
+    embed = MagicMock(return_value=[embedding])
+    monkeypatch.setattr("shared.affordance_pipeline.embed_batch_safe", embed)
+    monkeypatch.setattr("shared.config.get_qdrant", lambda: MagicMock())
+    record = CapabilityRecord(
+        name="test.cache",
+        description="fixture cache miss",
+        daemon="test",
+        operational=OperationalProperties(),
+    )
+    assert AffordancePipeline().index_capabilities_batch([record]) == 1
+    embed.assert_called_once()
+    row = json.loads((tmp_path / "embed-cache.json").read_text())
+    assert list(row["entries"].values()) == [embedding]
+
+
+def test_root_sink_subprocess_pin_dispatch(sink_subprocess):
+    sink_subprocess("dispatch")
+
+
+def test_root_sink_subprocess_pin_embed(sink_subprocess):
+    sink_subprocess("embed")

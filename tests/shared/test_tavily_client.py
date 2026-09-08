@@ -983,3 +983,28 @@ def test_map_and_crawl_estimates_are_conservative_for_limit(tmp_path: Path) -> N
 
     seen_estimates.extend([mapped.usage.estimated_credits, crawled.usage.estimated_credits])
     assert seen_estimates == [6, 8]
+
+
+def test_root_sink_tavily_lock_write(tmp_path):
+    client = TavilyClient(
+        api_key="test-token",
+        config_path=_config(tmp_path / "fixture-tavily.yaml"),
+        cache_dir=tmp_path / "cache",
+        ledger_path=tmp_path / "usage.jsonl",
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(200, json={"results": [], "usage": {"credits": 1}})
+            )
+        ),
+        now=_now,
+    )
+    client.search(TavilySearchRequest(query="fixture lock witness", lane="scout_horizon"))
+    assert client.lock_dir == tmp_path / "tavily-locks"
+    assert (tmp_path / "tavily-locks" / "ledger.lock").is_file()
+    assert (tmp_path / "tavily-locks" / "concurrency" / "slot.0").is_file()
+    assert list((tmp_path / "tavily-locks" / "cache").glob("search-*.lock"))
+    assert (tmp_path / "usage.jsonl").is_file()
+
+
+def test_root_sink_subprocess_pin_tavily(sink_subprocess):
+    sink_subprocess("tavily")

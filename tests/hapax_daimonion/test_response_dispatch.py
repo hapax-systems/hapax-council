@@ -487,3 +487,25 @@ def test_segment_topic_seed_carries_impingement_id(tmp_path):
 def test_timely_latency_threshold_constant_matches_acceptance():
     """cc-task chat-response-verbal-and-text acceptance: 3s timely target."""
     assert TIMELY_CHAT_LATENCY_S == 3.0
+
+
+def test_root_sink_segment_write(tmp_path):
+    import json
+
+    register_reader(_stub_reader("fixture-chat"))
+    publisher = MagicMock()
+    publisher.publish.return_value = PublisherResult(ok=True, detail="ok")
+    result = dispatch_response(
+        _Imp(
+            source="youtube.live_chat", content={"kind": "chat_message", "response_text": "hello"}
+        ),
+        publisher=publisher,
+    )
+    assert result.chat_result.ok
+    rows = [json.loads(line) for line in (tmp_path / "segments.jsonl").read_text().splitlines()]
+    assert rows
+    assert all(row["programme_role"] == CHAT_RESPONSE_SEGMENT_ROLE for row in rows)
+
+
+def test_root_sink_subprocess_pin_segment(sink_subprocess):
+    sink_subprocess("segment")

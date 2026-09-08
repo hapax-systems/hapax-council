@@ -69,3 +69,23 @@ def test_action_tendency_is_soft_scoring_prior_not_family_filter(monkeypatch) ->
     assert "visual.marker" in names
     visual_score = next(c.combined for c in survivors if c.capability_name == "visual.marker")
     assert survivors[0].combined > visual_score
+
+
+def test_root_sink_recruitment_write(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.delenv("HAPAX_RECRUITMENT_LOG", raising=False)
+    AffordancePipeline()._persist_recruitment_winner(
+        {
+            "timestamp": 100.0,
+            "source": "test.fixture",
+            "winners": [{"name": "test.recruited", "similarity": 0.8, "combined": 0.9}],
+        }
+    )
+    row = json.loads((tmp_path / "recruitment.jsonl").read_text())
+    assert row["capability_name"] == "test.recruited"
+    assert row["impingement_source"] == "test.fixture"
+
+
+def test_root_sink_subprocess_pin_recruitment(sink_subprocess):
+    sink_subprocess("recruitment")
