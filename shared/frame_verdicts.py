@@ -1367,12 +1367,23 @@ def resolve_scope_ref(ref: str, *, council_root: Path, vault_root: Path) -> tupl
         # Its own cause and remedy, not folded into `_unresolved_scope_component`: choosing the
         # anchor is a different failure from resolving a component, and one message for two
         # conditions names the wrong repair for half the cases.
+        # **UNSUPPRESSED, and this one REDIRECTS rather than shrinks.** `Path.exists` swallows
+        # the ignorable errnos and answers False, and `is_symlink` does the same, so an
+        # unreadable anchor candidate silently loses to the next one and the scope is resolved
+        # **against a different tree** — `all_inside` goes False and dispatch admits (review
+        # finding, codex, at `e9a5b4acb`, reproduced with an ELOOP on the first anchor). Every
+        # other instance of this family made a surface smaller; this one moves the question to
+        # another checkout entirely, which is why it is worth naming separately.
+        #
+        # `is_symlink` is left native deliberately: it answers about the LINK rather than its
+        # target, so an unreadable target is not its concern, and it is only consulted when
+        # `_classified_exists` has already answered False without raising.
         try:
             base = next(
                 (
                     b
                     for b in (council_root, vault_root)
-                    if (b / first).exists() or (b / first).is_symlink()
+                    if _classified_exists(b / first) or (b / first).is_symlink()
                 ),
                 council_root,
             )

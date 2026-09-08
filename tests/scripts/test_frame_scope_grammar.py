@@ -938,7 +938,14 @@ def test_row_r2b_an_unexpandable_scope_ref_is_also_an_actionable_refusal(tmp_pat
     )
 
 
-def test_row_r2c_an_unreadable_checkout_anchor_is_also_an_actionable_refusal(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "injected",
+    [errno.EACCES, errno.ELOOP],
+    ids=["propagated-eacces", "suppressed-eloop"],
+)
+def test_row_r2c_an_unreadable_checkout_anchor_is_also_an_actionable_refusal(
+    tmp_path, monkeypatch, injected
+):
     """R2c: the statement immediately after R2b's, which R2b's repair did not reach.
 
     Anchoring a RELATIVE scope ref asks `exists()`/`is_symlink()` of the council and vault
@@ -950,15 +957,27 @@ def test_row_r2c_an_unreadable_checkout_anchor_is_also_an_actionable_refusal(tmp
     four commits earlier and its docstring says, of R2's identical lesson, that noting a pattern
     is not searching for its other members. I wrote that sentence and then did not read the next
     statement in the same function.
+
+    **And this row then failed to hold the repair for two more rounds.** It replaced
+    `Path.exists` with a `PermissionError`, which bypasses the suppression twice over: the
+    method under test is the one that swallows errnos, and EACCES is not among the ones it
+    swallows. So it exercised the handler while the real hazard — an ELOOP that makes `exists()`
+    answer False, losing the first anchor and resolving the scope **against the other checkout
+    entirely** — went untested (review finding, codex, at `e9a5b4acb`). That redirection is
+    worse than the shrunk surfaces elsewhere in this family: the question is asked of a
+    different tree.
+
+    Both faults are kept. The EACCES case at `os.stat` is a propagated-error control; the ELOOP
+    case is the one that discriminates the unsuppressed anchor read.
     """
-    real_exists = pathlib.Path.exists
+    real_stat = os.stat
 
-    def refusing_exists(self, *args, **kwargs):
-        if self.name == "selected.txt":
-            raise PermissionError(13, "Permission denied")
-        return real_exists(self, *args, **kwargs)
+    def refusing_stat(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        if pathlib.Path(path).name == "selected.txt":
+            raise OSError(injected, "fixture stat denied", str(path))
+        return real_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(pathlib.Path, "exists", refusing_exists)
+    monkeypatch.setattr(os, "stat", refusing_stat)
 
     with pytest.raises(fv.UndecidableScopeContainment) as caught:
         fv.resolve_scope_ref(
