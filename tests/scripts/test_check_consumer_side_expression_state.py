@@ -452,6 +452,23 @@ COMPREHENSION_NEVER_RUNS = (
         "generator_bound_but_unconsumed",
         "g = (open('artifacts/never.json', 'w', closefd=False) for _ in [1])",
     ),
+    # Root readback 2026-09-08. Passing a generator to a call was treated as PROOF of
+    # consumption, which certified the body of one handed to a callee that never iterates it
+    # and absorbed the real orphan. Measured against Python: none of these four runs the body.
+    # `list`/`sorted`/`join` do, and stay in the twin table below — the repair is a table of
+    # proven consumers, not a reversal.
+    (
+        "generator_to_an_identity_helper",
+        "def keep(g):\n"
+        "    return g\n"
+        "keep(open('artifacts/never.json', 'w', closefd=False) for _ in [1])",
+    ),
+    (
+        "generator_to_enumerate",
+        "enumerate(open('artifacts/never.json', 'w', closefd=False) for _ in [1])",
+    ),
+    ("generator_to_zip", "zip(open('artifacts/never.json', 'w', closefd=False) for _ in [1])"),
+    ("generator_to_iter", "iter(open('artifacts/never.json', 'w', closefd=False) for _ in [1])"),
 )
 
 
@@ -492,6 +509,31 @@ COMPREHENSION_RUNS = (
     (
         "generator_consumed_by_a_comprehension",
         "[v for v in (open('artifacts/actual.json', 'w', closefd=False) for _ in [1])]",
+    ),
+    # Root readback 2026-09-08, the half pointed the other way. **A generator's OUTERMOST
+    # iterable is evaluated when the generator is CREATED**, so a writer there runs even though
+    # nothing ever consumes `g`. Skipping the whole clause chain for a deferred generator
+    # dropped it and reported the reader as an orphan.
+    (
+        "unconsumed_generator_first_iterable",
+        "g = (x for x in [open('artifacts/actual.json', 'w', closefd=False)])",
+    ),
+    # The nested case named in the same readback: eager construction, deferred iteration. The
+    # INNER generator is created eagerly as the outer's first iterable, and creating it in turn
+    # evaluates ITS first iterable — so the writer runs at two removes from anything consumed.
+    (
+        "unconsumed_generator_nested_source",
+        "g = (x for x in (y for y in [open('artifacts/actual.json', 'w', closefd=False)]))",
+    ),
+    # The other side of the proven-consumer table: these two do drive the body, so narrowing
+    # call consumption must not cost them their certification.
+    (
+        "generator_consumed_by_sorted",
+        "sorted(str(open('artifacts/actual.json', 'w', closefd=False)) for _ in [1])",
+    ),
+    (
+        "generator_consumed_by_join",
+        "''.join(str(open('artifacts/actual.json', 'w', closefd=False)) for _ in [1])",
     ),
 )
 

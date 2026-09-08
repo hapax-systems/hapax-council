@@ -3441,6 +3441,36 @@ def _merge_states(states: list[dict[str, str]], *, collapse: bool = False) -> li
     return [collapsed]
 
 
+#: Builtins that DRIVE a generator argument to completion (or at least into its body) during the
+#: call. Passing a generator to one of these is proof its body runs; passing it anywhere else is
+#: not. The lazy builtins are deliberately absent — `iter`, `enumerate`, `zip`, `map`, `filter`
+#: and `reversed` all return without touching the body — and so is every non-builtin, because a
+#: callee that merely stores its argument runs nothing.
+#:
+#: The earlier revision treated EVERY call argument as consuming, on the reasoning that the
+#: alternative fabricates an orphan for `list(open(...) for _ in [1])`. `list` is on this table,
+#: so that case keeps its answer; what the over-approximation also did was certify the body of a
+#: generator handed to a non-consuming helper, absorbing a real orphan reader — the same mistake
+#: in the opposite direction (root readback, 2026-09-08, two reader twins).
+_GENERATOR_CONSUMING_BUILTINS = frozenset(
+    {"all", "any", "dict", "frozenset", "list", "max", "min", "set", "sorted", "sum", "tuple"}
+)
+
+#: Attribute calls that consume an iterable argument outright. `str.join` is the common one and
+#: is spelled on a literal often enough to be worth naming; the receiver's type is not known
+#: here, so this is a name match and nothing stronger.
+_GENERATOR_CONSUMING_METHODS = frozenset({"join", "extend", "update", "writelines"})
+
+
+def _call_consumes_generator_argument(func: ast.expr) -> bool:
+    """Whether passing a generator to this callable is PROOF that its body runs."""
+    if isinstance(func, ast.Name):
+        return func.id in _GENERATOR_CONSUMING_BUILTINS
+    if isinstance(func, ast.Attribute):
+        return func.attr in _GENERATOR_CONSUMING_METHODS
+    return False
+
+
 class _BlockScanner:
     """Walk one lexical scope in source order, carrying every branch's value map separately.
 
@@ -4047,12 +4077,14 @@ class _BlockScanner:
             if isinstance(node.func, ast.Attribute):
                 self._freeze_expression(node.func.value, states)
             for argument in (*node.args, *(keyword.value for keyword in node.keywords)):
-                # Passing a generator to a call is a consuming position for the purposes of
-                # this scanner. It over-approximates — a callee could store it rather than
-                # iterate it — and that is the deliberate direction: the alternative treats
-                # `list(open(...) for _ in [1])` as never running and fabricates an orphan for
-                # a file that IS written.
-                if isinstance(argument, ast.GeneratorExp):
+                # Only a PROVEN consumer marks the body as running. Treating every call argument
+                # as consuming kept `list(...)` right and made the unknown-callee case wrong in
+                # the certifying direction: a generator handed to a helper that merely stores it
+                # had its body certified, which absorbed a real orphan reader. Unknown stays
+                # unknown here and is recorded as such by the comprehension handler.
+                if isinstance(argument, ast.GeneratorExp) and _call_consumes_generator_argument(
+                    node.func
+                ):
                     self.consumed_generators.add(id(argument))
                 self._scan_expression(argument, states)
                 self._freeze_expression(argument, states)
@@ -4168,7 +4200,7 @@ class _BlockScanner:
                         f"{self.path}:{node.lineno}:{node.col_offset}: deferred generator "
                         f"body not scheduled here expression={ast.unparse(node)}"
                     )
-            for generator in node.generators:
+            for index, generator in enumerate(node.generators):
                 # Once nothing reaches this point, nothing LATER is evaluated either — not a
                 # subsequent generator's iterable, and not a filter after a false one. The
                 # previous version scanned every generator and every condition regardless, so a
@@ -4181,12 +4213,24 @@ class _BlockScanner:
                 # and the comprehension BODY already honour. The body was the fifth place
                 # deciding it blind; the generator chain and the filter chain were the sixth and
                 # seventh, in the same handler as the repair.
-                if not body_runs:
+                if not body_runs and index > 0:
                     break
-                # A comprehension iterates its own source, so a generator there is consumed.
-                if isinstance(generator.iter, ast.GeneratorExp):
+                # **The OUTERMOST iterable is evaluated when the generator is CREATED.** Only
+                # the body, the filters and any later iterable are deferred, so skipping the
+                # whole clause chain for a deferred generator dropped a writer that really does
+                # run — `(x for x in write_and_return())` executes the call at the definition
+                # site whether or not anything iterates the result (root readback, 2026-09-08,
+                # four reader twins). Scanning it is not the same as certifying the body, and
+                # this is the only clause that gets the eager treatment.
+                #
+                # A comprehension iterates its own source, so a generator there is consumed —
+                # but only when this one is itself iterated. A nested source has the same split
+                # as its parent: eager construction, deferred iteration.
+                if body_runs and isinstance(generator.iter, ast.GeneratorExp):
                     self.consumed_generators.add(id(generator.iter))
                 self._scan_expression(generator.iter, inner)
+                if not body_runs:
+                    break
                 self._bind(generator.target, None, inner)
                 # A constant EMPTY iterable yields nothing, so nothing after it evaluates —
                 # checked BEFORE the filters, because Python evaluates no filter for an
