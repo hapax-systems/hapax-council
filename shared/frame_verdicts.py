@@ -2182,6 +2182,34 @@ def _observed_glob(root: Path, pattern: str) -> tuple[list[Path], list[OSError]]
                 close()
 
     class _ObservedPath(type(root)):  # type: ignore[misc]
+        def is_dir(self, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+            # THE FIFTH LAYER, and it runs BEFORE any scan. `Path.glob` asks
+            # `parent_path.is_dir()` first, and `Path.is_dir` swallows an ignorable `OSError`
+            # from its `stat` and answers False — so a root whose classification faults produced
+            # an empty selection with nothing recorded, and the enumeration never reached the
+            # scan hooks at all (review finding, codex, at `c761b2942`, reproduced with a
+            # transient fault on the root's own stat).
+            #
+            # Observed by stat-ing first and delegating unchanged, so the answer this returns is
+            # still pathlib's. The extra stat is the cost of seeing the error before the method
+            # that hides it.
+            try:
+                self.stat()
+            except (FileNotFoundError, NotADirectoryError):
+                # **Absence is a decided negative, not an unknown**, and this hook is asked
+                # about every path the glob considers — including ones that do not exist. I
+                # reintroduced the exact collapse `_record` was written to prevent: recording
+                # both turned ordinary missing-path arrangements into refusals and reddened
+                # nine committed dispatch controls, among them this row's own whole-scope
+                # predicate. Twice in one day, in two functions, from the same hand.
+                pass
+            except OSError as exc:
+                if not _definitely_outside_pattern(Path(self), root, pattern):
+                    failures.append(exc)
+            except ValueError:
+                pass
+            return super().is_dir(*args, **kwargs)
+
         def _scandir(self):  # noqa: ANN202
             try:
                 return _ObservedScan(super()._scandir())

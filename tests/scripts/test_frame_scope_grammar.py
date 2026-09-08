@@ -2961,6 +2961,84 @@ def test_row_s2r_the_readability_walk_reads_the_same_normalized_pattern(tmp_path
     assert "repair read access" in caught.value.remedy
 
 
+class _StatFaultingOnFirstAttempts:
+    """`os.stat` replacement that fails for one path on its first N attempts, then succeeds."""
+
+    def __init__(self, target: str, failing: set[int], error: OSError) -> None:
+        self._target = target
+        self._failing = failing
+        self._error = error
+        self._real = os.stat
+        self.attempts = 0
+
+    def __call__(self, path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN204
+        if str(path).rstrip("/") == self._target:
+            self.attempts += 1
+            if self.attempts in self._failing:
+                raise self._error
+        return self._real(path, *args, **kwargs)
+
+
+def test_row_s2s_a_root_classification_fault_is_observed_before_pathlib_hides_it(
+    tmp_path, monkeypatch
+):
+    """S2s: the fifth layer, and it runs BEFORE any scan.
+
+    Review finding (codex, 2026-09-08, at `c761b2942`): `Path.glob` asks `parent_path.is_dir()`
+    before scanning anything, and `Path.is_dir` swallows an ignorable `OSError` from its `stat`
+    and answers False. So a root whose classification faults yielded an empty selection with
+    nothing recorded — the enumeration never reached the scan, iterate, enter or entry-classify
+    hooks at all, every one of which I had added believing the set was complete.
+
+    **Five layers, closed one at a time, each close reported as complete.** Open, enter, iterate,
+    classify an entry, classify the root. Writing that down is the only part that generalises;
+    the fix itself is four lines.
+
+    The fault here is transient, on the root's own stat, so no later clean classification can
+    clear it — the same property every layer before it needed.
+    """
+    base = tmp_path / "base"
+    root = base / "bin"
+    root.mkdir(parents=True)
+    selected = root / "fsck.ext2"
+    selected.write_bytes(b"e2fsck NEEDLE\n")
+    scope_alias = root / "e2fsck"
+    os.link(selected, scope_alias)
+
+    member = {
+        "id": "root-classification-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["fsck.ext2"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("root-classification-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    readable = fv.scope_within_decayed(
+        [str(scope_alias)], verdicts, council_root=base, vault_root=base
+    )
+    assert readable.all_inside is True, "readable baseline reaches the selected file"
+
+    monkeypatch.setattr(
+        os,
+        "stat",
+        # The FIRST root stat is the glob's own `parent_path.is_dir()`, measured rather than
+        # guessed: faulting {2} reaches a different refusal, {3} and {7} are admitted, and
+        # {4}-{6} are the scope-component resolution. Only {1} isolates this layer, and a row
+        # written against a plausible-looking schedule passed for the wrong reason until the
+        # mutation said so.
+        _StatFaultingOnFirstAttempts(str(root), {1}, OSError(40, "Too many levels of symlinks")),
+    )
+
+    with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+        fv.scope_within_decayed([str(scope_alias)], verdicts, council_root=base, vault_root=base)
+    assert "cannot" in str(caught.value)
+    assert caught.value.remedy
+
+
 def test_row_s2o_absent_observation_refuses_by_name_instead_of_falling_back(tmp_path, monkeypatch):
     """S2o: capability ABSENCE, which nothing exercised and which is not hypothetical.
 
