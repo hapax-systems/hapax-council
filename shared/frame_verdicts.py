@@ -26,11 +26,14 @@ comparison that cannot be parsed refuses rather than being treated as outside th
 from __future__ import annotations
 
 import codecs
+import errno
 import fnmatch
 import hashlib
 import json
 import os
+import pathlib as pathlib_module
 import re
+import stat as stat_module
 import subprocess
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -2057,6 +2060,19 @@ def _require_scannable(root: Path, pattern: str, *, component_faults_recorded: b
 #: finding, and I reproduced it in the repair for it.
 _GLOB_SCAN_SEAM = hasattr(Path, "_scandir")
 
+#: The errnos `pathlib.Path.is_dir` swallows, read from the runtime rather than restated, so the
+#: observing override answers exactly what pathlib answers instead of approximating it.
+_PATHLIB_IGNORED_ERRNOS: frozenset[int] = frozenset(
+    getattr(
+        pathlib_module, "_IGNORED_ERRNOS", (errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP)
+    )
+)
+
+#: The subset that means DECIDED ABSENCE rather than an unreadable answer: the glob matches
+#: nothing there, which is a result. The rest — a bad descriptor, a symlink loop — are the
+#: unknown this module refuses over.
+_DECIDED_ABSENCE_ERRNOS: frozenset[int] = frozenset({errno.ENOENT, errno.ENOTDIR})
+
 
 def _refuse_unobservable_enumeration(root: Path, pattern: str) -> UndecidableScopeContainment:
     """Refuse by name where the supplying traversal cannot be observed on this runtime."""
@@ -2193,22 +2209,36 @@ def _observed_glob(root: Path, pattern: str) -> tuple[list[Path], list[OSError]]
             # Observed by stat-ing first and delegating unchanged, so the answer this returns is
             # still pathlib's. The extra stat is the cost of seeing the error before the method
             # that hides it.
+            # **ONE read, and it is the one that decides.** An earlier revision stat-ed first and
+            # then delegated to `super().is_dir()`, which stats AGAIN — so a transient fault
+            # hitting only the second read was never observed, and the observation hook had the
+            # very same-observation defect it was built to close, one level down (coordinator,
+            # static concern on `538e5bcd5`; structural, so repaired without waiting for the
+            # matrix to reproduce it). Two reads where one decides is a defect by construction.
+            #
+            # `pathlib.Path.is_dir` is mirrored exactly rather than approximated: it ignores
+            # errno 2/20/9/40 and answers False, and re-raises anything else. **Absence is a
+            # decided negative and is not recorded** — ENOENT and ENOTDIR mean the glob simply
+            # matches nothing there, which is an answer. EBADF and ELOOP are the unknown this
+            # exists to refuse, and are exactly the transient faults the finding used.
+            #
+            # Recording absence is the collapse `_record` was written to prevent, and the first
+            # version of this hook reintroduced it, reddening nine committed dispatch controls
+            # including this row's own whole-scope predicate. Stating the errnos keeps the
+            # distinction where a reader can check it against the runtime.
             try:
-                self.stat()
-            except (FileNotFoundError, NotADirectoryError):
-                # **Absence is a decided negative, not an unknown**, and this hook is asked
-                # about every path the glob considers — including ones that do not exist. I
-                # reintroduced the exact collapse `_record` was written to prevent: recording
-                # both turned ordinary missing-path arrangements into refusals and reddened
-                # nine committed dispatch controls, among them this row's own whole-scope
-                # predicate. Twice in one day, in two functions, from the same hand.
-                pass
+                status = self.stat()
             except OSError as exc:
-                if not _definitely_outside_pattern(Path(self), root, pattern):
+                if exc.errno not in _PATHLIB_IGNORED_ERRNOS:
+                    raise
+                if exc.errno not in _DECIDED_ABSENCE_ERRNOS and not _definitely_outside_pattern(
+                    Path(self), root, pattern
+                ):
                     failures.append(exc)
+                return False
             except ValueError:
-                pass
-            return super().is_dir(*args, **kwargs)
+                return False
+            return stat_module.S_ISDIR(status.st_mode)
 
         def _scandir(self):  # noqa: ANN202
             try:

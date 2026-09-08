@@ -2979,6 +2979,58 @@ class _StatFaultingOnFirstAttempts:
         return self._real(path, *args, **kwargs)
 
 
+def test_row_s2t_the_observed_glob_reads_no_more_than_the_plain_one(tmp_path):
+    """S2t: the read that DECIDES must be the read that is OBSERVED, so there is only one.
+
+    Coordinator's static concern on `538e5bcd5`: the first version of the classification hook
+    stat-ed to observe and then delegated to `Path.is_dir`, which stats AGAIN — so a transient
+    fault hitting only the second read was never seen, and **the observation hook had the very
+    same-observation defect it was built to close, one level down.** Repaired structurally
+    rather than waiting for the matrix to reproduce it: two reads where one decides is a defect
+    by construction, and `Path.is_dir`'s errno behaviour is mirrored from the runtime rather
+    than approximated.
+
+    This row pins the property directly instead of through a fault schedule, because a schedule
+    depends on call ordering that shifts whenever the code around it moves — which is exactly
+    how the previous row's first draft came to measure nothing. Counting is stable.
+    """
+    root = tmp_path / "surface"
+    branch = root / "branch"
+    branch.mkdir(parents=True)
+    (branch / "leaf.txt").write_bytes(b"NEEDLE\n")
+    (root / "other.txt").write_bytes(b"NEEDLE\n")
+
+    real_stat = os.stat
+
+    def counting(counter: list[int]):
+        def probe(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+            counter[0] += 1
+            return real_stat(path, *args, **kwargs)
+
+        return probe
+
+    plain: list[int] = [0]
+    os.stat = counting(plain)
+    try:
+        expected = sorted(str(p) for p in root.glob("**/*.txt"))
+    finally:
+        os.stat = real_stat
+
+    observed_count: list[int] = [0]
+    os.stat = counting(observed_count)
+    try:
+        entries, failures = fv._observed_glob(root, "**/*.txt")
+    finally:
+        os.stat = real_stat
+
+    assert sorted(str(p) for p in entries) == expected, "observation must not change selection"
+    assert failures == [], "a healthy tree records nothing"
+    assert observed_count[0] <= plain[0], (
+        f"the observing glob performed {observed_count[0]} stats against the plain glob's "
+        f"{plain[0]}: an extra read is a read whose faults nothing decides on"
+    )
+
+
 def test_row_s2s_a_root_classification_fault_is_observed_before_pathlib_hides_it(
     tmp_path, monkeypatch
 ):
