@@ -248,7 +248,16 @@ def _coerce_scope_ref_list(value: object) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
-        return [] if value.strip() in {"", "null", "None"} else [value]
+        # Blank rule, stated at `scope_within_decayed`: absent means the empty string, and a
+        # whitespace name is a declaration. The scalar branch used to test `.strip()` against a
+        # sentinel set while the list branch below tested the raw string, so one declaration got
+        # two answers depending only on how it was written (cx-blue, 2026-09-08):
+        #     ' '  -> []          [' ']  -> [' ']
+        #     'null' -> []        ['null'] -> ['null']
+        # Resolved toward the list branch, because the drop is the unsafe half: YAML already
+        # spells absence as `null`, which arrives as None and is handled above, so a STRING here
+        # was quoted deliberately and names a subject.
+        return [] if value == "" else [value]
     if isinstance(value, (list, tuple, set, frozenset)):
         return [str(item) for item in value if str(item)]
     return [str(value)] if str(value) else []
@@ -1157,16 +1166,41 @@ ROUTE_METADATA_FIELDS = frozenset(
 )
 
 
+def _field_is_absent(field: object, value: object) -> bool:
+    """Emptiness, asked per field rather than once for all of them.
+
+    `mutation_scope_refs` names filesystem surfaces, and the generic predicate treats any string
+    that strips to `""`, `"null"` or `"None"` as an absence. That is right for the many fields it
+    serves and wrong here, where whitespace is a legal POSIX filename — and it applied only to
+    the SCALAR spelling, because a list is not a string, so one declaration got two answers
+    depending on how it was written (cx-blue, 2026-09-08):
+
+        mutation_scope_refs: ' '     -> field dropped -> []
+        mutation_scope_refs: [' ']   -> kept          -> [' ']
+
+    Field-specific by design, and deliberately not a change to `_is_empty_frontmatter_value`:
+    that predicate serves fields which are not filesystem subjects, and rewriting generic
+    frontmatter normalization is out of scope for this contract. The scope-ref rule is the one
+    stated at `scope_within_decayed` — absent means None or the empty string, and everything else
+    is a declaration that must survive or be refused by name.
+    """
+    if field == "mutation_scope_refs":
+        if value is None:
+            return True
+        return value == "" if isinstance(value, str) else False
+    return _is_empty_frontmatter_value(value)
+
+
 def route_metadata_payload_from_frontmatter(frontmatter: Mapping[str, Any]) -> dict[str, Any]:
     """Extract route metadata fields from canonical frontmatter data."""
     payload: dict[str, Any] = {}
     nested = frontmatter.get("route_metadata")
     if isinstance(nested, Mapping):
         payload.update(
-            {key: value for key, value in nested.items() if not _is_empty_frontmatter_value(value)}
+            {key: value for key, value in nested.items() if not _field_is_absent(key, value)}
         )
     for field in ROUTE_METADATA_FIELDS:
-        if field in frontmatter and not _is_empty_frontmatter_value(frontmatter[field]):
+        if field in frontmatter and not _field_is_absent(field, frontmatter[field]):
             payload[field] = frontmatter[field]
     return payload
 

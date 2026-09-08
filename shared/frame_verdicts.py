@@ -3371,7 +3371,26 @@ def scope_within_decayed(
     vault_root = frame_vault_root() if vault_root is None else vault_root
     matches: list[ScopeMatch] = []
     outside: list[str] = []
-    declared_refs = [str(ref) for ref in refs if str(ref).strip()]
+    # Blank rule, stated once here and pointed at from the other site that takes a declared
+    # subject. A reference is ABSENT only when it is the empty string. `" "` is a legal POSIX
+    # filename, so it is a declaration and must be answered — matched, or refused by name.
+    #
+    # `.strip()` truthiness made a whitespace-only reference EVAPORATE, and the loss was not only
+    # its name (review finding, codex, at `5007ed238`). An emptied list also skips the guard just
+    # below, which is `if declared_refs and verdicts.unmatchable` — so a scope of `[" "]` against
+    # a member with no containable location returned "not inside" where an ordinary reference
+    # raised `UncontainableMemberLocation`. Trimming a name to nothing turned a refusal into a
+    # verdict, which is a fail-open on the undecidable path.
+    declared_refs: list[str] = []
+    for index, ref in enumerate(refs):
+        text = str(ref)
+        if not text:
+            raise NonCanonicalScopeRef(
+                f"mutation_scope_refs[{index}] is the empty string, which cannot name a surface. "
+                "An unrepresentable declaration is refused by name; emptying the scope instead "
+                "would make it indistinguishable from declaring no scope at all"
+            )
+        declared_refs.append(text)
     if declared_refs and verdicts.unmatchable:
         raise UncontainableMemberLocation(
             "decayed member(s) "

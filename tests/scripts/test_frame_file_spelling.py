@@ -29,6 +29,14 @@ which the producer would refuse to read, so a synthesized `scope_exited` receipt
 consumer about a member that could not exist (cx-blue); the next moved to `fs.filelist`, where
 every row then "passed" on the unimplemented-containment refusal and measured nothing.
 
+**What these rows are evidence OF, stated narrowly.** Giving `fs.glob` a readable
+`location.path` makes the declaration one the producer will read; it does NOT make the producer
+select the separately declared `files`, which that reader ignores. So these are controls on the
+CONSUMER's explicit-file containment, and they are not producer-selection evidence for those
+files (cx-blue, 2026-09-08). Real `fs.glob` selection for the whitespace cases, with exact
+subject and digest binding, is covered by a separate producer-backed run and the two claims are
+kept apart. Nothing here should be read as the consumer's extra keys being a producer contract.
+
 The declared root deliberately does not contain the trimmed neighbour. That is the real member's
 own structure — `agents-md-and-per-repo-claude-md-agents-md` declares roots across the estate
 *plus* two individually named files — and not a twin moved out of an overbroad directory to
@@ -39,6 +47,13 @@ discriminate if the root were removed entirely.
 import pytest
 
 from tests.scripts.test_frame_root_entries import _root_dispatch
+from tests.scripts.test_hapax_methodology_dispatch import (
+    _dispatcher_module,
+    _frame_procedure_root,
+    _governed_source_frontmatter,
+    _spec,
+    _task,
+)
 
 WHITESPACE_NAMES = ("zz-review-future ", "zz-review-future\t", " zz-leading")
 
@@ -122,7 +137,12 @@ def test_main_declared_file_spelling_is_not_trimmed(tmp_path, monkeypatch, capsy
 
 
 def test_main_a_plain_declared_file_still_refuses(tmp_path, monkeypatch, capsys):
-    """The twin with no whitespace, so the rows above cannot pass by refusing everything."""
+    """The twin with no whitespace: a declared file is inside its member however it is spelled.
+
+    This row does NOT discriminate "refuse whenever the names look similar" — it refuses too, so
+    a gate that refused everything would satisfy it (cx-blue, 2026-09-08). The earlier docstring
+    claimed otherwise. Only the admitting neighbour row below discriminates that.
+    """
     base, root = _fixture(tmp_path)
     declared = base / "zz-plain"
     declared.write_bytes(b"NEEDLE\n")
@@ -171,3 +191,83 @@ def test_main_the_trimmed_neighbour_is_a_different_file(tmp_path, monkeypatch, c
         print(f"declared='zz-review-future ' candidate=trimmed neighbour: main()={rc}")
     assert rc == 0, "the trimmed neighbour is a different file, outside the declared surface"
     assert not err
+
+
+def _dispatch_with_declared_refs(tmp_path, monkeypatch, capsys, frame_root, refs_literal: str):
+    """Receipt-only `main()` with `mutation_scope_refs` written verbatim into the task.
+
+    `_dispatch_receipt_only_scope` always spells the refs as a JSON list, so it cannot express
+    the SCALAR form — which is exactly where the erasure differed. This takes the YAML text.
+    """
+    spec = _spec(tmp_path / "isap-test.md")
+    _task(
+        tmp_path / "tasks",
+        "governed-build",
+        _governed_source_frontmatter(
+            spec,
+            mutation_scope_refs=refs_literal,
+            allowed_platforms="[codex]",
+            required_mode="headless",
+            required_profile="full",
+        ),
+        route_metadata_defaults=False,
+    )
+    monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(tmp_path / "tasks"))
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+    monkeypatch.setenv("HAPAX_DISPATCH_CLAIM_SWEEP", "0")
+    monkeypatch.setenv("HAPAX_ORCHESTRATION_LEDGER_DIR", str(tmp_path / "ledger"))
+    rc = _dispatcher_module().main(
+        [
+            "--task",
+            "governed-build",
+            "--lane",
+            "cx-green",
+            "--platform",
+            "codex",
+            "--mode",
+            "receipt-only",
+            "--skip-worktree-check",
+        ]
+    )
+    return rc, capsys.readouterr().err
+
+
+@pytest.mark.parametrize("spelling", ["scalar", "list"])
+def test_main_a_whitespace_only_scope_ref_does_not_skip_the_uncontainable_guard(
+    tmp_path, monkeypatch, capsys, spelling
+):
+    """The erasure's bite at the actual gate: a name trimmed to nothing skipped a refusal.
+
+    A decayed member with no containable location makes EVERY declared scope undecidable, and
+    the dispatcher must refuse. That refusal is reached through `if declared_refs and
+    verdicts.unmatchable`, so a scope that trimmed away to nothing never reached it: the
+    dispatch proceeded exactly where it had the least ground to (review finding, codex, at
+    `5007ed238`). Whitespace is a legal POSIX filename, so `" "` is a declaration and must reach
+    the same refusal as any other reference.
+
+    This is the gate-observable form of the defect, and deliberately not "a ref naming a
+    whitespace file". A bare `" "` resolves against the council root rather than the producer
+    directory, so it is genuinely outside the member and BOTH the erasing and the repaired code
+    admit it — such a row would pass either way and read as coverage it does not provide.
+
+    Both spellings run because the erasure was asymmetric: the scalar form was dropped during
+    frontmatter extraction while the list form survived, so one declaration got two answers
+    depending only on how it was written (cx-blue, 2026-09-08).
+    """
+    frame = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=tmp_path / "producer",
+        reader="fs.glob",
+        location={"endpoints": ["undisclosed"]},
+    )
+
+    literal = '" "' if spelling == "scalar" else '[" "]'
+    rc, err = _dispatch_with_declared_refs(tmp_path, monkeypatch, capsys, frame, literal)
+    with capsys.disabled():
+        print(f"uncontainable member, whitespace-only {spelling} ref: main()={rc}")
+
+    assert rc != 0, (
+        f"{spelling}: a whitespace-only scope ref skipped the uncontainable-member refusal; "
+        "trimming a name to nothing turned a refusal into a verdict"
+    )
+    assert err, "a refusal must carry its reason"

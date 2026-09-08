@@ -868,3 +868,74 @@ def test_task_demand_rejects_out_of_vocab_execution_axis_demand() -> None:
         build_demand_vector(_demand_frontmatter(effort_demand="galaxy"))
     with pytest.raises((ValidationError, ValueError)):
         build_demand_vector(_demand_frontmatter(context_mode_demand="hypercontext"))
+
+
+# A declared scope ref is ABSENT only when it is the empty string. Whitespace is a legal POSIX
+# filename, so a whitespace-only ref names a surface and must survive; a quoted null-like string
+# was written deliberately, because YAML already spells absence as `null`, which arrives as None
+# and is handled before any of this. The scalar branch used to test `.strip()` against a sentinel
+# set while the list branch tested the raw string, so ONE declaration got TWO answers depending
+# only on how it was written (cx-blue, 2026-09-08):
+#     ' '    -> []      [' ']    -> [' ']
+#     'null' -> []      ['null'] -> ['null']
+# The drop is the unsafe half: the frame gate reads an emptied scope as "nothing declared", so
+# erasure here made a declared-but-unhonourable scope indistinguishable from declaring none.
+_PRESERVED_SCOPE_REFS = ["  ", " ", "\t", "null", "None", "~", "  /tmp/x  "]
+
+
+@pytest.mark.parametrize("ref", _PRESERVED_SCOPE_REFS)
+def test_scope_ref_scalar_and_list_spellings_agree(ref: str) -> None:
+    """The same declaration, written two ways, must reach the gate as the same scope."""
+    scalar = _dispatchable_metadata()
+    scalar["mutation_scope_refs"] = ref
+    listed = _dispatchable_metadata()
+    listed["mutation_scope_refs"] = [ref]
+
+    from_scalar = list(validate_route_metadata(scalar).mutation_scope_refs)
+    from_list = list(validate_route_metadata(listed).mutation_scope_refs)
+
+    assert from_scalar == from_list == [ref], (
+        f"{ref!r}: a declared scope ref must survive both spellings unedited"
+    )
+
+
+@pytest.mark.parametrize("ref", _PRESERVED_SCOPE_REFS)
+def test_demand_vector_keeps_whitespace_and_null_like_scope_refs(ref: str) -> None:
+    """The same rule through demand construction, not only through the field helper."""
+    scalar = _demand_frontmatter()
+    scalar["mutation_scope_refs"] = ref
+    listed = _demand_frontmatter()
+    listed["mutation_scope_refs"] = [ref]
+
+    assert list(build_demand_vector(scalar).mutation_scope_refs) == [ref]
+    assert list(build_demand_vector(listed).mutation_scope_refs) == [ref]
+
+
+def test_two_scope_refs_differing_only_in_whitespace_stay_distinct() -> None:
+    """Erasure destroyed the subject AND collapsed two declarations into one.
+
+    Measured at `5007ed238`: `['/tmp/selected ', '/tmp/selected\\t']` both became
+    `/tmp/selected`, so a digest bound to either matched the other.
+    """
+    payload = _dispatchable_metadata()
+    payload["mutation_scope_refs"] = ["/tmp/selected ", "/tmp/selected\t", "/tmp/selected"]
+
+    refs = list(validate_route_metadata(payload).mutation_scope_refs)
+
+    assert refs == ["/tmp/selected ", "/tmp/selected\t", "/tmp/selected"]
+    assert len(set(refs)) == 3, "three declarations must not collapse into fewer subjects"
+
+
+def test_an_empty_scope_ref_is_dropped_here_and_refused_by_name_at_the_gate() -> None:
+    """`""` cannot name a surface, so this helper still drops it and its contract is unchanged.
+
+    The frame gate is where that becomes dangerous, and that is where it is now refused BY NAME:
+    an emptied scope there is indistinguishable from declaring no scope at all, which skips the
+    uncontainable-member guard. See `scope_within_decayed`.
+    """
+    payload = _dispatchable_metadata()
+    payload["mutation_scope_refs"] = ""
+    assert list(validate_route_metadata(payload).mutation_scope_refs) == []
+
+    payload["mutation_scope_refs"] = ["", "/tmp/real"]
+    assert list(validate_route_metadata(payload).mutation_scope_refs) == ["/tmp/real"]

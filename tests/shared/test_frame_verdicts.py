@@ -986,6 +986,20 @@ def test_a_decayed_member_without_a_containable_location_refuses_scope_compariso
             vault_root=tmp_path / "vault",
         )
 
+    # THE BYPASS this guard had (review finding, codex, at `5007ed238`). The refusal above is
+    # reached through `if declared_refs and verdicts.unmatchable`, so a scope that TRIMMED away
+    # to nothing skipped it and returned an ordinary "not inside" verdict. A whitespace-only
+    # name is a legal POSIX filename and must reach the same refusal as any other reference:
+    # trimming a name to nothing must never convert a refusal into a verdict.
+    for ref in ("  ", " ", "\t"):
+        with pytest.raises(fv.NonCanonicalScopeRef, match="mystery.*no containable"):
+            fv.scope_within_decayed(
+                [ref],
+                verdicts,
+                council_root=tmp_path / "council",
+                vault_root=tmp_path / "vault",
+            )
+
 
 def test_scope_matching_by_containment_patterns_files_and_wildcard_tails(tmp_path: Path) -> None:
     council = tmp_path / "council"
@@ -1031,9 +1045,21 @@ def test_scope_matching_by_containment_patterns_files_and_wildcard_tails(tmp_pat
     mixed = scope("legacy/a.py", "scripts/live.py")
     assert not mixed.all_inside and mixed.outside == ("scripts/live.py",)
     assert len(mixed.matches) == 1
-    # nothing declared: nothing to judge
-    empty = scope("", "  ")
+    # Nothing declared: nothing to judge. This row used to read `scope("", "  ")` with the
+    # comment "nothing declared", which conflated two different things and encoded a fail-open
+    # (review finding, codex, at `5007ed238`). It entered in this branch's first commit as
+    # incidental coverage of what the code did, not as a ratified equivalence, so it is corrected
+    # here rather than treated as settled. The two cases are now separated below.
+    empty = scope()
     assert not empty.all_inside and empty.matches == () and empty.outside == ()
+    # `""` cannot name a surface, so it is UNREPRESENTABLE and refused by name. Dropping it made
+    # a declared-but-impossible scope indistinguishable from declaring no scope at all.
+    with pytest.raises(fv.NonCanonicalScopeRef, match="empty string"):
+        scope("")
+    # `"  "` is a legal POSIX filename, so it IS a declaration and gets answered. Here it names
+    # nothing in the decayed member, so it is outside — a verdict, not a disappearance.
+    spaces = scope("  ")
+    assert not spaces.all_inside and spaces.outside == ("  ",)
     # absolute refs resolve as given; a foreign absolute path is outside
     assert scope(str(council / "legacy" / "z.py")).all_inside
     assert scope("/etc/hosts").outside == ("/etc/hosts",)
