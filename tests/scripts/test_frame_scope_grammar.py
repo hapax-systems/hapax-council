@@ -605,12 +605,39 @@ def test_row_p7_three_spellings_of_one_scope_agree_about_disjointness(tmp_path, 
         f"one arrangement, three spellings, one answer: {answers}"
     )
 
+    # REVISED 2026-09-08 under the coordinator's prospective-effect-scope ruling, which is
+    # explicit that it is not restricted to trailing-slash directory notation and applies to a
+    # declared glob's denoted LANGUAGE.
+    #
+    # This assertion used to read `result.all_inside is not mixed` — the glob was expected to be
+    # wholly inside whenever the directory happened to hold nothing but aliases. That encoded the
+    # error codex reported at `81962feab` and claude named at this line: a present expansion
+    # cannot establish exhaustive containment of an unbounded prospective language, because
+    # `tool*` names files that do not exist yet and those are not in the member. The row was
+    # written to prove the disjointness repair did not move admission, and it recorded the
+    # admission it found rather than the one the contract requires.
+    #
+    # `mixed` no longer changes the answer, and that is the point: `tool*` denotes the same
+    # unbounded language either way, so a stranger appearing beside the alias cannot be what
+    # decides it. The two arrangements are not two languages whose present contents coincide;
+    # each separately has a future outside witness.
     result = fv.scope_within_decayed(
         [str(elsewhere / "tool*")], verdicts, council_root=base, vault_root=base
     )
-    assert result.all_inside is not mixed, (
-        "withholding the disjointness claim must not move the admission: a glob expanding only to "
-        "aliases is still wholly inside, and one with a stranger beside them is still partial"
+    assert result.all_inside is False, (
+        "a glob's present expansion cannot prove exhaustive containment of its prospective "
+        "language, whether or not a stranger happens to sit beside the alias today"
+    )
+
+    # And the half the ruling explicitly preserves: the LITERAL spelling names one finite thing,
+    # which is the decayed file under another name, so it is still wholly inside and still
+    # refuses. Without this the row above would be satisfied by admitting everything.
+    literal = fv.scope_within_decayed(
+        [str(elsewhere / "tool")], verdicts, council_root=base, vault_root=base
+    )
+    assert literal.all_inside is True, (
+        "literal and single-choice-name hard-link refusal is preserved; only the unbounded "
+        "language loses its containment proof"
     )
 
 
@@ -938,6 +965,41 @@ def test_row_r2c_an_unreadable_checkout_anchor_is_also_an_actionable_refusal(tmp
     assert "cannot choose a checkout anchor" in str(caught.value)
     assert caught.value.remedy, "a refusal must name its remedy"
     assert "absolute path" in caught.value.remedy
+
+
+def test_row_r2d_an_unresolvable_default_vault_root_is_also_an_actionable_refusal(
+    tmp_path, monkeypatch
+):
+    """R2d: the DEFAULT vault root, which only fails when the caller does not pass one.
+
+    `scope_within_decayed` fills an omitted `vault_root` from `frame_vault_root()`, which ends in
+    `expanduser()` — so with no resolvable home directory the default path raised RuntimeError
+    straight out, while an explicitly passed root could not fail at all (review finding, claude,
+    at `24574cc4f`). Every test in this file passes `vault_root`, which is why nothing saw it.
+
+    **Sixth instance of this family, and on the line directly above a comment I wrote the same
+    morning.** R2 named the pattern, R2b repeated it, R2c wrote that noting a pattern is not
+    searching for its other members — and I then edited three lines below this call without
+    reading it. A fault family is closed by enumerating its call sites once, not by recognising
+    it six times.
+    """
+    monkeypatch.delenv(fv.FRAME_VAULT_ROOT_ENV, raising=False)
+    # Build the fixture BEFORE breaking expansion: loading the verdicts resolves the procedure
+    # root through the same call, and patching first refuses the setup instead of the subject.
+    verdicts = _decayed(tmp_path, _local_member(root=tmp_path / "surface"))
+
+    def refusing_expanduser(self):
+        raise RuntimeError("Could not determine home directory")
+
+    monkeypatch.setattr(pathlib.Path, "expanduser", refusing_expanduser)
+
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.scope_within_decayed(["scripts/x.py"], verdicts, council_root=tmp_path)
+
+    assert "default frame vault root cannot be resolved" in str(caught.value)
+    assert fv.FRAME_VAULT_ROOT_ENV in caught.value.remedy, (
+        "the remedy must name the override that repairs it"
+    )
 
 
 def test_row_r3_a_relative_declared_file_resolves_against_a_present_vault(tmp_path, monkeypatch):

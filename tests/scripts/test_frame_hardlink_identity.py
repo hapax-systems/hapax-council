@@ -215,3 +215,60 @@ def test_the_alias_only_directory_is_recorded_not_asserted(tmp_path, monkeypatch
         "veto withdrawn at aa5939179; it is a policy change and must be made deliberately with "
         "the ruling amended, not arrive as a side effect. See this row's docstring."
     )
+
+
+def test_main_an_unbounded_glob_over_only_aliases_is_admitted(tmp_path, monkeypatch, capsys):
+    """The receipt-only `main()` case for a glob whose outside witness does not exist yet.
+
+    `*.txt` denotes an unbounded language: every `.txt` file that could ever sit in this
+    directory, none of which the member selects. Its CURRENT expansion is nothing but a hard link
+    to a decayed file, and the containment predicate used to read that expansion as a proof of
+    whole-scope containment — so the glob was refused while the directory spelling of the same
+    arrangement was admitted (codex at `81962feab`, reproduced on `/usr/bin` `fsck.ext2`/`e2fsck`).
+
+    The coordinator's 2026-09-08 ruling settles it: prospective effect scope is not restricted to
+    trailing-slash notation and applies to a declared glob's denoted language, so today's
+    expansions cannot establish exhaustive containment of an unbounded scope.
+
+    `aliased/` and `aliased/*.txt` are NOT the same language merely because their present contents
+    coincide; each separately has a future outside witness, and that is what admits each.
+    """
+    base, surface, aliased, _alias = _linked(tmp_path, beside=False)
+    assert sorted(p.name for p in aliased.iterdir()) == ["selected-alias.txt"], (
+        "the directory must hold nothing but the alias, so only the LANGUAGE can admit it"
+    )
+
+    rc, err = _dispatch(tmp_path, monkeypatch, capsys, surface, base, str(aliased / "*.txt"))
+    with capsys.disabled():
+        print(f"unbounded glob over only aliases: main()={rc}")
+
+    assert rc == 0 and not err, (
+        "an unbounded glob's present expansion cannot prove exhaustive containment; refusing "
+        "here is the all(expansions) shortcut the ruling removed"
+    )
+
+
+@pytest.mark.parametrize(
+    "spelling", ["selected-alias.txt", "selected-alias[.]txt", "selected-alias.tx[t]"]
+)
+def test_main_a_finite_name_over_an_alias_still_refuses(tmp_path, monkeypatch, capsys, spelling):
+    """The negative controls: a FINITE language keeps its whole-language containment proof.
+
+    The ruling preserves literal and single-choice-name refusal explicitly, and does not
+    authorize indiscriminate broad admission. Each spelling here denotes exactly one name — a
+    character class with a single choice enlarges nothing — and that name is the decayed file
+    under another name, so the whole scope really is inside and must refuse.
+
+    Without these rows, "admit every broad spelling" would satisfy the unbounded case above.
+    """
+    base, surface, aliased, _alias = _linked(tmp_path, beside=False)
+
+    rc, err = _dispatch(tmp_path, monkeypatch, capsys, surface, base, str(aliased / spelling))
+    with capsys.disabled():
+        print(f"finite name {spelling!r}: main()={rc}")
+
+    assert rc != 0, (
+        f"{spelling}: a finite language whose every name is the decayed file under another name "
+        "is wholly inside, and the ruling preserves that proof"
+    )
+    assert err

@@ -1542,6 +1542,46 @@ def _literal_scope_glob(pattern: str) -> str | None:
     return "".join(literal)
 
 
+def _finite_scope_language(pattern: str | None, *, limit: int = 64) -> tuple[str, ...] | None:
+    """Every name a pattern denotes, when that set is finite and exhaustively enumerable.
+
+    `None` means the language is UNBOUNDED and cannot be enumerated: `*` and `?` admit names that
+    do not exist yet, a directory spelling admits anything placed under it later, and a range or
+    negated class is left undecidable exactly as `_literal_scope_glob` leaves it.
+
+    This is the line the 2026-09-08 prospective-effect-scope ruling draws. A present expansion
+    cannot prove containment of an unbounded language, because the language includes files nobody
+    has created — but a FINITE language is a closed set of names, and the ruling is explicit that
+    valid whole-language containment proofs are not removed. `alias[12]` denotes exactly two
+    names; if both are the decayed file under another name, the whole scope really is inside.
+
+    The `limit` refuses rather than truncating: a language too large to enumerate is not a shorter
+    language, and returning a prefix of it would prove containment from a sample.
+    """
+    if pattern is None:
+        return None
+    names: list[str] = [""]
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char in "*?":
+            return None
+        if char == "[":
+            end = pattern.find("]", index + 2)
+            characters = pattern[index + 1 : end] if end != -1 else ""
+            if not characters or characters[0] == "!" or "-" in characters:
+                return None
+            choices = tuple(dict.fromkeys(characters))
+            names = [name + choice for name in names for choice in choices]
+            if len(names) > limit:
+                return None
+            index = end + 1
+        else:
+            names = [name + char for name in names]
+            index += 1
+    return tuple(dict.fromkeys(names))
+
+
 def _member_path_is_excluded(path: Path, root: Path, member: DecayedMember) -> bool:
     """Filter an in-root remainder under each spelling of that declared root.
 
@@ -2767,35 +2807,47 @@ def ref_within_member(
         for entry, target in expansions.items()
         if not entry.is_dir() and target not in identity_surface
     )
-    # OPEN, raised 2026-09-08 and deliberately not resolved here (review finding, codex, at
-    # `81962feab`: "current hard-link expansions incorrectly prove whole-scope containment").
-    # The `all(...)` below declares the whole scope contained whenever every file the directory
-    # happens to hold TODAY is a selection or an alias of one. Measured on one arrangement:
-    #
-    #     aliased/          -> ref_within_member False   (partial, admits)
-    #     aliased/*.txt     -> ref_within_member True    (wholly inside, refuses)
-    #
-    # One arrangement, two spellings, opposite answers — the shape row P7 exists to catch. It
-    # also contradicts a rule stated 35 lines above in this same function: *existing files can
-    # disprove containment, but cannot establish the proof.*
-    #
-    # It is NOT repaired here, because the repair is a policy change and not mine to make. The
-    # coordinator's 2026-09-08 ruling that effect scope is PROSPECTIVE covers the DIRLIKE case
-    # and would extend to this one; but rows P7 (`only-the-alias`) and P8 (`both-aliases`) pin
-    # the current answer, and making the change turns P7 from refusal to admission and P8 from a
-    # definite answer to undecidable. Loosening two committed controls on my own reading of a
-    # ruling about an adjacent spelling is the withdrawn `aa5939179` error, and one family
-    # reporting a mechanism is not authority over a policy. Measured, reverted, and referred.
     aliased = tuple(
         target
         for entry, target in expansions.items()
         if not entry.is_dir() and target not in identity_surface
     )
-    if aliased and _identity_reaches_surface(aliased, identity_surface):
+    if aliased:
+        # Identity is ASKED, and only for its refusal: an unreadable comparison must raise rather
+        # than quietly become "not contained". Its positive answer is deliberately NOT a
+        # containment proof.
+        #
+        # It was. `return all(...)` over the CURRENT expansion declared the whole scope contained
+        # whenever every file the directory happened to hold today was a selection or an alias of
+        # one. Reproduced by codex at `81962feab` on a real pair — an `fs.glob` member rooted at
+        # `/usr/bin` with patterns `['fsck.ext2']` and its hard link `e2fsck`, where the scope
+        # `e2fsck*` returned all_inside=True and was refused, while `e2fsckscope` was
+        # independently admitted and the partial-scope predicate returned True for that same glob.
+        #
+        # A present expansion cannot establish exhaustive containment of an unbounded prospective
+        # language: `e2fsck*` names files that do not exist yet, and those are not in the member.
+        # This is the rule already written 35 lines above in this same function — *existing files
+        # can disprove containment, but cannot establish the proof* — and the coordinator's
+        # 2026-09-08 ruling, which is explicit that prospective effect scope is not restricted to
+        # trailing-slash directory notation and applies to a declared glob's denoted language.
+        #
+        # So the identity hit is OVERLAP, and the aliases join the surface for the existing
+        # partial-scope rules to decide — which is what this block's own comment above already
+        # said it did. Those rules then establish an outside witness or return a NAMED UNDECIDABLE
+        # refusal; neither an any-overlap veto nor indiscriminate broad admission follows.
+        _identity_reaches_surface(aliased, identity_surface)
+
+    # A FINITE language keeps its whole-language proof, which the ruling explicitly preserves.
+    # `alias[12]` denotes exactly two names, so the set can be closed and checked; `tool*` cannot.
+    # The names are enumerated from the PATTERN, never from the current expansion — a name the
+    # language denotes but nobody has created is not inside the member, and proving containment
+    # from the files that happen to exist is the defect this block was reported for.
+    language = _finite_scope_language(scope_pattern)
+    if language is not None:
+        denoted = tuple(path / name for name in language)
         return all(
             target in identity_surface or _identity_reaches_surface((target,), identity_surface)
-            for entry, target in expansions.items()
-            if not entry.is_dir()
+            for target in denoted
         )
     return False
 
@@ -3465,7 +3517,28 @@ def scope_within_decayed(
     council_root: Path,
     vault_root: Path | None = None,
 ) -> ScopeVerdict:
-    vault_root = frame_vault_root() if vault_root is None else vault_root
+    # `frame_vault_root()` ends in `expanduser()`, which raises RuntimeError when no home
+    # directory can be resolved — so the DEFAULT vault root escaped the refusal contract while an
+    # explicitly passed one could not fail at all (review finding, claude, at `24574cc4f`).
+    #
+    # **Sixth instance of this family, and this one is on the line directly above a comment I
+    # wrote today.** R2's docstring named the pattern, R2b repeated the naming, R2c said noting a
+    # pattern is not searching for its other members — and I then edited the three lines below
+    # this call without reading it. The lesson is not the fix: it is that a fault family is
+    # closed by enumerating its call sites once, not by recognising it six times.
+    if vault_root is None:
+        try:
+            vault_root = frame_vault_root()
+        except (OSError, RuntimeError) as exc:
+            error = UndecidableScopeContainment(
+                f"the default frame vault root cannot be resolved: {exc}; scope containment "
+                "cannot be decided against it"
+            )
+            error.remedy = (
+                f"set {FRAME_VAULT_ROOT_ENV} to an absolute path, or repair home-directory "
+                "resolution, then retry the dispatch"
+            )
+            raise error from exc
     matches: list[ScopeMatch] = []
     outside: list[str] = []
     # Blank rule, stated once here and pointed at from the other site that takes a declared

@@ -4,6 +4,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from shared.route_metadata_schema import (
@@ -21,6 +22,8 @@ from shared.route_metadata_schema import (
     RouteAdmissionAction,
     RouteMetadata,
     RouteMetadataStatus,
+    _coerce_scope_ref_list,
+    _field_is_absent,
     assess_route_metadata,
     build_demand_vector,
     check_demand_vector_freshness,
@@ -1035,3 +1038,56 @@ def test_a_bare_filename_still_does_not_bind_and_that_is_recorded_not_endorsed()
         "MEASUREMENT CHANGED: bare filenames now bind. That may be right, but it changes which "
         "declarations produce stale_reasons and must be a deliberate grammar decision."
     )
+
+
+@pytest.mark.parametrize("spelling", ["~", "null", "Null", "NULL", ""], ids=lambda s: s or "empty")
+def test_the_conventional_yaml_absence_spellings_are_still_absent(spelling: str) -> None:
+    """A task note writing `mutation_scope_refs: ~` declares NO scope, as it always did.
+
+    `_field_is_absent` treats a quoted `"null"` or `" "` as a declaration for this one field, and
+    claude read that at `81962feab` as making the conventional YAML absence spelling declare a
+    one-element scope naming the file `~` — a behaviour change facing every task note in the repo.
+
+    **Measured, and the mechanism does not reach my predicate.** YAML resolves unquoted `~`,
+    `null`, `Null`, `NULL` and an empty value to Python `None` before any of this code runs, and
+    `None` is absent on the first line of the predicate. Only an explicitly QUOTED `"~"` becomes a
+    declaration, which is the deliberate case: quoting it is how an author says they mean the
+    string.
+
+    The finding's other half was right and is why this row exists — nothing pinned it, so the
+    question could not be answered from the diff. It parses real YAML rather than passing Python
+    values in, because the claim is about what a note AUTHOR writes, and substituting the parsed
+    value would assume the very step in question.
+
+    **The end-to-end assertion alone would pin nothing, so the predicate is asserted directly.**
+    `_field_is_absent` and `_coerce_scope_ref_list` BOTH map `None` to an empty scope, so either
+    one can be broken while the outcome stays correct — measured: making the predicate treat
+    `None` as present leaves this file green, and so does making the coercion turn `None` into a
+    declaration. Two mitigations for one hazard, which is a design smell in its own right and is
+    exactly why an outcome-only row here would read as coverage it does not provide.
+    """
+    document = yaml.safe_load(f"mutation_scope_refs: {spelling}\n")
+    value = document["mutation_scope_refs"]
+    assert value is None, "YAML must resolve this spelling to None before the predicate sees it"
+
+    assert _field_is_absent("mutation_scope_refs", value) is True, (
+        "the field-specific predicate must keep None absent; the coercion below would mask a "
+        "regression here, so it is asserted at the site that decides it"
+    )
+    assert _coerce_scope_ref_list(value) == [], (
+        "and the coercion independently, since the predicate above would mask a regression here"
+    )
+
+    payload = _dispatchable_metadata()
+    payload["mutation_scope_refs"] = value
+    assert list(validate_route_metadata(payload).mutation_scope_refs) == []
+
+
+def test_a_quoted_tilde_is_a_declaration_because_quoting_is_how_you_say_so() -> None:
+    """The deliberate counterpart: `mutation_scope_refs: "~"` names a subject and survives."""
+    document = yaml.safe_load('mutation_scope_refs: "~"\n')
+    assert document["mutation_scope_refs"] == "~", "quoting must keep it a string"
+
+    payload = _dispatchable_metadata()
+    payload["mutation_scope_refs"] = document["mutation_scope_refs"]
+    assert list(validate_route_metadata(payload).mutation_scope_refs) == ["~"]
