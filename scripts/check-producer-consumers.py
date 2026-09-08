@@ -4130,8 +4130,16 @@ class _BlockScanner:
                 # local `list` is enough to make the call not-proven, the same rule the constant
                 # resolver already applies: deciding one branch on another's binding is how a
                 # shadow gets spent as a builtin.
+                # POSITION matters as much as the callee. `list` iterates its first positional
+                # argument and nothing else, so `dict(payload=(gen))` and `max([1],
+                # default=(gen))` iterate nothing at all — both reproduced certifying a phantom
+                # writer without shadowing anything (review finding, codex, at `5e5331e7c`).
+                # Marking every argument of a proven consumer was a second name-shaped
+                # over-approximation sitting behind the first one I had just repaired.
                 if (
                     isinstance(argument, ast.GeneratorExp)
+                    and node.args
+                    and argument is node.args[0]
                     and states
                     and all(
                         _call_consumes_generator_argument(
@@ -4331,7 +4339,9 @@ class _BlockScanner:
                 # A constant EMPTY iterable yields nothing, so nothing after it evaluates —
                 # checked BEFORE the filters, because Python evaluates no filter for an
                 # iterable that produces no element.
-                known, constant = _literal_operand(generator.iter)
+                # Resolver here too: `def empty(): return []` supplying the iterable is the same
+                # case as the filter above, and was named in the same finding.
+                known, constant = _literal_operand(generator.iter, self._constant_resolver(inner))
                 if (
                     known
                     and isinstance(constant, (list, tuple, set, frozenset, dict, str, bytes))
@@ -4343,13 +4353,30 @@ class _BlockScanner:
                     self._scan_expression(condition, inner)
                     # A constant-false filter admits nothing, so nothing after it evaluates.
                     #
-                    # No resolver is passed here, deliberately. The walker could supply one — it
-                    # is the same object the BoolOp and IfExp sites use — and a filter calling a
-                    # uniquely bound constant helper would then decide. That is a widening of the
-                    # same candidate, not part of it, and this row is returned for checking
-                    # before adoption; extending its reach unasked is how a bounded change stops
-                    # being reviewable. Left as a stated limit rather than an oversight.
-                    known, constant = _literal_operand(condition)
+                    # The resolver IS passed now. An earlier revision withheld it and said so in
+                    # a comment — "a widening of the same candidate, not part of it... left as a
+                    # stated limit rather than an oversight". The limit was real and the code
+                    # spent the unknown as permission to certify anyway: `def stop(): return
+                    # False` followed by `[open(...) for _ in [1] if stop()]` produced a bounded
+                    # writer and absorbed its orphan reader (review finding, codex, at
+                    # `5e5331e7c`). A limit stated beside code that proceeds regardless is the
+                    # defect, not a bound — the same shape as three other comments repaired
+                    # today.
+                    #
+                    # A comparison is decided too: `if 1 == 2` is not an `ast.Constant`, so
+                    # `_literal_operand` alone never folded it, while the module has carried
+                    # `_comparison_outcome` for exactly this since the chain repair.
+                    known, constant = _literal_operand(condition, self._constant_resolver(inner))
+                    if (
+                        not known
+                        and isinstance(condition, ast.Compare)
+                        and (len(condition.ops) == 1)
+                    ):
+                        outcome = _comparison_outcome(
+                            condition.left, condition.ops[0], condition.comparators[0]
+                        )
+                        if outcome is not None:
+                            known, constant = True, outcome
                     if known and not constant:
                         body_runs = False
                         break

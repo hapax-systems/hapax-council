@@ -518,7 +518,63 @@ COMPREHENSION_NEVER_RUNS = (
         "consumed_body_conditional_arm",
         "[open('artifacts/never.json', 'w', closefd=False) if x else None for x in [False]]",
     ),
+    # POSITION, not just callee. A proven consumer iterates its FIRST POSITIONAL argument and
+    # nothing else, so neither of these iterates anything — and neither shadows a builtin, which
+    # is what makes them independent of the shadowing rows above.
+    (
+        "proven_consumer_keyword_argument",
+        "dict(payload=(open('artifacts/never.json', 'w', closefd=False) for _ in [1]))",
+    ),
+    (
+        "proven_consumer_default_keyword",
+        "max([1], default=(open('artifacts/never.json', 'w', closefd=False) for _ in [1]))",
+    ),
+    # The three shapes the clause handlers could decide and were not being given the means to.
+    # Distinct from the literal `False` and literal-empty rows above: here the constant arrives
+    # through a uniquely bound helper or a comparison, and the handler was told not to look.
+    (
+        "filter_from_a_constant_helper",
+        "def stop():\n"
+        "    return False\n"
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in [1] if stop()]",
+    ),
+    (
+        "filter_from_a_comparison",
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in [1] if 1 == 2]",
+    ),
 )
+
+#: Named gap, not silence. `def empty(): return []` supplying a comprehension's iterable is the
+#: third shape in codex's 2026-09-08 filter/iterable critical, and it is the one still open. The
+#: clause now asks the resolver — measured — and the resolver still answers "not established"
+#: for this helper, while `def stop(): return False` in the filter position resolves. So the gap
+#: is in the helper-return channel rather than in the clause handler I repaired: `_literal_operand`
+#: folds a bare `[]` correctly, and JSON round-trips a list, so the break is somewhere between
+#: `_helper_return_summary` registering a list-returning helper and `_returned_constant` reading
+#: it back. Carried as a strict xfail so it fails the moment it starts working, rather than
+#: sitting green: the same marker caught the frame row's repair the moment it landed today.
+COMPREHENSION_NEVER_RUNS_OPEN = (
+    (
+        "iterable_from_a_constant_helper",
+        "def empty():\n"
+        "    return []\n"
+        "[open('artifacts/never.json', 'w', closefd=False) for _ in empty()]",
+    ),
+)
+
+
+@pytest.mark.xfail(strict=True, reason="open: list-returning helper not resolved by the channel")
+@pytest.mark.parametrize(
+    ("name", "body"),
+    COMPREHENSION_NEVER_RUNS_OPEN,
+    ids=[row[0] for row in COMPREHENSION_NEVER_RUNS_OPEN],
+)
+def test_a_comprehension_body_that_never_runs_certifies_nothing_open(gate, tmp_path, name, body):
+    writers, orphans = observed(
+        gate, tmp_path, f"{body}\nPath('artifacts/never.json').read_text()\n"
+    )
+    assert writers == set(), f"{name}: certified a writer whose comprehension body never runs"
+    assert "artifacts/never.json" in orphans, f"{name}: the orphan reader must survive"
 
 
 @pytest.mark.parametrize(
