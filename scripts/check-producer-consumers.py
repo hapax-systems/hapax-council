@@ -7064,12 +7064,25 @@ def _finding_line(finding: ConsumerSideFinding) -> str:
     readers = ",".join(f"{reader.path}:{reader.lineno}" for reader in finding.readers[:3])
     candidates = ", ".join(_writer_label(item) for item in finding.writers[:3]) or "none"
     detail = f" {finding.detail}" if finding.detail else ""
-    next_action = (
-        "model the named callee's file-access semantics, then rerun"
-        if finding.kind == "consumer-reads-through-unmodelled-api"
-        else "bind the consumer to a live producer output or add a reasoned "
-        "kind=consumer_side allowlist entry"
-    )
+    # **The next action has to belong to the KIND, and for the new one it did not.** The weaker
+    # finding's detail said the writer was located and its execution undetermined, and then this
+    # line told the reader to "bind the consumer to a live producer output" — the one instruction
+    # the coordinator ruled out for it, because the producer already exists and is named right
+    # there in `nearest-writers`. A remedy that contradicts its own diagnosis two fields later is
+    # worse than a generic one (review finding, root, at `7a4b8ceaf`).
+    if finding.kind == "consumer-reads-through-unmodelled-api":
+        next_action = "model the named callee's file-access semantics, then rerun"
+    elif finding.kind == "consumer-reads-artifact-with-unresolved-writer":
+        next_action = (
+            "decide the guard or source that leaves the named writer's execution undetermined, "
+            "or record that the reader tolerates the artifact being absent; do NOT add a "
+            "producer — one is named above"
+        )
+    else:
+        next_action = (
+            "bind the consumer to a live producer output or add a reasoned "
+            "kind=consumer_side allowlist entry"
+        )
     return (
         f"[REPORT] {finding.kind} readers={finding.reader_count} reader-sites={readers} "
         f"read={finding.reader.pattern} nearest-writers={candidates}{detail} "

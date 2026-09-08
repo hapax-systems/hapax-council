@@ -1237,6 +1237,41 @@ def test_the_report_distinguishes_absence_from_undetermined_execution(
     assert kinds == ({expected_kind} if expected_kind else set()), name
 
 
+def test_the_rendered_line_does_not_contradict_its_own_diagnosis(gate, tmp_path):
+    """The RENDERED line, not the detail field — which is where the contradiction was.
+
+    The detail said the writer was located and its execution undetermined; the line then ended
+    `next-action=bind the consumer to a live producer output`, the one instruction ruled out for
+    this kind, because the producer already exists and is printed in the same line under
+    `nearest-writers`. My controls read the detail and the finding kind and never the rendered
+    output, so nothing caught it (review finding, root, at `7a4b8ceaf`).
+    """
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "example.py").write_text(
+        "from pathlib import Path\n"
+        f"[x or {W_ACTUAL} for x in [True, True]]\n"
+        "Path('artifacts/actual.json').read_text()\n"
+    )
+    gate.collect_artifact_accesses(tmp_path)
+    report = gate.analyse_consumer_side(tmp_path, [])
+    finding = next(
+        item
+        for item in report.findings
+        if item.kind == "consumer-reads-artifact-with-unresolved-writer"
+    )
+
+    line = gate._finding_line(finding)  # noqa: SLF001
+    assert "bind the consumer to a live producer output" not in line, (
+        "the weaker finding must not be told to add a producer it has just named"
+    )
+    assert "next-action=" in line and "undetermined" in line
+    # The named candidate must survive into the rendered line as well as the object, since the
+    # next action tells the reader to look at it.
+    assert "example.py:2" in line
+
+
 def test_the_weaker_finding_names_its_candidate_writers_and_keeps_the_reader(gate, tmp_path):
     """Not a suppression: readers, their count, and the ACTUAL candidate sites all survive.
 
@@ -1271,17 +1306,57 @@ def test_the_weaker_finding_names_its_candidate_writers_and_keeps_the_reader(gat
     )
 
 
-def test_the_new_kind_has_its_own_allowlist_domain(gate):
-    """An old exact `unwritten` exemption must not silently exempt the new finding.
+@pytest.mark.parametrize(
+    ("entry_kind", "expect_exempt"),
+    (
+        # An exemption written for the OLD kind must not reach the new one.
+        ("consumer-reads-unwritten-artifact", False),
+        # And the twin, without which the row above would pass on a broken filter: the exemption
+        # written for the NEW kind must actually take effect.
+        ("consumer-reads-artifact-with-unresolved-writer", True),
+    ),
+    ids=["old_kind_entry_does_not_exempt", "new_kind_entry_does_exempt"],
+)
+def test_the_new_kind_has_its_own_allowlist_domain(gate, tmp_path, entry_kind, expect_exempt):
+    """Through the real filter, not through two strings I typed.
 
-    The allowlist key is `{kind}:{pattern}`, so the domains are distinct by construction — this
-    row is what stops a later refactor from keying on the pattern alone.
+    The first version of this row asserted that two hardcoded keys differ, which is a fact about
+    my typing and not about `is_allowlisted` — it would have passed against any filter, including
+    one that ignored the kind entirely (review finding, root, at `7a4b8ceaf`). It now runs
+    `analyse_consumer_side` with a real entry and reads which side of the report the finding
+    lands on, and the parametrised twin is what keeps it from passing on a filter that exempts
+    nothing at all.
     """
 
-    assert "consumer-reads-artifact-with-unresolved-writer" in gate.CONSUMER_SIDE_KINDS
-    unwritten = "consumer-reads-unwritten-artifact:artifacts/actual.json"
-    unresolved = "consumer-reads-artifact-with-unresolved-writer:artifacts/actual.json"
-    assert unwritten != unresolved
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "example.py").write_text(
+        "from pathlib import Path\n"
+        f"[x or {W_ACTUAL} for x in [True, True]]\n"
+        "Path('artifacts/actual.json').read_text()\n"
+    )
+    gate.collect_artifact_accesses(tmp_path)
+    allowlist = [
+        gate.AllowlistEntry(f"{entry_kind}:artifacts/actual.json", "control", "consumer_side")
+    ]
+    report = gate.analyse_consumer_side(tmp_path, allowlist)
+
+    reported = {
+        finding.kind
+        for finding in report.findings
+        for reader in finding.readers
+        if reader.pattern == "artifacts/actual.json"
+    }
+    exempted = {
+        finding.kind
+        for finding, _entry in report.allowlisted
+        if finding.reader.pattern == "artifacts/actual.json"
+    }
+    target = "consumer-reads-artifact-with-unresolved-writer"
+    if expect_exempt:
+        assert target in exempted and target not in reported
+    else:
+        assert target in reported and target not in exempted
 
 
 class _LegacyIterable:
