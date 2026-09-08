@@ -908,6 +908,38 @@ def test_row_r2b_an_unexpandable_scope_ref_is_also_an_actionable_refusal(tmp_pat
     )
 
 
+def test_row_r2c_an_unreadable_checkout_anchor_is_also_an_actionable_refusal(tmp_path, monkeypatch):
+    """R2c: the statement immediately after R2b's, which R2b's repair did not reach.
+
+    Anchoring a RELATIVE scope ref asks `exists()`/`is_symlink()` of the council and vault
+    checkouts, and those fail on their own terms — a permission fault on an ancestor, a symlink
+    loop. That selection sat outside the refusal contract while the expansion above it and the
+    `is_dir` check below it were both inside (review finding, codex, at `81962feab`).
+
+    **Fifth instance of this family, and the first one I caused.** R2b converted `expanduser`
+    four commits earlier and its docstring says, of R2's identical lesson, that noting a pattern
+    is not searching for its other members. I wrote that sentence and then did not read the next
+    statement in the same function.
+    """
+    real_exists = pathlib.Path.exists
+
+    def refusing_exists(self, *args, **kwargs):
+        if self.name == "selected.txt":
+            raise PermissionError(13, "Permission denied")
+        return real_exists(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "exists", refusing_exists)
+
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.resolve_scope_ref(
+            "selected.txt/inner.md", council_root=tmp_path, vault_root=tmp_path / "vault"
+        )
+
+    assert "cannot choose a checkout anchor" in str(caught.value)
+    assert caught.value.remedy, "a refusal must name its remedy"
+    assert "absolute path" in caught.value.remedy
+
+
 def test_row_r3_a_relative_declared_file_resolves_against_a_present_vault(tmp_path, monkeypatch):
     """R3: the positive counterpart, and the reason R2 must control its binding.
 

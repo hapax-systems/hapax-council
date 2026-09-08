@@ -1299,14 +1299,38 @@ def resolve_scope_ref(ref: str, *, council_root: Path, vault_root: Path) -> tupl
         # a file that may not exist yet (the work is about to create it), so the decision is made
         # on the nearest ancestor, never on the leaf.
         first = Path(segments[0]) if segments else Path(".")
-        base = next(
-            (
-                b
-                for b in (council_root, vault_root)
-                if (b / first).exists() or (b / first).is_symlink()
-            ),
-            council_root,
-        )
+        # `exists()` and `is_symlink()` are filesystem questions and fail on their own terms — a
+        # permission fault on an ancestor, or a symlink loop — and this selection sat OUTSIDE the
+        # refusal contract while the expansion immediately above it and the `is_dir` check
+        # immediately below it were both inside (review finding, codex, at `81962feab`).
+        #
+        # **Fifth instance of this family, and I made this one.** I converted `expanduser` four
+        # commits ago for exactly this reason and did not read the next statement in the same
+        # function. R2b's docstring says noting a pattern is not searching for its other members;
+        # this is that sentence costing a fifth round rather than being acted on.
+        #
+        # Its own cause and remedy, not folded into `_unresolved_scope_component`: choosing the
+        # anchor is a different failure from resolving a component, and one message for two
+        # conditions names the wrong repair for half the cases.
+        try:
+            base = next(
+                (
+                    b
+                    for b in (council_root, vault_root)
+                    if (b / first).exists() or (b / first).is_symlink()
+                ),
+                council_root,
+            )
+        except (OSError, RuntimeError) as exc:
+            error = UndecidableScopeContainment(
+                f"cannot choose a checkout anchor for relative scope ref {ref!r}: {exc}; "
+                "containment is undecidable"
+            )
+            error.remedy = (
+                f"repair filesystem access for {council_root} and {vault_root}, or declare "
+                f"{ref!r} as an absolute path in mutation_scope_refs, then retry the dispatch"
+            )
+            raise error from exc
         path = base / path
     # Keep entries below the root lexical, as fs.glob does. A member comparison checks symlinks
     # against that member's root; resolving here would erase the very entry it enumerated.
@@ -2738,6 +2762,30 @@ def ref_within_member(
     # independently admitted — a partial scope reported as a total one (review finding, codex,
     # 2026-09-07, on my own round-41 repair). So the aliases join the surface and the existing
     # partial-scope rules decide, which is what they are for.
+    aliased = tuple(
+        target
+        for entry, target in expansions.items()
+        if not entry.is_dir() and target not in identity_surface
+    )
+    # OPEN, raised 2026-09-08 and deliberately not resolved here (review finding, codex, at
+    # `81962feab`: "current hard-link expansions incorrectly prove whole-scope containment").
+    # The `all(...)` below declares the whole scope contained whenever every file the directory
+    # happens to hold TODAY is a selection or an alias of one. Measured on one arrangement:
+    #
+    #     aliased/          -> ref_within_member False   (partial, admits)
+    #     aliased/*.txt     -> ref_within_member True    (wholly inside, refuses)
+    #
+    # One arrangement, two spellings, opposite answers — the shape row P7 exists to catch. It
+    # also contradicts a rule stated 35 lines above in this same function: *existing files can
+    # disprove containment, but cannot establish the proof.*
+    #
+    # It is NOT repaired here, because the repair is a policy change and not mine to make. The
+    # coordinator's 2026-09-08 ruling that effect scope is PROSPECTIVE covers the DIRLIKE case
+    # and would extend to this one; but rows P7 (`only-the-alias`) and P8 (`both-aliases`) pin
+    # the current answer, and making the change turns P7 from refusal to admission and P8 from a
+    # definite answer to undecidable. Loosening two committed controls on my own reading of a
+    # ruling about an adjacent spelling is the withdrawn `aa5939179` error, and one family
+    # reporting a mechanism is not authority over a policy. Measured, reverted, and referred.
     aliased = tuple(
         target
         for entry, target in expansions.items()
