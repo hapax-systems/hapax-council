@@ -144,6 +144,74 @@ class UndecidableScopeContainment(NonCanonicalScopeRef):
     )
 
 
+class DuplicateGoverningKey(ValueError):
+    """A governing document repeated a key, so its own text does not say what it means."""
+
+
+def _reject_duplicate_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    seen: set[str] = set()
+    for key, _value in pairs:
+        if key in seen:
+            raise DuplicateGoverningKey(f"duplicate key {key!r}")
+        seen.add(key)
+    return dict(pairs)
+
+
+def _strict_json(text: str) -> object:
+    """`json.loads` that REFUSES a repeated key instead of keeping the last one.
+
+    **Last-wins is silent, and the last value is not the safe one.** A decay row carrying
+    `"verdict": "TRUE", "verdict": "FALSE"` parses to FALSE, so a scope that was refused at exit
+    10 becomes eligible at exit 0 — and nothing downstream can catch it, because the ambiguity is
+    gone before the matrix ever sees the document (review finding, codex, at `614dc6581`,
+    reproduced through `main()` with in-memory inputs).
+
+    `object_pairs_hook` is the only place the duplicate is still visible: it receives the pairs in
+    document order, at every nesting depth, before any dict is built.
+    """
+
+    return json.loads(text, object_pairs_hook=_reject_duplicate_pairs)
+
+
+class _StrictYAMLLoader(yaml.SafeLoader):
+    """`yaml.safe_load` with the same refusal. The PRODUCER already rejects duplicates here."""
+
+
+def _strict_yaml_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: bool = False):  # noqa: ANN201, FBT002
+    seen: set[object] = set()
+    for key_node, _value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in seen:
+            raise DuplicateGoverningKey(f"duplicate key {key!r}")
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+
+_StrictYAMLLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    lambda loader, node: _strict_yaml_mapping(loader, node),
+)
+
+
+def _strict_yaml(text: str) -> object:
+    """`yaml.load` here is NOT `yaml.unsafe_load` and does not widen the constructor table.
+
+    `_StrictYAMLLoader` subclasses `yaml.SafeLoader` and overrides exactly one constructor — the
+    default mapping — to refuse a duplicate key before delegating to `SafeLoader`'s own. Every
+    other tag, including `!!python/object`, is resolved by `SafeLoader` and refused by it. So the
+    reachable value domain is identical to `yaml.safe_load`'s.
+
+    **What would make that false**: rebasing this loader on `yaml.Loader` or `yaml.UnsafeLoader`,
+    or adding a constructor for a non-standard tag. Neither is done here, and the assertion below
+    fails loudly rather than silently if the first ever happens.
+    """
+
+    assert issubclass(_StrictYAMLLoader, yaml.SafeLoader), (
+        "the strict loader must stay a SafeLoader subclass; anything else widens the value domain"
+    )
+    return yaml.load(text, Loader=_StrictYAMLLoader)  # noqa: S506
+
+
 class FrameVerdictsUnavailable(RuntimeError):
     """The verdict set cannot be consulted; ``reason`` says why and ``remedy`` what to do."""
 
@@ -335,8 +403,11 @@ def current_epoch_dir(procedure_root: Path) -> Path:
             remedy=_producer_remedy(procedure_root),
         )
     try:
-        receipt = json.loads(publish_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # Decides whether the epoch was accepted for publication at all: `swapped is not True`
+        # refuses below. A repeated `"swapped": false, "swapped": true` would admit an epoch the
+        # producer rejected, which is the most direct of the seven.
+        receipt = _strict_json(publish_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateGoverningKey) as exc:
         raise FrameVerdictsUnavailable(
             f"{publish_path} is unreadable or malformed: {exc}",
             remedy=_producer_remedy(procedure_root),
@@ -526,7 +597,9 @@ def _producer_working_directory(epoch_dir: Path) -> Path:
         # DANGLING symlink stays on the absent side: `stat` reports ENOENT for it, and treating
         # a decided-absent target as unknown would be widening past what was reported.
         if _classified_exists(hypothesis):
-            payload = json.loads(hypothesis.read_text(encoding="utf-8"))
+            # Decides the producer working directory every member location resolves against — the
+            # same value whose unreadability redirected a root two commits ago.
+            payload = _strict_json(hypothesis.read_text(encoding="utf-8"))
             environment = payload.get("iteration", {}).get("environment", {})
             if "cwd" in environment:
                 raw = environment["cwd"]
@@ -825,7 +898,11 @@ def _load_content_query(
             raise ValueError("location.match must be substring or word")
         if "\n" in query or "\r" in query or (insensitive and not query.isascii()):
             raise ValueError("multiline or non-ASCII case-insensitive query is unsupported")
-        profile = yaml.safe_load((procedure_root / "declaration/params.yaml").read_text("utf-8"))
+        # The declaration profile whose digest is compared against the epoch's. The PRODUCER
+        # already rejects duplicates here, so accepting them on the consumer side let the two
+        # sides disagree about what the same bytes say. The handler below already catches
+        # `ValueError`, which `DuplicateGoverningKey` is, so no clause needs widening.
+        profile = _strict_yaml((procedure_root / "declaration/params.yaml").read_text("utf-8"))
         hypothesis = epoch_dir / "hypothesis.json"
         # **The SECOND site of the same suppression, and the one codex's wording pointed at.**
         # gemini and glm wrote "bypasses evidence binding" and codex wrote "bypasses PROFILE
@@ -838,7 +915,9 @@ def _load_content_query(
         # The rule is the one this file keeps relearning: repair the site a finding cites and the
         # neighbours keep the defect.
         if _classified_exists(hypothesis):
-            recorded = json.loads(hypothesis.read_text("utf-8")).get("iteration", {})
+            # Supplies the `parameter_profile_digest` compared against the declaration's. A
+            # duplicate here chooses which digest the comparison sees.
+            recorded = _strict_json(hypothesis.read_text("utf-8")).get("iteration", {})
             digest = recorded.get("parameter_profile_digest")
             canonical = json.dumps(
                 profile, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -985,8 +1064,10 @@ def _load_epoch_verdicts(
         )
     elements_path = epoch_dir / "elements.json"
     try:
-        elements = json.loads(elements_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # The verdicts themselves. A repeated `verdict` key here is the whole finding: last-wins
+        # turns a TRUE decay into FALSE, and a refused scope into an eligible one.
+        elements = _strict_json(elements_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateGoverningKey) as exc:
         raise FrameVerdictsUnavailable(
             f"{elements_path} is unreadable or malformed: {exc}"
         ) from exc
@@ -1032,8 +1113,10 @@ def _load_epoch_verdicts(
 
     mass_path = root / "declaration" / "mass.yaml"
     try:
-        mass = yaml.safe_load(mass_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        # The members the verdicts are ABOUT. A duplicate here re-points a verdict at a different
+        # declared surface, which is the same admission flip by another route.
+        mass = _strict_yaml(mass_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, DuplicateGoverningKey) as exc:
         raise FrameVerdictsUnavailable(f"{mass_path} is unreadable or malformed: {exc}") from exc
     members = mass.get("members") if isinstance(mass, dict) else None
     if not isinstance(members, list):
@@ -1077,8 +1160,10 @@ def _load_epoch_verdicts(
         )
     epoch_identities: dict[str, str] = {}
     try:
-        coverage_rows = json.loads(coverage_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # What binds the verdicts to the declaration they were computed against. A duplicate here
+        # rebinds that association silently.
+        coverage_rows = _strict_json(coverage_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, DuplicateGoverningKey) as exc:
         raise FrameVerdictsUnavailable(
             f"{coverage_path} is unreadable or malformed: {exc}; the verdicts cannot be bound "
             "to the declaration they were computed against"

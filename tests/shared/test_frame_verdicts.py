@@ -628,6 +628,71 @@ def test_a_colon_bearing_relative_root_refuses_when_no_anchor_is_available(
     assert "run the frame producer" in caught.value.remedy
 
 
+# **Last-wins is silent, and the value it keeps is not the safe one.** A decay row carrying
+# `"verdict": "TRUE", "verdict": "FALSE"` parses to FALSE under both parsers, so a scope refused at
+# exit 10 becomes eligible at exit 0 — and the ambiguity is gone before any validation sees the
+# document, so nothing downstream can detect it.
+DUPLICATE_KEY_INPUTS = (
+    ("json_flat", "json", '{"verdict": "TRUE", "verdict": "FALSE"}'),
+    ("json_nested", "json", '{"row": {"verdict": "TRUE", "verdict": "FALSE"}}'),
+    ("json_in_a_list", "json", '[{"verdict": "TRUE", "verdict": "FALSE"}]'),
+    ("yaml_flat", "yaml", "verdict: TRUE\nverdict: FALSE\n"),
+    ("yaml_nested", "yaml", "row:\n  verdict: TRUE\n  verdict: FALSE\n"),
+    ("yaml_in_a_list", "yaml", "- verdict: TRUE\n  verdict: FALSE\n"),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "parser", "text"), DUPLICATE_KEY_INPUTS, ids=[row[0] for row in DUPLICATE_KEY_INPUTS]
+)
+def test_a_governing_document_that_repeats_a_key_is_refused(
+    name: str, parser: str, text: str
+) -> None:
+    """Nesting matters: the hook must see pairs at every depth, not only at the top."""
+
+    load = fv._strict_json if parser == "json" else fv._strict_yaml  # noqa: SLF001
+    with pytest.raises(fv.DuplicateGoverningKey):
+        load(text)
+    # The oracle beside it: the stock parsers accept these and keep the LAST value, which is what
+    # makes the refusal necessary rather than fastidious.
+    stock = json.loads(text) if parser == "json" else yaml.safe_load(text)
+    assert stock is not None, name
+
+
+@pytest.mark.parametrize(
+    ("name", "parser", "text"),
+    (
+        ("json_clean", "json", '{"verdict": "TRUE"}'),
+        ("yaml_clean", "yaml", "verdict: TRUE\n"),
+        ("json_repeated_across_siblings", "json", '[{"verdict": "TRUE"}, {"verdict": "FALSE"}]'),
+        ("yaml_repeated_across_siblings", "yaml", "- verdict: TRUE\n- verdict: FALSE\n"),
+    ),
+    ids=["json_clean", "yaml_clean", "json_siblings", "yaml_siblings"],
+)
+def test_a_key_repeated_across_SIBLINGS_is_not_a_duplicate(
+    name: str, parser: str, text: str
+) -> None:
+    """The twin that keeps the refusal from becoming a blanket.
+
+    Two mappings each carrying `verdict` is ordinary and must parse. A check that counted keys
+    across the whole document rather than within one mapping would redden these.
+    """
+
+    load = fv._strict_json if parser == "json" else fv._strict_yaml  # noqa: SLF001
+    assert load(text) is not None, name
+
+
+def test_the_strict_yaml_loader_still_refuses_an_unsafe_tag() -> None:
+    """`yaml.load` with a custom Loader is the dangerous SHAPE, so the safety is asserted.
+
+    `_StrictYAMLLoader` subclasses `SafeLoader` and overrides one constructor, so the reachable
+    value domain is unchanged — but that is a claim, and this is the measurement.
+    """
+
+    with pytest.raises(yaml.YAMLError):
+        fv._strict_yaml("!!python/object:os.system {}")  # noqa: SLF001
+
+
 def _fault_once(monkeypatch: pytest.MonkeyPatch, operation: str, name: str, index: int) -> dict:
     """Fault `operation` ONCE, at the INDEXth call touching `name`, then let it recover.
 
