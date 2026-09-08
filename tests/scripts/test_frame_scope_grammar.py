@@ -53,6 +53,7 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
 
 import pytest
 import yaml
@@ -3120,6 +3121,91 @@ def test_row_s2v_the_selected_file_classifier_is_the_one_production_actually_cal
         "the member enumeration must classify its selected entries through the unsuppressed "
         f"classifier; it called it for {calls}"
     )
+
+
+def test_row_s2w_each_converted_classifier_is_the_one_its_caller_actually_calls(
+    tmp_path, monkeypatch
+):
+    """S2w: CALLER OBLIGATION, stated separately from end-to-end reachability.
+
+    Three conversions — `ref_within_member`'s candidate and the two in
+    `_refuse_in_root_alias_reaching_surface` — are measured UNPINNED end-to-end: reverting each
+    leaves every control green, because `resolve(strict=True)` upstream refuses on the same
+    fault first. That is a fact about reachability, and the coordinator's instruction is to hold
+    the caller's obligation as a separate claim rather than let one absorb the other.
+
+    So this row asserts what the call sites do, not what a fault reaches: each converted site
+    calls the unsuppressed classifier, on the path it is deciding about. A revert to the native
+    method makes the recorder see nothing and reddens the row — which is the discrimination the
+    stage-triggered and steady faults could not supply, obtained without weakening the earlier
+    refusal that intercepts them.
+
+    The absent twins are here because the obligation has two halves: the classifier must be
+    called, AND absence must remain a decided negative rather than becoming an error.
+
+    **Calls are attributed to the CALLING FUNCTION, and the first draft was not.** Recording only
+    "was this classifier called with this path" passed with the site reverted, because another
+    already-converted site classified the same path moments later. A caller obligation that any
+    caller can satisfy is not a caller obligation — the fifth row today that measured something
+    other than what it named, and again caught only because a mutation failed to redden it.
+
+    **Two of the three conversions are covered here; the third is not, and that is the report.**
+    `_refuse_in_root_alias_reaching_surface`'s `canonical_is_file` sits behind a
+    `scope_pattern is None` guard, and across four constructed arrangements — root and in-root
+    alias, with and without a pattern, matching and non-matching — the function is either not
+    entered or returns before that branch. So that site has **no demonstrated obligation at
+    all**, end-to-end or caller-level, and reaching it would mean relaxing a guard to arrive at
+    a chosen branch. It stays a review candidate with that stated rather than an assumed one.
+    """
+    root = tmp_path / "member"
+    root.mkdir()
+    (root / "leaf.txt").write_bytes(b"NEEDLE\n")
+    target, alias = tmp_path / "gawk", tmp_path / "awk"
+    target.touch()
+    alias.symlink_to(target.name)
+
+    seen: dict[str, list[tuple[str, str]]] = {"is_dir": [], "is_file": [], "exists": []}
+    originals = {
+        "is_dir": fv._classified_is_dir,
+        "is_file": fv._classified_is_file,
+        "exists": fv._classified_exists,
+    }
+
+    synthetic = {"<genexpr>", "<listcomp>", "<setcomp>", "<dictcomp>", "<lambda>"}
+
+    def recorder(name: str):
+        def probe(entry):  # noqa: ANN001, ANN202
+            # Walk past synthetic frames: the anchor call sits inside a generator expression, so
+            # the immediate frame is `<genexpr>` and naming it would attribute the call to the
+            # comprehension rather than to the function that owns the decision.
+            frame = sys._getframe(1)  # noqa: SLF001
+            while frame is not None and frame.f_code.co_name in synthetic:
+                frame = frame.f_back
+            caller = frame.f_code.co_name if frame is not None else "?"
+            seen[name].append((caller, str(entry)))
+            return originals[name](entry)
+
+        return probe
+
+    for name in originals:
+        monkeypatch.setattr(fv, f"_classified_{name}", recorder(name))
+
+    literal = fv.DecayedMember("m", "scope_exited", (tmp_path,), ("gawk",), ())
+    fv.ref_within_member(tmp_path, True, literal, scope_pattern="[a]wk")
+    assert ("ref_within_member", str(alias)) in seen["is_dir"], (
+        f"the candidate classification must be made by ref_within_member; saw {seen['is_dir']}"
+    )
+
+    fv.resolve_scope_ref("member/leaf.txt", council_root=tmp_path, vault_root=tmp_path / "vault")
+    assert ("resolve_scope_ref", str(root)) in seen["exists"], (
+        f"anchor selection must be made by resolve_scope_ref; saw {seen['exists']}"
+    )
+
+    # Absence stays a decided negative in all three, under the real operation.
+    missing = tmp_path / "not-here"
+    assert originals["is_dir"](missing) is False
+    assert originals["is_file"](missing) is False
+    assert originals["exists"](missing) is False
 
 
 def test_row_s2t_the_observed_glob_reads_no_more_than_the_plain_one(tmp_path):
