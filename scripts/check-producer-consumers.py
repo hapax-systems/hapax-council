@@ -499,6 +499,16 @@ CONSUMER_SIDE_ARM = "HAPAX_CONSUMER_SIDE_PRODUCER_BINDING_GATE=1"
 CONSUMER_SIDE_REPORT_LIMIT = 25
 CONSUMER_SIDE_KINDS = (
     "consumer-reads-unwritten-artifact",
+    # **A resolved-path writer whose EXECUTION is uncertain is not an absent one.** The report
+    # used to say "unwritten" for an artifact whose writer this scanner had located precisely and
+    # then declined to certify — an unqualified absence asserted on top of a recorded doubt.
+    # Neither existing weak kind fits: the path is resolved, the root is not dynamic, and the
+    # reader's API is modelled; what is unknown is only whether the site runs.
+    #
+    # Additive, and deliberately NOT a suppression: the reader, its count and its candidate
+    # writer sites are all still reported. It creates no bounded pair and certifies no
+    # production (coordinator direction, 2026-09-08).
+    "consumer-reads-artifact-with-unresolved-writer",
     "consumer-reads-through-unmodelled-api",
     "consumer-reads-artifact-under-dynamic-root",
     "consumer-reads-artifact-with-non-python-producer",
@@ -6860,6 +6870,15 @@ def analyse_consumer_side(
             for writer in writes
             if writer.bounded and _accesses_match(representative, writer)
         ]
+        # The SAME artifact-identity relation, on the writers this scanner located and then
+        # declined to certify. Not a basename test and not "any unknown writer anywhere" —
+        # either of those would let an uncertain unrelated writer clear a definite unmatched
+        # reader, which is the failure the same-basename control below exists to catch.
+        uncertain_matching = [
+            writer
+            for writer in writes
+            if not writer.bounded and _accesses_match(representative, writer)
+        ]
         unmodelled = tuple(reader for reader in reader_sites if not reader.modelled)
         if unmodelled:
             kind = "consumer-reads-through-unmodelled-api"
@@ -6895,6 +6914,22 @@ def analyse_consumer_side(
                 kind = "consumer-reads-artifact-documented-elsewhere"
                 detail = f"documented-elsewhere={','.join(documented_mentions)}"
                 nearest = _nearest_writers(representative, writes)
+            elif uncertain_matching:
+                # Last before the absence verdict, so the classifications that carry their own
+                # honest uncertainty keep it: a dynamic root, a non-Python producer and a
+                # documented-elsewhere mention are all decided above and are not narrowed here.
+                # This branch refines only the bare "nothing writes it" case, which is the one
+                # that was asserting more than the evidence held.
+                kind = "consumer-reads-artifact-with-unresolved-writer"
+                detail = (
+                    "writer located and not certified; execution of the write site is "
+                    f"undetermined (candidates={len(uncertain_matching)}); "
+                    "resolve the guard or the source that makes the site undecidable, or "
+                    "confirm the reader tolerates the artifact being absent"
+                )
+                # The ACTUAL candidate sites, not the nearest-by-distance guess used for a true
+                # absence: here the writers are known, and naming them is the whole point.
+                nearest = tuple(uncertain_matching[:3])
             else:
                 kind = "consumer-reads-unwritten-artifact"
                 detail = "searched=python-writers, non-python-mentions, docs, config, systemd"
@@ -7158,6 +7193,8 @@ def print_consumer_side_report(report: ConsumerSideReport, report_path: Path) ->
         f"status={'incomplete' if report.errors else 'complete'} "
         f"findings={len(report.findings)} "
         f"consumer-reads-unwritten-artifact={counts['consumer-reads-unwritten-artifact']} "
+        "consumer-reads-artifact-with-unresolved-writer="
+        f"{counts['consumer-reads-artifact-with-unresolved-writer']} "
         "consumer-reads-through-unmodelled-api="
         f"{counts['consumer-reads-through-unmodelled-api']} "
         "consumer-reads-artifact-under-dynamic-root="

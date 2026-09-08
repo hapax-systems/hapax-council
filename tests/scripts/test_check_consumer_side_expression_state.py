@@ -124,6 +124,24 @@ def observed(gate, tmp_path: Path, body: str) -> tuple[set[str], set[str]]:
     return writers, orphans
 
 
+def reported_readers(gate, tmp_path: Path, body: str) -> set[str]:
+    """Readers that survive into ANY consumer-side finding, whatever its kind.
+
+    `observed` reads only `consumer-reads-unwritten-artifact`, which is the right question for a
+    decided absence and the wrong one for a site whose execution is merely undetermined — those
+    now report `consumer-reads-artifact-with-unresolved-writer`. The rows below care that the
+    reader survived at all; `REPORT_BOUNDARY` is where WHICH kind it gets is pinned. Keeping the
+    two questions in two helpers is what stops the second from being blurred into the first.
+    """
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "example.py").write_text("from pathlib import Path\n" + body + "\n")
+    gate.collect_artifact_accesses(tmp_path)
+    report = gate.analyse_consumer_side(tmp_path, [])
+    return {reader.pattern for finding in report.findings for reader in finding.readers}
+
+
 def recorded(gate, tmp_path: Path, body: str) -> list:
     """Every access as recorded, `bounded` included — not just the certified ones.
 
@@ -778,13 +796,26 @@ COMPREHENSION_NEVER_RUNS = (
     ("name", "body"), COMPREHENSION_NEVER_RUNS, ids=[row[0] for row in COMPREHENSION_NEVER_RUNS]
 )
 def test_a_comprehension_body_that_never_runs_certifies_nothing(gate, tmp_path, name, body):
-    """Both halves, because certifying a phantom producer also swallows the orphan."""
+    """Both halves, because certifying a phantom producer also swallows the orphan.
 
-    writers, orphans = observed(
+    The reader is asserted through `reported_readers` rather than the unwritten kind alone: this
+    table mixes decided-dead rows with undecided-element ones, and since the report learned to
+    tell those apart the second group reports the weaker kind. The claim here has always been
+    that the reader SURVIVES; which classification it survives under is `REPORT_BOUNDARY`'s.
+    """
+
+    writers, _ = observed(gate, tmp_path, f"{body}\nPath('artifacts/never.json').read_text()\n")
+    assert writers == set(), f"{name}: certified a writer whose comprehension body never runs"
+
+
+@pytest.mark.parametrize(
+    ("name", "body"), COMPREHENSION_NEVER_RUNS, ids=[row[0] for row in COMPREHENSION_NEVER_RUNS]
+)
+def test_a_comprehension_body_that_never_runs_keeps_its_reader(gate, tmp_path, name, body):
+    readers = reported_readers(
         gate, tmp_path, f"{body}\nPath('artifacts/never.json').read_text()\n"
     )
-    assert writers == set(), f"{name}: certified a writer whose comprehension body never runs"
-    assert "artifacts/never.json" in orphans, f"{name}: the orphan reader must survive"
+    assert "artifacts/never.json" in readers, f"{name}: the orphan reader must survive"
 
 
 COMPREHENSION_RUNS = (
@@ -1120,6 +1151,137 @@ def test_an_ill_typed_comparison_really_does_raise(gate):
 
     with pytest.raises(TypeError):
         None < 1  # noqa: B015
+
+
+# THE REPORT BOUNDARY, held as a fixture rather than as prose. Each row is what the REPORT says
+# about `artifacts/actual.json` for one kind of write site, and the runtime column is what Python
+# does. The report used to say "unwritten" for an artifact whose writer it had located precisely
+# and then declined to certify — an unqualified absence asserted on top of a recorded doubt.
+#
+# Three dispositions, and the rows are arranged so that collapsing any two of them reddens
+# something:
+#   bounded write   -> matched, no finding at all
+#   absent write    -> `consumer-reads-unwritten-artifact`, the decided absence
+#   unbounded write -> `consumer-reads-artifact-with-unresolved-writer`, the recorded doubt
+W_ACTUAL = "open('artifacts/actual.json', 'w', closefd=False)"
+HELPER_ACTUAL = "def helper():\n    return open('artifacts/actual.json', 'w', closefd=False)\n"
+
+REPORT_BOUNDARY = (
+    # A static site satisfies the static check, including one with no call anywhere here: an
+    # external importer may call it, so no module-level call does not prove dead code.
+    ("definition_only", HELPER_ACTUAL, ""),
+    ("definition_and_call", HELPER_ACTUAL + "helper()\n", ""),
+    ("inline_reached", W_ACTUAL, ""),
+    # Decided absences. Nothing runs, so the reader really does read an unwritten artifact.
+    ("dead_empty_source", f"[{W_ACTUAL} for _ in []]", "consumer-reads-unwritten-artifact"),
+    (
+        "dead_false_filter",
+        f"[{W_ACTUAL} for _ in [1] if False]",
+        "consumer-reads-unwritten-artifact",
+    ),
+    ("dead_condition", f"if 1 == 2:\n    {W_ACTUAL}\n", "consumer-reads-unwritten-artifact"),
+    ("dead_non_iterable", f"[{W_ACTUAL} for _ in None]", "consumer-reads-unwritten-artifact"),
+    # Recorded doubt. The site is located and its execution is undetermined.
+    (
+        "undecided_guard",
+        "def go():\n    return not True\n" + f"[{W_ACTUAL} for _ in [1] if go()]",
+        "consumer-reads-artifact-with-unresolved-writer",
+    ),
+    (
+        "undecided_operand",
+        "def f():\n    return not True\n" + f"f() and {W_ACTUAL}",
+        "consumer-reads-artifact-with-unresolved-writer",
+    ),
+    (
+        "undecided_chain_link",
+        "def size():\n    return 5\n" + f"size() < 1 < {W_ACTUAL}",
+        "consumer-reads-artifact-with-unresolved-writer",
+    ),
+    (
+        "undecided_element",
+        f"[x or {W_ACTUAL} for x in [True, True]]",
+        "consumer-reads-artifact-with-unresolved-writer",
+    ),
+    # **The control that keeps the weak kind from becoming a basename test.** An uncertain writer
+    # at a DIFFERENT root must not clear a definite unmatched reader that merely shares a
+    # basename — the reader is still reading something nothing writes.
+    (
+        "uncertain_writer_at_another_root",
+        "[x or open('artifacts/other/actual.json', 'w', closefd=False) for x in [True, True]]",
+        "consumer-reads-unwritten-artifact",
+    ),
+    # And no writer of any kind: the absence verdict must survive the new classification.
+    ("no_writer_at_all", "pass", "consumer-reads-unwritten-artifact"),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "body", "expected_kind"), REPORT_BOUNDARY, ids=[row[0] for row in REPORT_BOUNDARY]
+)
+def test_the_report_distinguishes_absence_from_undetermined_execution(
+    gate, tmp_path, name, body, expected_kind
+):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "example.py").write_text(
+        "from pathlib import Path\n" + body + "\nPath('artifacts/actual.json').read_text()\n"
+    )
+    gate.collect_artifact_accesses(tmp_path)
+    result = gate.analyse_consumer_side(tmp_path, [])
+    kinds = {
+        finding.kind
+        for finding in result.findings
+        for reader in finding.readers
+        if reader.pattern == "artifacts/actual.json"
+    }
+    assert kinds == ({expected_kind} if expected_kind else set()), name
+
+
+def test_the_weaker_finding_names_its_candidate_writers_and_keeps_the_reader(gate, tmp_path):
+    """Not a suppression: readers, their count, and the ACTUAL candidate sites all survive.
+
+    A weaker classification that dropped the reader would trade one wrong verdict for another,
+    and one that pointed at a nearest-by-distance guess would waste the fact that these writers
+    are known exactly.
+    """
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "example.py").write_text(
+        "from pathlib import Path\n"
+        f"[x or {W_ACTUAL} for x in [True, True]]\n"
+        "Path('artifacts/actual.json').read_text()\n"
+    )
+    accesses, _, _, _ = gate.collect_artifact_accesses(tmp_path)
+    result = gate.analyse_consumer_side(tmp_path, [])
+
+    finding = next(
+        item
+        for item in result.findings
+        if item.kind == "consumer-reads-artifact-with-unresolved-writer"
+    )
+    assert finding.reader_total >= 1, "the reader count must survive the weaker classification"
+    assert finding.readers, "the reader evidence must survive"
+    assert finding.writers, "the candidate writer sites must be named"
+    assert all(not writer.bounded for writer in finding.writers), (
+        "a candidate is an uncertain site; naming a bounded one would imply a pair"
+    )
+    assert not any(access.action == "write" and access.bounded for access in accesses), (
+        "the weaker finding must not certify production"
+    )
+
+
+def test_the_new_kind_has_its_own_allowlist_domain(gate):
+    """An old exact `unwritten` exemption must not silently exempt the new finding.
+
+    The allowlist key is `{kind}:{pattern}`, so the domains are distinct by construction — this
+    row is what stops a later refactor from keying on the pattern alone.
+    """
+
+    assert "consumer-reads-artifact-with-unresolved-writer" in gate.CONSUMER_SIDE_KINDS
+    unwritten = "consumer-reads-unwritten-artifact:artifacts/actual.json"
+    unresolved = "consumer-reads-artifact-with-unresolved-writer:artifacts/actual.json"
+    assert unwritten != unresolved
 
 
 class _LegacyIterable:
