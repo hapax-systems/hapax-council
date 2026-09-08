@@ -808,6 +808,77 @@ def test_malformed_frame_is_a_recorded_report_only_error(tmp_path: Path) -> None
     _assert_report_only_error(result, tmp_path / ".consumer-side-report.json", frame)
 
 
+def test_unresolvable_home_in_a_declared_location_is_a_recorded_report_only_error(
+    tmp_path: Path,
+) -> None:
+    """`~someone-who-does-not-exist` must report a remedy, not crash the run.
+
+    `Path.expanduser()` raises RuntimeError for an unknown user, and the analysis handler
+    catches OSError and ValueError but not that — so this input escaped with no
+    `[REPORT-ERROR]`, no next action and a non-zero exit (codex, at `45a37aeda`).
+
+    It is converted at the declaration rather than by adding RuntimeError to that handler,
+    which would also swallow genuine scanner faults and report them as an incomplete
+    analysis. This asserts the remedy is present, because an error without a next action is
+    the thing the executive-function axiom exists against.
+    """
+    frame = tmp_path / "frame.json"
+    mass = tmp_path / "mass.yaml"
+    # The declaration is only consulted for a member the frame SELECTS as decayed, so an empty
+    # frame never reaches the expansion at all.
+    frame.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "r",
+                    "payload": {
+                        "verdicts": [
+                            {
+                                "subject": {"member_id": "unresolvable-home-producer"},
+                                "relation": "scope_exited",
+                                "verdict": True,
+                            }
+                        ]
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    mass.write_text(
+        "members:\n"
+        "  - id: unresolvable-home-producer\n"
+        "    location: {path: '~nosuchuser12345/artifacts', patterns: ['*.json']}\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            "--consumer-side",
+            "--frame",
+            str(frame),
+            "--mass",
+            str(mass),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    error_lines = [line for line in result.stdout.splitlines() if line.startswith("[REPORT-ERROR]")]
+    assert error_lines, "the run must report the unresolvable declaration"
+    assert "~nosuchuser12345/artifacts" in error_lines[0], "the report must name the declaration"
+    assert "next action" in error_lines[0], "an error without a next action is not a report"
+    payload = json.loads((tmp_path / ".consumer-side-report.json").read_text(encoding="utf-8"))
+    assert payload["summary"]["errors"] >= 1
+    assert any("~nosuchuser12345" in item for item in payload["errors"]), (
+        "the durable report must carry it too, not only stdout"
+    )
+
+
 def test_malformed_mass_is_a_recorded_report_only_error(tmp_path: Path) -> None:
     frame = tmp_path / "frame.json"
     mass = tmp_path / "malformed-mass.yaml"

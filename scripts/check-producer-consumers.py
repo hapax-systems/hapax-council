@@ -3295,10 +3295,18 @@ def _literal_operand(node: ast.expr) -> tuple[bool, object]:
 def _boolop_stops_after(op: ast.boolop, value: ast.expr) -> bool | None:
     """Does this operand decide an ``and``/``or``? ``True`` stops, ``False`` continues.
 
-    ``None`` means only the runtime knows, and BOTH continuations are genuinely reachable —
-    those are the disjunctive states the branch model already keeps, the same way an
-    ``if``/``else`` binding really can produce either of two writers. Deciding is reserved for
-    a compile-time constant, where one of the two alternatives is not cautious but impossible.
+    ``None`` means only the runtime knows, and the analysis keeps both continuations as
+    disjunctive states.
+
+    That is a statement about this ANALYSIS, not about the program. An earlier version of this
+    docstring said an unknown means both continuations are "genuinely reachable"; that was
+    unsupported, and root corrected it at `813b0857e` — *admitting both possibilities is not
+    proof both executions exist*, and a statically found write site is not a witnessed runtime
+    producer either. The distinction is kept explicit here because collapsing it is what makes
+    a scanner start certifying files nothing ever writes.
+
+    Deciding is reserved for a compile-time constant, where one alternative is not merely
+    unlikely but impossible.
     """
     known, constant = _literal_operand(value)
     if not known:
@@ -5700,7 +5708,21 @@ def _default_mass_path(frame_path: Path) -> Path:
 
 
 def _declared_pattern(value: str, repo_root: Path) -> str:
-    expanded = Path(value).expanduser().as_posix()
+    try:
+        expanded = Path(value).expanduser().as_posix()
+    except RuntimeError as exc:
+        # `~someone-who-does-not-exist` raises RuntimeError, and the analysis handler catches
+        # OSError/ValueError but not that — so a declared mass location naming an unknown user
+        # crashed the run with no `[REPORT-ERROR]` and no remedy (codex, at `45a37aeda`).
+        #
+        # Converted here rather than by widening that handler to RuntimeError: this is a
+        # DECLARED-INPUT failure and belongs in the same class as a malformed frame, while
+        # widening the handler would also swallow genuine scanner faults and report them as an
+        # incomplete analysis. Failure paths narrow; they do not widen.
+        raise ValueError(
+            f"declared location {value!r} names a home directory that cannot be resolved "
+            f"({exc}); next action: declare an explicit path or a '~/' home-relative one"
+        ) from exc
     canonical_repo = (Path.home() / "projects" / "hapax-council").as_posix()
     if expanded == canonical_repo:
         return "."
