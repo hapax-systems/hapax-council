@@ -3382,10 +3382,18 @@ def ref_within_member(
             candidate = path / literal
             try:
                 # Unsuppressed: this decides which containment QUESTION is asked of the
-                # candidate, so a swallowed ELOOP answering False silently reframes a directory
-                # as a file — and the handler beneath could never fire, exactly as at the
-                # discovery and identity sites. Converted by decision ROLE, per the
-                # coordinator's instruction, not as a blanket substitution.
+                # candidate, so a swallowed ELOOP answering False would reframe a directory as
+                # a file. Converted by decision ROLE, not as a blanket substitution.
+                #
+                # **UNPINNED, and stated because I could not pin it.** Asked for a killed
+                # rollback at this call, I could not produce one: in every arrangement I could
+                # construct, `_resolve_external_scope_path`'s `resolve(strict=True)` — which
+                # does NOT suppress — raises on the same fault first, at `:2385` for a literal
+                # spelling and through the scope-glob wrapper at `:3055` otherwise. So the
+                # hazard here may be unreachable, and this conversion may be unnecessary rather
+                # than load-bearing. It is kept because it is correct in principle and costs
+                # nothing, and it is labelled because an unpinned change presented as a repair
+                # is how a suite acquires decoration.
                 candidate_is_dir = _classified_is_dir(candidate)
             except (OSError, RuntimeError) as exc:
                 raise _unresolved_scope_component(candidate, exc) from exc

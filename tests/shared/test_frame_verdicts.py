@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import errno
 import fnmatch
 import hashlib
 import json
@@ -1197,10 +1198,26 @@ def test_glob_language_uses_the_canonical_root(
 
 
 @pytest.mark.parametrize(
-    ("probe", "pattern"), [("is_dir", "a*"), ("is_file", "a*"), ("is_dir", "[a]wk")]
+    ("probe", "pattern", "injected"),
+    [
+        # EACCES: pathlib PROPAGATES this, so these rows exercise the handler. Kept, because a
+        # handler that converts a propagated error into a remedy is a real obligation.
+        ("is_dir", "a*", errno.EACCES),
+        ("is_file", "a*", errno.EACCES),
+        ("is_dir", "[a]wk", errno.EACCES),
+        # ELOOP and EBADF: pathlib SUPPRESSES these and answers False, so only these rows
+        # discriminate the unsuppressed classifiers. The coordinator caught that my rewrite
+        # moved the layer and left the errno at EACCES while my report claimed both had
+        # changed — the row could not have distinguished a suppressing classifier from a
+        # correct one, which is the whole property it is here to hold.
+        ("is_dir", "a*", errno.ELOOP),
+        ("is_file", "a*", errno.ELOOP),
+        ("is_dir", "[a]wk", errno.ELOOP),
+        ("is_dir", "[a]wk", errno.EBADF),
+    ],
 )
 def test_scope_expansion_file_type_failure_has_remedy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: str, pattern: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe: str, pattern: str, injected: int
 ) -> None:
     target, alias = tmp_path / "gawk", tmp_path / "awk"
     target.touch()
@@ -1219,7 +1236,7 @@ def test_scope_expansion_file_type_failure_has_remedy(
 
     def denied(path, *args, **kwargs):
         if str(path) == str(alias):
-            raise PermissionError(13, "fixture stat denied", str(path))
+            raise OSError(injected, "fixture stat denied", str(path))
         return original_stat(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "stat", denied)
