@@ -6,6 +6,7 @@ import ast
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -1205,14 +1206,23 @@ def test_scope_expansion_file_type_failure_has_remedy(
     target.touch()
     alias.symlink_to(target.name)
     member = fv.DecayedMember("m", "scope_exited", (tmp_path,), ("gawk",), ())
-    original = getattr(Path, probe)
+
+    # **The fault is injected at `os.stat`, the supplying boundary, not at the `Path` method.**
+    # It used to replace `Path.is_dir` / `Path.is_file` directly, which stopped intercepting the
+    # moment those calls moved to the unsuppressed classifiers — and, more to the point, was
+    # never the layer that matters: those methods swallow the ignorable errnos themselves, so
+    # faulting the METHOD exercises the handler while leaving the case where the method silently
+    # answers False untested. Same correction as row R5c, which took three tries to discriminate
+    # anything (review finding, codex, 2026-09-08). `probe` is kept as the parametrisation label
+    # because it still names which classification the pattern reaches.
+    original_stat = os.stat
 
     def denied(path, *args, **kwargs):
-        if path == alias:
+        if str(path) == str(alias):
             raise PermissionError(13, "fixture stat denied", str(path))
-        return original(path, *args, **kwargs)
+        return original_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, probe, denied)
+    monkeypatch.setattr(os, "stat", denied)
     with pytest.raises(fv.UndecidableScopeContainment) as caught:
         fv.ref_within_member(tmp_path, True, member, scope_pattern=pattern)
     assert "containment is undecidable" in str(caught.value)

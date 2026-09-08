@@ -2773,9 +2773,11 @@ def _check_member_symlinks(
             # controls going red the moment I converted it, including the self-referential
             # `lbin` row that caught the same over-reach earlier today.
             #
-            # The member enumeration and the canonical FORMS are observed, because those decide
-            # containment and have nothing better downstream. Per-site, not per-file.
-            _require_scannable(path, scope_pattern, component_faults_recorded=False)
+            # The member enumeration, the canonical FORMS and the member file match are
+            # observed, because those decide containment and have nothing better downstream.
+            # The two scope expansions are not. **Three of five, not all of them** — the
+            # earlier wording here said the sites had been converted, which stopped being true
+            # the moment I reverted this one and stayed in the file anyway.
             _require_scannable(path, scope_pattern, component_faults_recorded=False)
             paths.extend(found)
         except NonCanonicalScopeRef:
@@ -3379,7 +3381,12 @@ def ref_within_member(
         if literal is not None:
             candidate = path / literal
             try:
-                candidate_is_dir = candidate.is_dir()
+                # Unsuppressed: this decides which containment QUESTION is asked of the
+                # candidate, so a swallowed ELOOP answering False silently reframes a directory
+                # as a file — and the handler beneath could never fire, exactly as at the
+                # discovery and identity sites. Converted by decision ROLE, per the
+                # coordinator's instruction, not as a blanket substitution.
+                candidate_is_dir = _classified_is_dir(candidate)
             except (OSError, RuntimeError) as exc:
                 raise _unresolved_scope_component(candidate, exc) from exc
             return ref_within_member(candidate, candidate_is_dir, member)
