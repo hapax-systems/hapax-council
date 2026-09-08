@@ -43,11 +43,18 @@ DEFAULT_FRAME_PROCEDURE_ROOT = Path("~/Documents/Personal/30-areas/hapax/frame/p
 FRAME_VAULT_ROOT_ENV = "HAPAX_FRAME_VAULT_ROOT"
 DEFAULT_FRAME_VAULT_ROOT = Path("~/Documents/Personal")
 
-#: A ``FRAME_ITERATION_CADENCE_S = 3 * 3600`` constant stood here until 2026-09-07, already
-#: annotated as historical with no runtime consumer. The annotation was not enough: a name that
-#: reads as the producer's cadence invites the next editor to re-derive the allowance below from
-#: it, which is the coupling deliberately removed. Deleted rather than renamed — nothing in the
-#: tree referenced it, and a comment is a weaker guard than an absent symbol.
+# TOMBSTONE, not documentation of anything below. A ``FRAME_ITERATION_CADENCE_S = 3 * 3600``
+# constant stood here until 2026-09-07, already annotated as historical with no runtime consumer.
+# The annotation was not enough: a name that reads as the producer's cadence invites the next
+# editor to re-derive the allowance below from it, which is the coupling deliberately removed.
+# Deleted rather than renamed — nothing in the tree referenced it, and a comment is a weaker
+# guard than an absent symbol.
+#
+# Written with `#:` until 2026-09-08, which made it the first five lines of the LIVE constant's
+# doc-comment: a reader of `FRAME_EPOCH_MAX_AGE_S` was told first about a different, deleted
+# symbol (review finding, claude, at `069e726dc`). A tombstone for a removed name and the
+# documentation of a present one are not the same text and no longer share a block.
+
 #: Independent six-hour maximum accepted-evidence age: an evidence-reliance allowance, not a
 #: model of the producer's sampling. A faster schedule permits more missed attempts inside the
 #: same allowance; a slower one can outlast it. Ordinary changes to this producer's collection

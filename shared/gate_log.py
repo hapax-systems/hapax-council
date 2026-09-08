@@ -46,9 +46,25 @@ DEFAULT_GATE_LOG = _IMPORT_TIME_GATE_LOG
 def default_gate_log() -> Path:
     """Resolve the canonical gate log at call time.
 
-    A patched ``DEFAULT_GATE_LOG`` wins, then ``HAPAX_GATE_LOG``, then the current
-    home. Resolving at call time is what keeps a test process that changed its
-    environment after import from appending to the operator's routing ledger.
+    A ``DEFAULT_GATE_LOG`` that DIFFERS IN VALUE from the import-time one wins, then
+    ``HAPAX_GATE_LOG``, then the current home. Resolving at call time is what keeps a
+    test process that changed its environment after import from appending to the
+    operator's routing ledger.
+
+    **The value comparison is deliberate, and the first line used to overstate it**
+    as "a patched ``DEFAULT_GATE_LOG`` wins" (review finding, claude, at `069e726dc`).
+    A patch to a path EQUAL to the import-time value does NOT win, and must not: a
+    value indistinguishable from the one this module bound at import is
+    indistinguishable from nobody having set it, and treating it as an override is
+    exactly how the stale import-time default reached the operator's routing ledger
+    in the first place. `test_import_time_default_gate_log_does_not_override_the_
+    environment` pins that case directly.
+
+    So this is a real limit, not a latent bug: an override that happens to equal the
+    import-time path cannot be honoured, because it cannot be recognised. Switching
+    to ``is not`` would recognise it — and would reopen the leak for every caller
+    holding the import-time value, which is the condition the seam exists to catch.
+    Measured before choosing: that change turns the pin above red.
     """
     if DEFAULT_GATE_LOG != _IMPORT_TIME_GATE_LOG:
         return DEFAULT_GATE_LOG
