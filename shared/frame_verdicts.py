@@ -2099,9 +2099,19 @@ def _refuse_unobservable_enumeration(root: Path, pattern: str) -> UndecidableSco
 #: leaves every control green, measured on each.
 #:
 #: What they close is the window between a successful resolve and a later stat — a real hazard
-#: with the same shape as the intermittent-enumeration finding, and one that existing controls
-#: cannot reach without injecting on call ORDINAL, which is the fragile approach that produced
-#: two rows earlier today that measured nothing.
+#: with the same shape as the intermittent-enumeration finding.
+#:
+#: **"Reachable only by call-ordinal injection" was my claim and it was too strong.** The
+#: coordinator proposed a stage-triggered discriminator instead: run the real resolver, then arm
+#: a path-specific BACKEND fault after its successful return, so the injection is still present
+#: under a rollback to the native classifier and arming does not touch the mitigation. Built and
+#: run exactly that way — and the refusal still arrives from a LATER `resolve`, with the same
+#: `cannot resolve scope component` message under both the converted and the rolled-back source.
+#: A legitimate decision intercepts the fault.
+#:
+#: That outcome is recorded rather than engineered around. Reaching the classifier from here
+#: would mean relaxing the resolution that refuses first, which is arranging for a desired
+#: branch rather than testing one.
 #:
 #: So they are kept as correct-in-principle and labelled UNPINNED, not presented as repairs.
 #: The discovery, identity, selected-file and canonical-forms conversions are different: those
