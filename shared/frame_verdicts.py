@@ -574,6 +574,36 @@ def _member_host_aliases(member: dict[str, object]) -> tuple[tuple[str, str], ..
     return tuple(sorted(aliases.items()))
 
 
+def _refuse_unrepresentable_declaration(raw: str, member: Mapping[str, Any], field: str) -> None:
+    """Refuse a declared path the filesystem cannot represent, BEFORE resolving it.
+
+    A NUL cannot appear in a POSIX path, and `Path.resolve()` answers that with a `ValueError`
+    ("embedded null character") — a third exception type, which every handler in this module
+    catches `OSError` and `RuntimeError` for and none catches. So a declared root or file
+    containing a NUL exited the dispatcher as a traceback rather than as the documented refusal,
+    remedy and receipt (review finding, at `b420f26c9`, reproduced through the epoch parser for
+    both `location.roots` and `location.files`).
+
+    Validated up front rather than caught downstream, because the refusal can then name the
+    field and the member instead of a resolution failure three layers away — and because a
+    spelling the filesystem cannot represent is a fact about the DECLARATION, not about this
+    host's access to it.
+
+    It is also the third exception type in a family this module keeps meeting one type at a
+    time: `OSError` for access, `RuntimeError` for expansion and loops, `ValueError` for
+    unrepresentable spellings.
+    """
+    if "\x00" in raw:
+        raise FrameVerdictsUnavailable(
+            f"member {member.get('id')!r} {field} entry {raw!r} contains a NUL, which no "
+            "filesystem path can represent",
+            remedy=(
+                f"repair {field} for member {member.get('id')!r} in {MASS_DECLARATION_LOCATION}; "
+                + PRODUCER_REMEDY
+            ),
+        )
+
+
 def _member_location(
     member: dict[str, object],
     *,
@@ -635,6 +665,7 @@ def _member_location(
         return path
 
     for raw in raw_roots:
+        _refuse_unrepresentable_declaration(raw, member, "location.roots")
         if not local_filesystem_reader and _has_qualifier(raw.strip()):
             qualified_roots.append(_qualified_location(raw.strip())[0])
             continue
@@ -701,6 +732,7 @@ def _member_location(
             # declaration is skipped: "" cannot name a file, while " " can.
             if not item:
                 continue
+            _refuse_unrepresentable_declaration(item, member, "location.files")
             # The same reader grammar governs `location.files`, not only `location.roots` — a
             # declared file under a local reader is a filesystem path whose name may contain a
             # colon. Gating only the roots loop left this sibling with the original defect, in
@@ -1741,6 +1773,62 @@ def _scope_intersects_exclusions(
     return False
 
 
+def _require_scannable(root: Path, pattern: str) -> None:
+    """Refuse when the directories a glob must read cannot be read.
+
+    **`Path.glob` and `Path.rglob` SUPPRESS the scan errors underneath them.** `os.scandir`
+    raising `PermissionError` on a directory yields no entries and no exception, so an unreadable
+    member root produced an EMPTY surface, `all_inside` became False, and the dispatcher returned
+    no refusal — the exact failure this consumer exists to prevent, reached through a fault
+    instead of a spelling (review finding, two families, at `b420f26c9`, reproduced on
+    `/usr/bin` with patterns `['fsck.ext[234]']`: all_inside True normally, False with
+    `os.scandir` faulted, True again on restore).
+
+    This is also the gap in my own `Path`-method sweep, and worth naming precisely: faulting
+    `Path.glob` produced a named refusal there, so the sweep reported the layer as covered. The
+    suppression happens BENEATH `Path.glob`, at the syscall it wraps, which a sweep over `Path`
+    methods cannot reach. A bound stated at the wrong layer looks like coverage.
+
+    Readability is verified before enumerating rather than inferred from the result, because an
+    empty enumeration and an unreadable one are indistinguishable afterwards — which is the whole
+    defect. A recursive pattern must be able to read the whole subtree; a shallow one only the
+    root it is anchored at.
+    """
+    recursive = "**" in pattern
+    try:
+        if not root.is_dir():
+            return
+    except (OSError, RuntimeError) as exc:
+        raise _unresolved_scope_component(root, exc) from exc
+
+    failures: list[OSError] = []
+
+    def _record(error: OSError) -> None:
+        failures.append(error)
+
+    try:
+        if recursive:
+            for _current, _dirs, _files in os.walk(root, onerror=_record):
+                if failures:
+                    break
+        else:
+            with os.scandir(root) as entries:
+                for _entry in entries:
+                    pass
+    except (OSError, RuntimeError) as exc:
+        failures.append(exc if isinstance(exc, OSError) else OSError(str(exc)))
+
+    if failures:
+        error = UndecidableScopeContainment(
+            f"cannot enumerate {root} for pattern {pattern!r}: {failures[0]}; an unreadable "
+            "directory is not an empty one, and containment cannot be decided over it"
+        )
+        error.remedy = (
+            f"repair read access for {root} and the directories beneath it, then retry the dispatch"
+        )
+        raise error
+
+
 def _scope_pattern_from_base(relative: str, scope_pattern: str | None) -> str:
     tail = scope_pattern or "**/*"
     return "/".join(part for part in (relative, tail) if part)
@@ -2125,6 +2213,7 @@ def _check_member_symlinks(
         # Inspect existing witnesses only for ambiguity, never to prove that a glob's future
         # surface is contained. pathlib uses the same traversal rules as the producer here.
         try:
+            _require_scannable(path, scope_pattern)
             paths.extend(path.glob(scope_pattern))
         except (OSError, RuntimeError, ValueError) as exc:
             raise UndecidableScopeContainment(
@@ -2274,6 +2363,7 @@ def _canonical_member_entries_uncached(member: DecayedMember) -> dict[Path, Path
     for root in member.roots:
         for pattern in patterns:
             try:
+                _require_scannable(root, f"**/{pattern}" if content_query else pattern)
                 entries = list(root.rglob(pattern) if content_query else root.glob(pattern))
             except (OSError, RuntimeError, ValueError) as exc:
                 raise UndecidableScopeContainment(
@@ -2311,6 +2401,7 @@ def _canonical_scope_entries(
 ) -> dict[Path, Path]:
     """Expand in the producer tree before resolving every entry, including broken links."""
     try:
+        _require_scannable(path, pattern)
         entries = list(path.glob(pattern))
     except (OSError, RuntimeError, ValueError) as exc:
         raise UndecidableScopeContainment(

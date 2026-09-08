@@ -1893,10 +1893,21 @@ def test_row_s2_no_filesystem_fault_escapes_the_refusal_contract(tmp_path, monke
     already converted twice, and `is_file()` in `_canonical_member_entries`), which is the only
     reason they are not two more reports.
 
-    **What this row does not establish.** A method whose fault produces no refusal here was not
-    necessarily guarded; it may simply not lie on the path these three refs take. The row proves
-    the absence of raw escapes for what it exercises, not the absence of unguarded calls in the
-    module — a bound, and stated as one rather than reported as a verdict.
+    **What this row does not establish, corrected 2026-09-08 after it missed two.** A method
+    whose fault produces no refusal here was not necessarily guarded; it may simply not lie on
+    the path these three refs take. Worse, and measured: this row faults `Path` METHODS, and
+    two families then found escapes at layers it cannot reach —
+
+      - `Path.glob` SUPPRESSES the `os.scandir` error beneath it, so faulting `Path.glob` here
+        produced a named refusal and the sweep reported the layer covered while an unreadable
+        root silently became an empty surface. **A bound stated at the wrong layer looks like
+        coverage.** Row S2b faults the syscall instead.
+      - every fault injected here is an `OSError`, so a `ValueError` — which `Path.resolve()`
+        raises for a NUL in a declared path — could never appear. Row S2c covers that.
+
+    So this row proves the absence of raw escapes for the methods AND the exception type it
+    exercises, at the layer it exercises them. That is three bounds, and naming them is the
+    point: the sweep was written to close a family and its first report of success was too broad.
     """
     base = tmp_path / "base"
     root = base / "surface"
@@ -1934,3 +1945,81 @@ def test_row_s2_no_filesystem_fault_escapes_the_refusal_contract(tmp_path, monke
                 f"a faulting Path.{method} escaped as a raw {type(exc).__name__} for ref {ref!r}: "
                 "every filesystem fault owes a named refusal with a remedy"
             )
+
+
+@pytest.mark.parametrize("pattern", ["*.txt", "**/*.txt"], ids=["shallow", "recursive"])
+def test_row_s2b_an_unreadable_root_is_not_an_empty_surface(tmp_path, monkeypatch, pattern):
+    """S2b: the layer BENEATH `Path.glob`, which S2 cannot reach.
+
+    `Path.glob`/`rglob` swallow the `os.scandir` error underneath them: a directory that raises
+    `PermissionError` yields no entries and no exception. So an unreadable member root produced
+    an EMPTY surface, `all_inside` became False, and the dispatcher returned no refusal — the
+    failure this consumer exists to prevent, reached through a fault instead of a spelling.
+
+    Two families reproduced it at `b420f26c9` on `/usr/bin` with patterns `['fsck.ext[234]']`:
+    all_inside True normally, False with `os.scandir` faulted, True again on restore.
+
+    **S2 reported this layer as covered**, because faulting `Path.glob` itself raises and is
+    converted. The suppression happens one layer down, at the syscall `Path.glob` wraps, which a
+    sweep over `Path` methods cannot see. This row faults `os.scandir` instead, and the shallow
+    and recursive patterns are separated because they read different amounts of the tree.
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    (root / "sub").mkdir(parents=True)
+    (root / "a.txt").write_bytes(b"ONE\n")
+    (root / "sub" / "b.txt").write_bytes(b"TWO\n")
+
+    verdicts = _decayed(tmp_path, _local_member(root=root, patterns=(pattern,)))
+    real_scandir = os.scandir
+
+    def refusing_scandir(path=".", *args, **kwargs):
+        if str(path).rstrip("/").endswith("surface"):
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", refusing_scandir)
+
+    with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+        fv.scope_within_decayed([str(root / "a.txt")], verdicts, council_root=base, vault_root=base)
+
+    assert "cannot enumerate" in str(caught.value)
+    assert caught.value.remedy, "a refusal must name its remedy"
+
+
+@pytest.mark.parametrize("field", ["roots", "files"])
+def test_row_s2c_a_nul_in_a_declared_path_is_a_named_refusal(tmp_path, field):
+    """S2c: `ValueError`, the third exception type in this family, which S2 never injects.
+
+    A NUL cannot appear in a POSIX path and `Path.resolve()` says so with a `ValueError`
+    ("embedded null character"). Every handler in the module catches `OSError` and
+    `RuntimeError`; none catches this, so a declared root or file containing a NUL exited the
+    dispatcher as a traceback instead of the documented refusal, remedy and receipt (review
+    finding at `b420f26c9`).
+
+    The family has now been met one exception type at a time — `OSError` for access,
+    `RuntimeError` for expansion and loops, `ValueError` for unrepresentable spellings — which
+    is why S2's docstring now states the exception type as one of its bounds.
+    """
+    location = (
+        {"path": "/tmp/bad\x00root", "patterns": ["*.txt"]}
+        if field == "roots"
+        else {"files": ["/tmp/bad\x00file.txt"]}
+    )
+    member = {
+        "id": "legacy-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": location,
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("legacy-surface", "scope_exited")],
+    )
+
+    with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
+        fv.load_frame_verdicts(procedure, now=NOW)
+
+    assert "NUL" in str(caught.value)
+    assert f"location.{field}" in str(caught.value)
+    assert caught.value.remedy
