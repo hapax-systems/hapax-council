@@ -4022,9 +4022,13 @@ class _BlockScanner:
             # every real writer. That asymmetry with the comprehension boundary — which does
             # withhold on unknown — is deliberate and is not what this repair changes.
             #
-            # `async for` needs `__aiter__` rather than `__iter__`, so a value failing even the
-            # sync protocol fails that one too. Whether a sync-iterable value satisfies `async
-            # for` is a separate question this predicate does not answer and does not claim to.
+            # `async for` needs `__aiter__`, which is a DIFFERENT protocol — an object can define
+            # it without `__iter__`, so failing the sync test does not in general imply failing
+            # the async one. The scope of the claim here is only the values `_literal_operand`
+            # can produce: `ast.literal_eval` results and constants, none of which define
+            # `__aiter__`. Outside that set this branch says nothing, and it must not be read as
+            # a statement about the object model (coordinator correction, at `605f1dd82`, where
+            # this comment asserted the general implication).
             if self._resolved_iteration_source(statement.iter, states)[2] == SOURCE_NOT_ITERABLE:
                 return states
         literal = isinstance(statement, (ast.For, ast.AsyncFor)) and isinstance(
