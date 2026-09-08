@@ -1334,7 +1334,15 @@ def resolve_scope_ref(ref: str, *, council_root: Path, vault_root: Path) -> tupl
         path = base / path
     # Keep entries below the root lexical, as fs.glob does. A member comparison checks symlinks
     # against that member's root; resolving here would erase the very entry it enumerated.
-    path = path.absolute()
+    #
+    # `absolute()` reads the process working directory, which fails on its own terms — a deleted
+    # or unreadable cwd — and this was the LAST unguarded statement in a function whose expansion
+    # and anchor selection I converted earlier today. Found by faulting every risky `Path` method
+    # in turn rather than by reading, which is the only reason it was not an eighth report.
+    try:
+        path = path.absolute()
+    except (OSError, RuntimeError) as exc:
+        raise _unresolved_scope_component(path, exc) from exc
     try:
         if path.is_dir():
             dirlike = True
@@ -1386,7 +1394,15 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
         else:
             out.append(re.escape(char))
             index += 1
-    return re.compile("^" + "".join(out) + "$")
+    # `\A`/`\Z`, never `^`/`$`: Python's `$` also matches just BEFORE a trailing newline, so
+    # `^a\.txt$` matched the filename "a.txt\n" — and a newline is a legal POSIX filename
+    # character, so those are two different files (review finding, codex, at `850ccfdbb`;
+    # reproduced as True/True for the patterns '*.txt', 'a.txt' and '*').
+    #
+    # Same family as the whitespace findings this row has already closed: a declared subject
+    # silently equated with a different one. A member selecting `a.txt` was treated as selecting
+    # `a.txt\n` too, so a scope naming the newline twin compared against the wrong surface.
+    return re.compile(r"\A" + "".join(out) + r"\Z")
 
 
 def _pattern_matches(relative: str, pattern: str) -> bool:
@@ -1918,7 +1934,14 @@ def _refuse_in_root_alias_reaching_surface(
     if scope_pattern is None:
         # Preserve the component-specific refusal and remedy for loops/dangling links.
         canonical_path, canonical_pattern = _canonical_path_forms(path, None)[0].base, None
-        if canonical_path.is_file():
+        # Whether the canonical path is a file decides whether this returns without refusing, so
+        # an unreadable answer here is not a negative one. Same family as the anchor and identity
+        # reads; found by the method sweep rather than by a report.
+        try:
+            canonical_is_file = canonical_path.is_file()
+        except (OSError, RuntimeError) as exc:
+            raise _unresolved_scope_component(canonical_path, exc) from exc
+        if canonical_is_file:
             # Existing selected targets are handled by the canonical surface below;
             # they establish containment rather than an ambiguous future overlap.
             return
@@ -2217,7 +2240,15 @@ def _canonical_member_entries(member: DecayedMember) -> dict[Path, Path]:
                 ):
                     continue
                 canonical = _resolve_external_scope_path(entry)
-                if entry.is_file() and not _member_path_is_excluded(entry, root, member):
+                # An unreadable entry must not silently drop OUT of the member's surface: a
+                # smaller surface is a weaker comparison, and this one decides what the member
+                # is taken to select. The `try` a few lines above already converts the traversal
+                # faults; this sibling call was outside it.
+                try:
+                    entry_is_file = entry.is_file()
+                except (OSError, RuntimeError) as exc:
+                    raise _unresolved_scope_component(entry, exc) from exc
+                if entry_is_file and not _member_path_is_excluded(entry, root, member):
                     surface[entry] = canonical
     return surface
 

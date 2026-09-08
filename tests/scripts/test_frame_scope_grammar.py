@@ -1698,3 +1698,110 @@ def test_row_r5c_checkout_discovery_failures_are_an_actionable_refusal(tmp_path,
 
     assert "checkout discovery" in str(caught.value)
     assert caught.value.remedy, "a refusal must name its remedy"
+
+
+@pytest.mark.parametrize(
+    ("pattern", "plain", "newline"),
+    [
+        ("*.txt", True, False),
+        ("a.txt", True, False),
+        ("*", True, True),
+        ("**/*", True, True),
+    ],
+    ids=["suffix-class", "literal-name", "any-name", "recursive-any-name"],
+)
+def test_row_s1_a_trailing_newline_filename_is_not_its_plain_twin(pattern, plain, newline):
+    """S1: `$` in a Python regex also matches just BEFORE a trailing newline.
+
+    `_glob_to_regex` anchored with `^`/`$`, so `^a\\.txt$` matched the filename `"a.txt\\n"` —
+    and a newline is a legal POSIX filename character, so those are two different files (review
+    finding, codex, at `850ccfdbb`; reproduced as True/True for `*.txt`, `a.txt` and `*`). A
+    member selecting `a.txt` was therefore treated as selecting `a.txt\\n` as well, and a scope
+    naming the newline twin compared against the wrong surface.
+
+    Same family as the whitespace findings this row has already closed: a declared subject
+    silently equated with a different one.
+
+    The wildcard rows are the discrimination that matters. `\\A`/`\\Z` must not turn this into
+    "newline names never match" — `*` and `**/*` genuinely DO name a file whose name contains a
+    newline, and a repair that refused them would trade one wrong answer for another.
+    """
+    assert fv._pattern_matches("a.txt", pattern) is plain
+    assert fv._pattern_matches("a.txt\n", pattern) is newline
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "exists",
+        "is_dir",
+        "is_file",
+        "is_symlink",
+        "resolve",
+        "absolute",
+        "expanduser",
+        "stat",
+        "iterdir",
+        "glob",
+        "read_text",
+        "readlink",
+        "samefile",
+    ],
+)
+def test_row_s2_no_filesystem_fault_escapes_the_refusal_contract(tmp_path, monkeypatch, method):
+    """S2: the fault family, closed by CONSTRUCTION rather than by noticing it again.
+
+    Seven of these were reported one at a time, each in the branch beside the one just repaired —
+    `location.files`, the content-query root, the scope expansion, the checkout anchor, the
+    default vault root, the checkout discovery, the identity read. After the sixth I wrote that
+    a family is closed by enumerating its call sites once, then repaired the seventh from a
+    report anyway.
+
+    So this row does the enumeration and keeps doing it. It faults each risky `Path` method in
+    turn and requires that the consumer answer with a NAMED refusal or an ordinary verdict —
+    never a raw `OSError`/`RuntimeError`. It found the eighth and ninth sites itself
+    (`absolute()` in `resolve_scope_ref`, the last unguarded statement in a function I had
+    already converted twice, and `is_file()` in `_canonical_member_entries`), which is the only
+    reason they are not two more reports.
+
+    **What this row does not establish.** A method whose fault produces no refusal here was not
+    necessarily guarded; it may simply not lie on the path these three refs take. The row proves
+    the absence of raw escapes for what it exercises, not the absence of unguarded calls in the
+    module — a bound, and stated as one rather than reported as a verdict.
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    root.mkdir(parents=True)
+    (root / "a.txt").write_bytes(b"ONE\n")
+
+    member = {
+        "id": "legacy-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["*.txt"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("legacy-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    real = getattr(pathlib.Path, method)
+
+    def faulting(self, *args, **kwargs):
+        if "surface" in str(self) or str(self).endswith("base"):
+            raise PermissionError(13, "Permission denied")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, method, faulting)
+
+    for ref in (str(root / "a.txt"), str(root / "*.txt"), f"{root}/"):
+        try:
+            fv.scope_within_decayed([ref], verdicts, council_root=base, vault_root=base)
+        except (fv.NonCanonicalScopeRef, fv.FrameVerdictsUnavailable):
+            continue
+        except (OSError, RuntimeError) as exc:  # noqa: PERF203
+            pytest.fail(
+                f"a faulting Path.{method} escaped as a raw {type(exc).__name__} for ref {ref!r}: "
+                "every filesystem fault owes a named refusal with a remedy"
+            )
