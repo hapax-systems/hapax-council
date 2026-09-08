@@ -1995,6 +1995,62 @@ def test_row_s2b_an_unreadable_root_is_not_an_empty_surface(tmp_path, monkeypatc
     assert caught.value.remedy, "a refusal must name its remedy"
 
 
+@pytest.mark.parametrize(
+    ("pattern", "refuses"),
+    [("sub/*.txt", True), ("*/*.txt", True), ("**/*.txt", True), ("*.txt", False)],
+    ids=["literal-nested", "wildcard-nested", "recursive", "shallow-does-not-traverse"],
+)
+def test_row_s2d_scan_readability_follows_the_declared_grammar(
+    tmp_path, monkeypatch, pattern, refuses
+):
+    """S2d: which directories a pattern TRAVERSES, not whether it contains `**`.
+
+    My first `_require_scannable` treated `recursive = "**" in pattern`, so a nested pattern
+    without `**` checked only the root. A persistent fault on `surface/sub` was therefore
+    undetected under `sub/*.txt` and `*/*.txt`, the glob came back silently empty, and an
+    outside hard-link alias to the selected file was ADMITTED — while the `**/*.txt` twin
+    refused correctly, which is exactly what isolates the assumption (review finding, root via
+    cx-blue, at `d8794d7c6`).
+
+    **The last row is the other half of the requirement and matters as much.** `*.txt` never
+    traverses `sub`, so a fault there must NOT refuse: the repair covers the directories the
+    declared grammar actually reaches, and does not demand readability of an unrelated corner of
+    the tree that the scope never looks at. Without it, "check everything" would satisfy the
+    first three rows and quietly convert unreadable-anywhere into refuse-everything.
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    sub = root / "sub"
+    sub.mkdir(parents=True)
+    selected = sub / "a.txt"
+    selected.write_bytes(b"NEEDLE\n")
+    elsewhere = base / "elsewhere"
+    elsewhere.mkdir()
+    alias = elsewhere / "alias.txt"
+    os.link(selected, alias)
+
+    verdicts = _decayed(tmp_path, _local_member(root=root, patterns=(pattern,)))
+    real_scandir = os.scandir
+
+    def refusing(path=".", *args, **kwargs):
+        if str(path).rstrip("/") == str(sub):
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", refusing)
+
+    if refuses:
+        with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+            fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+        assert "cannot enumerate" in str(caught.value)
+    else:
+        result = fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+        assert result.all_inside is False, (
+            "a shallow pattern never traverses the faulting directory, so the fault is not its "
+            "concern and must not refuse a scope that never reads it"
+        )
+
+
 @pytest.mark.parametrize("field", ["roots", "files"])
 def test_row_s2c_a_nul_in_a_declared_path_is_a_named_refusal(tmp_path, field):
     """S2c: `ValueError`, the third exception type in this family, which S2 never injects.

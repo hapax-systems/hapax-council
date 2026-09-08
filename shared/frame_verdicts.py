@@ -1801,12 +1801,17 @@ def _require_scannable(root: Path, pattern: str) -> None:
     suppression happens BENEATH `Path.glob`, at the syscall it wraps, which a sweep over `Path`
     methods cannot reach. A bound stated at the wrong layer looks like coverage.
 
-    Readability is verified before enumerating rather than inferred from the result, because an
-    empty enumeration and an unreadable one are indistinguishable afterwards — which is the whole
-    defect. A recursive pattern must be able to read the whole subtree; a shallow one only the
-    root it is anchored at.
+    **Called AFTER a successful enumeration, never before it.** Placing it first pre-empted the
+    existing, more specific refusals: a symlink loop under the scope base raised `ELOOP` here and
+    produced this generic "cannot enumerate" instead of the component diagnosis and remedy the
+    caller already had, reddening ten committed dispatch controls. Those controls were right. The
+    glob's own error handling speaks first; this answers only the question the glob cannot — an
+    enumeration that SUCCEEDED and came back empty, where empty and unreadable are otherwise
+    indistinguishable.
+
+    **Bound:** it therefore certifies the case it is asked about, an empty result, and does not
+    detect a partially unreadable subtree that still yielded some entries.
     """
-    recursive = "**" in pattern
     try:
         if not root.is_dir():
             return
@@ -1816,19 +1821,86 @@ def _require_scannable(root: Path, pattern: str) -> None:
     failures: list[OSError] = []
 
     def _record(error: OSError) -> None:
+        # **A directory that does not exist is not a directory that cannot be read.** Absence is
+        # a decided negative — the glob simply matches nothing there, which is an answer — while
+        # an unreadable directory is the unknown this function exists to refuse. Recording both
+        # turned every ordinary missing-path arrangement into a refusal and reddened ten
+        # committed dispatch controls; they were right, and the distinction is the same one this
+        # module keeps making between a refuted and an unreadable answer. I made the collapse
+        # inside the repair for it.
+        if isinstance(error, FileNotFoundError | NotADirectoryError):
+            return
         failures.append(error)
 
-    try:
-        if recursive:
-            for _current, _dirs, _files in os.walk(root, onerror=_record):
-                if failures:
-                    break
-        else:
-            with os.scandir(root) as entries:
+    def _children(base: Path, segment: str) -> list[Path]:
+        """Scan one directory, recording a failure, and return the subdirectories it selects."""
+        selected: list[Path] = []
+        try:
+            with os.scandir(base) as entries:
+                for entry in entries:
+                    # Match the NAME first. Asking `is_dir()` of every entry made an unrelated
+                    # sibling's fault everyone's: a self-referential symlink beside the selected
+                    # directory raised ELOOP, was recorded, and refused every scope under that
+                    # base — including ones whose pattern never names it. Ten committed dispatch
+                    # controls caught that, and they were right; a fault outside the declared
+                    # grammar is not this scope's concern, which is the same narrowness the
+                    # grammar walk itself exists to keep.
+                    if not fnmatch.fnmatch(entry.name, segment):
+                        continue
+                    try:
+                        if not entry.is_dir():
+                            continue
+                    except OSError:  # noqa: PERF203
+                        # A fault on a selected COMPONENT — a symlink loop, a dangling link — is
+                        # already diagnosed downstream, by a refusal that names the scope ref and
+                        # carries its own remedy. Skipping here lets that reach the caller intact;
+                        # raising instead replaced it with a worse message and reddened ten
+                        # committed dispatch controls, twice, in two different ways.
+                        #
+                        # This function's job is the narrow one nothing else can do: tell an EMPTY
+                        # enumeration apart from an UNREADABLE DIRECTORY, because `Path.glob`
+                        # returns the same thing for both and says nothing. Component faults are
+                        # not that case and are not its business.
+                        continue
+                    selected.append(Path(entry.path))
+        except (OSError, RuntimeError) as exc:
+            _record(exc if isinstance(exc, OSError) else OSError(str(exc)))
+        return selected
+
+    # Walk the DECLARED GRAMMAR, not an assumption about it. Every segment but the last selects
+    # directories, so each level the pattern traverses must be readable — and `sub/*.txt` and
+    # `*/*.txt` traverse a nested level without containing `**` at all. Treating `**` as the only
+    # nested form left a persistent fault on `surface/sub` undetected, the glob silently empty,
+    # and an outside hard-link alias ADMITTED (review finding, root via cx-blue, at `d8794d7c6`;
+    # the `**/*.txt` twin refused correctly, which is what isolates the assumption).
+    #
+    # It is also the narrow form: only directories the pattern actually reaches are required to
+    # be readable, so an unrelated unreadable corner of the tree does not refuse a scope that
+    # never looks at it.
+    segments = [segment for segment in pattern.split("/") if segment]
+    frontier = [root]
+    for segment in segments[:-1]:
+        if segment == "**":
+            # From here down the grammar can reach anything, so the whole subtree must be
+            # readable. `os.walk` reports per-directory failures through `onerror`.
+            for base in frontier:
+                for _current, _dirs, _files in os.walk(base, onerror=_record):
+                    if failures:
+                        break
+            frontier = []
+            break
+        frontier = [child for base in frontier for child in _children(base, segment)]
+        if failures or not frontier:
+            break
+
+    # The directories that hold the matched FILES are read too, by the final segment.
+    for base in frontier:
+        try:
+            with os.scandir(base) as entries:
                 for _entry in entries:
                     pass
-    except (OSError, RuntimeError) as exc:
-        failures.append(exc if isinstance(exc, OSError) else OSError(str(exc)))
+        except (OSError, RuntimeError) as exc:
+            _record(exc if isinstance(exc, OSError) else OSError(str(exc)))
 
     if failures:
         error = UndecidableScopeContainment(
@@ -2225,8 +2297,10 @@ def _check_member_symlinks(
         # Inspect existing witnesses only for ambiguity, never to prove that a glob's future
         # surface is contained. pathlib uses the same traversal rules as the producer here.
         try:
-            _require_scannable(path, scope_pattern)
-            paths.extend(path.glob(scope_pattern))
+            found = list(path.glob(scope_pattern))
+            if not found:
+                _require_scannable(path, scope_pattern)
+            paths.extend(found)
         except (OSError, RuntimeError, ValueError) as exc:
             raise UndecidableScopeContainment(
                 f"cannot inspect scope glob {scope_pattern!r} below {path}: {exc}; "
@@ -2387,8 +2461,9 @@ def _canonical_member_entries_uncached(member: DecayedMember) -> dict[Path, Path
     for root in member.roots:
         for pattern in patterns:
             try:
-                _require_scannable(root, f"**/{pattern}" if content_query else pattern)
                 entries = list(root.rglob(pattern) if content_query else root.glob(pattern))
+                if not entries:
+                    _require_scannable(root, f"**/{pattern}" if content_query else pattern)
             except (OSError, RuntimeError, ValueError) as exc:
                 raise UndecidableScopeContainment(
                     f"cannot enumerate member pattern {pattern!r} below {root}: {exc}; "
@@ -2425,8 +2500,9 @@ def _canonical_scope_entries(
 ) -> dict[Path, Path]:
     """Expand in the producer tree before resolving every entry, including broken links."""
     try:
-        _require_scannable(path, pattern)
         entries = list(path.glob(pattern))
+        if not entries:
+            _require_scannable(path, pattern)
     except (OSError, RuntimeError, ValueError) as exc:
         raise UndecidableScopeContainment(
             f"cannot inspect scope glob {pattern!r} below {path}: {exc}; containment is undecidable"
