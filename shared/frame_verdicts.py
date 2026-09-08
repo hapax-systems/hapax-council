@@ -3165,12 +3165,25 @@ def _canonical_scope_entries(
             raise _refuse_unobservable_enumeration(path, pattern)
         entries, enumeration_failures = _observed_glob(path, pattern)
         if enumeration_failures:
-            raise UndecidableScopeContainment(
+            error = UndecidableScopeContainment(
                 f"cannot enumerate scope glob {pattern!r} below {path}: "
                 f"{enumeration_failures[0]}; the expansion that produced this scope could not "
                 "read or classify every entry it traversed, and a short scope is not a smaller "
                 "answer but a wrong one"
             )
+            # **The default remedy is the wrong one for this failure and it fires by omission.**
+            # `UndecidableScopeContainment` defaults to "use narrower globs", which is right when
+            # a scope is too broad to decide and is actively misleading when the scope could not
+            # be READ: narrowing the glob does not repair a permission or a loop, and following
+            # the instruction changes the declaration rather than the fault. The member-side scan
+            # failure already sets its own; this one inherited the default because I raised the
+            # class directly instead of building the error and naming its repair (review finding,
+            # root, at `614dc6581`, two Next-action cases).
+            error.remedy = (
+                f"repair read access for {path} and the directories beneath it, "
+                "then retry the dispatch"
+            )
+            raise error
         # Kept: the readability walk still runs, because it diagnoses steady component faults
         # with a remedy the enumeration failure above does not carry. Observing does not replace
         # it; it covers the window the walk cannot see.

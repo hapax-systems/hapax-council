@@ -704,9 +704,18 @@ def test_a_transient_scope_fault_refuses_instead_of_shortening_the_scope(
     member = fv.DecayedMember("m", "scope_exited", (root,), ("branch/*.txt",), (alias,))
 
     state = _fault_once(monkeypatch, operation, target, index)
-    with pytest.raises(fv.UndecidableScopeContainment):
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
         fv._canonical_scope_entries(root, "branch/[a-a]lias.txt", member)  # noqa: SLF001
     assert state["count"] == 1, f"{name}: the fault must actually have fired"
+    # **The remedy has to belong to the failure, and the default fires by omission.**
+    # `UndecidableScopeContainment` defaults to "use narrower globs", which is right for a scope
+    # too broad to decide and actively misleading for one that could not be READ — following it
+    # edits the declaration instead of repairing the fault. Raising the class directly inherits
+    # that default silently, which is what happened here and what this row now catches.
+    assert caught.value.remedy != fv.UndecidableScopeContainment.remedy, (
+        f"{name}: an unreadable scope must not be told to narrow its globs"
+    )
+    assert "repair read access" in caught.value.remedy, name
 
 
 def test_a_healthy_scope_expansion_still_returns_its_entry(tmp_path: Path) -> None:
