@@ -1801,16 +1801,22 @@ def _require_scannable(root: Path, pattern: str) -> None:
     suppression happens BENEATH `Path.glob`, at the syscall it wraps, which a sweep over `Path`
     methods cannot reach. A bound stated at the wrong layer looks like coverage.
 
-    **Called AFTER a successful enumeration, never before it.** Placing it first pre-empted the
-    existing, more specific refusals: a symlink loop under the scope base raised `ELOOP` here and
-    produced this generic "cannot enumerate" instead of the component diagnosis and remedy the
-    caller already had, reddening ten committed dispatch controls. Those controls were right. The
-    glob's own error handling speaks first; this answers only the question the glob cannot — an
-    enumeration that SUCCEEDED and came back empty, where empty and unreadable are otherwise
-    indistinguishable.
+    **Called AFTER a successful enumeration, and for EVERY result — not only an empty one.**
+    Placing it first pre-empted the existing, more specific refusals, so it moved after the glob;
+    it was then also restricted to empty results, and **that restriction was a fail-open of its
+    own**. A partial listing decides containment on what survived: with an `fs.glob` member at
+    `/usr` and patterns `['*/fs*']`, faulting `os.scandir` for `/usr/bin` left
+    `/usr/include/fstab.h` in the expansion, skipped this check, and ADMITTED `/usr/bin/e2fsck`
+    — a hard link to the selected `fsck.ext2` (review finding, at `acd163574`, reproduced here).
 
-    **Bound:** it therefore certifies the case it is asked about, an empty result, and does not
-    detect a partially unreadable subtree that still yielded some entries.
+    The restriction existed to stop this function pre-empting better diagnoses, but the three
+    real causes of that were separately repaired — a missing directory is no longer a failure, an
+    unmatched sibling's fault is no longer recorded, and a component fault defers downstream. It
+    was a workaround for my own defects that outlived them and became one. Removing it closes the
+    partial-listing case and leaves all eleven dispatch controls passing.
+
+    An earlier version of this docstring named the partial-subtree case as a surviving BOUND. It
+    was reported as a defect and it was one: a stated bound on a fail-open is still a fail-open.
     """
     try:
         if not root.is_dir():
@@ -2298,8 +2304,7 @@ def _check_member_symlinks(
         # surface is contained. pathlib uses the same traversal rules as the producer here.
         try:
             found = list(path.glob(scope_pattern))
-            if not found:
-                _require_scannable(path, scope_pattern)
+            _require_scannable(path, scope_pattern)
             paths.extend(found)
         except (OSError, RuntimeError, ValueError) as exc:
             raise UndecidableScopeContainment(
@@ -2462,8 +2467,7 @@ def _canonical_member_entries_uncached(member: DecayedMember) -> dict[Path, Path
         for pattern in patterns:
             try:
                 entries = list(root.rglob(pattern) if content_query else root.glob(pattern))
-                if not entries:
-                    _require_scannable(root, f"**/{pattern}" if content_query else pattern)
+                _require_scannable(root, f"**/{pattern}" if content_query else pattern)
             except (OSError, RuntimeError, ValueError) as exc:
                 raise UndecidableScopeContainment(
                     f"cannot enumerate member pattern {pattern!r} below {root}: {exc}; "
@@ -2501,8 +2505,7 @@ def _canonical_scope_entries(
     """Expand in the producer tree before resolving every entry, including broken links."""
     try:
         entries = list(path.glob(pattern))
-        if not entries:
-            _require_scannable(path, pattern)
+        _require_scannable(path, pattern)
     except (OSError, RuntimeError, ValueError) as exc:
         raise UndecidableScopeContainment(
             f"cannot inspect scope glob {pattern!r} below {path}: {exc}; containment is undecidable"

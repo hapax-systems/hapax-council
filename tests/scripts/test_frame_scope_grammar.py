@@ -2051,6 +2051,58 @@ def test_row_s2d_scan_readability_follows_the_declared_grammar(
         )
 
 
+def test_row_s2e_a_partial_listing_cannot_decide_containment(tmp_path, monkeypatch):
+    """S2e: some entries survive while a faulted directory suppresses others.
+
+    `_require_scannable` was restricted to run only when enumeration returned NOTHING, and that
+    restriction was a fail-open. A partial listing decides containment on what happened to
+    survive: with the member rooted above two directories and a pattern reaching both, faulting
+    one leaves the other's entries in the expansion, skips the check, and ADMITS a hard link to
+    the selected file (review finding at `acd163574`, reproduced on `/usr` with `['*/fs*']`).
+
+    **Row S2d misses this because it has no readable sibling** — its fault empties the whole
+    enumeration, so the empty-only check still fired. The sibling is the whole point here.
+
+    The restriction existed to stop this function pre-empting better diagnoses, and its three
+    real causes were separately repaired: a missing directory is no longer a failure, an
+    unmatched sibling's fault is no longer recorded, and a component fault defers downstream. It
+    was a workaround for my own defects that outlived them. A stated bound on a fail-open is
+    still a fail-open.
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    faulting = root / "bin"
+    readable = root / "include"
+    faulting.mkdir(parents=True)
+    readable.mkdir(parents=True)
+
+    selected = faulting / "fsck.ext2"
+    selected.write_bytes(b"NEEDLE\n")
+    alias = faulting / "e2fsck"
+    os.link(selected, alias)
+    # The readable SIBLING: its entry survives the fault and keeps the enumeration non-empty.
+    (readable / "fstab.h").write_bytes(b"UNRELATED\n")
+
+    verdicts = _decayed(tmp_path, _local_member(root=root, patterns=("*/fs*",)))
+    normal = fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+    assert normal.all_inside is True, "with everything readable the alias is inside the member"
+
+    real_scandir = os.scandir
+
+    def refusing(path=".", *args, **kwargs):
+        if str(path).rstrip("/") == str(faulting):
+            raise PermissionError(13, "Permission denied")
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "scandir", refusing)
+
+    with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+        fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+
+    assert "cannot enumerate" in str(caught.value)
+    assert caught.value.remedy
+
+
 @pytest.mark.parametrize("field", ["roots", "files"])
 def test_row_s2c_a_nul_in_a_declared_path_is_a_named_refusal(tmp_path, field):
     """S2c: `ValueError`, the third exception type in this family, which S2 never injects.
