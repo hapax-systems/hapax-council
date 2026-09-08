@@ -2790,6 +2790,144 @@ def test_row_s2n_a_fault_while_iterating_the_scan_is_captured_too(tmp_path, monk
     assert caught.value.remedy
 
 
+class _ScanEnterFaultingOnFirstAttempt:
+    """`os.scandir` whose returned object fails on CONTEXT ENTRY the first time, not on open."""
+
+    def __init__(self, target: str, error: OSError) -> None:
+        self._target = target
+        self._error = error
+        self._real = os.scandir
+        self.attempts = 0
+
+    def __call__(self, path="."):
+        entries = []
+        with self._real(path) as scan:
+            entries.extend(scan)
+        if str(path).rstrip("/") == self._target:
+            self.attempts += 1
+            if self.attempts == 1:
+                return _ScandirRaisingOnEnter(entries, self._error)
+        return _ScandirResult(entries)
+
+
+class _ScandirRaisingOnEnter(_ScandirResult):
+    """Opens fine; `__enter__` raises. Native pathlib catches it and it vanishes unrecorded."""
+
+    def __init__(self, entries, error: OSError) -> None:
+        super().__init__(entries)
+        self._error = error
+
+    def __enter__(self):
+        raise self._error
+
+
+def test_row_s2p_a_fault_entering_the_scan_context_is_captured_too(tmp_path, monkeypatch):
+    """S2p: the PROTOCOL layer — entering the scan — is a fourth place this defect lives.
+
+    Review finding (root, 2026-09-08, at `8c3302d49`, eight cases): the observing enumerator
+    wrapped opening, iterating and classifying, and left `__enter__`/`__exit__` bare. Native
+    pathlib catches an error there and it disappears exactly as the other three did.
+
+    **Four layers, closed one at a time, each close reported as complete.** That is the same
+    shape as `OSError`/`RuntimeError`/`ValueError` being met one type at a time in this module,
+    and worth naming rather than quietly adding a fourth `try`.
+
+    Semantics are unchanged: the error is recorded and re-raised, so the caller sees what it saw.
+    """
+    base = tmp_path / "base"
+    root = base / "bin"
+    root.mkdir(parents=True)
+    selected = root / "fsck.ext2"
+    selected.write_bytes(b"e2fsck NEEDLE\n")
+    scope_alias = root / "e2fsck"
+    os.link(selected, scope_alias)
+
+    member = {
+        "id": "protocol-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": ["fsck.ext[234]"]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("protocol-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    readable = fv.scope_within_decayed(
+        [str(scope_alias)], verdicts, council_root=base, vault_root=base
+    )
+    assert readable.all_inside is True, "readable baseline reaches the selected file"
+
+    monkeypatch.setattr(
+        os,
+        "scandir",
+        _ScanEnterFaultingOnFirstAttempt(str(root), PermissionError(13, "Permission denied")),
+    )
+
+    with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+        fv.scope_within_decayed([str(scope_alias)], verdicts, council_root=base, vault_root=base)
+    assert "cannot enumerate" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    ["[b]ranch/selected.txt", "./[b]ranch/selected.txt", ".//[b]ranch/selected.txt"],
+    ids=["plain", "dot-prefixed", "dot-and-double-slash"],
+)
+def test_row_s2q_relevance_reads_the_pattern_the_way_the_selector_does(
+    tmp_path, monkeypatch, pattern
+):
+    """S2q: the relevance proof must not carry its own normalization grammar.
+
+    Review finding (root, 2026-09-08, at `8c3302d49`): `_definitely_outside_pattern` split the
+    pattern on "/", which keeps `.` and empty segments that pathlib's own selector removes. So
+    for `./[b]ranch/selected.txt` the entry `branch` was compared against the segment `.`, the
+    match failed, a RELEVANT classification fault was declared irrelevant and discarded, and the
+    selection went short with `errors` empty — the fault the observation exists to catch,
+    silenced by the filter meant to keep it narrow.
+
+    **Two grammars for one pattern will always drift; the sound reading is the selector's own.**
+    `PurePosixPath(pattern).parts` is that reading, and the three spellings here denote the same
+    language, which is the property the row pins.
+    """
+    base = tmp_path / "base"
+    root = base / "surface"
+    branch = root / "branch"
+    branch.mkdir(parents=True)
+    selected = branch / "selected.txt"
+    selected.write_bytes(b"NEEDLE\n")
+    elsewhere = base / "elsewhere"
+    elsewhere.mkdir()
+    alias = elsewhere / "alias.txt"
+    os.link(selected, alias)
+
+    member = {
+        "id": "normalization-surface",
+        "reader": {"id": "fs.glob", "version": "^1.0.0"},
+        "location": {"path": str(root), "patterns": [pattern]},
+    }
+    procedure = _procedure_root(
+        tmp_path / "procedure",
+        members=[member],
+        verdicts=[_verdict("normalization-surface", "scope_exited")],
+    )
+    verdicts = fv.load_frame_verdicts(procedure, now=NOW)
+
+    readable = fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+    assert readable.all_inside is True, f"{pattern}: the healthy selection reaches the file"
+
+    monkeypatch.setattr(
+        os,
+        "scandir",
+        _ClassificationFaultingOnFirstAttempt("branch", OSError(40, "Too many levels of symlinks")),
+    )
+
+    with pytest.raises(fv.NonCanonicalScopeRef) as caught:
+        fv.scope_within_decayed([str(alias)], verdicts, council_root=base, vault_root=base)
+    assert "cannot enumerate" in str(caught.value)
+
+
 def test_row_s2o_absent_observation_refuses_by_name_instead_of_falling_back(tmp_path, monkeypatch):
     """S2o: capability ABSENCE, which nothing exercised and which is not hypothetical.
 

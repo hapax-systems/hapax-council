@@ -34,7 +34,7 @@ import re
 import subprocess
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import yaml
 
@@ -2132,11 +2132,24 @@ def _observed_glob(root: Path, pattern: str) -> tuple[list[Path], list[OSError]]
             self._inner = inner
 
         def __enter__(self):  # noqa: ANN204
-            self._inner.__enter__()
+            # THE PROTOCOL LAYER, and the fourth place this one defect lives. Entering and
+            # leaving the scan can fail on their own, native pathlib catches those, and they
+            # then disappear exactly as the other three did (review finding, root, at
+            # `8c3302d49`, eight cases). Semantics are unchanged — the error is recorded and
+            # re-raised, so every caller still sees what it saw.
+            try:
+                self._inner.__enter__()
+            except OSError as exc:
+                failures.append(exc)
+                raise
             return self
 
         def __exit__(self, *exc_info) -> None:
-            self._inner.__exit__(*exc_info)
+            try:
+                self._inner.__exit__(*exc_info)
+            except OSError as exc:
+                failures.append(exc)
+                raise
 
         def __iter__(self):  # noqa: ANN204
             return self
@@ -2193,9 +2206,17 @@ def _definitely_outside_pattern(entry: Path, root: Path, pattern: str) -> bool:
         relative = entry.relative_to(root)
     except ValueError:
         return True
-    segments = [segment for segment in pattern.split("/") if segment]
+    # **The RUNTIME's parsed components, not a second normalization grammar.** Splitting the
+    # pattern on "/" kept `.` and empty segments that pathlib's own selector removes, so
+    # `./[b]ranch/selected.txt` compared the entry `branch` against the segment `.`, failed the
+    # match, and declared a relevant fault irrelevant — the selection went short with no error
+    # recorded (review finding, root, at `8c3302d49`, with the `.//` spelling as its twin).
+    # Writing a parallel grammar to reason about the first one is how the two drift apart; the
+    # only sound reading of a pattern is the one the selector itself uses.
+    segments = list(PurePosixPath(pattern).parts)
     parts = relative.parts
-    if not segments:
+    if not segments or ".." in segments:
+        # A parent segment can climb back into anything; nothing below is provably outside.
         return False
     for index, part in enumerate(parts):
         if index >= len(segments):
