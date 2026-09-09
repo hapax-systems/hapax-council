@@ -37,12 +37,26 @@ def _write(repo: Path, source: str) -> Path:
     return path
 
 
-def _unwritten(report) -> set[str]:
-    return {
-        finding.reader.pattern
-        for finding in report.findings
-        if finding.kind == "consumer-reads-unwritten-artifact"
-    }
+#: Readers surfaced as having no ESTABLISHED producer, which the report now says two ways: an
+#: absent write is `consumer-reads-unwritten-artifact`, and a located write whose execution is
+#: undetermined is `consumer-reads-artifact-with-unresolved-writer`. These tests are about binding
+#: precision and effect propagation — every one of them asks whether the reader survives a
+#: withheld writer, not which of the two sentences the report chose. WHICH kind fires is pinned
+#: where it belongs, in `test_check_consumer_side_expression_state.py`'s `REPORT_BOUNDARY` rows.
+#:
+#: Named `_unwritten` while only one kind existed; 66 cases here then asserted a kind name where
+#: they meant the concept, and stayed red across three published heads.
+#: The report says "this reader has no ESTABLISHED producer" two ways, and which one it says is
+#: the discrimination — so each helper reads exactly one kind and every row names the one it
+#: means. Measured across both binding files at `b88696a85`: 569 orphan findings, no test case
+#: emitting both kinds, and every one of the 72 unresolved-writer findings carrying at least one
+#: located writer with none of them bounded. A helper reading both would have hidden all of that.
+ABSENT_WRITER = "consumer-reads-unwritten-artifact"
+UNRESOLVED_WRITER = "consumer-reads-artifact-with-unresolved-writer"
+
+
+def _orphaned(report, kind: str = ABSENT_WRITER) -> set[str]:
+    return {finding.reader.pattern for finding in report.findings if finding.kind == kind}
 
 
 @pytest.mark.parametrize("indirect", [False, True], ids=["direct", "indirect"])
@@ -60,7 +74,7 @@ def test_round_nine_direct_indirect_outer_effects(gate, tmp_path, indirect):
     bounded_writes = {a.pattern for a in accesses if a.action == "write" and a.bounded}
     assert "artifacts/old.json" not in bounded_writes, bounded_writes
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/old.json"}
+    assert _orphaned(report, UNRESOLVED_WRITER) == {"artifacts/old.json"}
     assert report.unresolvable > 0 or bounded_writes == {"artifacts/new.json"}
     if not indirect:
         assert report.unresolvable > 0
@@ -91,7 +105,7 @@ def test_round_nine_three_level_outer_effects(gate, tmp_path, aliased, wrapped):
         {"artifacts/local.json"} if wrapped else set()
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/old.json"}
+    assert _orphaned(report, UNRESOLVED_WRITER) == {"artifacts/old.json"}
     assert report.unresolvable > 0
     assert not report.unresolved_closures
 
@@ -154,7 +168,7 @@ def test_round_nine_unbounded_outer_effects_are_named(gate, tmp_path, monkeypatc
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded], accesses
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/old.json"}
+    assert _orphaned(report, UNRESOLVED_WRITER) == {"artifacts/old.json"}
     assert report.unresolvable > 0
     assert any(
         "outer effects" in site and "UNRESOLVED" in site for site in report.unresolved_closures
@@ -183,7 +197,7 @@ def test_round_nine_transitive_nonlocal_keeps_lexical_owner(gate, tmp_path):
         "artifacts/module.json"
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/old.json"}
+    assert _orphaned(report, UNRESOLVED_WRITER) == {"artifacts/old.json"}
     assert report.unresolvable > 0
 
 
@@ -231,7 +245,7 @@ def test_round_eight_callee_mutations_invalidate_caller(gate, tmp_path, store, w
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded], accesses
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/old.json"}
+    assert _orphaned(report, UNRESOLVED_WRITER) == {"artifacts/old.json"}
     assert report.unresolvable > 0
     assert any("ARTIFACT" in site for site in report.unresolved_paths)
 
@@ -246,7 +260,7 @@ def test_round_eight_augassign_freezes_target_before_walrus(gate, tmp_path):
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/old/new.json"}
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"new.json/new.json"}
+    assert _orphaned(report) == {"new.json/new.json"}
     assert report.unresolvable == 0
 
 
@@ -336,7 +350,7 @@ def test_round_seven_call_bindings_precede_body_accesses(
         f"artifacts/{name}.json" for name in arguments if name is not None
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/old.json"}
+    assert _orphaned(report) == {"artifacts/old.json"}
     assert report.unresolvable == (1 if None in arguments else 0)
     assert bool(report.unresolved_paths) == (None in arguments)
 
@@ -362,7 +376,7 @@ def test_round_seven_function_globals_at_call(gate, tmp_path, before, after, exp
         f"artifacts/{name}.json" for name in expected
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == (set() if "new" in expected else {"artifacts/new.json"})
+    assert _orphaned(report) == (set() if "new" in expected else {"artifacts/new.json"})
     assert report.unresolvable == 0
 
 
@@ -389,7 +403,7 @@ def test_round_seven_receiver_precedes_argument_rebinding(
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == {f"artifacts/{expected}"}
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/new.json"}
+    assert _orphaned(report) == {"artifacts/new.json"}
     assert report.unresolvable == 0
 
 
@@ -404,7 +418,7 @@ def test_round_seven_arguments_keep_their_evaluation_state(gate, tmp_path, argum
     )
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/old.json"}
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
 
 
 def test_round_seven_unknown_receiver_cannot_borrow_argument_binding(gate, tmp_path):
@@ -417,7 +431,7 @@ def test_round_seven_unknown_receiver_cannot_borrow_argument_binding(gate, tmp_p
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/new.json"}
+    assert _orphaned(report) == {"artifacts/new.json"}
     assert report.unresolvable == 1
     assert any("path=artifact" in site for site in report.unresolved_paths)
 
@@ -430,7 +444,7 @@ def test_round_seven_unknown_call_globals_are_named(gate, tmp_path):
         "write_state()\nARTIFACT = Path('artifacts/new.json')\nARTIFACT.read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/new.json"}
+    assert _orphaned(report) == {"artifacts/new.json"}
     assert report.unresolvable == 1
     assert any("path=ARTIFACT" in site for site in report.unresolved_paths)
 
@@ -445,7 +459,7 @@ def test_round_seven_caller_locals_cannot_replace_callee_globals(gate, tmp_path)
     )
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/old.json"}
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
 
 
 def test_round_seven_many_call_states_retain_the_union(gate, tmp_path):
@@ -476,7 +490,7 @@ def test_round_seven_call_state_cap_is_named_without_guessing(gate, tmp_path, re
     assert any(
         "binding state cap" in site and "write_state" in site for site in report.unresolved_paths
     )
-    assert _unwritten(report) == {"artifacts/39.json"}
+    assert _orphaned(report) == {"artifacts/39.json"}
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [access for access in accesses if access.action == "write" and access.bounded]
 
@@ -519,7 +533,7 @@ def test_round_seven_fixpoint_iteration_cap_is_named(gate, tmp_path, monkeypatch
     report = gate.analyse_consumer_side(tmp_path, [])
     assert report.unresolvable > 0
     assert any("did not converge" in site for site in report.unresolved_paths)
-    assert _unwritten(report) == {"artifacts/new.json"}
+    assert _orphaned(report) == {"artifacts/new.json"}
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {access.pattern for access in accesses if access.action == "write"} == {
         "artifacts/stable.json"
@@ -561,7 +575,7 @@ def test_round_seven_mixed_read_bounds_keep_only_unresolved_pairs(gate, tmp_path
     assert len(report.pairs) == 1
     assert report.pairs[0].reader == dynamic
     assert report.pairs[0].writer == writer
-    assert pattern in _unwritten(report)
+    assert pattern in _orphaned(report, UNRESOLVED_WRITER)
 
 
 def test_round_seven_imported_callers_share_equal_global_states(gate, tmp_path):
@@ -693,7 +707,7 @@ def test_round_seven_recursive_binding_growth_is_named(gate, tmp_path):
         "write_state(Path('artifacts/root'))\nPath('artifacts/root/next').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/root/next"}
+    assert _orphaned(report) == {"artifacts/root/next"}
     assert report.unresolvable > 0
     assert any(
         "call bindings for write_state did not converge" in site for site in report.unresolved_paths
@@ -740,7 +754,7 @@ def test_round_seven_nested_call_separates_cells_from_globals(
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == {f"artifacts/{expected}.json"}
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {
+    assert _orphaned(report) == {
         f"artifacts/{name}.json" for name in {"old", "cell", "new"} - {expected}
     }
     assert report.unresolvable == 0
@@ -765,7 +779,7 @@ def test_round_seven_transitive_calls_keep_explicit_bindings(gate, tmp_path, cal
     accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/new.json"}
     assert unresolved == 0
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/old.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/old.json"}
 
 
 @pytest.mark.parametrize(
@@ -824,7 +838,7 @@ def test_round_six_unreachable_accesses_after_terminator(gate, tmp_path, termina
         "Path('artifacts/missing.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/missing.json"}
+    assert _orphaned(report) == {"artifacts/missing.json"}
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert [(a.action, a.pattern) for a in accesses] == [("read", "artifacts/missing.json")]
 
@@ -842,7 +856,7 @@ def test_round_six_loop_exit_preserves_bindings_and_runs_finally(gate, tmp_path,
         "artifact.read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/exit.json"} | (
+    assert _orphaned(report) == {"artifacts/exit.json"} | (
         {"artifacts/else.json"} if terminator == "continue" else set()
     )
 
@@ -858,7 +872,7 @@ def test_round_six_module_default_is_frozen(gate, tmp_path, signature):
     )
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/old.json"}
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
 
 
 @pytest.mark.parametrize(
@@ -880,7 +894,7 @@ def test_round_six_helper_default_and_explicit_argument(gate, tmp_path, argument
     )
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == {f"artifacts/{expected}.json"}
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
 
 
 def test_round_six_unknown_definition_default_stays_unresolved(gate, tmp_path):
@@ -892,7 +906,7 @@ def test_round_six_unknown_definition_default_stays_unresolved(gate, tmp_path):
         "Path('artifacts/new.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/new.json"}
+    assert _orphaned(report) == {"artifacts/new.json"}
     assert report.unresolvable == 1
     assert len(report.unresolved_paths) == 1
     assert "path=artifact" in report.unresolved_paths[0]
@@ -911,7 +925,7 @@ def test_round_six_explicit_writer_argument_wins(gate, tmp_path, argument):
     )
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/explicit.json"}
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/old.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/old.json"}
 
 
 @pytest.mark.parametrize("argument", ["choose()", "*options", "**options"])
@@ -923,7 +937,7 @@ def test_round_six_unknown_writer_argument_cannot_reuse_default(gate, tmp_path, 
         f"write_state({argument})\nPath('artifacts/old.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/old.json"}
+    assert _orphaned(report) == {"artifacts/old.json"}
     assert report.unresolvable == 1
     assert len(report.unresolved_paths) == 1
 
@@ -966,7 +980,7 @@ def test_round_six_literal_filename_is_not_a_glob(gate, tmp_path, literal, other
         )
         + f"Path('artifacts/{other}').read_text()\n{expression}.read_text()\n",
     )
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {f"artifacts/{other}"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {f"artifacts/{other}"}
     accesses, count, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {(a.action, a.pattern) for a in accesses} == {
         ("write", f"artifacts/{literal}"),
@@ -983,7 +997,7 @@ def test_round_six_glob_escapes_literal_parent(gate, tmp_path, directory):
         "from pathlib import Path\nPath('artifacts/state1/present.json').write_text('{}')\n"
         f"Path('artifacts/{directory}').glob('*.json')\n",
     )
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {f"artifacts/{directory}/*.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {f"artifacts/{directory}/*.json"}
 
 
 @pytest.mark.parametrize(
@@ -1010,7 +1024,7 @@ def test_round_six_glob_escapes_literal_parent(gate, tmp_path, directory):
 def test_round_six_store_target_reads_are_scanned(gate, tmp_path, statement):
     _write(tmp_path, "from pathlib import Path\nslots = {}\n" + statement + "\n")
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/missing.json"}
+    assert _orphaned(report) == {"artifacts/missing.json"}
     assert report.unresolvable == 0
 
 
@@ -1022,7 +1036,7 @@ def test_round_six_target_and_rhs_evaluation_order(gate, tmp_path, store):
         f"slots[artifact.read_text()] {store} (artifact := Path('artifacts/new.json'))\n",
     )
     expected = "old" if store == "+=" else "new"
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {f"artifacts/{expected}.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {f"artifacts/{expected}.json"}
 
 
 @pytest.mark.parametrize(
@@ -1041,7 +1055,7 @@ def test_round_six_target_stores_execute_left_to_right(gate, tmp_path, statement
         # This pin isolates target order; an unresolved manager can also rebind globals.
         "def manager():\n    pass\n" + statement + "\n",
     )
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/new.json"}
 
 
 @pytest.mark.parametrize("terminator", ["break", "continue", "return", "raise RuntimeError"])
@@ -1053,7 +1067,7 @@ def test_round_six_conditional_exit_keeps_reachable_branch(gate, tmp_path, termi
         "        Path('artifacts/reachable.json').write_text('{}')\n"
         "Path('artifacts/reachable.json').read_text()\n",
     )
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == set()
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == set()
 
 
 @pytest.mark.parametrize("terminator", ["break", "continue"])
@@ -1065,7 +1079,7 @@ def test_round_six_unreachable_definition_cannot_supply_writer(gate, tmp_path, t
         "        Path('artifacts/missing.json').write_text('{}')\n"
         "Path('artifacts/missing.json').read_text()\n",
     )
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/missing.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/missing.json"}
 
 
 @pytest.mark.parametrize("terminator", ["break", "continue"])
@@ -1078,7 +1092,7 @@ def test_round_six_unreachable_helper_cannot_supply_writer(gate, tmp_path, termi
         "artifact_path().write_text('{}')\nPath('artifacts/missing.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/missing.json"}
+    assert _orphaned(report) == {"artifacts/missing.json"}
     assert report.unresolvable == 1
     assert len(report.unresolved_paths) == 1
 
@@ -1091,7 +1105,7 @@ def test_round_six_real_glob_matches_literal_filename(gate, tmp_path, literal):
         f"Path('artifacts/{literal}').write_text('{{}}')\n"
         "Path('artifacts').glob('*.json')\n",
     )
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == set()
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == set()
 
 
 @pytest.mark.parametrize("transform", ["f'{name}'", "Path(name)", "helper(name)"])
@@ -1104,7 +1118,7 @@ def test_round_six_literal_provenance_survives_path_construction(gate, tmp_path,
         "Path('artifacts/state1.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/state1.json"}
+    assert _orphaned(report) == {"artifacts/state1.json"}
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/state[1].json"}
 
@@ -1116,7 +1130,7 @@ def test_round_six_invalid_literal_cannot_forge_provenance(gate, tmp_path):
         "Path('artifacts/*.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/*.json"}
+    assert _orphaned(report) == {"artifacts/*.json"}
     assert report.unresolvable == 1
     assert len(report.unresolved_paths) == 1
 
@@ -1189,7 +1203,7 @@ def test_assigned_path_open_receiver_keeps_access(
     }
     assert unresolved == 0
     if action == "read":
-        assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/orphan.json"}
+        assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/orphan.json"}
 
 
 @pytest.mark.parametrize("receiver", ["choose()", "'artifacts/orphan.json'"])
@@ -1242,7 +1256,7 @@ def test_rebound_closure_never_invents_an_obsolete_writer(
     assert writers == set()
     assert unresolved == 1
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/old.json" in _unwritten(report)
+    assert "artifacts/old.json" in _orphaned(report)
     payload = gate._report_json(report)
     assert payload["unresolved_closures"] == [
         "shared/consumer.py:4: closure binding artifact may change after definition"
@@ -1563,7 +1577,7 @@ def test_expression_cap_preserves_every_pattern(
     )
     _write(tmp_path, "from pathlib import Path\ndef load(flags):\n" + body)
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == expected
+    assert _orphaned(report) == expected
     assert report.unresolvable == 0
     payload = gate._report_json(report)
     assert payload["capped_expressions"]
@@ -1594,7 +1608,7 @@ def test_shadowed_callee_cannot_supply_a_writer(
     )
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [access for access in accesses if access.action == "write"]
-    assert "artifacts/destination.json" in _unwritten(gate.analyse_consumer_side(tmp_path, []))
+    assert "artifacts/destination.json" in _orphaned(gate.analyse_consumer_side(tmp_path, []))
 
 
 @pytest.mark.parametrize("nested", ["def inner():", "async def inner():", "lambda"])
@@ -1624,7 +1638,7 @@ def test_nested_scope_keeps_all_enclosing_branch_values(gate, tmp_path: Path) ->
         tmp_path,
         "from pathlib import Path\ndef outer(flag):\n    if flag:\n        artifact = Path('artifacts/a.json')\n    else:\n        artifact = Path('artifacts/b.json')\n    def inner():\n        return artifact.read_text()\n",
     )
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {
         "artifacts/a.json",
         "artifacts/b.json",
     }
@@ -1635,7 +1649,7 @@ def test_definition_expressions_use_enclosing_bindings(gate, tmp_path: Path) -> 
         tmp_path,
         "from pathlib import Path\ndef outer():\n    artifact = Path('artifacts/definition.json')\n    @decorate(artifact.read_text())\n    def inner(artifact=open(artifact), *, other=open('artifacts/keyword-default.json')):\n        pass\n",
     )
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {
         "artifacts/definition.json",
         "artifacts/keyword-default.json",
     }
@@ -1668,7 +1682,7 @@ def test_generated_branch_corpus_preserves_concrete_union(
             source += f"    match flags[{i}]:\n        case True:\n            {assignment}\n"
     _write(tmp_path, source + "    return artifact.read_text()\n")
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == expected
+    assert _orphaned(report) == expected
     if shape == "loop":
         assert report.unresolvable > 0
     else:
@@ -1742,7 +1756,7 @@ def test_module_assignment_preserves_capped_union_for_function_reads(gate, tmp_p
         + "\ndef load():\n    return artifact.read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {f"artifacts/module-{i}.json" for i in range(count)}
+    assert _orphaned(report) == {f"artifacts/module-{i}.json" for i in range(count)}
     assert report.unresolvable == 0
 
 
@@ -1781,7 +1795,7 @@ def test_multi_component_path_does_not_pair_different_files(gate, tmp_path: Path
         "Path('artifacts', 'missing.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/missing.json" in _unwritten(report)
+    assert "artifacts/missing.json" in _orphaned(report)
     accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {(item.action, item.pattern) for item in accesses} == {
         ("write", "artifacts/produced.json"),
@@ -1803,7 +1817,7 @@ def test_multi_component_path_absolute_component_resets_prefix(
         "from pathlib import Path, PurePath\n"
         f"Path('wrong', {component.format(absolute=absolute)}, 'missing.json').read_text()\n",
     )
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/reset/missing.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/reset/missing.json"}
 
 
 @pytest.mark.parametrize("constructor", ["Path", "PurePath", "PurePosixPath"])
@@ -1815,7 +1829,7 @@ def test_multi_component_path_joins_nested_components(
         "from pathlib import Path, PurePath, PurePosixPath\n"
         f"Path({constructor}('artifacts', 'nested'), Path('missing.json')).read_text()\n",
     )
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/nested/missing.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/nested/missing.json"}
 
 
 @pytest.mark.parametrize("component", ["choose()", "unknown", "f'{unknown}.json'"])
@@ -1832,7 +1846,7 @@ def test_multi_component_path_unknown_component_is_named(
     assert not [item for item in accesses if item.action == "write"]
     assert unresolved == 1
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/missing.json" in _unwritten(report)
+    assert "artifacts/missing.json" in _orphaned(report)
     sites = gate._report_json(report)["unresolved_paths"]
     assert len(sites) == 1 and "shared/consumer.py:2:" in sites[0]
     assert component in sites[0]
@@ -1854,7 +1868,7 @@ def test_helper_local_assignments_do_not_borrow_module_writer(
         "artifact_path().write_text('{}')\nPath('artifacts/old.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/old.json" in _unwritten(report)
+    assert "artifacts/old.json" in _orphaned(report)
     accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {item.pattern for item in accesses if item.action == "write"} == {"artifacts/new.json"}
     assert unresolved == 0
@@ -1880,7 +1894,7 @@ def test_helper_unbounded_body_cannot_supply_old_writer(gate, tmp_path: Path, bo
         "artifact_path().write_text('{}')\nPath('artifacts/old.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/old.json" in _unwritten(report)
+    assert "artifacts/old.json" in _orphaned(report)
     assert report.unresolvable >= 1
     assert any("artifact_path()" in site for site in report.unresolved_paths)
 
@@ -1897,7 +1911,7 @@ def test_helper_nonlocal_assignment_uses_enclosing_binding(gate, tmp_path: Path)
     accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {item.pattern for item in accesses if item.action == "write"} == {"artifacts/new.json"}
     assert unresolved == 0
-    assert "artifacts/old.json" in _unwritten(gate.analyse_consumer_side(tmp_path, []))
+    assert "artifacts/old.json" in _orphaned(gate.analyse_consumer_side(tmp_path, []))
 
 
 def test_helper_return_uses_state_at_return_not_after(gate, tmp_path: Path) -> None:
@@ -1908,7 +1922,7 @@ def test_helper_return_uses_state_at_return_not_after(gate, tmp_path: Path) -> N
         "    return ARTIFACT\n    ARTIFACT = Path('artifacts/unreachable.json')\n"
         "artifact_path().read_text()\n",
     )
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/returned.json"}
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {"artifacts/returned.json"}
 
 
 def test_helper_guard_raise_preserves_normal_return_binding(gate, tmp_path: Path) -> None:
@@ -1920,7 +1934,7 @@ def test_helper_guard_raise_preserves_normal_return_binding(gate, tmp_path: Path
         "artifact_path(False).read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/normal.json"}
+    assert _orphaned(report) == {"artifacts/normal.json"}
     assert report.unresolvable == 0
 
 
@@ -1984,7 +1998,7 @@ def test_store_cannot_supply_an_obsolete_producer(gate, tmp_path: Path, binding,
         "Path('artifacts/old.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/old.json" in _unwritten(report)
+    assert "artifacts/old.json" in _orphaned(report)
     accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == (
         {expected} if expected else set()
@@ -2014,7 +2028,7 @@ def test_comprehension_targets_do_not_borrow_or_export_producers(
         "Path('artifacts/old.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/old.json" in _unwritten(report)
+    assert "artifacts/old.json" in _orphaned(report)
     assert report.unresolvable == 2
     assert len(report.unresolved_paths) == 2
 
@@ -2066,7 +2080,7 @@ def test_constant_formatting_cannot_match_a_different_filename(
         f"Path(f'artifacts/{{{field}}}.json').write_text('{{}}')\nPath({wrong!r}).read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert wrong in _unwritten(report)
+    assert wrong in _orphaned(report)
     accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == {expected}
     assert unresolved == 0
@@ -2083,7 +2097,7 @@ def test_unbounded_or_invalid_formatting_is_named(gate, tmp_path: Path, field) -
         "Path('artifacts/word.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/word.json" in _unwritten(report)
+    assert "artifacts/word.json" in _orphaned(report)
     assert report.unresolvable == 1
     assert len(report.unresolved_paths) == 1
 
@@ -2118,7 +2132,7 @@ def test_unformatted_dynamic_gap_cannot_prove_a_producer(gate, tmp_path: Path, a
         + "Path('artifacts/old.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/old.json" in _unwritten(report)
+    assert "artifacts/old.json" in _orphaned(report, UNRESOLVED_WRITER)
     assert report.unresolvable == 1
     assert len(report.unresolved_paths) == 1
     assert not report.pairs
@@ -2140,7 +2154,7 @@ def test_expression_stores_preserve_both_possible_bindings(
         "    artifact = Path('artifacts/old.json')\n" + f"    {expression}\n"
         "    artifact.read_text()\n",
     )
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {
         "artifacts/a.json",
         "artifacts/b.json",
     }
@@ -2169,7 +2183,7 @@ def test_formatting_helper_argument_replaces_typed_default(gate, tmp_path: Path)
         "artifact_path(2).write_text('{}')\nPath('artifacts/01.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/01.json" in _unwritten(report)
+    assert "artifacts/01.json" in _orphaned(report)
     accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {a.pattern for a in accesses if a.action == "write"} == {"artifacts/02.json"}
     assert unresolved == 0
@@ -2183,7 +2197,7 @@ def test_lambda_comprehension_has_its_own_target_binding(gate, tmp_path: Path) -
         "Path('artifacts/old.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/old.json" in _unwritten(report)
+    assert "artifacts/old.json" in _orphaned(report)
     assert report.unresolvable == 1
     assert len(report.unresolved_paths) == 1
 
@@ -2196,7 +2210,7 @@ def test_unmodelled_type_alias_invalidates_store(gate, tmp_path: Path) -> None:
         "    artifact.write_text('{}')\nPath('artifacts/old.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/old.json" in _unwritten(report)
+    assert "artifacts/old.json" in _orphaned(report)
     assert report.unresolvable == 1
 
 
@@ -2212,7 +2226,7 @@ def test_dynamic_helper_pair_is_retained_as_unresolved_evidence(
         "Path('artifacts/widget-old.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/widget-old.json" in _unwritten(report)
+    assert "artifacts/widget-old.json" in _orphaned(report, UNRESOLVED_WRITER)
     assert report.unresolvable == 2
     assert len(report.unresolved_paths) == 2
     payload = gate._report_json(report)
@@ -2239,7 +2253,7 @@ def test_round_ten_literal_setup_configure(gate, tmp_path):
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/old.json"}
+    assert _orphaned(report, UNRESOLVED_WRITER) == {"artifacts/old.json"}
     assert report.unresolvable > 0
 
 
@@ -2271,7 +2285,9 @@ def test_round_ten_attribute_owner_never_borrows_namesake(gate, tmp_path, factor
         a.pattern for a in accesses if a.action == "write" and a.bounded
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/old.json"}
+    # The namesake attribute is not borrowed, so no writer is LOCATED for this reader at all —
+    # a genuine absence, not a withheld one. Measured for both parameters.
+    assert _orphaned(report) == {"artifacts/old.json"}
     assert report.unresolvable > 0
 
 
@@ -2290,7 +2306,7 @@ def test_round_ten_literal_loop_composes_iterations(gate, tmp_path):
         "artifacts/start/a/b"
     }
     assert unresolved == 0
-    assert _unwritten(gate.analyse_consumer_side(tmp_path, [])) == {
+    assert _orphaned(gate.analyse_consumer_side(tmp_path, [])) == {
         "artifacts/start",
         "artifacts/start/a",
         "artifacts/start/b",
@@ -2324,9 +2340,16 @@ def test_round_ten_uncertain_loop_never_certifies_producers(gate, tmp_path, monk
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/start" in _unwritten(report)
+    # The three parameters do NOT share a causal state, and the report says so. A three-element
+    # literal is enumerated exactly, so nothing writes `artifacts/start` and the absence is
+    # decided; `['a'] * 100` and the unresolved name leave a located writer whose execution is
+    # undetermined. Same expected reader, two different sentences about why it is orphaned.
+    exact_literal = iterable == "['a', 'b', 'c']"
+    assert "artifacts/start" in _orphaned(
+        report, ABSENT_WRITER if exact_literal else UNRESOLVED_WRITER
+    )
     assert report.unresolvable > 0
-    if iterable == "['a', 'b', 'c']":
+    if exact_literal:
         assert any("literal loop iteration cap" in site for site in report.capped_expressions)
 
 
@@ -2370,7 +2393,7 @@ def test_round_ten_ordered_outer_effects_without_walrus(gate, tmp_path, expressi
     # changed because the claim was false.
     expected_unresolved = 1 if expression.startswith("write_state(ARTIFACT, [") else 0
     assert unresolved == expected_unresolved
-    assert not _unwritten(gate.analyse_consumer_side(tmp_path, []))
+    assert not _orphaned(gate.analyse_consumer_side(tmp_path, []))
 
 
 def test_round_ten_comprehension_exports_outer_effects(gate, tmp_path):
@@ -2385,7 +2408,7 @@ def test_round_ten_comprehension_exports_outer_effects(gate, tmp_path):
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/old.json"}
+    assert _orphaned(report, UNRESOLVED_WRITER) == {"artifacts/old.json"}
     assert report.unresolvable > 0
 
 
@@ -2462,7 +2485,7 @@ def test_round_ten_unknown_transitive_capture_keeps_its_owner(gate, tmp_path):
         "artifacts/stable.json"
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/old.json"}
+    assert _orphaned(report, UNRESOLVED_WRITER) == {"artifacts/old.json"}
     assert report.unresolvable > 0
 
 
@@ -2495,7 +2518,7 @@ def test_round_ten_effect_caps_are_named_and_withhold_writers(gate, tmp_path, li
     report = gate.analyse_consumer_side(tmp_path, [])
     assert report.unresolvable > 0
     assert any(f"outer effect {limit} cap" in site for site in report.capped_expressions)
-    assert _unwritten(report) == {"artifacts/old.json"}
+    assert _orphaned(report, UNRESOLVED_WRITER) == {"artifacts/old.json"}
 
 
 def test_round_ten_effect_closure_linear_cost_and_local_cache(gate, monkeypatch):
@@ -2562,7 +2585,7 @@ def test_round_ten_unknown_loop_outer_effects_are_uncertain(gate, tmp_path):
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/old.json"}
+    assert _orphaned(report, UNRESOLVED_WRITER) == {"artifacts/old.json"}
     assert report.unresolvable > 0
 
 
@@ -2625,7 +2648,7 @@ def test_round_twelve_flat_module_binding_lookup_cost(gate, tmp_path, monkeypatc
         ),
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {f"artifacts/{i}.json" for i in range(24)}
+    assert _orphaned(report) == {f"artifacts/{i}.json" for i in range(24)}
     assert measured["enumerated"] == 0, measured
     assert measured["lookups"] > 1000
     assert measured["snapshots"] == 0, measured
@@ -2992,7 +3015,7 @@ def test_round_twelve_captured_api_name_is_not_an_effect_cap(gate, tmp_path):
     )
     report = gate.analyse_consumer_side(tmp_path, [])
     assert not report.capped_expressions
-    assert not _unwritten(report)
+    assert not _orphaned(report)
 
 
 @pytest.mark.parametrize("width", [32, 256])
@@ -3027,7 +3050,7 @@ def test_round_twelve_wide_conditional_payload_copy_bound(gate, tmp_path, monkey
         "    Path('artifacts/first.json' if flag else 'artifacts/second.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/first.json", "artifacts/second.json"}
+    assert _orphaned(report) == {"artifacts/first.json", "artifacts/second.json"}
     assert 0 < copied[0] <= 64, copied
     print(f"wide payload {width}: copied {copied[0]} AST nodes")
 
@@ -3060,6 +3083,6 @@ def test_round_twelve_unbounded_helper_keeps_uncertainty_without_snapshots(
         "Path('artifacts/outside.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report) == {"artifacts/inside.json", "artifacts/outside.json"}
+    assert _orphaned(report) == {"artifacts/inside.json", "artifacts/outside.json"}
     assert report.unresolvable > 0
     assert snapshots[0] == 0

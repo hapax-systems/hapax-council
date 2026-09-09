@@ -37,10 +37,18 @@ def _write(repo: Path, relative: str, source: str) -> None:
     path.write_text(source, encoding="utf-8")
 
 
-def _unwritten(report) -> dict[tuple[Path, str], int]:
+#: Readers surfaced as having no ESTABLISHED producer, counted per reader — one kind at a time,
+#: because which of the two the report chose IS the discrimination. An absent write is
+#: `consumer-reads-unwritten-artifact`; a located write whose execution is undetermined is
+#: `consumer-reads-artifact-with-unresolved-writer`. Every row below names the one it means.
+ABSENT_WRITER = "consumer-reads-unwritten-artifact"
+UNRESOLVED_WRITER = "consumer-reads-artifact-with-unresolved-writer"
+
+
+def _orphaned(report, kind: str = ABSENT_WRITER) -> dict[tuple[Path, str], int]:
     counts: dict[tuple[Path, str], int] = {}
     for finding in report.findings:
-        if finding.kind == "consumer-reads-unwritten-artifact":
+        if finding.kind == kind:
             key = (finding.reader.path, finding.reader.pattern)
             counts[key] = counts.get(key, 0) + 1
     return counts
@@ -58,7 +66,7 @@ def test_a_read_sees_the_assignment_above_it_not_the_one_below(gate, tmp_path: P
         "    return first + artifact.read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    unwritten = _unwritten(report)
+    unwritten = _orphaned(report)
     assert (Path("shared/consumer.py"), "artifacts/orphan.json") in unwritten
     assert (Path("shared/consumer.py"), "artifacts/second.json") in unwritten
 
@@ -75,7 +83,7 @@ def test_a_read_before_any_assignment_is_unresolvable_not_borrowed(gate, tmp_pat
     )
     report = gate.analyse_consumer_side(tmp_path, [])
     assert report.unresolvable == 1
-    assert (Path("shared/consumer.py"), "artifacts/later.json") not in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/later.json") not in _orphaned(report)
 
 
 def test_a_rebinding_to_an_unresolvable_value_forgets_the_old_path(gate, tmp_path: Path) -> None:
@@ -90,7 +98,7 @@ def test_a_rebinding_to_an_unresolvable_value_forgets_the_old_path(gate, tmp_pat
     )
     report = gate.analyse_consumer_side(tmp_path, [])
     assert report.unresolvable == 1
-    assert (Path("shared/consumer.py"), "artifacts/first.json") not in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/first.json") not in _orphaned(report)
 
 
 def test_reads_inside_with_and_try_blocks_are_seen_once(gate, tmp_path: Path) -> None:
@@ -107,7 +115,7 @@ def test_reads_inside_with_and_try_blocks_are_seen_once(gate, tmp_path: Path) ->
         "        return ARTIFACT.read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert _unwritten(report).get((Path("shared/consumer.py"), "artifacts/blocky.json")) == 1
+    assert _orphaned(report).get((Path("shared/consumer.py"), "artifacts/blocky.json")) == 1
 
 
 def test_sqlite_connect_is_a_modelled_read(gate, tmp_path: Path) -> None:
@@ -397,7 +405,7 @@ def test_string_replace_never_fabricates_an_artifact_writer(gate, tmp_path: Path
     assert (
         Path("shared/consumer.py"),
         "config/orphan.json",
-    ) in _unwritten(report)
+    ) in _orphaned(report)
 
 
 def test_relative_import_pairs_the_reader_with_its_writer(gate, tmp_path: Path) -> None:
@@ -486,7 +494,7 @@ def test_same_named_path_helpers_stay_with_their_own_modules(gate, tmp_path: Pat
         "    return artifact_path().read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    unwritten = _unwritten(report)
+    unwritten = _orphaned(report)
     assert (Path("alpha/paths.py"), "artifacts/alpha.json") in unwritten
     assert (Path("beta/paths.py"), "artifacts/beta.json") in unwritten
     assert (Path("alpha/paths.py"), "artifacts/beta.json") not in unwritten
@@ -512,7 +520,7 @@ def test_an_imported_path_helper_resolves_through_the_import(gate, tmp_path: Pat
         "    return artifact_path().read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    unwritten = _unwritten(report)
+    unwritten = _orphaned(report)
     assert (Path("shared/consumer.py"), "artifacts/shared.json") in unwritten
     assert (Path("shared/consumer.py"), "artifacts/other.json") not in unwritten
 
@@ -543,7 +551,7 @@ def test_current_import_binding_wins_over_an_earlier_definition(
         (Path("shared/writer.py"), f"artifacts/{'new' if import_last else 'old'}.json")
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert ((Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)) is import_last
+    assert ((Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(report)) is import_last
 
 
 @pytest.mark.parametrize("import_last", [True, False], ids=["import-last", "definition-last"])
@@ -603,7 +611,11 @@ def test_class_body_propagates_outer_binding_effects(gate, tmp_path: Path, shape
     bounded_writes = {a.pattern for a in accesses if a.action == "write" and a.bounded}
     assert bounded_writes == ({"artifacts/new.json"} if shape == "assignment" else set())
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    # A class body that CALLS the configurator locates a writer it cannot certify; one that
+    # merely assigns leaves nothing writing this reader. Same orphan, two causes.
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(
+        report, UNRESOLVED_WRITER if shape == "call" else ABSENT_WRITER
+    )
     if shape == "call":
         assert report.unresolvable > 0
 
@@ -629,7 +641,7 @@ def test_class_attributes_do_not_replace_enclosing_bindings(gate, tmp_path: Path
         "artifacts/old.json"
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/new.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/new.json") in _orphaned(report)
 
 
 @pytest.mark.parametrize("scope", ["global", "nonlocal"])
@@ -656,7 +668,9 @@ def test_class_attribute_cannot_hide_a_callee_outer_effect(gate, tmp_path: Path,
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(
+        report, UNRESOLVED_WRITER
+    )
     assert report.unresolvable > 0
 
 
@@ -691,7 +705,7 @@ def test_class_global_bypasses_an_enclosing_local(gate, tmp_path: Path, assignme
     }
     report = gate.analyse_consumer_side(tmp_path, [])
     assert (
-        (Path("shared/consumer.py"), "artifacts/module.json") in _unwritten(report)
+        (Path("shared/consumer.py"), "artifacts/module.json") in _orphaned(report)
     ) is assignment
 
 
@@ -708,7 +722,9 @@ def test_class_global_store_is_an_effect_of_its_enclosing_function(gate, tmp_pat
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(
+        report, UNRESOLVED_WRITER
+    )
     assert report.unresolvable > 0
 
 
@@ -726,7 +742,9 @@ def test_class_effect_branch_cap_keeps_the_orphan_reader(gate, tmp_path: Path, m
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(
+        report, UNRESOLVED_WRITER
+    )
     assert report.unresolvable > 0
 
 
@@ -756,7 +774,7 @@ def test_class_attributes_do_not_become_method_closure_cells(
     }
     report = gate.analyse_consumer_side(tmp_path, [])
     assert (
-        (Path("shared/consumer.py"), "artifacts/class.json") in _unwritten(report)
+        (Path("shared/consumer.py"), "artifacts/class.json") in _orphaned(report)
     ) is not default
 
 
@@ -786,7 +804,7 @@ def test_calls_bind_to_individual_definitions(gate, tmp_path: Path, imported, ca
         f"artifacts/{'orphan' if call_after else 'actual'}.json"
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), f"artifacts/{orphan}.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), f"artifacts/{orphan}.json") in _orphaned(report)
     assert report.unresolvable == 0
 
 
@@ -805,7 +823,7 @@ def test_function_object_alias_keeps_its_definition(gate, tmp_path: Path) -> Non
         "artifacts/actual.json"
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _orphaned(report)
     assert report.unresolvable == 0
 
 
@@ -844,7 +862,9 @@ def test_imported_global_effect_withholds_stale_writer(
     assert (unresolved > 0) is configured
     report = gate.analyse_consumer_side(tmp_path, [])
     assert (report.unresolvable > 0) is configured
-    assert ((Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)) is configured
+    assert (
+        (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(report, UNRESOLVED_WRITER)
+    ) is configured
     if not configured:
         assert not report.findings
 
@@ -878,7 +898,7 @@ def test_imported_global_effect_survives_branch_and_module_hops(
     assert readers and any(not a.bounded for a in readers)
     assert unresolved > 0
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/helper.py"), "artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/helper.py"), "artifacts/old.json") in _orphaned(report)
     assert report.unresolvable > 0
 
 
@@ -914,9 +934,14 @@ def test_imported_global_effect_limits_certification_to_untouched_names(
     )
     assert unresolved > 0
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(
+        report, UNRESOLVED_WRITER
+    )
+    # STABLE keeps its own certified writer unless the effect is unknown; when it does become
+    # uncertain it is the located-writer sentence, not the absence one.
     assert (
-        (Path("shared/consumer.py"), "artifacts/stable.json") in _unwritten(report)
+        (Path("shared/consumer.py"), "artifacts/stable.json")
+        in _orphaned(report, UNRESOLVED_WRITER)
     ) is uncertain
 
 
@@ -940,7 +965,7 @@ def test_decorator_application_propagates_global_assignment(gate, tmp_path: Path
         "artifacts/new.json"
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(report)
     assert report.unresolvable == 0
 
 
@@ -960,7 +985,9 @@ def test_unseen_decorator_keeps_outer_binding_uncertain(gate, tmp_path: Path, ki
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(
+        report, UNRESOLVED_WRITER
+    )
     assert report.unresolvable > 0
 
 
@@ -986,7 +1013,7 @@ def test_stacked_decorators_apply_innermost_first(gate, tmp_path: Path, kind) ->
         "artifacts/outer.json"
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/inner.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/inner.json") in _orphaned(report)
     assert report.unresolvable == 0
 
 
@@ -1027,7 +1054,7 @@ def test_untracked_result_retains_the_readers_literal_pattern(gate, tmp_path: Pa
         assert {finding.kind for finding in report.findings} == {
             "consumer-reads-unwritten-artifact"
         }
-        assert (Path("shared/consumer.py"), "artifacts/*/state.json") in _unwritten(report)
+        assert (Path("shared/consumer.py"), "artifacts/*/state.json") in _orphaned(report)
         assert not any(finding.writers for finding in report.findings)
 
 
@@ -1045,7 +1072,7 @@ def test_visible_source_relative_helper_survives_module_call_effects(gate, tmp_p
     )
     report = gate.analyse_consumer_side(tmp_path, [])
     assert {finding.kind for finding in report.findings} == {"consumer-reads-unwritten-artifact"}
-    assert (Path("shared/consumer.py"), "config/literal.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "config/literal.json") in _orphaned(report)
     assert report.unresolvable == 0
 
 
@@ -1074,7 +1101,9 @@ def test_module_effects_retain_literal_accesses_without_certifying_writers(
         ("write", "artifacts/literal.json", False),
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/literal.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/literal.json") in _orphaned(
+        report, UNRESOLVED_WRITER
+    )
     assert not any(a.bounded for f in report.findings for a in f.writers)
 
 
@@ -1100,7 +1129,9 @@ def test_function_attribute_assignment_keeps_result_identity_uncertain(
     writers = [a for a in accesses if a.action == "write"]
     assert {a.pattern for a in writers} == {"artifacts/*/state.json"}
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/orphan/state.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/orphan/state.json") in _orphaned(
+        report, UNRESOLVED_WRITER
+    )
     assert report.unresolvable > 0
     assert not report.pairs
     assert any(set(writers) <= set(finding.writers) for finding in report.findings)
@@ -1121,7 +1152,9 @@ def test_function_attribute_assignment_keeps_result_identity_uncertain(
     writers = [a for a in accesses if a.action == "write"]
     assert {a.pattern for a in writers} == {"artifacts/*/state.json"}
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/orphan/state.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/orphan/state.json") in _orphaned(
+        report, UNRESOLVED_WRITER
+    )
     assert report.unresolvable > 0
     assert not report.pairs
     assert any(set(writers) <= set(finding.writers) for finding in report.findings)
@@ -1142,7 +1175,7 @@ def test_callee_identity_is_captured_before_argument_rebinding(gate, tmp_path: P
         "artifacts/actual.json"
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _orphaned(report)
     assert report.unresolvable == 0
 
 
@@ -1163,7 +1196,7 @@ def test_decorator_identity_is_captured_before_class_body(gate, tmp_path: Path) 
         "artifacts/new.json"
     }
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _orphaned(report)
     assert report.unresolvable == 0
 
 
@@ -1184,7 +1217,9 @@ def test_decorator_with_uncertain_effects_keeps_orphan(gate, tmp_path: Path, kin
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(
+        report, UNRESOLVED_WRITER
+    )
     assert report.unresolvable > 0
 
 
@@ -1204,7 +1239,7 @@ def test_imported_decorated_helper_cannot_borrow_original_body(gate, tmp_path: P
     accesses, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not [a for a in accesses if a.action == "write" and a.bounded]
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/orphan.json") in _orphaned(report)
     assert report.unresolvable > 0
 
 
@@ -1242,7 +1277,9 @@ def test_imported_callable_effect_withholds_obsolete_body(
     assert (unresolved > 0) is configured
     report = gate.analyse_consumer_side(tmp_path, [])
     assert (report.unresolvable > 0) is configured
-    assert ((Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)) is configured
+    assert (
+        (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(report, UNRESOLVED_WRITER)
+    ) is configured
     if not configured:
         assert not report.findings
 
@@ -1276,7 +1313,7 @@ def test_imported_callable_effect_retains_uncertain_reads_across_module_hops(
     assert readers and all(not a.bounded for a in readers)
     assert unresolved > 0
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/helper.py"), "artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/helper.py"), "artifacts/old.json") in _orphaned(report)
     assert report.unresolvable > 0
 
 
@@ -1305,7 +1342,12 @@ def test_rebound_imported_path_helper_keeps_only_uncertain_literal_evidence(
     assert {a.pattern for a in through_helper} == {"artifacts/old.json"}
     assert unresolved > 0
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    # The two parameters differ in cause, not only in spelling: `write_text` LOCATES a writer
+    # through the rebound helper and leaves it uncertain, while `read_text` writes nothing at
+    # all, so the reader's absence is decided. Measured per parameter.
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(
+        report, UNRESOLVED_WRITER if access.startswith("write") else ABSENT_WRITER
+    )
     assert report.unresolvable > 0
 
 
@@ -1330,7 +1372,9 @@ def test_rebound_imported_callable_withholds_its_fallback_callees(gate, tmp_path
     assert writers and all(not a.bounded for a in writers)
     assert unresolved > 0
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(
+        report, UNRESOLVED_WRITER
+    )
 
 
 @pytest.mark.parametrize(
@@ -1364,7 +1408,7 @@ def test_nonliteral_open_mode_withholds_access_certification(
     report = gate.analyse_consumer_side(tmp_path, [])
     assert report.unresolvable == unresolved
     if mode == "mode":
-        assert (Path("shared/consumer.py"), "artifacts/state.json") in _unwritten(report)
+        assert (Path("shared/consumer.py"), "artifacts/state.json") in _orphaned(report)
 
 
 @pytest.mark.parametrize("uncertain", [True, False], ids=["uncertain", "bounded"])
@@ -1391,9 +1435,13 @@ def test_path_mismatch_requires_established_divergent_paths(
     mismatches = [f for f in report.findings if f.kind == "consumer-producer-path-mismatch"]
     assert bool(mismatches) is (divergent and not uncertain)
     assert (report.unresolvable > 0) is uncertain
-    assert ((Path("shared/consumer.py"), "artifacts/state.json") in _unwritten(report)) is (
-        uncertain or divergent
-    )
+    # Orphaned for two different reasons across the grid: a DIVERGENT path means nothing writes
+    # this reader at all, while the same path left uncertain means the writer is located and
+    # not established. Only the second is the unresolved-writer sentence.
+    assert (
+        (Path("shared/consumer.py"), "artifacts/state.json")
+        in _orphaned(report, UNRESOLVED_WRITER if uncertain and not divergent else ABSENT_WRITER)
+    ) is (uncertain or divergent)
     if mismatches:
         assert {a.pattern for f in mismatches for a in f.writers} == {writer}
 
@@ -1419,7 +1467,9 @@ def test_environment_default_writer_is_not_established(
     assert [(a.pattern, a.bounded) for a in writers] == [("artifacts/old.json", False)]
     assert unresolved > 0
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(
+        report, UNRESOLVED_WRITER
+    )
     assert report.unresolvable > 0
 
 
@@ -1467,7 +1517,7 @@ def test_literal_tilde_writer_does_not_certify_home_reader(gate, tmp_path: Path,
     }
     assert unresolved == 0
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "~/artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "~/artifacts/old.json") in _orphaned(report)
 
 
 @pytest.mark.parametrize("expanded", [False, True], ids=["literal", "expanduser"])
@@ -1487,9 +1537,7 @@ def test_expanduser_writer_does_not_certify_literal_tilde_reader(
     assert any(a.action == "write" and a.bounded for a in accesses) is not expanded
     assert (unresolved > 0) is expanded
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (
-        (Path("shared/consumer.py"), "./~/artifacts/old.json") in _unwritten(report)
-    ) is expanded
+    assert ((Path("shared/consumer.py"), "./~/artifacts/old.json") in _orphaned(report)) is expanded
     assert (report.unresolvable > 0) is expanded
     if not expanded:
         assert not report.findings
@@ -1506,8 +1554,8 @@ def test_symbolic_home_parent_is_not_a_modelled_layout(gate, tmp_path: Path) -> 
     accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not any(a.action == "write" and a.bounded for a in accesses)
     assert unresolved > 0
-    assert (Path("shared/consumer.py"), "/artifacts/old.json") in _unwritten(
-        gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "/artifacts/old.json") in _orphaned(
+        gate.analyse_consumer_side(tmp_path, []), UNRESOLVED_WRITER
     )
 
 
@@ -1530,8 +1578,8 @@ def test_unestablished_root_keeps_suffix_uncertain(gate, tmp_path: Path, root) -
     accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
     assert not any(a.action == "write" and a.bounded for a in accesses)
     assert unresolved > 0
-    assert (Path("shared/consumer.py"), "artifacts/old.json") in _unwritten(
-        gate.analyse_consumer_side(tmp_path, [])
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(
+        gate.analyse_consumer_side(tmp_path, []), UNRESOLVED_WRITER
     )
 
 
@@ -1572,7 +1620,7 @@ def test_python_home_identities_do_not_pair(
         f"from pathlib import Path\n({writer}).write_text('{{}}')\n({reader}).read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), reader_pattern) in _unwritten(report)
+    assert (Path("shared/consumer.py"), reader_pattern) in _orphaned(report)
     accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
     assert {(a.action, a.pattern, a.bounded) for a in accesses} == {
         ("write", writer_pattern, True),
@@ -1618,7 +1666,7 @@ def test_nested_absolute_join_does_not_certify_left_relative_reader(
         "Path('wrong/artifacts/old.json').read_text()\n",
     )
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert (Path("shared/consumer.py"), "wrong/artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "wrong/artifacts/old.json") in _orphaned(report)
     accesses, unresolved, *_ = gate.collect_artifact_accesses(tmp_path)
     expected = (
         "/review-fixture/artifacts/old.json" if root_kind == "codex-exact" else "artifacts/old.json"
@@ -1679,7 +1727,7 @@ def test_composed_absolute_identity_survives_expression_evaluation(
         "Path('wrong/artifacts/old.json').read_text()\n"
     )
     # The inline parent case is codex-1's exact composed expression and repo_root.
-    assert (Path("shared/consumer.py"), "wrong/artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "wrong/artifacts/old.json") in _orphaned(report)
     assert {(a.action, a.pattern, a.bounded) for a in accesses} == {
         ("write", "artifacts/old.json", True),
         ("read", "wrong/artifacts/old.json", True),
@@ -1699,7 +1747,7 @@ def test_posix_backslash_and_slash_filenames_do_not_pair(synthetic_repo, reverse
     report, (accesses, unresolved, *_) = synthetic_repo(
         f"from pathlib import Path\n{writer}.write_text('{{}}')\n{reader}.read_text()\n"
     )
-    assert (Path("shared/consumer.py"), reader_pattern) in _unwritten(report)
+    assert (Path("shared/consumer.py"), reader_pattern) in _orphaned(report)
     assert {(a.action, a.pattern, a.bounded) for a in accesses} == {
         ("write", writer_pattern, True),
         ("read", reader_pattern, True),
@@ -1721,8 +1769,8 @@ def test_formatted_backslashes_are_runtime_filename_characters(synthetic_repo, c
         f"{expression}.write_text('{{}}')\nPath({expected!r}).read_text()\n"
         f"Path({slash_pattern!r}).read_text()\n"
     )
-    assert (Path("shared/consumer.py"), slash_pattern) in _unwritten(report)
-    assert (Path("shared/consumer.py"), expected) not in _unwritten(report)
+    assert (Path("shared/consumer.py"), slash_pattern) in _orphaned(report)
+    assert (Path("shared/consumer.py"), expected) not in _orphaned(report)
     assert [(a.pattern, a.bounded) for a in accesses if a.action == "write"] == [(expected, True)]
     assert unresolved == report.unresolvable == 0
 
@@ -1735,7 +1783,7 @@ def test_absolute_writer_does_not_certify_wrong_prefix_reader(synthetic_repo, as
         "from pathlib import Path\n" + setup + f"(Path('/wrong') / {operand}).write_text('{{}}')\n"
         "Path('/wrong/artifacts/old.json').read_text()\n"
     )
-    assert (Path("shared/consumer.py"), "/wrong/artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "/wrong/artifacts/old.json") in _orphaned(report)
     assert [(a.pattern, a.bounded) for a in accesses if a.action == "write"] == [
         ("/wrong/*", False)
     ]
@@ -1770,7 +1818,7 @@ def test_resolve_writer_does_not_certify_wrong_prefix_reader(synthetic_repo, ass
     )
     # A resolved operand is absolute and discards /wrong; its actual root and
     # symlink targets cannot be established from this source.
-    assert (Path("shared/consumer.py"), "/wrong/artifacts/old.json") in _unwritten(report)
+    assert (Path("shared/consumer.py"), "/wrong/artifacts/old.json") in _orphaned(report)
     assert [(a.pattern, a.bounded) for a in accesses if a.action == "write"] == [
         ("/wrong/*", False)
     ]

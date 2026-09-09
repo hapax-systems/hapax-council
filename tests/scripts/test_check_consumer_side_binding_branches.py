@@ -948,12 +948,15 @@ def report_for(gate, tmp_path, body):
     return gate.analyse_consumer_side(tmp_path, [])
 
 
-def unwritten(report):
-    return {
-        finding.reader.pattern
-        for finding in report.findings
-        if finding.kind == "consumer-reads-unwritten-artifact"
-    }
+#: One kind at a time: an absent write is `consumer-reads-unwritten-artifact`, a located write
+#: whose execution is undetermined is `consumer-reads-artifact-with-unresolved-writer`, and which
+#: the report chose is the discrimination rather than noise to read past.
+ABSENT_WRITER = "consumer-reads-unwritten-artifact"
+UNRESOLVED_WRITER = "consumer-reads-artifact-with-unresolved-writer"
+
+
+def unwritten(report, kind: str = ABSENT_WRITER):
+    return {finding.reader.pattern for finding in report.findings if finding.kind == kind}
 
 
 @pytest.mark.parametrize("prefix", ["str()", "''", "str('')"])
@@ -1481,7 +1484,9 @@ def test_an_unknown_interpolation_stays_unbounded(gate, tmp_path):
         tmp_path,
         "x = input()\nPath(f'{x}/a.json').write_text('{}')\nPath('anything/a.json').read_text()\n",
     )
-    assert "anything/a.json" in unwritten(report)
+    # The interpolated write IS located — it just cannot be resolved to a path, so it stays
+    # unbounded and the reader is orphaned under the located-writer sentence, not the absent one.
+    assert "anything/a.json" in unwritten(report, UNRESOLVED_WRITER)
     assert "*/a.json" not in _bounded_writers(gate, tmp_path)
     assert report.unresolvable > 0
 
