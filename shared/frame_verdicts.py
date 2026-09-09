@@ -181,7 +181,21 @@ def _strict_yaml_mapping(loader: yaml.SafeLoader, node: yaml.MappingNode, deep: 
     seen: set[object] = set()
     for key_node, _value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
-        if key in seen:
+        try:
+            duplicate = key in seen
+        except TypeError:
+            # A YAML complex key — `? [a, b]` or `? {a: b}` — is UNHASHABLE, and set membership
+            # raises `TypeError` on it. That pre-empted `SafeLoader.construct_mapping`, which
+            # refuses the same document with `ConstructorError` ("found unhashable key"): the
+            # refusal boundary catches `yaml.YAMLError`, so a bare TypeError escaped it with no
+            # refusal, remedy or receipt (review finding, codex, at `41be64bde`).
+            #
+            # **Duplicate detection is not this key's question.** SafeLoader already answers it,
+            # correctly and actionably, so the guard steps aside rather than answering first and
+            # wrongly. Stepping aside is also why this cannot mask a duplicate: an unhashable key
+            # never reaches a mapping at all.
+            continue
+        if duplicate:
             raise DuplicateGoverningKey(f"duplicate key {key!r}")
         seen.add(key)
     return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)

@@ -660,6 +660,35 @@ def test_a_governing_document_that_repeats_a_key_is_refused(
 
 
 @pytest.mark.parametrize(
+    ("name", "text"),
+    (
+        ("sequence_key", "? [a, b]\n: c\n"),
+        ("mapping_key", "? {a: b}\n: c\n"),
+        ("sequence_key_nested", "row:\n  ? [a, b]\n  : c\n"),
+    ),
+    ids=["sequence_key", "mapping_key", "sequence_key_nested"],
+)
+def test_an_unhashable_key_keeps_SafeLoaders_actionable_refusal(name: str, text: str) -> None:
+    """The duplicate check must not pre-empt the loader's own error with a bare TypeError.
+
+    `key in seen` is set membership, and a YAML complex key — a sequence or mapping used as a key
+    — is unhashable, so the guard raised `TypeError` before `SafeLoader.construct_mapping` could
+    raise `ConstructorError`. The refusal boundary catches `yaml.YAMLError`; a TypeError escapes
+    it with no refusal, remedy or receipt (review finding, codex, at `41be64bde`).
+
+    Duplicate detection is simply not this key's question. SafeLoader already refuses it, and the
+    guard now steps aside instead of answering first and wrongly.
+    """
+    with pytest.raises(yaml.YAMLError) as caught:
+        fv._strict_yaml(text)  # noqa: SLF001
+    assert "unhashable" in str(caught.value), name
+    # The oracle beside it: stock SafeLoader refuses these the same way, so the strict loader is
+    # preserving that behaviour rather than inventing one.
+    with pytest.raises(yaml.YAMLError):
+        yaml.safe_load(text)
+
+
+@pytest.mark.parametrize(
     ("name", "parser", "text"),
     (
         ("json_clean", "json", '{"verdict": "TRUE"}'),
