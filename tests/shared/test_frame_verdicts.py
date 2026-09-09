@@ -780,7 +780,22 @@ def test_a_transient_scope_fault_refuses_instead_of_shortening_the_scope(
     assert caught.value.remedy != fv.UndecidableScopeContainment.remedy, (
         f"{name}: an unreadable scope must not be told to narrow its globs"
     )
-    assert "repair read access" in caught.value.remedy, name
+    # Which remedy replaces the default depends on the boundary, and this row asserted the WRONG
+    # one for two of the three. Enumeration failing means the directory could not be walked, and
+    # read access is the fix. A classification failing means an entry the walk already yielded
+    # could not be resolved — the injected errno here is ELOOP — and there the fix is the
+    # declaration's intended target, which is what `test_dispatch_canonical_closure_unresolved_
+    # entry_names_remedy` has pinned all along with a real self-referential symlink.
+    #
+    # I asserted "repair read access" for all three, then changed the source to satisfy it and
+    # broke that committed row. The invariant this test actually establishes is the line above:
+    # the default must not fire by omission. The specific wording belongs to the boundary.
+    expected = (
+        "repair read access"
+        if operation == "scandir"
+        else "repair or re-declare unresolved component"
+    )
+    assert expected in caught.value.remedy, name
 
 
 def test_a_healthy_scope_expansion_still_returns_its_entry(tmp_path: Path) -> None:

@@ -3332,22 +3332,15 @@ def _canonical_scope_entries(
                 else _unresolved_scope_component(entry, exc)
             )
             error = UndecidableScopeContainment(f"scope glob expansion {entry}: {cause}")
-            # The remedy has to belong to the failure. `_unresolved_scope_component` answers for a
-            # component that cannot be RESOLVED and tells the operator to re-declare it in
-            # `mutation_scope_refs` — right for a declaration that names nothing, and actively
-            # misleading here, where the entry came out of a successful enumeration and only its
-            # classification failed. An OSError at this point is an observation failure: the fix
-            # is read access, not an edit to the declaration.
-            #
-            # This is the same defect as the enumeration remedy repaired earlier at
-            # `_observed_glob`, at the second of the three fault boundaries. The first repair was
-            # reported as closing the remedy question; measured, it closed one third of it.
-            error.remedy = (
-                f"repair read access for {entry} and the directories beneath it, then retry "
-                "the dispatch"
-                if isinstance(exc, OSError)
-                else f"repair scope glob expansion {entry}; {cause.remedy}"
-            )
+            # The component remedy is the RIGHT one here and this line is deliberately unchanged.
+            # It was briefly rewritten to ask for read access, on the strength of a test row of
+            # mine that asserted that wording; `test_dispatch_canonical_closure_unresolved_entry_
+            # names_remedy` refuted it. Its `loop` case is a self-referential symlink — an entry
+            # the enumeration yields and the classification then cannot resolve, the identical
+            # situation — and for that the fix really is the declaration's intended target, not
+            # access. The row that looked like a second remedy defect was an over-specified
+            # assertion, not a defect.
+            error.remedy = f"repair scope glob expansion {entry}; {cause.remedy}"
             raise error from exc
     return canonical
 
