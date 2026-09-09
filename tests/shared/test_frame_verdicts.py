@@ -763,6 +763,69 @@ def test_the_refusal_names_the_path_to_the_value_not_just_the_member(
     assert "quote the affected value" in remedy
 
 
+#: A lone surrogate, reached the way a producer could: YAML's own escape syntax, not a constructed
+#: Python object. It survives `json.dumps(ensure_ascii=False)` and fails only at the digest.
+SURROGATE = yaml.safe_load('"\\udcff"')
+
+
+@pytest.mark.parametrize(
+    ("name", "member", "exclusions", "expected"),
+    (
+        ("value", {"id": "m1", "declared": SURROGATE}, (), "declared="),
+        ("nested", {"id": "m1", "location": {"path": SURROGATE}}, (), "location.path="),
+        ("key", {"id": "m1", SURROGATE: "x"}, (), "'\\udcff' (key)="),
+        ("exclusions", {"id": "m1"}, ({"path": SURROGATE},), "exclusions[0].path="),
+    ),
+    ids=["value", "nested", "key", "exclusions"],
+)
+def test_a_surrogate_refuses_and_the_refusal_is_itself_writable(
+    name: str, member: dict[str, object], exclusions: object, expected: str
+) -> None:
+    """The encode was one line below the guard, and the diagnostic had the same problem.
+
+    `json.dumps(ensure_ascii=False)` accepts a lone surrogate and `encode("utf-8")` rejects it, so
+    the digest raised `UnicodeEncodeError` — a `ValueError`, which the handler beside it would have
+    caught had the call been inside it. Guarding the dumps and leaving the very next operation
+    unguarded is the boundary drawn one line too high (review finding, codex).
+
+    The second assertion is the one that came from the reproduction failing rather than from the
+    finding: a surrogate used as a mapping KEY was interpolated raw into the path label, so the
+    refusal naming it could not be written to stderr or into a receipt — reproducing, at the moment
+    of reporting, the failure it was reporting.
+    """
+    located, remedy = _unencodable_at(member, exclusions)
+    assert located.startswith(expected), name
+    assert "not encodable as UTF-8" in located
+    assert "replace the character that is not encodable as UTF-8" in remedy
+    # Neither of the other two repairs, which would send the author after the wrong thing.
+    assert "quote the affected value" not in remedy
+    assert "self-referencing anchor" not in remedy
+    # **The refusal must survive being emitted**, which is the whole point of a governed refusal.
+    located.encode("utf-8")
+    remedy.encode("utf-8")
+
+
+def test_valid_non_ascii_still_produces_its_identity_unchanged() -> None:
+    """The control the repair must not break: legitimate Unicode still hashes, and hashes the same.
+
+    Moving `encode("utf-8")` inside the handler changes where the bytes are produced and must not
+    change what they are — this pins the digest against a fixed member so a future rewrite of that
+    boundary cannot quietly renumber every declaration identity in the estate.
+    """
+    member = {"id": "m1", "declared": "café — ünïcode ✓"}
+    identity = fv._member_declaration_identity(member, ())  # noqa: SLF001
+    assert identity.startswith("declaration:")
+    expected = hashlib.sha256(
+        json.dumps(
+            {"member": member, "exclusions": ()},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    assert identity == "declaration:" + expected
+
+
 def test_a_cyclic_declaration_gets_its_own_repair_and_does_not_hang_the_walker() -> None:
     """A cycle and an unquoted scalar are different repairs.
 

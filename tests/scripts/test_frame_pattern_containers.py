@@ -18,7 +18,15 @@ from tests.scripts.test_hapax_methodology_dispatch import (
 
 
 def _pattern_dispatch(
-    tmp_path, monkeypatch, capsys, reader, location_update, *, unrelated=False, reader_id=None
+    tmp_path,
+    monkeypatch,
+    capsys,
+    reader,
+    location_update,
+    *,
+    unrelated=False,
+    reader_id=None,
+    member_update=None,
 ):
     root = tmp_path / "member"
     root.mkdir()
@@ -49,6 +57,16 @@ def _pattern_dispatch(
         rows[1]["member_declaration_identity"] = fv._member_declaration_identity(
             mass["members"][1], mass["exclusions"]
         )
+        coverage.write_text(json.dumps(rows))
+    if member_update is not None:
+        mass_path = frame / "declaration/mass.yaml"
+        mass = yaml.safe_load(mass_path.read_text())
+        mass["members"][0].update(member_update)
+        mass_path.write_text(yaml.safe_dump(mass, allow_unicode=True))
+        coverage = frame / "_runs/current/coverage.json"
+        rows = json.loads(coverage.read_text())
+        # Deliberately NOT restating the declaration identity here: the point of these rows is
+        # that computing it is what fails, so a fixture that computed it first could not exist.
         coverage.write_text(json.dumps(rows))
     if reader_id is not None:
         # Rewrite the DECAYED member's reader id after the frame is built, then restate its
@@ -98,6 +116,32 @@ def test_main_pattern_absence_and_lists_unchanged(
     assert "malformed container" not in err
     if rc == 10:
         assert "legacy-surface (scope_exited)" in err
+
+
+def test_main_refuses_a_surrogate_declaration_with_a_receipt(tmp_path, monkeypatch, capsys):
+    """The escape end to end, through the governed dispatcher rather than the helper.
+
+    A lone surrogate survives YAML and `json.dumps(ensure_ascii=False)` and fails at the digest.
+    Before the boundary was corrected, `UnicodeEncodeError` escaped the typed handler and dispatch
+    ended with no next action and no refusal receipt.
+
+    The receipt assertion is the half a unit test cannot make: the refusal has to be *written*, and
+    a message that interpolated the surrogate raw would fail at exactly that step — reproducing the
+    reported failure at the moment of reporting it.
+    """
+    rc, err, _root, _candidate = _pattern_dispatch(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        "fs.glob",
+        {"patterns": ["*"]},
+        member_update={"declared": yaml.safe_load('"\\udcff"')},
+    )
+    assert rc == 10
+    assert "cannot be canonicalised" in err
+    assert "not encodable as UTF-8" in err
+    assert "replace the character that is not encodable as UTF-8" in err
+    err.encode("utf-8")
 
 
 @pytest.mark.parametrize(

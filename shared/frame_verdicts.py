@@ -324,6 +324,23 @@ class ScopeVerdict:
 _JSON_LEAF_TYPES = (str, int, float, bool, type(None))
 
 
+def _emittable(key: object) -> str:
+    """A path segment safe to put in a refusal that must itself be written out.
+
+    **The diagnostic for an unencodable value has to be encodable.** A surrogate used as a mapping
+    KEY was interpolated raw into the path label, so the refusal naming it could not be written to
+    stderr or into a receipt — reproducing, at the moment of reporting, the exact failure it was
+    reporting. `repr` escapes it to ASCII; ordinary keys keep their plain spelling so normal paths
+    stay readable.
+    """
+    text = str(key)
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return repr(text)
+    return text
+
+
 def _unencodable_declaration_paths(value: object, prefix: str, seen: set[int]) -> list[str]:
     """Dotted paths to values `json.dumps` cannot encode, so a refusal can name what to quote.
 
@@ -337,15 +354,25 @@ def _unencodable_declaration_paths(value: object, prefix: str, seen: set[int]) -
     """
     if id(value) in seen:
         return [f"{prefix or '<member>'} (cycle)"]
+    if isinstance(value, str):
+        # A `str` is a JSON leaf and still need not survive `encode("utf-8")`: a lone surrogate
+        # passes `json.dumps(ensure_ascii=False)` and fails at the encode. Checked here so the
+        # refusal can name WHICH field, which is the whole reason this walker exists.
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError:
+            return [f"{prefix or '<member>'}={value!r} (not encodable as UTF-8)"]
+        return []
     if isinstance(value, _JSON_LEAF_TYPES):
         return []
     seen = seen | {id(value)}
     if isinstance(value, dict):
         found: list[str] = []
         for key, item in value.items():
-            label = f"{prefix}.{key}" if prefix else str(key)
+            label = f"{prefix}.{_emittable(key)}" if prefix else _emittable(key)
             if not isinstance(key, (str, int, float, bool, type(None))):
                 found.append(f"{label} (key of type {type(key).__name__})")
+            found.extend(_unencodable_declaration_paths(key, f"{label} (key)", seen))
             found.extend(_unencodable_declaration_paths(item, label, seen))
         return found
     if isinstance(value, (list, tuple)):
@@ -365,12 +392,18 @@ def _member_declaration_identity(member: dict[str, object], exclusions: object) 
     even without the vault; the real-epoch test additionally checks the installed producer.
     """
     try:
+        # **The encode belongs INSIDE this handler and was left outside it.** A lone surrogate
+        # passes `json.dumps(ensure_ascii=False)` and raises `UnicodeEncodeError` at the encode —
+        # which is a `ValueError`, so the arm below would have caught it had the call been in
+        # scope. Guarding the dumps and leaving the very next operation unguarded is the same
+        # neighbourhood mistake as the comprehension guard earlier: the fix was correct and its
+        # boundary was drawn one line too high (review finding, codex, at `8241e4dcf`).
         canonical = json.dumps(
             {"member": member, "exclusions": exclusions},
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
-        )
+        ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         # **A YAML scalar the producer never quoted is a declaration defect, not a crash.**
         # `declared: 2026-09-08` unquoted is a `datetime.date` through SafeLoader, and this
@@ -394,19 +427,29 @@ def _member_declaration_identity(member: dict[str, object], exclusions: object) 
         # canonicalisation; telling its author to quote something would send them looking for a
         # scalar that is not the problem. The anchor has to go (root, at `9c60d1cde`, who also
         # established this class is pre-existing rather than introduced by the date refusal).
-        repair = (
-            "remove the self-referencing anchor/alias so the declaration is a finite tree"
-            if cyclic
-            else "quote the affected value so it stays a string (for example "
-            "`declared: '2026-09-08'`)"
-        )
+        unencodable = any(path.endswith("(not encodable as UTF-8)") for path in offending)
+        # **Three causes reach this handler and each wants a different sentence.** Telling the
+        # author of a lone surrogate to quote a value sends them to add quotes around a string
+        # that is already one; telling the author of a cycle to quote something is worse still.
+        if cyclic:
+            repair = "remove the self-referencing anchor/alias so the declaration is a finite tree"
+        elif unencodable:
+            repair = (
+                "replace the character that is not encodable as UTF-8 — a lone surrogate such as "
+                "`\\udcff` survives YAML and JSON and fails only at the digest"
+            )
+        else:
+            repair = (
+                "quote the affected value so it stays a string (for example "
+                "`declared: '2026-09-08'`)"
+            )
         raise FrameVerdictsUnavailable(
             f"member {member.get('id')!r} declaration cannot be canonicalised: {exc}; "
             f"at: {', '.join(offending) or '<no unencodable value located>'}",
             remedy=f"{repair} in {MASS_DECLARATION_LOCATION} for member "
             f"{member.get('id')!r}, then retry the dispatch; " + PRODUCER_REMEDY,
         ) from exc
-    return "declaration:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return "declaration:" + hashlib.sha256(canonical).hexdigest()
 
 
 def frame_procedure_root() -> Path:
