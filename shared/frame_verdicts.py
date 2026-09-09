@@ -3748,6 +3748,28 @@ def ref_within_member(
     scope_pattern: str | None = None,
 ) -> bool:
     _member_file_patterns(member.patterns)  # Validate even when the candidate is outside.
+    # **A regular file spelled as a directory is refused however the member reached it.** The
+    # check below covers `location.files`, so a DECLARED file refused; a file the reader SELECTED
+    # through `location.patterns` was ruled outside by `_local_disjoint_established` first and
+    # never arrived here — receipt-only `main()` returned 10 for `…/dumpe2fs` and 0 for
+    # `…/dumpe2fs/`, the same file under two spellings bound to the same hash (review critical,
+    # four families, at `d1d7a8204` onward).
+    #
+    # Placed above `broad` so it precedes the partial-scope logic entirely, and gated on
+    # `scope_pattern is None` because a partial scope is a different question: this is only the
+    # bare directory spelling of something the reader actually selects.
+    #
+    # `_member_selected_surface` and not the pattern set — a content-query entry that fails its
+    # own predicate is off the surface, so an alias of a pattern-matched, query-rejected file is
+    # still not refused here. Building this on patterns would have re-broken that.
+    #
+    # `path in surface` is tested before `_identity_reaches_surface`, which raises rather than
+    # answering False when a comparison cannot be made: the cheap exact match answers first and
+    # only an alias question reaches the comparison that can refuse for a different reason.
+    if dirlike and scope_pattern is None:
+        surface = _member_selected_surface(member)
+        if path in surface or _identity_reaches_surface((path,), surface):
+            _refuse_directory_spelled_file(path)
     broad = dirlike or scope_pattern is not None
     selected_files = _selected_member_files(member)
     file_path = _resolve_member_path(path) if member.files else path
@@ -4465,6 +4487,15 @@ def _local_disjoint_established(
         # spellings as unguarded on that reading (gemini and claude, 2026-09-07). They were
         # wrong about the behaviour and right that the shape invited it; this says the same
         # thing with one predicate and one exit.
+        #
+        # **The limit, stated because the prose above overstated it.** A directory spelling of a
+        # REGULAR FILE expands to nothing — a file has no descendants — so `denoted` is empty and
+        # no identity comparison happens here at all. This predicate therefore says nothing about
+        # that spelling, in either direction. It is refused earlier now, by the selected-surface
+        # guard in `ref_within_member`, and NOT by anything on this path (review finding, codex).
+        # Nothing below is changed by that note: the guard is placed where the declared-file
+        # refusal already lived, deliberately not here, for the reason recorded above about
+        # `aa5939179`.
         if not dirlike and scope_pattern is None:
             denoted: tuple[Path, ...] = (path,)
         else:

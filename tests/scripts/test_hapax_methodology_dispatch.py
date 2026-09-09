@@ -8084,16 +8084,97 @@ def test_dispatch_unsupported_member_pattern_names_normalized_form(
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "UNREPAIRED admission bypass, committed as a reproduction rather than as a claim. "
-        "One attempt — restoring the candidate when a dirlike expansion of a regular file comes "
-        "back empty — did not change the outcome, so the deciding site is not the one inferred "
-        "and the inference was withdrawn rather than shipped as dead code. strict=True so this "
-        "announces itself the moment it is actually fixed."
-    ),
-)
+def _mixed_scope_fixture(tmp_path: Path, declaration: str) -> tuple[Path, Path, Path]:
+    """One decayed member holding a selected file, plus a file outside it.
+
+    `declaration` chooses how the member reaches the file — by explicit `location.files` or by a
+    reader SELECTION through `location.patterns`. The pair is the whole point: the two arrangements
+    denote the same file and must give the same answer about a directory spelling of it.
+    """
+    member = tmp_path / "member"
+    member.mkdir()
+    selected = member / "selected.txt"
+    selected.write_text("selected bytes", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside bytes", encoding="utf-8")
+    location = (
+        {"files": [str(selected)]}
+        if declaration == "explicit"
+        else {"path": str(member), "patterns": ["selected.txt"]}
+    )
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame", decayed_root=member, reader="fs.glob", location=location
+    )
+    return frame_root, selected, outside
+
+
+def _dispatch_mixed_refs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    frame_root: Path,
+    refs: list[str],
+) -> tuple[int, str]:
+    original = _governed_source_frontmatter
+
+    def full_scope(spec, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        kwargs["mutation_scope_refs"] = json.dumps(refs)
+        return original(spec, **kwargs)
+
+    monkeypatch.setattr(
+        sys.modules[__name__], "_governed_source_frontmatter", full_scope, raising=True
+    )
+    return _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, refs[0])
+
+
+@pytest.mark.parametrize("declaration", ["explicit", "selected"])
+@pytest.mark.parametrize("suffix", ["/", "//", "/./"])
+@pytest.mark.parametrize("outside_first", [False, True], ids=["malformed-first", "outside-first"])
+def test_dispatch_a_valid_outside_ref_does_not_erase_a_malformed_selected_spelling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    declaration: str,
+    suffix: str,
+    outside_first: bool,
+) -> None:
+    """A second, valid scope in the same declaration must not launder the first one.
+
+    Twelve of the coordinator's fourteen mixed-scope controls, adopted natively with their guard.
+    `outside_first` is the parameter that earns its place: a refusal that only fires when the
+    malformed ref happens to be examined first is order-dependent, and the dispatcher does not
+    promise an order.
+    """
+    frame_root, selected, outside = _mixed_scope_fixture(tmp_path, declaration)
+    refs = [str(selected) + suffix, str(outside)]
+    if outside_first:
+        refs.reverse()
+    rc, err = _dispatch_mixed_refs(tmp_path, monkeypatch, capsys, frame_root, refs)
+    assert rc == 10, "an outside ref must not erase the malformed selected-file spelling"
+    assert "directory-spelled scope" in err
+    assert "repair mutation_scope_refs to use the file form" in err
+
+
+@pytest.mark.parametrize("declaration", ["explicit", "selected"])
+def test_dispatch_a_valid_partial_scope_of_two_literals_still_admits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    declaration: str,
+) -> None:
+    """The positive control, and the reason the guard is gated on the path being selected.
+
+    Both refs are literal files, so neither is dirlike. A valid partial scope is **not** always a
+    pattern — a directory ref can denote one too, which is why the guard cannot key on
+    `scope_pattern is not None` alone and keys on the path being a selected file instead.
+    """
+    frame_root, selected, outside = _mixed_scope_fixture(tmp_path, declaration)
+    rc, _err = _dispatch_mixed_refs(
+        tmp_path, monkeypatch, capsys, frame_root, [str(selected), str(outside)]
+    )
+    assert rc == 0
+
+
 @pytest.mark.parametrize("suffix", ["/", "//", "/./"])
 def test_dispatch_directory_spelled_SELECTED_file_refuses_like_a_declared_one(
     tmp_path: Path,
