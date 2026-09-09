@@ -17,7 +17,9 @@ from tests.scripts.test_hapax_methodology_dispatch import (
 )
 
 
-def _pattern_dispatch(tmp_path, monkeypatch, capsys, reader, location_update, *, unrelated=False):
+def _pattern_dispatch(
+    tmp_path, monkeypatch, capsys, reader, location_update, *, unrelated=False, reader_id=None
+):
     root = tmp_path / "member"
     root.mkdir()
     candidate = root / "candidate.txt"
@@ -46,6 +48,20 @@ def _pattern_dispatch(tmp_path, monkeypatch, capsys, reader, location_update, *,
         rows = json.loads(coverage.read_text())
         rows[1]["member_declaration_identity"] = fv._member_declaration_identity(
             mass["members"][1], mass["exclusions"]
+        )
+        coverage.write_text(json.dumps(rows))
+    if reader_id is not None:
+        # Rewrite the DECAYED member's reader id after the frame is built, then restate its
+        # declaration identity so the coverage row still matches — otherwise the dispatch refuses
+        # on the identity mismatch and never reaches the reader vocabulary at all.
+        mass_path = frame / "declaration/mass.yaml"
+        mass = yaml.safe_load(mass_path.read_text())
+        mass["members"][0]["reader"] = {"id": reader_id}
+        mass_path.write_text(yaml.safe_dump(mass))
+        coverage = frame / "_runs/current/coverage.json"
+        rows = json.loads(coverage.read_text())
+        rows[0]["member_declaration_identity"] = fv._member_declaration_identity(
+            mass["members"][0], mass["exclusions"]
         )
         coverage.write_text(json.dumps(rows))
     rc, err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame, candidate)
@@ -82,6 +98,41 @@ def test_main_pattern_absence_and_lists_unchanged(
     assert "malformed container" not in err
     if rc == 10:
         assert "legacy-surface (scope_exited)" in err
+
+
+@pytest.mark.parametrize(
+    ("name", "reader_id"),
+    [
+        ("list", ["fs.glob"]),
+        ("mapping", {"id": "fs.glob"}),
+        ("integer", 7),
+    ],
+    ids=["list", "mapping", "integer"],
+)
+def test_main_refuses_a_non_string_reader_id_with_a_receipt(
+    tmp_path, monkeypatch, capsys, name, reader_id
+):
+    """`reader.id` reached a set-membership test carrying whatever YAML held.
+
+    A list or a mapping is unhashable, so `reader_id not in {…}` raised `TypeError` before any
+    refusal could be built — escaping both the loader's handler and `frame_verdict_refusal`, so
+    dispatch terminated with no next action and no refusal receipt (review finding, codex).
+
+    The integer is the row that would not have been written from the finding alone: it is
+    hashable, so it never crashed — it reached the membership test and was reported as an
+    *unimplemented containment reader 7*, sending the operator to implement containment for a
+    number rather than to fix a malformed declaration. Same defect, quieter symptom.
+    """
+    rc, err, _root, _candidate = _pattern_dispatch(
+        tmp_path, monkeypatch, capsys, "fs.glob", {"patterns": ["*"]}, reader_id=reader_id
+    )
+    assert rc == 10, "a malformed reader id must refuse, not escape"
+    assert "non-string reader id" in err
+    assert repr(reader_id) in err and type(reader_id).__name__ in err
+    assert "declare reader.id as a string" in err
+    # The refusal must be the DECLARATION one, not the vocabulary one: telling the operator the
+    # reader is unimplemented sends them to implement it.
+    assert "unimplemented containment reader" not in err
 
 
 @pytest.mark.parametrize("reader", ["fs.content_query", "fs.glob"])

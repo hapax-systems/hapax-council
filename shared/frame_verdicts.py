@@ -1403,6 +1403,29 @@ def _load_epoch_verdicts(
             continue
         reader = member.get("reader")
         reader_id = reader.get("id", "") if isinstance(reader, dict) else ""
+        # **Validate the TYPE before the membership test.** `reader_id` comes straight from YAML,
+        # and set membership raises on an unhashable value: `id: [fs.glob]` and `id: {id: fs.glob}`
+        # raised `TypeError` before any refusal could be built, escaping both the loader's handler
+        # and `frame_verdict_refusal` — dispatch terminated with no next action and no refusal
+        # receipt (review finding, codex, at `f08b2f955`).
+        #
+        # The type check also catches a case that did NOT crash and was worse for it: `id: 7` is
+        # hashable, so it reached the membership test and was reported as an *unimplemented
+        # reader* — sending the operator to implement containment for `7` rather than to fix a
+        # malformed declaration. A non-string reader id is a declaration defect either way.
+        #
+        # Third instance of this class in this file. The sibling test at `location.match` is safe
+        # only because it coerces with `str(mode)` first; coercing HERE would turn `[fs.glob]`
+        # into the string `"['fs.glob']"` and report it as unimplemented, which is the same wrong
+        # diagnostic by another route.
+        if not isinstance(reader_id, str):
+            raise FrameVerdictsUnavailable(
+                f"member {member_id!r} declares a non-string reader id: "
+                f"{reader_id!r} ({type(reader_id).__name__})",
+                remedy=f"declare reader.id as a string for member {member_id!r} in "
+                f"{MASS_DECLARATION_LOCATION} — one of 'fs.glob', 'ssh.glob' or "
+                "'fs.content_query' — then retry the dispatch; " + PRODUCER_REMEDY,
+            )
         if reader_id not in {"", "fs.glob", "ssh.glob", "fs.content_query"}:
             raise FrameVerdictsUnavailable(
                 f"member {member_id!r} uses unimplemented containment reader {reader_id!r}",
