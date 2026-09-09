@@ -321,6 +321,42 @@ class ScopeVerdict:
     outside: tuple[str, ...]
 
 
+_JSON_LEAF_TYPES = (str, int, float, bool, type(None))
+
+
+def _unencodable_declaration_paths(value: object, prefix: str, seen: set[int]) -> list[str]:
+    """Dotted paths to values `json.dumps` cannot encode, so a refusal can name what to quote.
+
+    Recursive because the offending scalar is usually not a top-level member field: a date under
+    `location`, inside a window list, or in `exclusions` all reported "<not in a top-level member
+    field>" and named nothing the operator could act on (review finding, root).
+
+    **Guarded against cycles by identity**, because the inputs this describes include
+    `metadata: &loop [*loop]` — a walker that recursed forever on the very document it exists to
+    diagnose would replace one unhelpful failure with a worse one.
+    """
+    if id(value) in seen:
+        return [f"{prefix or '<member>'} (cycle)"]
+    if isinstance(value, _JSON_LEAF_TYPES):
+        return []
+    seen = seen | {id(value)}
+    if isinstance(value, dict):
+        found: list[str] = []
+        for key, item in value.items():
+            label = f"{prefix}.{key}" if prefix else str(key)
+            if not isinstance(key, (str, int, float, bool, type(None))):
+                found.append(f"{label} (key of type {type(key).__name__})")
+            found.extend(_unencodable_declaration_paths(item, label, seen))
+        return found
+    if isinstance(value, (list, tuple)):
+        return [
+            path
+            for index, item in enumerate(value)
+            for path in _unencodable_declaration_paths(item, f"{prefix}[{index}]", seen)
+        ]
+    return [f"{prefix or '<member>'}={value!r} ({type(value).__name__})"]
+
+
 def _member_declaration_identity(member: dict[str, object], exclusions: object) -> str:
     """The producer's per-member declaration identity, recomputed by its own rule.
 
@@ -335,7 +371,7 @@ def _member_declaration_identity(member: dict[str, object], exclusions: object) 
             separators=(",", ":"),
             ensure_ascii=False,
         )
-    except TypeError as exc:
+    except (TypeError, ValueError) as exc:
         # **A YAML scalar the producer never quoted is a declaration defect, not a crash.**
         # `declared: 2026-09-08` unquoted is a `datetime.date` through SafeLoader, and this
         # canonicalisation then raised `TypeError: Object of type date is not JSON serializable`
@@ -349,16 +385,26 @@ def _member_declaration_identity(member: dict[str, object], exclusions: object) 
         # would compute a hash the producer does not, and the two trees would silently disagree
         # about which declaration this is. Refusing is the only answer that keeps them equal.
         offending = sorted(
-            f"{key}={value!r} ({type(value).__name__})"
-            for key, value in member.items()
-            if not isinstance(value, (str, int, float, bool, type(None), list, dict))
+            _unencodable_declaration_paths(member, "", set())
+            + _unencodable_declaration_paths(exclusions, "exclusions", set())
+        )
+        cyclic = any(path.endswith("(cycle)") for path in offending)
+        # **A cycle and an unquoted scalar are different repairs and must not share a remedy.**
+        # `metadata: &loop [*loop]` is accepted by SafeLoader and raises ValueError at
+        # canonicalisation; telling its author to quote something would send them looking for a
+        # scalar that is not the problem. The anchor has to go (root, at `9c60d1cde`, who also
+        # established this class is pre-existing rather than introduced by the date refusal).
+        repair = (
+            "remove the self-referencing anchor/alias so the declaration is a finite tree"
+            if cyclic
+            else "quote the affected value so it stays a string (for example "
+            "`declared: '2026-09-08'`)"
         )
         raise FrameVerdictsUnavailable(
             f"member {member.get('id')!r} declaration cannot be canonicalised: {exc}; "
-            f"non-JSON values: {', '.join(offending) or '<not in a top-level member field>'}",
-            remedy=f"quote the affected value in {MASS_DECLARATION_LOCATION} so it stays a "
-            f"string (for example `declared: '2026-09-08'`) for member {member.get('id')!r}, "
-            "then retry the dispatch; " + PRODUCER_REMEDY,
+            f"at: {', '.join(offending) or '<no unencodable value located>'}",
+            remedy=f"{repair} in {MASS_DECLARATION_LOCATION} for member "
+            f"{member.get('id')!r}, then retry the dispatch; " + PRODUCER_REMEDY,
         ) from exc
     return "declaration:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

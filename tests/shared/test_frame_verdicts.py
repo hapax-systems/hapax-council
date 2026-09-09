@@ -723,6 +723,71 @@ def test_a_yaml_scalar_the_producer_left_unquoted_refuses_instead_of_escaping(
     assert fv._member_declaration_identity(quoted, ()).startswith("declaration:")  # noqa: SLF001
 
 
+#: What SafeLoader really produces for an unquoted `declared: 2026-09-08`, taken from the loader
+#: rather than constructed, so these rows describe a document a producer can actually write.
+DECL_DATE = yaml.safe_load("2026-09-08")
+
+
+def _unencodable_at(member: dict[str, object], exclusions: object = ()) -> tuple[str, str]:
+    with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
+        fv._member_declaration_identity(member, exclusions)  # noqa: SLF001
+    return str(caught.value).split("at: ", 1)[-1], caught.value.remedy
+
+
+@pytest.mark.parametrize(
+    ("name", "member", "exclusions", "expected"),
+    (
+        ("top_level", {"id": "m1", "declared": DECL_DATE}, (), "declared="),
+        (
+            "nested_mapping",
+            {"id": "m1", "location": {"path": "/tmp/x", "declared": DECL_DATE}},
+            (),
+            "location.declared=",
+        ),
+        ("inside_list", {"id": "m1", "windows": [{"from": DECL_DATE}]}, (), "windows[0].from="),
+        ("in_exclusions", {"id": "m1"}, ({"declared": DECL_DATE},), "exclusions[0].declared="),
+    ),
+    ids=["top-level", "nested-mapping", "inside-list", "in-exclusions"],
+)
+def test_the_refusal_names_the_path_to_the_value_not_just_the_member(
+    name: str, member: dict[str, object], exclusions: object, expected: str
+) -> None:
+    """ "Which key do I quote" is most of what this refusal is for.
+
+    The first version inspected top-level member keys only, so a date under `location`, inside a
+    window list or in `exclusions` refused with `<not in a top-level member field>` and named
+    nothing actionable (review finding, root).
+    """
+    located, remedy = _unencodable_at(member, exclusions)
+    assert located.startswith(expected), name
+    assert "quote the affected value" in remedy
+
+
+def test_a_cyclic_declaration_gets_its_own_repair_and_does_not_hang_the_walker() -> None:
+    """A cycle and an unquoted scalar are different repairs.
+
+    `metadata: &loop [*loop]` is accepted by SafeLoader and raises `ValueError` at
+    canonicalisation — a different exception AND a different fix, so telling its author to quote
+    something would send them after a scalar that is not the problem. Root established this class
+    is pre-existing rather than introduced by the date refusal.
+
+    The walker that describes it must also survive it: an identity-guarded recursion, because a
+    describer that recurses forever on the document it exists to diagnose is worse than the bare
+    exception it replaced.
+    """
+    loop: list[object] = []
+    loop.append(loop)
+
+    located, remedy = _unencodable_at({"id": "m1", "metadata": loop})
+    assert "(cycle)" in located
+    assert "remove the self-referencing anchor/alias" in remedy
+    assert "quote the affected value" not in remedy
+
+    located, remedy = _unencodable_at({"id": "m1"}, loop)
+    assert located.startswith("exclusions[0]") and "(cycle)" in located
+    assert "remove the self-referencing anchor/alias" in remedy
+
+
 @pytest.mark.parametrize(
     ("name", "text"),
     (
