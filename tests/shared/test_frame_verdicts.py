@@ -76,6 +76,28 @@ def test_producer_remedy_template_requires_named_root_placeholder() -> None:
     assert "{procedure_root}" in fv.PRODUCER_REMEDY_TEMPLATE
 
 
+def test_the_rootless_producer_remedy_does_not_pretend_to_name_a_path() -> None:
+    """The constant is used where no procedure root has been resolved yet.
+
+    It was formatted with the env-var NAME, so nineteen refusals said "verify it targets procedure
+    root HAPAX_FRAME_PROCEDURE_ROOT" — a next action whose subject reads as a path and is a
+    variable name (review finding, glm). A message written before the read can honestly say which
+    variable to consult and what it defaults to, and no more than that.
+    """
+    remedy = fv.PRODUCER_REMEDY
+    # A bare env-var name would be indistinguishable from a path; the sigil is what makes it a
+    # reference, and the default is what makes it actionable without one.
+    assert f"${fv.FRAME_PROCEDURE_ROOT_ENV}" in remedy
+    assert str(fv.DEFAULT_FRAME_PROCEDURE_ROOT) in remedy
+    assert f"root {fv.FRAME_PROCEDURE_ROOT_ENV}" not in remedy
+
+    # The call-time twin still binds a real path and says nothing about variables, because there
+    # the subject IS known.
+    resolved = fv._producer_remedy(Path("/srv/frame/procedure"))  # noqa: SLF001
+    assert "procedure root /srv/frame/procedure" in resolved
+    assert fv.FRAME_PROCEDURE_ROOT_ENV not in resolved
+
+
 def test_producer_remedy_renders_resolved_root(tmp_path: Path) -> None:
     root = tmp_path / "actual-procedure"
     alias = tmp_path / "procedure-alias"

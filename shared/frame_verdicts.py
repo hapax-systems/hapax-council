@@ -97,7 +97,15 @@ PRODUCER_REMEDY_TEMPLATE = (
     "run the frame producer — verify it targets procedure root {procedure_root}, "
     "then `systemctl --user start hapax-frame-iteration.service` — then retry the dispatch"
 )
-PRODUCER_REMEDY = PRODUCER_REMEDY_TEMPLATE.format(procedure_root=FRAME_PROCEDURE_ROOT_ENV)
+#: For the refusals that have no resolved procedure root in hand. It must not pretend to have one:
+#: formatting the template with the env-var NAME rendered "verify it targets procedure root
+#: HAPAX_FRAME_PROCEDURE_ROOT", which reads as a path and is a variable name, so the next action
+#: named an undefined subject (review finding, glm). `_producer_remedy` below is the call-time
+#: twin and takes a real Path; this one says which variable to consult and what it defaults to,
+#: which is the most a message written before the read can honestly say.
+PRODUCER_REMEDY = PRODUCER_REMEDY_TEMPLATE.format(
+    procedure_root=f"${FRAME_PROCEDURE_ROOT_ENV} (default {DEFAULT_FRAME_PROCEDURE_ROOT})"
+)
 
 
 def _producer_remedy(procedure_root: Path) -> str:
