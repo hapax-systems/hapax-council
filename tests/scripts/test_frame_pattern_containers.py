@@ -85,6 +85,36 @@ def test_main_pattern_absence_and_lists_unchanged(
 
 
 @pytest.mark.parametrize("reader", ["fs.content_query", "fs.glob"])
+@pytest.mark.parametrize(
+    "patterns",
+    [[None], [7], [{"glob": "*"}], ["*", None], [["*"]]],
+    ids=["null", "integer", "mapping", "trailing-null", "nested-list"],
+)
+def test_main_refuses_a_malformed_pattern_ENTRY_not_only_the_container(
+    tmp_path, monkeypatch, capsys, reader, patterns
+):
+    """The container was checked and its entries were not.
+
+    `str(item)` accepts anything, so a list holding `None`, an integer or a mapping produced a
+    selector spelled from `repr` while the installed producer raises on the original entry. The
+    consumer then has not established a comparable surface — it has established a different one.
+    Reported as a critical by codex at `842ca5937`.
+
+    Sibling contrast, twenty lines below the defect: `location.files` entries ARE type-checked
+    before use. The same question was asked at one of the two sites.
+    """
+    rc, err, _, _ = _pattern_dispatch(tmp_path, monkeypatch, capsys, reader, {"patterns": patterns})
+    assert rc == 10, "a pattern entry the producer cannot iterate must not select anything"
+    assert "location.patterns has malformed entry" in err
+    # The member and the INDEX, because a list of five patterns with one bad entry is not
+    # repairable from a message naming only the member.
+    assert "index" in err
+    bad = next(item for item in patterns if not isinstance(item, str))
+    assert type(bad).__name__ in err
+    assert repr(bad) in err
+
+
+@pytest.mark.parametrize("reader", ["fs.content_query", "fs.glob"])
 def test_main_malformed_non_decayed_unrelated_member_unchanged(
     tmp_path, monkeypatch, capsys, reader
 ):

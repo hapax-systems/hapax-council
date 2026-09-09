@@ -835,7 +835,25 @@ def _member_location(
             f"{MASS_DECLARATION_LOCATION}: use a list such as ['*'], or omit patterns; "
             + PRODUCER_REMEDY,
         )
-    globs = tuple(str(item) for item in patterns) if isinstance(patterns, list) else ()
+    if isinstance(patterns, list):
+        # The container was checked and its ENTRIES were not, so `str(item)` spelled a selector
+        # out of `None`, an integer or a mapping while the installed producer raises on the
+        # original entry — the consumer then establishes a DIFFERENT surface, not a comparable
+        # one (review finding, codex, at `842ca5937`). Twenty lines below, `location.files`
+        # already type-checks its entries: the same question, asked at one of the two sites.
+        #
+        # The INDEX is named because a five-pattern list with one bad entry is not repairable
+        # from a message that identifies only the member.
+        for index, item in enumerate(patterns):
+            if not isinstance(item, str):
+                raise FrameVerdictsUnavailable(
+                    f"member {member.get('id')!r} location.patterns has malformed entry at "
+                    f"index {index}: {type(item).__name__} {item!r}; expected a pattern string",
+                    remedy=f"repair location.patterns index {index} for member "
+                    f"{member.get('id')!r} in {MASS_DECLARATION_LOCATION}: use a string such as "
+                    "'*', or remove the entry; " + PRODUCER_REMEDY,
+                )
+    globs = tuple(patterns) if isinstance(patterns, list) else ()
     files_raw = None if content_query else location.get("files")
     files: list[Path] = []
     lexical_files: list[Path] = []
@@ -3314,7 +3332,22 @@ def _canonical_scope_entries(
                 else _unresolved_scope_component(entry, exc)
             )
             error = UndecidableScopeContainment(f"scope glob expansion {entry}: {cause}")
-            error.remedy = f"repair scope glob expansion {entry}; {cause.remedy}"
+            # The remedy has to belong to the failure. `_unresolved_scope_component` answers for a
+            # component that cannot be RESOLVED and tells the operator to re-declare it in
+            # `mutation_scope_refs` — right for a declaration that names nothing, and actively
+            # misleading here, where the entry came out of a successful enumeration and only its
+            # classification failed. An OSError at this point is an observation failure: the fix
+            # is read access, not an edit to the declaration.
+            #
+            # This is the same defect as the enumeration remedy repaired earlier at
+            # `_observed_glob`, at the second of the three fault boundaries. The first repair was
+            # reported as closing the remedy question; measured, it closed one third of it.
+            error.remedy = (
+                f"repair read access for {entry} and the directories beneath it, then retry "
+                "the dispatch"
+                if isinstance(exc, OSError)
+                else f"repair scope glob expansion {entry}; {cause.remedy}"
+            )
             raise error from exc
     return canonical
 
