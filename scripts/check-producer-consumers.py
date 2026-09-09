@@ -623,6 +623,12 @@ class _ScopeEvidence:
     unresolved: int
     unrecognised: Counter[str]
     calls: dict[ast.AST, list[dict[str, str]]]
+    #: Which of `calls` this scope supplied from a REACHED site and which only from an unreached
+    #: one. Carried on the evidence rather than left in the table, so a cache replay reproduces
+    #: the uncertainty instead of re-certifying what the original walk withheld — and so it
+    #: reaches a callee's callee, which is the transitive half of the same finding.
+    certain_calls: dict[ast.AST, set[tuple]]
+    uncertain_calls: dict[ast.AST, set[tuple]]
     nested: dict[ast.AST, list[dict[str, str]]]
     defaults: dict[ast.AST, dict[str, str]]
     paths: set[str]
@@ -658,6 +664,25 @@ class PathFunctionTable(dict[str, PathFunction]):
         self.helper_results: dict[tuple[int, tuple[tuple[str, str], ...]], _HelperReturn] = {}
         self.definition_defaults: dict[ast.AST, dict[str, str]] = {}
         self.call_bindings: dict[ast.AST, list[dict[str, str]]] = {}
+        #: Which invocation states were observed from a call site whose region is REACHED, and
+        #: which only from one that is not. `_demote_from` marks the access list unbounded, but
+        #: the callee's parameters are resolved from these bindings in a different scope walk, so
+        #: an argument supplied inside an unreached region certified a concrete path there
+        #: (review finding at `:4359`, raised independently by two families). A state is treated
+        #: as uncertain only when NO reached call site supplied it: one real caller is enough to
+        #: certify, and withholding then would assert absence rather than withhold.
+        #:
+        #: Named for STATES, not bindings: `uncertain_bindings` below is a different question
+        #: about a different subject — which function NODES lost a rebound export — and holding
+        #: both under one noun silently overwrote it.
+        self.certain_call_states: dict[ast.AST, set[tuple]] = {}
+        self.uncertain_call_states: dict[ast.AST, set[tuple]] = {}
+        #: True while a body is being scanned under a state no reached call site supplied. A
+        #: callee reached only through such a body is no better established than the body, so
+        #: the calls IT records inherit the doubt — otherwise the withholding stops at the first
+        #: callee and one relay function restores certification (measured: a helper called by a
+        #: helper certified a writer the run never reached).
+        self.scanning_uncertain = False
         self.scope_results: dict[ast.AST, dict[tuple, _ScopeEvidence]] = {}
         self.binding_states: dict[ast.AST, set[tuple]] = {}
         self.capped_scopes: set[ast.AST] = set()
@@ -778,6 +803,27 @@ class PathFunctionTable(dict[str, PathFunction]):
                 seen.add(key)
             if state not in current:
                 current.append(state)
+
+    def merge_binding_certainty(
+        self,
+        certain: Mapping[ast.AST, set[tuple]],
+        uncertain: Mapping[ast.AST, set[tuple]],
+    ) -> None:
+        """Union one walk's verdict about its own call sites into the repository-wide view.
+
+        A walk classifies its recordings only once it has finished, because a region's
+        reachability is decided after the call inside it has already been recorded. Merged as a
+        union and tested as `uncertain and not certain`, so **one reached call site is enough**:
+        withholding on the mere existence of an unreached site would assert that the reached one
+        does not exist, which is the over-reach the demotion itself is careful not to commit.
+        """
+        reached = (
+            self.uncertain_call_states if self.scanning_uncertain else self.certain_call_states
+        )
+        for node, keys in certain.items():
+            reached.setdefault(node, set()).update(keys)
+        for node, keys in uncertain.items():
+            self.uncertain_call_states.setdefault(node, set()).update(keys)
 
     def register(self, relative: Path, qualname: str, function: PathFunction) -> None:
         qualified = f"{_module_name(relative)}.{qualname}"
@@ -3790,6 +3836,15 @@ class _BlockScanner:
         self.context_family = context_family
         self.nested_scope_values = nested_scope_values
         self.scope_node = scope_node
+        #: Every invocation state this walk handed to a callee, with the access-list position it
+        #: was recorded at. `_demote_from` uses the SAME position predicate it already applies to
+        #: the access list, so the question "is this region reached" keeps one answer at one site
+        #: rather than a second copy beside each of the four callers.
+        self.recorded_bindings: list[tuple[int, ast.AST, tuple]] = []
+        #: Indices into `recorded_bindings` that fell inside a region later found unreached. Held
+        #: as indices rather than keys because two call sites can supply the SAME state and only
+        #: one of them be unreached; collapsing them would withdraw the reached one's writer.
+        self.demoted_bindings: set[int] = set()
         #: GeneratorExp nodes seen in a CONSUMING position. A generator expression's body does
         #: not run when it is created — only when something iterates it — so certifying its
         #: effects at the definition site invented a producer for a file nothing writes
@@ -3843,6 +3898,9 @@ class _BlockScanner:
                         self.path_functions,
                     )
                     self.path_functions.record_calls(function.node, [supplied])
+                    self.recorded_bindings.append(
+                        (len(self.accesses), function.node, tuple(sorted(supplied.items())))
+                    )
             local_unresolved = [0]
             local_unrecognised: Counter[str] = Counter()
             before = len(call_accesses)
@@ -4357,6 +4415,24 @@ class _BlockScanner:
         if mark is None:
             return
         self.accesses[mark:] = [replace(access, bounded=False) for access in self.accesses[mark:]]
+        # The access list is not the only channel out of this region. An argument supplied here
+        # is resolved in the CALLEE's scope walk, which this slice cannot reach, so demoting only
+        # what was recorded locally left the helper's write certified from a call that never runs.
+        # Same position predicate, applied to the bindings this walk handed out.
+        self.demoted_bindings.update(
+            index
+            for index, (position, _callee, _key) in enumerate(self.recorded_bindings)
+            if position >= mark
+        )
+
+    def binding_certainty(self) -> tuple[dict[ast.AST, set[tuple]], dict[ast.AST, set[tuple]]]:
+        """This walk's verdict on the invocation states it recorded, once the walk is over."""
+        certain: dict[ast.AST, set[tuple]] = {}
+        uncertain: dict[ast.AST, set[tuple]] = {}
+        for index, (_position, callee, key) in enumerate(self.recorded_bindings):
+            target = uncertain if index in self.demoted_bindings else certain
+            target.setdefault(callee, set()).add(key)
+        return certain, uncertain
 
     def _substituted(self, expression: ast.expr) -> ast.expr:
         """One-binding literal names replaced, for a DECISION only — never for a scan.
@@ -5752,10 +5828,14 @@ def _scan_scope(
             cache_key = (*input_key, defaults, table.effect_revisions[node])
     if evidence is None:
         saved_calls = table.call_bindings if table is not None else {}
+        saved_certain = table.certain_call_states if table is not None else {}
+        saved_uncertain = table.uncertain_call_states if table is not None else {}
         saved_paths = table.unresolved_paths if table is not None else set()
         saved_closures = table.unresolved_closures if table is not None else set()
         if table is not None:
             table.call_bindings = {}
+            table.certain_call_states = {}
+            table.uncertain_call_states = {}
             table.unresolved_paths = set()
             table.unresolved_closures = set()
         local_accesses: list[ArtifactAccess] = []
@@ -5777,11 +5857,17 @@ def _scan_scope(
             scanner._scan_expression(node.body, [initial])
         else:
             scanner.scan_block(list(node.body), [initial])
+        # Merged into the table once, below, AFTER the swapped-out maps are restored — merging
+        # here would write into the scope-local dict this branch is about to discard, and the
+        # merge below runs for a cache hit as well, so one call covers both paths.
+        scanned_certain, scanned_uncertain = scanner.binding_certainty()
         evidence = _ScopeEvidence(
             local_accesses,
             local_unresolved[0],
             local_unrecognised,
             table.call_bindings if table is not None else {},
+            scanned_certain,
+            scanned_uncertain,
             local_nested,
             {scope: dict(table.definition_defaults.get(scope, {})) for scope in local_nested}
             if table is not None
@@ -5791,6 +5877,8 @@ def _scan_scope(
         )
         if table is not None:
             table.call_bindings = saved_calls
+            table.certain_call_states = saved_certain
+            table.uncertain_call_states = saved_uncertain
             table.unresolved_paths = saved_paths
             table.unresolved_closures = saved_closures
             table.scope_results[node][cache_key] = evidence
@@ -5804,6 +5892,10 @@ def _scan_scope(
         table.call_edges.setdefault(node, set()).update(evidence.calls)
         for callee, states in evidence.calls.items():
             table.record_calls(callee, states)
+        # A cache hit must reproduce the withholding the original walk decided, not re-certify
+        # from the binding list alone — and this is also how the uncertainty reaches a callee's
+        # callee, since the evidence is what propagates.
+        table.merge_binding_certainty(evidence.certain_calls, evidence.uncertain_calls)
         table.definition_defaults.update(evidence.defaults)
         table.unresolved_paths.update(evidence.paths)
         table.unresolved_closures.update(evidence.closures)
@@ -6020,10 +6112,17 @@ def collect_artifact_accesses(
     # Gather calls across the whole repository before retaining any body's accesses.
     # Recompute each round: provisional defaults must disappear when a later caller is found.
     observed_calls: dict[ast.AST, list[dict[str, str]]] = {}
+    #: Snapshotted with `observed_calls` and consulted from it, never read mid-round. A scope is
+    #: scanned against the PREVIOUS round's bindings, so judging their certainty from the current
+    #: round's partly-filled marks would make a callee's verdict depend on file order.
+    observed_certain: dict[ast.AST, set[tuple]] = {}
+    observed_uncertain: dict[ast.AST, set[tuple]] = {}
     changing_calls: set[ast.AST] = set()
     changed_effects: set[ast.AST] = set()
     for _ in range(_MAX_BINDING_ROUNDS):
         path_functions.call_bindings = {}
+        path_functions.certain_call_states = {}
+        path_functions.uncertain_call_states = {}
         path_functions.unresolved_paths.clear()
         path_functions.unresolved_closures.clear()
         path_functions.helper_results.clear()
@@ -6065,30 +6164,81 @@ def collect_artifact_accesses(
                     )
                 rebindings = rebindings_by_node[scope.node]
                 enclosing_scopes[scope.qualname] = scope
+                uncertain_keys = observed_uncertain.get(scope.node, frozenset())
+                certain_keys = observed_certain.get(scope.node, frozenset())
+
+                def _binding_uncertain(
+                    state: dict[str, str],
+                    uncertain_keys: frozenset[tuple] | set[tuple] = uncertain_keys,
+                    certain_keys: frozenset[tuple] | set[tuple] = certain_keys,
+                ) -> bool:
+                    key = tuple(sorted(state.items()))
+                    return key in uncertain_keys and key not in certain_keys
+
+                # Deliberately NOT re-scanned against the empty definition baseline when every
+                # observed state is uncertain. Doing so keeps the definition-only certification
+                # alive, and measured, it emits the same write twice — once bounded and once
+                # not — which needs a repository-wide rule about which row wins. A helper whose
+                # only call site in this tree is unreached is reported as evidence rather than
+                # as a certified producer; that is a real consequence of this repair, and the
+                # narrower of the two, so it is taken openly rather than paid for with a
+                # deduplication rule reaching every site in the corpus.
+                supplied_states = list(observed_calls.get(scope.node, [{}]))
                 for initial in _merge_states(initial_states):
-                    for supplied in observed_calls.get(scope.node, [{}]):
-                        _scan_scope(
-                            scope.node,
-                            initial,
-                            relative,
-                            repo_root,
-                            path_functions,
-                            accesses,
-                            unresolved,
-                            unrecognised,
-                            scope.lexical_prefixes,
-                            nested_scope_values,
-                            rebindings,
-                            supplied,
+                    for supplied in supplied_states:
+                        supplied_mark = len(accesses)
+                        entered_uncertain = path_functions.scanning_uncertain
+                        path_functions.scanning_uncertain = entered_uncertain or _binding_uncertain(
+                            supplied
                         )
+                        try:
+                            _scan_scope(
+                                scope.node,
+                                initial,
+                                relative,
+                                repo_root,
+                                path_functions,
+                                accesses,
+                                unresolved,
+                                unrecognised,
+                                scope.lexical_prefixes,
+                                nested_scope_values,
+                                rebindings,
+                                supplied,
+                            )
+                        finally:
+                            path_functions.scanning_uncertain = entered_uncertain
+                        # The body is scanned once per invocation state, so the accesses this
+                        # state produced are exactly the ones appended here. Where no reached
+                        # call site supplied the state, they are what the argument binding from
+                        # an unreached region resolved — evidence, not a certified writer.
+                        if _binding_uncertain(supplied):
+                            accesses[supplied_mark:] = [
+                                replace(access, bounded=False)
+                                for access in accesses[supplied_mark:]
+                            ]
         discovered = {
             node: [
                 dict(items) for items in sorted({tuple(sorted(state.items())) for state in states})
             ]
             for node, states in path_functions.call_bindings.items()
         }
+        discovered_certain = {
+            node: set(keys) for node, keys in path_functions.certain_call_states.items() if keys
+        }
+        discovered_uncertain = {
+            node: set(keys) for node, keys in path_functions.uncertain_call_states.items() if keys
+        }
         changed_effects = path_functions.close_outer_effects()
-        if discovered == observed_calls and not changed_effects:
+        # Certainty is part of the fixpoint, not a decoration on it. A round where the bindings
+        # are stable but their certainty has just changed must run again, or the accesses kept
+        # are the ones scanned before the withholding was known.
+        if (
+            discovered == observed_calls
+            and discovered_certain == observed_certain
+            and discovered_uncertain == observed_uncertain
+            and not changed_effects
+        ):
             changing_calls = set()
             break
         changing_calls = {
@@ -6097,6 +6247,8 @@ def collect_artifact_accesses(
             if discovered.get(node) != observed_calls.get(node)
         }
         observed_calls = discovered
+        observed_certain = discovered_certain
+        observed_uncertain = discovered_uncertain
     if changed_effects:
         # The last permitted sweep used provisional effects. Withhold its dependent
         # scope evidence, including module callers, rather than retaining stale writers.

@@ -1791,3 +1791,66 @@ def test_standalone_resolve_retains_literal_as_unresolved_evidence(
     assert not any(a.bounded for a in accesses)
     assert unresolved == report.unresolvable == 1
     assert any("Path('artifacts/old.json').resolve()" in site for site in report.unresolved_paths)
+
+
+# An argument supplied inside a region whose reachability is not established used to certify the
+# callee's write, because demotion rewrites the ACCESS list and the callee's parameters are
+# resolved in a different scope walk from a binding the demotion never touched. Reported as a
+# critical at `:4359` independently by two reviewer families.
+#
+# The rows pair every withholding with the control that must NOT withhold. `bounded` is what
+# certification means here, so a row expecting `True` is asserting that the repair left a real
+# writer alone — withholding everything would satisfy the finding and destroy the report.
+_HELPER = (
+    "import json\nimport os\n\n\n"
+    "def unresolved():\n    return os.environ.get('SOURCE', '')\n\n\n"
+    "def emit(path):\n    with open(path, 'w') as handle:\n        json.dump({}, handle)\n"
+)
+_RELAY = "\n\ndef relay(path):\n    emit(path)\n"
+_UNREACHED = "\n[emit('artifacts/a.json') for _ in unresolved()]\n"
+
+
+@pytest.mark.parametrize(
+    ("suffix", "expected"),
+    [
+        (_UNREACHED, {"artifacts/a.json": False}),
+        # One reached call site is enough: withholding here would assert that the reached
+        # caller does not exist, which is the over-reach demotion itself avoids.
+        (_UNREACHED + "emit('artifacts/a.json')\n", {"artifacts/a.json": True}),
+        (
+            _UNREACHED + "emit('artifacts/b.json')\n",
+            {"artifacts/a.json": False, "artifacts/b.json": True},
+        ),
+        (
+            _UNREACHED + "\n\ndef caller():\n    emit('artifacts/a.json')\n\n\ncaller()\n",
+            {"artifacts/a.json": True},
+        ),
+    ],
+    ids=["unreached-only", "same-state-also-reached", "different-states", "reached-via-caller"],
+)
+def test_an_argument_from_an_unreached_region_does_not_certify_the_callees_write(
+    synthetic_repo, suffix, expected
+) -> None:
+    _report, (accesses, *_rest) = synthetic_repo(_HELPER + suffix)
+    assert {a.pattern: a.bounded for a in accesses if a.action == "write"} == expected
+
+
+@pytest.mark.parametrize(
+    ("suffix", "expected"),
+    [
+        ("\n[relay('artifacts/a.json') for _ in unresolved()]\n", {"artifacts/a.json": False}),
+        (
+            "\n[relay('artifacts/a.json') for _ in unresolved()]\nrelay('artifacts/a.json')\n",
+            {"artifacts/a.json": True},
+        ),
+    ],
+    ids=["relay-unreached-only", "relay-also-reached"],
+)
+def test_uncertainty_reaches_the_callee_of_the_callee(synthetic_repo, suffix, expected) -> None:
+    """A relay must not launder the doubt.
+
+    The callee is scanned in its own walk, so a body reached only through an unreached region
+    would otherwise record its own calls as ordinary observations and re-certify one hop down.
+    """
+    _report, (accesses, *_rest) = synthetic_repo(_HELPER + _RELAY + suffix)
+    assert {a.pattern: a.bounded for a in accesses if a.action == "write"} == expected
