@@ -320,12 +320,38 @@ def _member_declaration_identity(member: dict[str, object], exclusions: object) 
     because the producer lives in another tree. The literal producer fixture pins compatibility
     even without the vault; the real-epoch test additionally checks the installed producer.
     """
-    canonical = json.dumps(
-        {"member": member, "exclusions": exclusions},
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
+    try:
+        canonical = json.dumps(
+            {"member": member, "exclusions": exclusions},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+    except TypeError as exc:
+        # **A YAML scalar the producer never quoted is a declaration defect, not a crash.**
+        # `declared: 2026-09-08` unquoted is a `datetime.date` through SafeLoader, and this
+        # canonicalisation then raised `TypeError: Object of type date is not JSON serializable`
+        # — outside the parsing handler, and the dispatcher catches only FrameVerdictsUnavailable,
+        # so it escaped with no refusal, no remedy and no receipt (review finding, codex, at
+        # `d1d7a8204`). Same class as the unhashable-key escape repaired at `cf45a21d3`: a value
+        # the loader accepts and a later stage cannot govern.
+        #
+        # **Coercing it is not available.** This identity is copied from the producer's own rule
+        # and the fixture pins byte compatibility, so serialising the date with `default=str`
+        # would compute a hash the producer does not, and the two trees would silently disagree
+        # about which declaration this is. Refusing is the only answer that keeps them equal.
+        offending = sorted(
+            f"{key}={value!r} ({type(value).__name__})"
+            for key, value in member.items()
+            if not isinstance(value, (str, int, float, bool, type(None), list, dict))
+        )
+        raise FrameVerdictsUnavailable(
+            f"member {member.get('id')!r} declaration cannot be canonicalised: {exc}; "
+            f"non-JSON values: {', '.join(offending) or '<not in a top-level member field>'}",
+            remedy=f"quote the affected value in {MASS_DECLARATION_LOCATION} so it stays a "
+            f"string (for example `declared: '2026-09-08'`) for member {member.get('id')!r}, "
+            "then retry the dispatch; " + PRODUCER_REMEDY,
+        ) from exc
     return "declaration:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

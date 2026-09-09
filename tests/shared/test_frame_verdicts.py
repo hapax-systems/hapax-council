@@ -660,6 +660,48 @@ def test_a_governing_document_that_repeats_a_key_is_refused(
 
 
 @pytest.mark.parametrize(
+    ("name", "scalar", "kind"),
+    (
+        ("date", "2026-09-08", "date"),
+        ("timestamp", "2026-09-08 01:02:03", "datetime"),
+        ("sexagesimal_like", "2026-09-08T01:02:03Z", "datetime"),
+    ),
+    ids=["date", "timestamp", "iso-timestamp"],
+)
+def test_a_yaml_scalar_the_producer_left_unquoted_refuses_instead_of_escaping(
+    name: str, scalar: str, kind: str
+) -> None:
+    """SafeLoader accepts it; the identity hash cannot govern it.
+
+    An unquoted `declared: 2026-09-08` is a `datetime.date`, and canonicalising the declaration
+    then raised a bare `TypeError` outside the parsing handler — the dispatcher catches only
+    `FrameVerdictsUnavailable`, so it escaped with no refusal, remedy or receipt (review finding,
+    codex). Same class as the unhashable-key escape beside it: a value the loader accepts and a
+    later stage cannot serialise.
+
+    Coercion is deliberately not the fix. This identity is copied from the producer's own rule and
+    a fixture pins byte compatibility, so serialising the date would compute a hash the producer
+    does not and the two trees would disagree about which declaration this is.
+    """
+    member = {"id": "m1", "relation": "scope_exited", "declared": yaml.safe_load(scalar)}
+    assert type(member["declared"]).__name__ == kind, name
+
+    with pytest.raises(fv.FrameVerdictsUnavailable) as caught:
+        fv._member_declaration_identity(member, ())  # noqa: SLF001
+    assert "cannot be canonicalised" in str(caught.value)
+    assert "m1" in str(caught.value)
+    # The offending FIELD is named, because a member with twenty keys is not repairable from a
+    # message saying only that one of them is not serialisable.
+    assert "declared=" in str(caught.value)
+    assert "quote the affected value" in caught.value.remedy
+
+    # The twin: an all-string member still produces its identity, so the refusal is about the
+    # unserialisable value and not about the shape of the member.
+    quoted = {"id": "m1", "relation": "scope_exited", "declared": scalar}
+    assert fv._member_declaration_identity(quoted, ()).startswith("declaration:")  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
     ("name", "text"),
     (
         ("sequence_key", "? [a, b]\n: c\n"),
