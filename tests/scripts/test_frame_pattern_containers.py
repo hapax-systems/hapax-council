@@ -106,10 +106,13 @@ def test_main_refuses_a_malformed_pattern_ENTRY_not_only_the_container(
     rc, err, _, _ = _pattern_dispatch(tmp_path, monkeypatch, capsys, reader, {"patterns": patterns})
     assert rc == 10, "a pattern entry the producer cannot iterate must not select anything"
     assert "location.patterns has malformed entry" in err
-    # The member and the INDEX, because a list of five patterns with one bad entry is not
-    # repairable from a message naming only the member.
-    assert "index" in err
-    bad = next(item for item in patterns if not isinstance(item, str))
+    # The member and the EXACT index, because a list with one bad entry is not repairable from a
+    # message naming only the member. Asserting `"index" in err` was the first spelling of this
+    # and it passes against an always-zero index — a root oracle caught that where these native
+    # rows could not, so the row now names the position it measured.
+    position = next(i for i, item in enumerate(patterns) if not isinstance(item, str))
+    assert f"index {position}" in err
+    bad = patterns[position]
     assert type(bad).__name__ in err
     assert repr(bad) in err
 
