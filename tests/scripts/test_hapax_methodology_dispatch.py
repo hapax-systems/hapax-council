@@ -8084,6 +8084,61 @@ def test_dispatch_unsupported_member_pattern_names_normalized_form(
     )
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "UNREPAIRED admission bypass, committed as a reproduction rather than as a claim. "
+        "One attempt — restoring the candidate when a dirlike expansion of a regular file comes "
+        "back empty — did not change the outcome, so the deciding site is not the one inferred "
+        "and the inference was withdrawn rather than shipped as dead code. strict=True so this "
+        "announces itself the moment it is actually fixed."
+    ),
+)
+@pytest.mark.parametrize("suffix", ["/", "//", "/./"])
+def test_dispatch_directory_spelled_SELECTED_file_refuses_like_a_declared_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    suffix: str,
+) -> None:
+    """The same question, asked of a glob SELECTION rather than an explicit declaration.
+
+    `location.files` already rejects a regular file spelled as a directory — the row below pins
+    that. A file reached through `location.patterns` took a different route: the directory flag
+    turns it into a hypothetical-descendant language which is then certified disjoint, so
+    receipt-only `main()` returns 10 for `…/dumpe2fs` and **0** for `…/dumpe2fs/` while the demand
+    vector binds both spellings to the same selected file and hash (review critical, codex, at
+    `cf45a21d3`).
+
+    A scope that refuses under one spelling and admits under another spelling of the same file is
+    an admission bypass, not a formatting difference.
+    """
+    module = _dispatcher_module()
+    member_root = tmp_path / "bin"
+    member_root.mkdir()
+    selected = member_root / "dumpe2fs"
+    selected.write_bytes(b"selected regular file\n")
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=member_root,
+        reader="fs.glob",
+        location={"path": str(member_root), "patterns": ["dumpe2fs"]},
+    )
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+
+    # The file spelling refuses. Established first, so the twin below is a comparison and not an
+    # assertion about a scope that was never containable in the first place.
+    plain, _err = _dispatch_receipt_only_scope(tmp_path, monkeypatch, capsys, frame_root, selected)
+    assert plain == 10
+
+    rc, err = _dispatch_receipt_only_scope(
+        tmp_path, monkeypatch, capsys, frame_root, str(selected) + suffix
+    )
+    assert rc == 10, "a selected regular file spelled as a directory must not become admissible"
+    assert "directory-spelled scope" in err
+    assert f"Next: repair mutation_scope_refs to use the file form {str(selected)!r}" in err
+
+
 @pytest.mark.parametrize("namespace", ["filesystem", "podium:", "gh://hapax-systems/"])
 @pytest.mark.parametrize("suffix", ["/", "//", "/./"])
 def test_dispatch_directory_spelled_explicit_file_refuses_with_file_form(
