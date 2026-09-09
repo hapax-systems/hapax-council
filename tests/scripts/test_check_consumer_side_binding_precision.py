@@ -1917,3 +1917,102 @@ def test_uncertainty_reaches_the_callee_of_the_callee(synthetic_repo, suffix, ex
     """
     _report, (accesses, *_rest) = synthetic_repo(_HELPER + _RELAY + suffix)
     assert _certified_writes(accesses) == expected
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "[configure() for artifact in [1]]",
+        "{configure() for artifact in [1]}",
+        "{artifact: configure() for artifact in [1]}",
+        "list(configure() for artifact in [1])",
+    ],
+    ids=["list", "set", "dict", "consumed-generator"],
+)
+def test_a_callees_global_mutation_survives_a_comprehension_target_of_the_same_name(
+    synthetic_repo, form
+) -> None:
+    """A name collision is not ownership.
+
+    The comprehension target is local; the callee rebinds the GLOBAL. Subtracting target names
+    from the callee's effect names discarded that mutation because the spellings matched, and once
+    the enclosing invalidation was removed the result was a CERTIFIED writer for
+    `artifacts/old.json` — which Python never writes — absorbing the real orphan reader entirely
+    (review critical, codex).
+
+    Python writes `artifacts/new.json` only, in all four forms.
+    """
+    report, (accesses, unresolved, *_rest) = synthetic_repo(
+        "from pathlib import Path\n"
+        "artifact = Path('artifacts/old.json')\n"
+        "def configure():\n"
+        "    global artifact\n"
+        "    artifact = Path('artifacts/new.json')\n"
+        f"{form}\n"
+        "artifact.write_text('{}')\n"
+        "Path('artifacts/old.json').read_text()\n"
+    )
+    assert not [a for a in accesses if a.action == "write" and a.bounded]
+    assert unresolved == 1
+    # The reader must SURVIVE. A phantom producer that absorbs its orphan is the failure this
+    # row exists for, so asserting the writer alone would not catch a regression.
+    assert (Path("shared/consumer.py"), "artifacts/old.json") in _orphaned(
+        report, UNRESOLVED_WRITER
+    )
+
+
+def test_a_reached_call_is_not_demoted_by_a_later_undecided_region(synthetic_repo) -> None:
+    """The two channels a region demotes into do not advance together.
+
+    A call resolving entirely in its callee appends no access here, so its ledger entry shared the
+    access position of whatever followed — and an unrelated undecided operand region beginning at
+    the same access count demoted a call that had already run (review finding, codex). Python
+    writes `a.json` unconditionally; the later condition cannot reach back.
+    """
+    _report, (accesses, *_rest) = synthetic_repo(
+        "from pathlib import Path\n"
+        "def emit(path): open(path, 'w')\n"
+        "def condition(): return not False\n"
+        "emit('artifacts/a.json')\n"
+        "condition() and 0\n"
+        "Path('artifacts/a.json').read_text()\n"
+    )
+    assert _certified_writes(accesses) == {"artifacts/a.json": True}
+
+
+def test_a_well_formed_consumer_side_entry_actually_suppresses_its_finding(
+    gate, tmp_path: Path
+) -> None:
+    """The allowlist's positive direction, which nothing in the tree exercised.
+
+    `producer-consumer-allowlist.json` ships `"entries": []`, so its documented key shape — the
+    `kind=consumer_side` requirement and the `<finding kind>:<read pattern>` spelling — had no
+    live entry demonstrating it, and the only covering control pinned the CROSS-DOMAIN refusal:
+    that a consumer_side entry cannot exempt a producer finding (review finding, claude). This is
+    the other half, and it is the half that would notice the key shape drifting.
+    """
+    _write(
+        tmp_path,
+        "shared/consumer.py",
+        "from pathlib import Path\nPath('artifacts/orphan.json').read_text()\n",
+    )
+    plain = gate.analyse_consumer_side(tmp_path, [])
+    orphan = next(f for f in plain.findings if f.reader.pattern == "artifacts/orphan.json")
+    assert orphan.kind == "consumer-reads-unwritten-artifact"
+    assert orphan.key == f"{orphan.kind}:artifacts/orphan.json"
+
+    entry = gate.AllowlistEntry(
+        orphan.key, "worked example for the documented key shape", "consumer_side"
+    )
+    exempted = gate.analyse_consumer_side(tmp_path, [entry])
+    assert [f.reader.pattern for f in exempted.findings] == []
+    assert [(f.reader.pattern, e.reason) for f, e in exempted.allowlisted] == [
+        ("artifacts/orphan.json", "worked example for the documented key shape")
+    ]
+
+    # And the kind really is load-bearing: the same pattern without `kind=consumer_side` does
+    # not suppress it, which is what makes the cross-domain control above meaningful.
+    untyped = gate.AllowlistEntry(orphan.key, "no kind declared", None)
+    assert [f.reader.pattern for f in gate.analyse_consumer_side(tmp_path, [untyped]).findings] == [
+        "artifacts/orphan.json"
+    ]

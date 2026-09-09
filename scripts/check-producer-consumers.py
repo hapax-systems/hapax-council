@@ -15,11 +15,21 @@ Closes UNWIRED-WORK (A1) at merge per the LLM-agent failure-taxonomy spec
   must have its contract YAML at ``axioms/contracts/publication/{slug}.yaml``
   plus a runner reference or non-test importer.
 
-``--consumer-side`` adds the inverse, whole-tree report: artifact reads with
-no resolved writer, named reader/writer families whose paths diverge, and
-(with ``--frame``) reads backed only by a producer in a decayed mass member.
+``--consumer-side`` adds the inverse, whole-tree report: artifact reads whose
+writer is **absent**, reads whose writer is **located but of undetermined
+execution**, named reader/writer families whose paths diverge, and (with
+``--frame``) reads backed only by a producer in a decayed mass member.
+
+The first two are separate sentences on purpose and this paragraph used to
+flatten them into one. A located writer that cannot be shown to run is not an
+absence, and saying "nothing writes this" about a file something may write is
+the false-absence error the row exists to avoid — see
+``consumer-reads-artifact-with-unresolved-writer`` in ``CONSUMER_SIDE_KINDS``
+below, which the prose above it predated (review finding, claude).
+
 That mode is deliberately report-only until a follow-on row authorises its
-named arm.
+named arm, and its CI step carries ``continue-on-error`` so the workflow
+enforces that rather than the script asserting it about its caller.
 
 Anti-theses honored (taxonomy §4.3):
 
@@ -4400,7 +4410,23 @@ class _BlockScanner:
             )[0]
             self.path_functions.helper_results.clear()
 
-    def _demote_from(self, mark: int | None) -> None:
+    def _region_mark(self) -> tuple[int, int]:
+        """Where a region begins in BOTH channels this walk records into.
+
+        The access list and the invocation ledger advance independently: a call that resolves
+        entirely in its callee appends no access here, so its ledger entry shares the access
+        position of whatever follows it. Using the access position for both then demoted a
+        REACHED call because an unrelated undecided region began at the same access count —
+
+            emit('artifacts/a.json')     # reached, appends no local access
+            condition() and 0            # undecided operand region, same access position
+
+        — and Python writes `a.json` unconditionally (review finding, codex, at `95312c946`).
+        Two boundaries, captured at one moment, so the sites cannot drift apart.
+        """
+        return len(self.accesses), len(self.recorded_bindings)
+
+    def _demote_from(self, mark: tuple[int, int] | None) -> None:
         """Everything recorded since ``mark`` is a site whose reachability is not established.
 
         `bounded` is what certification requires, so demoting keeps each access as evidence
@@ -4414,16 +4440,15 @@ class _BlockScanner:
         """
         if mark is None:
             return
-        self.accesses[mark:] = [replace(access, bounded=False) for access in self.accesses[mark:]]
+        access_mark, binding_mark = mark
+        self.accesses[access_mark:] = [
+            replace(access, bounded=False) for access in self.accesses[access_mark:]
+        ]
         # The access list is not the only channel out of this region. An argument supplied here
         # is resolved in the CALLEE's scope walk, which this slice cannot reach, so demoting only
         # what was recorded locally left the helper's write certified from a call that never runs.
-        # Same position predicate, applied to the bindings this walk handed out.
-        self.demoted_bindings.update(
-            index
-            for index, (position, _callee, _key) in enumerate(self.recorded_bindings)
-            if position >= mark
-        )
+        # Its own boundary, because the two lists do not advance together.
+        self.demoted_bindings.update(range(binding_mark, len(self.recorded_bindings)))
 
     def binding_certainty(self) -> tuple[dict[ast.AST, set[tuple]], dict[ast.AST, set[tuple]]]:
         """This walk's verdict on the invocation states it recorded, once the walk is over."""
@@ -4637,7 +4662,7 @@ class _BlockScanner:
             # Note what this does NOT say: it is not that the arms are unreachable. One of them
             # runs. Demoting both is the honest reading of "one of these two, unknown which",
             # and it is why the decided case above still certifies its single arm.
-            arms_from = len(self.accesses)
+            arms_from = self._region_mark()
             taken, not_taken = _fork(states), _fork(states)
             self._scan_expression(node.body, taken)
             self._scan_expression(node.orelse, not_taken)
@@ -4680,7 +4705,7 @@ class _BlockScanner:
                 # three more operator sites). The mark is taken AFTER the decision, so it is the
                 # NEXT operand's scan that falls inside it.
                 if decided is None and unreached_from is None:
-                    unreached_from = len(self.accesses)
+                    unreached_from = self._region_mark()
             self._demote_from(unreached_from)
             states[:] = _merge_states(alternatives)
             return
@@ -4732,7 +4757,7 @@ class _BlockScanner:
                 # runtime (`5 < 1` is False) and certified the write. The decided-true case is
                 # untouched: the chain definitely continues, so the next operand definitely runs.
                 if decided is None and chain_unreached_from is None:
-                    chain_unreached_from = len(self.accesses)
+                    chain_unreached_from = self._region_mark()
                 self._scan_expression(node.comparators[index], continued)
             self._demote_from(chain_unreached_from)
             alternatives.extend(_fork(continued))
@@ -4888,7 +4913,7 @@ class _BlockScanner:
                             f"expression={ast.unparse(generator.iter)}"
                         )
                     if unreached_from is None:
-                        unreached_from = len(self.accesses)
+                        unreached_from = self._region_mark()
                 if domain == SOURCE_UNDECIDED:
                     # **UNRESOLVED IS NOT PERMISSION.** Leaving `body_runs` enabled here meant an
                     # iterable this scanner cannot evaluate certified everything inside it — and
@@ -4912,7 +4937,7 @@ class _BlockScanner:
                     # region because nothing runs, an UNDECIDED one keeps it as unbounded
                     # evidence because something might.
                     if unreached_from is None:
-                        unreached_from = len(self.accesses)
+                        unreached_from = self._region_mark()
                     self.unresolved[0] += 1
                     if isinstance(self.path_functions, PathFunctionTable):
                         detail = (
@@ -4989,7 +5014,7 @@ class _BlockScanner:
                         # guards is absent either. The guard's own truth is unknown, so the
                         # region below it is unbounded evidence.
                         if unreached_from is None:
-                            unreached_from = len(self.accesses)
+                            unreached_from = self._region_mark()
                         self.unresolved[0] += 1
                         if isinstance(self.path_functions, PathFunctionTable):
                             self.path_functions.unresolved_paths.add(
@@ -5055,9 +5080,31 @@ class _BlockScanner:
             }
             for state in states:
                 _invalidate_names(state, leaked_names)
-                # `names` still governs the effect subtraction: a `for` target IS comprehension-
-                # local, so an effect recorded under it does not name anything out here.
-                self._invalidate_effect_names(state, effect_names - names)
+                # **The subtraction was wrong and my repair turned it into a phantom.** A callee
+                # reached from the body can mutate a GLOBAL whose name coincides with a
+                # comprehension target, and subtracting target names discarded that mutation
+                # because the spellings matched:
+                #
+                #     artifact = Path('artifacts/old.json')
+                #     def configure():
+                #         global artifact
+                #         artifact = Path('artifacts/new.json')
+                #     [configure() for artifact in [1]]
+                #     artifact.write_text('{}')          # Python writes NEW; this certified OLD
+                #
+                # At `6549d4d6c` and `2b1c95877` the enclosing invalidation hid the consequence
+                # and the reader was correctly reported unwritten. Removing that invalidation
+                # without removing this subtraction turned a conservative answer into a
+                # CERTIFIED writer for a file nothing writes, which then absorbed the real
+                # orphan reader — the exact class rounds seven to ten exist to eliminate
+                # (review critical, codex, at `95312c946`; four comprehension forms).
+                #
+                # The two cases are not separable here: an effect key records that a name became
+                # unresolved, whether by the comprehension's own target or by a callee's global
+                # mutation. So the subtraction goes. Where the cause really was local this
+                # over-withholds a name outside — which narrows, and withholding a producer is
+                # defensible where asserting one is not.
+                self._invalidate_effect_names(state, effect_names)
                 if _CALL_GLOBALS_KEY in state and effect_names:
                     inherited = _decode_call_globals(state[_CALL_GLOBALS_KEY], self.path_functions)
                     self._invalidate_effect_names(inherited, effect_names)
