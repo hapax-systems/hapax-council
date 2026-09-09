@@ -8113,7 +8113,6 @@ def test_dispatch_directory_spelled_SELECTED_file_refuses_like_a_declared_one(
     A scope that refuses under one spelling and admits under another spelling of the same file is
     an admission bypass, not a formatting difference.
     """
-    module = _dispatcher_module()
     member_root = tmp_path / "bin"
     member_root.mkdir()
     selected = member_root / "dumpe2fs"
