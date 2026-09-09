@@ -3268,11 +3268,29 @@ def _canonical_scope_entries(
             raise _refuse_unobservable_enumeration(path, pattern)
         entries, enumeration_failures = _observed_glob(path, pattern)
         if enumeration_failures:
+            # **Name the DECLARED scope, not only the base and the relative pattern.** This
+            # message split the ref into two halves that never appear adjacent, so an operator
+            # holding a `mutation_scope_refs` list could not find the entry it is about, and
+            # `test_dispatch_empty_member_glob_directory_prefix[unresolved-directory]` said so
+            # from the moment this refusal was introduced at `614dc6581`. The comment above
+            # records that the path it replaced diagnosed "with the ref in hand"; the
+            # replacement dropped exactly that and I then reported the failure three times as
+            # predating this arm, on the strength of it also being red one commit later.
+            # Both halves of the comparison, in the vocabulary the sibling refusals already use:
+            # the DECLARED scope and the member roots it is being decided against, and the phrase
+            # `containment is undecidable`. A refusal that names one side says which path is
+            # broken and not which question went unanswered.
+            # The `scope_containment_undecidable:` code is spelled by hand at six other sites and
+            # this is the seventh. One refusal code written out at seven sites is the same shape
+            # this arm keeps filing against the scanner, and it belongs in a follow-up rather than
+            # in a row already under review — recorded here so the follow-up has a reason.
             error = UndecidableScopeContainment(
-                f"cannot enumerate scope glob {pattern!r} below {path}: "
+                f"scope_containment_undecidable: cannot enumerate declared scope "
+                f"{path / pattern} against member root "
+                f"{', '.join(str(root) for root in member.roots)}: "
                 f"{enumeration_failures[0]}; the expansion that produced this scope could not "
-                "read or classify every entry it traversed, and a short scope is not a smaller "
-                "answer but a wrong one"
+                "read or classify every entry it traversed, a short scope is not a smaller "
+                "answer but a wrong one, and containment is undecidable"
             )
             # **The default remedy is the wrong one for this failure and it fires by omission.**
             # `UndecidableScopeContainment` defaults to "use narrower globs", which is right when
