@@ -8175,7 +8175,11 @@ def test_dispatch_a_valid_partial_scope_of_two_literals_still_admits(
     assert rc == 0
 
 
-@pytest.mark.parametrize("suffix", ["/", "//", "/./"])
+@pytest.mark.parametrize(
+    "suffix",
+    ["/", "//", "/./", "/*", "/**", "/**/*"],
+    ids=["slash", "double-slash", "dot-slash", "star", "globstar", "globstar-star"],
+)
 def test_dispatch_directory_spelled_SELECTED_file_refuses_like_a_declared_one(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -8217,6 +8221,39 @@ def test_dispatch_directory_spelled_SELECTED_file_refuses_like_a_declared_one(
     assert rc == 10, "a selected regular file spelled as a directory must not become admissible"
     assert "directory-spelled scope" in err
     assert f"Next: repair mutation_scope_refs to use the file form {str(selected)!r}" in err
+
+
+def test_dispatch_a_sibling_pattern_beside_a_selected_file_still_admits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The control that says the wildcard-tail repair did not overreach.
+
+    Removing the `scope_pattern is None` restriction makes `file/*` refuse. It must NOT make
+    `…/dumpe2fs*` refuse: there the base is the containing DIRECTORY and the pattern is a sibling
+    selector, so the candidate is not a selected file and the guard has no business firing. The
+    two are one character apart in the declaration and opposite in meaning, which is exactly the
+    pair a repair to this gate can get wrong.
+    """
+    member_root = tmp_path / "bin"
+    member_root.mkdir()
+    (member_root / "dumpe2fs").write_bytes(b"selected regular file\n")
+    frame_root = _frame_procedure_root(
+        tmp_path / "frame",
+        decayed_root=member_root,
+        reader="fs.glob",
+        location={"path": str(member_root), "patterns": ["dumpe2fs"]},
+    )
+    monkeypatch.setenv("HAPAX_FRAME_PROCEDURE_ROOT", str(frame_root))
+    rc, err = _dispatch_receipt_only_scope(
+        tmp_path, monkeypatch, capsys, frame_root, str(member_root / "dumpe2fs*")
+    )
+    assert "directory-spelled scope" not in err, (
+        "a sibling pattern under the member directory is a partial scope, not a file spelled "
+        "as a directory"
+    )
+    assert rc == 0
 
 
 @pytest.mark.parametrize("namespace", ["filesystem", "podium:", "gh://hapax-systems/"])

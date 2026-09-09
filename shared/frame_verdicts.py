@@ -3798,9 +3798,20 @@ def ref_within_member(
     # `…/dumpe2fs/`, the same file under two spellings bound to the same hash (review critical,
     # four families, at `d1d7a8204` onward).
     #
-    # Placed above `broad` so it precedes the partial-scope logic entirely, and gated on
-    # `scope_pattern is None` because a partial scope is a different question: this is only the
-    # bare directory spelling of something the reader actually selects.
+    # Placed above `broad` so it precedes the partial-scope logic entirely.
+    #
+    # **Not gated on `scope_pattern is None`, because a wildcard tail is the same subject.**
+    # It was, and `file/*`, `file/**` and `file/**/*` therefore carried a pattern and skipped the
+    # guard: the literal and the bare directory spelling refused while all three tails admitted
+    # with `ok=True, reason=eligible`, against a member selecting that very file (review critical,
+    # codex, at `f68d19e7e`). Appending a descendant pattern to a REGULAR FILE does not make it a
+    # partial scope; it makes it the same inconsistent file-as-directory subject in another dress,
+    # and the empty descendant expansion is what let it through.
+    #
+    # The legitimate partial scope survives on the OTHER half of the gate, not this one: in
+    # `…/hostname*` the base is the containing DIRECTORY and the pattern is a sibling selector, so
+    # `path` is not in the selected surface and the guard never fires. That is why removing this
+    # restriction closes the three tails without touching the case it was there to protect.
     #
     # `_member_selected_surface` and not the pattern set — a content-query entry that fails its
     # own predicate is off the surface, so an alias of a pattern-matched, query-rejected file is
@@ -3809,7 +3820,7 @@ def ref_within_member(
     # `path in surface` is tested before `_identity_reaches_surface`, which raises rather than
     # answering False when a comparison cannot be made: the cheap exact match answers first and
     # only an alias question reaches the comparison that can refuse for a different reason.
-    if dirlike and scope_pattern is None:
+    if dirlike:
         surface = _member_selected_surface(member)
         if path in surface or _identity_reaches_surface((path,), surface):
             _refuse_directory_spelled_file(path)
