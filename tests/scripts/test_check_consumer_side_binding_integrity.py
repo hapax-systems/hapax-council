@@ -2009,17 +2009,28 @@ def test_store_cannot_supply_an_obsolete_producer(gate, tmp_path: Path, binding,
 
 
 @pytest.mark.parametrize(
-    "expression",
+    ("expression", "unresolved_sites"),
     [
-        "[artifact.write_text('{}') for artifact in items]",
-        "{artifact.write_text('{}') for artifact in items}",
-        "{artifact: artifact.write_text('{}') for artifact in items}",
-        "(artifact.write_text('{}') for artifact in items)",
+        ("[artifact.write_text('{}') for artifact in items]", 2),
+        ("{artifact.write_text('{}') for artifact in items}", 2),
+        ("{artifact: artifact.write_text('{}') for artifact in items}", 2),
+        # A generator's body is not scheduled at the definition site, so its single unresolved
+        # site is the deferral itself rather than an iterable plus a target-bound write.
+        ("(artifact.write_text('{}') for artifact in items)", 1),
     ],
 )
 def test_comprehension_targets_do_not_borrow_or_export_producers(
-    gate, tmp_path: Path, expression
+    gate, tmp_path: Path, expression, unresolved_sites
 ) -> None:
+    """A comprehension target neither exports its value NOR disturbs the enclosing binding.
+
+    Only the first half was true here. `for artifact in items` invalidated the enclosing
+    `artifact` as well, so the next line's write — which Python performs on `old.json`, the
+    comprehension having its own scope — was lost with it. Twelve shapes measured against the
+    interpreter, eight of them closed fixtures calling `use([])` or
+    `use([Path('artifacts/other.json')])`: Python writes `old.json` in all eight and the scanner
+    recorded no writer at all (review finding, root).
+    """
     _write(
         tmp_path,
         "from pathlib import Path\ndef use(items):\n"
@@ -2027,10 +2038,18 @@ def test_comprehension_targets_do_not_borrow_or_export_producers(
         f"    {expression}\n    artifact.write_text('{{}}')\n"
         "Path('artifacts/old.json').read_text()\n",
     )
+    accesses, *_rest = gate.collect_artifact_accesses(tmp_path)
+    assert [(a.pattern, a.bounded) for a in accesses if a.action == "write"] == [
+        ("artifacts/old.json", True)
+    ]
     report = gate.analyse_consumer_side(tmp_path, [])
-    assert "artifacts/old.json" in _orphaned(report)
-    assert report.unresolvable == 2
-    assert len(report.unresolved_paths) == 2
+    # The reader now HAS its producer, so it is orphaned under neither sentence.
+    assert _orphaned(report) == set()
+    assert _orphaned(report, UNRESOLVED_WRITER) == set()
+    # The write THROUGH the target stays unresolved: that one really is bound to an element of
+    # an argument, and naming it would need per-element evaluation this arm has not built.
+    assert report.unresolvable == unresolved_sites
+    assert len(report.unresolved_paths) == unresolved_sites
 
 
 def test_store_context_inventory_and_fallback(gate, tmp_path: Path) -> None:
@@ -2196,10 +2215,19 @@ def test_lambda_comprehension_has_its_own_target_binding(gate, tmp_path: Path) -
         "use = lambda items: [artifact.write_text('{}') for artifact in items]\n"
         "Path('artifacts/old.json').read_text()\n",
     )
+    accesses, *_rest = gate.collect_artifact_accesses(tmp_path)
+    # The lambda is never called, and inside it the target SHADOWS the module binding, so the
+    # write is on an element of `items` and nothing writes old.json. The reader is genuinely
+    # unproduced — the contrast with the function fixture above, where the write is on the line
+    # AFTER the comprehension and therefore on the enclosing binding.
+    assert not [a for a in accesses if a.action == "write"]
     report = gate.analyse_consumer_side(tmp_path, [])
     assert "artifacts/old.json" in _orphaned(report)
-    assert report.unresolvable == 1
-    assert len(report.unresolved_paths) == 1
+    # Two sites, not one: the unresolvable iterable AND the write through the target. The second
+    # only became visible when the comprehension body started being scanned, and this count was
+    # never updated — it has been red since.
+    assert report.unresolvable == 2
+    assert len(report.unresolved_paths) == 2
 
 
 def test_unmodelled_type_alias_invalidates_store(gate, tmp_path: Path) -> None:

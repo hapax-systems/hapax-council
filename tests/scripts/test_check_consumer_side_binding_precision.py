@@ -1858,6 +1858,21 @@ _RELAY = "\n\ndef relay(path):\n    emit(path)\n"
 _UNREACHED = "\n[emit('artifacts/a.json') for _ in unresolved()]\n"
 
 
+def _certified_writes(accesses) -> dict[str, bool]:
+    """Whether each written pattern has AT LEAST ONE certified writer.
+
+    Two call sites can resolve to the same path and be scanned as two invocation states, so a
+    pattern carries both a certified row from the reached site and a withheld one from the
+    unreached site. "One reached caller is enough" is therefore `any(bounded)`, and reading the
+    last row instead silently reported whichever state happened to be scanned second.
+    """
+    flags: dict[str, set[bool]] = {}
+    for access in accesses:
+        if access.action == "write":
+            flags.setdefault(access.pattern, set()).add(access.bounded)
+    return {pattern: any(seen) for pattern, seen in flags.items()}
+
+
 @pytest.mark.parametrize(
     ("suffix", "expected"),
     [
@@ -1880,7 +1895,7 @@ def test_an_argument_from_an_unreached_region_does_not_certify_the_callees_write
     synthetic_repo, suffix, expected
 ) -> None:
     _report, (accesses, *_rest) = synthetic_repo(_HELPER + suffix)
-    assert {a.pattern: a.bounded for a in accesses if a.action == "write"} == expected
+    assert _certified_writes(accesses) == expected
 
 
 @pytest.mark.parametrize(
@@ -1901,4 +1916,4 @@ def test_uncertainty_reaches_the_callee_of_the_callee(synthetic_repo, suffix, ex
     would otherwise record its own calls as ordinary observations and re-certify one hop down.
     """
     _report, (accesses, *_rest) = synthetic_repo(_HELPER + _RELAY + suffix)
-    assert {a.pattern: a.bounded for a in accesses if a.action == "write"} == expected
+    assert _certified_writes(accesses) == expected

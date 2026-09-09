@@ -5027,9 +5027,25 @@ class _BlockScanner:
             # Do not export comprehension values. We also refuse to use a pre-comprehension
             # snapshot for these targets outside it; deferred iteration is not scheduled here.
             names = set().union(*(_target_names(g.target) for g in node.generators))
-            names.update(
+            # A comprehension has its OWN scope in Python 3, so a `for` target neither exports its
+            # value nor disturbs an enclosing binding of the same name. Invalidating these outside
+            # did the second thing: `artifact = Path('artifacts/old.json')` followed by
+            # `[artifact.write_text('{}') for artifact in items]` lost the outer binding, and the
+            # NEXT line's real write vanished with it — twelve shapes measured against the
+            # interpreter, eight of them closed fixtures calling `use([])` or
+            # `use([Path('artifacts/other.json')])`, every one of which Python writes and the
+            # scanner recorded no writer for at all (review finding, root, at `2a49a0f7c`).
+            #
+            # Refusing to EXPORT the target was right and is unchanged: `inner` is a fork, so the
+            # enclosing states never held the comprehension's binding to begin with.
+            #
+            # A walrus is the exception and the only one: `[(y := f(x)) for x in items]` really
+            # does bind `y` in the enclosing scope, to a value this walk cannot pin, so those
+            # targets are still invalidated.
+            leaked_names = {
                 item.target.id for item in ast.walk(node) if isinstance(item, ast.NamedExpr)
-            )
+            }
+            names.update(leaked_names)
             effect_names = {
                 key.removeprefix(prefix)
                 for state in inner
@@ -5038,7 +5054,9 @@ class _BlockScanner:
                 if key.startswith(prefix)
             }
             for state in states:
-                _invalidate_names(state, names)
+                _invalidate_names(state, leaked_names)
+                # `names` still governs the effect subtraction: a `for` target IS comprehension-
+                # local, so an effect recorded under it does not name anything out here.
                 self._invalidate_effect_names(state, effect_names - names)
                 if _CALL_GLOBALS_KEY in state and effect_names:
                     inherited = _decode_call_globals(state[_CALL_GLOBALS_KEY], self.path_functions)
