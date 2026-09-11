@@ -70,6 +70,23 @@ class TestBlocksOperatorName:
         assert result.returncode == 2
         assert "Operator full name" in result.stderr
 
+
+class TestBlocksRegisteredIdentityForms:
+    def test_blocks_surname_alone(self, tmp_path: Path) -> None:
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        result = _run(_edit(str(repo / "agents/x.py"), "subject = 'Kleeberger'\n"), cwd=repo)
+        assert result.returncode == 2
+
+    def test_blocks_each_registered_principal_id(self, tmp_path: Path) -> None:
+        repo = tmp_path
+        (repo / ".git").mkdir()
+        for principal_id in ("principal-c1", "principal-c2", "principal-a1"):
+            result = _run(
+                _edit(str(repo / "agents/x.py"), f"subject = '{principal_id}'\n"), cwd=repo
+            )
+            assert result.returncode == 2
+
     def test_blocks_operator_name_case_insensitive(self, tmp_path: Path) -> None:
         repo = tmp_path
         (repo / ".git").mkdir()

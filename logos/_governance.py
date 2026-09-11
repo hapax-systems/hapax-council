@@ -23,13 +23,14 @@ import yaml
 from werkzeug.security import safe_join
 from werkzeug.utils import secure_filename
 
+from shared.governance.consent import REGISTERED_CHILD_PRINCIPALS
+
 log = logging.getLogger(__name__)
 
 # ── Consent contracts (from shared/governance/consent.py) ──────────────
 
 _CONTRACTS_DIR = Path(__file__).parent.parent / "axioms" / "contracts"
 
-REGISTERED_CHILD_PRINCIPALS: frozenset[str] = frozenset({"simon", "agatha"})
 _CONTRACT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _UNSAFE_CONTRACT_CHARS_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
