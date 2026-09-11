@@ -72,7 +72,6 @@ KNOWN_PRODUCERS = (
     "hapax-cache-cleanup",
     "hapax-audio-safe-restart",
     "hapax-lane-idle-watchdog",
-    "hapax-lane-reaper",
     "hapax-lane-supervisor",
     "hapax-post-merge-deploy",
     "hapax-worktree-gc.sh",
@@ -152,6 +151,13 @@ def test_no_unrouted_raw_high_priority_emit_per_emit() -> None:
     assert not violations, "Raw high-priority alert(s) bypass governed P0 intake:\n" + "\n".join(
         violations
     )
+
+
+def test_observation_only_lane_reaper_is_not_an_alert_producer() -> None:
+    text = _read(SCRIPTS / "hapax-lane-reaper") or ""
+    assert not RAW_DESKTOP.search(text)
+    assert not RAW_NTFY.search(text)
+    assert not GOVERNED.search(text)
 
 
 @pytest.mark.parametrize("name", sorted(ALLOWLIST))

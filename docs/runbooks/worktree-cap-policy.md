@@ -196,7 +196,7 @@ garbage-collected.
 
 ## 5a. Automated hygiene & the orphaned-spawn-tree class
 
-Two timers keep the count bounded without manual cleanup:
+One active timer keeps the count bounded without manual cleanup:
 
 - **`hapax-worktree-gc.timer`** (every 6h) → `scripts/hapax-worktree-gc.sh`. The
   cleanup is governed by EXPLICIT lifecycle STATUS, not age+merge inference (PR
@@ -260,20 +260,36 @@ Two timers keep the count bounded without manual cleanup:
     `fail-closed` lines).
   - A live-PID guard refuses to remove any worktree a running process maps via
     `/proc/<pid>/cwd|exe` (the F1 release-ghost incident).
-- **`hapax-lane-reaper.timer`** (every 30m) → reaps *dead lanes that still have
-  a live tmux session*.
 
-**The 2026-06-27 pileup (root cause).** The lane-reaper only iterates EXISTING
-tmux sessions. When a lane dies *ungracefully* — its tmux session/pane is gone
-but its `*-spawns/run-*.sh` spawn shell and the MCP servers it started
+**Parked transitional compatibility.** `hapax-lane-reaper.service` and
+`hapax-lane-reaper.timer` are retained only as a legacy tmux metadata projection.
+Both units carry `# Hapax-Parked: true`; the timer has no install target, and the
+service has no notification edge. Source activation therefore disables and stops
+either stale deployed unit instead of scheduling it. The script is non-effectful
+in every mode: it does not reap lanes, release ownership, clean worktrees, or read
+terminal transcripts. An absent tmux runtime is an expected unknown inventory,
+not proof of zero lanes.
+
+**Retirement predicate.** Do not delete the compatibility script, service, timer,
+or shared compatibility mapping until the Reins successor has both parity and
+source activation. Parity means runtime-agnostic observation with provenance,
+currentness, and uncertainty; capability-demand and affected-party impingement
+derivation; authority, admission, and an execution lease before one bounded,
+reversible effect; and outcome attestation with affordance update. Tmux remains a
+discoverable transitional adapter, not a permanent lifecycle dependency.
+
+**The 2026-06-27 pileup (historical root cause).** The former effectful
+lane-reaper iterated only existing tmux sessions. When a lane died
+*ungracefully* — its tmux session/pane disappeared but its
+`*-spawns/run-*.sh` spawn shell and the MCP servers it started survived
 (node/playwright/chrome-devtools/context7/mcp-gemini + `docker run` github-mcp
-containers) survive — nothing reaps them. Each leaked tree keeps its `cwd`
-parked in the lane's (now-merged) worktree, so the GC's live-PID guard refuses
-removal *forever*. The result was 79 worktrees, 80 leaked processes, 9 leaked
-docker containers, and a GC reporting `removable=7 removed=0 live_refused=7`.
+containers) — that path did not reap them. Each leaked tree kept its `cwd`
+parked in the lane's (then-merged) worktree, so the GC's live-PID guard refused
+removal. The result was 79 worktrees, 80 leaked processes, 9 leaked docker
+containers, and a GC reporting `removable=7 removed=0 live_refused=7`.
 
-**The fix.** `scripts/hapax-orphan-spawn-reaper.py` runs as a GC pre-pass
-(invoked from `hapax-worktree-gc.sh`; disable with
+**Separate cleanup path retained.** `scripts/hapax-orphan-spawn-reaper.py` runs
+as a GC pre-pass (invoked from `hapax-worktree-gc.sh`; disable with
 `HAPAX_WORKTREE_GC_REAP_ORPHANS=0`). It SIGTERMs (then SIGKILLs stragglers):
 
 1. orphaned spawn-shell trees (`*-spawns/run-*.sh` + descendants) NOT reachable
@@ -293,8 +309,12 @@ a meaningless empty result):
     # orphan reaper: what would it reap right now (expect 0 on a clean host)?
     scripts/hapax-orphan-spawn-reaper.py --dry-run
 
-    # timer chain wired + scheduled?
-    systemctl --user list-timers hapax-worktree-gc.timer hapax-lane-reaper.timer
+    # active worktree hygiene timer wired + scheduled?
+    systemctl --user list-timers hapax-worktree-gc.timer
+
+    # source-active parked target: static plus inactive/dead (never scheduled)
+    systemctl --user show hapax-lane-reaper.service hapax-lane-reaper.timer \
+      -p UnitFileState -p ActiveState -p SubState
 
     # GC's own view (removable vs removed vs live_refused) without mutating:
     scripts/hapax-worktree-gc.sh --dry-run --no-fetch
