@@ -110,7 +110,7 @@ Consent contracts remain authoritative for every **non-visual** domain:
   (e.g., personalized captions, relationship inference) remains gated
   behind active consent contracts.
 
-The Agatha, Simon, Jason, and other consent contracts under
+The principal-c1, principal-c2, principal-a1, and other consent contracts under
 `axioms/contracts/` continue to govern these domains unchanged.
 
 ---

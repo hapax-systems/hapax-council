@@ -8,7 +8,7 @@ Generate a demo from a natural language request. Examples:
 - `/demo the entire system for my partner`
 - `/demo health monitoring for a technical peer`
 - `/demo the agent architecture for my manager --format video`
-- `/demo the system for alexis --format app`
+- `/demo the system for principal-a2 --format app`
 
 Available formats: `slides` (default), `video` (requires Chatterbox TTS), `markdown-only`, `app` (in-browser live demo).
 

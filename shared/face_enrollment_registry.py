@@ -11,7 +11,7 @@ This module ships the registry + match/revoke primitives. Wiring the
 matcher into the live ``FaceDetector`` and into the consent gate's
 ``consent_to_enroll`` activation path lands as follow-up cc-tasks per
 the parent spec
-``docs/research/2026-05-01-arcface-jason-matcher-reconcile.md``.
+``docs/research/2026-05-01-arcface-principal-a1-matcher-reconcile.md``.
 
 Per the "revoke ships before matcher gate" invariant
 (``cc-task: arcface-per-person-matcher-gate``), ``revoke_enrollment``

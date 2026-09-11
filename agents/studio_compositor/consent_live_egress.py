@@ -13,7 +13,7 @@ level (redundant once face-obscure is authoritative).
 
 Axiom `it-irreversible-broadcast` and `interpersonal_transparency` are
 now honored at the face-obscure layer, not at the compositor layout
-layer. Consent contracts (Agatha, Simon, Jason, …) continue to govern
+layer. Consent contracts (principal-c1, principal-c2, principal-a1, …) continue to govern
 audio + transcription + interaction recording — those do NOT pass
 through face-obscure and retain full consent-contract enforcement.
 

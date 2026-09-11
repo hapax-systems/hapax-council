@@ -222,11 +222,11 @@ def test_renderer_refuses_side_chat_in_implication() -> None:
 
 
 def test_renderer_refuses_non_operator_person_name() -> None:
-    row = _make_row(statement="operator should defer to Jason on this branch")
+    row = _make_row(statement="operator should defer to principal-a1 on this branch")
     rendering = render_row_for_prompt(
         row,
         requested_ceiling="private",
-        non_operator_person_names=("Jason",),
+        non_operator_person_names=("principal-a1",),
     )
     assert rendering.refused
     assert any(f.leak_kind == "non_operator_person" for f in rendering.leak_findings)

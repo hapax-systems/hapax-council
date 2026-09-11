@@ -172,7 +172,7 @@ def _modulate_for_environment(
 
 
 # ── Child Interaction Policy ─────────────────────────────────────────────────
-# Registered child principals: Simon and Agatha. Same dignity floor applies.
+# Registered child principals: principal-c2 and principal-c1. Same dignity floor applies.
 # Operational constraints describe what the system does when a child is the
 # active principal — no personality attribution, no inner-life claims.
 

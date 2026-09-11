@@ -1,13 +1,13 @@
-"""Render narration audio for Aggie demo — Agatha (11).
+"""Render narration audio for principal-c1 demo — principal-c1.
 
 Same substance as v4 research coverage. Adjusted for a single brilliant
-11-year-old who cares about both the ideas and the spectacle. No
+younger listener who cares about both the ideas and the spectacle. No
 condescension. Treat as an intellectual-moral athlete in serious training.
 
 Updated with all recent Logos UI changes: classification inspector,
 theme switching, boot overlay, keyboard hints, ground surface enrichment.
 
-Usage: uv run python scripts/render_aggie_demo.py
+Usage: uv run python scripts/render_principal_c1_demo.py
 """
 
 from __future__ import annotations
@@ -320,7 +320,7 @@ SCENES: list[tuple[str, str]] = [
 ]
 # fmt: on
 
-DEMO_NAME = "aggie-demo"
+DEMO_NAME = "principal-c1-demo"
 
 
 def _slugify(text: str) -> str:
@@ -339,7 +339,7 @@ async def main() -> None:
     audio_dir.mkdir(parents=True, exist_ok=True)
 
     total_words = sum(len(text.split()) for _, text in SCENES)
-    print(f"Aggie demo: {len(SCENES)} scenes, ~{total_words} words")
+    print(f"principal-c1 demo: {len(SCENES)} scenes, ~{total_words} words")
 
     from agents.demo_pipeline.voice import generate_all_voice_segments
 
