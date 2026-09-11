@@ -1,3 +1,11 @@
+"""Unclaimed cc-close must refuse without rewriting notes.
+
+The historical bash rewriter moved files before admission and had its own
+prefix-vs-exact duplicate check. Slice-2 close is claim-bound: no publication,
+no mutation. Prefix/exact duplicate identity lives on the typed task store
+(`test_sdlc_task_store.py`). These tests pin the wrapper's fail-closed surface.
+"""
+
 from __future__ import annotations
 
 import os
@@ -62,53 +70,50 @@ def _vault(home: Path) -> Path:
     return root
 
 
-def test_prefix_collision_does_not_block_distinct_closed_task(tmp_path: Path) -> None:
+def test_unclaimed_close_refuses_and_does_not_move_note_with_prefix_neighbor(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    vault = _vault(home)
+    active = _write_task(vault, "active", "foo.md", "foo")
+    closed_neighbor = _write_task(vault, "closed", "foo-bar.md", "foo-bar", status="done")
+    before_active = active.read_bytes()
+    before_closed = closed_neighbor.read_bytes()
+
+    result = _run_close(home, "foo")
+
+    assert result.returncode != 0
+    assert "REFUSED" in result.stderr
+    assert active.is_file()
+    assert active.read_bytes() == before_active
+    assert closed_neighbor.read_bytes() == before_closed
+    assert not (vault / "closed" / "foo.md").exists()
+
+
+def test_unclaimed_close_refuses_and_does_not_mutate_true_duplicate(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    vault = _vault(home)
+    active = _write_task(vault, "active", "foo.md", "foo")
+    closed = _write_task(vault, "closed", "foo.md", "foo", status="done")
+    before_active = active.read_bytes()
+    before_closed = closed.read_bytes()
+
+    result = _run_close(home, "foo")
+
+    assert result.returncode != 0
+    assert "REFUSED" in result.stderr
+    assert active.read_bytes() == before_active
+    assert closed.read_bytes() == before_closed
+
+
+def test_unclaimed_close_refuses_without_session_identity(tmp_path: Path) -> None:
     home = tmp_path / "home"
     vault = _vault(home)
     _write_task(vault, "active", "foo.md", "foo")
-    _write_task(vault, "closed", "foo-bar.md", "foo-bar", status="done")
 
     result = _run_close(home, "foo")
 
-    assert result.returncode == 0, result.stderr
-    assert not (vault / "active" / "foo.md").exists()
-    assert (vault / "closed" / "foo.md").exists()
-    assert (vault / "closed" / "foo-bar.md").exists()
-
-
-def test_true_exact_duplicate_is_blocked(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    vault = _vault(home)
-    _write_task(vault, "active", "foo.md", "foo")
-    _write_task(vault, "closed", "foo.md", "foo", status="done")
-
-    result = _run_close(home, "foo")
-
-    assert result.returncode == 8
-    assert "closed task duplicate" in result.stderr
-    assert (vault / "active" / "foo.md").exists()
-
-
-def test_descriptor_style_true_duplicate_is_blocked(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    vault = _vault(home)
-    _write_task(vault, "active", "foo-descriptor.md", "foo")
-    _write_task(vault, "closed", "foo-other.md", "foo", status="done")
-
-    result = _run_close(home, "foo")
-
-    assert result.returncode == 8
-    assert "closed task duplicate" in result.stderr
-    assert (vault / "active" / "foo-descriptor.md").exists()
-
-
-def test_no_closed_tasks_allows_close(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    vault = _vault(home)
-    _write_task(vault, "active", "foo.md", "foo")
-
-    result = _run_close(home, "foo")
-
-    assert result.returncode == 0, result.stderr
-    assert not (vault / "active" / "foo.md").exists()
-    assert (vault / "closed" / "foo.md").exists()
+    assert result.returncode == 2
+    assert "terminal_close_identity_missing" in result.stderr
