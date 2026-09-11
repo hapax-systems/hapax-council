@@ -4819,3 +4819,455 @@ def test_check_symlink_drift_ignores_legacy_alias_to_nonmatching_script(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+# ── Pi-6 edge units: deleting the source does not retire the unit ──────────────────────
+#
+# `systemd/units-pi6/*` is installed by hand on another host, so the classification arm is a
+# correct no-op for adds and modifies. It is not correct for DELETES: merging a removal leaves the
+# installed timer and service running on Pi-6, and the only thing that changed is that the estate
+# no longer carries the source that would tell anyone they exist.
+#
+# The deploy cannot retire them — it has no authority on that host — so it must refuse to let the
+# deletion look complete. These tests pin the three outcomes.
+
+
+def _pi6_repo(tmp_path: Path) -> tuple[Path, Path]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "pi6-test@example.test")
+    _git(repo, "config", "user.name", "Pi6 Test")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    unit = repo / "systemd/units-pi6/claude-code-sync.timer"
+    unit.parent.mkdir(parents=True)
+    unit.write_text("[Timer]\nOnCalendar=hourly\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "base with a pi6 unit")
+    return repo, unit
+
+
+def _pi6_ssh_stub(tmp_path: Path, *, name: str, rc: int, listing: str = "") -> Path:
+    """A stand-in for ssh that answers the way a given host state would.
+
+    The observation is only reachable from a test through a seam like this. Leaving the real
+    `ssh` in place would also make every test in this section depend on whether a Pi answers,
+    which is the opposite of what these assertions are about.
+    """
+    stub = tmp_path / name
+    stub.write_text(
+        f"#!/usr/bin/env bash\ncat <<'LISTING'\n{listing}\nLISTING\nexit {rc}\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    return stub
+
+
+def _pi6_env(tmp_path: Path, repo: Path, *, ssh: Path | None = None) -> dict[str, str]:
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    # Default to an ssh that fails. Without this the suite would shell out to the real `ssh pi6`
+    # and its result would depend on whether a Pi is on the network right now.
+    transport = ssh or _pi6_ssh_stub(tmp_path, name="ssh-unreachable", rc=255)
+    return {
+        **os.environ,
+        "HOME": str(home),
+        "REPO": str(repo),
+        "HAPAX_LOCAL_BIN": str(home / ".local" / "bin"),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces" / "post-merge-traces.jsonl"),
+        "HAPAX_POST_MERGE_PI6_DEFER_DIR": str(tmp_path / "pi6-defer"),
+        "HAPAX_POST_MERGE_PI6_SSH": str(transport),
+        "HAPAX_POST_MERGE_PI6_SSH_TIMEOUT": "2",
+        "HAPAX_DRIFT_NTFY": "0",
+    }
+
+
+def test_deleting_a_pi6_unit_defers_a_decommission(tmp_path: Path) -> None:
+    """The critical this closes: a merged deletion left the unit running with no record."""
+    repo, unit = _pi6_repo(tmp_path)
+    unit.unlink()
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "delete the pi6 transcript offload")
+    sha = _git(repo, "rev-parse", "HEAD")
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo),
+    )
+
+    runbook = tmp_path / "pi6-defer" / sha / "RUNBOOK.txt"
+    assert runbook.exists(), "a deleted pi6 unit left no decommission record"
+    body = runbook.read_text(encoding="utf-8")
+    assert "claude-code-sync.timer" in body, "the record must name the unit that is still installed"
+    assert "systemctl disable --now" in body, "the record must name the retiring command"
+    assert "unreachable host is an unknown" in body, (
+        "the record must refuse to read unreachability as retirement"
+    )
+
+
+def test_modifying_a_pi6_unit_defers_nothing(tmp_path: Path) -> None:
+    """Adds and modifies are genuinely this script's business to ignore — the arm was right
+    about them, and widening it into a deferral for every touch would make the record noise."""
+    repo, unit = _pi6_repo(tmp_path)
+    unit.write_text("[Timer]\nOnCalendar=daily\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "retune the pi6 timer")
+    sha = _git(repo, "rev-parse", "HEAD")
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo),
+    )
+
+    assert not (tmp_path / "pi6-defer" / sha).exists()
+
+
+def test_the_pi6_arm_stays_above_the_bare_systemd_glob() -> None:
+    """Position IS the mechanism, so a later edit must not be able to move it silently.
+
+    A `case` glob crosses `/`, so `systemd/*.timer` matches
+    `systemd/units-pi6/claude-code-sync.timer`. While the pi6 arm sat below that glob it was
+    unreachable for exactly the files that matter — the timer and the service — and they were
+    classified as SYSTEMD, i.e. as units for THIS host to install and restart. Only the non-unit
+    files ever reached the arm, which is why it read as working.
+    """
+    lines = SCRIPT.read_text(encoding="utf-8").splitlines()
+    pi6 = [i for i, ln in enumerate(lines) if ln.strip().startswith("systemd/units-pi6/*)")]
+    bare = [i for i, ln in enumerate(lines) if ln.strip().startswith("systemd/*.service|")]
+    assert pi6, "the pi6 classification arm is gone"
+    assert bare, "the bare systemd unit glob is gone; re-derive this ordering assertion"
+    assert min(pi6) < min(bare), (
+        f"the pi6 arm is at line {min(pi6) + 1}, below the bare systemd glob at "
+        f"{min(bare) + 1}. `systemd/*.timer` matches across `/`, so pi6 units would be "
+        "classified as this host's units to deploy."
+    )
+
+
+def _pi6_deleted(tmp_path: Path) -> tuple[Path, str]:
+    repo, unit = _pi6_repo(tmp_path)
+    unit.unlink()
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "delete the pi6 transcript offload")
+    return repo, _git(repo, "rev-parse", "HEAD")
+
+
+def test_an_observed_retirement_clears_the_deferral_and_leaves_a_receipt(tmp_path: Path) -> None:
+    """The host answered and did not name the unit. That is evidence, and it is the only thing
+    that may clear the deferral."""
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path,
+        name="ssh-retired",
+        rc=0,
+        listing="claude-code-sync.timer inactive not-found",
+    )
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    receipt = tmp_path / "pi6-defer" / sha / "RETIRED.receipt"
+    assert receipt.exists(), "an observed retirement left no durable receipt"
+    body = receipt.read_text(encoding="utf-8")
+    assert "claude-code-sync.timer" in body
+    assert "Observed at:" in body, "the receipt must carry when the observation was made"
+    assert not (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists(), (
+        "a verified retirement must not also leave a pending runbook"
+    )
+
+
+def test_a_surviving_unit_keeps_the_deferral_open(tmp_path: Path) -> None:
+    """The host answered and the unit is STILL THERE. Reaching the host is not the evidence —
+    what it said is."""
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path,
+        name="ssh-still-installed",
+        rc=0,
+        listing="claude-code-sync.timer active enabled",
+    )
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert not (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists(), (
+        "a receipt was minted while the unit was still installed"
+    )
+    assert (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists()
+    assert "claude-code-sync.timer still running or still enabled" in result.stderr
+
+
+def test_an_unreachable_host_mints_no_receipt(tmp_path: Path) -> None:
+    """An unreachable host is an unknown host. The default stub fails, which is this case."""
+    repo, sha = _pi6_deleted(tmp_path)
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo),
+    )
+
+    assert not (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists()
+    assert (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists()
+
+
+def test_a_substring_match_does_not_count_as_a_survivor(tmp_path: Path) -> None:
+    """`claude-code-sync.timer` must not be found inside `old-claude-code-sync.timer`."""
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path,
+        name="ssh-lookalike",
+        rc=0,
+        # The retired unit answers as retired; a differently-named unit that CONTAINS its name
+        # is active. Only the exact-name line may decide.
+        listing=(
+            "claude-code-sync.timer inactive not-found\nold-claude-code-sync.timer active enabled"
+        ),
+    )
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists(), (
+        "a differently-named unit was mistaken for the one being retired"
+    )
+
+
+def test_a_hand_written_receipt_does_not_clear_the_deferral(tmp_path: Path) -> None:
+    """This test asserted the opposite, and asserting it is how the hole survived.
+
+    It wrote the literal string "observed" into RETIRED.receipt and required the deploy to treat
+    it as authoritative — codifying the very bypass the receipt was introduced to close. An
+    interrupted write leaves exactly that: a file whose existence means nothing.
+
+    A receipt is a record, not a key. Only a live answer from the host clears the deferral.
+    """
+    repo, sha = _pi6_deleted(tmp_path)
+    env = _pi6_env(tmp_path, repo)
+
+    subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
+    (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").write_text("observed\n", encoding="utf-8")
+    (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").unlink()
+
+    subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
+
+    assert (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists(), (
+        "a hand-written receipt suppressed the deferral with no host observation behind it"
+    )
+
+
+def test_an_empty_receipt_does_not_clear_the_deferral(tmp_path: Path) -> None:
+    """The interrupted-write case directly: zero bytes is what a killed process leaves."""
+    repo, sha = _pi6_deleted(tmp_path)
+    env = _pi6_env(tmp_path, repo)
+
+    subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
+    (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").write_text("", encoding="utf-8")
+    (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").unlink()
+
+    subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
+
+    assert (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists()
+
+
+def test_a_disabled_but_present_unit_file_satisfies_the_check(tmp_path: Path) -> None:
+    """The runbook must be able to satisfy its own verifier.
+
+    `systemctl disable --now` stops the unit and leaves its FILE in place, listed as disabled.
+    The first predicate required absence from `list-unit-files`, so an operator who followed the
+    prescribed action exactly would find the deferral still open on every later deploy, with
+    nothing explaining why.
+    """
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path, name="ssh-disabled", rc=0, listing="claude-code-sync.timer inactive disabled"
+    )
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists(), (
+        "disable --now produces inactive+disabled, which is exactly what the runbook prescribes"
+    )
+
+
+def test_an_active_unit_with_no_unit_file_is_not_retired(tmp_path: Path) -> None:
+    """File absence is not retirement.
+
+    A unit already loaded into PID 1 keeps running after its file is deleted, until something
+    stops it or systemd is reloaded. The file-listing predicate would have certified this as
+    retired while the timer was still firing.
+    """
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path,
+        name="ssh-loaded-fileless",
+        rc=0,
+        listing="claude-code-sync.timer active not-found",
+    )
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert not (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists(), (
+        "a still-running timer was certified as retired because its file was gone"
+    )
+    assert "still running or still enabled" in result.stderr
+
+
+def test_a_stopped_but_still_enabled_unit_is_not_retired(tmp_path: Path) -> None:
+    """Inactive alone is not enough: an enabled unit returns on the next boot or timer tick."""
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path,
+        name="ssh-stopped-enabled",
+        rc=0,
+        listing="claude-code-sync.timer inactive enabled",
+    )
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert not (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists()
+
+
+def test_a_unit_the_host_says_nothing_about_is_a_survivor(tmp_path: Path) -> None:
+    """Silence is not evidence: a truncated or partial answer must not read as absence."""
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(tmp_path, name="ssh-silent", rc=0, listing="")
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert not (tmp_path / "pi6-defer" / sha / "RETIRED.receipt").exists()
+
+
+def test_a_pending_retirement_is_visible_in_the_exit_status(tmp_path: Path) -> None:
+    """A file under ~/.cache that nothing polls is not a signal.
+
+    The function used to end on `echo`, so it returned 0 and the deploy reported success while
+    units on another host were known-unretired.
+    """
+    repo, sha = _pi6_deleted(tmp_path)
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo),
+    )
+
+    assert result.returncode == 78, (
+        f"a deferred retirement exited {result.returncode}; it must be distinguishable from "
+        "both success and failure"
+    )
+    assert "retirement is pending" in result.stderr
+
+
+def test_a_verified_retirement_exits_zero(tmp_path: Path) -> None:
+    """The deferred RC must not fire when nothing is pending."""
+    repo, sha = _pi6_deleted(tmp_path)
+    ssh = _pi6_ssh_stub(
+        tmp_path, name="ssh-clean", rc=0, listing="claude-code-sync.timer inactive not-found"
+    )
+
+    result = subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo, ssh=ssh),
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_no_touchable_file_clears_the_deferral(tmp_path: Path) -> None:
+    """The finding this closes, pinned so it cannot come back.
+
+    The first version cleared on `[ -f DRAINED.txt ]`. That tests only that somebody ran
+    `touch` — an assertion with no referent, which silenced the deferral forever whether or not
+    a single unit had been retired. Creating that file must now change nothing.
+    """
+    repo, sha = _pi6_deleted(tmp_path)
+    env = _pi6_env(tmp_path, repo)
+
+    subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
+    (tmp_path / "pi6-defer" / sha / "DRAINED.txt").write_text("done\n", encoding="utf-8")
+    (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").unlink()
+
+    subprocess.run([str(SCRIPT), sha], text=True, capture_output=True, check=False, env=env)
+
+    assert (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").exists(), (
+        "touching DRAINED.txt cleared a deferral that nothing had observed"
+    )
+    # Comments are allowed to name the sentinel -- the one above this test explains why it went.
+    # Only executable lines may not test for it.
+    code = [
+        ln
+        for ln in SCRIPT.read_text(encoding="utf-8").splitlines()
+        if not ln.lstrip().startswith("#")
+    ]
+    assert not [ln for ln in code if "DRAINED" in ln], (
+        "the touchable sentinel is back in the script"
+    )
+
+
+def test_the_runbook_carries_the_unit_bodies_the_merge_deleted(tmp_path: Path) -> None:
+    """After the merge the definitions exist nowhere else, so a runbook that only names them
+    asks the operator to retire something they can no longer read."""
+    repo, sha = _pi6_deleted(tmp_path)
+
+    subprocess.run(
+        [str(SCRIPT), sha],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=_pi6_env(tmp_path, repo),
+    )
+
+    body = (tmp_path / "pi6-defer" / sha / "RUNBOOK.txt").read_text(encoding="utf-8")
+    assert "OnCalendar=hourly" in body, "the deleted unit's body is not recoverable from the record"
