@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# git pre-push hook — scan-before-push (operator-accepted rule, 2026-09-02).
+#
+# This file is named for git's hook protocol and lives in scripts/ as the version-controlled source.
+# scripts/install-git-hooks.sh copies it beside pre-commit in <git-common-dir>/hooks, which covers
+# every worktree without core.hooksPath masking the other hook. No push leaves an installed clone
+# without a detect-secrets + home-path scan of the new commits.
+# Exemptions only by `git config --add hapax.prepushScan.skipRemote <remote-name>` (private mirrors).
+set -euo pipefail
+root="$(git rev-parse --show-toplevel)"
+scan="$root/scripts/hapax-prepush-secret-scan"
+if [ ! -f "$scan" ]; then
+  # A worktree checked out at a commit without the scanner: use the main checkout's copy, and
+  # refuse (not pass) if neither exists — the absence of the scanner is not a clean scan.
+  scan="$(git rev-parse --path-format=absolute --git-common-dir)/../scripts/hapax-prepush-secret-scan"
+  if [ ! -f "$scan" ]; then
+    echo "pre-push: scanner missing at $root/scripts/hapax-prepush-secret-scan — refusing" >&2
+    echo "Remedy: restore scripts/hapax-prepush-secret-scan in this checkout and retry the push." >&2
+    exit 3
+  fi
+fi
+exec python3 "$scan" "$@"
