@@ -73,6 +73,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.headless.sonnet",
         "claude.review.opus",
         "claude.interactive.full",
+        "kimi.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
         "agy.review.direct",
@@ -140,6 +141,7 @@ class Platform(StrEnum):
     CODEX = "codex"
     GEMINI = "gemini"
     GLMCP = "glmcp"
+    KIMI = "kimi"
     LOCAL_TOOL = "local_tool"
     VIBE = "vibe"
 
@@ -227,6 +229,7 @@ class ModelId(StrEnum):
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
+    KIMI_K3 = "kimi-code/k3"
     UNKNOWN = "unknown"
 
 
