@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily GDrive critical offsite backup
+Description=Hapax Critical Off-site Backup (restic)
 
 [Timer]
 OnCalendar=*-*-* 04:35:00

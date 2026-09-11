@@ -1,0 +1,52 @@
+id: backup_critical_offsite
+name: Critical Off-site Backup
+version: "1.0.0"
+category: observability
+reports_to: operator
+peers: [backup_local]
+depends_on: [backup_local]
+
+purpose: Canonical bounded critical-artifact off-site restic backup to Cloudflare R2.
+inputs:
+  - Postgres PITR artifacts
+  - latest materialized Qdrant snapshots
+  - vault evidence and SOP artifacts
+outputs:
+  - Critical off-site restic snapshots in Cloudflare R2
+capabilities:
+  - restic_backup
+  - s3_upload
+schedule:
+  type: timer
+  systemd_unit: hapax-backup-critical-offsite.timer
+  interval: daily
+model: null
+
+autonomy: full
+decision_scope: Back up bounded, already-materialized critical artifacts to the R2 restic repository. Cannot create new snapshots, dump databases, upload live MinIO, or prune/delete remote data.
+escalation_target: operator
+axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-routine-007]
+    role: subject
+  - axiom_id: corporate_boundary
+    implications: [cb-key-001]
+    role: subject
+raci:
+  - task: critical-offsite-backup
+    role: responsible
+
+health_group: null
+service_tier: 1
+
+timer_display:
+  schedule_label: "Daily 04:35"
+  purpose: "Critical off-site restic backup (PITR + Qdrant snapshots + SOP evidence)"
+
+narrative: |
+  The Critical Off-site Backup agent provides a bounded off-site safety
+  baseline in Cloudflare R2. It writes to rclone:r2:hapax-restic-critical using
+  restic and rclone with bucket-scoped static credentials, but it intentionally
+  does not create database dumps, create Qdrant snapshots, upload live MinIO
+  backing stores, or run destructive restic prune. Runtime enablement and
+  restore-smoke proof are governed separately.

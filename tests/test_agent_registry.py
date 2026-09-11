@@ -242,7 +242,7 @@ class TestTimerAgents:
         assert et["briefing"] == "daily-briefing.timer"
         assert "llm_backup" in et
         assert "backup_local" in et
-        assert "backup_gdrive_critical" in et
+        assert "backup_critical_offsite" in et
         assert "backup_remote" not in et
 
     def test_backup_remote_is_retired_on_demand(self, registry):

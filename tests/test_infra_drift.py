@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -26,6 +27,9 @@ from shared.infra_drift import (
 
 HOST = "hapax-appendix"
 NOW = datetime(2026, 6, 6, tzinfo=UTC)
+SOURCE_REGISTRY = (
+    Path(__file__).resolve().parents[1] / "config" / "infrastructure" / "host-storage-registry.json"
+)
 
 
 def base_fields() -> dict:
@@ -224,17 +228,17 @@ def test_mount_partuuid_drift_invalidates_destructive_preflight_freshness():
 def test_backup_intended_state_vs_systemctl_observed_state_drift():
     policy = BackupPolicyRecord(
         **base_fields(),
-        store_id="gdrive-critical",
+        store_id="critical-offsite-restic",
         method="restic",
         cadence="daily",
         offsite=True,
         target_host=HOST,
-        unit_name="hapax-backup-gdrive-critical.timer",
+        unit_name="hapax-backup-critical-offsite.timer",
         intended_state=BackupIntendedState.ENABLED,
     )
     registry = HostStorageRegistry(backup_policies=[policy])
     observed = {
-        "gdrive-critical": BackupObservedState(
+        "critical-offsite-restic": BackupObservedState(
             load_state="loaded",
             active_state="inactive",
             witnessed_at=NOW,
@@ -246,12 +250,28 @@ def test_backup_intended_state_vs_systemctl_observed_state_drift():
     entry = find_entry(
         report,
         status=DriftStatus.DRIFTED,
-        key="gdrive-critical",
+        key="critical-offsite-restic",
         field="backup.intended_state",
     )
     assert entry.code == BACKUP_STATE_DRIFT_CODE
     assert entry.registry_value == "enabled"
     assert entry.observed_value["active_state"] == "inactive"
+
+
+def test_source_registry_pins_live_offsite_backup_policies():
+    registry = HostStorageRegistry.model_validate_json(SOURCE_REGISTRY.read_text())
+    policies = {policy.store_id: policy for policy in registry.backup_policies}
+
+    critical = policies["critical-offsite-restic"]
+    assert critical.method == "restic-r2"
+    assert critical.unit_name == "hapax-backup-critical-offsite.timer"
+    assert critical.cadence == "daily"
+    assert critical.offsite is True
+    assert critical.intended_state == BackupIntendedState.ENABLED
+    assert critical.observed_at == datetime(2026, 9, 2, 17, 34, tzinfo=UTC)
+    # The B2 lane's policy row is pinned by the PR that carries its timer and unit (#4623);
+    # this PR leaves that row exactly as main has it (review finding on #4622, round 4).
+    assert policies["b2-restic-offsite"].unit_name != "hapax-backup-critical-offsite.timer"
 
 
 def test_backup_policy_intent_is_required():
