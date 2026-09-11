@@ -3,31 +3,31 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 HOOK = REPO_ROOT / "hooks" / "scripts" / "mcp-connector-mutator-gate.sh"
 BASH = Path("/usr/bin/bash") if Path("/usr/bin/bash").exists() else Path("/bin/bash")
 
-_CLEARED_ENV = (
-    "HAPAX_AGENT_NAME",
-    "HAPAX_AGENT_ROLE",
-    "HAPAX_WORKTREE_ROLE",
-    "HAPAX_AGENT_SLOT",
-    "HAPAX_AGENT_INTERFACE",
-    "HAPAX_SESSION_ID",
-    "CLAUDE_ROLE",
-    "CLAUDE_CODE_SESSION_ID",
-    "CODEX_ROLE",
-    "CODEX_SESSION",
-    "CODEX_SESSION_NAME",
-    "CODEX_THREAD_ID",
-    "CODEX_THREAD_NAME",
-    "CODEX_HOME",
-)
+
+def _gate_env(home: Path, role: str | None, extra_env: dict[str, str] | None) -> dict[str, str]:
+    # Do not inherit Python import-path flags that can supply the hook's fix.
+    env = {
+        "HOME": str(home),
+        "PATH": "/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "LITELLM_LOCAL_MODEL_COST_MAP": "True",
+    }
+    if role is not None:
+        env["CODEX_THREAD_NAME"] = role
+    if extra_env:
+        env.update(extra_env)
+    return env
 
 
 def _run_gate(
@@ -35,23 +35,17 @@ def _run_gate(
     *,
     home: Path,
     role: str | None = "cx-red",
+    cwd: Path | None = None,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    for key in _CLEARED_ENV:
-        env.pop(key, None)
-    if role is not None:
-        env["CODEX_THREAD_NAME"] = role
-    if extra_env:
-        env.update(extra_env)
+    env = _gate_env(home, role, extra_env)
     return subprocess.run(
         [str(BASH), str(HOOK)],
         input=json.dumps(payload),
         capture_output=True,
         text=True,
         env=env,
-        cwd=REPO_ROOT,
+        cwd=REPO_ROOT if cwd is None else cwd,
         timeout=10,
     )
 
@@ -79,13 +73,7 @@ def _path_without_jq(tmp_path: Path) -> str:
 def _run_gate_text(
     payload: str, *, home: Path, extra_env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    env["HOME"] = str(home)
-    for key in _CLEARED_ENV:
-        env.pop(key, None)
-    env["CODEX_THREAD_NAME"] = "cx-red"
-    if extra_env:
-        env.update(extra_env)
+    env = _gate_env(home, "cx-red", extra_env)
     return subprocess.run(
         [str(BASH), str(HOOK)],
         input=payload,
@@ -189,3 +177,109 @@ def test_malformed_hook_payload_blocks_instead_of_passing_empty_tool_name(
 
     assert result.returncode == 2
     assert "cannot parse hook payload tool_name" in result.stderr
+
+
+def _caller_fixture(tmp_path: Path, kind: str, claimed: bool) -> tuple[Path, Path]:
+    home = tmp_path / "home"
+    home.mkdir()
+    cwd = tmp_path / "caller"
+    cwd.mkdir()
+    if kind != "plain":
+        package = cwd / "shared"
+        package.mkdir()
+        (package / "__init__.py").write_text("", encoding="utf-8")
+        if kind in {"spoof_classifier", "spoof_receipt"}:
+            classifier_rc = 10 if kind == "spoof_classifier" else 0
+            (package / "mcp_connector_policy.py").write_text(
+                "import sys\n"
+                "if sys.argv[1] == 'is-side-effecting':\n"
+                f"    raise SystemExit({classifier_rc})\n"
+                "if sys.argv[1] == 'receipt-gate':\n"
+                "    print('PRIVATE_FIXTURE_RECEIPT_ACCEPTED')\n"
+                "    raise SystemExit(0)\n"
+                "raise SystemExit(3)\n",
+                encoding="utf-8",
+            )
+    if claimed:
+        cache = home / ".cache" / "hapax"
+        cache.mkdir(parents=True)
+        (cache / "cc-active-task-cx-red").write_text("private-task\n", encoding="utf-8")
+    return home, cwd
+
+
+def _run_caller_mutator(
+    home: Path, cwd: Path, extra_env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
+    assert "PYTHONSAFEPATH" not in _gate_env(home, "cx-red", extra_env)
+    return _run_gate(
+        {"tool_name": "mcp__codex_apps__gmail___forward_emails", "tool_input": {}},
+        home=home,
+        cwd=cwd,
+        extra_env=extra_env,
+    )
+
+
+def _assert_route_refusal(result: subprocess.CompletedProcess) -> None:
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "route_decision_absent" in result.stderr, result.stderr
+    assert "Next action:" in result.stderr
+    assert "PRIVATE_FIXTURE_RECEIPT_ACCEPTED" not in result.stdout
+
+
+@pytest.mark.parametrize("kind", ("plain", "incomplete", "spoof_classifier"))
+@pytest.mark.parametrize("claimed", (False, True))
+def test_caller_package_cannot_replace_primary_classifier(
+    tmp_path: Path, kind: str, claimed: bool
+) -> None:
+    home, cwd = _caller_fixture(tmp_path, kind, claimed)
+    result = _run_caller_mutator(home, cwd)
+    if claimed:
+        _assert_route_refusal(result)
+    else:
+        assert result.returncode == 2, (result.stdout, result.stderr)
+        assert "no claimed task" in result.stderr, result.stderr
+        assert "Next action:" in result.stderr
+
+
+def test_caller_package_cannot_accept_missing_route_receipt(tmp_path: Path) -> None:
+    home, cwd = _caller_fixture(tmp_path, "spoof_receipt", claimed=True)
+    _assert_route_refusal(_run_caller_mutator(home, cwd))
+
+
+def test_incomplete_caller_package_preserves_manifest_read_only_classification(
+    tmp_path: Path,
+) -> None:
+    home, cwd = _caller_fixture(tmp_path, "incomplete", claimed=False)
+    result = _run_gate(
+        {"tool_name": "mcp__codex_apps__github___fetch_pr_comments", "tool_input": {}},
+        home=home,
+        cwd=cwd,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("path_kind", ("empty", "cwd", "empty_components", "other"))
+def test_explicit_pythonpath_cannot_precede_primary_package(tmp_path: Path, path_kind: str) -> None:
+    home, cwd = _caller_fixture(tmp_path, "spoof_classifier", claimed=True)
+    other = tmp_path / "other"
+    other.mkdir()
+    pythonpath = {
+        "empty": "",
+        "cwd": str(cwd),
+        "empty_components": ":" + str(cwd) + ":",
+        "other": str(other),
+    }[path_kind]
+    _assert_route_refusal(_run_caller_mutator(home, cwd, {"PYTHONPATH": pythonpath}))
+
+
+def test_cwd_stdlib_spoof_not_imported(tmp_path: Path) -> None:
+    # Review finding (agy/GLM, 2026-09-11): a caller-supplied PYTHONPATH with a
+    # trailing empty component resolves to cwd and precedes stdlib — a cwd
+    # json.py would be imported over the real one. The gate now discards the
+    # inherited PYTHONPATH and resolves the module from REPO_ROOT itself, so
+    # the spoofed stdlib module must not be imported.
+    home, cwd = _caller_fixture(tmp_path, "spoof_classifier", claimed=True)
+    (cwd / "json.py").write_text("raise SystemExit(99)\n", encoding="utf-8")
+    result = _run_caller_mutator(home, cwd, {"PYTHONPATH": f"{cwd}:"})
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    _assert_route_refusal(result)
