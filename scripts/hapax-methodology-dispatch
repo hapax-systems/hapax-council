@@ -37,6 +37,7 @@ from shared.capability_adapter_protocol import (
     CapabilityAdapter,
     ClaudeAdapter,
     CodexAdapter,
+    KimiAdapter,
     VibeAdapter,
     WorkerAdapter,
 )
@@ -163,6 +164,15 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "Claude Code visible tmux lane with governed task binding",
         True,
         "Visible Claude lanes require an explicit task binding or an existing lane claim.",
+    ),
+    ("kimi", "interactive", "full"): PlatformPath(
+        "kimi",
+        "interactive",
+        "full",
+        "~/.local/bin/hapax-kimi <lane>",
+        "Kimi Code managed interactive tmux lane with canonical gate hooks",
+        True,
+        "Visible kimi lanes bind tasks through cc-claim in-lane (HAPAX_METHODOLOGY_DISPATCH_TASK).",
     ),
     ("codex", "headless", "full"): PlatformPath(
         "codex",
@@ -1395,6 +1405,7 @@ _WORKER_FAILURE_ADAPTERS: dict[str, type[WorkerAdapter]] = {
     "agy": AgyAdapter,
     "claude": ClaudeAdapter,
     "codex": CodexAdapter,
+    "kimi": KimiAdapter,
     "vibe": VibeAdapter,
 }
 
