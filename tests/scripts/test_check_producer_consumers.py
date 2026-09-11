@@ -381,6 +381,32 @@ def test_deadlock_canary_reasoned_allowlist_passes(repo: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_consumer_side_allowlist_cannot_exempt_a_producer_refusal(repo: Path) -> None:
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "shared").mkdir()
+    (repo / "scripts").mkdir()
+    (repo / "shared" / "writer.py").write_text(
+        "client.upsert(collection_name='still-unwired', points=[])\n"
+    )
+    (repo / "scripts" / "producer-consumer-allowlist.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "kind": "consumer_side",
+                        "pattern": "collection:still-unwired",
+                        "reason": "only consumer-side findings are exempt",
+                    }
+                ]
+            }
+        )
+    )
+    _commit_all(repo, "add writer with wrong-kind allowlist entry")
+    result = run_gate(repo, base)
+    assert result.returncode == 1
+    assert "still-unwired" in result.stdout
+
+
 def test_allowlist_without_reason_blocks(repo: Path) -> None:
     base = _git(repo, "rev-parse", "HEAD")
     (repo / "shared").mkdir()
