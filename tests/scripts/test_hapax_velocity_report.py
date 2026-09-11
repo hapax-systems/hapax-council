@@ -1,5 +1,7 @@
 """Tests for hapax-velocity-report script and systemd units."""
 
+import json
+import os
 import pathlib
 import subprocess
 
@@ -61,6 +63,64 @@ class TestVelocityScript:
             timeout=10,
         )
         assert result.returncode == 0, f"Syntax error: {result.stderr}"
+
+
+class TestOpenPrCountIsTheWholePopulation:
+    """The open-PR figure is measured by running the script, not by reading its source.
+
+    Every other test in this file asserts on `SCRIPT.read_text()`. That is why the previous
+    implementation — `per_page=1` with `--jq length`, which returns 1 for any repository with
+    at least one open PR — survived: no test ever ran it. Measured 2026-08-23, the report said
+    `Open PRs: 1` against a true 52.
+
+    The stub emits 150 PR numbers when `--paginate` is passed and 100 without it, so the three
+    implementations are distinguishable by their answer alone:
+      old (`per_page=1`, length) -> 1 ;  single page of 100 -> 100 ;  correct -> 150.
+    """
+
+    def _run(self, tmp_path):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        gh = bin_dir / "gh"
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            'args="$*"\n'
+            'if [[ "$args" == *"/pulls?state=open"* ]]; then\n'
+            "  n=100\n"
+            '  [[ "$args" == *"--paginate"* ]] && n=150\n'
+            "  for ((i=1;i<=n;i++)); do echo $i; done\n"
+            "  exit 0\n"
+            "fi\n"
+            'if [[ "$args" == *"/pulls?state=closed"* ]]; then echo "[]"; exit 0; fi\n'
+            'if [[ "$args" == *"actions/runs"* ]]; then echo 0; exit 0; fi\n'
+            'echo ""\n',
+            encoding="utf-8",
+        )
+        gh.chmod(0o755)
+        # `pass` must not be consulted: no secret value may be read in a test.
+        (bin_dir / "pass").write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+        (bin_dir / "pass").chmod(0o755)
+
+        out = tmp_path / "observatory"
+        env = dict(os.environ)
+        env["PATH"] = f"{bin_dir}:{env['PATH']}"
+        env["HAPAX_OBSERVATORY_DIR"] = str(out)
+        env["GITHUB_TOKEN"] = "stub-not-a-secret"
+        result = subprocess.run(
+            ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=120
+        )
+        assert result.returncode == 0, result.stderr
+        written = sorted(out.glob("*-velocity.json"))
+        assert written, f"no JSON report written; stderr={result.stderr}"
+        return json.loads(written[0].read_text())
+
+    def test_open_pr_count_is_every_open_pr_not_the_page_size(self, tmp_path):
+        report = self._run(tmp_path)
+        assert report["quality"]["open_prs"] == 150, (
+            "the report must count every open PR. 1 means the page size is being measured; "
+            "100 means a single unpaginated page is being counted and the figure will cap "
+            "silently once the queue passes 100."
+        )
 
 
 class TestVelocitySystemdUnits:
