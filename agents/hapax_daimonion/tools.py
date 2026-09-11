@@ -29,7 +29,6 @@ from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from qdrant_client.models import FieldCondition, Filter, MatchAny, MatchValue
 
 from agents._config import embed, get_qdrant_grpc
-from agents._google_auth import build_service
 from agents.hapax_daimonion.desktop_tools import (
     DESKTOP_TOOL_SCHEMAS,
     handle_confirm_open_app,
@@ -38,6 +37,7 @@ from agents.hapax_daimonion.desktop_tools import (
     handle_open_app,
     handle_switch_workspace,
 )
+from shared.google_auth import build_service
 from shared.rag_inventory import is_inventory_payload
 
 if TYPE_CHECKING:
@@ -589,7 +589,7 @@ async def handle_get_calendar_today(params) -> None:
     days_ahead = min(params.arguments.get("days_ahead", 2), 7)
 
     try:
-        service = build_service("calendar", "v3", [_CALENDAR_SCOPE])
+        service = build_service("calendar", "v3", [_CALENDAR_SCOPE], interactive=False)
         now = datetime.now(UTC)
         time_max = now + timedelta(days=days_ahead)
 
@@ -689,7 +689,7 @@ async def _search_emails_qdrant(params, query: str, max_results: int) -> None:
 
 async def _search_emails_gmail(params, query: str, max_results: int) -> None:
     """Search emails directly via Gmail API for freshest results."""
-    service = build_service("gmail", "v1", [_GMAIL_SCOPE])
+    service = build_service("gmail", "v1", [_GMAIL_SCOPE], interactive=False)
     result = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
     messages = result.get("messages", [])
     if not messages:
