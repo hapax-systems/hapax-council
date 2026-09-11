@@ -1692,6 +1692,17 @@ def platform_lane_compatibility_reason(lane: str, route: PlatformPath) -> str | 
     return None
 
 
+def _lane_can_run(lane: str, route: PlatformPath) -> bool:
+    """Can this lane actually execute this route?
+
+    Deliberately delegates to the SAME predicate that refuses a selection later. A second,
+    separately-maintained notion of compatibility would drift from the one that actually gates
+    dispatch, and the drift would stay invisible until it refused again.
+    """
+
+    return platform_lane_compatibility_reason(lane, route) is None
+
+
 def _availability_recomposition_candidate_requests(
     primary: DispatchRequest,
     *,
@@ -1718,6 +1729,19 @@ def _availability_recomposition_candidate_requests(
         if route is None or not supports_route(platform, mode):
             continue
         if not route.mutable and not validation.exempt_read_only:
+            continue
+        # The lane is FIXED for every candidate (they all carry `primary.lane`), so a route this
+        # lane cannot execute is not a candidate -- it is a refusal waiting to happen downstream.
+        # Without this, admission picks the highest-scoring route from an unfiltered set and
+        # `platform_lane_compatibility_reason` rejects the choice at the end of dispatch.
+        # Measured 2026-08-10: 2,590 attempts in 24h, every one `codex.headless.full -> epsilon`,
+        # every one refused; 6 successful dispatches in 7 days.
+        #
+        # This narrows the candidate set and never widens it. The real consequence to state:
+        # admission may now select a LOWER-scoring route. A runnable worse route beats an
+        # unrunnable better one -- and where no candidate is runnable the set is empty, so the
+        # existing fail-closed admission path refuses rather than downgrading past a quality floor.
+        if not _lane_can_run(primary.lane, route):
             continue
         candidates.append(
             build_dispatch_request(
