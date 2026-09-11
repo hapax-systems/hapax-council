@@ -85,6 +85,12 @@ def _env_float(name: str, default: float) -> float:
     return value if math.isfinite(value) else default
 
 
+def _env_flag(name: str) -> bool:
+    """Truthiness of an env flag: '1', 'true', 'yes', 'on' (case-insensitive) enable."""
+
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _ntfy_escalate(title: str, body: str) -> None:
     """Send an ntfy escalation for the no-spin law.  Best-effort; never raises."""
     try:
@@ -312,9 +318,15 @@ class Coordinator:
         # (sdlc_pressure_gate.py:176/209/414). read_remote_pressure fails OPEN if
         # the target is unreachable, so this can only loosen, never re-starve.
         admission = admission_state(target_host=LOCAL_DEV_TARGET)
+        # Observe-only restoration (stalled-reoffer incident 2026-09-09): with
+        # HAPAX_COORDINATOR_OBSERVE_ONLY=1 the daemon projects lane state but
+        # performs NO mutations — no orphan reoffers, no stalled reoffers, no
+        # dispatch. Until the stalled-reoffer mediation is qualified, this is
+        # the narrowly justified observational mode the incident named.
+        observe_only = _env_flag("HAPAX_COORDINATOR_OBSERVE_ONLY")
         orphan_reoffers = (
             0
-            if admission.state == "closed"
+            if admission.state == "closed" or observe_only
             else self._reoffer_orphaned_claims(tasks, lanes, now_wall=time.time())
         )
         if orphan_reoffers:
@@ -396,7 +408,7 @@ class Coordinator:
             )
         state.lanes_stalled = sum(1 for lane in lanes.values() if lane.stalled)
 
-        reoffer_budget = 0 if admission.state == "closed" else MAX_REOFFERS_PER_TICK
+        reoffer_budget = 0 if admission.state == "closed" or observe_only else MAX_REOFFERS_PER_TICK
         reoffered = 0
         for lane in lanes.values():
             if reoffered >= reoffer_budget:
@@ -457,6 +469,8 @@ class Coordinator:
         task_by_id = {t.task_id: t for t in offered}
         lane_by_role = {l.role: l for l in idle_lanes}
         for task_id, role in plan:
+            if observe_only:
+                break
             task = task_by_id.get(task_id)
             lane = lane_by_role.get(role)
             if task is None or lane is None:
