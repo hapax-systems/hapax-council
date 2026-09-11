@@ -41,6 +41,20 @@
       "declined_exit_codes": [],
       "notes": "Runs a REAL scripts/hapax-agy-reviewer smoke and requires schema-conformant fenced-YAML stdout, so the receipt cannot be minted without a completed provider round trip. Measured 2026-08-19: honest, fully mechanical on hapax-appendix, and on no timer — its receipts had been expired since 2026-08-17, which is why the gemini review family was unseatable. Its TTL is 900s, so cadence must stay well under that. NOTE its rc=2 is INDETERMINATE and is deliberately NOT listed as declined: agy collapses smoke-timeout, quota wall, auth failure, and model non-compliance into one exit code, so classifying it as a healthy decline would launder a broken producer as good news. Observed both within one minute on 2026-08-19 — a clean produce in 24s and a self-timeout at 240s, both indistinguishable at the exit code. Until agy discriminates, rc=2 surfaces as a failure. The fix belongs in agy, not in a generous mapping here.",
       "timeout_seconds": 300
+    },
+    {
+      "id": "glmcp-review-quota",
+      "property": "route_specific_quota",
+      "subjects": ["glmcp.review.direct"],
+      "command": ["scripts/hapax-glmcp-quota-admission", "--json"],
+      "cadence_seconds": 600,
+      "evidence_ttl_seconds": 900,
+      "provenance": "mechanical",
+      "host_scope": "wherever_credential_present",
+      "success_exit_codes": [0],
+      "declined_exit_codes": [],
+      "notes": "Runs a REAL scripts/hapax-glmcp-reviewer smoke and requires schema-conformant fenced-YAML stdout, so the receipt cannot be minted without a completed provider round trip. The smoke's nonzero outcomes are deliberately NOT listed as declined: hapax-glmcp-reviewer does not distinguish quota wall from auth, configuration, transport, provider, or schema failure at this boundary, so classifying any of them as a healthy decline would launder a broken producer as good news. Its TTL is 900s, so cadence must stay well under that.",
+      "timeout_seconds": 300
     }
   ]
 }
