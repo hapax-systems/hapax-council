@@ -233,6 +233,11 @@ class ModelId(StrEnum):
     CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
+    # Mirrored from the registry: 5.1 is a distinct capability, and `claude-opus-5` was missing
+    # although it is this estate's session default and demonstrably meters real spend — a run
+    # pinned elsewhere was measured with ~70% of its output produced by it.
+    CLAUDE_FABLE_5_1 = "claude-fable-5-1"
+    CLAUDE_OPUS_5 = "claude-opus-5"
     GPT_5_5 = "gpt-5.5"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
     GPT_OSS_120B = "gpt-oss-120b"

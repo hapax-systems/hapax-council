@@ -27,7 +27,8 @@
     "agy.review.direct",
     "glmcp.review.direct",
     "local_tool.local.worker",
-    "vibe.headless.full"
+    "vibe.headless.full",
+    "claude.review.fable"
   ],
   "omitted_capability_shapes": [
     {
@@ -41,19 +42,47 @@
       "shape_state": "measurement_pending",
       "demand_eligible": false,
       "route_ids": [],
-      "resource_semantics": ["public-egress", "claim-review", "surface-specific adapter"],
-      "spend_semantics": ["zero-provider-spend-by-default", "public-claim-cost-nonzero"],
-      "observability": ["public_events_jsonl", "published-artifact-metadata", "publication-hardening-gate"],
-      "failure_classes": ["live_public_event_type_absent", "public_claim_gate_missing", "adapter_receipt_absent"],
-      "measurement_plan_refs": ["cc-task-publication-bus-route-spend-gate-20260630"],
-      "remediation_refs": ["require:omg.weblog-public-event-adapter", "require:publication-hardening-gate", "require:rdlc-claim-disposition-before-public-egress"],
+      "resource_semantics": [
+        "public-egress",
+        "claim-review",
+        "surface-specific adapter"
+      ],
+      "spend_semantics": [
+        "zero-provider-spend-by-default",
+        "public-claim-cost-nonzero"
+      ],
+      "observability": [
+        "public_events_jsonl",
+        "published-artifact-metadata",
+        "publication-hardening-gate"
+      ],
+      "failure_classes": [
+        "live_public_event_type_absent",
+        "public_claim_gate_missing",
+        "adapter_receipt_absent"
+      ],
+      "measurement_plan_refs": [
+        "cc-task-publication-bus-route-spend-gate-20260630"
+      ],
+      "remediation_refs": [
+        "require:omg.weblog-public-event-adapter",
+        "require:publication-hardening-gate",
+        "require:rdlc-claim-disposition-before-public-egress"
+      ],
       "surface_delta_signal": "capability_surface_delta:publication_bus",
       "observation_receipt_class": null,
       "observed_at": "2026-07-04T01:50:00Z",
       "stale_after": "30d",
       "freshness_state": "asserted_only",
-      "evidence_refs": ["task:cc-task-publication-bus-route-spend-gate-20260630", "docs:published-artifacts/HOW-TO-PUBLISH.md"],
-      "blocked_reasons": ["measured_supply_leaf_absent", "omg_weblog_live_event_absent", "public_claim_disposition_required"]
+      "evidence_refs": [
+        "task:cc-task-publication-bus-route-spend-gate-20260630",
+        "docs:published-artifacts/HOW-TO-PUBLISH.md"
+      ],
+      "blocked_reasons": [
+        "measured_supply_leaf_absent",
+        "omg_weblog_live_event_absent",
+        "public_claim_disposition_required"
+      ]
     },
     {
       "descriptor_schema": 1,
@@ -66,19 +95,47 @@
       "shape_state": "measurement_pending",
       "demand_eligible": false,
       "route_ids": [],
-      "resource_semantics": ["receipt-ledger", "idempotent-ingress", "receive-only"],
-      "spend_semantics": ["no-spend-authority", "cash-receipt-visible", "resource-cost-nonzero"],
-      "observability": ["money-rail-resource-receipts", "payment-event-log", "support-copy-readiness"],
-      "failure_classes": ["receipt_missing_fail_closed", "duplicate_delivery", "release_pr_dirty"],
-      "measurement_plan_refs": ["cc-task-money-rails-resource-receipt-ledger-20260630"],
-      "remediation_refs": ["pr:4347:resolve-merge-conflict", "require:current-head-review", "require:autoqueue-admission"],
+      "resource_semantics": [
+        "receipt-ledger",
+        "idempotent-ingress",
+        "receive-only"
+      ],
+      "spend_semantics": [
+        "no-spend-authority",
+        "cash-receipt-visible",
+        "resource-cost-nonzero"
+      ],
+      "observability": [
+        "money-rail-resource-receipts",
+        "payment-event-log",
+        "support-copy-readiness"
+      ],
+      "failure_classes": [
+        "receipt_missing_fail_closed",
+        "duplicate_delivery",
+        "release_pr_dirty"
+      ],
+      "measurement_plan_refs": [
+        "cc-task-money-rails-resource-receipt-ledger-20260630"
+      ],
+      "remediation_refs": [
+        "pr:4347:resolve-merge-conflict",
+        "require:current-head-review",
+        "require:autoqueue-admission"
+      ],
       "surface_delta_signal": "capability_surface_delta:money_rail",
       "observation_receipt_class": null,
       "observed_at": "2026-07-04T01:50:00Z",
       "stale_after": "30d",
       "freshness_state": "asserted_only",
-      "evidence_refs": ["task:cc-task-money-rails-resource-receipt-ledger-20260630", "relay:2026-07-04-cx-cap-money-pr4347-merge-conflict-blocked.md"],
-      "blocked_reasons": ["measured_supply_leaf_absent", "upstream_pr_dirty"]
+      "evidence_refs": [
+        "task:cc-task-money-rails-resource-receipt-ledger-20260630",
+        "relay:2026-07-04-cx-cap-money-pr4347-merge-conflict-blocked.md"
+      ],
+      "blocked_reasons": [
+        "measured_supply_leaf_absent",
+        "upstream_pr_dirty"
+      ]
     },
     {
       "descriptor_schema": 1,
@@ -91,19 +148,45 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
-      "resource_semantics": ["external-api", "connector-auth", "tool-call-receipts"],
-      "spend_semantics": ["unknown-provider-quota", "external-api-cost-possible"],
-      "observability": ["tool-call-ledger", "connector-permission-surface", "egress-policy-gate"],
-      "failure_classes": ["connector_auth_absent", "permission_surface_unknown", "external_mutation_not_authorized"],
-      "measurement_plan_refs": ["capability_surface_delta:mcp_connector"],
-      "remediation_refs": ["mint:connector-capability-intake", "require:permission-and-egress-contract", "require:route-resource-receipts"],
+      "resource_semantics": [
+        "external-api",
+        "connector-auth",
+        "tool-call-receipts"
+      ],
+      "spend_semantics": [
+        "unknown-provider-quota",
+        "external-api-cost-possible"
+      ],
+      "observability": [
+        "tool-call-ledger",
+        "connector-permission-surface",
+        "egress-policy-gate"
+      ],
+      "failure_classes": [
+        "connector_auth_absent",
+        "permission_surface_unknown",
+        "external_mutation_not_authorized"
+      ],
+      "measurement_plan_refs": [
+        "capability_surface_delta:mcp_connector"
+      ],
+      "remediation_refs": [
+        "mint:connector-capability-intake",
+        "require:permission-and-egress-contract",
+        "require:route-resource-receipts"
+      ],
       "surface_delta_signal": "capability_surface_delta:mcp_connector",
       "observation_receipt_class": null,
       "observed_at": "2026-06-30T18:39:00Z",
       "stale_after": "30d",
       "freshness_state": "asserted_only",
-      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
-      "blocked_reasons": ["descriptor_intake_required", "measured_supply_leaf_absent"]
+      "evidence_refs": [
+        "task:cc-task-register-omitted-demand-shape-routes-20260630"
+      ],
+      "blocked_reasons": [
+        "descriptor_intake_required",
+        "measured_supply_leaf_absent"
+      ]
     },
     {
       "descriptor_schema": 1,
@@ -116,19 +199,47 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
-      "resource_semantics": ["child-session-supply", "coordination-overhead", "claim-bound-worktrees"],
-      "spend_semantics": ["fanout-cost", "token-and-local-resource-amplification"],
-      "observability": ["dispatch-packets", "claim-files", "relay-status", "child-session-receipts"],
-      "failure_classes": ["orphan_claim", "child_auth_invalidated", "worktree_missing", "relay_stale"],
-      "measurement_plan_refs": ["capability_surface_delta:orchestrator"],
-      "remediation_refs": ["mint:orchestrator-surface-intake", "require:child-route-receipts", "require:worktree-and-claim-coherence"],
+      "resource_semantics": [
+        "child-session-supply",
+        "coordination-overhead",
+        "claim-bound-worktrees"
+      ],
+      "spend_semantics": [
+        "fanout-cost",
+        "token-and-local-resource-amplification"
+      ],
+      "observability": [
+        "dispatch-packets",
+        "claim-files",
+        "relay-status",
+        "child-session-receipts"
+      ],
+      "failure_classes": [
+        "orphan_claim",
+        "child_auth_invalidated",
+        "worktree_missing",
+        "relay_stale"
+      ],
+      "measurement_plan_refs": [
+        "capability_surface_delta:orchestrator"
+      ],
+      "remediation_refs": [
+        "mint:orchestrator-surface-intake",
+        "require:child-route-receipts",
+        "require:worktree-and-claim-coherence"
+      ],
       "surface_delta_signal": "capability_surface_delta:orchestrator",
       "observation_receipt_class": null,
       "observed_at": "2026-07-04T01:54:00Z",
       "stale_after": "30d",
       "freshness_state": "asserted_only",
-      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
-      "blocked_reasons": ["measured_supply_leaf_absent", "child_receipt_contract_required"]
+      "evidence_refs": [
+        "task:cc-task-register-omitted-demand-shape-routes-20260630"
+      ],
+      "blocked_reasons": [
+        "measured_supply_leaf_absent",
+        "child_receipt_contract_required"
+      ]
     },
     {
       "descriptor_schema": 1,
@@ -141,19 +252,45 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
-      "resource_semantics": ["bounded-context", "support-evidence", "no-direct-source-authority"],
-      "spend_semantics": ["token-cost", "parallelism-cost"],
-      "observability": ["subagent-prompt", "subagent-summary", "evidence-disposition"],
-      "failure_classes": ["support_only_confused_with_authority", "prompt_context_stale", "evidence_not_disposed"],
-      "measurement_plan_refs": ["capability_surface_delta:subagent"],
-      "remediation_refs": ["mint:subagent-surface-intake", "require:evidence-grade-disposition", "require:parent-route-receipt"],
+      "resource_semantics": [
+        "bounded-context",
+        "support-evidence",
+        "no-direct-source-authority"
+      ],
+      "spend_semantics": [
+        "token-cost",
+        "parallelism-cost"
+      ],
+      "observability": [
+        "subagent-prompt",
+        "subagent-summary",
+        "evidence-disposition"
+      ],
+      "failure_classes": [
+        "support_only_confused_with_authority",
+        "prompt_context_stale",
+        "evidence_not_disposed"
+      ],
+      "measurement_plan_refs": [
+        "capability_surface_delta:subagent"
+      ],
+      "remediation_refs": [
+        "mint:subagent-surface-intake",
+        "require:evidence-grade-disposition",
+        "require:parent-route-receipt"
+      ],
       "surface_delta_signal": "capability_surface_delta:subagent",
       "observation_receipt_class": null,
       "observed_at": "2026-06-30T18:39:00Z",
       "stale_after": "30d",
       "freshness_state": "asserted_only",
-      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
-      "blocked_reasons": ["measured_supply_leaf_absent", "support_only_evidence"]
+      "evidence_refs": [
+        "task:cc-task-register-omitted-demand-shape-routes-20260630"
+      ],
+      "blocked_reasons": [
+        "measured_supply_leaf_absent",
+        "support_only_evidence"
+      ]
     },
     {
       "descriptor_schema": 1,
@@ -166,19 +303,45 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
-      "resource_semantics": ["command-wrapper", "underlying-model-hidden", "tool-authority-envelope"],
-      "spend_semantics": ["underlying-model-cost-unknown", "command-overhead"],
-      "observability": ["cockpit-command-log", "route-decision-receipt", "underlying-model-receipt"],
-      "failure_classes": ["command_name_confused_with_capability", "underlying_supply_unmeasured", "authority_envelope_absent"],
-      "measurement_plan_refs": ["capability_surface_delta:cockpit_command"],
-      "remediation_refs": ["mint:cockpit-command-capability-intake", "require:underlying-model-descriptor", "require:tool-authority-envelope"],
+      "resource_semantics": [
+        "command-wrapper",
+        "underlying-model-hidden",
+        "tool-authority-envelope"
+      ],
+      "spend_semantics": [
+        "underlying-model-cost-unknown",
+        "command-overhead"
+      ],
+      "observability": [
+        "cockpit-command-log",
+        "route-decision-receipt",
+        "underlying-model-receipt"
+      ],
+      "failure_classes": [
+        "command_name_confused_with_capability",
+        "underlying_supply_unmeasured",
+        "authority_envelope_absent"
+      ],
+      "measurement_plan_refs": [
+        "capability_surface_delta:cockpit_command"
+      ],
+      "remediation_refs": [
+        "mint:cockpit-command-capability-intake",
+        "require:underlying-model-descriptor",
+        "require:tool-authority-envelope"
+      ],
       "surface_delta_signal": "capability_surface_delta:cockpit_command",
       "observation_receipt_class": null,
       "observed_at": "2026-06-30T18:39:00Z",
       "stale_after": "30d",
       "freshness_state": "asserted_only",
-      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
-      "blocked_reasons": ["measured_supply_leaf_absent", "command_not_capability_unit"]
+      "evidence_refs": [
+        "task:cc-task-register-omitted-demand-shape-routes-20260630"
+      ],
+      "blocked_reasons": [
+        "measured_supply_leaf_absent",
+        "command_not_capability_unit"
+      ]
     },
     {
       "descriptor_schema": 1,
@@ -191,19 +354,46 @@
       "shape_state": "measurement_pending",
       "demand_eligible": false,
       "route_ids": [],
-      "resource_semantics": ["session-context", "claim-file", "tool-gate"],
-      "spend_semantics": ["interactive-token-cost", "operator-attention-cost"],
-      "observability": ["claim-file", "task-note", "tool-gate-decision", "git-diff"],
-      "failure_classes": ["role_lane_mismatch", "worktree_missing", "claim_without_relay"],
-      "measurement_plan_refs": ["capability_surface_delta:self_inline"],
-      "remediation_refs": ["require:lane-worktree-claim-coherence", "require:route-receipt", "require:status-vector-projection"],
+      "resource_semantics": [
+        "session-context",
+        "claim-file",
+        "tool-gate"
+      ],
+      "spend_semantics": [
+        "interactive-token-cost",
+        "operator-attention-cost"
+      ],
+      "observability": [
+        "claim-file",
+        "task-note",
+        "tool-gate-decision",
+        "git-diff"
+      ],
+      "failure_classes": [
+        "role_lane_mismatch",
+        "worktree_missing",
+        "claim_without_relay"
+      ],
+      "measurement_plan_refs": [
+        "capability_surface_delta:self_inline"
+      ],
+      "remediation_refs": [
+        "require:lane-worktree-claim-coherence",
+        "require:route-receipt",
+        "require:status-vector-projection"
+      ],
       "surface_delta_signal": "capability_surface_delta:self_inline",
       "observation_receipt_class": null,
       "observed_at": "2026-07-04T01:54:00Z",
       "stale_after": "7d",
       "freshness_state": "asserted_only",
-      "evidence_refs": ["claim:cc-task-register-omitted-demand-shape-routes-20260630:cx-rdlc-ext"],
-      "blocked_reasons": ["measured_supply_leaf_absent", "status_vector_required"]
+      "evidence_refs": [
+        "claim:cc-task-register-omitted-demand-shape-routes-20260630:cx-rdlc-ext"
+      ],
+      "blocked_reasons": [
+        "measured_supply_leaf_absent",
+        "status_vector_required"
+      ]
     },
     {
       "descriptor_schema": 1,
@@ -216,19 +406,45 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
-      "resource_semantics": ["read-only-observation", "witness-receipt", "no-source-mutation"],
-      "spend_semantics": ["observer-token-cost", "local-observation-cost"],
-      "observability": ["witness-receipts", "review-dossier", "cctv-assignment"],
-      "failure_classes": ["observer_confused_with_actor", "witness_stale", "review_lens_mismatch"],
-      "measurement_plan_refs": ["capability_surface_delta:cctv_runner"],
-      "remediation_refs": ["mint:cctv-runner-intake", "require:witness-receipt-contract", "require:review-lens-fit"],
+      "resource_semantics": [
+        "read-only-observation",
+        "witness-receipt",
+        "no-source-mutation"
+      ],
+      "spend_semantics": [
+        "observer-token-cost",
+        "local-observation-cost"
+      ],
+      "observability": [
+        "witness-receipts",
+        "review-dossier",
+        "cctv-assignment"
+      ],
+      "failure_classes": [
+        "observer_confused_with_actor",
+        "witness_stale",
+        "review_lens_mismatch"
+      ],
+      "measurement_plan_refs": [
+        "capability_surface_delta:cctv_runner"
+      ],
+      "remediation_refs": [
+        "mint:cctv-runner-intake",
+        "require:witness-receipt-contract",
+        "require:review-lens-fit"
+      ],
       "surface_delta_signal": "capability_surface_delta:cctv_runner",
       "observation_receipt_class": null,
       "observed_at": "2026-06-30T18:39:00Z",
       "stale_after": "30d",
       "freshness_state": "asserted_only",
-      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
-      "blocked_reasons": ["measured_supply_leaf_absent", "read_only_observer"]
+      "evidence_refs": [
+        "task:cc-task-register-omitted-demand-shape-routes-20260630"
+      ],
+      "blocked_reasons": [
+        "measured_supply_leaf_absent",
+        "read_only_observer"
+      ]
     },
     {
       "descriptor_schema": 1,
@@ -241,19 +457,45 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
-      "resource_semantics": ["provider-gateway", "model-leaf", "quota-and-rate-limit"],
-      "spend_semantics": ["paid-provider-usage", "gateway-markup-possible"],
-      "observability": ["provider-usage-ledger", "route-authority-receipt", "quota-spend-ledger"],
-      "failure_classes": ["provider_badge_as_capability", "quota_unknown", "model_leaf_unmeasured"],
-      "measurement_plan_refs": ["capability_surface_delta:model_provider"],
-      "remediation_refs": ["mint:provider-model-leaf-intake", "require:quota-spend-receipts", "require:quality-posterior"],
+      "resource_semantics": [
+        "provider-gateway",
+        "model-leaf",
+        "quota-and-rate-limit"
+      ],
+      "spend_semantics": [
+        "paid-provider-usage",
+        "gateway-markup-possible"
+      ],
+      "observability": [
+        "provider-usage-ledger",
+        "route-authority-receipt",
+        "quota-spend-ledger"
+      ],
+      "failure_classes": [
+        "provider_badge_as_capability",
+        "quota_unknown",
+        "model_leaf_unmeasured"
+      ],
+      "measurement_plan_refs": [
+        "capability_surface_delta:model_provider"
+      ],
+      "remediation_refs": [
+        "mint:provider-model-leaf-intake",
+        "require:quota-spend-receipts",
+        "require:quality-posterior"
+      ],
       "surface_delta_signal": "capability_surface_delta:model_provider",
       "observation_receipt_class": null,
       "observed_at": "2026-06-30T18:39:00Z",
       "stale_after": "30d",
       "freshness_state": "asserted_only",
-      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
-      "blocked_reasons": ["measured_supply_leaf_absent", "quota_receipt_absent"]
+      "evidence_refs": [
+        "task:cc-task-register-omitted-demand-shape-routes-20260630"
+      ],
+      "blocked_reasons": [
+        "measured_supply_leaf_absent",
+        "quota_receipt_absent"
+      ]
     },
     {
       "descriptor_schema": 1,
@@ -266,19 +508,45 @@
       "shape_state": "intake_required",
       "demand_eligible": false,
       "route_ids": [],
-      "resource_semantics": ["local-compute", "gpu-or-cpu-envelope", "burst-worker"],
-      "spend_semantics": ["zero-cash-not-zero-resource", "thermal-and-opportunity-cost"],
-      "observability": ["resource-telemetry", "harness-self-test", "route-authority-receipt"],
-      "failure_classes": ["local_compute_silent_free", "harness_unmeasured", "resource_pressure_unknown"],
-      "measurement_plan_refs": ["capability_surface_delta:local_compute"],
-      "remediation_refs": ["mint:local-compute-leaf-intake", "require:resource-receipts", "require:harness-self-test"],
+      "resource_semantics": [
+        "local-compute",
+        "gpu-or-cpu-envelope",
+        "burst-worker"
+      ],
+      "spend_semantics": [
+        "zero-cash-not-zero-resource",
+        "thermal-and-opportunity-cost"
+      ],
+      "observability": [
+        "resource-telemetry",
+        "harness-self-test",
+        "route-authority-receipt"
+      ],
+      "failure_classes": [
+        "local_compute_silent_free",
+        "harness_unmeasured",
+        "resource_pressure_unknown"
+      ],
+      "measurement_plan_refs": [
+        "capability_surface_delta:local_compute"
+      ],
+      "remediation_refs": [
+        "mint:local-compute-leaf-intake",
+        "require:resource-receipts",
+        "require:harness-self-test"
+      ],
       "surface_delta_signal": "capability_surface_delta:local_compute",
       "observation_receipt_class": null,
       "observed_at": "2026-06-30T18:39:00Z",
       "stale_after": "30d",
       "freshness_state": "asserted_only",
-      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
-      "blocked_reasons": ["measured_supply_leaf_absent", "resource_receipt_absent"]
+      "evidence_refs": [
+        "task:cc-task-register-omitted-demand-shape-routes-20260630"
+      ],
+      "blocked_reasons": [
+        "measured_supply_leaf_absent",
+        "resource_receipt_absent"
+      ]
     },
     {
       "descriptor_schema": 1,
@@ -291,19 +559,47 @@
       "shape_state": "evidence_only",
       "demand_eligible": false,
       "route_ids": [],
-      "resource_semantics": ["local-read-only-verification", "caller-held-three-pin-anchors", "no-execution-capacity"],
-      "spend_semantics": ["no-provider-spend", "local-energy-technical-telemetry-only", "no-economic-payback-effect"],
-      "observability": ["AgenticTrustEvidenceReceiptV1", "integer-only-summary-facts", "custody-and-anchor-status"],
-      "failure_classes": ["terminal_custody_invalid", "external_anchors_incomplete", "semantic_claim_ceiling_exceeded", "production_evidence_absent", "runtime_authority_leak"],
-      "measurement_plan_refs": ["cc-task-agentic-trust-evidence-only-onboarding-20260804"],
-      "remediation_refs": ["require:production-evidence-import", "require:application-bound-admission-tuple", "forbid:route-adapter-launcher-registration"],
+      "resource_semantics": [
+        "local-read-only-verification",
+        "caller-held-three-pin-anchors",
+        "no-execution-capacity"
+      ],
+      "spend_semantics": [
+        "no-provider-spend",
+        "local-energy-technical-telemetry-only",
+        "no-economic-payback-effect"
+      ],
+      "observability": [
+        "AgenticTrustEvidenceReceiptV1",
+        "integer-only-summary-facts",
+        "custody-and-anchor-status"
+      ],
+      "failure_classes": [
+        "terminal_custody_invalid",
+        "external_anchors_incomplete",
+        "semantic_claim_ceiling_exceeded",
+        "production_evidence_absent",
+        "runtime_authority_leak"
+      ],
+      "measurement_plan_refs": [
+        "cc-task-agentic-trust-evidence-only-onboarding-20260804"
+      ],
+      "remediation_refs": [
+        "require:production-evidence-import",
+        "require:application-bound-admission-tuple",
+        "forbid:route-adapter-launcher-registration"
+      ],
       "surface_delta_signal": null,
       "observation_receipt_class": "AgenticTrustEvidenceReceiptV1",
       "observed_at": null,
       "stale_after": "30d",
       "freshness_state": "missing",
       "evidence_refs": [],
-      "blocked_reasons": ["production_evidence_absent", "application_bound_admission_tuple_absent", "external_three_pin_custody_not_established"]
+      "blocked_reasons": [
+        "production_evidence_absent",
+        "application_bound_admission_tuple_absent",
+        "external_three_pin_custody_not_established"
+      ]
     },
     {
       "descriptor_schema": 1,
@@ -316,19 +612,42 @@
       "shape_state": "deprecated",
       "demand_eligible": false,
       "route_ids": [],
-      "resource_semantics": ["deprecated-route", "legacy-wrapper", "no-dispatch-supply"],
-      "spend_semantics": ["no-spend-authority", "legacy-provider-quota-not-admitted"],
-      "observability": ["task-note-correction", "capability-surface-delta"],
-      "failure_classes": ["deprecated_route_observed", "legacy_route_alias_reintroduced"],
-      "measurement_plan_refs": ["cc-task-register-omitted-demand-shape-routes-20260630"],
-      "remediation_refs": ["refuse:antigrav-live-route", "require:agy-measured-supply-leaf-before-route-admission"],
+      "resource_semantics": [
+        "deprecated-route",
+        "legacy-wrapper",
+        "no-dispatch-supply"
+      ],
+      "spend_semantics": [
+        "no-spend-authority",
+        "legacy-provider-quota-not-admitted"
+      ],
+      "observability": [
+        "task-note-correction",
+        "capability-surface-delta"
+      ],
+      "failure_classes": [
+        "deprecated_route_observed",
+        "legacy_route_alias_reintroduced"
+      ],
+      "measurement_plan_refs": [
+        "cc-task-register-omitted-demand-shape-routes-20260630"
+      ],
+      "remediation_refs": [
+        "refuse:antigrav-live-route",
+        "require:agy-measured-supply-leaf-before-route-admission"
+      ],
       "surface_delta_signal": "capability_surface_delta:orchestrator",
       "observation_receipt_class": null,
       "observed_at": "2026-06-30T18:12:00Z",
       "stale_after": "30d",
       "freshness_state": "asserted_only",
-      "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
-      "blocked_reasons": ["deprecated_antigrav_route_retired", "measured_supply_leaf_absent"]
+      "evidence_refs": [
+        "task:cc-task-register-omitted-demand-shape-routes-20260630"
+      ],
+      "blocked_reasons": [
+        "deprecated_antigrav_route_retired",
+        "measured_supply_leaf_absent"
+      ]
     }
   ],
   "routes": [
@@ -3637,7 +3956,9 @@
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": ["engine_exact_token_smoke_failed"]
+          "blocked_reasons": [
+            "engine_exact_token_smoke_failed"
+          ]
         },
         {
           "variant_id": "agy@gemini-3.5-flash-medium",
@@ -3647,7 +3968,9 @@
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": ["engine_exact_token_smoke_failed"]
+          "blocked_reasons": [
+            "engine_exact_token_smoke_failed"
+          ]
         },
         {
           "variant_id": "agy@gemini-3.5-flash-high",
@@ -3657,7 +3980,9 @@
           },
           "score_delta": {},
           "scores_inherited_from": "agy.review.direct",
-          "blocked_reasons": ["engine_exact_token_smoke_failed"]
+          "blocked_reasons": [
+            "engine_exact_token_smoke_failed"
+          ]
         },
         {
           "variant_id": "agy@gemini-3.1-pro-high",
@@ -4775,6 +5100,216 @@
       "approval_posture": "default_deny_enable_latch",
       "capability_tier": "jr_plus",
       "worker_tier": "bounded_worker"
+    },
+    {
+      "registry_schema": 1,
+      "route_id": "claude.review.fable",
+      "platform": "claude",
+      "mode": "review",
+      "profile": "fable",
+      "launcher": "NOT YET SANCTIONED. scripts/hapax-claude-reviewer pins the floating `opus` alias and therefore cannot launch an exact-model route; a fable wrapper must pin `--model claude-fable-5-1` explicitly and must pass `--disallowedTools Task`.",
+      "sanctioned_wrapper": "",
+      "summary": "Claude Fable 5.1 no-tools review seat (declared, not yet admitted)",
+      "notes": "Fable 5.1 released 2026-09-01 and is reachable on appendix (Claude Code 2.1.257; the `fable` alias requires >= 2.1.255). Measured 2026-09-01 across 20 work-shaped probes on the four surfaces this estate records as near-worst-case for classifier trips — cyber (secrets/authz/audit/CODEOWNERS), frontier_llm (routing/eval-plane/quota/bpw), mondlc, and bio (HRV/skin-temp/consent): ZERO model_refusal_fallback records. That supersedes nothing on its own — the July 2026 observation of 17 refusal events in one day was a correct measurement of a different time, and vendor safeguard behaviour is modulated silently. PIN THE DATED ID, NEVER THE `fable` ALIAS: the alias now resolves to 5.1 and will resolve to something else later, which would make this route's identity drift without an edit. The wrapper must also disable subagent dispatch: a dispatched subagent runs on the settings default rather than the pinned model — measured at ~70% of one run's output — so an undisabled route cannot honour its own execution_descriptor.",
+      "route_state": "blocked",
+      "blocked_reasons": [
+        "claude_fable_review_seat_sanctioned_wrapper_absent",
+        "claude_fable_review_seat_receipt_admission_required",
+        "claude_fable_review_route_specific_quota_receipt_absent"
+      ],
+      "model_or_engine": "claude-fable",
+      "execution_descriptor": {
+        "model_id": "claude-fable-5-1",
+        "effort": "high",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none"
+      },
+      "descriptor_variants": [],
+      "auth_surface": "subscription",
+      "capacity_pool": "subscription_quota",
+      "mutability": {
+        "vault_docs": false,
+        "source": false,
+        "runtime": false,
+        "public": false,
+        "provider_spend": false
+      },
+      "authority_ceiling": "read_only",
+      "tool_access": {
+        "filesystem": "read_only",
+        "shell": "none",
+        "browser": false,
+        "mcp": []
+      },
+      "privacy_posture": "provider_private",
+      "quality_envelope": {
+        "eligible_quality_floors": [
+          "frontier_review_required"
+        ],
+        "explicit_equivalence_records": [],
+        "excluded_task_classes": [
+          "source_mutation",
+          "runtime_mutation",
+          "provider_spend",
+          "governance_authority_case",
+          "privacy_secret_sensitive",
+          "public_release_without_gate"
+        ]
+      },
+      "capability_tier": "read_only_support",
+      "worker_tier": "read_only_sidecar",
+      "approval_posture": "plan_mode_read_only",
+      "context_limits": {
+        "max_context_class": "very_large"
+      },
+      "capability_scores": {
+        "grounding": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "governance_reasoning": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "source_editing": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "architecture": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "ambiguity_resolution": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "long_context": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "current_docs_grounding": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "multimodal_verification": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "runtime_debugging": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "test_authoring": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "coordination_reliability": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "privacy_safety": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "public_claim_safety": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        },
+        "local_calibration": {
+          "score": 0,
+          "confidence": 0,
+          "evidence_refs": [],
+          "observed_at": null,
+          "stale_after": "24h"
+        }
+      },
+      "tool_state": [],
+      "freshness": {
+        "capability_checked_at": null,
+        "capability_stale_after": "24h",
+        "quota_checked_at": null,
+        "quota_stale_after": "15m",
+        "resource_checked_at": null,
+        "resource_stale_after": "24h",
+        "provider_docs_checked_at": null,
+        "provider_docs_stale_after": "30d",
+        "evidence": {
+          "capability": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "claude_fable_review_seat_receipt_admission_required"
+            ]
+          },
+          "quota": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "claude_fable_review_route_specific_quota_receipt_absent"
+            ]
+          },
+          "resource": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fresh_resource_evidence_absent"
+            ]
+          },
+          "provider_docs": {
+            "evidence_refs": [],
+            "blocked_reasons": [
+              "fable_5_1_system_card_not_retrievable"
+            ]
+          }
+        }
+      },
+      "known_unknowns": [
+        "Classifier behaviour is measured over 20 probes on this estate's own surfaces, not over 'most of the estate'; the operator's July 2026 observation stands for its own time and safeguard tuning is not pre-announced. Re-measure after any vendor release.",
+        "No sanctioned wrapper exists, so nothing yet enforces the pinned model, the pinned effort, or subagent suppression at dispatch time.",
+        "Cost is unmodelled here. List is 10x uncached input + 0.25x cache read + 50x output per M; the advertised 25-45% saving is cache-read only and uncached Fable is ~2x Opus 5."
+      ],
+      "telemetry": {
+        "quota_source": "unknown",
+        "cost_source": "none",
+        "resource_source": "local_probe"
+      }
     }
   ]
 }

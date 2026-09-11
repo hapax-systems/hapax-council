@@ -14,6 +14,10 @@ from types import ModuleType
 import pytest
 from pydantic import ValidationError
 
+from shared.execution_observer import (
+    EXECUTION_INVARIANT_SATISFIED,
+    ExecutionInvariantVerdict,
+)
 from shared.platform_capability_receipts import (
     CliEvidence,
     EvidenceStatus,
@@ -270,6 +274,53 @@ def test_fresh_row_passes_when_evidence_is_present() -> None:
 
     assert result.ok is True
     assert result.routes[0].errors == ()
+
+
+def test_registry_freshness_rejects_mixed_effort_execution_evidence() -> None:
+    payload = _payload()
+    route_id = "codex.headless.full"
+    route = _route_payload(payload, route_id)
+    _mark_fresh(route)
+    registry = PlatformCapabilityRegistry.model_validate(payload)
+    mixed_effort = ExecutionInvariantVerdict(
+        status=EXECUTION_INVARIANT_SATISFIED,
+        observed_models=frozenset({"gpt-5.5"}),
+        sanctioned_models=frozenset({"gpt-5.5"}),
+        observed_efforts=frozenset({"high", "xhigh"}),
+        effort_drifted=True,
+    )
+
+    result = check_registry_freshness(
+        registry,
+        route_ids=[route_id],
+        now=FRESH_NOW,
+        execution_verdicts={route_id: mixed_effort},
+    )
+
+    assert result.ok is False
+    assert result.routes[0].blocked_reasons == ("execution_effort_drift_observed",)
+    assert result.routes[0].errors == (
+        "codex.headless.full: execution_effort_drift_observed: "
+        "observed_efforts=high,xhigh; next action: discard mixed-effort evidence or measure each "
+        "effort separately",
+    )
+
+
+def test_missing_sanctioned_wrapper_is_only_valid_with_a_named_blocker() -> None:
+    payload = _payload()
+    route = _route_payload(payload, "claude.review.fable")
+
+    assert route["sanctioned_wrapper"] == ""
+    PlatformCapabilityRegistry.model_validate(payload)
+
+    route["route_state"] = "active"
+    with pytest.raises(ValidationError, match="without a sanctioned wrapper must be blocked"):
+        PlatformCapabilityRegistry.model_validate(payload)
+
+    route["route_state"] = "blocked"
+    route["blocked_reasons"] = ["some_other_blocker"]
+    with pytest.raises(ValidationError, match="must name sanctioned_wrapper_absent"):
+        PlatformCapabilityRegistry.model_validate(payload)
 
 
 def test_claude_headless_full_route_is_blocked_with_exact_reasons() -> None:

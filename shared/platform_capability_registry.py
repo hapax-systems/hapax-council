@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -30,6 +30,7 @@ from shared.agentic_trust_boundary import (
 from shared.capability_surface_delta import (
     CapabilitySurfaceDelta as CapabilitySurfaceDeltaSignal,
 )
+from shared.execution_observer import ExecutionInvariantVerdict
 from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -72,6 +73,11 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.headless.opus",
         "claude.headless.sonnet",
         "claude.review.opus",
+        # Fable 5.1, declared 2026-09-01. Listed here — not merely appended to `routes` — because
+        # this set is what makes a route intentional: the registry refuses any route absent from it,
+        # so a route cannot be added quietly. Declared BLOCKED pending a sanctioned wrapper and its
+        # receipts; a correctly-blocked route is a real result, an undeclared reachable model is not.
+        "claude.review.fable",
         "claude.interactive.full",
         "codex.headless.full",
         "codex.headless.spark",
@@ -156,6 +162,10 @@ class Profile(StrEnum):
     API_FRONTIER = "api_frontier"
     DETERMINISTIC = "deterministic"
     DIRECT = "direct"
+    # Fable is its own profile, not a variant of `opus`. The two differ in exactly the way this
+    # registry treats as identity — a different model with a different measured shape — and folding
+    # fable under `opus` would let a route's profile disagree with its own execution_descriptor.
+    FABLE = "fable"
     FLASH = "flash"
     FULL = "full"
     HAIKU = "haiku"
@@ -217,6 +227,17 @@ class ModelId(StrEnum):
     CLAUDE_SONNET_5 = "claude-sonnet-5"
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
+    # Released 2026-09-01. A DISTINCT enum member, never a rename of `claude-fable-5`: the two are
+    # different capabilities under this registry's own rule that configuration is identity, and
+    # rows measured against 5 must not silently re-label as 5.1. Pin the dated id, never the
+    # `fable` alias — the alias now resolves to 5.1 and will resolve to something else later.
+    CLAUDE_FABLE_5_1 = "claude-fable-5-1"
+    # **The estate's own default was unnameable here.** `~/.claude/settings.json` sets
+    # `model: opus[1m]`, which resolves to `claude-opus-5[1m]`, and a run pinned to another model
+    # was measured on 2026-09-01 with ~70% of its output produced by it via a dispatched subagent.
+    # A registry that cannot name the model that actually ran cannot record a mixed execution, so
+    # the omission was not cosmetic: it made the most common real observation unrepresentable.
+    CLAUDE_OPUS_5 = "claude-opus-5"
     GPT_5_5 = "gpt-5.5"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
     GPT_OSS_120B = "gpt-oss-120b"
@@ -891,6 +912,21 @@ class PlatformCapabilityRoute(StrictModel):
         if self.route_id != expected:
             raise ValueError(f"route_id must equal platform.mode.profile: {expected}")
 
+        # Empty is the explicit no-wrapper sentinel for a route that is known but not yet
+        # launchable. It is valid only when the route is blocked and names that exact remedy;
+        # otherwise an omitted executable could silently reach the supply plane.
+        if self.sanctioned_wrapper == "":
+            if self.route_state is not RouteState.BLOCKED:
+                raise ValueError("a route without a sanctioned wrapper must be blocked")
+            if not any(
+                reason == "sanctioned_wrapper_absent"
+                or reason.endswith("_sanctioned_wrapper_absent")
+                for reason in self.blocked_reasons
+            ):
+                raise ValueError(
+                    "a route without a sanctioned wrapper must name sanctioned_wrapper_absent"
+                )
+
         if any(
             is_agentic_trust_supply_evidence_reference(identity)
             for identity in (
@@ -1386,6 +1422,7 @@ def check_route_freshness(
     route: PlatformCapabilityRoute,
     *,
     now: datetime | None = None,
+    execution_verdict: ExecutionInvariantVerdict | None = None,
 ) -> RouteFreshnessCheck:
     checked_now = ensure_utc(now or datetime.now(UTC))
     errors: list[str] = []
@@ -1398,6 +1435,18 @@ def check_route_freshness(
 
     if route.route_state is RouteState.BLOCKED:
         errors.extend(f"{route.route_id}: blocked: {reason}" for reason in route.blocked_reasons)
+
+    if execution_verdict is not None and execution_verdict.effort_drifted:
+        # A session observed at multiple effort levels is not evidence for the registry's one
+        # declared effort leaf. Keep the route's general availability intact, but refuse this
+        # freshness decision so callers cannot label the mixed execution as one capability.
+        effort_drift_reason = "execution_effort_drift_observed"
+        blocked_reasons.append(effort_drift_reason)
+        observed = ",".join(sorted(execution_verdict.observed_efforts)) or "unknown"
+        errors.append(
+            f"{route.route_id}: {effort_drift_reason}: observed_efforts={observed}; "
+            "next action: discard mixed-effort evidence or measure each effort separately"
+        )
 
     for surface in FRESHNESS_SURFACES:
         errors.extend(
@@ -1442,11 +1491,16 @@ def check_registry_freshness(
     *,
     route_ids: Iterable[str] | None = None,
     now: datetime | None = None,
+    execution_verdicts: Mapping[str, ExecutionInvariantVerdict] | None = None,
 ) -> RegistryFreshnessCheck:
     checked_now = ensure_utc(now or datetime.now(UTC))
     route_map = registry.route_map()
     checks: list[RouteFreshnessCheck] = []
     normalized_ids = [normalize_route_id(route_id) for route_id in route_ids] if route_ids else None
+    normalized_verdicts = {
+        normalize_route_id(route_id): verdict
+        for route_id, verdict in (execution_verdicts or {}).items()
+    }
 
     for route_id in normalized_ids or sorted(route_map):
         route = route_map.get(route_id)
@@ -1460,7 +1514,13 @@ def check_registry_freshness(
                 )
             )
             continue
-        checks.append(check_route_freshness(route, now=checked_now))
+        checks.append(
+            check_route_freshness(
+                route,
+                now=checked_now,
+                execution_verdict=normalized_verdicts.get(route_id),
+            )
+        )
 
     return RegistryFreshnessCheck(
         ok=all(check.ok for check in checks),
