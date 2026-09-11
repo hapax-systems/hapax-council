@@ -31,6 +31,7 @@ Receive-only invariants (carried through from the rail receivers):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import UTC
@@ -65,6 +66,7 @@ from logos.api.routes._payment_rails_helpers import (
     dispatch_publish_result,
     parse_webhook_request_body,
     render_null_event_response,
+    require_ingress_resource_receipt,
     wrap_rail_error_to_400,
 )
 from shared._rail_idempotency import (
@@ -166,7 +168,13 @@ def _persist_payment_event_durable(event: Any, log_label: str) -> None:
 
     ref = f"receipt://payment/{log_label}/{event.raw_payload_sha256}/{event.event_kind.value}"
 
-    sink.append(
+    # Idempotent on the deterministic source_receipt_ref: a provider retry or a
+    # redelivery that mints a fresh delivery id for the same payload with an
+    # identical stable identity reuses the single committed row instead of
+    # appending a second Stage-0 row. This bounds only the Stage-0 write; it is
+    # not a claim about end-to-end publication, downstream projection, or
+    # process-death safety.
+    sink.append_once(
         stream_id="payment-event",
         data_class="financial_receipt",
         source_receipt_ref=ref,
@@ -201,6 +209,136 @@ def _resolve_liberapay_delivery_id(headers) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _payload_event_hint(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "webhook_delivery"
+
+
+class _ReceiptFirstIdempotencyStore:
+    """Record private receipt evidence before idempotency mutates seen-state."""
+
+    def __init__(
+        self,
+        store: Any,
+        *,
+        rail: str,
+        route_path: str,
+        raw_payload_sha256: str | None,
+        event_kind: str,
+    ) -> None:
+        self._store = store
+        self._rail = rail
+        self._route_path = route_path
+        self._raw_payload_sha256 = raw_payload_sha256
+        self._event_kind = event_kind
+        self.resource_receipt_ref: str | None = None
+        # The exact seen-key this request newly recorded (None if this request
+        # saw a duplicate or never reached record_or_skip). Captured here so the
+        # shared finalize helper never re-derives ten rail-specific keys.
+        self._recorded_event_id: str | None = None
+
+    def record_or_skip(self, event_id: str, *, first_seen_at: Any = None) -> bool:
+        self.resource_receipt_ref = require_ingress_resource_receipt(
+            rail=self._rail,
+            route_path=self._route_path,
+            external_id=event_id,
+            event_kind=self._event_kind,
+            raw_payload_sha256=self._raw_payload_sha256,
+            downstream_action="rail_idempotency.record_or_skip",
+        )
+        recorded = self._store.record_or_skip(event_id, first_seen_at=first_seen_at)
+        if recorded:
+            self._recorded_event_id = event_id
+        return recorded
+
+    def has_seen(self, event_id: str) -> bool:
+        return self._store.has_seen(event_id)
+
+    def reopen_after_retryable_failure(self) -> None:
+        """Roll back the seen-key this request recorded so a provider retry
+        re-enters instead of short-circuiting as a duplicate.
+
+        One-shot and idempotent: it clears at most the id this request newly
+        recorded, and only once. This prevents nested cleanup and ABA deletion
+        of a key a concurrent retry may have re-inserted. A no-op when this
+        request recorded nothing (duplicate/None) or was already reopened.
+        """
+        event_id = self._recorded_event_id
+        if event_id is None:
+            return
+        self._recorded_event_id = None
+        self._store.remove(event_id)
+
+
+def _receipt_first_idempotency_store(
+    request: Request,
+    *,
+    rail: str,
+    store: Any,
+    raw_body: bytes,
+    event_kind: str,
+) -> _ReceiptFirstIdempotencyStore:
+    raw_payload_sha256 = hashlib.sha256(raw_body).hexdigest() if raw_body else None
+    return _ReceiptFirstIdempotencyStore(
+        store,
+        rail=rail,
+        route_path=request.url.path,
+        raw_payload_sha256=raw_payload_sha256,
+        event_kind=event_kind,
+    )
+
+
+def _finalize_payment_event(
+    event: Any,
+    *,
+    log_label: str,
+    idempotency_store: _ReceiptFirstIdempotencyStore,
+    publisher: Any,
+    extra_received_fields: dict[str, Any] | None = None,
+) -> JSONResponse:
+    """Durably persist Stage-0, publish, and render the rail's HTTP response.
+
+    Rolls back the seen-key this request recorded on exactly three retryable
+    surfaces so a provider retry re-enters instead of returning a false-negative
+    duplicate: a durable-persist exception, a publisher exception, or a
+    ``PublisherResult.error`` transport failure. It never reopens after a
+    successful or refused publish (both terminal), nor after a post-success
+    rendering failure — reopening a terminally handled publisher outcome would
+    let it be re-published. Publisher success/refusal is a reported publisher
+    outcome, not financial settlement.
+    Combined with the idempotent Stage-0 append, a reopened retry reuses the
+    single committed Stage-0 row for the same deterministic ref and identical
+    stable semantics, so this tested caught-failure retry path does not append
+    a second row. This is NOT an outbox or exactly-once publication guarantee:
+    process death, an ambiguous or non-idempotent publisher effect, and an
+    in-flight concurrent duplicate that gets a 200 before this request's later
+    rollback all remain open windows tracked as a governed reconciliation
+    follow-up.
+    """
+    try:
+        _persist_payment_event_durable(event, log_label=log_label)
+    except Exception:
+        idempotency_store.reopen_after_retryable_failure()
+        raise
+    try:
+        publish_result = publisher.publish_event(event)
+    except Exception:
+        idempotency_store.reopen_after_retryable_failure()
+        raise
+    if publish_result.error:
+        idempotency_store.reopen_after_retryable_failure()
+    return dispatch_publish_result(
+        publish_result,
+        event,
+        log_label=log_label,
+        extra_received_fields=extra_received_fields,
+        resource_receipt_ref=idempotency_store.resource_receipt_ref,
+    )
 
 
 # Stripe Payment Link migrated to the shared idempotency registry —
@@ -293,8 +431,15 @@ async def receive_github_sponsors_webhook(request: Request) -> JSONResponse:
     signature = request.headers.get(GITHUB_SPONSORS_SIGNATURE_HEADER)
     delivery_id = request.headers.get(GITHUB_SPONSORS_DELIVERY_ID_HEADER)
 
+    idempotency_store = _receipt_first_idempotency_store(
+        request,
+        rail="github-sponsors",
+        store=_get_idempotency_store("github-sponsors"),
+        raw_body=raw_body,
+        event_kind=_payload_event_hint(payload, "action"),
+    )
     receiver = GitHubSponsorsRailReceiver(
-        idempotency_store=_get_idempotency_store("github-sponsors"),
+        idempotency_store=idempotency_store,
     )
     with wrap_rail_error_to_400(GitHubSponsorsReceiveOnlyRailError, log_label="github_sponsors"):
         event = receiver.ingest_webhook(
@@ -310,16 +455,15 @@ async def receive_github_sponsors_webhook(request: Request) -> JSONResponse:
             duplicate_id_key="delivery_id",
             duplicate_id_value=delivery_id,
             log_label="github_sponsors",
+            resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
-    try:
-        _persist_payment_event_durable(event, log_label="github_sponsors")
-    except Exception:
-        if delivery_id:
-            _get_idempotency_store("github-sponsors").remove(delivery_id)
-        raise
-    publish_result = GitHubSponsorsPublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="github_sponsors")
+    return _finalize_payment_event(
+        event,
+        log_label="github_sponsors",
+        idempotency_store=idempotency_store,
+        publisher=GitHubSponsorsPublisher(),
+    )
 
 
 @router.post("/liberapay")
@@ -349,8 +493,15 @@ async def receive_liberapay_webhook(request: Request) -> JSONResponse:
     signature = request.headers.get(LIBERAPAY_SIGNATURE_HEADER)
     delivery_id = _resolve_liberapay_delivery_id(request.headers)
 
+    idempotency_store = _receipt_first_idempotency_store(
+        request,
+        rail="liberapay",
+        store=_get_idempotency_store("liberapay"),
+        raw_body=raw_body,
+        event_kind=_payload_event_hint(payload, "event"),
+    )
     receiver = LiberapayRailReceiver(
-        idempotency_store=_get_idempotency_store("liberapay"),
+        idempotency_store=idempotency_store,
     )
     with wrap_rail_error_to_400(LiberapayReceiveOnlyRailError, log_label="liberapay"):
         event = receiver.ingest_webhook(
@@ -366,16 +517,15 @@ async def receive_liberapay_webhook(request: Request) -> JSONResponse:
             duplicate_id_key="delivery_id",
             duplicate_id_value=delivery_id,
             log_label="liberapay",
+            resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
-    try:
-        _persist_payment_event_durable(event, log_label="liberapay")
-    except Exception:
-        if delivery_id:
-            _get_idempotency_store("liberapay").remove(delivery_id)
-        raise
-    publish_result = LiberapayPublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="liberapay")
+    return _finalize_payment_event(
+        event,
+        log_label="liberapay",
+        idempotency_store=idempotency_store,
+        publisher=LiberapayPublisher(),
+    )
 
 
 @router.post("/open-collective")
@@ -394,8 +544,15 @@ async def receive_open_collective_webhook(request: Request) -> JSONResponse:
     signature = request.headers.get(OPEN_COLLECTIVE_SIGNATURE_HEADER)
     delivery_id = request.headers.get(OPEN_COLLECTIVE_DELIVERY_ID_HEADER)
 
+    idempotency_store = _receipt_first_idempotency_store(
+        request,
+        rail="open-collective",
+        store=_get_idempotency_store("open-collective"),
+        raw_body=raw_body,
+        event_kind=_payload_event_hint(payload, "type"),
+    )
     receiver = OpenCollectiveRailReceiver(
-        idempotency_store=_get_idempotency_store("open-collective"),
+        idempotency_store=idempotency_store,
     )
     with wrap_rail_error_to_400(OpenCollectiveReceiveOnlyRailError, log_label="open_collective"):
         event = receiver.ingest_webhook(
@@ -411,16 +568,15 @@ async def receive_open_collective_webhook(request: Request) -> JSONResponse:
             duplicate_id_key="delivery_id",
             duplicate_id_value=delivery_id,
             log_label="open_collective",
+            resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
-    try:
-        _persist_payment_event_durable(event, log_label="open_collective")
-    except Exception:
-        if delivery_id:
-            _get_idempotency_store("open-collective").remove(delivery_id)
-        raise
-    publish_result = OpenCollectivePublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="open_collective")
+    return _finalize_payment_event(
+        event,
+        log_label="open_collective",
+        idempotency_store=idempotency_store,
+        publisher=OpenCollectivePublisher(),
+    )
 
 
 @router.post("/stripe-payment-link")
@@ -439,8 +595,15 @@ async def receive_stripe_payment_link_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(STRIPE_PAYMENT_LINK_SIGNATURE_HEADER)
 
+    idempotency_store = _receipt_first_idempotency_store(
+        request,
+        rail="stripe-payment-link",
+        store=_get_idempotency_store("stripe-payment-link"),
+        raw_body=raw_body,
+        event_kind=_payload_event_hint(payload, "type"),
+    )
     receiver = StripePaymentLinkRailReceiver(
-        idempotency_store=_get_idempotency_store("stripe-payment-link"),
+        idempotency_store=idempotency_store,
     )
     with wrap_rail_error_to_400(
         StripePaymentLinkReceiveOnlyRailError, log_label="stripe_payment_link"
@@ -448,22 +611,21 @@ async def receive_stripe_payment_link_webhook(request: Request) -> JSONResponse:
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
 
     if event is None:
+        event_id = payload.get("id")
         return render_null_event_response(
             payload,
             duplicate_id_key="event_id",
-            duplicate_id_value=payload.get("id"),
+            duplicate_id_value=event_id if isinstance(event_id, str) else None,
             log_label="stripe_payment_link",
+            resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
-    try:
-        _persist_payment_event_durable(event, log_label="stripe_payment_link")
-    except Exception:
-        event_id = payload.get("id")
-        if event_id:
-            _get_idempotency_store("stripe-payment-link").remove(event_id)
-        raise
-    publish_result = StripePaymentLinkPublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="stripe_payment_link")
+    return _finalize_payment_event(
+        event,
+        log_label="stripe_payment_link",
+        idempotency_store=idempotency_store,
+        publisher=StripePaymentLinkPublisher(),
+    )
 
 
 @stripe_webhook_router.post("/stripe-webhook")
@@ -487,32 +649,38 @@ async def receive_ko_fi_webhook(request: Request) -> JSONResponse:
     The rail's ``ingest_webhook`` reads the token field inline and
     fails closed on mismatch.
     """
-    _, payload = await parse_webhook_request_body(request, log_label="ko_fi")
+    raw_body, payload = await parse_webhook_request_body(request, log_label="ko_fi")
 
     if payload is None:
         return JSONResponse({"status": "ping_ok"})
 
-    receiver = KoFiRailReceiver(idempotency_store=_get_idempotency_store("ko-fi"))
+    idempotency_store = _receipt_first_idempotency_store(
+        request,
+        rail="ko-fi",
+        store=_get_idempotency_store("ko-fi"),
+        raw_body=raw_body,
+        event_kind=_payload_event_hint(payload, "type", "message_type"),
+    )
+    receiver = KoFiRailReceiver(idempotency_store=idempotency_store)
     with wrap_rail_error_to_400(KoFiReceiveOnlyRailError, log_label="ko_fi"):
         event = receiver.ingest_webhook(payload, verify_token=True)
 
     if event is None:
+        transaction_id = payload.get("kofi_transaction_id")
         return render_null_event_response(
             payload,
             duplicate_id_key="kofi_transaction_id",
-            duplicate_id_value=payload.get("kofi_transaction_id"),
+            duplicate_id_value=transaction_id if isinstance(transaction_id, str) else None,
             log_label="ko_fi",
+            resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
-    try:
-        _persist_payment_event_durable(event, log_label="ko_fi")
-    except Exception:
-        transaction_id = payload.get("kofi_transaction_id")
-        if transaction_id:
-            _get_idempotency_store("ko-fi").remove(transaction_id)
-        raise
-    publish_result = KoFiPublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="ko_fi")
+    return _finalize_payment_event(
+        event,
+        log_label="ko_fi",
+        idempotency_store=idempotency_store,
+        publisher=KoFiPublisher(),
+    )
 
 
 @router.post("/patreon")
@@ -533,7 +701,14 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
     event_header = request.headers.get(PATREON_EVENT_HEADER)
     webhook_id = request.headers.get("X-Patreon-Webhook-Id")
 
-    receiver = PatreonRailReceiver(idempotency_store=_get_idempotency_store("patreon"))
+    idempotency_store = _receipt_first_idempotency_store(
+        request,
+        rail="patreon",
+        store=_get_idempotency_store("patreon"),
+        raw_body=raw_body,
+        event_kind=event_header or _payload_event_hint(payload, "type"),
+    )
+    receiver = PatreonRailReceiver(idempotency_store=idempotency_store)
     with wrap_rail_error_to_400(PatreonReceiveOnlyRailError, log_label="patreon"):
         event = receiver.ingest_webhook(
             payload,
@@ -549,16 +724,15 @@ async def receive_patreon_webhook(request: Request) -> JSONResponse:
             duplicate_id_key="webhook_id",
             duplicate_id_value=webhook_id,
             log_label="patreon",
+            resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
-    try:
-        _persist_payment_event_durable(event, log_label="patreon")
-    except Exception:
-        if webhook_id:
-            _get_idempotency_store("patreon").remove(webhook_id)
-        raise
-    publish_result = PatreonPublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="patreon")
+    return _finalize_payment_event(
+        event,
+        log_label="patreon",
+        idempotency_store=idempotency_store,
+        publisher=PatreonPublisher(),
+    )
 
 
 @router.post("/buy-me-a-coffee")
@@ -576,29 +750,35 @@ async def receive_buy_me_a_coffee_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(BUY_ME_A_COFFEE_SIGNATURE_HEADER)
 
+    idempotency_store = _receipt_first_idempotency_store(
+        request,
+        rail="buy-me-a-coffee",
+        store=_get_idempotency_store("buy-me-a-coffee"),
+        raw_body=raw_body,
+        event_kind=_payload_event_hint(payload, "type", "event"),
+    )
     receiver = BuyMeACoffeeRailReceiver(
-        idempotency_store=_get_idempotency_store("buy-me-a-coffee"),
+        idempotency_store=idempotency_store,
     )
     with wrap_rail_error_to_400(BuyMeACoffeeReceiveOnlyRailError, log_label="buy_me_a_coffee"):
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
 
     if event is None:
+        event_id = payload.get("event_id")
         return render_null_event_response(
             payload,
             duplicate_id_key="event_id",
-            duplicate_id_value=payload.get("event_id"),
+            duplicate_id_value=event_id if isinstance(event_id, str) else None,
             log_label="buy_me_a_coffee",
+            resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
-    try:
-        _persist_payment_event_durable(event, log_label="buy_me_a_coffee")
-    except Exception:
-        event_id = payload.get("event_id")
-        if event_id:
-            _get_idempotency_store("buy-me-a-coffee").remove(event_id)
-        raise
-    publish_result = BuyMeACoffeePublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="buy_me_a_coffee")
+    return _finalize_payment_event(
+        event,
+        log_label="buy_me_a_coffee",
+        idempotency_store=idempotency_store,
+        publisher=BuyMeACoffeePublisher(),
+    )
 
 
 @router.post("/mercury")
@@ -622,7 +802,14 @@ async def receive_mercury_webhook(request: Request) -> JSONResponse:
         MERCURY_LEGACY_SIGNATURE_HEADER
     )
 
-    receiver = MercuryRailReceiver(idempotency_store=_get_idempotency_store("mercury"))
+    idempotency_store = _receipt_first_idempotency_store(
+        request,
+        rail="mercury",
+        store=_get_idempotency_store("mercury"),
+        raw_body=raw_body,
+        event_kind=_payload_event_hint(payload, "type", "event"),
+    )
+    receiver = MercuryRailReceiver(idempotency_store=idempotency_store)
     with wrap_rail_error_to_400(MercuryReceiveOnlyRailError, log_label="mercury"):
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
 
@@ -633,20 +820,14 @@ async def receive_mercury_webhook(request: Request) -> JSONResponse:
             duplicate_id_key="transaction_id",
             duplicate_id_value=txn_id if isinstance(txn_id, str) else None,
             log_label="mercury",
+            resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
-    try:
-        _persist_payment_event_durable(event, log_label="mercury")
-    except Exception:
-        txn_id = (payload.get("data") or {}).get("id")
-        if txn_id:
-            _get_idempotency_store("mercury").remove(txn_id)
-        raise
-    publish_result = MercuryPublisher().publish_event(event)
-    return dispatch_publish_result(
-        publish_result,
+    return _finalize_payment_event(
         event,
         log_label="mercury",
+        idempotency_store=idempotency_store,
+        publisher=MercuryPublisher(),
         extra_received_fields={"direction": event.direction.value},
     )
 
@@ -668,8 +849,15 @@ async def receive_modern_treasury_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(MODERN_TREASURY_SIGNATURE_HEADER)
 
+    idempotency_store = _receipt_first_idempotency_store(
+        request,
+        rail="modern-treasury",
+        store=_get_idempotency_store("modern-treasury"),
+        raw_body=raw_body,
+        event_kind=_payload_event_hint(payload, "event", "type"),
+    )
     receiver = ModernTreasuryRailReceiver(
-        idempotency_store=_get_idempotency_store("modern-treasury"),
+        idempotency_store=idempotency_store,
     )
     with wrap_rail_error_to_400(ModernTreasuryReceiveOnlyRailError, log_label="modern_treasury"):
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
@@ -681,21 +869,14 @@ async def receive_modern_treasury_webhook(request: Request) -> JSONResponse:
             duplicate_id_key="payment_id",
             duplicate_id_value=payment_id if isinstance(payment_id, str) else None,
             log_label="modern_treasury",
+            resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
-    try:
-        _persist_payment_event_durable(event, log_label="modern_treasury")
-    except Exception:
-        payment_id = (payload.get("data") or {}).get("id")
-        if payment_id:
-            idempotency_key = f"{event.event_kind.value}:{payment_id}"
-            _get_idempotency_store("modern-treasury").remove(idempotency_key)
-        raise
-    publish_result = ModernTreasuryPublisher().publish_event(event)
-    return dispatch_publish_result(
-        publish_result,
+    return _finalize_payment_event(
         event,
         log_label="modern_treasury",
+        idempotency_store=idempotency_store,
+        publisher=ModernTreasuryPublisher(),
         extra_received_fields={"payment_method": event.payment_method.value},
     )
 
@@ -717,8 +898,15 @@ async def receive_treasury_prime_webhook(request: Request) -> JSONResponse:
 
     signature = request.headers.get(TREASURY_PRIME_SIGNATURE_HEADER)
 
+    idempotency_store = _receipt_first_idempotency_store(
+        request,
+        rail="treasury-prime",
+        store=_get_idempotency_store("treasury-prime"),
+        raw_body=raw_body,
+        event_kind=_payload_event_hint(payload, "event", "type"),
+    )
     receiver = TreasuryPrimeRailReceiver(
-        idempotency_store=_get_idempotency_store("treasury-prime"),
+        idempotency_store=idempotency_store,
     )
     with wrap_rail_error_to_400(TreasuryPrimeReceiveOnlyRailError, log_label="treasury_prime"):
         event = receiver.ingest_webhook(payload, signature, raw_body=raw_body)
@@ -730,17 +918,15 @@ async def receive_treasury_prime_webhook(request: Request) -> JSONResponse:
             duplicate_id_key="ach_id",
             duplicate_id_value=ach_id if isinstance(ach_id, str) else None,
             log_label="treasury_prime",
+            resource_receipt_ref=idempotency_store.resource_receipt_ref,
         )
 
-    try:
-        _persist_payment_event_durable(event, log_label="treasury_prime")
-    except Exception:
-        ach_id = (payload.get("data") or {}).get("id")
-        if ach_id:
-            _get_idempotency_store("treasury-prime").remove(ach_id)
-        raise
-    publish_result = TreasuryPrimePublisher().publish_event(event)
-    return dispatch_publish_result(publish_result, event, log_label="treasury_prime")
+    return _finalize_payment_event(
+        event,
+        log_label="treasury_prime",
+        idempotency_store=idempotency_store,
+        publisher=TreasuryPrimePublisher(),
+    )
 
 
 __all__ = [

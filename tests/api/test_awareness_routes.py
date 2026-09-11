@@ -17,7 +17,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agents.operator_awareness.state import AwarenessState, write_state_atomic
+from agents.operator_awareness.state import (
+    AwarenessState,
+    MonetizationBlock,
+    PaymentEvent,
+    write_state_atomic,
+)
 from logos.api.routes.awareness import router as awareness_router
 
 
@@ -125,6 +130,32 @@ class TestAwarenessEndpoint:
         body = resp.json()
         assert "stream" in body
         assert "refusals_recent" in body
+
+    def test_public_filter_redacts_money_rail_resource_receipt_ref(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        event = PaymentEvent(
+            timestamp=datetime.now(UTC),
+            rail="liberapay",
+            amount_eur=5.0,
+            external_id="lp-public-redaction",
+            resource_receipt_ref="money-rail-resource-receipt:liberapay:mrr-private",
+        )
+        state = AwarenessState(
+            timestamp=datetime.now(UTC),
+            ttl_seconds=300,
+            monetization=MonetizationBlock(public=True, last_event=event),
+        )
+        path = tmp_path / "state.json"
+        write_state_atomic(state, path)
+        _patch_state_path(monkeypatch, path)
+
+        resp = client.get("/api/awareness?public=true")
+
+        assert resp.status_code == 200
+        last_event = resp.json()["monetization"]["last_event"]
+        assert last_event["external_id"] == "lp-public-redaction"
+        assert last_event["resource_receipt_ref"] is None
 
 
 # ── /api/awareness/watch-summary ────────────────────────────────────
