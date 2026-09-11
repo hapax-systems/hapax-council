@@ -145,6 +145,7 @@ SUBSCRIPTION_ROUTES = {
     "claude": "claude.headless.full",
     "codex": "codex.headless.full",
     "glmcp": "glmcp.review.direct",
+    "kimi": "kimi.interactive.lane",
 }
 CLAUDE_SUBSCRIPTION_ROUTES = ("claude.headless.full", "claude.review.opus")
 CLAUDE_HEADLESS_ROLES = frozenset(
@@ -155,6 +156,7 @@ SUBSCRIPTION_PROVIDERS = {
     "agy": "google-antigravity-cli-agy",
     "claude": "anthropic-claude-subscription",
     "glmcp": "z_ai-glm-coding-plan",
+    "kimi": "moonshot-kimi-code-managed",
 }
 
 AGY_ADMISSION_SCHEMA = "hapax.agy_quota_admission.v1"
@@ -203,6 +205,59 @@ AGY_ADMISSION_FIELDS = frozenset(
         "smoke_returncode",
         "smoke_stdout_validated",
         "positive_admission",
+    }
+)
+
+KIMI_ADMISSION_SCHEMA = "hapax.kimi_quota_admission.v1"
+KIMI_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["kimi"]
+KIMI_ADMISSION_CAPACITY_POOL = "subscription_quota"
+KIMI_ADMISSION_SUPPORTED_TOOL = "hapax-kimi-quota-admission"
+KIMI_ADMISSION_MODEL = "kimi-code/k3"
+KIMI_ADMISSION_MODELS = frozenset({KIMI_ADMISSION_MODEL})
+KIMI_ADMISSION_SECRET_SOURCE = "kimi:operator-session"  # pragma: allowlist secret
+KIMI_ADMISSION_BILLING_MODE = "operator_session_subscription"
+KIMI_ADMISSION_SMOKE_COMMAND = "kimi -p"
+KIMI_ADMISSION_MAX_STALE_AFTER_SECONDS = 3600
+KIMI_ADMISSION_RECEIPT_GLOB = "*kimi-quota-admission*.yaml"
+KIMI_ADMISSION_SAFE_RECEIPT_NAME_RE = re.compile(
+    r"\A[a-z0-9_.+-]*kimi-quota-admission[a-z0-9_.+-]*\.yaml\Z"
+)
+KIMI_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+KIMI_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+KIMI_ADMISSION_RECHECK_COMMAND = (
+    f"find ~/.cache/hapax/relay/receipts -maxdepth 1 -name '{KIMI_ADMISSION_RECEIPT_GLOB}' -print"
+)
+KIMI_ADMISSION_RECOVERY_HINT = (
+    "false-negative recovery: create a fresh short-lived admission receipt with "
+    "hapax-kimi-quota-admission after a kimi smoke round-trip succeeds"
+)
+KIMI_ADMISSION_FIELDS = frozenset(
+    {
+        "schema",
+        "status",
+        "provider",
+        "capacity_pool",
+        "route_id",
+        "supported_tool",
+        "model",
+        "observed_at",
+        "stale_after_seconds",
+        "evidence_ref",
+        "secret_source",
+        "secret_value_persisted",
+        "prompt_or_output_persisted",
+        "billing_mode",
+        "smoke_command",
+        "smoke_returncode",
+        "smoke_stdout_validated",
+        "positive_admission",
+        "measurement",
+        "output_digest_sha256",
+        "quota_fraction",
+        "limits",
     }
 )
 
@@ -804,7 +859,16 @@ def _receipt_label(path: Path) -> str:
         return f"unsafe-receipt-name-sha256:{digest}"
     if (
         AGY_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
-        or GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
+        and AGY_ADMISSION_SECRETISH_RE.search(name) is None
+    ):
+        return name
+    if (
+        KIMI_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
+        and KIMI_ADMISSION_SECRETISH_RE.search(name) is None
+    ):
+        return name
+    if (
+        GLMCP_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(name)
         or GLMCP_PAYG_SPEND_SAFE_RECEIPT_NAME_RE.fullmatch(name)
     ) and GLMCP_ADMISSION_SECRETISH_RE.search(name) is None:
         return name
@@ -1090,6 +1154,18 @@ def _warn_ignored_agy_admission(path: Path, reason: str) -> str:
     return f"relay-receipt:{receipt_label}:ignored:{reason_code}"
 
 
+def _warn_ignored_kimi_admission(path: Path, reason: str) -> str:
+    receipt_label = _receipt_label(path)
+    reason_code = _reason_code(reason)
+    print(
+        "hapax-quota-telemetry-writer: ignoring kimi admission receipt: "
+        f"reason={reason_code}; recheck: {KIMI_ADMISSION_RECHECK_COMMAND}; "
+        f"{KIMI_ADMISSION_RECOVERY_HINT}",
+        file=sys.stderr,
+    )
+    return f"relay-receipt:{receipt_label}:ignored:{reason_code}"
+
+
 def _warn_ignored_claude_admission(path: Path, reason: str, route_id: str | None = None) -> str:
     # Emit the same sanitized reason code stored in evidence. Never print raw rejected field values.
     receipt_label = _receipt_label(path)
@@ -1208,6 +1284,132 @@ def active_agy_admission_receipts(
                     # The observed model, not the pinned constant: two ids name
                     # this seat, and an evidence ref that renames what the
                     # receipt witnessed is not evidence.
+                    f"model:{fields.get('model', '')}:"
+                    f"observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
+                    f"fresh_until:{fresh_until.isoformat().replace('+00:00', 'Z')}"
+                ),
+                fresh_until=fresh_until,
+            )
+        )
+    return AgyAdmissionScan(admissions=refs, ignored_evidence_refs=ignored_refs)
+
+
+def active_kimi_admission_receipts(
+    receipt_dir: Path,
+    *,
+    now: datetime,
+) -> AgyAdmissionScan:
+    """Return fresh positive kimi interactive-lane admission evidence refs."""
+
+    if not receipt_dir.is_dir():
+        return AgyAdmissionScan(admissions=[], ignored_evidence_refs=[])
+    refs: list[AgyAdmission] = []
+    ignored_refs: list[str] = []
+
+    def reject(path: Path, reason: str) -> None:
+        ignored_refs.append(_warn_ignored_kimi_admission(path, reason))
+
+    for path in sorted(receipt_dir.glob(KIMI_ADMISSION_RECEIPT_GLOB)):
+        if KIMI_ADMISSION_SAFE_RECEIPT_NAME_RE.fullmatch(path.name) is None:
+            reject(path, "unsafe receipt name")
+            continue
+        try:
+            raw_receipt = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            reject(path, f"unreadable receipt {type(exc).__name__}")
+            continue
+        fields, parse_error = _parse_flat_yaml_strict(
+            raw_receipt,
+            allowed_fields=KIMI_ADMISSION_FIELDS,
+        )
+        if parse_error is not None:
+            reject(path, parse_error)
+            continue
+        expected = {
+            "schema": KIMI_ADMISSION_SCHEMA,
+            "status": "quota_available",
+            "provider": KIMI_ADMISSION_PROVIDER,
+            "route_id": SUBSCRIPTION_ROUTES["kimi"],
+            "capacity_pool": KIMI_ADMISSION_CAPACITY_POOL,
+            "supported_tool": KIMI_ADMISSION_SUPPORTED_TOOL,
+            "secret_source": KIMI_ADMISSION_SECRET_SOURCE,
+            "secret_value_persisted": "false",  # pragma: allowlist secret
+            "prompt_or_output_persisted": "false",
+            "billing_mode": KIMI_ADMISSION_BILLING_MODE,
+            "smoke_command": KIMI_ADMISSION_SMOKE_COMMAND,
+            "smoke_returncode": "0",
+            "smoke_stdout_validated": "true",
+            "positive_admission": "true",
+        }
+        failed = False
+        for key, value in expected.items():
+            if fields.get(key, "") != value:
+                reject(path, f"{key} missing or unsupported; expected {value}")
+                failed = True
+                break
+        if not failed and fields.get("model", "") not in KIMI_ADMISSION_MODELS:
+            reject(
+                path,
+                f"model missing or unsupported; expected {sorted(KIMI_ADMISSION_MODELS)}",
+            )
+            failed = True
+        if failed:
+            continue
+        # The kimi receipt carries these four fields beyond the agy contract;
+        # their VALUES must be pinned, or a malformed claim (e.g. a fabricated
+        # quota fraction) would fold unchecked (GLM review finding, 2026-09-11).
+        if fields.get("measurement", "") != "minimal_round_trip_liveness":
+            reject(path, "measurement missing or unsupported; expected minimal_round_trip_liveness")
+            continue
+        digest = fields.get("output_digest_sha256", "")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            reject(path, "output_digest_sha256 missing or malformed")
+            continue
+        if fields.get("quota_fraction", "") != "unobservable":
+            reject(path, "quota_fraction missing or unsupported; expected unobservable")
+            continue
+        limits = fields.get("limits", "").strip()
+        if not limits or KIMI_ADMISSION_SECRETISH_RE.search(limits) is not None:
+            reject(path, "limits missing or unsafe")
+            continue
+        receipt_evidence_ref = " ".join(fields.get("evidence_ref", "").strip().split())
+        if (
+            KIMI_ADMISSION_EVIDENCE_REF_RE.fullmatch(receipt_evidence_ref) is None
+            or KIMI_ADMISSION_SECRETISH_RE.search(receipt_evidence_ref) is not None
+        ):
+            reject(path, "evidence_ref unsafe; expected sanitized kimi smoke witness reference")
+            continue
+        observed_at = _parse_utc(fields.get("observed_at", "").strip())
+        if observed_at is None:
+            reject(path, "missing or malformed observed_at")
+            continue
+        if observed_at > now:
+            reject(path, "observed_at is in the future")
+            continue
+        try:
+            stale_after_seconds = int(fields.get("stale_after_seconds", "").strip())
+        except ValueError:
+            reject(path, "malformed stale_after_seconds")
+            continue
+        if stale_after_seconds <= 0:
+            reject(path, "non-positive stale_after_seconds")
+            continue
+        if stale_after_seconds > KIMI_ADMISSION_MAX_STALE_AFTER_SECONDS:
+            reject(
+                path,
+                f"stale_after_seconds exceeds maximum {KIMI_ADMISSION_MAX_STALE_AFTER_SECONDS}",
+            )
+            continue
+        fresh_until = observed_at + timedelta(seconds=stale_after_seconds)
+        if now >= fresh_until:
+            reject(path, "receipt expired")
+            continue
+        refs.append(
+            AgyAdmission(
+                evidence_ref=(
+                    "relay-receipt:"
+                    f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
+                    f"supported_tool:{KIMI_ADMISSION_SUPPORTED_TOOL}:"
                     f"model:{fields.get('model', '')}:"
                     f"observed_at:{observed_at.isoformat().replace('+00:00', 'Z')}:"
                     f"fresh_until:{fresh_until.isoformat().replace('+00:00', 'Z')}"
@@ -1839,6 +2041,8 @@ def build_live_ledger(
     walls: dict[str, list[QuotaWall]],
     agy_admissions: list[AgyAdmission],
     agy_ignored_receipts: list[str],
+    kimi_admissions: list[AgyAdmission],
+    kimi_ignored_receipts: list[str],
     claude_admissions: list[ClaudeAdmission],
     claude_ignored_receipts: list[str],
     glmcp_admissions: list[GlmcpAdmission],
@@ -1862,6 +2066,9 @@ def build_live_ledger(
         platform_walls = walls.get(platform, [])
         platform_wall_evidence = [wall.evidence_ref for wall in platform_walls]
         agy_platform_admissions = [admission for admission in agy_admissions if platform == "agy"]
+        kimi_platform_admissions = [
+            admission for admission in kimi_admissions if platform == "kimi"
+        ]
         claude_platform_admissions = [
             admission for admission in claude_admissions if platform == "claude"
         ]
@@ -1942,6 +2149,30 @@ def build_live_ledger(
                 reason = (
                     "no fresh agy route-specific quota admission receipt; agy.review.direct "
                     "must hold/backoff rather than dispatch blind"
+                )
+        elif platform == "kimi":
+            if kimi_platform_admissions:
+                state = "fresh"
+                evidence = [
+                    *(admission.evidence_ref for admission in kimi_platform_admissions),
+                    writer_ref,
+                ]
+                fresh_until = max(admission.fresh_until for admission in kimi_platform_admissions)
+                reason = (
+                    "fresh kimi interactive-lane admission receipt present; "
+                    "kimi.interactive.lane is availability-measured, not quota-fraction-measured"
+                )
+            else:
+                state = "unknown"
+                evidence = (
+                    [*kimi_ignored_receipts, writer_ref]
+                    if kimi_ignored_receipts
+                    else ["relay-receipt:kimi:quota-admission:absent", writer_ref]
+                )
+                fresh_until = None
+                reason = (
+                    "no fresh kimi interactive-lane quota admission receipt; kimi exposes no "
+                    "client-side quota fraction, so availability is the only measurable signal"
                 )
         elif platform == "claude":
             for claude_route_id in CLAUDE_SUBSCRIPTION_ROUTES:
@@ -2331,6 +2562,7 @@ def main(argv: list[str] | None = None) -> int:
     with quota_spend_live_lock(out_path):
         walls = active_quota_walls(args.relay_receipt_dir, now=now)
         agy_scan = active_agy_admission_receipts(args.relay_receipt_dir, now=now)
+        kimi_scan = active_kimi_admission_receipts(args.relay_receipt_dir, now=now)
         claude_scan = active_claude_admission_receipts(args.relay_receipt_dir, now=now)
         glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=now)
         glmcp_payg_spend_scan = active_glmcp_payg_spend_receipts(
@@ -2350,6 +2582,8 @@ def main(argv: list[str] | None = None) -> int:
                 walls=walls,
                 agy_admissions=agy_scan.admissions,
                 agy_ignored_receipts=agy_scan.ignored_evidence_refs,
+                kimi_admissions=kimi_scan.admissions,
+                kimi_ignored_receipts=kimi_scan.ignored_evidence_refs,
                 claude_admissions=claude_scan.admissions,
                 claude_ignored_receipts=claude_scan.ignored_evidence_refs,
                 glmcp_admissions=glmcp_scan.admissions,
@@ -2373,6 +2607,8 @@ def main(argv: list[str] | None = None) -> int:
         "local_resource_state": resource_state,
         "agy_admissions": len(agy_scan.admissions),
         "agy_ignored_admissions": len(agy_scan.ignored_evidence_refs),
+        "kimi_admissions": len(kimi_scan.admissions),
+        "kimi_ignored_admissions": len(kimi_scan.ignored_evidence_refs),
         "claude_admissions": len(claude_scan.admissions),
         "claude_ignored_admissions": len(claude_scan.ignored_evidence_refs),
         "glmcp_admissions": len(glmcp_scan.admissions),
