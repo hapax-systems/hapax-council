@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import math
@@ -14,6 +15,8 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -34,10 +37,15 @@ from shared.platform_capability_receipts import (  # noqa: E402
     ConfigEvidence,
     EvidenceStatus,
     PlatformCapabilityReceipt,
+    PlatformCapabilityReceiptError,
     ProviderDocsEvidence,
     SurfaceEvidence,
     ToolEvidence,
     WrapperEvidence,
+    ensure_utc,
+    load_platform_capability_receipt,
+    load_platform_capability_receipts,
+    parse_duration_spec,
     receipt_reference,
 )
 from shared.platform_capability_registry import (  # noqa: E402
@@ -508,7 +516,7 @@ QUOTA_RECEIPT_FUTURE_SKEW_SECONDS = 60
 
 def _ledger_fresh_routes(
     route_ids: set[str], *, now: datetime
-) -> tuple[dict[str, tuple[tuple[str, ...], datetime | None]], bool]:
+) -> tuple[dict[str, tuple[tuple[str, ...], datetime | None]], bool, datetime | None]:
     """Routes the live ledger's own fail-closed validator reports FRESH: route_id -> (refs, bound).
 
     The state comes from ``subscription_quota_state_for_route`` — the ledger's validator, which
@@ -522,7 +530,7 @@ def _ledger_fresh_routes(
     try:
         ledger = load_quota_spend_ledger(QUOTA_LEDGER_LIVE)
     except (OSError, ValueError, QuotaSpendLedgerError):
-        return {}, False
+        return {}, False, None
     fresh: dict[str, tuple[tuple[str, ...], datetime | None]] = {}
     for route_id in sorted(route_ids):
         try:
@@ -540,7 +548,11 @@ def _ledger_fresh_routes(
             tuple(_typed_evidence_ref(ref) for ref in refs),
             min(bounds) if bounds else None,
         )
-    return fresh, True
+    # The ledger's own capture instant travels with its verdict. Readable is not current: a
+    # ledger that parses but was captured before an admission has not SEEN that admission, and
+    # its silence about the route is not an observation of the admission's absence (review
+    # finding, codex, 2026-09-07).
+    return fresh, True, ensure_utc(ledger.captured_at)
 
 
 def _typed_evidence_ref(ref: str) -> str:
@@ -644,27 +656,75 @@ def observe_quota(
             current = best_by_route.get(route_id)
             if current is None or observed > current[0]:
                 best_by_route[route_id] = (observed, doc, path)
-    ledger_fresh, ledger_readable = _ledger_fresh_routes(route_ids, now=now)
+    ledger_fresh, ledger_readable, ledger_captured_at = _ledger_fresh_routes(route_ids, now=now)
     # Observed only where a fresh relay receipt AND the ledger's validator agree on the route.
     observed_routes = sorted(route_id for route_id in best_by_route if route_id in ledger_fresh)
     if not observed_routes:
         # No fresh receipt for any route: the producer wrote nothing — receipt absent. Receipts
-        # present but the validated ledger unreadable: telemetry unknown. Receipts present and the
-        # ledger readable but not fresh for those routes: the admission is absent per the ledger.
+        # present but the validated ledger unreadable, or readable and captured before those
+        # receipts: telemetry unknown. Receipts present and a ledger that has actually looked
+        # since, still not fresh for those routes: the admission is absent per the ledger.
+        newest_admission = (
+            max(observed for observed, _doc, _path in best_by_route.values())
+            if best_by_route
+            else None
+        )
+        # **Readable is not current.** A ledger that parses but has not read since the admission
+        # this run is holding has not seen that admission, so its silence about the route is not
+        # an observation of the admission's absence — it is the same unknown as an unreadable
+        # ledger, reached by a different route (review finding, codex, 2026-09-07: a readable old
+        # ledger still revoked a renewal after the unreadable one stopped). Only a ledger captured
+        # STRICTLY AFTER the admission has demonstrably looked, and only then is its silence a
+        # real absence.
+        #
+        # Hence `<=`, not `<`: both stamps are second-resolution, so an equal capture cannot show
+        # the ledger looked after the admission was written — it is indistinguishable from looking
+        # before (codex again, after the first version of this comparison shipped with a strict
+        # `<` and an explanation that said "at or after ... HAS looked", which the code below it
+        # then contradicted). `observation_supersedes` two hundred lines below already decides
+        # ties this way and says why: "at equal observation times positive evidence wins:
+        # failure/absence has not established a later distinct observation (admissions have second
+        # precision)." This is that same sentence applied one step earlier, so the two agree.
+        ledger_behind = (
+            newest_admission is not None
+            and ledger_captured_at is not None
+            and ledger_captured_at <= newest_admission
+        )
+        telemetry_unknown = bool(best_by_route) and (not ledger_readable or ledger_behind)
         reason = (
-            "quota_telemetry_unknown"
-            if best_by_route and not ledger_readable
-            else "account_live_quota_receipt_absent"
+            "quota_telemetry_unknown" if telemetry_unknown else "account_live_quota_receipt_absent"
         )
         unobserved_refs = [f"local:{platform}:quota-probe:unobservable"]
-        if best_by_route and not ledger_readable:
+        if telemetry_unknown:
+            # Which unknown it is, named: a ledger nobody could read is a different fact from one
+            # that read fine and had not looked yet, and a reference that says "unreadable" for
+            # both would misdescribe the second to anyone auditing the receipt.
             unobserved_refs.append(
-                f"quota-spend-ledger:{display_path(QUOTA_LEDGER_LIVE)}:unreadable"
+                f"quota-spend-ledger:{display_path(QUOTA_LEDGER_LIVE)}:"
+                + ("older-than-admission" if ledger_readable else "unreadable")
             )
+        # **A failed observation is dated by what it examined, not by when it failed.** Two
+        # distinct facts were sharing one timestamp rule. `account_live_quota_receipt_absent` is
+        # an absence this run really did observe at `now` — the producer wrote nothing, or the
+        # readable ledger says the admission is gone — and a later negative like that must still
+        # be able to supersede an earlier renewal, which `observation_supersedes` allows.
+        # `quota_telemetry_unknown` is the other fact: the relay admissions ARE here and the
+        # validated ledger could not be read, so this run established nothing about the quota at
+        # `now`. Dating it `now` let a stale ledger revoke a positive built from the very same
+        # admissions — measured by the coordinator on 2026-09-07: a positive at t=5 published,
+        # then a t=6 run with a stale ledger stamped UNOBSERVABLE at t=6 and superseded it, and a
+        # later run's identical positive was then refused as older. Dating it by the same
+        # admissions the positive path uses (their oldest observation, as there) makes the two
+        # readings of one admission set tie, and the existing equal-time rule keeps the positive.
+        observed_at = (
+            min(observed for observed, _doc, _path in best_by_route.values())
+            if telemetry_unknown
+            else now
+        )
         return surface_evidence(
             status=EvidenceStatus.UNOBSERVABLE,
             source="local_receipt_probe",
-            observed_at=now,
+            observed_at=observed_at,
             stale_after="15m",
             evidence_refs=unobserved_refs,
             reason_codes=[reason],
@@ -903,13 +963,129 @@ def platform_routes(
     return routes
 
 
-def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path:
-    receipt_dir.mkdir(parents=True, exist_ok=True)
-    path = receipt_dir / f"{receipt.platform}.json"
-    path.write_text(
-        json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True), encoding="utf-8"
+@contextmanager
+def receipt_publication_lock(receipt_dir: Path) -> Any:
+    """Shared by capability compare-and-publish and telemetry's ledger transaction.
+
+    Keep the lock beside the receipt directory, outside the plural loader's glob;
+    never unlink its inode. Independent processes and opens contend on the same flock.
+    """
+    directory = receipt_dir.expanduser().resolve()
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    with (directory.parent / f".{directory.name}.publication.lock").open("a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def observation_supersedes(
+    receipt: PlatformCapabilityReceipt, previous: PlatformCapabilityReceipt
+) -> bool:
+    """Order quota evidence by its observation, never by publication wall-clock max.
+
+    Positive evidence is identified by admission references plus quota.observed_at;
+    its validity ends at receipt.observed_at + quota.stale_after. Negative evidence
+    (failure or absence) is a distinct observation dated by quota.observed_at.
+    An earlier observation cannot replace a later one, in either direction: an old
+    failure cannot erase a renewal, nor an old admission erase a later failure.
+    At equal observation times positive evidence wins: failure/absence has not
+    established a later distinct observation (admissions have second precision).
+    Equal-time positive evidence must name the same admission references and may
+    only retain or shorten that admission's validity window, never extend it.
+    Distinct equal-time admissions are unordered: retain the published evidence.
+    """
+    observed = ensure_utc(receipt.quota.observed_at)
+    prior_observed = ensure_utc(previous.quota.observed_at)
+    if observed != prior_observed:
+        return observed > prior_observed
+    positive = receipt.quota.status is EvidenceStatus.OBSERVED
+    prior_positive = previous.quota.status is EvidenceStatus.OBSERVED
+    if positive != prior_positive:
+        return positive
+    if not positive:
+        return True
+    # Exclude generation/provenance references: neither identifies an admission.
+    refs = {ref for ref in receipt.quota.evidence_refs if ref.startswith("relay-receipt:")}
+    prior_refs = {ref for ref in previous.quota.evidence_refs if ref.startswith("relay-receipt:")}
+    expiry = ensure_utc(receipt.observed_at) + parse_duration_spec(receipt.quota.stale_after)
+    prior_expiry = ensure_utc(previous.observed_at) + parse_duration_spec(
+        previous.quota.stale_after
     )
-    return path
+    return refs == prior_refs and expiry <= prior_expiry
+
+
+def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path | None:
+    with receipt_publication_lock(receipt_dir):
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        path = receipt_dir / f"{receipt.platform}.json"
+        # Re-read AFTER flock, including for an observation built before another producer ran.
+        previous = None
+        if path.exists():
+            try:
+                previous = load_platform_capability_receipt(path)
+            except PlatformCapabilityReceiptError as exc:
+                # **Unreadable is a third fact, and it was being handled as neither.** The raise
+                # escaped `write_receipt`, so a single corrupt file — the coordinator reproduced
+                # it with a `glmcp.json` containing one `{` — stopped this platform's receipt
+                # from ever being regenerated, and the broken bytes stayed in place while every
+                # later run failed the same way. A file that cannot be parsed supplies no
+                # ordering evidence: it cannot show it is newer, and refusing forever protects
+                # nothing, because the plural loader cannot read it for any consumer either.
+                #
+                # So it is moved aside rather than trusted or destroyed. The bytes are preserved
+                # under a dated name for whoever has to explain them, publication proceeds on
+                # properly observed evidence, and the quarantine is announced rather than
+                # silent. This is not a fallback that widens: it does less, because it stops
+                # treating an unreadable file as a prior observation at all.
+                # A second-resolution stamp is not a unique name. Two quarantines inside one
+                # second landed on the same path and `os.replace` overwrote the first, so the
+                # repair that exists to PRESERVE unreadable bytes destroyed a set of them
+                # (review finding, cx-blue, 2026-09-07 13:30). The name is claimed with O_EXCL
+                # under the publication lock, so the filesystem decides rather than a pre-check,
+                # and a losing candidate is never written over.
+                stamp = f"{receipt.observed_at:%Y%m%dT%H%M%SZ}"
+                attempt = 0
+                while True:
+                    suffix = f".unreadable-{stamp}" + (f".{attempt}" if attempt else "")
+                    quarantine = path.with_name(path.name + suffix)
+                    try:
+                        os.close(os.open(quarantine, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+                        break
+                    except FileExistsError:
+                        attempt += 1
+                os.replace(path, quarantine)
+                # The diagnostic names WHERE and WHAT KIND, never the bytes. A parser's message
+                # quotes the input it choked on, so printing `exc` would republish the contents
+                # of an unreadable receipt into logs and journals — every artifact a guard emits
+                # is a disclosure channel (review finding, codex, 2026-09-07). The quarantined
+                # file is the place to read it, under whatever protects that directory.
+                print(
+                    f"hapax-platform-capability-receipts: unreadable_receipt_quarantined "
+                    f"platform={receipt.platform}; moved to {display_path(quarantine)}; "
+                    f"cause={type(exc.__cause__ or exc).__name__}",
+                    file=sys.stderr,
+                )
+        if previous is not None and not observation_supersedes(receipt, previous):
+            print(
+                f"hapax-platform-capability-receipts: stale_observation_not_published "
+                f"platform={receipt.platform}; retained current receipt",
+                file=sys.stderr,
+            )
+            return None
+        payload = json.dumps(receipt.model_dump(mode="json"), indent=2, sort_keys=True)
+        # Incomplete files stay outside the plural loader's *.json glob.
+        fd, tmp_name = tempfile.mkstemp(dir=receipt_dir, prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp_name, path)
+        finally:
+            Path(tmp_name).unlink(missing_ok=True)
+        return path
 
 
 def positive_float_env_default(name: str, default: float) -> float:
@@ -937,6 +1113,75 @@ def positive_float_env_default(name: str, default: float) -> float:
         )
         return default
     return value
+
+
+def show_receipts(
+    *,
+    platforms: list[str],
+    receipt_dir: Path,
+    now: datetime,
+    as_json: bool,
+) -> int:
+    """Print the validated quota surface of each stored receipt; never probe, never write.
+
+    A consumer that wants to know what the dispatcher will see must read the receipt through the
+    dispatcher's own loader (schema, platform, future skew, duration syntax, freshness), not pick
+    three fields out of the JSON (review finding on #4624, round 8). ``accepted`` is exactly the
+    plural loader's verdict — the one the writer and the dispatcher apply.
+    """
+
+    if not platforms:
+        print("--show needs at least one --platform", file=sys.stderr)
+        return 2
+    # The plural loader is the dispatcher's read: it raises on any malformed file in the directory,
+    # and then the dispatcher sees no receipt at all — so that is what this reports, not a crash.
+    directory_error: str | None = None
+    try:
+        accepted_receipts = load_platform_capability_receipts(receipt_dir, now=now)
+    except (PlatformCapabilityReceiptError, ValueError, OSError) as exc:
+        accepted_receipts = {}
+        directory_error = f"receipt_dir_unloadable:{type(exc).__name__}"
+    rows: list[dict[str, Any]] = []
+    all_ok = True
+    for platform in platforms:
+        path = receipt_dir / f"{platform}.json"
+        row: dict[str, Any] = {"platform": platform, "path": str(path), "accepted": False}
+        try:
+            receipt = load_platform_capability_receipt(path)
+        except FileNotFoundError:
+            row["reason"] = "receipt_absent"
+        except (PlatformCapabilityReceiptError, ValueError, OSError) as exc:
+            row["reason"] = f"receipt_invalid:{type(exc).__name__}"
+        else:
+            accepted = accepted_receipts.get(platform)
+            row["accepted"] = accepted is not None and accepted.receipt_id == receipt.receipt_id
+            row["receipt_id"] = receipt.receipt_id
+            row["observed_at"] = iso_z(ensure_utc(receipt.observed_at))
+            row["stale_after"] = receipt.stale_after
+            row["quota"] = receipt.quota.model_dump(mode="json")
+            if not row["accepted"]:
+                row["reason"] = directory_error or "receipt_stale_or_superseded"
+        all_ok = all_ok and bool(row["accepted"])
+        rows.append(row)
+    payload = {
+        "ok": all_ok,
+        "checked_at": iso_z(now),
+        "receipt_dir": str(receipt_dir),
+        "directory_error": directory_error,
+        "receipts": rows,
+    }
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        for row in rows:
+            quota = row.get("quota") or {}
+            print(
+                f"{row['platform']}: accepted={row['accepted']} "
+                f"quota={quota.get('status', '?')} observed_at={quota.get('observed_at', '?')} "
+                f"stale_after={quota.get('stale_after', '?')}"
+                + (f" reason={row['reason']}" if row.get("reason") else "")
+            )
+    return 0 if all_ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -984,9 +1229,25 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--show",
+        action="store_true",
+        help=(
+            "Read-only: load the stored receipt for each selected platform through the same "
+            "loader the dispatcher uses and print its validated quota surface. No probe runs and "
+            "nothing is written. Exit 1 when any selected receipt is absent, malformed or stale."
+        ),
+    )
     args = parser.parse_args(argv)
 
     observed_at = parse_utc(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
+    if args.show:
+        return show_receipts(
+            platforms=[platform.lower() for platform in args.platform],
+            receipt_dir=args.receipt_dir,
+            now=observed_at,
+            as_json=args.json,
+        )
     registry, non_supply_observation_errors = load_platform_capability_registry_for_dispatch(
         args.registry,
         now=observed_at,
@@ -1038,6 +1299,13 @@ def main(argv: list[str] | None = None) -> int:
                 "platform": platform,
                 "receipt_id": receipt.receipt_id,
                 "path": str(path) if path else None,
+                "publication_status": (
+                    "dry_run"
+                    if args.dry_run
+                    else "published"
+                    if path
+                    else "stale_observation_not_published"
+                ),
                 "cli_available": receipt.cli.available,
                 "wrapper_exists": receipt.wrapper.exists,
                 "capability_status": receipt.capability.status.value,
@@ -1060,7 +1328,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         for item in outputs:
-            target = item["path"] or "<dry-run>"
+            target = item["path"] or f"<{item['publication_status']}>"
             print(
                 f"{item['platform']}: wrote {target} "
                 f"cli={item['cli_available']} wrapper={item['wrapper_exists']} "

@@ -95,6 +95,7 @@ import hashlib
 import json
 import os
 import re
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -122,13 +123,16 @@ from shared.quota_spend_ledger import (  # noqa: E402
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
     QUOTA_SPEND_LEDGER_FIXTURES,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
+    RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES,
     PaidRouteEligibility,
     PaidRouteRequest,
     QuotaSpendLedger,
     QuotaSpendLedgerError,
     SpendReceipt,
+    SubscriptionQuotaState,
     evaluate_paid_route_eligibility,
     load_quota_spend_ledger,
+    subscription_quota_state_for_route,
 )
 
 RELAY_RECEIPT_DIR = Path(
@@ -2194,6 +2198,55 @@ def build_live_ledger(
     return QuotaSpendLedger.model_validate(payload)
 
 
+def keep_newer_valid_admissions(
+    ledger: QuotaSpendLedger, previous: QuotaSpendLedger, *, now: datetime
+) -> QuotaSpendLedger:
+    """An older scan cannot revoke a newer, still dispatcher-valid route admission.
+
+    Do not carry old evidence into a newer scan: expiry, new walls and receipt
+    withdrawal must still fail closed. Preserve the original lifetime and witness.
+    """
+    snapshots = list(ledger.quota_snapshots)
+    for index, snapshot in enumerate(snapshots):
+        if snapshot.route_id not in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
+            continue
+        for prior in previous.quota_snapshots:
+            if prior.route_id != snapshot.route_id or prior.captured_at <= snapshot.captured_at:
+                continue
+            # Validate each candidate with dispatch's predicate; raw `fresh` is insufficient.
+            candidate = previous.model_copy(update={"quota_snapshots": (prior,)})
+            state, _ = subscription_quota_state_for_route(candidate, prior.route_id, now=now)
+            # Retained evidence must also pass the current governance/spend predicate.
+            merged_candidate = ledger.model_copy(update={"quota_snapshots": (prior,)})
+            merged_state, _ = subscription_quota_state_for_route(
+                merged_candidate, prior.route_id, now=now
+            )
+            if (
+                state is SubscriptionQuotaState.FRESH
+                and merged_state is SubscriptionQuotaState.FRESH
+            ):
+                snapshots[index] = snapshot = prior
+    return ledger.model_copy(
+        update={
+            "quota_snapshots": tuple(snapshots),
+            # `max(x, *rest)` is `max(x)` when `rest` is empty — one non-iterable argument, so
+            # `TypeError: 'datetime.datetime' object is not iterable` came out of the merge for a
+            # ledger with no quota snapshots (review finding, gemini, 2026-09-07). That is not a
+            # corrupt ledger: `quota_snapshots` is declared `default=()`, so the model permits
+            # exactly the state this line could not survive, and a first scan before any admission
+            # is written reaches it.
+            #
+            # One iterable rather than a first argument plus a splat, so the empty case is the
+            # ordinary `max` of a one-element sequence. Deliberately NOT
+            # `max(<snapshots>, default=ledger.captured_at)`: that would drop the ledger's own
+            # instant from the comparison whenever a snapshot exists, and a snapshot older than
+            # the ledger would then move `captured_at` backwards. The comparison keeps exactly
+            # the operands it always had.
+            "captured_at": max((ledger.captured_at, *(row.captured_at for row in snapshots))),
+        }
+    )
+
+
 def write_ledger_atomic(ledger: QuotaSpendLedger, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(ledger.model_dump(mode="json"), indent=1, sort_keys=True) + "\n"
@@ -2254,6 +2307,9 @@ def refresh_capability_receipts(*, timeout: float, receipt_dir: Path) -> bool:
             file=sys.stderr,
         )
         return False
+    for line in result.stderr.splitlines():
+        if "stale_observation_not_published" in line:
+            print(line, file=sys.stderr)
     return True
 
 
@@ -2306,8 +2362,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="Print a JSON summary to stdout")
     args = parser.parse_args(argv)
 
-    now = _parse_utc(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
-    if now is None:
+    override_now = _parse_utc(args.now) if args.now else None
+    if args.now and override_now is None:
         parser.error(f"invalid --now value: {args.now!r}")
 
     receipts_ok = True
@@ -2328,7 +2384,26 @@ def main(argv: list[str] | None = None) -> int:
     else:
         configured = os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV)
         out_path = Path(configured).expanduser() if configured else DEFAULT_QUOTA_SPEND_LEDGER_LIVE
-    with quota_spend_live_lock(out_path):
+    resource_state, resource_evidence = probe_local_resource_state(nvidia_smi=args.nvidia_smi)
+    # Use the capability publishers' lock too: the admission re-read through the
+    # ledger's os.replace cannot interleave a capability compare-and-publication.
+    publication_lock = runpy.run_path(
+        str(REPO_ROOT / "scripts/hapax-platform-capability-receipts")
+    )["receipt_publication_lock"]
+    with quota_spend_live_lock(out_path), publication_lock(args.platform_capability_receipt_dir):
+        # Both producers serialize here. Capture the observation clock AFTER every wait:
+        # a seat refresh may publish admission during capability refresh, probing or flock.
+        now = override_now or datetime.now(UTC).replace(microsecond=0)
+        previous = None
+        if out_path.exists():
+            try:
+                previous = load_quota_spend_ledger(out_path)
+            except QuotaSpendLedgerError:
+                print(
+                    f"hapax-quota-telemetry-writer: previous ledger unusable: {out_path}; "
+                    "next action: inspect the ledger schema and permissions; rebuilding from live receipts",
+                    file=sys.stderr,
+                )
         walls = active_quota_walls(args.relay_receipt_dir, now=now)
         agy_scan = active_agy_admission_receipts(args.relay_receipt_dir, now=now)
         claude_scan = active_claude_admission_receipts(args.relay_receipt_dir, now=now)
@@ -2342,7 +2417,6 @@ def main(argv: list[str] | None = None) -> int:
             args.platform_capability_receipt_dir,
             now=now,
         )
-        resource_state, resource_evidence = probe_local_resource_state(nvidia_smi=args.nvidia_smi)
         try:
             ledger = build_live_ledger(
                 base,
@@ -2363,6 +2437,8 @@ def main(argv: list[str] | None = None) -> int:
         except (ValueError, QuotaSpendLedgerError) as exc:
             print(f"hapax-quota-telemetry-writer: live ledger invalid: {exc}", file=sys.stderr)
             return 1
+        if previous is not None:
+            ledger = keep_newer_valid_admissions(ledger, previous, now=now)
         write_ledger_atomic(ledger, out_path)
 
     summary = {

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import runpy
 import stat
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -77,9 +81,12 @@ def _run_writer(
     return result, out
 
 
+@pytest.mark.parametrize("diagnostic", ["", "stale_observation_not_published platform=glmcp"])
 def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys,
+    diagnostic: str,
 ) -> None:
     namespace = runpy.run_path(str(SCRIPT))
     calls: list[list[str]] = []
@@ -96,7 +103,7 @@ def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
         assert capture_output is True
         assert text is True
         assert timeout == 36
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr=diagnostic)
 
     monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
 
@@ -107,6 +114,7 @@ def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
         )
         is True
     )
+    assert capsys.readouterr().err == (diagnostic + "\n" if diagnostic else "")
     assert calls == [
         [
             sys.executable,
@@ -119,6 +127,99 @@ def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
             str(receipt_dir),
         ]
     ]
+
+
+@pytest.mark.parametrize("case", ["older", "newer", "expired", "untrusted"])
+def test_ledger_merge_keeps_only_newer_valid_route_admission(tmp_path: Path, case: str) -> None:
+    from shared.quota_spend_ledger import (
+        load_quota_spend_ledger,
+        subscription_quota_state_for_route,
+    )
+
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_admission(relay, observed_at="2026-06-10T00:00:04Z")
+    result, out = _run_writer(tmp_path, now="2026-06-10T00:00:05Z")
+    assert result.returncode == 0, result.stderr
+    previous = json.loads(out.read_text())
+    admitted = next(
+        row for row in previous["quota_snapshots"] if row["route_id"] == "glmcp.review.direct"
+    )
+    assert admitted["subscription_quota_state"] == "fresh"
+    if case == "untrusted":
+        admitted["evidence_refs"] = ["test:untrusted"]
+        out.write_text(json.dumps(previous))
+    (relay / "glmcp-quota-admission.yaml").unlink()
+    now = {"newer": "2026-06-10T00:00:10Z", "expired": "2026-06-10T00:20:00Z"}.get(case, NOW)
+    result, out = _run_writer(tmp_path, now=now)
+    assert result.returncode == 0, result.stderr
+    ledger = load_quota_spend_ledger(out)
+    from datetime import datetime
+
+    state, _ = subscription_quota_state_for_route(
+        ledger, "glmcp.review.direct", now=datetime.fromisoformat(now)
+    )
+    assert state.value == ("fresh" if case == "older" else "unknown")
+    if case == "older":
+        kept = next(row for row in ledger.quota_snapshots if row.route_id == "glmcp.review.direct")
+        assert kept.model_dump(mode="json") == admitted
+        assert ledger.captured_at.isoformat() == "2026-06-10T00:00:05+00:00"
+
+
+def test_telemetry_rereads_admission_after_shared_publication_lock(tmp_path: Path, monkeypatch):
+    from shared.quota_spend_ledger import load_quota_spend_ledger
+
+    namespace = runpy.run_path(str(SCRIPT))
+    globals_ = namespace["main"].__globals__
+    capability = runpy.run_path(str(REPO_ROOT / "scripts/hapax-platform-capability-receipts"))
+    receipt_dir = tmp_path / "platform-receipts"
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    out = tmp_path / "live.json"
+    attempted, scanned = Event(), Event()
+    real_flock = fcntl.flock
+    real_scan = namespace["active_glmcp_admission_receipts"]
+    lock_inode = None
+
+    def flock(fd, operation):
+        if operation == fcntl.LOCK_EX and os.fstat(fd).st_ino == lock_inode:
+            attempted.set()
+        return real_flock(fd, operation)
+
+    def scan(*args, **kwargs):
+        scanned.set()
+        return real_scan(*args, **kwargs)
+
+    monkeypatch.setattr(fcntl, "flock", flock)
+    monkeypatch.setitem(globals_, "active_glmcp_admission_receipts", scan)
+    monkeypatch.setitem(globals_, "refresh_capability_receipts", lambda **kw: True)
+    monkeypatch.setitem(
+        globals_, "probe_local_resource_state", lambda **kw: ("green", ["test:gpu"])
+    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with capability["receipt_publication_lock"](receipt_dir):
+            lock_inode = (tmp_path / ".platform-receipts.publication.lock").stat().st_ino
+            pending = pool.submit(
+                namespace["main"],
+                [
+                    "--now",
+                    "2026-06-10T00:00:05Z",
+                    "--out",
+                    str(out),
+                    "--relay-receipt-dir",
+                    str(relay),
+                    "--platform-capability-receipt-dir",
+                    str(receipt_dir),
+                ],
+            )
+            assert attempted.wait(2), "telemetry bypassed the capability publication lock"
+            assert not scanned.is_set(), "admission was read before acquiring the shared lock"
+            _glmcp_admission(relay, observed_at="2026-06-10T00:00:04Z")
+        assert pending.result(timeout=10) == 0
+    ledger = load_quota_spend_ledger(out)
+    snapshot = next(row for row in ledger.quota_snapshots if row.route_id == "glmcp.review.direct")
+    assert snapshot.subscription_quota_state.value == "fresh"
+    assert any("observed_at:2026-06-10T00:00:04Z" in ref for ref in snapshot.evidence_refs)
 
 
 def _wall_receipt(
@@ -3605,3 +3706,59 @@ def test_no_secret_material_in_output(tmp_path: Path) -> None:
         "hapax-secrets.env",
     ):
         assert token not in text
+
+
+def test_a_ledger_with_no_snapshots_merges_instead_of_raising() -> None:
+    """An empty snapshot tuple is a declared state, and the merge could not survive it.
+
+    The final model_copy computed max(ledger.captured_at, *snapshot_times). With no snapshots
+    that is max() of one non-iterable argument, so the merge raised
+    TypeError: datetime.datetime object is not iterable — measured (review finding, gemini,
+    2026-09-07). QuotaSpendLedger declares quota_snapshots with default=(), so the model permits
+    exactly the state the merge died on, and a first scan before any admission is written reaches
+    it.
+
+    The one-snapshot twin is what keeps the repair honest: the ledger's own instant stays IN the
+    comparison, so a snapshot older than the ledger cannot move captured_at backwards.
+    """
+
+    from shared.quota_spend_ledger import QuotaSpendLedger
+
+    writer = runpy.run_path(str(SCRIPT))
+    merge = writer["keep_newer_valid_admissions"]
+    captured = datetime(2026, 9, 5, tzinfo=UTC)
+
+    def ledger(snapshots):
+        return QuotaSpendLedger.model_validate(
+            {
+                "ledger_id": "quota-spend-ledger-live-20260905T000000Z",
+                "captured_at": captured,
+                "authority_source": "isap:quota-spend-ledger-20260509",
+                "generated_from": ["scripts/hapax-quota-telemetry-writer"],
+                "consumer_permission_after": "private_capacity_routing_tests_only",
+                "evidence_refs": ["local:ledger:test"],
+                "quota_snapshots": snapshots,
+            }
+        )
+
+    empty = ledger(())
+    assert merge(empty, empty, now=captured).captured_at == captured
+
+    older = ledger(
+        (
+            {
+                "snapshot_id": "quota-agy-subscription-live-20260904t000000z",
+                "captured_at": captured - timedelta(days=1),
+                "route_id": "agy.review.direct",
+                "provider": "agy",
+                "capacity_pool": "subscription_quota",
+                "subscription_quota_state": "fresh",
+                "fresh_until": captured + timedelta(seconds=900),
+                "evidence_refs": ["relay-receipt:agy.review.direct:present"],
+                "operator_visible_reason": "test fixture",
+            },
+        )
+    )
+    assert merge(older, older, now=captured).captured_at == captured, (
+        "a snapshot older than the ledger must not move captured_at backwards"
+    )
