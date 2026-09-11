@@ -3200,11 +3200,14 @@ def review_all_open_prs(
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
     try:
+        # The scan needs only PR numbers and draft flags; fetching statuses here would
+        # couple every review to one row's rollup availability.
         open_prs, route = list_open_pr_statuses(
             repo=repo,
             repo_root=repo_root,
             runner=gh_runner,
             limit=100,
+            include_status=False,
         )
     except PrListingUnavailable as exc:
         # Skip this scan rather than spending it into guaranteed 403s. Returning an empty
