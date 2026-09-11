@@ -30,6 +30,14 @@ from agents.publication_bus.surface_registry import SURFACE_REGISTRY, Automation
 from logos.api.routes.art_50_credentials import verify_credential_api
 
 
+@pytest.fixture(autouse=True)
+def optional_dependencies_absent(monkeypatch):
+    monkeypatch.setattr(
+        "agents.art_50_provenance.c2pa_adapter.c2pa_python_available", lambda: False
+    )
+    monkeypatch.setattr("agents.art_50_provenance.fingerprint._native_pdq_hex", lambda image: None)
+
+
 def _png_bytes() -> bytes:
     image = Image.new("RGB", (180, 120), (34, 87, 142))
     out = BytesIO()
@@ -83,7 +91,7 @@ def test_verify_image_bytes_accepts_exact_output_bytes() -> None:
     issued = issue_image_credential(request=_request(), image_bytes=_png_bytes())
     result = verify_image_bytes(issued.certificate, issued.asset_bytes)
 
-    assert result.status is Art50VerificationStatus.VALID_UNSIGNED_PREVIEW
+    assert result.status.value == "structure_present_unverified"
     assert result.exact_sha256_match is True
     assert result.phash_distance == 0
     assert "blocked_missing_c2pa_python" in result.reasons
@@ -151,4 +159,4 @@ def test_verify_route_reads_local_certificate_packet(tmp_path, monkeypatch) -> N
     payload = verify_credential_api(issued.certificate.credential_id)
 
     assert payload["credential_id"] == issued.certificate.credential_id
-    assert payload["status"] == "valid_unsigned_preview"
+    assert payload["status"] == "structure_present_unverified"
