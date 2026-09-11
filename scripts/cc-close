@@ -14,12 +14,35 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve through symlinks — cc-close is installed as ~/.local/bin/cc-close -> the
+# deployed worktree, and bash does NOT resolve symlinks for BASH_SOURCE. Without
+# this, SCRIPT_DIR was ~/.local/bin, ROLE_HELPER pointed at the nonexistent
+# ~/.local/hooks/scripts/agent-role.sh, and the helper was never sourced — so
+# through the entrypoint the operator actually invokes, NEITHER role resolver
+# existed and the claim-release block below could never run. cc-claim carries this
+# same resolution with a comment naming this exact hazard; cc-close did not, which
+# is why the release was dead through the installed path regardless of which
+# resolver it named.
+# No `command -v readlink` guard. A missing readlink makes the substitution exit
+# non-zero, so `|| printf` yields the same VALUE the guard's else-branch produced —
+# the unresolved BASH_SOURCE — with the shell's diagnostic suppressed by 2>/dev/null.
+# Equivalent in result, not in mechanism. The guard added a branch reachable only by
+# removing /usr/bin from PATH, which also removes dirname, so every test of it died
+# of something else. One path, reachable and covered, beats two where one is not.
+_cc_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$_cc_self")" && pwd)"
 ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
-if [[ -f "$ROLE_HELPER" ]]; then
-  # shellcheck source=../hooks/scripts/agent-role.sh
-  . "$ROLE_HELPER"
+if [[ ! -f "$ROLE_HELPER" ]]; then
+  # Refuse rather than degrade. The previous behaviour — carry on with env-only
+  # role resolution — is precisely how the claim leaked: a close that cannot
+  # resolve its own role silently releases nothing and strands the session behind
+  # the task it just closed. A missing helper means a broken install, and saying
+  # so beats completing a close that only appears to have worked.
+  echo "cc-close: agent-role.sh not found next to the installed script (looked in $ROLE_HELPER). Without it the claim lease cannot be released and this close would strand the session. Next: repair the install (hapax-source-activate) or invoke scripts/cc-close from a complete checkout." >&2
+  exit 2
 fi
+# shellcheck source=../hooks/scripts/agent-role.sh
+. "$ROLE_HELPER"
 
 if [[ $# -lt 1 ]]; then
   echo "usage: cc-close <task_id> [--pr N] [--status done|withdrawn|superseded]" >&2
@@ -45,10 +68,23 @@ case "$final_status" in
   *) echo "cc-close: --status must be done, withdrawn, or superseded (got '$final_status')" >&2; exit 1 ;;
 esac
 
-role="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SESSION:-${CODEX_ROLE:-${HAPAX_AGENT_ROLE:-${CLAUDE_ROLE:-}}}}}}}"
-if [[ -z "$role" ]] && declare -F hapax_agent_identity >/dev/null 2>&1; then
-  role="$(hapax_agent_identity 2>/dev/null || true)"
-fi
+# Resolve the claiming role with hapax_effective_role — the SAME resolver the
+# WRITER (cc-claim) and the READER (cc-task-gate.impl.sh) both use. A roleless
+# session has no explicit identity but does have a session id, so
+# hapax_agent_identity returns EMPTY exactly where hapax_effective_role returns
+# `roleless`. Binding here with hapax_agent_identity left $role empty, which
+# skipped the claim-release block below entirely (its `[[ -n "$role" ]]` guard)
+# and stranded the session behind the task it had just closed: the gate,
+# resolving through the OTHER function, still found the lease and blocked every
+# subsequent mutation. Measured twice on 2026-08-21, both times after a clean
+# close, each needing an operator rescue.
+# Sourcing agent-role.sh is now mandatory above, so this is the only role binding
+# in the file. The env cascade that used to sit here (HAPAX_AGENT_NAME,
+# CODEX_THREAD_NAME, ... CLAUDE_ROLE) is deleted rather than guarded: it read the
+# exact names hapax_agent_identity reads, in the exact order, so it never changed
+# an outcome — it only kept a second copy of the resolver's precedence list in a
+# file obliged to agree with it, which is how a releaser drifts from its writer.
+role="$(hapax_effective_role 2>/dev/null || true)"
 
 ROOT_HELPER="$SCRIPT_DIR/../hooks/scripts/cc-task-root.sh"
 if [[ ! -f "$ROOT_HELPER" ]]; then
@@ -75,6 +111,32 @@ if [[ -z "$note_path" ]] && [[ -f "$vault_root/active/$task_id.md" ]]; then
 fi
 if [[ -z "$note_path" ]]; then
   echo "cc-close: task '$task_id' not in $vault_root/active/ (already closed?)" >&2
+  exit 2
+fi
+
+# PRE-FLIGHT, before any state change.
+#
+# The claim release runs near the end, after the note has moved to closed/. Anything
+# it discovers there it can only warn about: refusing at that point would leave the
+# task closed AND its lease held, which is worse than either outcome alone. So the one
+# condition that would make the release incomplete — a claim file that cannot be read,
+# and therefore cannot be ruled in or out as naming this task — is checked HERE, while
+# refusing is still free.
+#
+# An earlier revision warned about it after the move and told the reader to re-run
+# cc-close. That retry is impossible: by then the task is in closed/ and cc-close
+# refuses with "not in active/". A remedy naming a sealed exit is the failure this row
+# exists to stop reproducing, and I reproduced it inside the fix.
+_claims_dir="$HOME/.cache/hapax"
+shopt -s nullglob
+_unreadable_leases=()
+for _lease in "$_claims_dir"/cc-active-task-*; do
+  [[ -f "$_lease" ]] || continue
+  head -n1 "$_lease" >/dev/null 2>&1 || _unreadable_leases+=("$_lease")
+done
+shopt -u nullglob
+if (( ${#_unreadable_leases[@]} > 0 )); then
+  echo "cc-close: ${#_unreadable_leases[@]} claim file(s) cannot be read, so whether they name '$task_id' is unknown: ${_unreadable_leases[*]}. Closing now could leave one of them behind and strand its holder, and the close is not reversible. Nothing has been changed. Next: fix their permissions, or remove them if no session holds them, then re-run cc-close for '$task_id'." >&2
   exit 2
 fi
 
@@ -274,30 +336,58 @@ PYEOF
 # reads the session-keyed file FIRST, so it kept seeing the just-closed task
 # (reform finding #12/#13). Clear this session's lease forms, each only when its
 # head still names the closed task (never clobber a lease for other work).
-if [[ -n "$role" ]]; then
-  session_id=""
-  if declare -F hapax_session_id >/dev/null 2>&1; then
-    session_id="$(hapax_session_id 2>/dev/null || true)"
+# KEYED ON THE TASK, NOT ON THE CLOSER.
+#
+# This loop used to derive the keys to clear from the CLOSING session's identity —
+# cc-active-task-<role> and cc-active-task-<role>-<session_id>. That is only correct
+# when the closer is also the holder, and it silently released nothing whenever it was
+# not:
+#
+#   * a roleless session resolved no key at all, so the guard skipped the block and the
+#     holder's lease survived the close (the original defect in this row)
+#   * cc-pr-merge-watcher closes merged tasks under a SYNTHETIC role, which resolves to
+#     a key that owns nothing, so every unattended close left the real owner's lease
+#     behind and stranded them
+#
+# Both are the same mistake: asking "what is MY key?" when the question is "which lease
+# belongs to the task being closed?". The second is answerable directly and without
+# reference to who is asking — a lease names its task in its first line.
+#
+# This never clobbers other work: a file is removed only when its own content names the
+# task now being closed, which is a stronger test than the key match it replaces.
+# NOT configurable. An earlier revision honoured HAPAX_CC_CLAIMS_DIR here, which
+# cc-claim (the writer) and cc-task-gate (the reader) do not read — so setting it would
+# have pointed the releaser at a directory the other two never use. That is this row's
+# own defect, three participants disagreeing about one fact, reintroduced inside its
+# fix. Only run_claim_sweep honours that variable; if the location is ever to become
+# configurable, all three must change together.
+claims_dir="$HOME/.cache/hapax"
+cleared_claim=0
+shopt -s nullglob
+for claim_file in "$claims_dir"/cc-active-task-*; do
+  [[ -f "$claim_file" ]] || continue
+  if ! claim_head="$(head -n1 "$claim_file" 2>/dev/null)"; then
+    # The pre-flight above already refused on unreadable leases while refusing was
+    # still free, so reaching here means one became unreadable during this run. Warn
+    # rather than refuse: the note has already moved, and refusing now would leave the
+    # task closed AND the lease held. This is the residual window the pre-flight cannot
+    # close, and closing it properly needs the claim plane to be readable atomically.
+    echo "cc-close: WARNING '$claim_file' became unreadable during the close; if it names '$task_id' it survives and will block its holder. Next: fix its permissions or remove it if no session holds it — the task is already closed, so cc-close cannot clear it now." >&2
+    continue
   fi
-  cleared_claim=0
-  for claim_key in \
-    "$role" \
-    ${session_id:+"$role-$session_id"}; do
-    claim_file="$HOME/.cache/hapax/cc-active-task-$claim_key"
-    if [[ -f "$claim_file" ]] &&
-       [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
-      # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
-      # clear it with its claim file so a stale epoch can never mis-age a
-      # future claim. Explicit path construction — substring substitution on
-      # the full path would rewrite a parent-directory occurrence instead.
-      rm -f "$claim_file" "$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
-      echo "cc-close: cleared claim file '$claim_file' (role '$role')"
-      cleared_claim=1
-    fi
-  done
-  if [[ "$cleared_claim" == 1 ]]; then
-    systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
-  fi
+  [[ "$(printf '%s' "$claim_head" | tr -d '[:space:]')" == "$task_id" ]] || continue
+  # The cc-claim-epoch sidecar carries the claim age for task_is_terminal; clear it
+  # with its claim file so a stale epoch can never mis-age a future claim. Explicit
+  # path construction — substring substitution on the full path would rewrite a
+  # parent-directory occurrence instead.
+  claim_key="${claim_file##*/cc-active-task-}"
+  rm -f "$claim_file" "$claims_dir/cc-claim-epoch-$claim_key"
+  echo "cc-close: cleared claim file '$claim_file' (names '$task_id')"
+  cleared_claim=1
+done
+shopt -u nullglob
+if [[ "$cleared_claim" == 1 ]]; then
+  systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
 fi
 
 # Best-effort request lifecycle reconciliation. `request-intake-consumer`
