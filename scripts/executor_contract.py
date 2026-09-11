@@ -146,6 +146,21 @@ EXECUTOR_REGISTRY: dict[str, ExecutorCapabilities] = {
         headless=True,
         notes="bounded one-shot headless worker lane",
     ),
+    "grok": ExecutorCapabilities(
+        platform="grok",
+        modes=(),
+        profiles=("full",),
+        mutates=False,
+        claims=False,
+        hooks_wired=True,
+        headless=False,
+        read_only=True,
+        notes=(
+            "registry leaf grok.headless.full is required but not methodology-dispatch "
+            "launchable until receipts promote (modes=()); interim carrier is ad-hoc "
+            "hapax-grok with Hapax hooks. PLATFORM_PATHS.mutable=False matches."
+        ),
+    ),
 }
 
 
