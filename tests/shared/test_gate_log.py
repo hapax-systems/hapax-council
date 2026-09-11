@@ -7,12 +7,12 @@ runs in the default council pytest harness.
 from __future__ import annotations
 
 import json
+import runpy
 from pathlib import Path
 
 import pytest
 
 from shared.gate_log import (
-    DEFAULT_GATE_LOG,
     GateEvent,
     append_gate_event,
     is_persistent,
@@ -70,10 +70,22 @@ def test_missing_log_is_empty(tmp_path: Path) -> None:
     assert list(read_gate_events(path=tmp_path / "nope.jsonl")) == []
 
 
-def test_default_path_is_persistent_not_tmpfs() -> None:
-    # The substrate must survive a reboot (the tmpfs-swap-trap).
-    assert is_persistent(DEFAULT_GATE_LOG)
-    assert "/tmp/" not in str(DEFAULT_GATE_LOG)
+def test_default_gate_log_under_fixed_home_is_persistent_and_outside_volatile_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Load the real default expression under a fixed persistent HOME, independent
+    # of pytest's basetemp and the importing process's HOME or gate-log override.
+    import shared.gate_log as gate_log
+
+    monkeypatch.setenv("HOME", "/persistent-fixture-home")
+    monkeypatch.delenv("HAPAX_GATE_LOG", raising=False)
+    namespace = runpy.run_path(gate_log.__file__)
+    default = namespace["DEFAULT_GATE_LOG"]
+    assert namespace["is_persistent"](default)
+    for volatile_root in ("/tmp", "/dev/shm", "/run"):
+        assert not default.is_relative_to(volatile_root)
+    assert default == Path("/persistent-fixture-home/.cache/hapax/sdlc-routing/gate-events.jsonl")
+    assert is_persistent("/persistent-fixture-home/tmp/gate-events.jsonl")
     assert not is_persistent("/tmp/x/gate-events.jsonl")
     assert not is_persistent("/dev/shm/gate-events.jsonl")
 
@@ -175,3 +187,72 @@ def test_default_gate_log_durable_payload_scrubs_structured_secret_keys(
     assert "private routing text" not in content
     assert "[REDACTED:secret_assignment]" in content
     assert "[REDACTED:private_text]" in content
+
+
+def test_default_gate_log_follows_the_environment_at_call_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HAPAX_GATE_LOG set AFTER import redirects the actual write; the module was imported
+    under another home, and the import-time constant must not be the writer's target."""
+    from shared import gate_log
+
+    original = gate_log._IMPORT_TIME_GATE_LOG
+    before = original.read_bytes() if original.exists() else None
+    later = tmp_path / "later" / "gate-events.jsonl"
+    monkeypatch.setenv("HAPAX_GATE_LOG", str(later))
+    monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(tmp_path / "durable"))
+    (tmp_path / "durable").mkdir()
+    assert gate_log.default_gate_log() == later
+    written = gate_log.append_gate_event(
+        gate_log.GateEvent(route="r", routing_class="c", task_hash="h1")
+    )
+    assert written == later
+    assert later.exists()
+    assert (original.read_bytes() if original.exists() else None) == before
+    assert [event.task_hash for event in gate_log.read_gate_events()] == ["h1"]
+    mirror = tmp_path / "durable/gate-log.jsonl"
+    assert json.loads(mirror.read_text())["payload"]["task_hash"] == "h1"
+
+
+def test_default_gate_log_follows_home_at_call_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from shared import gate_log
+
+    monkeypatch.delenv("HAPAX_GATE_LOG", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "later-home"))
+    expected = Path.home() / ".cache/hapax/sdlc-routing/gate-events.jsonl"
+    assert gate_log.default_gate_log() == expected
+    assert gate_log.append_gate_event(GateEvent(route="r", routing_class="c")) == expected
+    assert [event.route for event in gate_log.read_gate_events()] == ["r"]
+
+
+def test_patched_default_gate_log_wins_over_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from shared import gate_log
+
+    patched = tmp_path / "patched" / "gate-events.jsonl"
+    assert patched != gate_log._IMPORT_TIME_GATE_LOG
+    monkeypatch.setenv("HAPAX_GATE_LOG", str(tmp_path / "env" / "gate-events.jsonl"))
+    monkeypatch.setattr(gate_log, "DEFAULT_GATE_LOG", patched)
+    monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(tmp_path / "durable"))
+    (tmp_path / "durable").mkdir()
+    assert gate_log.default_gate_log() == patched
+    gate_log.append_gate_event(gate_log.GateEvent(route="r", routing_class="c", task_hash="h2"))
+    assert patched.exists()
+    assert not (tmp_path / "env" / "gate-events.jsonl").exists()
+
+
+def test_import_time_default_gate_log_does_not_override_the_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from shared import gate_log
+
+    configured = tmp_path / "env" / "gate-events.jsonl"
+    assert configured != gate_log._IMPORT_TIME_GATE_LOG
+    monkeypatch.setattr(gate_log, "DEFAULT_GATE_LOG", Path(str(gate_log._IMPORT_TIME_GATE_LOG)))
+    monkeypatch.setenv("HAPAX_GATE_LOG", str(configured))
+
+    assert gate_log.DEFAULT_GATE_LOG == gate_log._IMPORT_TIME_GATE_LOG
+    assert gate_log.default_gate_log() == configured

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import date
+from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from shared.route_metadata_schema import (
@@ -20,6 +23,8 @@ from shared.route_metadata_schema import (
     RouteAdmissionAction,
     RouteMetadata,
     RouteMetadataStatus,
+    _coerce_scope_ref_list,
+    _field_is_absent,
     assess_route_metadata,
     build_demand_vector,
     check_demand_vector_freshness,
@@ -868,3 +873,274 @@ def test_task_demand_rejects_out_of_vocab_execution_axis_demand() -> None:
         build_demand_vector(_demand_frontmatter(effort_demand="galaxy"))
     with pytest.raises((ValidationError, ValueError)):
         build_demand_vector(_demand_frontmatter(context_mode_demand="hypercontext"))
+
+
+# A declared scope ref is ABSENT only when it is the empty string. Whitespace is a legal POSIX
+# filename, so a whitespace-only ref names a surface and must survive; a quoted null-like string
+# was written deliberately, because YAML already spells absence as `null`, which arrives as None
+# and is handled before any of this. The scalar branch used to test `.strip()` against a sentinel
+# set while the list branch tested the raw string, so ONE declaration got TWO answers depending
+# only on how it was written (cx-blue, 2026-09-08):
+#     ' '    -> []      [' ']    -> [' ']
+#     'null' -> []      ['null'] -> ['null']
+# The drop is the unsafe half: the frame gate reads an emptied scope as "nothing declared", so
+# erasure here made a declared-but-unhonourable scope indistinguishable from declaring none.
+_PRESERVED_SCOPE_REFS = ["  ", " ", "\t", "null", "None", "~", "  /tmp/x  "]
+
+
+@pytest.mark.parametrize("ref", _PRESERVED_SCOPE_REFS)
+def test_scope_ref_scalar_and_list_spellings_agree(ref: str) -> None:
+    """The same declaration, written two ways, must reach the gate as the same scope."""
+    scalar = _dispatchable_metadata()
+    scalar["mutation_scope_refs"] = ref
+    listed = _dispatchable_metadata()
+    listed["mutation_scope_refs"] = [ref]
+
+    from_scalar = list(validate_route_metadata(scalar).mutation_scope_refs)
+    from_list = list(validate_route_metadata(listed).mutation_scope_refs)
+
+    assert from_scalar == from_list == [ref], (
+        f"{ref!r}: a declared scope ref must survive both spellings unedited"
+    )
+
+
+@pytest.mark.parametrize("ref", _PRESERVED_SCOPE_REFS)
+def test_demand_vector_keeps_whitespace_and_null_like_scope_refs(ref: str) -> None:
+    """The same rule through demand construction, not only through the field helper."""
+    scalar = _demand_frontmatter()
+    scalar["mutation_scope_refs"] = ref
+    listed = _demand_frontmatter()
+    listed["mutation_scope_refs"] = [ref]
+
+    assert list(build_demand_vector(scalar).mutation_scope_refs) == [ref]
+    assert list(build_demand_vector(listed).mutation_scope_refs) == [ref]
+
+
+def test_two_scope_refs_differing_only_in_whitespace_stay_distinct() -> None:
+    """Erasure destroyed the subject AND collapsed two declarations into one.
+
+    Measured at `5007ed238`: `['/tmp/selected ', '/tmp/selected\\t']` both became
+    `/tmp/selected`, so a digest bound to either matched the other.
+    """
+    payload = _dispatchable_metadata()
+    payload["mutation_scope_refs"] = ["/tmp/selected ", "/tmp/selected\t", "/tmp/selected"]
+
+    refs = list(validate_route_metadata(payload).mutation_scope_refs)
+
+    assert refs == ["/tmp/selected ", "/tmp/selected\t", "/tmp/selected"]
+    assert len(set(refs)) == 3, "three declarations must not collapse into fewer subjects"
+
+
+def test_an_empty_scope_ref_is_dropped_by_this_helper() -> None:
+    """`""` cannot name a surface, so this helper drops it and its contract is unchanged.
+
+    **Scope of this row, corrected.** It was titled "…and refused by name at the gate" and its
+    prose said so, which implied it exercised the dropped ref reaching a frame refusal. It does
+    not: everything here is the metadata helper, and a ref this helper drops never reaches
+    `scope_within_decayed` from this call path at all (cx-blue, 2026-09-08). A title claiming a
+    second subsystem is the same fault as a spelling parameter that only reaches a print.
+
+    The gate's own empty-ref refusal is a DIRECT-PREDICATE claim and is asserted where it
+    happens, on `scope_within_decayed` in `tests/shared/test_frame_verdicts.py`
+    (`test_scope_matching_by_containment_patterns_files_and_wildcard_tails`), which calls that
+    function with `""` and requires `NonCanonicalScopeRef`. The `main()` claim in this family is
+    narrower still and is the uncontainable-guard bypass, in
+    `tests/scripts/test_frame_file_spelling.py`. Three different levels, three different rows.
+    """
+    payload = _dispatchable_metadata()
+    payload["mutation_scope_refs"] = ""
+    assert list(validate_route_metadata(payload).mutation_scope_refs) == []
+
+    payload["mutation_scope_refs"] = ["", "/tmp/real"]
+    assert list(validate_route_metadata(payload).mutation_scope_refs) == ["/tmp/real"]
+
+
+def _bound_paths(frontmatter: dict[str, object]) -> list[str]:
+    """The artifact paths the evidence binding actually took a digest over."""
+    return [
+        ref.artifact_path
+        for ref in build_demand_vector(frontmatter).source_refs
+        if ref.source_id.startswith("mutation_scope_ref_")
+    ]
+
+
+def test_scope_refs_differing_only_in_whitespace_bind_to_distinct_evidence(tmp_path) -> None:
+    """The digest must be taken over the declared name, not a trimmed substitute.
+
+    This is the half of the combined repair that had no regression at all: restoring the strip
+    in `_resolve_scope_ref_path` left 170 tests green across every suite reaching its public
+    entry points, which is how a repair ships and then quietly stops holding. Two declarations
+    differing only in trailing whitespace are two subjects, and a digest bound to one must not
+    match the other.
+    """
+    first = tmp_path / "selected "
+    first.write_bytes(b"ONE\n")
+    second = tmp_path / "selected\t"
+    second.write_bytes(b"TWO\n")
+    plain = tmp_path / "selected"
+    plain.write_bytes(b"THREE\n")
+
+    frontmatter = _demand_frontmatter()
+    frontmatter["mutation_scope_refs"] = [str(first), str(second), str(plain)]
+
+    bound = _bound_paths(frontmatter)
+
+    assert bound == [str(first), str(second), str(plain)]
+    assert len(set(bound)) == 3, "three declared subjects must bind to three distinct artifacts"
+
+    # **The HASH, not only the path.** As first written this row checked paths alone, and a
+    # reviewer executed it with every mutation-scope source hash replaced by the hash of
+    # unrelated bytes: it still passed. The amended acceptance predicate requires an exact
+    # source-hash comparison, so a row that discards the digest does not discharge it — the
+    # digest is the whole reason two whitespace-differing names must stay distinct subjects.
+    refs = {
+        ref.artifact_path: ref
+        for ref in build_demand_vector(frontmatter).source_refs
+        if ref.source_id.startswith("mutation_scope_ref_")
+    }
+    for declared in (first, second, plain):
+        expected = "sha256:" + hashlib.sha256(declared.read_bytes()).hexdigest()
+        assert refs[str(declared)].hash == expected, (
+            f"{declared.name!r}: the digest must be taken over THIS file's bytes"
+        )
+    assert len({ref.hash for ref in refs.values()}) == 3, (
+        "distinct content must produce distinct digests; equal ones would let a digest bound to "
+        "one declaration match another"
+    )
+
+
+def test_the_resolver_has_one_drop_rule_and_it_is_the_path_shape(tmp_path) -> None:
+    """Absence is settled upstream; the only question here is whether this is a path.
+
+    The resolver used to re-test absence with its own sentinel set, which disagreed with the
+    coercion it accompanies once that stopped reading a quoted `"null"` or `" "` as absent
+    (review finding, claude, at `069e726dc`). `~` is a path and now binds — as a named
+    `UNPARSEABLE` row, because it is not a file, which is the point: nothing that reaches the
+    binding disappears without saying so.
+    """
+    frontmatter = _demand_frontmatter()
+    frontmatter["mutation_scope_refs"] = ["~"]
+    assert _bound_paths(frontmatter) == [str(Path("~").expanduser())]
+
+    states = {
+        ref.artifact_path: ref.freshness_state
+        for ref in build_demand_vector(frontmatter).source_refs
+        if ref.source_id.startswith("mutation_scope_ref_")
+    }
+    assert all(state == FreshnessState.UNPARSEABLE for state in states.values()), (
+        "a declared scope ref that is not a file must bind as a named row, not vanish"
+    )
+
+
+def test_a_bare_filename_still_does_not_bind_and_that_is_recorded_not_endorsed() -> None:
+    """RECORDED, not asserted-as-correct: `zz-plain` survives coercion and binds nothing.
+
+    `_looks_like_path` requires a separator or a leading `/`, `~` or `.`, so an ordinary bare
+    filename is not recognised as a path and gets no evidence row — while the frame gate happily
+    resolves bare refs against the council and vault roots. One declaration, two subsystems, two
+    answers (review finding, codex, at `069e726dc`).
+
+    I have NOT changed it here, because the fix is not obvious and the wrong one does damage.
+    `_looks_like_path` is what separates filesystem subjects from identifier subjects — the
+    `isap:CASE-…` refs these very fixtures use — and a bare token like `CASE-CAPACITY-ROUTING-001`
+    is shaped exactly like a bare filename. Binding those as paths would make each one a MISSING
+    source, and a MISSING source contributes a `stale_reason`, so the change would newly block
+    dispatches that declare identifier-shaped scopes. That is a grammar decision about what a
+    scope ref IS, and it belongs to the owner rather than to this repair.
+    """
+    frontmatter = _demand_frontmatter()
+    frontmatter["mutation_scope_refs"] = ["zz-plain", "zz-review-future "]
+
+    assert list(build_demand_vector(frontmatter).mutation_scope_refs) == [
+        "zz-plain",
+        "zz-review-future ",
+    ], "the declarations themselves survive; it is only the binding that drops them"
+    assert _bound_paths(frontmatter) == [], (
+        "MEASUREMENT CHANGED: bare filenames now bind. That may be right, but it changes which "
+        "declarations produce stale_reasons and must be a deliberate grammar decision."
+    )
+
+
+@pytest.mark.parametrize("spelling", ["~", "null", "Null", "NULL", ""], ids=lambda s: s or "empty")
+def test_the_conventional_yaml_absence_spellings_are_still_absent(spelling: str) -> None:
+    """A task note writing `mutation_scope_refs: ~` declares NO scope, as it always did.
+
+    `_field_is_absent` treats a quoted `"null"` or `" "` as a declaration for this one field, and
+    claude read that at `81962feab` as making the conventional YAML absence spelling declare a
+    one-element scope naming the file `~` — a behaviour change facing every task note in the repo.
+
+    **Measured, and the mechanism does not reach my predicate.** YAML resolves unquoted `~`,
+    `null`, `Null`, `NULL` and an empty value to Python `None` before any of this code runs, and
+    `None` is absent on the first line of the predicate. Only an explicitly QUOTED `"~"` becomes a
+    declaration, which is the deliberate case: quoting it is how an author says they mean the
+    string.
+
+    The finding's other half was right and is why this row exists — nothing pinned it, so the
+    question could not be answered from the diff. It parses real YAML rather than passing Python
+    values in, because the claim is about what a note AUTHOR writes, and substituting the parsed
+    value would assume the very step in question.
+
+    **The end-to-end assertion alone would pin nothing, so the predicate is asserted directly.**
+    `_field_is_absent` and `_coerce_scope_ref_list` BOTH map `None` to an empty scope, so either
+    one can be broken while the outcome stays correct — measured: making the predicate treat
+    `None` as present leaves this file green, and so does making the coercion turn `None` into a
+    declaration. Two mitigations for one hazard, which is a design smell in its own right and is
+    exactly why an outcome-only row here would read as coverage it does not provide.
+    """
+    document = yaml.safe_load(f"mutation_scope_refs: {spelling}\n")
+    value = document["mutation_scope_refs"]
+    assert value is None, "YAML must resolve this spelling to None before the predicate sees it"
+
+    assert _field_is_absent("mutation_scope_refs", value) is True, (
+        "the field-specific predicate must keep None absent; the coercion below would mask a "
+        "regression here, so it is asserted at the site that decides it"
+    )
+    assert _coerce_scope_ref_list(value) == [], (
+        "and the coercion independently, since the predicate above would mask a regression here"
+    )
+
+    payload = _dispatchable_metadata()
+    payload["mutation_scope_refs"] = value
+    assert list(validate_route_metadata(payload).mutation_scope_refs) == []
+
+
+def test_a_quoted_tilde_is_a_declaration_because_quoting_is_how_you_say_so() -> None:
+    """The deliberate counterpart: `mutation_scope_refs: "~"` names a subject and survives."""
+    document = yaml.safe_load('mutation_scope_refs: "~"\n')
+    assert document["mutation_scope_refs"] == "~", "quoting must keep it a string"
+
+    payload = _dispatchable_metadata()
+    payload["mutation_scope_refs"] = document["mutation_scope_refs"]
+    assert list(validate_route_metadata(payload).mutation_scope_refs) == ["~"]
+
+
+def test_a_null_list_item_is_absent_and_does_not_become_the_filename_none() -> None:
+    """`mutation_scope_refs: [~]` declares nothing; it used to declare a file called "None".
+
+    `str(item)` over the list turned a YAML null into the literal string `'None'`, which is
+    truthy, so it survived the blank filter and became a declared subject — one that then
+    resolved, bound evidence and could be compared against a member (review finding, gemini, at
+    `850ccfdbb`). A `None` ITEM is a true absence exactly as a `None` VALUE is.
+
+    Dropped rather than refused by name, unlike `""`: absence is what `~` MEANS in YAML, whereas
+    `""` is a string an author wrote.
+
+    **The same line is in the generic `_coerce_string_list`, and I have not touched it.** gemini
+    reported it there — `evidence_refs` on `PublicReleaseProjection` — and the standing
+    instruction on this row is no general string-coercion rewrite. The generic helper still turns
+    `[None]` into `['None']` for every field it serves; that is pre-existing, out of this
+    contract, and recorded here rather than silently fixed or silently left.
+    """
+    document = yaml.safe_load("mutation_scope_refs: [~, 'kept.md', null]\n")
+    assert document["mutation_scope_refs"] == [None, "kept.md", None]
+
+    payload = _dispatchable_metadata()
+    payload["mutation_scope_refs"] = document["mutation_scope_refs"]
+    assert list(validate_route_metadata(payload).mutation_scope_refs) == ["kept.md"]
+
+    from shared.route_metadata_schema import _coerce_string_list
+
+    assert _coerce_string_list([None]) == ["None"], (
+        "the GENERIC helper is deliberately unchanged; if this starts dropping None the "
+        "no-general-rewrite instruction has been crossed and the change needs its own authority"
+    )
