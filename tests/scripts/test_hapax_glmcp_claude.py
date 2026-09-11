@@ -83,11 +83,11 @@ def test_check_mode_sets_coding_plan_environment_without_printing_secret(
     assert "ANTHROPIC_AUTH_TOKEN" not in result.stderr
     assert "test-secret-token" not in result.stdout
     assert "test-secret-token" not in result.stderr
-    assert "primary_model=glm-5.2[1m]" in result.stdout
+    assert "primary_model=glm-5.3[1m]" in result.stdout
     launched_env = env_file.read_text(encoding="utf-8")
     assert "ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic" in launched_env
-    assert "ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2[1m]" in launched_env
-    assert "ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2[1m]" in launched_env
+    assert "ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.3[1m]" in launched_env
+    assert "ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.3[1m]" in launched_env
     assert "ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.5-air" in launched_env
     assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000" in launched_env
     assert "HAPAX_LLM_PROVIDER=zai-glm-coding-plan" in launched_env
@@ -195,7 +195,7 @@ def test_rejects_previous_glm5_primary_model_by_default(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "refusing primary model 'glm-5'" in result.stderr
-    assert "expected documented GLM Coding Plan model id glm-5.2[1m]" in result.stderr
+    assert "expected documented GLM Coding Plan model id glm-5.3[1m]" in result.stderr
     assert "next action: unset HAPAX_GLMCP_MODEL" in result.stderr
 
 

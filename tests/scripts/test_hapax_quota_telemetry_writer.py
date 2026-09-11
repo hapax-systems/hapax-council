@@ -337,6 +337,8 @@ def _glmcp_payg_spend(
     created_at: str = "2026-07-06T14:04:30Z",
     reconcile_by: str = "2026-07-07T14:04:30Z",
     estimated_cost_usd: str = "0.05",
+    model_or_engine: str = "glm-5.2",
+    model_id: str = "z_ai-glm-5.2",
     extra_fields: str = "",
 ) -> None:
     task_hash_line = f"task_hash: {task_hash}\n" if task_hash is not None else ""
@@ -350,8 +352,8 @@ route_id: glmcp.review.direct
 capacity_pool: api_paid_spend
 budget_id: tb-20260706-zai-glmcp-payg-review
 provider: z_ai
-model_or_engine: glm-5.2
-model_id: z_ai-glm-5.2
+model_or_engine: {model_or_engine}
+model_id: {model_id}
 effort: none
 quantization: not_applicable
 auth_surface: api_key
@@ -1312,6 +1314,74 @@ def test_glmcp_payg_spend_receipt_strips_malformed_task_hash_but_counts_spend(
     summary = json.loads(result.stdout)
     assert summary["glmcp_payg_spend_receipts"] == 1
     assert summary["glmcp_ignored_payg_spend_receipts"] == 0
+
+
+def test_glmcp_payg_spend_receipt_accepts_the_current_coding_plan_model(
+    tmp_path: Path,
+) -> None:
+    """A PAYG spend receipt naming glm-5.3 is the one hapax-glmcp-reviewer now writes.
+
+    The reviewer serializes ``model_or_engine`` straight from its configured model,
+    whose default is glm-5.3. If this validator only accepted glm-5.2 the reviewer's
+    own spend receipts would be rejected, silently reopening the PAYG budget gate.
+    """
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    spend_receipt_name = "glmcp-payg-spend-20260706t140430z-test.yaml"
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref=spend_receipt_name,
+    )
+    # model_id is passed explicitly, and deliberately does NOT say z_ai-glm-5.3:
+    # no such ModelId exists yet (minting one is a governed registry change, see the
+    # task note's blocked sub-part). This pairing — model_or_engine glm-5.3 against
+    # model_id z_ai-glm-5.2 — is the real transitional state hapax-glmcp-reviewer
+    # emits today, not an endorsement of it. Stated here rather than inherited from a
+    # helper default so the coupling is visible when the identity is finally minted.
+    _glmcp_payg_spend(
+        relay,
+        name=spend_receipt_name,
+        model_or_engine="glm-5.3",
+        model_id="z_ai-glm-5.2",
+    )
+
+    result, out = _run_writer(tmp_path, now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert any(
+        receipt["spend_id"] == "spend-20260706T140430Z-glmcp-payg-review-test"
+        for receipt in payload["spend_receipts"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_payg_spend_receipts"] == 1
+    assert summary["glmcp_ignored_payg_spend_receipts"] == 0
+
+
+def test_glmcp_payg_spend_receipt_refuses_an_undocumented_model(tmp_path: Path) -> None:
+    """The allowlist stays fail-closed: an off-plan model id is still rejected."""
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    spend_receipt_name = "glmcp-payg-spend-20260706t140430z-test.yaml"
+    _wall_receipt(relay, "cx-glmcp", "2026-07-06T16:00:00Z")
+    _glmcp_admission(
+        relay,
+        observed_at="2026-07-06T14:04:00Z",
+        endpoint="https://api.z.ai/api/paas/v4",
+        name="glmcp-quota-admission-payg.yaml",
+        evidence_ref=spend_receipt_name,
+    )
+    _glmcp_payg_spend(relay, name=spend_receipt_name, model_or_engine="glm-4.5-air")
+
+    result, _ = _run_writer(tmp_path, now=PAYG_NOW)
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_payg_spend_receipts"] == 0
 
 
 def test_glmcp_payg_admission_rechecks_witness_task_cap(tmp_path: Path) -> None:

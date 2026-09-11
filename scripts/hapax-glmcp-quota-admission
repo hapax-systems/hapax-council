@@ -47,7 +47,8 @@ SUPPORTED_TOOL = "hapax-glmcp-reviewer"
 CODING_PLAN_ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
 PAYG_ENDPOINT = "https://api.z.ai/api/paas/v4"
 ENDPOINT = CODING_PLAN_ENDPOINT
-MODEL = "glm-5.2"
+MODEL = "glm-5.3"
+MODELS = frozenset({MODEL, "glm-5.2"})
 SECRET_SOURCE = "pass:glmcp/api-key"
 CODING_PLAN_BILLING_MODE = "coding_plan_subscription"
 PAYG_BILLING_MODE = "api_credit_payg"
@@ -360,8 +361,8 @@ def observe_success(args: argparse.Namespace) -> int:
         raise ValueError(f"--supported-tool must be {SUPPORTED_TOOL}")
     if endpoint not in SUCCESS_RECEIPT_CONTRACT_BY_ENDPOINT:
         raise ValueError(f"--endpoint must be one of {ENDPOINT} or {PAYG_ENDPOINT}")
-    if model != MODEL:
-        raise ValueError(f"--model must be {MODEL}")
+    if model not in MODELS:
+        raise ValueError(f"--model must be one of {sorted(MODELS)}")
     primary_error_class: str | None = None
     quota_wall_evidence_ref: str | None = None
     if endpoint == PAYG_ENDPOINT:
