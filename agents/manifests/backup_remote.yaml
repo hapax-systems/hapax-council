@@ -4,26 +4,36 @@ version: "1.0.0"
 category: observability
 reports_to: operator
 peers: [backup_local]
-depends_on: [backup_local]
+depends_on: []
 
-purpose: Retired Backblaze B2 remote backup receipt — no routine timer is expected after the 2026-06-06 offsite-policy decision.
+purpose: Live daily Tier 2 offsite backup to Backblaze B2 — dumps PostgreSQL, snapshots Qdrant, exports n8n, runs restic retention, and publishes the DR restore script.
 inputs:
-  - Operator retirement decision
-  - Historical B2 backup records
+  - PostgreSQL databases
+  - Qdrant collections
+  - n8n workflows
+  - Docker volume and system metadata
+  - filesystem paths
 outputs:
-  - Retirement receipt
+  - Backblaze B2 restic snapshots
+  - Independently downloadable DR restore script
 capabilities:
-  - backup_retirement_receipt
+  - restic_backup
+  - postgres_dump
+  - qdrant_snapshot
+  - b2_upload
 schedule:
-  type: on-demand
-  systemd_unit: hapax-backup-remote.service
-  interval: retired
+  type: timer
+  systemd_unit: hapax-backup-remote.timer
+  interval: daily
 model: null
 
-autonomy: advisory
-decision_scope: Document the retired B2 lane. Must not run automatically, enable timers, prune, upload, or modify backup repositories.
+autonomy: full
+decision_scope: Execute the daily offsite backup, apply the declared restic retention policy, and publish the recovery script. Cannot modify source data.
 escalation_target: operator
 axiom_bindings:
+  - axiom_id: executive_function
+    implications: [ex-routine-007]
+    role: subject
   - axiom_id: corporate_boundary
     implications: [cb-key-001]
     role: subject
@@ -32,16 +42,20 @@ raci:
     role: responsible
 
 health_group: null
-service_tier: 3
+service_tier: 1
 
 timer_display:
-  schedule_label: "Retired 2026-06-06"
-  purpose: "Backblaze B2 remote backup retained only as a historical receipt"
+  schedule_label: "Daily 03:30"
+  purpose: "B2 restic backup (Postgres + Qdrant + n8n + files + DR script)"
 
 narrative: |
-  The Remote Backup agent is retired as a required routine lane. On 2026-06-06
-  the operator selected Google Drive critical offsite backup as the canonical
-  offsite path and retired broad Backblaze B2 coverage rather than raising the
-  B2 storage cap. The service file may remain as a historical/manual receipt,
-  but no `hapax-backup-remote.timer` should be installed, enabled, or expected
-  by health policy.
+  The Remote Backup agent is a live daily Tier 2 lane by operator decision on
+  2026-09-02. It independently dumps PostgreSQL, snapshots every Qdrant
+  collection, exports n8n workflows, captures system and repository recovery
+  metadata, writes a restic snapshot to Backblaze B2, applies the declared
+  retention policy, and uploads the standalone DR restore script. It does not
+  consume the local lane's staged dumps, so it has no runtime dependency on
+  `backup_local`. Both lanes share the dump step's dependencies: PostgreSQL,
+  Qdrant, n8n, the pass store, /store, the activation tree, and hapax-podium.
+  A shared dump-service failure fails both lanes; separate dump directories
+  do not isolate that failure. Only the NAS and B2 destinations fail independently.

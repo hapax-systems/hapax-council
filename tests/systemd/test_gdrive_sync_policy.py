@@ -21,6 +21,13 @@ def test_gdrive_drop_hot_sync_units_are_retired() -> None:
     assert not (UNITS / "rclone-gdrive-drop.timer").exists()
 
 
-def test_backblaze_remote_timer_is_retired_but_manual_service_receipt_remains() -> None:
-    assert not (UNITS / "hapax-backup-remote.timer").exists()
+def test_backblaze_remote_timer_is_source_controlled_and_the_service_remains() -> None:
+    """Until 2026-09-02 this test pinned the 2026-06-06 'B2 retired' policy while podium ran
+    hapax-backup-remote.timer every night from an installed copy the repository did not hold.
+    Measured 2026-09-02: the B2 run completes nightly (4 m 43 s that day) and the storage registry
+    now records it enabled/daily; B2 and R2 are the two off-site copies in different failure
+    domains. The timer is source-controlled here so the runtime and the record agree."""
+    timer = UNITS / "hapax-backup-remote.timer"
+    assert timer.exists()
+    assert "OnCalendar=" in timer.read_text()
     assert (UNITS / "hapax-backup-remote.service").exists()

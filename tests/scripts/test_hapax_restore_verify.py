@@ -243,6 +243,9 @@ class TestHistoricalRestoreCoverage:
         assert "DEPRECATED" in backup_text
         assert "hapax-backup-local.service" in backup_text
         assert "hapax-backup-gdrive-critical.service" in backup_text
-        assert "hapax-backup-remote.service" not in backup_text
+        # The B2 remote lane returned as a live daily lane on 2026-09-02 (operator policy,
+        # row backup-scripts-into-council-20260902); the deprecated producer points at every
+        # live lane, so the pointer that used to be forbidden is now required.
+        assert "hapax-backup-remote.service" in backup_text
         assert "pg_dump" not in backup_text
         assert "ragdb" not in backup_text

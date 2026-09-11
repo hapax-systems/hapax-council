@@ -3,10 +3,10 @@ name: GDrive Critical Offsite Backup
 version: "1.0.0"
 category: observability
 reports_to: operator
-peers: [backup_local]
+peers: [backup_local, backup_remote]
 depends_on: [backup_local]
 
-purpose: Canonical bounded critical-artifact offsite restic backup to Google Drive after broad B2 Tier 2 retirement.
+purpose: Bounded critical-artifact offsite restic backup to Google Drive, complementary to the live daily B2 Tier 2 lane.
 inputs:
   - Postgres PITR artifacts
   - latest materialized Qdrant snapshots
@@ -45,8 +45,9 @@ timer_display:
 
 narrative: |
   The GDrive Critical Offsite Backup agent provides a bounded offsite safety
-  baseline after the broad Backblaze B2 remote backup lane was retired by
-  operator policy on 2026-06-06. It writes to rclone:gdrive:hapax-backups/restic-critical using
-  restic and rclone, but it intentionally does not create database dumps, create
-  Qdrant snapshots, upload live MinIO backing stores, or run destructive restic
-  prune. Runtime enablement and restore-smoke proof are governed separately.
+  baseline complementary to the live daily Backblaze B2 lane reinstated by the
+  operator on 2026-09-02. It writes to
+  rclone:gdrive:hapax-backups/restic-critical using restic and rclone, but it
+  intentionally does not create database dumps, create Qdrant snapshots, upload
+  live MinIO backing stores, or run destructive restic prune. Runtime enablement
+  and restore-smoke proof are governed separately.

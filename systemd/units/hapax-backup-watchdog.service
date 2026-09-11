@@ -1,16 +1,21 @@
 [Unit]
 Description=Hapax Backup Health Watchdog
-After=network-online.target
+After=network-online.target hapax-source-activate.service
+Wants=network-online.target hapax-source-activate.service
 OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
-ExecStart=/home/hapax/projects/hapax-council/scripts/hapax-backup-watchdog
-WorkingDirectory=/home/hapax/projects/hapax-council
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/hapax-backup-watchdog
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg
 Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
+# Monocle's hapax-monocle/monocle-daily producer shares the Tier2 repository and is checked
+# independently of podium's lanes; the watchdog refuses to run without this threshold rather
+# than defaulting it. Daily cadence with the same slack as the podium daily lanes.
+Environment=HAPAX_MONOCLE_MAX_AGE_HOURS=36
 MemoryMax=512M
 CPUQuota=25%
 SyslogIdentifier=hapax-backup-watchdog

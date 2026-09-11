@@ -457,6 +457,7 @@ Runs `scripts/monthly-claude-md-audit.sh` on a monthly cadence. Sweeps every wor
 | Tier | Timer | Destination | Tool |
 |------|-------|-------------|------|
 | Local | `hapax-backup-local.timer` daily 03:00 | `/mnt/nas/backups/restic` | restic |
+| Remote (Tier 2, Backblaze B2) | `hapax-backup-remote.timer` daily | B2 restic repository, staged under `/store` | restic + rclone → B2; also publishes the DR script |
 | Critical offsite | `hapax-backup-gdrive-critical.timer` daily 04:35 | `rclone:gdrive:hapax-backups/restic-critical` | restic + rclone → Google Drive |
 
 The local tier backs up PostgreSQL dumps, Qdrant snapshots, n8n workflows,
@@ -465,8 +466,10 @@ and system files.
 
 The GDrive critical lane is intentionally narrower. It backs up already
 materialized Postgres PITR artifacts, latest Qdrant snapshot files, and selected
-vault evidence/SOP artifacts after broad Backblaze B2 was retired by operator
-policy on 2026-06-06. It does
+vault evidence/SOP artifacts. Broad Backblaze B2 coverage was retired by operator
+policy on 2026-06-06 and **returned on 2026-09-02** as the daily remote lane above
+(row `backup-scripts-into-council-20260902`); the storage registry, the unit
+manifest and `hapax-backup-remote.timer` carry it together. The critical lane does
 not create Qdrant snapshots, dump databases into `/tmp`, upload live MinIO, or
 run destructive restic prune.
 
