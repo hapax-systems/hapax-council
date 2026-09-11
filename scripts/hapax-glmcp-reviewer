@@ -71,7 +71,7 @@ DEFAULT_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_TOKENS = 8192
 DEFAULT_THINKING = "disabled"
 PAYG_FALLBACK_ERROR_CLASSES = frozenset({"daily_limit_exhausted", "quota_exhausted"})
-PAYG_SPEND_RECEIPT_SCHEMA = "hapax.glmcp_payg_spend.v1"
+PAYG_SPEND_RECEIPT_SCHEMA = "hapax.glmcp_payg_spend.v2"
 PAYG_SPEND_RECEIPT_RECONCILE_AFTER = timedelta(hours=24)
 TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 # Z.ai's GLM-5 repository and Coding Plan docs now identify GLM-5.2 as the
@@ -972,7 +972,7 @@ def _build_payg_spend_receipt(
     spend_id = f"spend-{stamp}-glmcp-payg-review-{suffix}"
     path = _relay_receipt_dir() / f"glmcp-payg-spend-{stamp.lower()}-{suffix}.yaml"
     receipt_payload: dict[str, object] = {
-        "spend_receipt_schema": 1,
+        "spend_receipt_schema": 2,
         "spend_id": spend_id,
         "task_id": task_id,
         "authority_case": gate.budget_authority_case,
@@ -1076,6 +1076,7 @@ def _payg_spend_receipt_fields(
                 "spend_id",
                 "task_id",
                 "task_hash",
+                "run_id",
                 "authority_case",
                 "route_id",
                 "capacity_pool",
@@ -1085,6 +1086,15 @@ def _payg_spend_receipt_fields(
                 "model_id",
                 "effort",
                 "quantization",
+                "effort_provenance",
+                "wall_latency_ms",
+                "ttfb_ms",
+                "input_tokens",
+                "output_tokens",
+                "compute_unit_status",
+                "compute_unit_value",
+                "compute_unit_provenance",
+                "tokens_do_not_explain_latency",
                 "auth_surface",
                 "quality_floor",
                 "quality_preservation_reason",

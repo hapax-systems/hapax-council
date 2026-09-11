@@ -20,8 +20,12 @@ from shared.quota_spend_ledger import (
     ArtifactProvenanceRecord,
     BootstrapDependencyState,
     BudgetLifecycleState,
+    ComputeUnitDriftEvent,
+    ComputeUnitProvenance,
+    ComputeUnitStatus,
     DependencyState,
     Effort,
+    EffortProvenance,
     ModelId,
     PaidApiBudgetState,
     PaidRouteRequest,
@@ -34,6 +38,7 @@ from shared.quota_spend_ledger import (
     SupportArtifactAuthority,
     SupportArtifactDisposition,
     build_dashboard,
+    classify_reported_compute_unit_drift,
     evaluate_paid_route_eligibility,
     has_successful_task_scoped_glmcp_payg_review_spend,
     load_quota_spend_ledger,
@@ -300,7 +305,7 @@ def _add_glmcp_payg_spend_receipt(
 ) -> None:
     payload["spend_receipts"].append(
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": spend_id,
             "task_id": task_id,
             "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-TEST",
@@ -463,7 +468,7 @@ def test_cap_exhaustion_refuses_paid_route() -> None:
     payload = _active_budget_payload()
     payload["spend_receipts"] = [
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": "spend-20260509T203000Z-cap-used",
             "task_id": "capacity-routing-quota-spend-ledger",
             "authority_case": "CASE-CAPACITY-ROUTING-001",
@@ -502,7 +507,7 @@ def test_per_task_cap_sums_existing_spend_for_same_task_only() -> None:
     budget["per_task_cap_usd"] = "2.00"
     payload["spend_receipts"] = [
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": "spend-20260517T073000Z-task-a-used",
             "task_id": "capacity-routing-quota-spend-ledger",
             "authority_case": "CASE-CAPACITY-ROUTING-001",
@@ -527,7 +532,7 @@ def test_per_task_cap_sums_existing_spend_for_same_task_only() -> None:
             "support_artifact_authority": "none",
         },
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": "spend-20260517T073500Z-task-b-used",
             "task_id": "other-task",
             "authority_case": "CASE-CAPACITY-ROUTING-001",
@@ -577,7 +582,7 @@ def test_reconciled_zero_actual_spend_counts_zero_against_caps() -> None:
     budget["per_task_cap_usd"] = "0.05"
     payload["spend_receipts"] = [
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": "spend-20260517T073000Z-zero-actual",
             "task_id": "capacity-routing-quota-spend-ledger",
             "authority_case": "CASE-CAPACITY-ROUTING-001",
@@ -1160,7 +1165,7 @@ def test_overdue_reconciliation_freezes_otherwise_valid_budget() -> None:
     payload = _active_budget_payload()
     payload["spend_receipts"] = [
         {
-            "spend_receipt_schema": 1,
+            "spend_receipt_schema": 2,
             "spend_id": "spend-20260509T203000Z-unreconciled",
             "task_id": "capacity-routing-quota-spend-ledger",
             "authority_case": "CASE-CAPACITY-ROUTING-001",
@@ -2070,11 +2075,12 @@ def test_spend_receipt_meters_effort_and_structured_model_id() -> None:
     """effort defaults to NONE and model_id to None (free-text model_or_engine is retained), and a
     receipt can record a structured dated model_id + the effort the spend was incurred at — so the
     spend plane keys on the same execution axes the route descriptor does."""
-    ledger = QuotaSpendLedger.model_validate(
-        json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
-    )
+    fixture = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    fixture["spend_receipts"][0].pop("effort_provenance")
+    ledger = QuotaSpendLedger.model_validate(fixture)
     base = ledger.spend_receipts[0]
     assert base.effort is Effort.NONE
+    assert base.effort_provenance is EffortProvenance.ABSENT
     assert base.model_id is None  # legacy receipts carry only free-text model_or_engine
 
     payload = base.model_dump(mode="json")
@@ -2084,3 +2090,258 @@ def test_spend_receipt_meters_effort_and_structured_model_id() -> None:
     assert metered.model_id is ModelId.CLAUDE_OPUS_4_8
     assert metered.effort is Effort.XHIGH
     assert metered.model_or_engine == base.model_or_engine  # free-text identity retained alongside
+
+
+def test_spend_receipt_schema_2_renders_resource_absence_and_rejects_zero_default() -> None:
+    ledger = QuotaSpendLedger.model_validate(
+        json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    )
+    receipt = ledger.spend_receipts[0]
+
+    assert receipt.spend_receipt_schema == 2
+    assert receipt.compute_unit_value is None
+    payload = receipt.model_dump(mode="json")
+    assert payload["compute_unit_status"] == "absent"
+    assert payload["compute_unit_value"] == "absent"
+    assert payload["compute_unit_provenance"] == "absent"
+    assert payload["wall_latency_ms"] == "absent"
+    assert payload["ttfb_ms"] == "absent"
+    assert payload["input_tokens"] == "absent"
+    assert payload["output_tokens"] == "absent"
+
+    payload["compute_unit_value"] = "0"
+    with pytest.raises(ValidationError, match="absent compute unit cannot carry a value"):
+        SpendReceipt.model_validate(payload)
+
+
+def test_spend_receipt_schema_1_upgrades_losslessly_and_unknown_schema_fails_closed() -> None:
+    payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))["spend_receipts"][
+        0
+    ]
+    payload["spend_receipt_schema"] = 1
+    for field_name in (
+        "effort_provenance",
+        "wall_latency_ms",
+        "ttfb_ms",
+        "input_tokens",
+        "output_tokens",
+        "compute_unit_status",
+        "compute_unit_value",
+        "compute_unit_provenance",
+        "tokens_do_not_explain_latency",
+    ):
+        payload.pop(field_name)
+
+    migrated = SpendReceipt.model_validate(payload)
+
+    assert migrated.spend_receipt_schema == 2
+    assert migrated.spend_id == payload["spend_id"]
+    assert str(migrated.estimated_cost_usd) == "2.00"
+    rendered = migrated.model_dump(mode="json")
+    assert rendered["compute_unit_value"] == "absent"
+    assert rendered["wall_latency_ms"] == "absent"
+
+    payload["spend_receipt_schema"] = 3
+    with pytest.raises(ValidationError, match="Input should be 2"):
+        SpendReceipt.model_validate(payload)
+
+
+def test_spend_receipt_derives_tokens_do_not_explain_latency_only_with_both_inputs() -> None:
+    """The pre-registered inequality is
+    ``wall_latency_ms > TOKENS_DO_NOT_EXPLAIN_LATENCY_WALL_THRESHOLD_MS`` AND
+    ``output_tokens < TOKENS_DO_NOT_EXPLAIN_LATENCY_OUTPUT_TOKEN_THRESHOLD``.
+    """
+    ledger = QuotaSpendLedger.model_validate(
+        json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
+    )
+    payload = ledger.spend_receipts[0].model_dump(mode="json")
+    payload["wall_latency_ms"] = 30_001
+    payload["output_tokens"] = 127
+    high_wall_low_output = SpendReceipt.model_validate(payload)
+    assert high_wall_low_output.tokens_do_not_explain_latency is True
+
+    payload["wall_latency_ms"] = "absent"
+    wall_absent = SpendReceipt.model_validate(payload)
+    assert wall_absent.tokens_do_not_explain_latency is None
+    assert wall_absent.model_dump(mode="json")["tokens_do_not_explain_latency"] == "absent"
+
+
+@pytest.mark.parametrize(
+    ("wall_latency_ms", "output_tokens", "expected"),
+    [
+        pytest.param(30_001, 127, True, id="high-wall-low-output"),
+        pytest.param(29_999, 127, False, id="low-wall-low-output"),
+        pytest.param(30_001, 129, False, id="high-wall-high-output"),
+        pytest.param(29_999, 129, False, id="low-wall-high-output"),
+        pytest.param(30_000, 127, False, id="exact-wall-threshold"),
+        pytest.param(30_001, 128, False, id="exact-output-threshold"),
+        pytest.param(30_000, 128, False, id="both-exact-thresholds"),
+        pytest.param(None, 127, None, id="missing-wall"),
+        pytest.param(30_001, None, None, id="missing-output"),
+        pytest.param(None, None, None, id="both-missing"),
+    ],
+)
+def test_spend_receipt_latency_truth_table(
+    wall_latency_ms: int | None, output_tokens: int | None, expected: bool | None
+) -> None:
+    payload = _payload()["spend_receipts"][0]
+    payload.update(wall_latency_ms=wall_latency_ms, output_tokens=output_tokens)
+    # Caller-supplied derived values must never override either the inequality
+    # or explicit absence; this also checks the serializer's False/absent split.
+    payload["tokens_do_not_explain_latency"] = expected is not True
+    receipt = SpendReceipt.model_validate(payload)
+    assert receipt.tokens_do_not_explain_latency is expected
+    rendered = receipt.model_dump(mode="json")
+    assert rendered["tokens_do_not_explain_latency"] == ("absent" if expected is None else expected)
+    assert receipt.compute_unit_status is ComputeUnitStatus.ABSENT
+    assert receipt.compute_unit_value is None
+
+
+@pytest.mark.parametrize("provenance", ["requested", "observed"])
+def test_spend_receipt_preserves_explicit_effort_provenance(provenance: str) -> None:
+    payload = _payload()["spend_receipts"][0]
+    payload.update(effort="xhigh", effort_provenance=provenance)
+    receipt = SpendReceipt.model_validate(payload)
+    assert receipt.effort is Effort.XHIGH
+    assert receipt.effort_provenance is EffortProvenance(provenance)
+    rendered = receipt.model_dump(mode="json")
+    assert rendered["effort_provenance"] == provenance
+    assert SpendReceipt.model_validate(rendered).effort_provenance is EffortProvenance(provenance)
+
+
+def test_spend_receipt_does_not_infer_effort_provenance() -> None:
+    payload = _payload()["spend_receipts"][0]
+    payload.update(effort="xhigh")
+    payload.pop("effort_provenance")
+    assert SpendReceipt.model_validate(payload).effort_provenance is EffortProvenance.ABSENT
+
+
+@pytest.mark.parametrize("missing_value", [None, "absent"])
+def test_reported_compute_unit_requires_value(missing_value: str | None) -> None:
+    payload = _payload()["spend_receipts"][0]
+    payload.update(
+        run_id="run-compute-missing-value",
+        compute_unit_status="reported",
+        compute_unit_value=missing_value,
+        compute_unit_provenance="provider_field",
+    )
+    with pytest.raises(ValidationError, match="reported compute unit requires a value"):
+        SpendReceipt.model_validate(payload)
+
+
+@pytest.mark.parametrize("provenance", ["absent", "inferred"])
+def test_reported_compute_unit_rejects_invalid_provenance(provenance: str) -> None:
+    payload = _payload()["spend_receipts"][0]
+    payload.update(
+        run_id="run-compute-invalid-provenance",
+        compute_unit_status="reported",
+        compute_unit_value="reasoning_items:7",
+        compute_unit_provenance=provenance,
+    )
+    error = (
+        "reported compute unit requires provider_field provenance"
+        if provenance == "absent"
+        else "Input should be 'provider_field' or 'absent'"
+    )
+    with pytest.raises(ValidationError, match=error):
+        SpendReceipt.model_validate(payload)
+
+
+def test_spend_receipt_has_no_latency_inferred_depth_or_step_field() -> None:
+    assert not {
+        field_name
+        for field_name in SpendReceipt.model_fields
+        if "depth" in field_name or "step" in field_name
+    }
+
+
+def _reported_compute_receipt(
+    *,
+    spend_id: str,
+    run_id: str | None,
+    compute_unit_value: str,
+) -> SpendReceipt:
+    payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))["spend_receipts"][
+        0
+    ]
+    payload.update(
+        {
+            "spend_id": spend_id,
+            "run_id": run_id,
+            "compute_unit_status": "reported",
+            "compute_unit_value": compute_unit_value,
+            "compute_unit_provenance": "provider_field",
+        }
+    )
+    return SpendReceipt.model_validate(payload)
+
+
+def test_reported_compute_unit_requires_run_id_for_r7_comparison() -> None:
+    with pytest.raises(ValidationError, match="reported compute unit requires run_id"):
+        _reported_compute_receipt(
+            spend_id="spend-20260509T193001Z-compute-without-run",
+            run_id=None,
+            compute_unit_value="reasoning_items:7",
+        )
+
+
+def test_same_run_reported_compute_unit_change_is_classified_and_rejected_as_r7() -> None:
+    receipts = (
+        _reported_compute_receipt(
+            spend_id="spend-20260509T193001Z-compute-run-first",
+            run_id="run-compute-fixture-001",
+            compute_unit_value="reasoning_items:7",
+        ),
+        _reported_compute_receipt(
+            spend_id="spend-20260509T193002Z-compute-run-second",
+            run_id="run-compute-fixture-001",
+            compute_unit_value="reasoning_items:11",
+        ),
+    )
+
+    events = classify_reported_compute_unit_drift(receipts)
+    assert events[0].classification == "r7_compute_unit_drift"
+    assert events == (
+        ComputeUnitDriftEvent(
+            run_id="run-compute-fixture-001",
+            compute_unit_values=("reasoning_items:11", "reasoning_items:7"),
+            spend_receipt_ids=(
+                "spend-20260509T193001Z-compute-run-first",
+                "spend-20260509T193002Z-compute-run-second",
+            ),
+        ),
+    )
+
+    payload = _payload()
+    payload["spend_receipts"] = [receipt.model_dump(mode="json") for receipt in receipts]
+    with pytest.raises(
+        ValidationError, match="r7_compute_unit_drift.*run-compute-fixture-001"
+    ) as exc_info:
+        QuotaSpendLedger.model_validate(payload)
+    message = str(exc_info.value)
+    assert "uv run scripts/check-quota-spend-ledger --fixture <preserved-ledger.json>" in message
+    assert "reconcile the named receipts against provider evidence" in message
+    assert "preserve all spend history and original relay receipts; never discard spend" in message
+    assert "docs/runbooks/pr-4621-receipt-schema-2.md#compute-unit-drift-recovery" in message
+
+
+def test_reported_compute_unit_changes_across_runs_are_not_r7_drift() -> None:
+    receipts = (
+        _reported_compute_receipt(
+            spend_id="spend-20260509T193001Z-compute-run-a",
+            run_id="run-compute-fixture-a",
+            compute_unit_value="reasoning_items:7",
+        ),
+        _reported_compute_receipt(
+            spend_id="spend-20260509T193002Z-compute-run-b",
+            run_id="run-compute-fixture-b",
+            compute_unit_value="reasoning_items:11",
+        ),
+    )
+
+    assert all(receipt.compute_unit_status is ComputeUnitStatus.REPORTED for receipt in receipts)
+    assert all(
+        receipt.compute_unit_provenance is ComputeUnitProvenance.PROVIDER_FIELD
+        for receipt in receipts
+    )
+    assert classify_reported_compute_unit_drift(receipts) == ()

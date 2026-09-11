@@ -36,6 +36,10 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 )
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
+LEGACY_SPEND_RECEIPT_SCHEMA = 1
+CURRENT_SPEND_RECEIPT_SCHEMA = 2
+TOKENS_DO_NOT_EXPLAIN_LATENCY_WALL_THRESHOLD_MS = 30_000
+TOKENS_DO_NOT_EXPLAIN_LATENCY_OUTPUT_TOKEN_THRESHOLD = 128
 CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
     {"claude.headless.full", "claude.review.opus"}
 )
@@ -222,6 +226,22 @@ class Effort(StrEnum):
     HIGH = "high"
     XHIGH = "xhigh"
     MAX = "max"
+
+
+class ComputeUnitStatus(StrEnum):
+    REPORTED = "reported"
+    ABSENT = "absent"
+
+
+class ComputeUnitProvenance(StrEnum):
+    PROVIDER_FIELD = "provider_field"
+    ABSENT = "absent"
+
+
+class EffortProvenance(StrEnum):
+    REQUESTED = "requested"
+    OBSERVED = "observed"
+    ABSENT = "absent"
 
 
 class ModelId(StrEnum):
@@ -434,10 +454,11 @@ class TransitionBudget(StrictModel):
 class SpendReceipt(StrictModel):
     """Estimated or reconciled spend event under a transition budget."""
 
-    spend_receipt_schema: Literal[1] = 1
+    spend_receipt_schema: Literal[2] = 2
     spend_id: str = Field(pattern=r"^spend-\d{8}T\d{6}Z-[a-z0-9_.:-]+$")
     task_id: str = Field(min_length=1)
     task_hash: str | None = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$")
+    run_id: str | None = Field(default=None, pattern=r"^run-[a-z0-9][a-z0-9_.:-]*$")
     authority_case: str = Field(min_length=1)
     route_id: str = Field(min_length=1)
     capacity_pool: CapacityPool
@@ -451,6 +472,15 @@ class SpendReceipt(StrictModel):
     model_id: ModelId | None = None
     effort: Effort = Effort.NONE
     quantization: Quantization = Quantization.NOT_APPLICABLE
+    effort_provenance: EffortProvenance = EffortProvenance.ABSENT
+    wall_latency_ms: int | None = Field(default=None, ge=0)
+    ttfb_ms: int | None = Field(default=None, ge=0)
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    compute_unit_status: ComputeUnitStatus = ComputeUnitStatus.ABSENT
+    compute_unit_value: str | None = Field(default=None, min_length=1)
+    compute_unit_provenance: ComputeUnitProvenance = ComputeUnitProvenance.ABSENT
+    tokens_do_not_explain_latency: bool | None = None
     auth_surface: AuthSurface
     quality_floor: str = Field(min_length=1)
     quality_preservation_reason: str = Field(min_length=1)
@@ -465,6 +495,32 @@ class SpendReceipt(StrictModel):
     reconciliation_reason: str | None = None
     artifact_refs: tuple[str, ...] = Field(default=())
     support_artifact_authority: SupportArtifactAuthority = SupportArtifactAuthority.NONE
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_rendered_absence(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        # Schema 1 allowed this discriminator to be omitted because it defaulted
+        # to 1. Upgrade both explicit and implicit schema-1 receipts in memory;
+        # every historical spend field remains untouched and schema-2-only
+        # resource fields take their typed absence defaults below.
+        if payload.get("spend_receipt_schema", LEGACY_SPEND_RECEIPT_SCHEMA) == (
+            LEGACY_SPEND_RECEIPT_SCHEMA
+        ):
+            payload["spend_receipt_schema"] = CURRENT_SPEND_RECEIPT_SCHEMA
+        for field_name in (
+            "wall_latency_ms",
+            "ttfb_ms",
+            "input_tokens",
+            "output_tokens",
+            "compute_unit_value",
+            "tokens_do_not_explain_latency",
+        ):
+            if payload.get(field_name) == "absent":
+                payload[field_name] = None
+        return payload
 
     @model_validator(mode="after")
     def _receipt_contract(self) -> Self:
@@ -500,11 +556,37 @@ class SpendReceipt(StrictModel):
                 raise ValueError(f"{self.spend_id} frozen/refused spend cannot claim actual cost")
             if self.reconciled_at is None or not self.reconciliation_reason:
                 raise ValueError(f"{self.spend_id} frozen/refused spend requires review evidence")
+        if self.compute_unit_status is ComputeUnitStatus.ABSENT:
+            if self.compute_unit_value is not None:
+                raise ValueError(f"{self.spend_id} absent compute unit cannot carry a value")
+            if self.compute_unit_provenance is not ComputeUnitProvenance.ABSENT:
+                raise ValueError(f"{self.spend_id} absent compute unit requires absent provenance")
+        else:
+            if self.run_id is None:
+                raise ValueError(f"{self.spend_id} reported compute unit requires run_id")
+            if self.compute_unit_value is None:
+                raise ValueError(f"{self.spend_id} reported compute unit requires a value")
+            if self.compute_unit_provenance is not ComputeUnitProvenance.PROVIDER_FIELD:
+                raise ValueError(
+                    f"{self.spend_id} reported compute unit requires provider_field provenance"
+                )
+        tokens_do_not_explain_latency = None
+        if self.wall_latency_ms is not None and self.output_tokens is not None:
+            tokens_do_not_explain_latency = (
+                self.wall_latency_ms > TOKENS_DO_NOT_EXPLAIN_LATENCY_WALL_THRESHOLD_MS
+                and self.output_tokens < TOKENS_DO_NOT_EXPLAIN_LATENCY_OUTPUT_TOKEN_THRESHOLD
+            )
+        object.__setattr__(
+            self,
+            "tokens_do_not_explain_latency",
+            tokens_do_not_explain_latency,
+        )
         _reject_private_or_identity_refs(
             _refs(
                 self.spend_id,
                 self.task_id,
                 self.task_hash,
+                self.run_id,
                 self.authority_case,
                 self.route_id,
                 self.budget_id,
@@ -513,6 +595,7 @@ class SpendReceipt(StrictModel):
                 self.model_id.value if self.model_id is not None else None,
                 self.effort.value,
                 self.quantization.value,
+                self.compute_unit_value,
                 self.quality_floor,
                 self.quality_preservation_reason,
                 self.reconciliation_reason,
@@ -523,10 +606,22 @@ class SpendReceipt(StrictModel):
         return self
 
     @model_serializer(mode="wrap")
-    def _serialize_without_empty_task_hash(self, handler: Any) -> dict[str, Any]:
+    def _serialize_receipt(self, handler: Any) -> dict[str, Any]:
         payload = handler(self)
         if payload.get("task_hash") is None:
             payload.pop("task_hash", None)
+        if payload.get("run_id") is None:
+            payload.pop("run_id", None)
+        for field_name in (
+            "wall_latency_ms",
+            "ttfb_ms",
+            "input_tokens",
+            "output_tokens",
+            "compute_unit_value",
+            "tokens_do_not_explain_latency",
+        ):
+            if payload.get(field_name) is None:
+                payload[field_name] = "absent"
         return payload
 
     def cost_against_cap(self) -> Decimal:
@@ -547,6 +642,51 @@ class SpendReceipt(StrictModel):
 
     def is_frozen_refused(self) -> bool:
         return self.reconciliation_state is SpendReconciliationState.FROZEN_REFUSED
+
+
+class ComputeUnitDriftEvent(StrictModel):
+    """A provider-reported compute unit changed inside one explicitly joined run."""
+
+    classification: Literal["r7_compute_unit_drift"] = "r7_compute_unit_drift"
+    run_id: str = Field(pattern=r"^run-[a-z0-9][a-z0-9_.:-]*$")
+    compute_unit_values: tuple[str, ...] = Field(min_length=2)
+    spend_receipt_ids: tuple[str, ...] = Field(min_length=2)
+
+
+def classify_reported_compute_unit_drift(
+    receipts: tuple[SpendReceipt, ...],
+) -> tuple[ComputeUnitDriftEvent, ...]:
+    """Classify R7 only inside an explicit run; cross-run changes are not R7."""
+
+    reported_by_run: dict[str, list[SpendReceipt]] = {}
+    for receipt in receipts:
+        if receipt.compute_unit_status is not ComputeUnitStatus.REPORTED:
+            continue
+        # SpendReceipt rejects reported values without this join key, so a
+        # reported unit can never silently escape the within-run comparison.
+        assert receipt.run_id is not None
+        reported_by_run.setdefault(receipt.run_id, []).append(receipt)
+
+    events: list[ComputeUnitDriftEvent] = []
+    for run_id, run_receipts in sorted(reported_by_run.items()):
+        values = tuple(
+            sorted(
+                {
+                    receipt.compute_unit_value
+                    for receipt in run_receipts
+                    if receipt.compute_unit_value is not None
+                }
+            )
+        )
+        if len(values) > 1:
+            events.append(
+                ComputeUnitDriftEvent(
+                    run_id=run_id,
+                    compute_unit_values=values,
+                    spend_receipt_ids=tuple(sorted(receipt.spend_id for receipt in run_receipts)),
+                )
+            )
+    return tuple(events)
 
 
 class ProviderDependencyRecord(StrictModel):
@@ -920,6 +1060,20 @@ class QuotaSpendLedger(StrictModel):
         for receipt in self.spend_receipts:
             if receipt.budget_id and receipt.budget_id not in budget_ids:
                 raise ValueError(f"{receipt.spend_id} references unknown budget")
+        compute_unit_drifts = classify_reported_compute_unit_drift(self.spend_receipts)
+        if compute_unit_drifts:
+            details = "; ".join(
+                f"{event.classification}:{event.run_id} "
+                f"receipts={','.join(event.spend_receipt_ids)}"
+                for event in compute_unit_drifts
+            )
+            raise ValueError(
+                f"{details}; recheck: uv run scripts/check-quota-spend-ledger "
+                "--fixture <preserved-ledger.json>; reconcile the named receipts against "
+                "provider evidence; preserve all spend history and original relay receipts; "
+                "never discard spend. Recovery: "
+                "docs/runbooks/pr-4621-receipt-schema-2.md#compute-unit-drift-recovery"
+            )
         for decision in self.spend_gate_decisions:
             if decision.budget_id and decision.budget_id not in budget_ids:
                 raise ValueError(f"{decision.decision_id} references unknown budget")
