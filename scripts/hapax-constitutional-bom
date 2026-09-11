@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Generate or verify the Constitutional Bill of Materials."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+
+from shared.constitutional_bom import ARTIFACT_PATH, generate_bom, validate_completeness
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", type=Path, default=ARTIFACT_PATH)
+    parser.add_argument("--check", action="store_true", help="verify the committed artifact")
+    args = parser.parse_args()
+    if args.check:
+        artifact = json.loads(args.output.read_text(encoding="utf-8"))
+        validate_completeness(artifact)
+        print(f"BOM complete: {args.output} (unknown_count={artifact['unknown_count']})")
+        return 0
+    artifact = generate_bom()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
+    print(f"Generated {args.output} (unknown_count={artifact['unknown_count']})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
