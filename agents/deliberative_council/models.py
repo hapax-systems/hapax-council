@@ -21,6 +21,26 @@ _MEMBER_EXECUTION_FIELDS = {
     **_PROVENANCE_FIELDS,
 }
 _FAILURE_FIELDS = {"model_alias": str, "reason": str}
+_PHASE_FAILURE_FIELDS = {"phase": int, "reason": str}
+_REVISION_FIELDS = {
+    "model_alias": str,
+    "attempted": bool,
+    "status": str,
+    "original_retained": bool,
+    "phase1_served_model": str,
+    "phase4_served_model": str,
+    "revised_axes": [str],
+    "retained_axes": [str],
+    "reason": str,
+    "detail": {
+        # JSON text preserves rejected value types, including containers, without
+        # allowing arbitrary nested records into the execution schema.
+        "scores": [{"axis": str, "value_json": str}],
+        "missing_axes": [str],
+        "received_type": str,
+        "exception_type": str,
+    },
+}
 _HEALTH_FIELDS = {
     "members_requested": int,
     "members_valid": int,
@@ -77,7 +97,7 @@ _EXECUTION_RECEIPT_SCHEMA = {
     "shortcircuited": bool,
     "council_health": _HEALTH_FIELDS,
     "models_used": [str],
-    "served_models": [str],
+    "served_models": [str],  # Phase 1, positional relative to models_used.
     "ruler_substituted": bool,
     "failed_members": [_FAILURE_FIELDS],
     "cache_policy": {},  # Named model indices are bound at the receipt boundary.
@@ -85,7 +105,12 @@ _EXECUTION_RECEIPT_SCHEMA = {
     "route_resource_admission": str,
     "capability_admission_source": str,
     "capability_admission_call_count": int,
+    "phases_requested": [int],
+    "phases_attempted": [int],
     "phases_completed": [int],
+    "phases_failed": [_PHASE_FAILURE_FIELDS],
+    "phases_not_attempted": [_PHASE_FAILURE_FIELDS],
+    "phase4_revisions": [_REVISION_FIELDS],
     "member_execution": [_MEMBER_EXECUTION_FIELDS],
 }
 EXECUTION_RECEIPT_FIELDS = frozenset(_EXECUTION_RECEIPT_SCHEMA)
