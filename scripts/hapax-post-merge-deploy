@@ -42,16 +42,17 @@
 #   systemd/scripts/*              → installer helper scripts; no direct deploy
 #   systemd/watchdogs/*            → install executable into ~/.local/bin
 #   config/root-required/oom-containment.files and every path it owns
-#                                  → install P0 OOM containment policy into
-#                                    /etc/default, /etc/systemd/system, and
-#                                    ~/.config/systemd/user; apply active
-#                                    app.slice properties without restarting
-#                                    the live slice
+#                                  → validate and stage exact-SHA desired
+#                                    evidence; production application remains
+#                                    unavailable until a separately authorized
+#                                    root broker exists
 #   systemd/logrotate.d/*          → logrotate configs; require sudo install
 #   systemd/system/**              → other system-scoped configs; require sudo install
 #   config/root-required/apcupsd-power-alerts.files and every path it owns
-#                                  → install podium apcupsd config/hooks/helper
-#                                    into /etc/apcupsd from the merge SHA
+#                                  → validate and stage exact-SHA APC desired
+#                                    evidence; production application remains
+#                                    unavailable until a separately authorized
+#                                    root broker exists
 #   scripts/hapax-recovery-plane-install, scripts/hapax-p0-incident-intake,
 #   scripts/hapax-coord-deploy, shared/{__init__,jsonl_append,p0_incident_intake}.py
 #                                  → refresh the stable D2 recovery bundle under
@@ -96,6 +97,11 @@
 # Exits non-zero if any deploy step failed (or, in --report-coverage
 # mode, if any systemd/** path is unclassified).
 set -euo pipefail
+# Repository selectors are never deployment inputs. Explicit repository roots
+# and immutable commit objects are the only accepted identity surface.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE
+export GIT_NO_REPLACE_OBJECTS=1
 ORIGINAL_ARGS=("$@")
 
 DRY_RUN=0
@@ -104,9 +110,14 @@ COVERAGE_FROM_STDIN=0
 VERIFY_AUTO_ENABLE=0
 CHECK_SYMLINK_DRIFT=0
 SINCE=""
+DEPLOY_CURSOR_SHA=""
 TRACE_READY=0
 TRACE_WRITTEN=0
 SHA=""
+TARGET_FIRST_PARENT=""
+CHANGED_FILES=""
+FILES=""
+SYSTEMD_PENDING_SNAPSHOT="absent"
 if [ "${1:-}" = "--dry-run" ]; then
     DRY_RUN=1
     shift
@@ -153,7 +164,11 @@ WP_SCRIPTS_DIR="$HOME/.local/share/wireplumber/scripts/hapax"
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
 SYSTEMD_RUNTIME_USER_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/user"
 SYSTEMD_USER_PRESET_DIR="$HOME/.config/systemd/user-preset"
+SYSTEMD_SYSTEM_DIR="/etc/systemd/system"
+SYSTEMD_SYSTEM_EXPECTED_UID=0
+SYSTEMD_SYSTEM_TRUST_ROOT="/"
 LOCAL_BIN="$HOME/.local/bin"
+SYSTEMD_RUN_BIN="${HAPAX_POST_MERGE_SYSTEMD_RUN_BIN:-/usr/bin/systemd-run}"
 TRACE_PATH="${HAPAX_POST_MERGE_TRACE_PATH:-$HOME/.cache/hapax/post-merge-traces/post-merge-traces.jsonl}"
 TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
 # Receipt of the last SHA a real deploy cycle ran against (completed or
@@ -163,16 +178,21 @@ TRACE_MAX_RECORDS="${HAPAX_POST_MERGE_TRACE_MAX_RECORDS:-200}"
 # trace file by default so a test override of HAPAX_POST_MERGE_TRACE_PATH
 # isolates it automatically.
 LAST_DEPLOYED_SHA_PATH="${HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH:-$(dirname "$TRACE_PATH")/last-deployed-sha}"
+# Durable replay set for system-manager work that could not be witnessed at the
+# deploy SHA. The queue stores source paths only; every replay re-evaluates
+# those paths against the newest exact SHA rather than trusting old bytes.
+SYSTEMD_RUNTIME_PENDING_PATH="${HAPAX_POST_MERGE_SYSTEMD_PENDING_PATH:-$(dirname "$TRACE_PATH")/systemd-runtime-pending.json}"
 RECOVERY_INSTALLER_PATH="scripts/hapax-recovery-plane-install"
 OOM_CONTAINMENT_INSTALLER_PATH="scripts/install-p0-oom-containment"
 APCUPSD_INSTALLER_PATH="scripts/install-apcupsd-power-alerts"
-ROOT_REQUIRED_RC=77
 ROOT_DEFER_DIR="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$HOME/.cache/hapax/post-merge-root-required}"
 ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$HOME/.local/state/hapax/root-required}"
+DEPLOY_CURSOR_ESTABLISHED_PATH="$ROOT_REQUIRED_STATE_ROOT/post-merge-deploy-cursor-established"
 ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
 ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
 ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
+ROOT_REQUIRED_LOCK_ANCHOR=""
 RECOVERY_BUNDLE_DEST="${HAPAX_RECOVERY_BUNDLE_DEST:-$HOME/.local/lib/hapax-recovery/council/current}"
 RECOVERY_BUNDLE_SOURCE_FILES=(
     scripts/hapax-p0-incident-intake
@@ -186,13 +206,152 @@ RECOVERY_BUNDLE_REQUIRED_FILES=(
     manifest.json
 )
 
+configure_root_required_state_domain() {
+    local test_root="${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT:-}"
+    local selector nss_home
+    if [ -n "$test_root" ]; then
+        /usr/bin/python3 -I -S - \
+            "$test_root" \
+            "HOME=$HOME" \
+            "HAPAX_POST_MERGE_TRACE_PATH=$TRACE_PATH" \
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH=$LAST_DEPLOYED_SHA_PATH" \
+            "HAPAX_POST_MERGE_CURSOR_ESTABLISHED_PATH=$DEPLOY_CURSOR_ESTABLISHED_PATH" \
+            "HAPAX_POST_MERGE_SYSTEMD_PENDING_PATH=$SYSTEMD_RUNTIME_PENDING_PATH" \
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR=$ROOT_DEFER_DIR" \
+            "HAPAX_ROOT_REQUIRED_STATE_ROOT=$ROOT_REQUIRED_STATE_ROOT" \
+            "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
+            "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
+            "HAPAX_ROOT_REQUIRED_LOCK_FILE=$ROOT_REQUIRED_LOCK_FILE" \
+            "HAPAX_POST_MERGE_SYSTEMD_RUN_OVERRIDE=${HAPAX_POST_MERGE_SYSTEMD_RUN_BIN:-}" \
+            "HAPAX_RECOVERY_BUNDLE_DEST=$RECOVERY_BUNDLE_DEST" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+
+root = sys.argv[1]
+if not os.path.isabs(root) or "\n" in root or len(root) > 4096:
+    print("hapax-post-merge-deploy: isolated test root must be one absolute path", file=sys.stderr)
+    raise SystemExit(2)
+root = os.path.abspath(root)
+try:
+    root_stat = os.lstat(root)
+except OSError as exc:
+    print(f"hapax-post-merge-deploy: invalid isolated test root {root}: {exc}", file=sys.stderr)
+    raise SystemExit(2) from exc
+if (
+    not stat.S_ISDIR(root_stat.st_mode)
+    or root_stat.st_uid != os.geteuid()
+    or root_stat.st_mode & 0o022
+    or os.path.realpath(root) != root
+):
+    print(
+        "hapax-post-merge-deploy: isolated test root must be a caller-owned, "
+        "non-symlink, non-group/world-writable directory",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+for item in sys.argv[2:]:
+    label, separator, candidate = item.partition("=")
+    if label == "HAPAX_POST_MERGE_SYSTEMD_RUN_OVERRIDE" and not candidate:
+        continue
+    if not separator or not candidate or not os.path.isabs(candidate) or "\n" in candidate:
+        print(f"hapax-post-merge-deploy: {label} is invalid in isolated test mode", file=sys.stderr)
+        raise SystemExit(2)
+    lexical = os.path.abspath(candidate)
+    resolved = os.path.realpath(candidate)
+    try:
+        lexical_inside = os.path.commonpath((root, lexical)) == root
+        resolved_inside = os.path.commonpath((root, resolved)) == root
+    except ValueError:
+        lexical_inside = resolved_inside = False
+    if not lexical_inside or not resolved_inside or lexical == root:
+        print(
+            f"hapax-post-merge-deploy: {label} escapes isolated test root {root}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if label == "HAPAX_POST_MERGE_SYSTEMD_RUN_OVERRIDE":
+        try:
+            executable = os.lstat(candidate)
+        except OSError as exc:
+            print(
+                f"hapax-post-merge-deploy: {label} is unavailable: {exc}",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from exc
+        if (
+            not stat.S_ISREG(executable.st_mode)
+            or executable.st_uid != os.geteuid()
+            or executable.st_mode & 0o022
+            or not executable.st_mode & 0o100
+            or resolved != lexical
+        ):
+            print(
+                f"hapax-post-merge-deploy: {label} is not a trusted isolated executable",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+PY
+        ROOT_REQUIRED_LOCK_ANCHOR="/"
+        return
+    fi
+
+    for selector in \
+        HAPAX_POST_MERGE_TRACE_PATH \
+        HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH \
+        HAPAX_POST_MERGE_SYSTEMD_PENDING_PATH \
+        HAPAX_POST_MERGE_ROOT_DEFER_DIR \
+        HAPAX_ROOT_REQUIRED_STATE_ROOT \
+        HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT \
+        HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT \
+        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT \
+        HAPAX_ROOT_REQUIRED_LOCK_FILE \
+        HAPAX_POST_MERGE_SYSTEMD_RUN_BIN; do
+        if [[ -v "$selector" ]]; then
+            echo "hapax-post-merge-deploy: $selector selects caller-selected production state; remove it or use a confined HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT harness" >&2
+            return 2
+        fi
+    done
+    nss_home="$(/usr/bin/python3 -I -S - <<'PY'
+import os
+import pwd
+
+print(pwd.getpwuid(os.geteuid()).pw_dir)
+PY
+)"
+    if [ -z "$nss_home" ] || [ "${nss_home#/}" = "$nss_home" ] || [ "$HOME" != "$nss_home" ]; then
+        echo "hapax-post-merge-deploy: HOME does not match NSS home for UID $(/usr/bin/id -u); refusing a split production state domain" >&2
+        return 2
+    fi
+    TRACE_PATH="$nss_home/.cache/hapax/post-merge-traces/post-merge-traces.jsonl"
+    LAST_DEPLOYED_SHA_PATH="$nss_home/.cache/hapax/post-merge-traces/last-deployed-sha"
+    SYSTEMD_RUNTIME_PENDING_PATH="$nss_home/.cache/hapax/post-merge-traces/systemd-runtime-pending.json"
+    ROOT_DEFER_DIR="$nss_home/.cache/hapax/post-merge-root-required"
+    ROOT_REQUIRED_STATE_ROOT="$nss_home/.local/state/hapax/root-required"
+    DEPLOY_CURSOR_ESTABLISHED_PATH="$ROOT_REQUIRED_STATE_ROOT/post-merge-deploy-cursor-established"
+    ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_STATE_ROOT/current-source"
+    ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/installed-receipts"
+    ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_STATE_ROOT/desired-receipts"
+    ROOT_REQUIRED_LOCK_FILE="$ROOT_REQUIRED_STATE_ROOT/.lock"
+    ROOT_REQUIRED_LOCK_ANCHOR="$nss_home"
+}
+
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
-    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
-        echo "hapax-post-merge-deploy: safe shared lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the package-owned deploy script" >&2
+    local anchor_fd="${HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD:-}"
+    local isolated=0
+    [ -z "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT:-}" ] || isolated=1
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
+        || ! [[ "$anchor_fd" =~ ^[0-9]+$ ]] || [ "$anchor_fd" -lt 3 ]; then
+        echo "hapax-post-merge-deploy: safe shared lock descriptors are absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the package-owned deploy script" >&2
         return 1
     fi
-    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+    /usr/bin/python3 -I -S - "$lock_fd" "$anchor_fd" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$ROOT_REQUIRED_LOCK_ANCHOR" "$isolated" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -201,10 +360,57 @@ import stat
 import sys
 
 fd = int(sys.argv[1])
-lock_path = sys.argv[2]
+anchor_fd = int(sys.argv[2])
+lock_path = os.path.abspath(sys.argv[3])
+anchor_path = os.path.abspath(sys.argv[4])
+isolated = sys.argv[5] == "1"
+
+
+def validate_anchor() -> None:
+    try:
+        inode = os.fstat(anchor_fd)
+        path_inode = os.lstat(anchor_path)
+        parent_path = os.path.dirname(anchor_path)
+        parent_inode = os.lstat(parent_path)
+    except OSError as exc:
+        raise OSError(f"cannot inspect stable lock anchor: {exc}") from exc
+    expected_anchor_uid = 0 if isolated else os.geteuid()
+    if isolated and anchor_path != "/":
+        raise OSError("isolated lock anchor must be the stable filesystem root")
+    if (
+        not stat.S_ISDIR(inode.st_mode)
+        or not stat.S_ISDIR(path_inode.st_mode)
+        or inode.st_uid != expected_anchor_uid
+        or path_inode.st_uid != expected_anchor_uid
+        or inode.st_mode & 0o022
+        or path_inode.st_mode & 0o022
+        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+        or os.path.realpath(anchor_path) != anchor_path
+    ):
+        raise OSError("stable lock anchor is not a trusted caller-owned directory")
+    if not isolated and (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != 0
+        or parent_inode.st_mode & 0o022
+        or os.path.realpath(parent_path) != parent_path
+    ):
+        raise OSError("production lock anchor parent is replaceable by the caller")
+
+
 try:
-    inode = os.fstat(fd)
-    path_inode = os.lstat(lock_path)
+    validate_anchor()
+    fcntl.flock(anchor_fd, fcntl.LOCK_EX)
+    validate_anchor()
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: refused unstable shared lock anchor {anchor_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+
+try:
+    inode_before = os.fstat(fd)
+    path_before = os.lstat(lock_path)
 except OSError as exc:
     print(
         f"hapax-post-merge-deploy: refused invalid shared lock descriptor for {lock_path}: "
@@ -213,12 +419,13 @@ except OSError as exc:
     )
     raise SystemExit(1) from exc
 if (
-    not stat.S_ISREG(inode.st_mode)
-    or not stat.S_ISREG(path_inode.st_mode)
-    or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
-    or inode.st_uid != os.geteuid()
-    or inode.st_nlink != 1
-    or inode.st_mode & 0o022
+    not stat.S_ISREG(inode_before.st_mode)
+    or not stat.S_ISREG(path_before.st_mode)
+    or (inode_before.st_dev, inode_before.st_ino)
+    != (path_before.st_dev, path_before.st_ino)
+    or inode_before.st_uid != os.geteuid()
+    or inode_before.st_nlink != 1
+    or inode_before.st_mode & 0o022
 ):
     print(
         f"hapax-post-merge-deploy: refused invalid shared lock descriptor for {lock_path}; "
@@ -229,15 +436,47 @@ if (
     raise SystemExit(1)
 os.fchmod(fd, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
+try:
+    inode_after = os.fstat(fd)
+    path_after = os.lstat(lock_path)
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: shared lock identity changed while acquiring {lock_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+if (
+    not stat.S_ISREG(inode_after.st_mode)
+    or not stat.S_ISREG(path_after.st_mode)
+    or inode_after.st_uid != os.geteuid()
+    or path_after.st_uid != os.geteuid()
+    or inode_after.st_nlink != 1
+    or path_after.st_nlink != 1
+    or inode_after.st_mode & 0o022
+    or path_after.st_mode & 0o022
+    or (inode_after.st_dev, inode_after.st_ino)
+    != (path_after.st_dev, path_after.st_ino)
+    or (inode_before.st_dev, inode_before.st_ino)
+    != (inode_after.st_dev, inode_after.st_ino)
+):
+    print(
+        f"hapax-post-merge-deploy: shared lock identity changed while acquiring {lock_path}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 PY
 }
 
 reexec_with_safe_root_required_lock() {
-    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ]; then
+    if [ -n "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] \
+        || [ -n "${HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD:-}" ]; then
         acquire_inherited_root_required_lock
         return
     fi
-    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+    local isolated=0
+    [ -z "${HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT:-}" ] || isolated=1
+    exec /usr/bin/python3 -I -S - "$ROOT_REQUIRED_LOCK_ANCHOR" "$ROOT_REQUIRED_LOCK_FILE" \
+        "$isolated" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -246,8 +485,55 @@ import stat
 import subprocess
 import sys
 
-lock_path, script, *args = sys.argv[1:]
+anchor_path, lock_path, isolated_raw, script, *args = sys.argv[1:]
+anchor_path = os.path.abspath(anchor_path)
+lock_path = os.path.abspath(lock_path)
+isolated = isolated_raw == "1"
 os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+
+
+def validate_anchor(anchor_fd: int) -> None:
+    inode = os.fstat(anchor_fd)
+    path_inode = os.lstat(anchor_path)
+    parent_path = os.path.dirname(anchor_path)
+    parent_inode = os.lstat(parent_path)
+    expected_anchor_uid = 0 if isolated else os.geteuid()
+    if isolated and anchor_path != "/":
+        raise OSError("isolated lock anchor must be the stable filesystem root")
+    if (
+        not stat.S_ISDIR(inode.st_mode)
+        or not stat.S_ISDIR(path_inode.st_mode)
+        or inode.st_uid != expected_anchor_uid
+        or path_inode.st_uid != expected_anchor_uid
+        or inode.st_mode & 0o022
+        or path_inode.st_mode & 0o022
+        or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
+        or os.path.realpath(anchor_path) != anchor_path
+    ):
+        raise OSError("stable lock anchor is not a trusted caller-owned directory")
+    if not isolated and (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != 0
+        or parent_inode.st_mode & 0o022
+        or os.path.realpath(parent_path) != parent_path
+    ):
+        raise OSError("production lock anchor parent is replaceable by the caller")
+
+
+try:
+    anchor_fd = os.open(
+        anchor_path,
+        os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_RDONLY,
+    )
+    validate_anchor(anchor_fd)
+    fcntl.flock(anchor_fd, fcntl.LOCK_EX)
+    validate_anchor(anchor_fd)
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: refused unstable shared lock anchor {anchor_path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
 try:
     fd = os.open(
         lock_path,
@@ -262,12 +548,19 @@ except OSError as exc:
     )
     raise SystemExit(1) from exc
 try:
-    inode = os.fstat(fd)
+    inode_before = os.fstat(fd)
+    path_before = os.lstat(lock_path)
     if (
-        not stat.S_ISREG(inode.st_mode)
-        or inode.st_uid != os.geteuid()
-        or inode.st_nlink != 1
-        or inode.st_mode & 0o022
+        not stat.S_ISREG(inode_before.st_mode)
+        or not stat.S_ISREG(path_before.st_mode)
+        or inode_before.st_uid != os.geteuid()
+        or path_before.st_uid != os.geteuid()
+        or inode_before.st_nlink != 1
+        or path_before.st_nlink != 1
+        or inode_before.st_mode & 0o022
+        or path_before.st_mode & 0o022
+        or (inode_before.st_dev, inode_before.st_ino)
+        != (path_before.st_dev, path_before.st_ino)
     ):
         print(
             f"hapax-post-merge-deploy: refused unsafe shared lock inode {lock_path}; expected "
@@ -278,20 +571,232 @@ try:
         raise SystemExit(1)
     os.fchmod(fd, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        inode_after = os.fstat(fd)
+        path_after = os.lstat(lock_path)
+    except OSError as exc:
+        print(
+            f"hapax-post-merge-deploy: shared lock identity changed while acquiring {lock_path}: {exc}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+    if (
+        not stat.S_ISREG(inode_after.st_mode)
+        or not stat.S_ISREG(path_after.st_mode)
+        or inode_after.st_uid != os.geteuid()
+        or path_after.st_uid != os.geteuid()
+        or inode_after.st_nlink != 1
+        or path_after.st_nlink != 1
+        or inode_after.st_mode & 0o022
+        or path_after.st_mode & 0o022
+        or (inode_after.st_dev, inode_after.st_ino)
+        != (path_after.st_dev, path_after.st_ino)
+        or (inode_before.st_dev, inode_before.st_ino)
+        != (inode_after.st_dev, inode_after.st_ino)
+    ):
+        print(
+            f"hapax-post-merge-deploy: shared lock identity changed while acquiring {lock_path}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
+    env["HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD"] = str(anchor_fd)
     env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
     result = subprocess.run(
         [os.path.abspath(script), *args],
         env=env,
-        pass_fds=(fd,),
+        pass_fds=(anchor_fd, fd),
         check=False,
     )
     raise SystemExit(result.returncode)
 finally:
     os.close(fd)
+    os.close(anchor_fd)
 PY
+}
+
+read_last_deployed_sha_under_lock() {
+    /usr/bin/python3 -I -S - \
+        "$LAST_DEPLOYED_SHA_PATH" "$DEPLOY_CURSOR_ESTABLISHED_PATH" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import stat
+import sys
+import tempfile
+
+path = os.path.abspath(sys.argv[1])
+marker = os.path.abspath(sys.argv[2])
+marker_payload = b"hapax-deploy-cursor-established-v1\n"
+if marker == path:
+    raise OSError("deploy cursor and establishment marker must differ")
+
+
+def validate_marker() -> bool:
+    try:
+        marker_before = os.lstat(marker)
+    except FileNotFoundError:
+        return False
+    if (
+        not stat.S_ISREG(marker_before.st_mode)
+        or marker_before.st_uid != os.geteuid()
+        or marker_before.st_nlink != 1
+        or marker_before.st_mode & 0o133
+        or marker_before.st_size != len(marker_payload)
+    ):
+        raise OSError("unsafe deploy-cursor establishment marker")
+    marker_fd = os.open(marker, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        inode = os.fstat(marker_fd)
+        payload = os.read(marker_fd, len(marker_payload) + 1)
+        marker_after = os.lstat(marker)
+    finally:
+        os.close(marker_fd)
+    if (
+        payload != marker_payload
+        or (inode.st_dev, inode.st_ino) != (marker_before.st_dev, marker_before.st_ino)
+        or (inode.st_dev, inode.st_ino) != (marker_after.st_dev, marker_after.st_ino)
+    ):
+        raise OSError("deploy-cursor establishment marker changed during read")
+    return True
+
+
+marker_exists = validate_marker()
+try:
+    path_before = os.lstat(path)
+except FileNotFoundError:
+    if marker_exists:
+        print(
+            "hapax-post-merge-deploy: established deploy cursor is missing; refusing to reset cumulative deployment history",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    raise SystemExit(0)
+except OSError as exc:
+    print(
+        f"hapax-post-merge-deploy: cannot inspect deploy cursor {path}: {exc}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+
+mode = stat.S_IMODE(path_before.st_mode)
+if (
+    not stat.S_ISREG(path_before.st_mode)
+    or path_before.st_uid != os.geteuid()
+    or path_before.st_nlink != 1
+    or mode & 0o133
+    or path_before.st_size != 41
+):
+    print(
+        f"hapax-post-merge-deploy: refused unsafe deploy cursor {path}; expected "
+        "one caller-owned, single-link, non-executable regular file not writable by group/other containing one SHA",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+fd = -1
+try:
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    before = os.fstat(fd)
+    if (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino):
+        raise OSError("cursor path changed before read")
+    payload = os.read(fd, 42)
+    if os.read(fd, 1):
+        raise OSError("cursor exceeded its exact size")
+    after = os.fstat(fd)
+    path_after = os.lstat(path)
+finally:
+    if fd >= 0:
+        os.close(fd)
+
+def generation(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+if generation(before) != generation(after) or generation(after) != generation(path_after):
+    raise OSError("cursor generation changed during read")
+try:
+    value = payload.decode("ascii")
+except UnicodeDecodeError as exc:
+    raise OSError("cursor is not ASCII") from exc
+if re.fullmatch(r"[0-9a-f]{40}\n", value) is None:
+    raise OSError("cursor does not contain one canonical SHA")
+if not marker_exists:
+    marker_parent = os.path.dirname(marker)
+    os.makedirs(marker_parent, mode=0o700, exist_ok=True)
+    marker_fd, marker_temp = tempfile.mkstemp(
+        prefix=f".{os.path.basename(marker)}.tmp.", dir=marker_parent
+    )
+    try:
+        os.fchmod(marker_fd, 0o600)
+        if os.write(marker_fd, marker_payload) != len(marker_payload):
+            raise OSError("short write while migrating deploy-cursor establishment marker")
+        os.fsync(marker_fd)
+        os.close(marker_fd)
+        marker_fd = -1
+        os.replace(marker_temp, marker)
+        dir_fd = os.open(marker_parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if marker_fd >= 0:
+            os.close(marker_fd)
+        try:
+            os.unlink(marker_temp)
+        except FileNotFoundError:
+            pass
+print(value[:-1])
+PY
+}
+
+admit_monotonic_deploy_target() {
+    local current rc
+    DEPLOY_CURSOR_SHA=""
+    if ! current="$(read_last_deployed_sha_under_lock)"; then
+        echo "hapax-post-merge-deploy: cannot establish a trusted deploy cursor before mutation" >&2
+        return 1
+    fi
+    [ -n "$current" ] || return 0
+    DEPLOY_CURSOR_SHA="$current"
+    if ! git -C "$REPO" cat-file -e "$current^{commit}" 2>/dev/null; then
+        echo "hapax-post-merge-deploy: deploy cursor references unavailable commit $current; next action: restore the latest governed cursor object before deploying" >&2
+        return 1
+    fi
+    [ "$current" != "$SHA" ] || return 0
+    if git -C "$REPO" merge-base --is-ancestor "$current" "$SHA"; then
+        return 0
+    else
+        rc=$?
+        if [ "$rc" -ne 1 ]; then
+            echo "hapax-post-merge-deploy: failed to compare deploy cursor $current with candidate $SHA" >&2
+            return 1
+        fi
+    fi
+    if git -C "$REPO" merge-base --is-ancestor "$SHA" "$current"; then
+        echo "hapax-post-merge-deploy: refusing stale deploy target $SHA because cursor $current already supersedes it; governed rollback requires a separate runtime-authorized path" >&2
+        return 1
+    else
+        rc=$?
+        if [ "$rc" -ne 1 ]; then
+            echo "hapax-post-merge-deploy: failed to compare deploy candidate $SHA with cursor $current" >&2
+            return 1
+        fi
+    fi
+    echo "hapax-post-merge-deploy: refusing ancestry-divergent deploy target $SHA from cursor $current; next action: reconcile source history through a governed deploy" >&2
+    return 1
 }
 
 # --- auto-enable marker (reform-improve-deploy-activation-20260601) ---
@@ -509,13 +1014,15 @@ _trace_join() {
 record_post_merge_trace() {
     local status="$1"
     local exit_code="${2:-0}"
+    local cursor_path="${3:-}"
+    local cursor_value="${4:-}"
     local -a recovery_bundle_trace
     recovery_bundle_trace=("${RECOVERY_BUNDLE[@]}")
     if [ "${RECOVERY_BUNDLE_SELF_HEAL:-0}" = "1" ]; then
         recovery_bundle_trace+=("self-heal:$RECOVERY_BUNDLE_DEST")
     fi
 
-    HAPAX_TRACE_FILES="$FILES" \
+    HAPAX_TRACE_FILES="$CHANGED_FILES" \
     HAPAX_TRACE_PW="$(_trace_join "${PW[@]}")" \
     HAPAX_TRACE_HAPAX_CONF="$(_trace_join "${HAPAX_CONF[@]}")" \
     HAPAX_TRACE_WP="$(_trace_join "${WP[@]}")" \
@@ -523,7 +1030,12 @@ record_post_merge_trace() {
     HAPAX_TRACE_SYSTEMD="$(_trace_join "${SYSTEMD[@]}")" \
     HAPAX_TRACE_SYSTEMD_SYSTEM="$(_trace_join "${SYSTEMD_SYSTEM[@]}")" \
     HAPAX_TRACE_SYSTEMD_DROPINS="$(_trace_join "${SYSTEMD_DROPINS[@]}")" \
+    HAPAX_TRACE_SYSTEMD_SYSTEM_DROPINS="$(_trace_join "${SYSTEMD_SYSTEM_DROPINS[@]}")" \
+    HAPAX_TRACE_SYSTEMD_RUNTIME_REPLAYED="$(_trace_join "${SYSTEMD_RUNTIME_REPLAYED[@]}")" \
+    HAPAX_SYSTEMD_PENDING_ADD="$(_trace_join "${SYSTEMD_PENDING_ADD[@]}")" \
+    HAPAX_SYSTEMD_PENDING_REMOVE="$(_trace_join "${SYSTEMD_PENDING_REMOVE[@]}")" \
     HAPAX_TRACE_OOM_CONTAINMENT="$(_trace_join "${OOM_CONTAINMENT[@]}")" \
+    HAPAX_TRACE_RUNTIME_DEFERRED="$(_trace_join "${RUNTIME_DEFERRED[@]}")" \
     HAPAX_TRACE_APCUPSD_POWER_ALERTS="$(_trace_join "${APCUPSD_POWER_ALERTS[@]}")" \
     HAPAX_TRACE_USER_PRESETS="$(_trace_join "${USER_PRESETS[@]}")" \
     HAPAX_TRACE_WATCHDOGS="$(_trace_join "${WATCHDOGS[@]}")" \
@@ -534,19 +1046,120 @@ record_post_merge_trace() {
     HAPAX_TRACE_CANONICAL_GATE="$(_trace_join "${CANONICAL_GATE[@]}")" \
     HAPAX_TRACE_AUDIO_SAFE_RESTARTS="$(_trace_join "${AUDIO_SAFE_RESTARTS[@]}")" \
     HAPAX_TRACE_SYSTEMD_UNCLASSIFIED="$(_trace_join "${SYSTEMD_UNCLASSIFIED[@]}")" \
-    python3 - "$TRACE_PATH" "$TRACE_MAX_RECORDS" "$SHA" "$DRY_RUN" "$status" "$exit_code" \
-        "$DID_ANYTHING" <<'PY'
+    /usr/bin/python3 -I -S - "$TRACE_PATH" "$TRACE_MAX_RECORDS" "$SHA" "$DRY_RUN" "$status" "$exit_code" \
+        "$DID_ANYTHING" "$cursor_path" "$cursor_value" "$SYSTEMD_RUNTIME_PENDING_PATH" \
+        "$SYSTEMD_PENDING_SNAPSHOT" "$DEPLOY_CURSOR_ESTABLISHED_PATH" <<'PY'
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
 import os
+import re
+import stat
 import sys
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 
 def lines(name: str) -> list[str]:
     return [line for line in os.environ.get(name, "").splitlines() if line]
+
+
+PENDING_PATH_RE = re.compile(
+    r"^systemd/units/(?:"
+    r"[A-Za-z0-9_.@:-]+\.(?:service|timer|path|slice|target)|"
+    r"[A-Za-z0-9_.@:-]+\.(?:service|timer|slice|scope)\.d/"
+    r"[A-Za-z0-9_.@:-]+\.conf)$"
+)
+MAX_PENDING_PATHS = 256
+MAX_PENDING_BYTES = 128 * 1024
+
+
+def validate_pending_paths(value: object) -> set[str]:
+    if not isinstance(value, list) or len(value) > MAX_PENDING_PATHS:
+        raise ValueError("pending systemd paths must be a bounded list")
+    paths: set[str] = set()
+    for item in value:
+        if not isinstance(item, str) or PENDING_PATH_RE.fullmatch(item) is None:
+            raise ValueError("pending systemd queue contains an unsafe source path")
+        if item in paths:
+            raise ValueError("pending systemd queue contains a duplicate source path")
+        paths.add(item)
+    return paths
+
+
+def read_pending(path: Path) -> tuple[set[str], str]:
+    if not os.path.lexists(path):
+        return set(), "absent"
+    read_fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(read_fd)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or before.st_mode & 0o077
+            or before.st_size > MAX_PENDING_BYTES
+        ):
+            raise OSError(f"unsafe pending systemd queue inode: {path}")
+        payload = bytearray()
+        while True:
+            chunk = os.read(read_fd, 65536)
+            if not chunk:
+                break
+            payload.extend(chunk)
+            if len(payload) > MAX_PENDING_BYTES:
+                raise OSError("pending systemd queue exceeds the bounded size")
+        after = os.fstat(read_fd)
+        path_after = os.lstat(path)
+    finally:
+        os.close(read_fd)
+    generation = lambda value: (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+    if generation(before) != generation(after) or generation(after) != generation(path_after):
+        raise OSError("pending systemd queue changed during read")
+    data = json.loads(payload)
+    if not isinstance(data, dict) or set(data) != {"schema_version", "paths"}:
+        raise ValueError("pending systemd queue has an unsupported schema")
+    if data["schema_version"] != 1:
+        raise ValueError("pending systemd queue has an unsupported schema version")
+    return validate_pending_paths(data["paths"]), hashlib.sha256(payload).hexdigest()
+
+
+def write_temp(parent: Path, name: str, payload: bytes) -> tuple[int, str]:
+    fd, temp_path = tempfile.mkstemp(prefix=f".{name}.tmp.", dir=parent)
+    try:
+        os.fchmod(fd, 0o600)
+        offset = 0
+        while offset < len(payload):
+            written = os.write(fd, payload[offset:])
+            if written <= 0:
+                raise OSError(f"short write while staging {name}")
+            offset += written
+        os.fsync(fd)
+    except Exception:
+        os.close(fd)
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
+    return fd, temp_path
+
+
+def fsync_dir(parent: Path) -> None:
+    dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 path = Path(sys.argv[1]).expanduser()
@@ -560,6 +1173,20 @@ dry_run = sys.argv[4] == "1"
 status = sys.argv[5]
 exit_code = int(sys.argv[6])
 manual_deploy_executed = sys.argv[7] == "1"
+cursor_path = sys.argv[8]
+cursor_value = sys.argv[9]
+pending_path = Path(sys.argv[10]).expanduser()
+pending_snapshot = sys.argv[11]
+cursor_established_path = Path(sys.argv[12]).expanduser()
+if bool(cursor_path) != bool(cursor_value):
+    print("hapax-post-merge-deploy: incomplete cursor publication request", file=sys.stderr)
+    raise SystemExit(1)
+if cursor_value and re.fullmatch(r"[0-9a-f]{40}", cursor_value) is None:
+    print(
+        f"hapax-post-merge-deploy: refused invalid SHA receipt value: {cursor_value!r}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 
 deploy_groups = {
     "pipewire": lines("HAPAX_TRACE_PW"),
@@ -569,6 +1196,7 @@ deploy_groups = {
     "systemd_units": lines("HAPAX_TRACE_SYSTEMD"),
     "systemd_system_units": lines("HAPAX_TRACE_SYSTEMD_SYSTEM"),
     "systemd_dropins": lines("HAPAX_TRACE_SYSTEMD_DROPINS"),
+    "systemd_system_dropins": lines("HAPAX_TRACE_SYSTEMD_SYSTEM_DROPINS"),
     "oom_containment": lines("HAPAX_TRACE_OOM_CONTAINMENT"),
     "apcupsd_power_alerts": lines("HAPAX_TRACE_APCUPSD_POWER_ALERTS"),
     "systemd_user_presets": lines("HAPAX_TRACE_USER_PRESETS"),
@@ -579,6 +1207,7 @@ deploy_groups = {
     "quake_assets": lines("HAPAX_TRACE_QUAKE_ASSETS"),
     "canonical_gate_closure": lines("HAPAX_TRACE_CANONICAL_GATE"),
 }
+runtime_deferred = lines("HAPAX_TRACE_RUNTIME_DEFERRED")
 runtime_media_groups = [
     name
     for name in (
@@ -589,7 +1218,7 @@ runtime_media_groups = [
         "systemd_units",
         "systemd_system_units",
         "systemd_dropins",
-        "oom_containment",
+        "systemd_system_dropins",
         "apcupsd_power_alerts",
         "systemd_watchdogs",
         "recovery_bundle",
@@ -610,8 +1239,10 @@ record = {
     "exit_code": exit_code,
     "changed_files": lines("HAPAX_TRACE_FILES"),
     "deploy_groups": deploy_groups,
-    "manual_deploy_needed": any(deploy_groups.values()),
+    "manual_deploy_needed": any(deploy_groups.values()) or bool(runtime_deferred),
     "manual_deploy_executed": manual_deploy_executed,
+    "runtime_deferred": runtime_deferred,
+    "systemd_runtime_replayed": lines("HAPAX_TRACE_SYSTEMD_RUNTIME_REPLAYED"),
     "audio_safe_restart_units": lines("HAPAX_TRACE_AUDIO_SAFE_RESTARTS"),
     "systemd_unclassified": lines("HAPAX_TRACE_SYSTEMD_UNCLASSIFIED"),
     "avsdlc": {
@@ -621,15 +1252,217 @@ record = {
     },
 }
 
-path.parent.mkdir(parents=True, exist_ok=True)
-previous = []
-if path.exists():
-    previous = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-previous.append(json.dumps(record, sort_keys=True))
-kept = previous[-max_records:]
-tmp_path = path.with_name(f"{path.name}.tmp")
-tmp_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
-os.replace(tmp_path, path)
+parent = path.parent
+fd = -1
+lock_fd = -1
+temp_paths: list[str] = []
+failure_surface = f"trace {path}"
+marker_parent: Path | None = None
+marker_preexisting = False
+marker_published = False
+try:
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    lock_path = parent / f".{path.name}.lock"
+    lock_fd = os.open(
+        lock_path,
+        os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+        0o600,
+    )
+    lock_stat = os.fstat(lock_fd)
+    if (
+        not stat.S_ISREG(lock_stat.st_mode)
+        or lock_stat.st_uid != os.geteuid()
+        or lock_stat.st_nlink != 1
+        or lock_stat.st_mode & 0o022
+    ):
+        raise OSError(f"unsafe trace lock inode: {lock_path}")
+    os.fchmod(lock_fd, 0o600)
+    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    if pending_path.absolute() == path.absolute():
+        raise ValueError("trace and pending-systemd queue paths must differ")
+    current_pending, current_pending_digest = read_pending(pending_path)
+    pending_add = validate_pending_paths(lines("HAPAX_SYSTEMD_PENDING_ADD"))
+    pending_remove = validate_pending_paths(lines("HAPAX_SYSTEMD_PENDING_REMOVE"))
+    if pending_add & pending_remove:
+        raise ValueError("a systemd path cannot be both pending and converged")
+    if cursor_path and current_pending_digest == pending_snapshot:
+        next_pending = (current_pending | pending_add) - pending_remove
+    elif cursor_path:
+        # Another deploy changed the queue after this process loaded it. Keep
+        # every concurrent item and suppress removals until the next replay.
+        next_pending = current_pending | pending_add
+    else:
+        next_pending = current_pending
+    if len(next_pending) > MAX_PENDING_PATHS:
+        raise ValueError("pending systemd queue exceeds the bounded path count")
+    previous: list[str] = []
+    if os.path.lexists(path):
+        read_fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        try:
+            if not stat.S_ISREG(os.fstat(read_fd).st_mode):
+                raise OSError("existing trace is not a regular file")
+            with os.fdopen(read_fd, "r", encoding="utf-8") as stream:
+                read_fd = -1
+                previous = [line for line in stream.read().splitlines() if line.strip()]
+        finally:
+            if read_fd >= 0:
+                os.close(read_fd)
+    previous.append(json.dumps(record, sort_keys=True))
+    payload = ("\n".join(previous[-max_records:]) + "\n").encode("utf-8")
+    fd, trace_temp = write_temp(parent, path.name, payload)
+    temp_paths.append(trace_temp)
+    os.close(fd)
+    fd = -1
+    pending_temp = ""
+    cursor_temp = ""
+    cursor_restore_temp = ""
+    if cursor_path:
+        cursor = Path(cursor_path).expanduser()
+        cursor_parent = cursor.parent
+        if len(
+            {
+                path.absolute(),
+                pending_path.absolute(),
+                cursor.absolute(),
+                cursor_established_path.absolute(),
+            }
+        ) != 4:
+            raise ValueError("trace, queue, cursor, and cursor marker paths must be distinct")
+        pending_parent = pending_path.parent
+        marker_parent = cursor_established_path.parent
+        pending_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        cursor_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        marker_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        marker_preexisting = os.path.lexists(cursor_established_path)
+        if next_pending:
+            failure_surface = f"pending systemd queue {pending_path}"
+            pending_payload = (
+                json.dumps(
+                    {"schema_version": 1, "paths": sorted(next_pending)},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+            fd, pending_temp = write_temp(pending_parent, pending_path.name, pending_payload)
+            temp_paths.append(pending_temp)
+            os.close(fd)
+            fd = -1
+        failure_surface = f"last-deployed SHA {cursor}"
+        if os.path.lexists(cursor):
+            previous_cursor_fd = os.open(
+                cursor, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+            )
+            try:
+                previous_cursor_payload = os.read(previous_cursor_fd, 42)
+                if os.read(previous_cursor_fd, 1):
+                    raise OSError("existing cursor exceeded its exact size")
+            finally:
+                os.close(previous_cursor_fd)
+            if re.fullmatch(rb"[0-9a-f]{40}\n", previous_cursor_payload) is None:
+                raise OSError("existing cursor is not one canonical SHA")
+            fd, cursor_restore_temp = write_temp(
+                cursor_parent, f"{cursor.name}.restore", previous_cursor_payload
+            )
+            temp_paths.append(cursor_restore_temp)
+            os.close(fd)
+            fd = -1
+        cursor_payload = f"{cursor_value}\n".encode("ascii")
+        fd, cursor_temp = write_temp(cursor_parent, cursor.name, cursor_payload)
+        temp_paths.append(cursor_temp)
+        os.close(fd)
+        fd = -1
+        failure_surface = f"deploy cursor establishment marker {cursor_established_path}"
+        marker_payload = b"hapax-deploy-cursor-established-v1\n"
+        fd, marker_temp = write_temp(
+            marker_parent, cursor_established_path.name, marker_payload
+        )
+        temp_paths.append(marker_temp)
+        os.close(fd)
+        fd = -1
+    fsync_dir(parent)
+    if cursor_path:
+        fsync_dir(pending_path.parent)
+        fsync_dir(cursor_parent)
+        fsync_dir(marker_parent)
+    failure_surface = f"trace {path}"
+    os.replace(trace_temp, path)
+    temp_paths.remove(trace_temp)
+    fsync_dir(parent)
+    if cursor_path:
+        failure_surface = f"pending systemd queue {pending_path}"
+        if next_pending:
+            os.replace(pending_temp, pending_path)
+            temp_paths.remove(pending_temp)
+        elif os.path.lexists(pending_path):
+            os.unlink(pending_path)
+        fsync_dir(pending_path.parent)
+        failure_surface = f"deploy cursor establishment marker {cursor_established_path}"
+        os.replace(marker_temp, cursor_established_path)
+        marker_published = True
+        temp_paths.remove(marker_temp)
+        fsync_dir(marker_parent)
+        failure_surface = f"last-deployed SHA {cursor}"
+        os.replace(cursor_temp, cursor)
+        temp_paths.remove(cursor_temp)
+        try:
+            fsync_dir(cursor_parent)
+        except OSError as cursor_sync_error:
+            failure_surface = f"last-deployed SHA rollback {cursor}"
+            try:
+                if cursor_restore_temp:
+                    os.replace(cursor_restore_temp, cursor)
+                    temp_paths.remove(cursor_restore_temp)
+                    cursor_restore_temp = ""
+                elif os.path.lexists(cursor):
+                    os.unlink(cursor)
+                fsync_dir(cursor_parent)
+                if marker_published and not marker_preexisting:
+                    if os.path.lexists(cursor_established_path):
+                        os.unlink(cursor_established_path)
+                    fsync_dir(marker_parent)
+                    marker_published = False
+            except OSError as rollback_error:
+                raise OSError(
+                    f"cursor directory sync failed ({cursor_sync_error}); rollback also failed: {rollback_error}"
+                ) from rollback_error
+            raise OSError(
+                f"cursor directory sync failed and the prior cursor state was restored: {cursor_sync_error}"
+            ) from cursor_sync_error
+        if cursor_restore_temp:
+            os.unlink(cursor_restore_temp)
+            temp_paths.remove(cursor_restore_temp)
+            cursor_restore_temp = ""
+    os.close(lock_fd)
+    lock_fd = -1
+except (OSError, UnicodeError, ValueError) as exc:
+    marker_rollback_error: OSError | None = None
+    if marker_published and not marker_preexisting and marker_parent is not None:
+        try:
+            if os.path.lexists(cursor_established_path):
+                os.unlink(cursor_established_path)
+            fsync_dir(marker_parent)
+            marker_published = False
+        except OSError as cleanup_error:
+            marker_rollback_error = cleanup_error
+    if fd >= 0:
+        os.close(fd)
+    if lock_fd >= 0:
+        os.close(lock_fd)
+    for temp_path in temp_paths:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+    marker_rollback_suffix = ""
+    if marker_rollback_error is not None:
+        marker_rollback_suffix = f"; new marker rollback also failed: {marker_rollback_error}"
+    print(
+        f"hapax-post-merge-deploy: failed to publish {failure_surface}: {exc}"
+        f"{marker_rollback_suffix}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
 PY
 }
 
@@ -651,13 +1484,157 @@ trap trace_on_exit EXIT
 # Record the SHA this deploy cycle ran against (real-deploy modes only). The
 # staleness alarm + the AC `rev-list <last-deployed-sha>..origin/main` read it;
 # the .service edge-trigger reads it to compute the cumulative --since range.
-record_last_deployed_sha() {
-    [ "$DRY_RUN" = "1" ] && return 0
-    [ "$REPORT_COVERAGE" = "1" ] && return 0
-    [ -n "$SHA" ] || return 0
-    mkdir -p "$(dirname "$LAST_DEPLOYED_SHA_PATH")" 2>/dev/null || true
-    printf '%s\n' "$SHA" > "$LAST_DEPLOYED_SHA_PATH"
+atomic_write_sha_receipt() {
+    local path="$1" value="$2"
+    /usr/bin/python3 -I -S - "$path" "$value" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import sys
+import tempfile
+
+path = os.path.abspath(sys.argv[1])
+value = sys.argv[2]
+if re.fullmatch(r"[0-9a-f]{40}", value) is None:
+    print(f"hapax-post-merge-deploy: refused invalid SHA receipt value: {value!r}", file=sys.stderr)
+    raise SystemExit(1)
+
+parent = os.path.dirname(path)
+fd = -1
+temp_path = ""
+try:
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.tmp.", dir=parent)
+    os.fchmod(fd, 0o600)
+    payload = f"{value}\n".encode("ascii")
+    offset = 0
+    while offset < len(payload):
+        written = os.write(fd, payload[offset:])
+        if written <= 0:
+            raise OSError("short write while publishing SHA receipt")
+        offset += written
+    os.fsync(fd)
+    os.close(fd)
+    fd = -1
+    os.replace(temp_path, path)
+    temp_path = ""
+    dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+except (OSError, ValueError) as exc:
+    if fd >= 0:
+        os.close(fd)
+    if temp_path:
+        try:
+            os.unlink(temp_path)
+        except FileNotFoundError:
+            pass
+    print(f"hapax-post-merge-deploy: failed to publish SHA receipt {path}: {exc}", file=sys.stderr)
+    raise SystemExit(1) from exc
+PY
 }
+
+finalize_deploy_receipts() {
+    local status="$1"
+    local cursor_path="" cursor_value=""
+    if [ "$DRY_RUN" != "1" ] && [ "$REPORT_COVERAGE" != "1" ] && [ -n "$SHA" ]; then
+        cursor_path="$LAST_DEPLOYED_SHA_PATH"
+        cursor_value="$SHA"
+    fi
+    if ! record_post_merge_trace \
+        "$status" "0" "$cursor_path" "$cursor_value"; then
+        echo "hapax-post-merge-deploy: failed to publish completion trace and last-deployed SHA transaction" >&2
+        return 1
+    fi
+    TRACE_WRITTEN=1
+}
+
+load_systemd_runtime_pending() {
+    /usr/bin/python3 -I -S - "$SYSTEMD_RUNTIME_PENDING_PATH" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+
+path = Path(sys.argv[1]).expanduser()
+path_re = re.compile(
+    r"^systemd/units/(?:"
+    r"[A-Za-z0-9_.@:-]+\.(?:service|timer|path|slice|target)|"
+    r"[A-Za-z0-9_.@:-]+\.(?:service|timer|slice|scope)\.d/"
+    r"[A-Za-z0-9_.@:-]+\.conf)$"
+)
+if not os.path.lexists(path):
+    print("absent")
+    raise SystemExit(0)
+
+fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+try:
+    before = os.fstat(fd)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or before.st_nlink != 1
+        or before.st_mode & 0o077
+        or before.st_size > 128 * 1024
+    ):
+        raise OSError(f"unsafe pending systemd queue inode: {path}")
+    payload = bytearray()
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        payload.extend(chunk)
+        if len(payload) > 128 * 1024:
+            raise OSError("pending systemd queue exceeds the bounded size")
+    after = os.fstat(fd)
+    path_after = os.lstat(path)
+finally:
+    os.close(fd)
+
+generation = lambda value: (
+    value.st_dev,
+    value.st_ino,
+    value.st_size,
+    value.st_mtime_ns,
+    value.st_ctime_ns,
+)
+if generation(before) != generation(after) or generation(after) != generation(path_after):
+    raise OSError("pending systemd queue changed during read")
+data = json.loads(payload)
+if not isinstance(data, dict) or set(data) != {"schema_version", "paths"}:
+    raise ValueError("pending systemd queue has an unsupported schema")
+if data["schema_version"] != 1:
+    raise ValueError("pending systemd queue has an unsupported schema version")
+paths = data["paths"]
+if not isinstance(paths, list) or len(paths) > 256:
+    raise ValueError("pending systemd paths must be a bounded list")
+seen: set[str] = set()
+for item in paths:
+    if not isinstance(item, str) or path_re.fullmatch(item) is None:
+        raise ValueError("pending systemd queue contains an unsafe source path")
+    if item in seen:
+        raise ValueError("pending systemd queue contains a duplicate source path")
+    seen.add(item)
+print(hashlib.sha256(payload).hexdigest())
+for item in sorted(seen):
+    print(item)
+PY
+}
+
+if [ "$COVERAGE_FROM_STDIN" != "1" ] \
+    && [ "$DRY_RUN" != "1" ] \
+    && [ "$REPORT_COVERAGE" != "1" ]; then
+    configure_root_required_state_domain
+fi
 
 cd "$REPO"
 # Ensure the commit's objects are available locally even if main hasn't been
@@ -674,24 +1651,124 @@ if [ "$COVERAGE_FROM_STDIN" != "1" ]; then
         exit 2
     fi
     SHA="$SHA_RESOLVED"
+    if ! TARGET_COMMIT_TEXT="$(git cat-file -p "$SHA" 2>/dev/null)"; then
+        echo "hapax-post-merge-deploy: cannot inspect target commit header for $SHA" >&2
+        exit 2
+    fi
+    while IFS= read -r commit_header_line; do
+        [ -n "$commit_header_line" ] || break
+        case "$commit_header_line" in
+            parent\ *)
+                if [ -z "$TARGET_FIRST_PARENT" ]; then
+                    TARGET_FIRST_PARENT="${commit_header_line#parent }"
+                fi
+                ;;
+        esac
+    done <<< "$TARGET_COMMIT_TEXT"
+    if [ -n "$TARGET_FIRST_PARENT" ]; then
+        if ! [[ "$TARGET_FIRST_PARENT" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+            || ! git cat-file -e "${TARGET_FIRST_PARENT}^{commit}" 2>/dev/null; then
+            echo "hapax-post-merge-deploy: target $SHA names unavailable first parent $TARGET_FIRST_PARENT; refusing to treat a shallow boundary as a root commit" >&2
+            exit 2
+        fi
+    fi
+    FIRST_PARENT="$TARGET_FIRST_PARENT"
+fi
+
+if [ -n "$SINCE" ]; then
+    if ! SINCE_RESOLVED="$(git rev-parse --verify --quiet "$SINCE^{commit}")"; then
+        echo "hapax-post-merge-deploy: --since '$SINCE' is not a valid commit" >&2
+        exit 2
+    fi
+    SINCE="$SINCE_RESOLVED"
+fi
+
+if [ "$COVERAGE_FROM_STDIN" != "1" ] \
+    && [ "$DRY_RUN" != "1" ] \
+    && [ "$REPORT_COVERAGE" != "1" ]; then
+    reexec_with_safe_root_required_lock
+    admit_monotonic_deploy_target
+    if [ -n "$DEPLOY_CURSOR_SHA" ] && [ "$DEPLOY_CURSOR_SHA" != "$SHA" ]; then
+        if [ -n "$SINCE" ] && [ "$SINCE" != "$DEPLOY_CURSOR_SHA" ]; then
+            echo "hapax-post-merge-deploy: --since $SINCE does not match trusted deploy cursor $DEPLOY_CURSOR_SHA; refusing to skip an undeployed commit range" >&2
+            exit 2
+        fi
+        SINCE="$DEPLOY_CURSOR_SHA"
+    fi
+fi
+
+if [ -n "$SINCE" ]; then
+    if git merge-base --is-ancestor "$SINCE" "$SHA"; then
+        :
+    else
+        since_ancestor_rc=$?
+        if [ "$since_ancestor_rc" -eq 1 ]; then
+            echo "hapax-post-merge-deploy: --since $SINCE is not an ancestor of deploy target $SHA" >&2
+        else
+            echo "hapax-post-merge-deploy: failed to compare --since $SINCE with deploy target $SHA" >&2
+        fi
+        exit 2
+    fi
 fi
 
 if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
     FILES="$(cat)"
 elif [ -n "$SINCE" ]; then
     # Cumulative range deploy: union of every file changed across <since>..<SHA>.
-    if ! git rev-parse --verify --quiet "$SINCE^{commit}" >/dev/null; then
-        echo "hapax-post-merge-deploy: --since '$SINCE' is not a valid commit" >&2
+    if ! FILES="$(git diff --name-only "$SINCE" "$SHA" | sort -u)"; then
+        echo "hapax-post-merge-deploy: failed to enumerate cumulative changes for ${SINCE}..${SHA}" >&2
         exit 2
     fi
-    FILES="$(git diff --name-only "$SINCE" "$SHA" | sort -u)"
-elif FIRST_PARENT="$(git rev-parse --verify --quiet "$SHA^1")"; then
-    FILES="$(git diff --name-only "$FIRST_PARENT" "$SHA" | sort -u)"
+elif [ -n "$TARGET_FIRST_PARENT" ]; then
+    if ! FILES="$(git diff --name-only "$TARGET_FIRST_PARENT" "$SHA" | sort -u)"; then
+        echo "hapax-post-merge-deploy: failed to enumerate target changes for ${TARGET_FIRST_PARENT}..${SHA}" >&2
+        exit 2
+    fi
 else
-    FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"
+    if ! FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" | sort -u)"; then
+        echo "hapax-post-merge-deploy: failed to enumerate root target changes for $SHA" >&2
+        exit 2
+    fi
 fi
 
-PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); OOM_CONTAINMENT=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=()
+CHANGED_FILES="$FILES"
+SYSTEMD_PENDING_PRIOR=()
+SYSTEMD_RUNTIME_REPLAYED=()
+SYSTEMD_PENDING_ADD=()
+SYSTEMD_PENDING_REMOVE=()
+declare -A SYSTEMD_PENDING_PRIOR_SET=()
+declare -A CHANGED_FILE_SET=()
+if [ "$REPORT_COVERAGE" != "1" ]; then
+    if ! pending_output="$(load_systemd_runtime_pending)"; then
+        echo "hapax-post-merge-deploy: failed to load the pending systemd runtime queue; refusing to advance the deploy cursor" >&2
+        exit 2
+    fi
+    mapfile -t pending_lines <<< "$pending_output"
+    SYSTEMD_PENDING_SNAPSHOT="${pending_lines[0]:-}"
+    if ! [[ "$SYSTEMD_PENDING_SNAPSHOT" =~ ^(absent|[0-9a-f]{64})$ ]]; then
+        echo "hapax-post-merge-deploy: malformed pending systemd queue snapshot" >&2
+        exit 2
+    fi
+    for ((pending_index = 1; pending_index < ${#pending_lines[@]}; pending_index++)); do
+        pending_path="${pending_lines[$pending_index]}"
+        SYSTEMD_PENDING_PRIOR+=("$pending_path")
+        SYSTEMD_PENDING_PRIOR_SET["$pending_path"]=1
+    done
+    while IFS= read -r changed_path; do
+        [ -n "$changed_path" ] || continue
+        CHANGED_FILE_SET["$changed_path"]=1
+    done <<< "$CHANGED_FILES"
+    for pending_path in "${SYSTEMD_PENDING_PRIOR[@]}"; do
+        if [ -z "${CHANGED_FILE_SET[$pending_path]+present}" ]; then
+            SYSTEMD_RUNTIME_REPLAYED+=("$pending_path")
+        fi
+    done
+    if [ "${#SYSTEMD_PENDING_PRIOR[@]}" -gt 0 ]; then
+        FILES="$({ printf '%s\n' "$FILES"; printf '%s\n' "${SYSTEMD_PENDING_PRIOR[@]}"; } | sed '/^$/d' | sort -u)"
+    fi
+fi
+
+PW=(); HAPAX_CONF=(); WP=(); WP_LUA=(); SYSTEMD=(); SYSTEMD_SYSTEM=(); SYSTEMD_DROPINS=(); SYSTEMD_SYSTEM_DROPINS=(); SYSTEMD_PENDING_USER_UNITS=(); SYSTEMD_PENDING_USER_DROPINS=(); OOM_CONTAINMENT=(); APCUPSD_POWER_ALERTS=(); USER_PRESETS=(); WATCHDOGS=(); RECOVERY_BUNDLE=(); SCRIPTS=(); SCRIPT_PY=(); QUAKE_ASSETS=(); CANONICAL_GATE=(); RUNTIME_DEFERRED=()
 declare -A OOM_PACKAGE_PATHS=()
 declare -A APCUPSD_PACKAGE_PATHS=()
 GATE_CLOSURE=()
@@ -719,19 +1796,67 @@ GOVERNED_INTAKE_PRESET_UNIT_SETS=(
 )
 GOVERNED_INTAKE_PRESET_ENABLE=()
 
+root_required_manifest_path_is_safe() {
+    local rel="$1"
+    if [[ "$rel" =~ [[:space:]] ]]; then
+        return 1
+    fi
+    case "$rel" in
+        ""|/*|*\\*|*//*|.|..|./*|../*|*/./*|*/../*|*/.|*/..)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 load_root_required_manifest_paths() {
-    local manifest="$1" revision="$2" target_name="$3" content rel
+    local manifest="$1" revision="$2" target_name="$3"
+    local content="" entry="" mode="" type="" rel="" extra="" line=""
     local -n target="$target_name"
+    local -A seen=()
     if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
         [ -f "$REPO/$manifest" ] || return 0
-        content="$(cat "$REPO/$manifest")"
+        if ! content="$(cat "$REPO/$manifest")"; then
+            echo "hapax-post-merge-deploy: failed to read source coverage manifest $manifest" >&2
+            return 2
+        fi
     else
-        content="$(git -C "$REPO" show "$revision:$manifest" 2>/dev/null || true)"
+        if ! entry="$(git -C "$REPO" ls-tree "$revision" -- "$manifest")"; then
+            echo "hapax-post-merge-deploy: failed to inspect root-required manifest $revision:$manifest; refusing package classification" >&2
+            return 2
+        fi
+        [ -n "$entry" ] || return 0
+        if [[ "$entry" == *$'\n'* ]]; then
+            echo "hapax-post-merge-deploy: ambiguous root-required manifest entry $revision:$manifest; refusing package classification" >&2
+            return 2
+        fi
+        read -r mode type _ <<< "$entry"
+        if [[ "$mode" != 100644 && "$mode" != 100755 ]] || [ "$type" != blob ]; then
+            echo "hapax-post-merge-deploy: root-required manifest is not a regular Git blob at $revision:$manifest; refusing package classification" >&2
+            return 2
+        fi
+        if ! content="$(git -C "$REPO" show "$revision:$manifest")"; then
+            echo "hapax-post-merge-deploy: failed to read root-required manifest $revision:$manifest; refusing package classification" >&2
+            return 2
+        fi
     fi
-    while IFS= read -r rel; do
+    while IFS= read -r line; do
+        rel=""
+        extra=""
+        read -r rel extra <<< "$line" || true
         [ -n "$rel" ] || continue
+        [[ "$rel" == \#* ]] && continue
+        if [ -n "$extra" ] || ! root_required_manifest_path_is_safe "$rel"; then
+            echo "hapax-post-merge-deploy: malformed root-required manifest entry in $manifest: $line" >&2
+            return 2
+        fi
+        if [ -n "${seen[$rel]+present}" ]; then
+            echo "hapax-post-merge-deploy: duplicate root-required manifest path in $manifest: $rel" >&2
+            return 2
+        fi
+        seen["$rel"]=1
         target["$rel"]=1
-    done < <(awk 'NF && $1 !~ /^#/ {print $1}' <<< "$content")
+    done <<< "$content"
 }
 
 load_root_required_package_paths() {
@@ -756,19 +1881,134 @@ load_root_required_package_paths() {
 
 load_root_required_package_paths
 
-unit_install_scope() {
-    local f="$1"
-    if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
-        printf 'user\n'
+GIT_BLOB_PRESENT=0
+GIT_BLOB_MODE=""
+GIT_BLOB_OID=""
+git_blob_state_at() {
+    local revision="$1" path="$2" label="$3"
+    local entry mode type object_and_path oid tree_path
+    GIT_BLOB_PRESENT=0
+    GIT_BLOB_MODE=""
+    GIT_BLOB_OID=""
+    if ! entry="$(git -C "$REPO" ls-tree "$revision" -- "$path")"; then
+        echo "hapax-post-merge-deploy: failed to inspect $label Git entry at $revision:$path; refusing to infer deletion" >&2
+        return 1
+    fi
+    if [ -z "$entry" ]; then
         return 0
     fi
-    local content
-    content="$(git show "$SHA:$f" 2>/dev/null || true)"
-    if [ -n "$content" ] \
-        && grep -Eiq '^[#;][[:space:]]*Hapax-Install-Scope:[[:space:]]*system([[:space:]]*$|[[:space:]]+)' <<< "$content"; then
-        printf 'system\n'
+    if [[ "$entry" == *$'\n'* ]]; then
+        echo "hapax-post-merge-deploy: ambiguous $label Git entry at $revision:$path" >&2
+        return 1
+    fi
+    read -r mode type object_and_path <<< "$entry"
+    if [[ "$object_and_path" != *$'\t'* ]]; then
+        echo "hapax-post-merge-deploy: malformed $label Git entry at $revision:$path" >&2
+        return 1
+    fi
+    oid="${object_and_path%%$'\t'*}"
+    tree_path="${object_and_path#*$'\t'}"
+    if [[ "$mode" != 100644 && "$mode" != 100755 ]] \
+        || [ "$type" != "blob" ] \
+        || ! [[ "$oid" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+        || [ "$tree_path" != "$path" ]; then
+        echo "hapax-post-merge-deploy: unsupported $label Git entry at $revision:$path; expected one regular blob at the exact path" >&2
+        return 1
+    fi
+    GIT_BLOB_PRESENT=1
+    GIT_BLOB_MODE="$mode"
+    GIT_BLOB_OID="$oid"
+}
+
+UNIT_INSTALL_SCOPE=""
+unit_install_scope() {
+    local f="$1" allow_absent="${2:-0}" pending_owner="${3:-$1}"
+    UNIT_INSTALL_SCOPE=""
+    if [ "$COVERAGE_FROM_STDIN" = "1" ]; then
+        UNIT_INSTALL_SCOPE="user"
+        return 0
+    fi
+    local revision="$SHA" content base_ref prior_content
+    local prior_scope_marker_count prior_system_marker_count
+    if ! git_blob_state_at "$revision" "$f" "systemd unit"; then
+        return 1
+    fi
+    if [ "$GIT_BLOB_PRESENT" -eq 0 ]; then
+        base_ref="${SINCE:-${FIRST_PARENT:-}}"
+        if [ -z "$base_ref" ]; then
+            if [ -n "${SYSTEMD_PENDING_PRIOR_SET[$pending_owner]+present}" ]; then
+                UNIT_INSTALL_SCOPE="system"
+                return 0
+            fi
+            if [ "$allow_absent" = "1" ]; then
+                UNIT_INSTALL_SCOPE="user"
+                return 0
+            fi
+            echo "hapax-post-merge-deploy: changed systemd unit is absent at $SHA:$f and has no base commit for install-scope classification" >&2
+            return 1
+        fi
+        revision="$base_ref"
+        if ! git_blob_state_at "$revision" "$f" "prior systemd unit"; then
+            return 1
+        fi
+        if [ "$GIT_BLOB_PRESENT" -eq 0 ]; then
+            if [ -n "${SYSTEMD_PENDING_PRIOR_SET[$pending_owner]+present}" ]; then
+                UNIT_INSTALL_SCOPE="system"
+                return 0
+            fi
+            if [ "$allow_absent" = "1" ]; then
+                UNIT_INSTALL_SCOPE="user"
+                return 0
+            fi
+            echo "hapax-post-merge-deploy: changed systemd unit is absent from both classification revisions: $f" >&2
+            return 1
+        fi
+    fi
+    if ! content="$(git -C "$REPO" show "$revision:$f")"; then
+        echo "hapax-post-merge-deploy: failed to read systemd unit while classifying install scope at $revision:$f" >&2
+        return 1
+    fi
+    local scope_marker_count system_marker_count
+    scope_marker_count="$(
+        grep -Eic '^[[:blank:]]*[#;][[:blank:]]*Hapax-Install-Scope[[:blank:]]*:' <<< "$content" || true
+    )"
+    system_marker_count="$(
+        grep -Eic '^[[:blank:]]*[#;][[:blank:]]*Hapax-Install-Scope[[:blank:]]*:[[:blank:]]*system[[:blank:]]*$' <<< "$content" || true
+    )"
+    if [ "$scope_marker_count" -eq 0 ]; then
+        UNIT_INSTALL_SCOPE="user"
+    elif [ "$scope_marker_count" -eq 1 ] && [ "$system_marker_count" -eq 1 ]; then
+        UNIT_INSTALL_SCOPE="system"
     else
-        printf 'user\n'
+        echo "hapax-post-merge-deploy: malformed Hapax-Install-Scope marker at $revision:$f (duplicate or unsupported value)" >&2
+        return 1
+    fi
+    if [ "$UNIT_INSTALL_SCOPE" = "user" ] && [ "$revision" = "$SHA" ]; then
+        base_ref="${SINCE:-${FIRST_PARENT:-}}"
+        if [ -n "$base_ref" ]; then
+            if ! git_blob_state_at "$base_ref" "$f" "prior systemd unit"; then
+                return 1
+            fi
+            if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+                if ! prior_content="$(git -C "$REPO" show "$base_ref:$f")"; then
+                    echo "hapax-post-merge-deploy: failed to read prior systemd unit while classifying install-scope transition at $base_ref:$f" >&2
+                    return 1
+                fi
+                prior_scope_marker_count="$(
+                    grep -Eic '^[[:blank:]]*[#;][[:blank:]]*Hapax-Install-Scope[[:blank:]]*:' <<< "$prior_content" || true
+                )"
+                prior_system_marker_count="$(
+                    grep -Eic '^[[:blank:]]*[#;][[:blank:]]*Hapax-Install-Scope[[:blank:]]*:[[:blank:]]*system[[:blank:]]*$' <<< "$prior_content" || true
+                )"
+                if [ "$prior_scope_marker_count" -eq 1 ] \
+                    && [ "$prior_system_marker_count" -eq 1 ]; then
+                    UNIT_INSTALL_SCOPE="transition"
+                elif [ "$prior_scope_marker_count" -ne 0 ]; then
+                    echo "hapax-post-merge-deploy: malformed prior Hapax-Install-Scope marker at $base_ref:$f" >&2
+                    return 1
+                fi
+            fi
+        fi
     fi
 }
 
@@ -1086,6 +2326,23 @@ reconcile_canonical_gate_closure() {
 # remediation epic).
 while IFS= read -r f; do
     [ -z "$f" ] && continue
+    # Upgrade bridge for the historical top-level path. The compatibility copy
+    # is byte-identical to the canonical unit so an already-installed pre-guard
+    # deploy helper publishes safe bytes on the first deployment. Current and
+    # later helpers always reconcile the installed basename from the canonical
+    # exact-SHA object, even if the compatibility path drifts.
+    if [ "$f" = "systemd/hapax-rebuild-services.service" ]; then
+        SYSTEMD+=("systemd/units/hapax-rebuild-services.service")
+        continue
+    fi
+    # The historical judge unit is retired. Classify it before either the old
+    # or current root-package manifest so a cumulative deploy can never
+    # reinstall, unmask, restart, or delete the installed tombstone. The
+    # generic installer owns a separately authorized retry-convergent cleanup.
+    if [ "$f" = "systemd/units/hapax-local-judge.service" ]; then
+        RUNTIME_DEFERRED+=("local-judge-retirement:$f")
+        continue
+    fi
     if [ -n "${OOM_PACKAGE_PATHS[$f]+present}" ]; then
         OOM_CONTAINMENT+=("$f")
         continue
@@ -1107,21 +2364,46 @@ while IFS= read -r f; do
         config/wireplumber/*.conf)        WP+=("$f") ;;
         systemd/units/notify-failure@.service|systemd/units/hapax-coord.service|systemd/units/hapax-coord-rebuild.service|systemd/units/hapax-coord-rebuild.timer)
             RECOVERY_BUNDLE+=("$f")
-            if [ "$(unit_install_scope "$f")" = "system" ]; then
+            if ! unit_install_scope "$f"; then
+                exit 2
+            fi
+            if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
                 SYSTEMD_SYSTEM+=("$f")
+            elif [ "$UNIT_INSTALL_SCOPE" = "transition" ] \
+                || [ -n "${SYSTEMD_PENDING_PRIOR_SET[$f]+present}" ]; then
+                SYSTEMD_PENDING_USER_UNITS+=("$f")
             else
                 SYSTEMD+=("$f")
             fi
             ;;
         systemd/units/*.service|systemd/units/*.timer|systemd/units/*.path|systemd/units/*.target|systemd/units/*.slice)
-            if [ "$(unit_install_scope "$f")" = "system" ]; then
+            if ! unit_install_scope "$f"; then
+                exit 2
+            fi
+            if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
                 SYSTEMD_SYSTEM+=("$f")
+            elif [ "$UNIT_INSTALL_SCOPE" = "transition" ] \
+                || [ -n "${SYSTEMD_PENDING_PRIOR_SET[$f]+present}" ]; then
+                SYSTEMD_PENDING_USER_UNITS+=("$f")
             else
                 SYSTEMD+=("$f")
             fi
             ;;
         systemd/*.service|systemd/*.timer|systemd/*.path) SYSTEMD+=("$f") ;;
-        systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf|systemd/units/*.slice.d/*.conf|systemd/units/*.scope.d/*.conf) SYSTEMD_DROPINS+=("$f") ;;
+        systemd/units/*.service.d/*.conf|systemd/units/*.timer.d/*.conf|systemd/units/*.slice.d/*.conf|systemd/units/*.scope.d/*.conf)
+            dropin_base_unit="${f%%.d/*}"
+            if ! unit_install_scope "$dropin_base_unit" 1 "$f"; then
+                exit 2
+            fi
+            if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
+                SYSTEMD_SYSTEM_DROPINS+=("$f")
+            elif [ "$UNIT_INSTALL_SCOPE" = "transition" ] \
+                || [ -n "${SYSTEMD_PENDING_PRIOR_SET[$f]+present}" ]; then
+                SYSTEMD_PENDING_USER_DROPINS+=("$f")
+            else
+                SYSTEMD_DROPINS+=("$f")
+            fi
+            ;;
         systemd/user-preset.d/*.preset)   USER_PRESETS+=("$f") ;;
         systemd/watchdogs/*)              WATCHDOGS+=("$f") ;;
         systemd/scripts/*)                ;; # installer helpers; run manually when needed
@@ -1150,6 +2432,17 @@ while IFS= read -r f; do
     esac
 done <<< "$FILES"
 
+if [ "${#SYSTEMD[@]}" -gt 1 ]; then
+    mapfile -t SYSTEMD < <(printf '%s\n' "${SYSTEMD[@]}" | sort -u)
+fi
+
+if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
+    RUNTIME_DEFERRED+=("oom-containment:$SHA")
+fi
+if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
+    RUNTIME_DEFERRED+=("apcupsd-power-alerts:$SHA")
+fi
+
 if [ "$REPORT_COVERAGE" = "1" ]; then
     if [ "${#SYSTEMD_UNCLASSIFIED[@]}" -gt 0 ]; then
         echo "ERROR: ${#SYSTEMD_UNCLASSIFIED[@]} systemd/** path(s) in $SHA fall outside hapax-post-merge-deploy case-globs:" >&2
@@ -1166,10 +2459,6 @@ if [ "$REPORT_COVERAGE" = "1" ]; then
     exit 0
 fi
 
-if [ "$DRY_RUN" != "1" ]; then
-    reexec_with_safe_root_required_lock
-fi
-
 TRACE_READY=1
 if [ -z "$FILES" ]; then
     reconcile_canonical_gate_closure
@@ -1177,10 +2466,9 @@ if [ -z "$FILES" ]; then
     if [ "$DID_ANYTHING" -ne 0 ]; then
         trace_status="completed"
     fi
-    if record_post_merge_trace "$trace_status" "0"; then
-        TRACE_WRITTEN=1
+    if ! finalize_deploy_receipts "$trace_status"; then
+        exit 1
     fi
-    record_last_deployed_sha
     echo "no files changed in $SHA"
     exit 0
 fi
@@ -1193,28 +2481,213 @@ if [ "$DRY_RUN" = "1" ]; then
     exit 0
 fi
 
+declare -A SYSTEMD_TARGET_PRESENT=()
+declare -A SYSTEMD_TARGET_CONTENT=()
+declare -A SYSTEMD_EARLY_PREPARKED=()
+
+cache_systemd_target_at_sha() {
+    local source_path="$1" unit_content
+    if [ -n "${SYSTEMD_TARGET_PRESENT[$source_path]+cached}" ]; then
+        return 0
+    fi
+    if ! git_blob_state_at "$SHA" "$source_path" "systemd unit"; then
+        return 2
+    fi
+    if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+        if ! unit_content="$(git -C "$REPO" show "$SHA:$source_path")"; then
+            echo "hapax-post-merge-deploy: failed to materialize systemd unit preflight at $SHA:$source_path" >&2
+            return 1
+        fi
+        SYSTEMD_TARGET_PRESENT["$source_path"]=1
+        SYSTEMD_TARGET_CONTENT["$source_path"]="$unit_content"
+    else
+        SYSTEMD_TARGET_PRESENT["$source_path"]=0
+        SYSTEMD_TARGET_CONTENT["$source_path"]=""
+    fi
+}
+
+user_unit_artifacts_exist() {
+    local base="$1" dest="$SYSTEMD_USER_DIR/$1" artifact
+    if [ -e "$dest" ] || [ -L "$dest" ] \
+        || [ -e "$SYSTEMD_USER_DIR/${base}.d" ] \
+        || [ -L "$SYSTEMD_USER_DIR/${base}.d" ]; then
+        return 0
+    fi
+    for artifact in "$SYSTEMD_USER_DIR"/*.wants/"$base"; do
+        if [ -e "$artifact" ] || [ -L "$artifact" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+user_unit_preexists() {
+    local base="$1" reason="$2" load_state active_state
+    if user_unit_artifacts_exist "$base"; then
+        return 0
+    fi
+    if ! load_state="$(systemctl --user show "$base" -p LoadState --value)"; then
+        echo "hapax-post-merge-deploy: cannot query LoadState for $reason $base before mutation" >&2
+        return 2
+    fi
+    if ! active_state="$(systemctl --user show "$base" -p ActiveState --value)"; then
+        echo "hapax-post-merge-deploy: cannot query ActiveState for $reason $base before mutation" >&2
+        return 2
+    fi
+    if [ -z "$load_state" ] || [ -z "$active_state" ]; then
+        echo "hapax-post-merge-deploy: user manager returned an empty state for $reason $base before mutation" >&2
+        return 2
+    fi
+    if [ "$load_state" = "not-found" ] && [ "$active_state" = "inactive" ]; then
+        return 1
+    fi
+    return 0
+}
+
+remove_user_unit_artifacts_checked() {
+    local base="$1" reason="$2" dest="$SYSTEMD_USER_DIR/$1" artifact
+    if [ -e "$dest" ] || [ -L "$dest" ]; then
+        if ! rm -f -- "$dest"; then
+            echo "hapax-post-merge-deploy: failed to remove $reason fragment $dest" >&2
+            return 1
+        fi
+    fi
+    for artifact in "$SYSTEMD_USER_DIR"/*.wants/"$base"; do
+        [ -e "$artifact" ] || [ -L "$artifact" ] || continue
+        if ! rm -f -- "$artifact"; then
+            echo "hapax-post-merge-deploy: failed to remove $reason enablement link $artifact" >&2
+            return 1
+        fi
+    done
+    artifact="$SYSTEMD_USER_DIR/${base}.d"
+    if [ -e "$artifact" ] || [ -L "$artifact" ]; then
+        if ! rm -rf -- "$artifact"; then
+            echo "hapax-post-merge-deploy: failed to remove $reason drop-in path $artifact" >&2
+            return 1
+        fi
+    fi
+}
+
+stop_disable_user_unit_checked() {
+    local base="$1" reason="$2" active_state
+    if ! systemctl --user stop "$base"; then
+        echo "hapax-post-merge-deploy: unable to stop $reason $base" >&2
+        return 1
+    fi
+    if ! active_state="$(systemctl --user show "$base" -p ActiveState --value)"; then
+        echo "hapax-post-merge-deploy: cannot verify ActiveState for $reason $base after stop" >&2
+        return 1
+    fi
+    if [ "$active_state" != "inactive" ]; then
+        echo "hapax-post-merge-deploy: $reason $base remained ActiveState=${active_state:-missing} after stop" >&2
+        return 1
+    fi
+    if ! systemctl --user disable "$base"; then
+        echo "hapax-post-merge-deploy: unable to disable $reason $base after verified stop" >&2
+        return 1
+    fi
+    systemctl --user reset-failed "$base" >/dev/null 2>&1 || true
+}
+
+park_user_unit_checked() {
+    stop_disable_user_unit_checked "$1" "parked unit"
+}
+
+prepark_cached_systemd_target() {
+    local source_path="$1" base parked_preexisting_rc=0
+    if [ "${SYSTEMD_TARGET_PRESENT[$source_path]}" -ne 1 ] \
+        || ! unit_content_parked "${SYSTEMD_TARGET_CONTENT[$source_path]}"; then
+        return 0
+    fi
+    base="$(basename "$source_path")"
+    user_unit_preexists "$base" "parked unit" || parked_preexisting_rc=$?
+    if [ "$parked_preexisting_rc" -eq 1 ]; then
+        return 0
+    fi
+    [ "$parked_preexisting_rc" -eq 0 ] || return 1
+    echo "pre-parking $base before all eligible deployment groups (Hapax-Parked marker)"
+    park_user_unit_checked "$base"
+}
+
+retire_deleted_cached_systemd_target() {
+    local source_path="$1" base preexisting_rc=0
+    [ "${SYSTEMD_TARGET_PRESENT[$source_path]}" -eq 0 ] || return 0
+    base="$(basename "$source_path")"
+    user_unit_preexists "$base" "deleted user unit" || preexisting_rc=$?
+    if [ "$preexisting_rc" -eq 1 ]; then
+        return 0
+    fi
+    [ "$preexisting_rc" -eq 0 ] || return 1
+    echo "retiring deleted user unit $base before fragment removal"
+    stop_disable_user_unit_checked "$base" "deleted user unit"
+}
+
+# Resolve every target user-unit object before any deploy group mutates state,
+# including system-to-user transitions whose publication still needs a later
+# system-manager absence witness. Existing parked user instances are stopped
+# under their historical loaded definition before OOM staging, dependency
+# work, or other unrelated groups can fail.
+if [ "${#SYSTEMD[@]}" -gt 0 ] || [ "${#SYSTEMD_PENDING_USER_UNITS[@]}" -gt 0 ]; then
+    for f in "${SYSTEMD[@]}" "${SYSTEMD_PENDING_USER_UNITS[@]}"; do
+        cache_systemd_target_at_sha "$f" || exit $?
+    done
+    for f in "${SYSTEMD[@]}" "${SYSTEMD_PENDING_USER_UNITS[@]}"; do
+        prepark_cached_systemd_target "$f" || exit 1
+        retire_deleted_cached_systemd_target "$f" || exit 1
+        SYSTEMD_EARLY_PREPARKED["$f"]=1
+    done
+fi
+
+publish_exact_file_or_delete() {
+    local source_path="$1" dest="$2" mode="$3" label="$4" validator="${5:-}"
+    local dest_dir base temp
+    if ! git_blob_state_at "$SHA" "$source_path" "$label"; then
+        return 2
+    fi
+    if [ "$GIT_BLOB_PRESENT" -eq 0 ]; then
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            if ! rm -f -- "$dest"; then
+                echo "hapax-post-merge-deploy: failed to remove deleted $label destination $dest" >&2
+                return 1
+            fi
+        fi
+        echo "  (deleted: $source_path)"
+        return 0
+    fi
+    dest_dir="$(dirname "$dest")"
+    base="$(basename "$dest")"
+    if ! mkdir -p -- "$dest_dir" \
+        || ! temp="$(mktemp "$dest_dir/.${base}.tmp.XXXXXX")"; then
+        echo "hapax-post-merge-deploy: failed to reserve a staged $label beside $dest" >&2
+        return 1
+    fi
+    if ! git -C "$REPO" show "$SHA:$source_path" > "$temp"; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: failed to materialize $label at $SHA:$source_path" >&2
+        return 1
+    fi
+    if [ "$validator" = "spa-json" ] \
+        && command -v spa-json-dump >/dev/null 2>&1 \
+        && ! spa-json-dump /dev/stdin < "$temp" >/dev/null 2>&1; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: REFUSED invalid PipeWire SPA JSON at $SHA:$source_path; live configuration is unchanged" >&2
+        return 1
+    fi
+    if ! chmod "$mode" "$temp" \
+        || ! mv -fT -- "$temp" "$dest"; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: failed to atomically publish $label $dest" >&2
+        return 1
+    fi
+    echo "  '$source_path' -> '$dest'"
+}
+
 # --- PipeWire confs ---
 if [ "${#PW[@]}" -gt 0 ]; then
     echo "pipewire confs changed (${#PW[@]}):"
-    mkdir -p "$PW_CONF_DIR"
     for f in "${PW[@]}"; do
         dest="$PW_CONF_DIR/$(basename "$f")"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            # Parse-lint BEFORE the live conf dir sees it: one syntax-invalid
-            # conf start-limit-kills the whole audio stack (2026-06-11 P0).
-            if command -v spa-json-dump >/dev/null 2>&1; then
-                if ! git show "$SHA:$f" | spa-json-dump /dev/stdin >/dev/null 2>&1; then
-                    echo "  REFUSED (spa-json parse error, would kill PipeWire): '$f'" >&2
-                    DEPLOY_ERRORS=$((${DEPLOY_ERRORS:-0} + 1))
-                    continue
-                fi
-            fi
-            git show "$SHA:$f" > "$dest"
-            echo "  '$f' -> '$dest'"
-        else
-            echo "  (deleted: $f)"
-            rm -fv "$dest" || true
-        fi
+        publish_exact_file_or_delete "$f" "$dest" 0644 "PipeWire configuration" spa-json || exit $?
     done
     echo "restarting pipewire stack"
     systemctl --user restart pipewire pipewire-pulse wireplumber
@@ -1224,16 +2697,9 @@ fi
 # --- Hapax runtime config ---
 if [ "${#HAPAX_CONF[@]}" -gt 0 ]; then
     echo "hapax runtime config changed (${#HAPAX_CONF[@]}):"
-    mkdir -p "$HAPAX_CONF_DIR"
     for f in "${HAPAX_CONF[@]}"; do
         dest="$HAPAX_CONF_DIR/$(basename "$f")"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$dest"
-            echo "  '$f' -> '$dest'"
-        else
-            echo "  (deleted: $f)"
-            rm -fv "$dest" || true
-        fi
+        publish_exact_file_or_delete "$f" "$dest" 0644 "Hapax runtime configuration" || exit $?
     done
     echo "restarting hapax-audio-reconciler"
     systemctl --user restart hapax-audio-reconciler.service || true
@@ -1243,15 +2709,9 @@ fi
 # --- WirePlumber confs ---
 if [ "${#WP[@]}" -gt 0 ]; then
     echo "wireplumber confs changed (${#WP[@]}):"
-    mkdir -p "$WP_CONF_DIR"
     for f in "${WP[@]}"; do
         dest="$WP_CONF_DIR/$(basename "$f")"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$dest"
-            echo "  '$f' -> '$dest'"
-        else
-            rm -fv "$dest" || true
-        fi
+        publish_exact_file_or_delete "$f" "$dest" 0644 "WirePlumber configuration" || exit $?
     done
     # WP restart alone if we didn't already restart above
     if [ "${#PW[@]}" -eq 0 ]; then
@@ -1268,15 +2728,9 @@ fi
 # policy can go stale on deploy while its .conf updates (FM-13).
 if [ "${#WP_LUA[@]}" -gt 0 ]; then
     echo "wireplumber lua scripts changed (${#WP_LUA[@]}):"
-    mkdir -p "$WP_SCRIPTS_DIR"
     for f in "${WP_LUA[@]}"; do
         dest="$WP_SCRIPTS_DIR/$(basename "$f")"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$dest"
-            echo "  '$f' -> '$dest'"
-        else
-            rm -fv "$dest" || true
-        fi
+        publish_exact_file_or_delete "$f" "$dest" 0644 "WirePlumber Lua script" || exit $?
     done
     # Restart wireplumber only if neither the pipewire stack nor the WP confs
     # above already restarted it.
@@ -1289,17 +2743,10 @@ fi
 # --- systemd watchdog helper scripts ---
 if [ "${#WATCHDOGS[@]}" -gt 0 ]; then
     echo "systemd watchdog scripts changed (${#WATCHDOGS[@]}):"
-    mkdir -p "$LOCAL_BIN"
     for f in "${WATCHDOGS[@]}"; do
         base="$(basename "$f")"
         dest="$LOCAL_BIN/$base"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$dest"
-            chmod +x "$dest" 2>/dev/null || true
-            echo "  '$f' -> '$dest'"
-        else
-            rm -fv "$dest" || true
-        fi
+        publish_exact_file_or_delete "$f" "$dest" 0755 "systemd watchdog script" || exit $?
         matches="$(grep -l -F "$dest" "$REPO/systemd/units/"*.service 2>/dev/null || true)"
         for unit_path in $matches; do
             base_unit="$(basename "$unit_path")"
@@ -1334,7 +2781,7 @@ recovery_bundle_runtime_missing() {
 }
 
 recovery_bundle_runtime_stale() {
-    python3 - "$RECOVERY_BUNDLE_DEST/manifest.json" "$REPO" "$SHA" "${RECOVERY_BUNDLE_SOURCE_FILES[@]}" <<'PY'
+    /usr/bin/python3 -I -S - "$RECOVERY_BUNDLE_DEST/manifest.json" "$REPO" "$SHA" "${RECOVERY_BUNDLE_SOURCE_FILES[@]}" <<'PY'
 import hashlib
 import json
 import subprocess
@@ -1432,18 +2879,47 @@ fi
 # --- P0 OOM containment system/user policy ---
 stage_root_required_package() {
     local stage="$1" manifest="$2" label="$3"
-    local rel dest git_mode
+    local rel dest git_mode git_type git_tree manifest_line extra payload_tmp mode
+    local manifest_text="" entry_count=0
+    if [ ! -d "$stage" ] || [ -L "$stage" ]; then
+        echo "hapax-post-merge-deploy: invalid $label stage directory: $stage" >&2
+        return 2
+    fi
     if ! git cat-file -e "$SHA:$manifest" 2>/dev/null; then
         echo "hapax-post-merge-deploy: missing $label manifest at $SHA:$manifest; next: restore the versioned ownership manifest and rerun hapax-post-merge-deploy for this merge" >&2
         return 2
     fi
-    while IFS= read -r rel; do
+    if ! manifest_text="$(git -C "$REPO" show "$SHA:$manifest")"; then
+        echo "hapax-post-merge-deploy: failed to read $label manifest at $SHA:$manifest; refusing to publish an incomplete stage" >&2
+        return 2
+    fi
+    while IFS= read -r manifest_line; do
+        rel=""
+        extra=""
+        read -r rel extra <<< "$manifest_line" || true
         [ -n "$rel" ] || continue
+        [[ "$rel" == \#* ]] && continue
+        if [ -n "$extra" ]; then
+            echo "hapax-post-merge-deploy: malformed $label manifest entry: $manifest_line; next: declare exactly one normalized path per line" >&2
+            return 2
+        fi
+        if ! root_required_manifest_path_is_safe "$rel"; then
+            echo "hapax-post-merge-deploy: unsafe or non-normalized $label manifest path: $rel; next: use normalized repository-relative paths only" >&2
+            return 2
+        fi
         if ! git cat-file -e "$SHA:$rel" 2>/dev/null; then
             echo "hapax-post-merge-deploy: missing $label source at $SHA:$rel; next: restore every path declared by $manifest and rerun hapax-post-merge-deploy for this merge" >&2
             return 2
         fi
-        git_mode="$(git -C "$REPO" ls-tree "$SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
+        if ! git_tree="$(git -C "$REPO" ls-tree "$SHA" -- "$rel")"; then
+            echo "hapax-post-merge-deploy: failed to inspect $label Git mode at $SHA:$rel; refusing to publish an incomplete stage" >&2
+            return 2
+        fi
+        if [ -z "$git_tree" ] || [[ "$git_tree" == *$'\n'* ]]; then
+            echo "hapax-post-merge-deploy: ambiguous $label Git entry at $SHA:$rel; refusing to publish an incomplete stage" >&2
+            return 2
+        fi
+        read -r git_mode git_type _ <<< "$git_tree"
         case "$git_mode" in
             100644|100755) ;;
             *)
@@ -1451,16 +2927,49 @@ stage_root_required_package() {
                 return 2
                 ;;
         esac
-        dest="$stage/$rel"
-        mkdir -p "$(dirname "$dest")"
-        git show "$SHA:$rel" > "$dest"
-        if [ "$git_mode" = "100755" ]; then
-            chmod 0755 "$dest"
-        else
-            chmod 0644 "$dest"
+        if [ "$git_type" != "blob" ]; then
+            echo "hapax-post-merge-deploy: unsupported $label Git object type ${git_type:-missing} at $SHA:$rel; expected a blob" >&2
+            return 2
         fi
-    done < <(git -C "$REPO" show "$SHA:$manifest" | awk 'NF && $1 !~ /^#/ {print $1}')
-    printf '%s\n' "$SHA" > "$stage/.hapax-root-required-package-sha"
+        dest="$stage/$rel"
+        if ! mkdir -p "$(dirname "$dest")"; then
+            echo "hapax-post-merge-deploy: failed to create $label stage directory for $rel" >&2
+            return 2
+        fi
+        if ! payload_tmp="$(mktemp "$dest.tmp.XXXXXX")"; then
+            echo "hapax-post-merge-deploy: failed to allocate $label stage file for $rel" >&2
+            return 2
+        fi
+        if ! git -C "$REPO" show "$SHA:$rel" > "$payload_tmp"; then
+            rm -f -- "$payload_tmp" 2>/dev/null || true
+            echo "hapax-post-merge-deploy: failed to read $label source at $SHA:$rel; refusing to publish an incomplete stage" >&2
+            return 2
+        fi
+        if [ "$git_mode" = "100755" ]; then
+            mode=0755
+        else
+            mode=0644
+        fi
+        if ! chmod "$mode" "$payload_tmp"; then
+            rm -f -- "$payload_tmp" 2>/dev/null || true
+            echo "hapax-post-merge-deploy: failed to set $label stage mode for $rel" >&2
+            return 2
+        fi
+        if ! mv -f -- "$payload_tmp" "$dest"; then
+            rm -f -- "$payload_tmp" 2>/dev/null || true
+            echo "hapax-post-merge-deploy: failed to publish $label stage file for $rel" >&2
+            return 2
+        fi
+        entry_count=$((entry_count + 1))
+    done <<< "$manifest_text"
+    if [ "$entry_count" -eq 0 ]; then
+        echo "hapax-post-merge-deploy: $label manifest at $SHA:$manifest has no package paths; refusing to publish an empty stage" >&2
+        return 2
+    fi
+    if ! atomic_write_sha_receipt "$stage/.hapax-root-required-package-sha" "$SHA"; then
+        echo "hapax-post-merge-deploy: failed to publish the $label stage marker" >&2
+        return 2
+    fi
 }
 
 stage_oom_containment_installer() {
@@ -1469,79 +2978,147 @@ stage_oom_containment_installer() {
 }
 
 defer_root_required_installer() {
-    local label="$1" stage="$2" installer="$3" dest temp receipt
+    local label="$1" stage="$2" dest temp
     mkdir -p "$ROOT_DEFER_DIR"
     dest="$ROOT_DEFER_DIR/$SHA/$label"
     mkdir -p "$(dirname "$dest")"
-    receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
-    if [ -f "$receipt" ] && [ "$(tr -d '[:space:]' < "$receipt")" = "$SHA" ]; then
-        echo "root-required $label already installed at $SHA; deferral not recreated"
-        return 0
-    fi
     temp="$ROOT_DEFER_DIR/$SHA/.${label}.tmp.$$"
     rm -rf "$temp" 2>/dev/null || true
     cp -a "$stage" "$temp"
-    cat > "$temp/RUNBOOK.txt" <<EOF
-Root-required post-merge deploy action deferred.
+    if [ "$label" = "oom-containment" ]; then
+        cat > "$temp/RUNBOOK.txt" <<EOF
+Root-required OOM package staged as non-authoritative desired-state evidence.
 
 Commit: $SHA
 Package: $label
 
-Run from this host after this root-authority preparation:
+Production OOM installation and authoritative live verification are unavailable
+in this source revision. This staged package and all same-UID receipts are input,
+not runtime authority.
 
-  sudo -v
+This staging does not replace, stop, or otherwise reconcile an already installed
+OOM auditor or timer. Existing installed bytes may retain historical mutating semantics
+until a separately runtime-authorized cutover verifies and replaces
+them; do not treat source acceptance or this RUNBOOK as that cutover.
 
-Default sudo path after sudo -v:
+Next action: preserve this exact-SHA package and dispatch separately runtime-authorized root-broker work against
+docs/security/root-authority-hazard-register.md. Do not execute the staged
+interpreter as root and do not recreate the retired --install/--verify-live path.
 
-  HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live
-
-Post-merge deploy continued after this deferral so unrelated user-scope deploy
-groups for the same merge were not skipped.
+Post-merge deploy continued so unrelated user-scope deploy groups for the same
+merge were not skipped.
 EOF
-    rm -rf "$dest" 2>/dev/null || true
-    mv "$temp" "$dest"
-    echo "root-required $label install deferred to $dest"
-    echo "next action: run HAPAX_ROOT_REQUIRED_PACKAGE_SHA=$SHA HAPAX_ROOT_REQUIRED_DRAIN_DIR=$dest HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT=$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT=$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT=$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT HAPAX_ROOT_REQUIRED_GIT_REPO=$REPO $dest/$installer --source $dest --install --verify-live with root authority"
+        rm -rf "$dest" 2>/dev/null || true
+        mv "$temp" "$dest"
+        echo "root-required $label desired-state package staged at $dest"
+        echo "next action: dispatch separately runtime-authorized root-broker work; production OOM application is unavailable in this source revision"
+        return 0
+    fi
+    if [ "$label" = "apcupsd-power-alerts" ]; then
+        cat > "$temp/RUNBOOK.txt" <<EOF
+Root-required APC package staged as non-authoritative desired-state evidence.
+
+Commit: $SHA
+Package: $label
+
+Production APC installation is unavailable in this source revision. A
+caller-owned shell and mutable staged paths cannot carry root authority, and
+same-UID receipts or drained markers cannot establish runtime completion.
+
+Next action: preserve this exact-SHA package and dispatch separately runtime-authorized root-broker work against
+docs/security/root-authority-hazard-register.md. Do not execute the staged
+interpreter as root and do not use its isolated-test install path against live
+destinations.
+
+Post-merge deploy continued so unrelated user-scope deploy groups for the same
+merge were not skipped.
+EOF
+        rm -rf "$dest" 2>/dev/null || true
+        mv "$temp" "$dest"
+        echo "root-required $label desired-state package staged at $dest"
+        echo "next action: dispatch separately runtime-authorized root-broker work; production APC application is unavailable in this source revision"
+        return 0
+    fi
+    rm -rf "$temp" 2>/dev/null || true
+    echo "hapax-post-merge-deploy: unsupported root-required package label $label; no runbook published" >&2
+    return 2
 }
 
 root_required_stage_matches_commit() {
-    local stage="$1" commit="$2" manifest_rel="$3" file rel git_mode stage_mode
-    cmp -s "$stage/$manifest_rel" <(git -C "$REPO" show "$commit:$manifest_rel" 2>/dev/null) || return 1
-    while IFS= read -r rel; do
+    local stage="$1" commit="$2" manifest_rel="$3" file rel git_mode git_type stage_mode
+    local source_oid stage_oid git_tree manifest_line extra entry_count=0
+    [ -f "$stage/$manifest_rel" ] || return 1
+    [ ! -L "$stage/$manifest_rel" ] || return 1
+    if ! source_oid="$(git -C "$REPO" rev-parse --verify "$commit:$manifest_rel" 2>/dev/null)"; then
+        return 1
+    fi
+    if ! stage_oid="$(git -C "$REPO" hash-object "$stage/$manifest_rel" 2>/dev/null)"; then
+        return 1
+    fi
+    [ "$source_oid" = "$stage_oid" ] || return 1
+    while IFS= read -r manifest_line; do
+        rel=""
+        extra=""
+        read -r rel extra <<< "$manifest_line" || true
+        [ -n "$rel" ] || continue
+        [[ "$rel" == \#* ]] && continue
+        [ -z "$extra" ] || return 1
+        root_required_manifest_path_is_safe "$rel" || return 1
         file="$stage/$rel"
         [ -f "$file" ] || return 1
         [ ! -L "$file" ] || return 1
-        git -C "$REPO" cat-file -e "$commit:$rel" 2>/dev/null || return 1
-        cmp -s "$file" <(git -C "$REPO" show "$commit:$rel") || return 1
-        git_mode="$(git -C "$REPO" ls-tree "$commit" -- "$rel" | awk 'NR == 1 {print $1}')"
+        if ! source_oid="$(git -C "$REPO" rev-parse --verify "$commit:$rel" 2>/dev/null)"; then
+            return 1
+        fi
+        if ! stage_oid="$(git -C "$REPO" hash-object "$file" 2>/dev/null)"; then
+            return 1
+        fi
+        [ "$source_oid" = "$stage_oid" ] || return 1
+        if ! git_tree="$(git -C "$REPO" ls-tree "$commit" -- "$rel")"; then
+            return 1
+        fi
+        [ -n "$git_tree" ] || return 1
+        [[ "$git_tree" != *$'\n'* ]] || return 1
+        read -r git_mode git_type _ <<< "$git_tree"
+        [ "$git_type" = "blob" ] || return 1
         stage_mode=100644
         [ -x "$file" ] && stage_mode=100755
         [ "$git_mode" = "$stage_mode" ] || return 1
-    done < <(awk 'NF && $1 !~ /^#/ {print $1}' "$stage/$manifest_rel")
+        entry_count=$((entry_count + 1))
+    done < "$stage/$manifest_rel"
+    [ "$entry_count" -gt 0 ]
 }
 
 validate_root_required_stage_manifest() {
-    local stage="$1" manifest_rel="$2"
-    if ! cmp -s \
-        <(awk 'NF && $1 !~ /^#/ {print $1}' "$stage/$manifest_rel" | sort) \
-        <(find "$stage" -type f ! -name .hapax-root-required-package-sha -printf '%P\n' | sort); then
+    local stage="$1" manifest_rel="$2" expected actual
+    if ! expected="$(awk 'NF && $1 !~ /^#/ {print $1}' "$stage/$manifest_rel" | LC_ALL=C sort)"; then
+        echo "hapax-post-merge-deploy: failed to read staged $manifest_rel; refusing desired-state publication" >&2
+        return 1
+    fi
+    if ! actual="$(find "$stage" -type f ! -name .hapax-root-required-package-sha -printf '%P\n' | LC_ALL=C sort)"; then
+        echo "hapax-post-merge-deploy: failed to enumerate staged root-required package; refusing desired-state publication" >&2
+        return 1
+    fi
+    if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
         echo "hapax-post-merge-deploy: staged root-required package does not match $manifest_rel; next action: update the versioned ownership manifest and staging list together" >&2
         return 1
     fi
 }
 
 record_root_required_desired_sha() {
-    local label="$1" stage="$2" receipt temp current manifest_rel
+    local label="$1" stage="$2" receipt current manifest_rel
     case "$label" in
         oom-containment) manifest_rel="config/root-required/oom-containment.files" ;;
         apcupsd-power-alerts) manifest_rel="config/root-required/apcupsd-power-alerts.files" ;;
         *) echo "hapax-post-merge-deploy: unknown root-required package label: $label; next action: use oom-containment or apcupsd-power-alerts from the governed staging path" >&2; return 2 ;;
     esac
     validate_root_required_stage_manifest "$stage" "$manifest_rel" || return 1
-    mkdir -p "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
     receipt="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
     if [ -f "$receipt" ]; then
-        current="$(tr -d '[:space:]' < "$receipt")"
+        if ! current="$(tr -d '[:space:]' < "$receipt")"; then
+            echo "hapax-post-merge-deploy: failed to read desired $label receipt $receipt; refusing to replace it" >&2
+            return 1
+        fi
         if ! [[ "$current" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$REPO" cat-file -e "$current^{commit}" 2>/dev/null; then
             echo "hapax-post-merge-deploy: invalid or unavailable desired $label receipt $current; next action: restore the latest governed receipt and rerun this deploy" >&2
             return 1
@@ -1562,12 +3139,14 @@ record_root_required_desired_sha() {
             fi
         fi
     fi
-    temp="$receipt.tmp.$$"
-    printf '%s\n' "$SHA" > "$temp"
-    mv -f "$temp" "$receipt"
+    if ! atomic_write_sha_receipt "$receipt" "$SHA"; then
+        echo "hapax-post-merge-deploy: failed to publish desired $label receipt; refusing successful staging" >&2
+        return 1
+    fi
 }
 
-# apcupsd must be active before the OOM package verifies the recovery plane.
+# Validate the APC source package before the OOM source package so recovery-plane
+# policy errors are reported in dependency order. Runtime application is deferred.
 stage_apcupsd_power_alert_installer() {
     stage_root_required_package \
         "$1" config/root-required/apcupsd-power-alerts.files "apcupsd power-alert"
@@ -1587,25 +3166,19 @@ if [ "${#APCUPSD_POWER_ALERTS[@]}" -gt 0 ]; then
         rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
         exit "$stage_apcupsd_rc"
     fi
+    set +e
+    "$APCUPSD_STAGE/$APCUPSD_INSTALLER_PATH" --source "$APCUPSD_STAGE" --check
+    apcupsd_installer_rc=$?
+    set -e
+    if [ "$apcupsd_installer_rc" -ne 0 ]; then
+        rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
+        exit "$apcupsd_installer_rc"
+    fi
     if ! record_root_required_desired_sha "apcupsd-power-alerts" "$APCUPSD_STAGE"; then
         rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
         exit 1
     fi
-    set +e
-    HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
-        HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
-        HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
-        HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
-        HAPAX_ROOT_REQUIRED_GIT_REPO="$REPO" \
-        "$APCUPSD_STAGE/$APCUPSD_INSTALLER_PATH" --source "$APCUPSD_STAGE" --install --verify-live
-    apcupsd_installer_rc=$?
-    set -e
-    if [ "$apcupsd_installer_rc" -eq "$ROOT_REQUIRED_RC" ]; then
-        defer_root_required_installer "apcupsd-power-alerts" "$APCUPSD_STAGE" "$APCUPSD_INSTALLER_PATH"
-    elif [ "$apcupsd_installer_rc" -ne 0 ]; then
-        rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
-        exit "$apcupsd_installer_rc"
-    fi
+    defer_root_required_installer "apcupsd-power-alerts" "$APCUPSD_STAGE"
     rm -rf "$APCUPSD_STAGE" 2>/dev/null || true
     DID_ANYTHING=1
 fi
@@ -1624,27 +3197,26 @@ if [ "${#OOM_CONTAINMENT[@]}" -gt 0 ]; then
         rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit "$stage_oom_rc"
     fi
-    if ! record_root_required_desired_sha "oom-containment" "$OOM_STAGE"; then
-        rm -rf "$OOM_STAGE" 2>/dev/null || true
-        exit 1
-    fi
     set +e
     HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$SHA" \
         HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
         HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
         HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" \
         HAPAX_ROOT_REQUIRED_GIT_REPO="$REPO" \
-        "$OOM_STAGE/$OOM_CONTAINMENT_INSTALLER_PATH" --source "$OOM_STAGE" --install --verify-live
+        "$OOM_STAGE/$OOM_CONTAINMENT_INSTALLER_PATH" \
+            --source "$OOM_STAGE" --check --no-runtime
     oom_installer_rc=$?
     set -e
-    if [ "$oom_installer_rc" -eq "$ROOT_REQUIRED_RC" ]; then
-        defer_root_required_installer "oom-containment" "$OOM_STAGE" "$OOM_CONTAINMENT_INSTALLER_PATH"
-    elif [ "$oom_installer_rc" -ne 0 ]; then
+    if [ "$oom_installer_rc" -ne 0 ]; then
         rm -rf "$OOM_STAGE" 2>/dev/null || true
         exit "$oom_installer_rc"
     fi
+    if ! record_root_required_desired_sha "oom-containment" "$OOM_STAGE"; then
+        rm -rf "$OOM_STAGE" 2>/dev/null || true
+        exit 1
+    fi
+    defer_root_required_installer "oom-containment" "$OOM_STAGE"
     rm -rf "$OOM_STAGE" 2>/dev/null || true
-    DID_ANYTHING=1
 fi
 
 slice_memory_issue_from_content() {
@@ -1748,11 +3320,17 @@ validate_generic_dropin_activation() {
             return 1
             ;;
         *.slice)
-            if ! git -C "$REPO" cat-file -e "$SHA:$f" 2>/dev/null; then
+            if ! git_blob_state_at "$SHA" "$f" "generic slice drop-in"; then
+                return 1
+            fi
+            if [ "$GIT_BLOB_PRESENT" -eq 0 ]; then
                 echo "hapax-post-merge-deploy: refusing generic slice drop-in deletion for $f because runtime set-property overrides cannot be safely inferred; next action: use a governed slice-specific removal that clears persistent and runtime policy together" >&2
                 return 1
             fi
-            content="$(git -C "$REPO" show "$SHA:$f")"
+            if ! content="$(git -C "$REPO" show "$SHA:$f")"; then
+                echo "hapax-post-merge-deploy: failed to materialize generic slice drop-in at $SHA:$f" >&2
+                return 1
+            fi
             invalid_memory="$(printf '%s\n' "$content" | awk -F= '
                 /^(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)=/ {
                     if ($2 !~ /^(infinity|[0-9]+([.][0-9]+)?([KMGTPE](iB|B)?)?|[0-9]+%)$/) {
@@ -1811,7 +3389,776 @@ validate_generic_dropin_activation() {
     esac
 }
 
-# --- systemd unit drop-ins ---
+system_unit_file_witness() {
+    local path="$1" expected_oid="$2"
+    /usr/bin/python3 -I -S - \
+        "$path" "$expected_oid" "$SYSTEMD_SYSTEM_TRUST_ROOT" \
+        "$SYSTEMD_SYSTEM_EXPECTED_UID" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import os
+import stat
+import sys
+
+raw_path, expected_oid, raw_trust_root, expected_uid_text = sys.argv[1:]
+try:
+    expected_uid = int(expected_uid_text)
+except ValueError:
+    raise SystemExit(1)
+path = os.path.normpath(raw_path)
+trust_root = os.path.normpath(raw_trust_root)
+if (
+    not path.startswith("/")
+    or not trust_root.startswith("/")
+    or path != raw_path
+    or trust_root != raw_trust_root
+    or expected_uid < 0
+):
+    raise SystemExit(1)
+try:
+    if os.path.commonpath((path, trust_root)) != trust_root or path == trust_root:
+        raise SystemExit(1)
+except ValueError:
+    raise SystemExit(1)
+
+
+def generation(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def trusted_ancestors(
+    *, allow_missing_suffix: bool
+) -> list[tuple[str, tuple[int, ...] | None]]:
+    parent = os.path.dirname(path)
+    relative = os.path.relpath(parent, trust_root)
+    components = [] if relative == "." else relative.split(os.sep)
+    current = trust_root
+    witnessed: list[tuple[str, tuple[int, ...] | None]] = []
+    for component in ("", *components):
+        if component:
+            if component in (".", "..") or os.sep in component:
+                raise OSError("unsafe system-unit ancestor component")
+            current = os.path.join(current, component)
+        try:
+            value = os.lstat(current)
+        except FileNotFoundError:
+            if not allow_missing_suffix:
+                raise
+            witnessed.append((current, None))
+            break
+        if (
+            not stat.S_ISDIR(value.st_mode)
+            or value.st_uid != expected_uid
+            or stat.S_IMODE(value.st_mode) & 0o022
+        ):
+            raise OSError(f"untrusted system-unit ancestor: {current}")
+        witnessed.append((current, generation(value)))
+    return witnessed
+
+
+def serialize_ancestors(
+    values: list[tuple[str, tuple[int, ...] | None]]
+) -> str:
+    return ";".join(
+        f"{name}:missing"
+        if observed is None
+        else f"{name}:{','.join(str(item) for item in observed)}"
+        for name, observed in values
+    )
+
+
+try:
+    ancestors_before = trusted_ancestors(allow_missing_suffix=True)
+except (FileNotFoundError, OSError):
+    raise SystemExit(1)
+try:
+    path_before = os.lstat(path)
+except FileNotFoundError:
+    try:
+        ancestors_after = trusted_ancestors(allow_missing_suffix=True)
+    except (FileNotFoundError, OSError):
+        raise SystemExit(1)
+    if ancestors_before != ancestors_after:
+        raise SystemExit(1)
+    print("\t".join(("absent", serialize_ancestors(ancestors_after))))
+    raise SystemExit(0)
+if (
+    not stat.S_ISREG(path_before.st_mode)
+    or path_before.st_uid != expected_uid
+    or path_before.st_nlink != 1
+    or stat.S_IMODE(path_before.st_mode) != 0o644
+):
+    raise SystemExit(1)
+if any(observed is None for _, observed in ancestors_before):
+    raise SystemExit(1)
+
+fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+try:
+    before = os.fstat(fd)
+    if (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino):
+        raise OSError("system unit path changed before read")
+    if before.st_size > 4 * 1024 * 1024:
+        raise OSError("system unit exceeds the bounded witness size")
+    payload = bytearray()
+    while True:
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            break
+        payload.extend(chunk)
+    after = os.fstat(fd)
+    path_after = os.lstat(path)
+    ancestors_after = trusted_ancestors(allow_missing_suffix=False)
+finally:
+    os.close(fd)
+
+generation_before = generation(before)
+generation_after = generation(after)
+path_generation_after = generation(path_after)
+if (
+    generation_before != generation_after
+    or generation_after != path_generation_after
+    or ancestors_before != ancestors_after
+):
+    raise OSError("system unit generation changed during read")
+
+if expected_oid and len(expected_oid) not in (40, 64):
+    raise SystemExit(1)
+algorithm = hashlib.sha1 if len(expected_oid) == 40 else hashlib.sha256
+digest = algorithm(f"blob {len(payload)}\0".encode("ascii") + payload).hexdigest()
+print(
+    "\t".join(
+        (
+            "present",
+            digest,
+            str(after.st_uid),
+            format(stat.S_IMODE(after.st_mode), "04o"),
+            str(after.st_nlink),
+            *(str(value) for value in generation_after),
+            serialize_ancestors(ancestors_after),
+        )
+    )
+)
+PY
+}
+
+SYSTEM_EXPECTED_DROPIN_PATHS=""
+SYSTEM_EXPECTED_DROPIN_RECORDS=""
+load_expected_system_dropin_paths() {
+    local source_unit="$1" listing line mode type object_and_path object_oid tree_path
+    local prefix="${source_unit}.d/"
+    local installed_path
+    local -a expected=() records=()
+    SYSTEM_EXPECTED_DROPIN_PATHS=""
+    SYSTEM_EXPECTED_DROPIN_RECORDS=""
+    if ! listing="$(git -C "$REPO" ls-tree -r "$SHA" -- "${source_unit}.d")"; then
+        echo "hapax-post-merge-deploy: failed to enumerate system drop-ins at $SHA:${source_unit}.d" >&2
+        return 1
+    fi
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        read -r mode type object_and_path <<< "$line"
+        if [[ "$object_and_path" != *$'\t'* ]]; then
+            echo "hapax-post-merge-deploy: malformed system drop-in Git entry at $SHA:${source_unit}.d" >&2
+            return 1
+        fi
+        object_oid="${object_and_path%%$'\t'*}"
+        tree_path="${object_and_path#*$'\t'}"
+        case "$tree_path" in
+            "$prefix"*.conf) ;;
+            *) continue ;;
+        esac
+        if [ "$mode" != 100644 ] || [ "$type" != "blob" ] \
+            || ! [[ "$object_oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+            echo "hapax-post-merge-deploy: unsupported system drop-in Git entry at $SHA:$tree_path" >&2
+            return 1
+        fi
+        installed_path="$SYSTEMD_SYSTEM_DIR/${tree_path#systemd/units/}"
+        expected+=("$installed_path")
+        records+=("$installed_path"$'\t'"$object_oid")
+    done <<< "$listing"
+    if [ "${#expected[@]}" -gt 0 ]; then
+        SYSTEM_EXPECTED_DROPIN_PATHS="$(printf '%s\n' "${expected[@]}" | sort -u)"
+        SYSTEM_EXPECTED_DROPIN_RECORDS="$(printf '%s\n' "${records[@]}" | sort -u)"
+    fi
+}
+
+SYSTEM_EXPECTED_FRAGMENT_OID=""
+SYSTEM_EXPECTED_FRAGMENT_PRESENT=0
+load_expected_system_fragment_oid() {
+    local source_unit="$1" listing mode type object_and_path object_oid tree_path
+    SYSTEM_EXPECTED_FRAGMENT_OID=""
+    SYSTEM_EXPECTED_FRAGMENT_PRESENT=0
+    if ! listing="$(git -C "$REPO" ls-tree "$SHA" -- "$source_unit")"; then
+        echo "hapax-post-merge-deploy: cannot resolve exact system fragment at $SHA:$source_unit" >&2
+        return 1
+    fi
+    [ -n "$listing" ] || return 0
+    if [[ "$listing" == *$'\n'* ]]; then
+        echo "hapax-post-merge-deploy: ambiguous exact system fragment at $SHA:$source_unit" >&2
+        return 1
+    fi
+    read -r mode type object_and_path <<< "$listing"
+    if [[ "$object_and_path" != *$'\t'* ]]; then
+        return 1
+    fi
+    object_oid="${object_and_path%%$'\t'*}"
+    tree_path="${object_and_path#*$'\t'}"
+    if [ "$mode" != 100644 ] || [ "$type" != "blob" ] \
+        || [ "$tree_path" != "$source_unit" ] \
+        || ! [[ "$object_oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+        echo "hapax-post-merge-deploy: unsupported exact system fragment at $SHA:$source_unit" >&2
+        return 1
+    fi
+    SYSTEM_EXPECTED_FRAGMENT_OID="$object_oid"
+    SYSTEM_EXPECTED_FRAGMENT_PRESENT=1
+}
+
+system_dropin_file_set_witness() {
+    local records="$1" path oid extra witness count=0
+    if [ -z "$records" ]; then
+        printf 'none\n'
+        return 0
+    fi
+    [ "${#records}" -le 131072 ] || return 1
+    while IFS=$'\t' read -r path oid extra; do
+        [ -n "$path" ] && [ -n "$oid" ] && [ -z "$extra" ] || return 1
+        if ! [[ "$oid" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+            || ! witness="$(system_unit_file_witness "$path" "$oid")" \
+            || [[ "$witness" != $'present\t'"$oid"$'\t'* ]]; then
+            return 1
+        fi
+        printf '%s\t%s\n' "$path" "$witness"
+        count=$((count + 1))
+        [ "$count" -le 512 ] || return 1
+    done <<< "$records"
+    [ "$count" -gt 0 ]
+}
+
+system_dropin_directory_witness() {
+    local unit_name="$1" witness
+    if ! witness="$(
+        system_unit_file_witness \
+            "$SYSTEMD_SYSTEM_DIR/$unit_name.d/.hapax-directory-witness" ""
+    )" \
+        || [[ "$witness" != absent$'\t'* ]]; then
+        return 1
+    fi
+    printf '%s\n' "$witness"
+}
+
+system_dropin_paths_match() {
+    local observed="$1" expected="$2"
+    [ "${#observed}" -le 131072 ] || return 1
+    [ "${#expected}" -le 131072 ] || return 1
+    /usr/bin/python3 -I -S - "$observed" "$expected" <<'PY'
+from __future__ import annotations
+
+import os
+import sys
+
+observed = sys.argv[1].split()
+expected = [line for line in sys.argv[2].splitlines() if line]
+if len(observed) != len(set(observed)) or len(expected) != len(set(expected)):
+    raise SystemExit(1)
+if any(not path.startswith("/") or any(char.isspace() for char in path) for path in observed):
+    raise SystemExit(1)
+raise SystemExit(0 if set(observed) == set(expected) else 1)
+PY
+}
+
+pending_system_scope_absent_for_user_path() {
+    local source_path="$1" rel base system_dest manager_unit
+    local file_before file_after manager_record line
+    local load_state fragment_path dropin_paths need_reload
+    local record_ok property_count load_seen fragment_seen dropins_seen reload_seen
+    rel="${source_path#systemd/units/}"
+    case "$rel" in
+        *.d/*.conf)
+            base="${rel%%.d/*}"
+            system_dest="$SYSTEMD_SYSTEM_DIR/$rel"
+            ;;
+        *)
+            base="$(basename "$rel")"
+            system_dest="$SYSTEMD_SYSTEM_DIR/$base"
+            ;;
+    esac
+    manager_unit="$base"
+    if [[ "$manager_unit" == *@.* ]]; then
+        manager_unit="${manager_unit/@./@hapax-post-merge-witness.}"
+    fi
+    if ! file_before="$(system_unit_file_witness "$system_dest" "")" \
+        || [[ "$file_before" != absent$'\t'* ]]; then
+        return 1
+    fi
+    if ! manager_record="$(
+        systemctl show "$manager_unit" \
+            --property=LoadState,FragmentPath,DropInPaths,NeedDaemonReload --no-pager
+    )"; then
+        return 1
+    fi
+    load_state=""
+    fragment_path=""
+    dropin_paths=""
+    need_reload=""
+    record_ok=1
+    property_count=0
+    load_seen=0
+    fragment_seen=0
+    dropins_seen=0
+    reload_seen=0
+    while IFS= read -r line; do
+        case "$line" in
+            LoadState=*)
+                [ "$load_seen" -eq 0 ] || record_ok=0
+                load_seen=1
+                load_state="${line#LoadState=}"
+                ;;
+            FragmentPath=*)
+                [ "$fragment_seen" -eq 0 ] || record_ok=0
+                fragment_seen=1
+                fragment_path="${line#FragmentPath=}"
+                ;;
+            DropInPaths=*)
+                [ "$dropins_seen" -eq 0 ] || record_ok=0
+                dropins_seen=1
+                dropin_paths="${line#DropInPaths=}"
+                ;;
+            NeedDaemonReload=*)
+                [ "$reload_seen" -eq 0 ] || record_ok=0
+                reload_seen=1
+                need_reload="${line#NeedDaemonReload=}"
+                ;;
+            *) record_ok=0 ;;
+        esac
+        property_count=$((property_count + 1))
+    done <<< "$manager_record"
+    if [ "$property_count" -ne 4 ] \
+        || [ "$load_seen" -ne 1 ] \
+        || [ "$fragment_seen" -ne 1 ] \
+        || [ "$dropins_seen" -ne 1 ] \
+        || [ "$reload_seen" -ne 1 ] \
+        || [ "$load_state" != "not-found" ] \
+        || [ -n "$fragment_path" ] \
+        || [ -n "$dropin_paths" ] \
+        || [ "$need_reload" != "no" ]; then
+        record_ok=0
+    fi
+    [ "$record_ok" -eq 1 ] || return 1
+    if ! file_after="$(system_unit_file_witness "$system_dest" "")" \
+        || [ "$file_after" != "$file_before" ]; then
+        return 1
+    fi
+}
+
+for f in "${SYSTEMD_PENDING_USER_UNITS[@]}"; do
+    if pending_system_scope_absent_for_user_path "$f"; then
+        cache_systemd_target_at_sha "$f" || exit $?
+        if [ -z "${SYSTEMD_EARLY_PREPARKED[$f]+prepared}" ]; then
+            prepark_cached_systemd_target "$f" || exit 1
+        fi
+        SYSTEMD_PENDING_REMOVE+=("$f")
+        SYSTEMD+=("$f")
+        echo "system-to-user transition witness converged: $f"
+    else
+        SYSTEMD_PENDING_ADD+=("$f")
+        RUNTIME_DEFERRED+=("systemd-system-to-user:$f")
+        echo "  runtime deferred: prior system installation for '$f' has not been proven absent; refusing user-manager publication" >&2
+    fi
+done
+for f in "${SYSTEMD_PENDING_USER_DROPINS[@]}"; do
+    if pending_system_scope_absent_for_user_path "$f"; then
+        SYSTEMD_PENDING_REMOVE+=("$f")
+        SYSTEMD_DROPINS+=("$f")
+        echo "system-to-user transition witness converged: $f"
+    else
+        SYSTEMD_PENDING_ADD+=("$f")
+        RUNTIME_DEFERRED+=("systemd-system-to-user:$f")
+        echo "  runtime deferred: prior system installation for '$f' has not been proven absent; refusing user-manager publication" >&2
+    fi
+done
+
+user_unit_absence_witness() {
+    local unit_name="$1"
+    /usr/bin/python3 -I -S - "$SYSTEMD_USER_DIR" "$unit_name" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import stat
+import sys
+
+root, unit = sys.argv[1:]
+if (
+    not root.startswith("/")
+    or os.path.normpath(root) != root
+    or re.fullmatch(r"[A-Za-z0-9_.@:-]+", unit) is None
+):
+    raise SystemExit(1)
+
+
+def generation(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def trusted_directory(path: str) -> os.stat_result:
+    value = os.lstat(path)
+    if (
+        not stat.S_ISDIR(value.st_mode)
+        or value.st_uid != os.geteuid()
+        or stat.S_IMODE(value.st_mode) & 0o022
+    ):
+        raise OSError(f"untrusted user-unit directory: {path}")
+    return value
+
+
+if not os.path.lexists(root):
+    print("absent-root")
+    raise SystemExit(0)
+
+root_before = trusted_directory(root)
+if os.path.lexists(os.path.join(root, unit)) or os.path.lexists(
+    os.path.join(root, f"{unit}.d")
+):
+    raise SystemExit(1)
+
+wants_before: dict[str, tuple[int, ...]] = {}
+with os.scandir(root) as entries:
+    names = sorted(entry.name for entry in entries if entry.name.endswith(".wants"))
+if len(names) > 512 or len(names) != len(set(names)):
+    raise SystemExit(1)
+for name in names:
+    if "/" in name or name in (".", ".."):
+        raise SystemExit(1)
+    wants_path = os.path.join(root, name)
+    wants_before[name] = generation(trusted_directory(wants_path))
+    if os.path.lexists(os.path.join(wants_path, unit)):
+        raise SystemExit(1)
+
+root_after = trusted_directory(root)
+with os.scandir(root) as entries:
+    names_after = sorted(entry.name for entry in entries if entry.name.endswith(".wants"))
+if names_after != names:
+    raise SystemExit(1)
+wants_after = {
+    name: generation(trusted_directory(os.path.join(root, name))) for name in names_after
+}
+if generation(root_before) != generation(root_after) or wants_before != wants_after:
+    raise SystemExit(1)
+print("root=" + ",".join(str(value) for value in generation(root_after)))
+for name in names_after:
+    print(name + "=" + ",".join(str(value) for value in wants_after[name]))
+PY
+}
+
+reconcile_user_unit_absence() {
+    local unit_name="$1" user_unit="$SYSTEMD_USER_DIR/$1" user_dropin_dir
+    local wants_link user_record line load_state fragment_path active_state sub_state
+    local record_ok property_count load_seen fragment_seen active_seen sub_seen
+    local absence_before absence_after
+    user_dropin_dir="$SYSTEMD_USER_DIR/$unit_name.d"
+    systemctl --user disable --now "$unit_name" >/dev/null 2>&1 || true
+    if [ -e "$user_unit" ] || [ -L "$user_unit" ]; then
+        if ! rm -f -- "$user_unit"; then
+            echo "hapax-post-merge-deploy: failed to remove stale user unit $user_unit" >&2
+            return 1
+        fi
+        DID_ANYTHING=1
+    fi
+    for wants_link in "$SYSTEMD_USER_DIR"/*.wants/"$unit_name"; do
+        [ -e "$wants_link" ] || [ -L "$wants_link" ] || continue
+        if ! rm -f -- "$wants_link"; then
+            echo "hapax-post-merge-deploy: failed to remove stale user wants link $wants_link" >&2
+            return 1
+        fi
+        DID_ANYTHING=1
+    done
+    if [ -e "$user_dropin_dir" ] || [ -L "$user_dropin_dir" ]; then
+        if ! rm -rf -- "$user_dropin_dir"; then
+            echo "hapax-post-merge-deploy: failed to remove stale user drop-in directory $user_dropin_dir" >&2
+            return 1
+        fi
+        DID_ANYTHING=1
+    fi
+    if ! systemctl --user daemon-reload; then
+        echo "hapax-post-merge-deploy: failed to reload the user manager while retiring stale $unit_name artifacts" >&2
+        return 1
+    fi
+    if ! absence_before="$(user_unit_absence_witness "$unit_name")"; then
+        echo "hapax-post-merge-deploy: cannot establish stable filesystem absence for stale user $unit_name artifacts" >&2
+        return 1
+    fi
+    if ! user_record="$(
+        systemctl --user show "$unit_name" \
+            --property=LoadState,FragmentPath,ActiveState,SubState --no-pager
+    )"; then
+        echo "hapax-post-merge-deploy: cannot obtain the combined user-manager absence witness for $unit_name" >&2
+        return 1
+    fi
+    load_state=""
+    fragment_path=""
+    active_state=""
+    sub_state=""
+    record_ok=1
+    property_count=0
+    load_seen=0
+    fragment_seen=0
+    active_seen=0
+    sub_seen=0
+    while IFS= read -r line; do
+        case "$line" in
+            LoadState=*)
+                [ "$load_seen" -eq 0 ] || record_ok=0
+                load_seen=1
+                load_state="${line#LoadState=}"
+                ;;
+            FragmentPath=*)
+                [ "$fragment_seen" -eq 0 ] || record_ok=0
+                fragment_seen=1
+                fragment_path="${line#FragmentPath=}"
+                ;;
+            ActiveState=*)
+                [ "$active_seen" -eq 0 ] || record_ok=0
+                active_seen=1
+                active_state="${line#ActiveState=}"
+                ;;
+            SubState=*)
+                [ "$sub_seen" -eq 0 ] || record_ok=0
+                sub_seen=1
+                sub_state="${line#SubState=}"
+                ;;
+            *) record_ok=0 ;;
+        esac
+        property_count=$((property_count + 1))
+    done <<< "$user_record"
+    if [ "$property_count" -ne 4 ] \
+        || [ "$load_seen" -ne 1 ] \
+        || [ "$fragment_seen" -ne 1 ] \
+        || [ "$active_seen" -ne 1 ] \
+        || [ "$sub_seen" -ne 1 ] \
+        || [ "$load_state" != "not-found" ] \
+        || [ -n "$fragment_path" ] \
+        || [ "$active_state" != "inactive" ] \
+        || [ "$sub_state" != "dead" ]; then
+        record_ok=0
+    fi
+    if [ "$record_ok" -ne 1 ]; then
+        echo "hapax-post-merge-deploy: stale user-manager state remains for system-scoped $unit_name" >&2
+        return 1
+    fi
+    if ! absence_after="$(user_unit_absence_witness "$unit_name")" \
+        || [ "$absence_after" != "$absence_before" ]; then
+        echo "hapax-post-merge-deploy: stale user $unit_name filesystem state changed across the manager absence witness" >&2
+        return 1
+    fi
+}
+
+# A system-owned base unit owns all of its drop-ins. Never materialize those
+# bytes in the user manager; remove stale user artifacts and leave the exact
+# system installation to an authorized runtime deploy.
+if [ "${#SYSTEMD_SYSTEM_DROPINS[@]}" -gt 0 ]; then
+    echo "system-scoped systemd drop-ins changed (${#SYSTEMD_SYSTEM_DROPINS[@]}):"
+    for f in "${SYSTEMD_SYSTEM_DROPINS[@]}"; do
+        rel="${f#systemd/units/}"
+        dropin_dir="$(dirname "$rel")"
+        unit_name="${dropin_dir%.d}"
+        system_dest="$SYSTEMD_SYSTEM_DIR/$rel"
+        if ! reconcile_user_unit_absence "$unit_name"; then
+            exit 1
+        fi
+        if ! git_blob_state_at "$SHA" "$f" "system-scoped systemd drop-in"; then
+            exit 2
+        fi
+        dropin_base_source="${f%%.d/*}"
+        if ! load_expected_system_dropin_paths "$dropin_base_source"; then
+            exit 2
+        fi
+        expected_system_dropins="$SYSTEM_EXPECTED_DROPIN_PATHS"
+        expected_system_dropin_records="$SYSTEM_EXPECTED_DROPIN_RECORDS"
+        if ! load_expected_system_fragment_oid "$dropin_base_source"; then
+            exit 2
+        fi
+        expected_system_fragment_oid="$SYSTEM_EXPECTED_FRAGMENT_OID"
+        expected_system_fragment_present="$SYSTEM_EXPECTED_FRAGMENT_PRESENT"
+        if [ "$expected_system_fragment_present" -eq 0 ] \
+            && [ -n "$expected_system_dropin_records" ]; then
+            echo "hapax-post-merge-deploy: exact SHA has system drop-ins without their owning fragment at $SHA:$dropin_base_source" >&2
+            exit 2
+        fi
+        system_fragment_dest="$SYSTEMD_SYSTEM_DIR/$unit_name"
+        system_dropin_converged=0
+        system_dropin_file_before=""
+        if system_dropin_file_before="$(system_unit_file_witness "$system_dest" "$GIT_BLOB_OID")"; then
+            if [ "$GIT_BLOB_PRESENT" -eq 1 ] \
+                && [[ "$system_dropin_file_before" == $'present\t'"$GIT_BLOB_OID"$'\t'* ]]; then
+                system_dropin_converged=1
+            elif [ "$GIT_BLOB_PRESENT" -eq 0 ] \
+                && [[ "$system_dropin_file_before" == absent$'\t'* ]]; then
+                system_dropin_converged=1
+            fi
+        else
+            echo "  runtime deferred: cannot obtain a stable file witness for '$system_dest'" >&2
+        fi
+        system_fragment_file_before=""
+        system_dropin_files_before=""
+        system_dropin_directory_before=""
+        if [ "$system_dropin_converged" -eq 1 ]; then
+            if ! system_fragment_file_before="$(
+                system_unit_file_witness \
+                    "$system_fragment_dest" "$expected_system_fragment_oid"
+            )"; then
+                system_dropin_converged=0
+            elif [ "$expected_system_fragment_present" -eq 1 ] \
+                && [[ "$system_fragment_file_before" != $'present\t'"$expected_system_fragment_oid"$'\t'* ]]; then
+                system_dropin_converged=0
+            elif [ "$expected_system_fragment_present" -eq 0 ] \
+                && [[ "$system_fragment_file_before" != absent$'\t'* ]]; then
+                system_dropin_converged=0
+            elif ! system_dropin_files_before="$(
+                system_dropin_file_set_witness "$expected_system_dropin_records"
+            )"; then
+                system_dropin_converged=0
+            elif ! system_dropin_directory_before="$(
+                system_dropin_directory_witness "$unit_name"
+            )"; then
+                system_dropin_converged=0
+            fi
+            if [ "$system_dropin_converged" -ne 1 ]; then
+                echo "  runtime deferred: effective fragment or sibling drop-in bytes for '$unit_name' are not exact trusted Git objects" >&2
+            fi
+        fi
+        system_dropin_manager_converged=0
+        if [ "$system_dropin_converged" -eq 1 ]; then
+            system_manager_record=""
+            if ! system_manager_record="$(
+                systemctl show "$unit_name" \
+                    --property=LoadState,FragmentPath,DropInPaths,NeedDaemonReload --no-pager
+            )"; then
+                echo "  runtime deferred: cannot query the system-manager witness for '$unit_name'" >&2
+            else
+                system_load_state=""
+                system_fragment_path=""
+                system_dropin_paths=""
+                system_need_reload=""
+                system_manager_record_ok=1
+                system_manager_property_count=0
+                system_load_seen=0
+                system_fragment_seen=0
+                system_dropins_seen=0
+                system_reload_seen=0
+                while IFS= read -r system_manager_line; do
+                    case "$system_manager_line" in
+                        LoadState=*)
+                            [ "$system_load_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_load_seen=1
+                            system_load_state="${system_manager_line#LoadState=}"
+                            ;;
+                        FragmentPath=*)
+                            [ "$system_fragment_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_fragment_seen=1
+                            system_fragment_path="${system_manager_line#FragmentPath=}"
+                            ;;
+                        DropInPaths=*)
+                            [ "$system_dropins_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_dropins_seen=1
+                            system_dropin_paths="${system_manager_line#DropInPaths=}"
+                            ;;
+                        NeedDaemonReload=*)
+                            [ "$system_reload_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_reload_seen=1
+                            system_need_reload="${system_manager_line#NeedDaemonReload=}"
+                            ;;
+                        *) system_manager_record_ok=0 ;;
+                    esac
+                    system_manager_property_count=$((system_manager_property_count + 1))
+                done <<< "$system_manager_record"
+                if [ "$system_manager_property_count" -ne 4 ] \
+                    || [ "$system_load_seen" -ne 1 ] \
+                    || [ "$system_fragment_seen" -ne 1 ] \
+                    || [ "$system_dropins_seen" -ne 1 ] \
+                    || [ "$system_reload_seen" -ne 1 ] \
+                    || [ -z "$system_load_state" ] \
+                    || [ -z "$system_need_reload" ]; then
+                    system_manager_record_ok=0
+                fi
+                if [ "$system_manager_record_ok" -ne 1 ]; then
+                    echo "  runtime deferred: malformed combined system-manager witness for '$unit_name'" >&2
+                elif [ "$expected_system_fragment_present" -eq 1 ] \
+                    && [ "$system_load_state" = "loaded" ] \
+                    && [ "$system_fragment_path" = "$SYSTEMD_SYSTEM_DIR/$unit_name" ] \
+                    && system_dropin_paths_match \
+                        "$system_dropin_paths" "$expected_system_dropins" \
+                    && [ "$system_need_reload" = "no" ]; then
+                    system_dropin_manager_converged=1
+                elif [ "$expected_system_fragment_present" -eq 0 ] \
+                    && [ "$system_load_state" = "not-found" ] \
+                    && [ -z "$system_fragment_path" ] \
+                    && system_dropin_paths_match \
+                        "$system_dropin_paths" "$expected_system_dropins" \
+                    && [ "$system_need_reload" = "no" ]; then
+                    system_dropin_manager_converged=1
+                else
+                    echo "  runtime deferred: system manager has not loaded the exact '$system_dest' state" >&2
+                fi
+            fi
+            if [ "$system_dropin_manager_converged" -eq 1 ]; then
+                system_dropin_file_after=""
+                system_fragment_file_after=""
+                system_dropin_files_after=""
+                system_dropin_directory_after=""
+                if ! system_dropin_file_after="$(
+                    system_unit_file_witness "$system_dest" "$GIT_BLOB_OID"
+                )" \
+                    || [ "$system_dropin_file_after" != "$system_dropin_file_before" ] \
+                    || ! system_fragment_file_after="$(
+                        system_unit_file_witness \
+                            "$system_fragment_dest" "$expected_system_fragment_oid"
+                    )" \
+                    || [ "$system_fragment_file_after" != "$system_fragment_file_before" ] \
+                    || ! system_dropin_files_after="$(
+                        system_dropin_file_set_witness "$expected_system_dropin_records"
+                    )" \
+                    || [ "$system_dropin_files_after" != "$system_dropin_files_before" ] \
+                    || ! system_dropin_directory_after="$(
+                        system_dropin_directory_witness "$unit_name"
+                    )" \
+                    || [ "$system_dropin_directory_after" != "$system_dropin_directory_before" ]; then
+                    system_dropin_manager_converged=0
+                    echo "  runtime deferred: effective fragment/drop-in generations for '$unit_name' changed across the system-manager witness" >&2
+                fi
+            fi
+        fi
+        if [ "$system_dropin_converged" -eq 1 ] \
+            && [ "$system_dropin_manager_converged" -eq 1 ]; then
+            SYSTEMD_PENDING_REMOVE+=("$f")
+            echo "  exact file and system-manager witness: '$system_dest'"
+        else
+            SYSTEMD_PENDING_ADD+=("$f")
+            RUNTIME_DEFERRED+=("systemd-system-dropin:$f")
+            echo "  runtime deferred: '$system_dest' lacks an exact $SHA file-and-manager witness; next action: install or remove it through an authorized system-unit installer, reload the system manager, then rerun this deploy" >&2
+        fi
+    done
+fi
+
+# --- user-scoped systemd unit drop-ins ---
 if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
     echo "systemd drop-ins changed (${#SYSTEMD_DROPINS[@]}):"
     DROPIN_BASE_REF="${SINCE:-${FIRST_PARENT:-}}"
@@ -1827,8 +4174,14 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
         unit_name="${dropin_dir%.d}"
         dest_dir="$SYSTEMD_USER_DIR/$dropin_dir"
         dest="$dest_dir/$conf_name"
-        mkdir -p "$dest_dir"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
+        if ! git_blob_state_at "$SHA" "$f" "systemd user drop-in"; then
+            exit 1
+        fi
+        if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+            if ! mkdir -p "$dest_dir"; then
+                echo "hapax-post-merge-deploy: unable to create the drop-in staging directory for $f; next action: verify destination ownership and capacity, then rerun the governed deploy" >&2
+                exit 1
+            fi
             if ! dropin_temp="$(mktemp "$dest_dir/.${conf_name}.tmp.XXXXXX")"; then
                 echo "hapax-post-merge-deploy: unable to reserve a temporary path for $f; next action: verify destination ownership and capacity, then rerun the governed deploy" >&2
                 exit 1
@@ -1838,8 +4191,8 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
                 echo "hapax-post-merge-deploy: unable to materialize $f before drop-in activation; next action: verify the commit object and rerun the governed deploy" >&2
                 exit 1
             fi
-            chmod 0644 "$dropin_temp"
-            if ! mv -fT "$dropin_temp" "$dest"; then
+            if ! chmod 0644 "$dropin_temp" \
+                || ! mv -fT "$dropin_temp" "$dest"; then
                 rm -f "$dropin_temp" 2>/dev/null || true
                 echo "hapax-post-merge-deploy: unable to atomically replace drop-in $dest; next action: remove unsafe destination drift and rerun the governed deploy" >&2
                 exit 1
@@ -1847,7 +4200,12 @@ if [ "${#SYSTEMD_DROPINS[@]}" -gt 0 ]; then
             echo "  '$f' -> '$dest'"
             DROPIN_UNITS_TO_RESTART+=("$unit_name")
         else
-            rm -fv "$dest" || true
+            if [ -e "$dest" ] || [ -L "$dest" ]; then
+                if ! rm -f -- "$dest"; then
+                    echo "hapax-post-merge-deploy: unable to remove deleted drop-in $dest" >&2
+                    exit 1
+                fi
+            fi
         fi
     done
     systemctl --user daemon-reload
@@ -1889,47 +4247,220 @@ if [ "${#SYSTEMD_SYSTEM[@]}" -gt 0 ]; then
     mkdir -p "$SYSTEMD_USER_DIR"
     for f in "${SYSTEMD_SYSTEM[@]}"; do
         base="$(basename "$f")"
-        dest="$SYSTEMD_USER_DIR/$base"
-        echo "  '$f' marked Hapax-Install-Scope: system; skipping user deploy"
-        systemctl --user disable --now "$base" >/dev/null 2>&1 || true
-        if [ -e "$dest" ] || [ -L "$dest" ]; then
-            rm -fv "$dest" || true
+        system_dest="$SYSTEMD_SYSTEM_DIR/$base"
+        system_manager_unit="$base"
+        if [[ "$system_manager_unit" == *@.* ]]; then
+            system_manager_unit="${system_manager_unit/@./@hapax-post-merge-witness.}"
+        fi
+        echo "  '$f' marked Hapax-Install-Scope: system; reconciling user copy and verifying exact system installation"
+        if ! git_blob_state_at "$SHA" "$f" "system-scoped systemd unit"; then
+            exit 2
+        fi
+        if ! load_expected_system_dropin_paths "$f"; then
+            exit 2
+        fi
+        expected_system_dropins="$SYSTEM_EXPECTED_DROPIN_PATHS"
+        expected_system_dropin_records="$SYSTEM_EXPECTED_DROPIN_RECORDS"
+        if ! reconcile_user_unit_absence "$base"; then
+            exit 1
+        fi
+        system_unit_converged=0
+        system_file_before=""
+        if system_file_before="$(system_unit_file_witness "$system_dest" "$GIT_BLOB_OID")"; then
+            if [ "$GIT_BLOB_PRESENT" -eq 1 ] \
+                && [[ "$system_file_before" == $'present\t'"$GIT_BLOB_OID"$'\t'* ]]; then
+                system_unit_converged=1
+            elif [ "$GIT_BLOB_PRESENT" -eq 0 ] \
+                && [[ "$system_file_before" == absent$'\t'* ]]; then
+                system_unit_converged=1
+            fi
+        else
+            echo "  runtime deferred: cannot obtain a stable file witness for '$system_dest'" >&2
+        fi
+        system_dropin_files_before=""
+        system_dropin_directory_before=""
+        if [ "$system_unit_converged" -eq 1 ] \
+            && ! system_dropin_files_before="$(
+                system_dropin_file_set_witness "$expected_system_dropin_records"
+            )"; then
+            system_unit_converged=0
+            echo "  runtime deferred: effective sibling drop-in bytes for '$base' are not exact trusted Git objects" >&2
+        fi
+        if [ "$system_unit_converged" -eq 1 ] \
+            && ! system_dropin_directory_before="$(
+                system_dropin_directory_witness "$base"
+            )"; then
+            system_unit_converged=0
+            echo "  runtime deferred: sibling drop-in directory for '$base' is not a stable trusted generation" >&2
+        fi
+        system_manager_converged=0
+        if [ "$system_unit_converged" -eq 1 ]; then
+            system_manager_record=""
+            if ! system_manager_record="$(
+                systemctl show "$system_manager_unit" \
+                    --property=LoadState,FragmentPath,DropInPaths,NeedDaemonReload --no-pager
+            )"; then
+                echo "  runtime deferred: cannot query the system-manager witness for '$system_manager_unit'" >&2
+            else
+                system_load_state=""
+                system_fragment_path=""
+                system_dropin_paths=""
+                system_need_reload=""
+                system_manager_record_ok=1
+                system_manager_property_count=0
+                system_load_seen=0
+                system_fragment_seen=0
+                system_dropins_seen=0
+                system_reload_seen=0
+                while IFS= read -r system_manager_line; do
+                    case "$system_manager_line" in
+                        LoadState=*)
+                            [ "$system_load_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_load_seen=1
+                            system_load_state="${system_manager_line#LoadState=}"
+                            ;;
+                        FragmentPath=*)
+                            [ "$system_fragment_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_fragment_seen=1
+                            system_fragment_path="${system_manager_line#FragmentPath=}"
+                            ;;
+                        DropInPaths=*)
+                            [ "$system_dropins_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_dropins_seen=1
+                            system_dropin_paths="${system_manager_line#DropInPaths=}"
+                            ;;
+                        NeedDaemonReload=*)
+                            [ "$system_reload_seen" -eq 0 ] || system_manager_record_ok=0
+                            system_reload_seen=1
+                            system_need_reload="${system_manager_line#NeedDaemonReload=}"
+                            ;;
+                        *) system_manager_record_ok=0 ;;
+                    esac
+                    system_manager_property_count=$((system_manager_property_count + 1))
+                done <<< "$system_manager_record"
+                if [ "$system_manager_property_count" -ne 4 ] \
+                    || [ "$system_load_seen" -ne 1 ] \
+                    || [ "$system_fragment_seen" -ne 1 ] \
+                    || [ "$system_dropins_seen" -ne 1 ] \
+                    || [ "$system_reload_seen" -ne 1 ] \
+                    || [ -z "$system_load_state" ] \
+                    || [ -z "$system_need_reload" ]; then
+                    system_manager_record_ok=0
+                fi
+                if [ "$system_manager_record_ok" -ne 1 ]; then
+                    echo "  runtime deferred: malformed combined system-manager witness for '$system_manager_unit'" >&2
+                elif [ "$GIT_BLOB_PRESENT" -eq 1 ] \
+                && [ "$system_load_state" = "loaded" ] \
+                && [ "$system_fragment_path" = "$system_dest" ] \
+                && system_dropin_paths_match \
+                    "$system_dropin_paths" "$expected_system_dropins" \
+                && [ "$system_need_reload" = "no" ]; then
+                    system_manager_converged=1
+                elif [ "$GIT_BLOB_PRESENT" -eq 0 ] \
+                && [ "$system_load_state" = "not-found" ] \
+                && [ -z "$system_fragment_path" ] \
+                && system_dropin_paths_match \
+                    "$system_dropin_paths" "$expected_system_dropins" \
+                && [ "$system_need_reload" = "no" ]; then
+                    system_manager_converged=1
+                else
+                    echo "  runtime deferred: system manager has not loaded the exact '$system_dest' state" >&2
+                fi
+            fi
+            if [ "$system_manager_converged" -eq 1 ]; then
+                system_file_after=""
+                system_dropin_files_after=""
+                system_dropin_directory_after=""
+                if ! system_file_after="$(
+                    system_unit_file_witness "$system_dest" "$GIT_BLOB_OID"
+                )" \
+                    || [ "$system_file_after" != "$system_file_before" ] \
+                    || ! system_dropin_files_after="$(
+                        system_dropin_file_set_witness "$expected_system_dropin_records"
+                    )" \
+                    || [ "$system_dropin_files_after" != "$system_dropin_files_before" ] \
+                    || ! system_dropin_directory_after="$(
+                        system_dropin_directory_witness "$base"
+                    )" \
+                    || [ "$system_dropin_directory_after" != "$system_dropin_directory_before" ]; then
+                    system_manager_converged=0
+                    echo "  runtime deferred: effective fragment/drop-in generations for '$base' changed across the system-manager witness" >&2
+                fi
+            fi
+        fi
+        if [ "$system_unit_converged" -eq 1 ] && [ "$system_manager_converged" -eq 1 ]; then
+            SYSTEMD_PENDING_REMOVE+=("$f")
+            echo "  exact file and system-manager witness: '$system_dest'"
+        else
+            SYSTEMD_PENDING_ADD+=("$f")
+            RUNTIME_DEFERRED+=("systemd-system:$f")
+            echo "  runtime deferred: '$system_dest' lacks an exact $SHA file-and-manager witness; next action: install or remove it through an authorized system-unit installer, reload the system manager, then rerun this deploy" >&2
         fi
     done
-    systemctl --user daemon-reload
-    DID_ANYTHING=1
 fi
+
+PUBLISHED_GIT_CONTENT=""
+publish_systemd_unit_at_sha() {
+    local source_path="$1" dest="$2" dest_dir base temp
+    PUBLISHED_GIT_CONTENT=""
+    dest_dir="$(dirname "$dest")"
+    base="$(basename "$dest")"
+    if ! temp="$(mktemp "$dest_dir/.${base}.tmp.XXXXXX")"; then
+        echo "hapax-post-merge-deploy: failed to reserve an atomic systemd unit temporary beside $dest" >&2
+        return 1
+    fi
+    if ! git -C "$REPO" show "$SHA:$source_path" > "$temp"; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: failed to materialize systemd unit at $SHA:$source_path; existing destination is unchanged" >&2
+        return 1
+    fi
+    if ! PUBLISHED_GIT_CONTENT="$(/usr/bin/cat -- "$temp")"; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: failed to read staged systemd unit at $temp" >&2
+        return 1
+    fi
+    if ! chmod 0644 "$temp"; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: failed to set staged systemd unit mode for $source_path" >&2
+        return 1
+    fi
+    if ! mv -fT -- "$temp" "$dest"; then
+        rm -f -- "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: failed to atomically publish systemd unit $dest" >&2
+        return 1
+    fi
+}
 
 if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     echo "systemd units changed (${#SYSTEMD[@]}):"
-    mkdir -p "$SYSTEMD_USER_DIR"
     SYSTEMD_INSTALLED=()
+    declare -A SYSTEMD_INSTALLED_CONTENT=()
+
+    mkdir -p "$SYSTEMD_USER_DIR"
     for f in "${SYSTEMD[@]}"; do
         base="$(basename "$f")"
         dest="$SYSTEMD_USER_DIR/$base"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            if [ -L "$dest" ]; then
-                rm -f "$dest"
+        if [ "${SYSTEMD_TARGET_PRESENT[$f]}" -eq 1 ]; then
+            if ! publish_systemd_unit_at_sha "$f" "$dest"; then
+                exit 1
             fi
-            git show "$SHA:$f" > "$dest"
             echo "  '$f' -> '$dest'"
             cleanup_known_stale_user_dropins_for_unit "$base"
             SYSTEMD_INSTALLED+=("$f")
+            SYSTEMD_INSTALLED_CONTENT["$f"]="$PUBLISHED_GIT_CONTENT"
         else
-            rm -fv "$dest" || true
+            if ! remove_user_unit_artifacts_checked "$base" "deleted systemd unit"; then
+                exit 1
+            fi
         fi
     done
     systemctl --user daemon-reload
     for f in "${SYSTEMD_INSTALLED[@]}"; do
         base="$(basename "$f")"
-        unit_content="$(git show "$SHA:$f" 2>/dev/null || true)"
+        unit_content="${SYSTEMD_INSTALLED_CONTENT[$f]}"
         if unit_content_parked "$unit_content"; then
             echo "parking $base (Hapax-Parked marker)"
-            if ! systemctl --user disable --now "$base"; then
-                echo "hapax-post-merge-deploy: unable to disable parked unit $base; next action: inspect systemctl --user status $base and rerun the governed deploy" >&2
-                exit 1
-            fi
-            systemctl --user reset-failed "$base" >/dev/null 2>&1 || true
+            park_user_unit_checked "$base" || exit 1
         elif systemctl --user is-active --quiet "$base"; then
             if [[ "$base" == *.timer ]] && unit_content_timer_enable_only "$unit_content"; then
                 echo "leaving active $base running (Hapax-Timer-Enable-Only marker; not restarting during deploy)"
@@ -1969,11 +4500,13 @@ if [ "${#SYSTEMD[@]}" -gt 0 ]; then
     DID_ANYTHING=1
 fi
 
+declare -A USER_PRESET_CONTENT=()
 preset_enables_unit_at_sha() {
     local unit="$1" preset
     for preset in "${USER_PRESETS[@]}"; do
-        git cat-file -e "$SHA:$preset" 2>/dev/null || continue
-        if git show "$SHA:$preset" | grep -Eq "^[[:space:]]*enable[[:space:]]+$unit([[:space:]]|$)"; then
+        [ -n "${USER_PRESET_CONTENT[$preset]+present}" ] || continue
+        if grep -Eq "^[[:space:]]*enable[[:space:]]+$unit([[:space:]]|$)" \
+            <<< "${USER_PRESET_CONTENT[$preset]}"; then
             return 0
         fi
     done
@@ -1985,10 +4518,9 @@ install_governed_intake_unit_at_sha() {
     local rel dest
     rel="systemd/units/$unit"
     dest="$SYSTEMD_USER_DIR/$unit"
-    if [ -L "$dest" ]; then
-        rm -f "$dest"
+    if ! publish_systemd_unit_at_sha "$rel" "$dest"; then
+        return 1
     fi
-    git show "$SHA:$rel" > "$dest"
     echo "  '$rel' -> '$dest' ($reason)"
     cleanup_known_stale_user_dropins_for_unit "$unit"
     return 0
@@ -1997,7 +4529,10 @@ install_governed_intake_unit_at_sha() {
 governed_intake_unit_exists_at_sha() {
     local unit="$1"
     local rel="systemd/units/$unit"
-    if git cat-file -e "$SHA:$rel" 2>/dev/null; then
+    if ! git_blob_state_at "$SHA" "$rel" "governed intake systemd unit"; then
+        return 2
+    fi
+    if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
         return 0
     fi
     echo "  warning: preset requires $unit but $rel is absent at $SHA; cannot activate governed intake. Next action: add $rel at the deployed SHA or remove the preset enable for its timer." >&2
@@ -2005,20 +4540,28 @@ governed_intake_unit_exists_at_sha() {
 }
 
 install_governed_intake_preset_units() {
-    local set timer unit install_ok
+    local set timer unit install_ok unit_status
     GOVERNED_INTAKE_PRESET_ENABLE=()
     for set in "${GOVERNED_INTAKE_PRESET_UNIT_SETS[@]}"; do
         timer="${set%% *}"
         preset_enables_unit_at_sha "$timer" || continue
         install_ok=1
         for unit in $set; do
-            if ! governed_intake_unit_exists_at_sha "$unit"; then
+            if governed_intake_unit_exists_at_sha "$unit"; then
+                :
+            else
+                unit_status=$?
+                if [ "$unit_status" -gt 1 ]; then
+                    return "$unit_status"
+                fi
                 install_ok=0
             fi
         done
         [ "$install_ok" -eq 1 ] || continue
         for unit in $set; do
-            install_governed_intake_unit_at_sha "$unit" "preset-activated governed intake unit"
+            if ! install_governed_intake_unit_at_sha "$unit" "preset-activated governed intake unit"; then
+                return 1
+            fi
         done
         GOVERNED_INTAKE_PRESET_ENABLE+=("$timer")
     done
@@ -2032,11 +4575,20 @@ if [ "${#USER_PRESETS[@]}" -gt 0 ]; then
     for f in "${USER_PRESETS[@]}"; do
         base="$(basename "$f")"
         dest="$SYSTEMD_USER_PRESET_DIR/$base"
-        if git cat-file -e "$SHA:$f" 2>/dev/null; then
-            git show "$SHA:$f" > "$dest"
+        if ! git_blob_state_at "$SHA" "$f" "systemd user preset"; then
+            exit 2
+        fi
+        if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+            if ! publish_systemd_unit_at_sha "$f" "$dest"; then
+                exit 1
+            fi
+            USER_PRESET_CONTENT["$f"]="$PUBLISHED_GIT_CONTENT"
             echo "  '$f' -> '$dest'"
         else
-            rm -fv "$dest" || true
+            if ! rm -fv -- "$dest"; then
+                echo "hapax-post-merge-deploy: failed to remove deleted systemd user preset $dest" >&2
+                exit 1
+            fi
         fi
     done
     install_governed_intake_preset_units
@@ -2061,7 +4613,11 @@ publish_git_executable_at_sha() {
         echo "hapax-post-merge-deploy: unable to materialize $source_path for $dest; next action: verify the commit object and rerun the governed deploy" >&2
         return 1
     fi
-    chmod 0755 "$temp"
+    if ! chmod 0755 "$temp"; then
+        rm -f "$temp" 2>/dev/null || true
+        echo "hapax-post-merge-deploy: unable to set executable mode on staged launcher $dest; next action: verify destination ownership and rerun the governed deploy" >&2
+        return 1
+    fi
     if ! mv -fT -- "$temp" "$dest"; then
         rm -f "$temp" 2>/dev/null || true
         echo "hapax-post-merge-deploy: unable to atomically publish launcher $dest; next action: move unsafe destination drift aside and rerun the governed deploy" >&2
@@ -2076,13 +4632,21 @@ if [ "${#SCRIPTS[@]}" -gt 0 ]; then
     for f in "${SCRIPTS[@]}"; do
         base="$(basename "$f")"
         dest="$LOCAL_BIN/$base"
-        if git -C "$REPO" cat-file -e "$SHA:$f" 2>/dev/null; then
+        if ! git_blob_state_at "$SHA" "$f" "hapax launcher"; then
+            exit 2
+        fi
+        if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
             # Copy-from-SHA (the WATCHDOGS pattern): the installed script is the
             # deployed release's content, never a live view of a mutable tree.
-            publish_git_executable_at_sha "$f" "$dest"
+            if ! publish_git_executable_at_sha "$f" "$dest"; then
+                exit 1
+            fi
             echo "  '$f' -> '$dest' (copy @ ${SHA:0:9})"
         else
-            rm -fv "$dest" || true
+            if ! rm -fv -- "$dest"; then
+                echo "hapax-post-merge-deploy: failed to remove deleted launcher $dest" >&2
+                exit 1
+            fi
         fi
         matches="$(
             { grep -l -F "$dest" "$REPO/systemd/units/"*.service 2>/dev/null || true; \
@@ -2153,23 +4717,133 @@ fi
 # while later merges stamped last-deployed-sha as healthy.
 reconcile_canonical_gate_closure
 
-if [ "$DID_ANYTHING" -eq 0 ]; then
+if [ "$DID_ANYTHING" -eq 0 ] && [ "${#RUNTIME_DEFERRED[@]}" -gt 0 ]; then
+    echo "merge $SHA: source staging completed; runtime work remains deferred (${RUNTIME_DEFERRED[*]})"
+elif [ "$DID_ANYTHING" -eq 0 ]; then
     echo "merge $SHA: no manual deploys needed (only auto-rebuild paths changed)"
 fi
 
+run_bounded_user_service() {
+    local unit_stem="$1" runtime_s="$2"
+    shift 2
+    local env_name env_value client_timeout_s
+    local -a environment_args=()
+    if [ ! -x "$SYSTEMD_RUN_BIN" ] || [ -L "$SYSTEMD_RUN_BIN" ]; then
+        echo "hapax-post-merge-deploy: trusted systemd-run executable is unavailable at $SYSTEMD_RUN_BIN" >&2
+        return 2
+    fi
+    for env_name in HOME PATH NTFY_TOPIC HAPAX_SMOKE_OFF HAPAX_SMOKE_DRYRUN \
+        HAPAX_SMOKE_NTFY_TIMEOUT_S HAPAX_SMOKE_ISOLATED_TEST_ROOT \
+        HAPAX_SMOKE_SYSTEMD_RUN_BIN HAPAX_TEST_SMOKE_DESCENDANT_PID_FILE; do
+        [[ -v "$env_name" ]] || continue
+        env_value="${!env_name}"
+        [ "${#env_value}" -le 4096 ] || return 2
+        environment_args+=("--setenv=${env_name}=${env_value}")
+    done
+    client_timeout_s=$((runtime_s + 10))
+    /usr/bin/timeout --foreground --signal=TERM --kill-after=2s "${client_timeout_s}s" \
+        "$SYSTEMD_RUN_BIN" \
+        --user \
+        --wait \
+        --pipe \
+        --collect \
+        --quiet \
+        --no-ask-password \
+        --unit="${unit_stem}.service" \
+        --service-type=exec \
+        --expand-environment=no \
+        --property="RuntimeMaxSec=${runtime_s}s" \
+        --property=MemoryHigh=1536M \
+        --property=MemoryMax=2G \
+        --property=TasksMax=512 \
+        --property=TimeoutStopSec=1s \
+        --property=KillMode=control-group \
+        --property=SendSIGKILL=yes \
+        "${environment_args[@]}" \
+        --setenv="REPO_ROOT=$REPO" \
+        --setenv=HAPAX_POST_MERGE_EXACT_SMOKE_CALLER=1 \
+        -- \
+        "$@"
+}
+
 # Smoke-runner gate (cc-task post-merge-smoke-deploy-wiring, 2026-05-02).
 # DRY_RUN and REPORT_COVERAGE modes exited earlier so this only fires
-# in real-deploy mode. The smoke runner inspects the diff for $SHA,
-# fires gates that match, ntfy's on failure, and ALWAYS exits 0 — the
-# deploy already happened; the smoke is informational. The script
-# itself enforces the 0-exit contract; we still wrap with `|| true`
-# defensively so a smoke-side bug can never block trace recording or
-# the deploy script's normal exit. Rationale: shipping in #2148
+# in real-deploy mode. The smoke runner inspects the exact deployed commit or
+# cumulative $SINCE..$SHA range, fires matching gates, ntfy's on failure, and
+# exits 0 after reporting advisory gate failures. Missing code, publication
+# failure, a non-zero runner, or a whole-process timeout are execution failures:
+# they block the completion receipt so the deployment remains retryable. Rationale: shipping in #2148
 # without a deploy-chain caller meant every smoke-side fix lived as
-# dead code (zeta audit finding 2026-05-02, severity HIGH).
-SMOKE_SCRIPT="$REPO/scripts/hapax-post-merge-smoke"
-if [ -x "$SMOKE_SCRIPT" ]; then
-    "$SMOKE_SCRIPT" "$SHA" || true
+# dead code (zeta audit finding 2026-05-02, severity HIGH). Materialize the
+# runner from the target object even when the mutable worktree or activation
+# alias still names the preceding release.
+SMOKE_SOURCE_PATH="scripts/hapax-post-merge-smoke"
+SMOKE_SCRIPT="$LOCAL_BIN/hapax-post-merge-smoke"
+SMOKE_ARGS=("$SHA")
+SMOKE_TIMEOUT_S="${HAPAX_POST_MERGE_SMOKE_TIMEOUT_S:-60}"
+if ! [[ "$SMOKE_TIMEOUT_S" =~ ^[0-9]+$ ]] \
+    || [ "$SMOKE_TIMEOUT_S" -lt 1 ] \
+    || [ "$SMOKE_TIMEOUT_S" -gt 300 ]; then
+    SMOKE_TIMEOUT_S=60
+fi
+if [ -n "$SINCE" ]; then
+    SMOKE_ARGS=(--since "$SINCE" "$SHA")
+fi
+
+smoke_contract_present_at() {
+    local revision="$1" path
+    for path in "$SMOKE_SOURCE_PATH" scripts/hapax-post-merge-deploy; do
+        if ! git_blob_state_at "$revision" "$path" "post-merge smoke contract"; then
+            return 2
+        fi
+        [ "$GIT_BLOB_PRESENT" -eq 0 ] || return 0
+    done
+    return 1
+}
+
+if ! git_blob_state_at "$SHA" "$SMOKE_SOURCE_PATH" "exact-target smoke runner"; then
+    exit 1
+fi
+if [ "$GIT_BLOB_PRESENT" -eq 1 ]; then
+    if ! mkdir -p "$LOCAL_BIN" \
+        || ! publish_git_executable_at_sha "$SMOKE_SOURCE_PATH" "$SMOKE_SCRIPT"; then
+        echo "hapax-post-merge-deploy: exact-target smoke runner could not be published; next action: repair $LOCAL_BIN ownership/capacity and rerun the governed deploy smoke for $SHA" >&2
+        exit 1
+    fi
+    smoke_rc=0
+    run_bounded_user_service \
+        "hapax-post-merge-smoke-${SHA:0:12}-${BASHPID}" \
+        "$SMOKE_TIMEOUT_S" \
+        "$SMOKE_SCRIPT" "${SMOKE_ARGS[@]}" || smoke_rc=$?
+    if [ "$smoke_rc" -ne 0 ]; then
+        echo "hapax-post-merge-deploy: exact-target smoke runner failed or exceeded ${SMOKE_TIMEOUT_S}s (rc=$smoke_rc); refusing the completion receipt; next action: inspect the smoke diagnostics, repair the exact runner or blocked gate probe, and rerun this deploy for $SHA" >&2
+        exit "$smoke_rc"
+    fi
+else
+    smoke_required=0
+    if smoke_contract_present_at "$SHA"; then
+        smoke_required=1
+    else
+        smoke_contract_rc=$?
+        [ "$smoke_contract_rc" -eq 1 ] || exit 1
+    fi
+    SMOKE_BASE="$SINCE"
+    if [ -z "$SMOKE_BASE" ]; then
+        SMOKE_BASE="$TARGET_FIRST_PARENT"
+    fi
+    if [ "$smoke_required" -eq 0 ] && [ -n "$SMOKE_BASE" ]; then
+        if smoke_contract_present_at "$SMOKE_BASE"; then
+            smoke_required=1
+        else
+            smoke_contract_rc=$?
+            [ "$smoke_contract_rc" -eq 1 ] || exit 1
+        fi
+    fi
+    if [ "$smoke_required" -eq 1 ]; then
+        echo "hapax-post-merge-deploy: exact-target smoke runner is missing at $SHA:$SMOKE_SOURCE_PATH; refusing the completion receipt; next action: restore the governed runner at the target commit and rerun this deploy" >&2
+        exit 1
+    fi
+    echo "hapax-post-merge-deploy: legacy target has no governed smoke contract at $SHA; no smoke ran" >&2
 fi
 
 # Self-verify the deploy symlinks resolve to the canonical tree (advisory:
@@ -2178,9 +4852,10 @@ fi
 # dangling/foreign ~/.local/bin/hapax-* symlink can't sit unnoticed.
 check_symlink_drift || true
 
-if record_post_merge_trace "completed" "0"; then
-    TRACE_WRITTEN=1
-else
-    echo "warning: failed to write post-merge deploy trace to $TRACE_PATH" >&2
+trace_status="completed"
+if [ "${#RUNTIME_DEFERRED[@]}" -gt 0 ]; then
+    trace_status="completed_with_runtime_deferral"
 fi
-record_last_deployed_sha
+if ! finalize_deploy_receipts "$trace_status"; then
+    exit 1
+fi

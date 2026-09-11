@@ -412,6 +412,13 @@ def classify_critical_floor_risk(
     *,
     profile: ServiceResourceProfile | None = None,
 ) -> MemoryPressureSignal:
+    """Compare injected systemd properties with the source resource model.
+
+    This is deliberately a pure source-model API. The installed recurring OOM
+    audit is a sealed standalone script and enforces the same contract without
+    importing mutable repository modules.
+    """
+
     profile = profile or DEFAULT_SERVICE_PROFILES.get(service_name)
     if profile is None:
         return MemoryPressureSignal(
@@ -436,13 +443,13 @@ def classify_critical_floor_risk(
             state = ResourceState.RED
             reasons.append("memory_max_below_profile_limit")
 
-    if critical and expected_oom_score is not None:
+    if expected_oom_score is not None:
         if properties.oom_score_adjust is None:
             state = _worse_state(state, ResourceState.YELLOW)
             reasons.append("missing_oom_score_adjust")
-        elif properties.oom_score_adjust > expected_oom_score:
+        elif properties.oom_score_adjust != expected_oom_score:
             state = _worse_state(state, ResourceState.YELLOW)
-            reasons.append("oom_score_less_protected_than_profile")
+            reasons.append("oom_score_adjust_drift")
 
     message = (
         f"{service_name} critical memory floor risk: {', '.join(reasons)}"
