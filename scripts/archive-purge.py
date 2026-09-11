@@ -33,7 +33,7 @@ Usage::
     archive-purge.py --condition <id> --confirm     # live
     archive-purge.py --condition <id> --confirm --reason "consent revocation"
     archive-purge.py --condition <id> --confirm \\
-        --consent-revoked-for simon --reason "guardian revoked simon's scope"
+        --consent-revoked-for principal-c2 --reason "guardian revoked principal-c2's scope"
 """
 
 from __future__ import annotations
@@ -71,21 +71,31 @@ def _consent_revocation_check(
     modify any contract state.
     """
     try:
-        from shared.governance.consent import ConsentRegistry
+        from shared.governance.consent import (
+            ConsentRegistry,
+            estate_identity_operation,
+            resolve_contract_id,
+            resolve_principal_id,
+        )
     except ImportError as exc:
         return False, f"ConsentRegistry import failed: {exc}"
 
-    registry = ConsentRegistry()
-    registry.load(contracts_dir)
-    contract = registry.get_contract_for(person_id)
-    if contract is None:
-        return True, f"no contract for {person_id!r} — consent check passes"
-    if not contract.active:
-        return True, f"contract {contract.id!r} for {person_id!r} is revoked — consent check passes"
-    return False, (
-        f"contract {contract.id!r} for {person_id!r} is LIVE (not revoked); "
-        f"revoke it in axioms/contracts/ before purging the derived data"
-    )
+    with estate_identity_operation():
+        person_id = resolve_principal_id(person_id) or person_id
+        registry = ConsentRegistry()
+        registry.load(contracts_dir)
+        contract = registry.get_contract_for(person_id)
+        if contract is None:
+            return True, f"no contract for {person_id!r} — consent check passes"
+        if not contract.active:
+            return (
+                True,
+                f"contract {resolve_contract_id(contract.id)!r} for {person_id!r} is revoked — consent check passes",
+            )
+        return False, (
+            f"contract {resolve_contract_id(contract.id)!r} for {person_id!r} is LIVE (not revoked); "
+            f"revoke it in axioms/contracts/ before purging the derived data"
+        )
 
 
 def _iter_sidecars(root: Path) -> list[Path]:
@@ -202,8 +212,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # LRR Phase 2 spec §3.9 consent-revocation tie-in.
     if args.consent_revoked_for is not None:
-        contracts_dir = Path(args.contracts_dir) if args.contracts_dir else None
-        ok, msg = _consent_revocation_check(args.consent_revoked_for, contracts_dir)
+        from shared.governance.consent import estate_identity_operation, resolve_principal_id
+
+        with estate_identity_operation():
+            args.consent_revoked_for = (
+                resolve_principal_id(args.consent_revoked_for) or args.consent_revoked_for
+            )
+            contracts_dir = Path(args.contracts_dir) if args.contracts_dir else None
+            ok, msg = _consent_revocation_check(args.consent_revoked_for, contracts_dir)
         print(f"consent-check: {msg}", file=sys.stderr)
         if not ok:
             print(

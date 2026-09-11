@@ -6,7 +6,9 @@ refresh loop. Clients poll at matching cadence (30s fast, 5min slow).
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 from dataclasses import asdict
 from datetime import UTC
@@ -21,8 +23,10 @@ from logos.api.deps.stream_redaction import (
     references_non_broadcast_person_id,
     require_private_stream,
 )
+from shared.governance.consent import IdentityMigrationUnavailable, estate_identity_operation
 
 router = APIRouter(prefix="/api", tags=["data"])
+_log = logging.getLogger(__name__)
 
 _INFRA_IDENTITY_KEYS = {
     "by_id",
@@ -58,18 +62,65 @@ _SERIAL_RE = re.compile(r"\b[A-Z0-9]{10,}\b")
 def _load_consent_registry():
     """Lazily load consent registry for person-id redaction.
 
-    Swallowing load failures here is deliberate: if the registry can't
-    be loaded, fall back to treating ALL names as non-broadcast-consented
-    (fail closed — reference detection returns True because an empty
-    registry can't confirm any person). Callers checking the returned
-    value must treat a None as "no registry available → assume worst".
+    None means custody or contract storage is unavailable. Public callers
+    must omit the affected items and explicitly mark the response incomplete;
+    it is never an empty registry that could permit unfiltered output.
     """
     try:
         from logos._governance import load_contracts
 
         return load_contracts()
-    except Exception:  # pragma: no cover — defensive
+    except IdentityMigrationUnavailable as exc:
+        _log.warning(
+            "consent_registry_refused: %s cause_class=%s remedy=%s",
+            exc.reason,
+            exc.cause_class or "unavailable",
+            exc.remedy,
+        )
         return None
+    except Exception:  # pragma: no cover — defensive
+        _log.warning("consent_registry_unavailable: remedy=inspect_contract_storage")
+        return None
+
+
+def _public_person_items(items: list, fields: tuple[str, ...]) -> list | None:
+    """Load and filter a whole public result within one worker custody operation."""
+    try:
+        with estate_identity_operation():
+            registry = _load_consent_registry()
+            if registry is None:
+                _log.warning(
+                    "public_consent_incomplete: custody unavailable; inspect contract storage "
+                    "and restore identity custody before retrying"
+                )
+                return None
+            return [
+                item
+                for item in items
+                if isinstance(item, dict)
+                and not references_non_broadcast_person_id(
+                    " ".join(str(item.get(key, "")) for key in fields), registry
+                )
+            ]
+    except IdentityMigrationUnavailable as exc:
+        _log.warning(
+            "public_consent_refused: result incomplete because custody is unavailable; "
+            "%s cause_class=%s remedy=%s",
+            exc.reason,
+            exc.cause_class or "unavailable",
+            exc.remedy,
+        )
+        return None
+
+
+def _incomplete_consent_response(data):
+    """Preserve the route's data shape while marking withheld items as unavailable."""
+    response = _slow_response(data)
+    response.status_code = 503
+    response.headers["X-Consent-Result"] = "incomplete"
+    response.headers["X-Consent-Reason"] = "custody_unavailable"
+    response.headers["X-Consent-Remedy"] = "restore_identity_custody_and_retry"
+    return response
 
 
 def _dict_factory(fields: list[tuple]) -> dict:
@@ -185,20 +236,15 @@ async def get_briefing():
     if is_publicly_visible() and isinstance(data, dict):
         # LRR Phase 6 §4.A: omit action_items that reference a person
         # without active broadcast contract
-        registry = _load_consent_registry()
         action_items = data.get("action_items") or []
-        if registry is not None and isinstance(action_items, list):
-            filtered = []
-            for item in action_items:
-                if not isinstance(item, dict):
-                    continue
-                combined = " ".join(str(item.get(k, "")) for k in ("action", "reason", "command"))
-                if not references_non_broadcast_person_id(combined, registry):
-                    filtered.append(item)
-            data["action_items"] = filtered
-        elif registry is None:
-            # fail-closed: can't verify → omit all action_items on broadcast
-            data["action_items"] = []
+        filtered = await asyncio.to_thread(
+            _public_person_items,
+            action_items if isinstance(action_items, list) else [],
+            ("action", "reason", "command"),
+        )
+        data["action_items"] = filtered if filtered is not None else []
+        if filtered is None:
+            return _incomplete_consent_response(data)
     return _slow_response(data)
 
 
@@ -237,24 +283,11 @@ async def get_nudges():
     if is_publicly_visible() and isinstance(data, list):
         # LRR Phase 6 §4.A: omit nudges whose detail references a person
         # without active broadcast contract
-        registry = _load_consent_registry()
-        if registry is not None:
-            data = [
-                n
-                for n in data
-                if not (
-                    isinstance(n, dict)
-                    and references_non_broadcast_person_id(
-                        " ".join(
-                            str(n.get(k, "")) for k in ("detail", "title", "suggested_action")
-                        ),
-                        registry,
-                    )
-                )
-            ]
-        else:
-            # fail-closed: can't verify → omit all nudges on broadcast
-            data = []
+        data = await asyncio.to_thread(
+            _public_person_items, data, ("detail", "title", "suggested_action")
+        )
+        if data is None:
+            return _incomplete_consent_response([])
     return _slow_response(data)
 
 

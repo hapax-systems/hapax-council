@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from agentgov.consent import identity_operation, resolve_contract_id
 from agentgov.consent_label import ConsentLabel
 from agentgov.labeled import Labeled
 
@@ -117,12 +118,20 @@ class CarrierRegistry:
             f"{least.observation_count} * {self.displacement_threshold}",
         )
 
+    @identity_operation()
     def purge_by_provenance(self, contract_id: str) -> int:
         """Remove carrier facts whose provenance includes contract_id."""
+        # Provenance contains contract IDs. Alias records live separately in
+        # the resolver's metadata registry; their string shape is irrelevant.
+        contract_id = resolve_contract_id(contract_id) or contract_id
         purged = 0
         for slots in self._slots.values():
             before = len(slots)
-            slots[:] = [f for f in slots if contract_id not in f.provenance]
+            slots[:] = [
+                fact
+                for fact in slots
+                if contract_id not in {resolve_contract_id(cid) or cid for cid in fact.provenance}
+            ]
             purged += before - len(slots)
         return purged
 
