@@ -166,11 +166,14 @@ class TestCadence:
         assert det.is_due(p, {"ran_at": "not-a-timestamp"}, NOW)
 
 
-class TestDueWithin:
-    """--due-within closes the measured failure phase: a pull at :X8:24 against
-    a :X-1:42 mint is 582s old on a 600s cadence — not_due to a due-check-only
-    gate, a NO-OP pull, and the flap survives the repair (critical finding on
-    #4665)."""
+class TestForceFreshnessEscape:
+    """``--force`` is the freshness-consumer escape hatch the telemetry writer's
+    pull-forward uses (critical finding on #4665, round 2): a fixed due-window
+    leaves a 560s-old admission unpulled at drifted timer phases, so the CALLER
+    measures the freshness the next write needs and forces the mint NOW. The
+    harness's job is to honor force immediately — no sleeping into a cadence
+    boundary the receipt cannot wait for — while the run-ledger append keeps
+    the later invokers honest."""
 
     def _main(self, tmp_path: Path, ledger_age_s: int, *extra: str) -> dict:
         marker = tmp_path / "producer-ran"
@@ -204,97 +207,52 @@ class TestDueWithin:
         assert rc == 0
         return {"marker": marker, "ledger": ledger}
 
-    def test_waits_into_the_due_window_and_runs(
+    def test_force_mints_now_despite_not_due(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
-        """The measured phase exactly: 582s of age on a 600s cadence, pulled 18s
-        before the boundary. The harness must sleep those 18s and mint at the
-        boundary, not skip."""
+        """The reviewer's exact repro age: 560s old on a 600s cadence — not_due to
+        the cadence gate — yet the receipt expires before the consumer's next
+        write. Force must run immediately and stamp the mint at now."""
         slept: list[float] = []
         monkeypatch.setattr(det.time, "sleep", lambda s: slept.append(s))
-        ctx = self._main(tmp_path, 582, "--due-within", "30")
-        # subprocess.communicate polls in ~1ms sleeps (git identity probes,
-        # producer waits); the due-window sleep is the only cadence-scale one.
-        assert [s for s in slept if s > 0.1] == [18.0]
+        ctx = self._main(tmp_path, 560, "--force")
+        assert not any(s > 0.1 for s in slept)
         assert ctx["marker"].exists()
         payload = json.loads(capsys.readouterr().out)
         assert [r["producer_id"] for r in payload["ran"]] == ["p1"]
-        # The receipt is stamped at the post-sleep boundary, and the reported
-        # now agrees with the stamp (--now advanced by the slept seconds).
-        assert payload["ran"][0]["ran_at"] == det._iso(NOW + timedelta(seconds=18))
-        assert payload["now"] == det._iso(NOW + timedelta(seconds=18))
+        assert payload["ran"][0]["ran_at"] == det._iso(NOW)
+        assert payload["now"] == det._iso(NOW)
         assert payload["skipped"] == []
 
-    def test_out_of_horizon_does_not_wait(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
-    ) -> None:
-        """300s from due is outside a 30s horizon: no sleep, an honest not_due
-        skip — waiting here would make every tick unboundedly slow."""
-        slept: list[float] = []
-        monkeypatch.setattr(det.time, "sleep", lambda s: slept.append(s))
-        ctx = self._main(tmp_path, 300, "--due-within", "30")
-        assert not any(s > 0.1 for s in slept)
-        assert not ctx["marker"].exists()
-        payload = json.loads(capsys.readouterr().out)
-        assert payload["ran"] == []
-        assert payload["skipped"] == [{"producer_id": "p1", "reason": "not_due"}]
-
-    def test_concurrent_winner_during_the_sleep_short_circuits(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
-    ) -> None:
-        """The determine timer fires while the pull sleeps into the boundary and
-        mints first: the sleeper wakes, re-reads under the lock, and skips —
-        still one provider round trip per cadence window."""
-        marker = tmp_path / "producer-ran"
-        producer_sh = tmp_path / "producer.sh"
-        producer_sh.write_text(f"#!/bin/sh\ntouch {marker}\n")
-        producer_sh.chmod(0o755)
-        reg = _registry(tmp_path, command=[str(producer_sh)])
-        ledger = tmp_path / "runs.jsonl"
-        det.append_run(
-            ledger,
-            {
-                "ran_at": det._iso(NOW - timedelta(seconds=582)),
-                "producer_id": "p1",
-                "outcome": "produced",
-            },
-        )
-
-        def _winner_mints_during_sleep(seconds: float) -> None:
-            if seconds <= 0.1:
-                return  # subprocess poll noise, not the due-window sleep
-            assert seconds == 18.0
-            det.append_run(
-                ledger,
-                {
-                    "ran_at": det._iso(NOW + timedelta(seconds=18)),
-                    "producer_id": "p1",
-                    "outcome": "produced",
-                },
-            )
-
-        monkeypatch.setattr(det.time, "sleep", _winner_mints_during_sleep)
+    def test_post_force_invoker_on_the_same_ledger_skips(self, tmp_path: Path, capsys) -> None:
+        """One run per cadence window survives force: a later plain invoker
+        re-reads the forced mint's fresh ran_at and skips as not_due."""
+        ctx = self._main(tmp_path, 560, "--force")
+        assert ctx["marker"].exists()
+        capsys.readouterr()  # consume the forced run's JSON before the second invocation
+        marker2 = tmp_path / "second-ran"
+        producer2 = tmp_path / "producer2.sh"
+        producer2.write_text(f"#!/bin/sh\ntouch {marker2}\n")
+        producer2.chmod(0o755)
+        reg = _registry(tmp_path, command=[str(producer2)])
         rc = det.main(
             [
                 "--registry",
                 str(reg),
                 "--run-ledger",
-                str(ledger),
+                str(ctx["ledger"]),
                 "--repo-root",
                 str(tmp_path),
                 "--now",
-                det._iso(NOW),
-                "--due-within",
-                "30",
+                det._iso(NOW + timedelta(seconds=30)),
                 "--json",
             ]
         )
         assert rc == 0
-        assert not marker.exists()
+        assert not marker2.exists()
         payload = json.loads(capsys.readouterr().out)
         assert payload["ran"] == []
         assert payload["skipped"] == [{"producer_id": "p1", "reason": "not_due"}]
-        assert payload["liveness"] == []
 
 
 class TestInvokerContractPins:

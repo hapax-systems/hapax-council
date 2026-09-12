@@ -43,7 +43,7 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -157,25 +157,6 @@ def producer_lock_path(ledger: Path, producer_id: str) -> Path:
     """
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", producer_id) or "producer"
     return ledger.parent / "locks" / f"{safe}.lock"
-
-
-def seconds_until_due(
-    producer: dict[str, Any], last: dict[str, Any] | None, now: datetime
-) -> float | None:
-    """Seconds until the producer becomes due; ``None`` when already due or never run.
-
-    The mirror of ``is_due`` for invokers that can afford to WAIT into the due window
-    instead of reading one mint behind (the quota-surface freshness flap: the telemetry
-    writer fires ~18s before the cadence boundary, so a due-check-only pull is a NO-OP
-    for 18 of every 600 seconds — exactly the measured failure phase).
-    """
-    if last is None:
-        return None
-    at = _parse_iso(last.get("ran_at"))
-    if at is None:
-        return None
-    remaining = producer["cadence_seconds"] - (now - at).total_seconds()
-    return remaining if remaining > 0 else None
 
 
 class ProducerLockTimeout(RuntimeError):
@@ -359,18 +340,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=DEFAULT_PRODUCER_TIMEOUT_S)
     parser.add_argument("--check", action="store_true", help="report liveness only; run nothing")
     parser.add_argument(
-        "--due-within",
-        type=float,
-        default=None,
-        metavar="SECONDS",
-        help=(
-            "when a producer is not yet due but becomes due within SECONDS, sleep into the "
-            "due window instead of returning not_due (the telemetry writer's pull-forward: "
-            "it fires ~18s before the cadence boundary, and a due-check-only pull is a NO-OP "
-            "for exactly that phase)"
-        ),
-    )
-    parser.add_argument(
         "--lock-wait",
         type=float,
         default=DEFAULT_LOCK_WAIT_S,
@@ -404,22 +373,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.check:
         for p in producers:
-            # The due-window wait happens BEFORE the lock: an invoker that can afford to
-            # wait (the telemetry writer's pull-forward, --due-within) sleeps into the
-            # cadence boundary, then the existing lock+re-read below dedups it against a
-            # concurrent winner that fired during the sleep. Without this, a pull at
-            # :X8:24 against a :X-1:42 mint is 582s old on a 600s cadence — not_due — and
-            # the flap survives the repair (critical finding on #4665). `now` advances with
-            # the slept seconds under --now so the due decision and the receipt stamp agree.
-            if not args.force and args.due_within is not None:
-                wait_for_due = seconds_until_due(p, last_runs(args.run_ledger).get(p["id"]), now)
-                if wait_for_due is not None and wait_for_due <= args.due_within:
-                    time.sleep(wait_for_due)
-                    if args.now:
-                        now = now + timedelta(seconds=wait_for_due)
-                    else:
-                        now = datetime.now(UTC)
-                    payload["now"] = _iso(now)
             # The due decision is made INSIDE the per-producer lock, against a
             # fresh read of the ledger. Two invokers share one cadence (timer +
             # telemetry pull-forward); whoever locks first runs and appends, and
@@ -428,6 +381,15 @@ def main(argv: list[str] | None = None) -> int:
             # re-read also refreshes the liveness view, so an invoker that
             # skipped behind a concurrent winner reports the winner's run, not
             # a false `never_ran` deficit.
+            #
+            # `--force` is the freshness-consumer escape hatch (the telemetry
+            # writer's pull-forward): it runs even when the cadence says not
+            # due, because the CALLER has measured that the receipt this
+            # producer mints will not stay fresh through its next read. The
+            # run-ledger append below keeps the one-run-per-window invariant
+            # intact — a later invoker in the same window re-reads the fresh
+            # `ran_at` and skips — so force shifts WHEN a run happens, never
+            # HOW MANY.
             try:
                 with producer_lock(args.run_ledger, p["id"], wait_s=args.lock_wait):
                     latest = last_runs(args.run_ledger).get(p["id"])

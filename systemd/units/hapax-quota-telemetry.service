@@ -10,8 +10,13 @@ Type=oneshot
 # the paired timer fires every 10m to stay inside that window) and rebuilds the
 # live quota/spend ledger at ~/.cache/hapax/orchestration/quota-spend-ledger-live.json,
 # which load_dispatch_policy_sources prefers over the checked-in fixtures.
-# No secrets are read or persisted; the EnvironmentFile is wired only so future
-# account-live probes inherit the standard credential surface.
+# Credential use (review finding on #4665, round 2): the step-0 pull-forward
+# hosts the agy admission chain (hapax-determine → hapax-agy-quota-admission →
+# reviewer smoke), which reads the operator OAuth token from the EnvironmentFile
+# below inside its isolated smoke workspace — same credential surface as
+# hapax-determine.service, now invoked from this unit too. No secret VALUES are
+# read by the writer itself or persisted anywhere: receipts carry
+# secret_source names with secret_value_persisted=false.
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-quota-telemetry-writer
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
@@ -25,31 +30,34 @@ SyslogIdentifier=hapax-quota-telemetry
 # smoke) that normally runs under hapax-determine.service's 512M cgroup;
 # match that ceiling so the smoke is not OOM-killed into a skipped tick
 # (a skip re-forwards the stale-receipt problem this writer repairs).
-# Caveat (review finding on #4665): 512M is the determine unit's PROVEN
-# ceiling for the smoke alone. Here the writer's own working set (pydantic
-# models, receipt scan, ledger assembly) rides IN SERIES inside the same
-# cgroup — additive in a way the split units never were — and no peak-RSS
-# measurement of the combined tick has been recorded. If an overlap tick
-# ever shows oom-kill in the journal, raise this before investigating
-# elsewhere.
+# Measured evidence (review findings on #4665, round 2), recheck with
+# `systemctl --user show hapax-quota-telemetry.service hapax-determine.service
+# -p MemoryPeak`: writer-alone tick peak 191 MiB, determine tick peak 217 MiB
+# (both 2026-09-12). The combined tick runs them IN SERIES in one cgroup, so
+# the additive worst case is ~408 MiB against this 512 MiB ceiling — ~104 MiB
+# headroom. NOTE: hapax-determine.service itself took a cgroup OOM kill at
+# 2026-09-12T14:59:26Z despite the same 512M, so this ceiling is monitored,
+# not assumed: `journalctl --user -u hapax-quota-telemetry.service --since -1d
+# | grep -i oom` after any suspected skipped mint.
 MemoryMax=512M
-# Step 0 of the writer pulls a due determination producer forward (bounded by
-# the 330s producer timeout, which also contains the --due-within sleep into
-# the cadence boundary) before the receipt refresh (bounded by its own
-# 360s outer timeout), in series. 180s could kill the tick that now contains
-# both; a killed tick skips a telemetry write entirely (oneshot, no overlap),
-# so the budget must cover the worst-case serial path with margin.
+# Step 0 of the writer pulls the determination producer forward (child budgets:
+# 90s lock wait + 90s producer run ≤ a 210s pull timeout) before the receipt
+# refresh (bounded by its own 360s outer timeout), in series. The worst-case
+# serial path is therefore 210s + 360s = 570s against the 600s timer cadence —
+# UNDER the cadence, so a tick can no longer defer the next fire by duration
+# alone; TestPullForwardBudgetPins in tests/scripts/
+# test_hapax_quota_telemetry_writer.py re-derives this from the unit files and
+# the writer constants, so the arithmetic cannot drift silently.
 #
 # Overrun semantics, stated so no future operator has to infer them (review
-# findings on #4665): the worst-case serial path is 330s pull + 360s refresh
-# = 690s against the 600s timer cadence. A tick whose serial path crosses the
-# next cadence boundary DEFERS that fire — systemd will not overlap a oneshot
-# unit — which is a silently skipped write cycle, the quieter failure mode.
-# That deferral is ACCEPTED here: the pull-forward dedups through the
-# determine lock, so the determine timer still mints the receipt on cadence
-# and the following writer tick embeds it; one deferred write never lapses
-# the 15m receipt window. TimeoutStartSec=900 bounds the kill so a wedged
-# tick cannot linger past one deferred cycle.
+# findings on #4665): a tick that still crosses the next cadence boundary
+# (external stalls — host suspend, cgroup CPU pressure) DEFERS that fire —
+# systemd will not overlap a oneshot unit — which is a silently skipped write
+# cycle, the quieter failure mode. That deferral is ACCEPTED: the pull-forward
+# dedups through the determine lock, so the determine timer still mints the
+# receipt on cadence and the following writer tick embeds it; one deferred
+# write never lapses the 15m receipt window. TimeoutStartSec=900 bounds the
+# kill so a wedged tick cannot linger past one deferred cycle.
 TimeoutStartSec=900
 # Killswitch: `systemctl --user mask hapax-quota-telemetry.timer` stops the
 # writer; receipts then lapse after quota stale_after (15m) and the live ledger

@@ -8,20 +8,26 @@ checked-in ``config/quota-spend-ledger-fixtures.json`` snapshot.
 
 Each tick does four steps:
 
-0. Pull forward any due-or-nearly-due determination producer whose receipts the
-   quota surfaces embed (currently the agy admission). The telemetry timer fires
-   ~18s BEFORE the determine timer mints each cycle's receipt, so without
-   this step the receipt read below always embeds the PREVIOUS cycle's mint
-   — ~600s of its 900s TTL already spent — and the #4616 anti-overclaim
-   encoding leaves only ~300s of surface freshness per 600s write cadence:
-   a permanent ~50% stale duty cycle while the receipt plane itself never
-   lapses (measured 2026-09-12,
-   REVIEW-ROUTE-FRESHNESS-FLAP-DEFECT-20260912). The pull goes through the
-   SAME harness and cadence gate (no --force) and passes --due-within, so the
-   harness sleeps into the cadence boundary when the producer is seconds away
-   from due — a due-check-only pull is a NO-OP in exactly the measured failure
-   phase (18s of every 600s) — and exactly one run happens per cadence window
-   regardless of which invoker fires first.
+0. Pull forward the determination producer whose receipts the quota surfaces
+   embed (currently the agy admission) whenever the FRESHNESS the next write
+   needs demands it: the pull adds ``--force`` to the same harness exactly
+   when the freshest existing admission's ``fresh_until`` will not cover the
+   next 600s write cycle (plus a 15s pull-to-write margin). Derived from the
+   receipt's own horizon, never from a measured timer phase — the timer's
+   ``AccuracySec=1min`` walks the fire phase across the determine cadence, and
+   a phase-derived window (the first repair's 30s ``--due-within``) leaves a
+   560s-old admission unpulled: 340s of freshness against a 600s cycle, a
+   260s flap (critical finding on #4665, round 2). Without this step at all,
+   the receipt read below embeds the PREVIOUS cycle's mint — ~600s of its
+   900s TTL already spent — and the #4616 anti-overclaim encoding leaves only
+   ~300s of surface freshness per 600s write cadence: a permanent ~50% stale
+   duty cycle while the receipt plane itself never lapses (measured
+   2026-09-12, REVIEW-ROUTE-FRESHNESS-FLAP-DEFECT-20260912). The run ledger's
+   ``ran_at`` aging keeps exactly one run per cadence window regardless of
+   which invoker fires first — force shifts WHEN a needed run happens, never
+   HOW MANY — and the bounded child budgets (lock wait 90s + producer 90s ≤
+   the 210s pull timeout, pinned by TestPullForwardBudgetPins) keep the
+   worst-case tick under the 600s cadence.
 
 1. Rebuild and write the live ledger (step 3's scan/build, below) BEFORE any
    receipt refresh, so downstream consumers of the ledger always see the
@@ -112,6 +118,16 @@ files and nvidia-smi. If the Codex sentinel reports an invalidated saved login,
 the dispatch host login must be repaired through the documented operator
 credential-transfer fallback and then rechecked; telemetry never mints, copies,
 or refreshes Codex bearer material itself.
+
+Recheck (the load-bearing ordering and freshness claims above, so a future
+reader never has to rediscover them):
+``tests/scripts/test_hapax_quota_telemetry_writer.py::test_main_pulls_mints_writes_then_refreshes``
+proves the write→refresh ordering and the freshness-derived force predicate
+against stubbed producers; ``TestPullForwardBudgetPins`` pins the child budget
+arithmetic to the systemd unit files; live:
+``journalctl --user -u hapax-quota-telemetry.service --since -1h | grep -E 'DEGRADED|pull-forward'``
+plus the ``admission_freshness_at_write_s`` / ``pull_forward`` keys in this
+writer's ``--json`` summary are the operating truth.
 """
 
 from __future__ import annotations
@@ -171,17 +187,27 @@ RELAY_RECEIPT_DIR = Path(
 # remaining at the same 600s phase, comfortably above the write cadence, so it
 # has no freshness flap to repair.
 QUOTA_SURFACE_PULL_FORWARD_PRODUCER_IDS = ("agy-review-quota",)
-# One pulled run is bounded by the determination harness's 300s producer
-# timeout plus ledger overhead; the systemd unit's TimeoutStartSec must cover
-# this in series with the receipt refresh that follows.
-PULL_FORWARD_TIMEOUT_S = 330.0
-# The pull fires ~18s before the cadence boundary, where the producer is 582s
-# old on a 600s cadence — not_due to a due-check-only gate, a NO-OP pull, and
-# the freshness flap survives the repair (critical finding on #4665). The
-# harness sleeps into the due window for anything within this horizon; 30s
-# covers the measured phase plus timer jitter while staying far inside the
-# 330s pull budget above.
-PULL_FORWARD_DUE_WITHIN_S = 30.0
+# The telemetry timer's OnUnitActiveSec (10min) and the quota surface's
+# stale_after (15m) — the two cadences the pull-forward arithmetic sits between.
+# The timer's AccuracySec=1min means the writer's fire phase walks up to ±60s
+# against the determine timer, which is why the pull decision is derived from
+# the freshness the NEXT write needs (below), never from a measured phase.
+WRITER_CYCLE_S = 600.0
+# The pull's force predicate fires this far ahead of pure need: covers the
+# pull→write latency inside the tick plus timer jitter, so a receipt judged
+# sufficient actually still has its full cycle ahead at the ledger write.
+PULL_FORWARD_MARGIN_S = 15.0
+# Bounded budgets for the pull's child, pinned relative to PULL_FORWARD_TIMEOUT_S
+# by TestPullForwardBudgetPins: the lock wait covers a colliding determine-timer
+# winner finishing a typical run (measured 2026-09-12: agy-review-quota completes
+# in ~27s), and the producer timeout bounds the smoke inside the pull context
+# (the determine timer's own invocation keeps the harness default of 300s).
+PULL_FORWARD_LOCK_WAIT_S = 90.0
+PULL_FORWARD_PRODUCER_TIMEOUT_S = 90.0
+# Worst-case serial child: lock wait + producer run + spawn overhead. With the
+# 360s refresh outer budget this stays under the 600s write cadence, so a tick
+# can no longer defer the next fire by duration alone.
+PULL_FORWARD_TIMEOUT_S = PULL_FORWARD_LOCK_WAIT_S + PULL_FORWARD_PRODUCER_TIMEOUT_S + 30.0
 
 # Subscription platforms with quota-wall detection and their canonical
 # dispatch route (the registry's primary subscription route per platform).
@@ -2265,35 +2291,74 @@ def quota_spend_live_lock(path: Path) -> Any:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+def pull_forward_force_needed(receipt_dir: Path, *, now: datetime) -> bool:
+    """Would the agy admission embedded by this tick lapse before the NEXT write?
+
+    The exit predicate the whole pull-forward exists to enforce: the ledger
+    written now must stay fresh through the following writer cycle. Derived
+    from the receipt's own ``fresh_until`` — never from a measured timer phase,
+    which the timer's ``AccuracySec`` window walks across (critical finding on
+    #4665, round 2: a fixed 30s due-window left a 560s-old admission unpulled,
+    340s of remaining freshness against a 600s cycle — a 260s flap).
+    """
+
+    scan = active_agy_admission_receipts(receipt_dir, now=now)
+    if not scan.admissions:
+        return True
+    horizon = now + timedelta(seconds=WRITER_CYCLE_S + PULL_FORWARD_MARGIN_S)
+    return max(a.fresh_until for a in scan.admissions) < horizon
+
+
 def pull_forward_due_producers(
     *,
     repo_root: Path,
+    receipt_dir: Path,
+    now: datetime,
     timeout: float = PULL_FORWARD_TIMEOUT_S,
-) -> bool:
-    """Run due determination producers feeding the quota surfaces before reading them.
+) -> dict[str, Any]:
+    """Run the determination producers feeding the quota surfaces before reading them.
 
-    Invokes the same harness and the same cadence gate (no ``--force``), so
-    exactly one run happens per cadence window regardless of which invoker
-    fires first; the per-producer lock in ``hapax-determine`` serializes
-    overlapping invocations. Degrades, never aborts: on timeout or failure the
-    receipt refresh proceeds with whatever receipts exist, which is exactly the
-    pre-repair behavior — never worse, sometimes stale.
+    Invokes the same harness and per-producer lock as the determine timer. The
+    cadence gate stays in charge of HOW MANY runs happen per window (the run
+    ledger's ``ran_at`` aging); ``--force`` is added only when the freshness
+    predicate above says the embedded receipt will not survive the next write,
+    which shifts WHEN a needed run happens, never the count — a determine-timer
+    fire later in the same window re-reads the fresh ``ran_at`` and skips.
+
+    Degrades, never aborts: on timeout or failure the tick proceeds with
+    whatever receipts exist — exactly the pre-repair behavior, never worse,
+    sometimes stale — and the returned skip reasons let the caller report the
+    degradation instead of presenting it as success (major finding on #4665,
+    round 2).
     """
 
     script = repo_root / "scripts" / "hapax-determine"
-    ok = True
+    info: dict[str, Any] = {
+        "invoked": True,
+        "forced": False,
+        "ran": [],
+        "skipped": [],
+        "ok": True,
+    }
+    force = pull_forward_force_needed(receipt_dir, now=now)
+    info["forced"] = force
     for producer_id in QUOTA_SURFACE_PULL_FORWARD_PRODUCER_IDS:
+        argv = [
+            sys.executable,
+            str(script),
+            "--producer",
+            producer_id,
+            "--lock-wait",
+            str(PULL_FORWARD_LOCK_WAIT_S),
+            "--timeout",
+            str(int(PULL_FORWARD_PRODUCER_TIMEOUT_S)),
+        ]
+        if force:
+            argv.append("--force")
+        argv.append("--json")
         try:
             result = subprocess.run(
-                [
-                    sys.executable,
-                    str(script),
-                    "--producer",
-                    producer_id,
-                    "--due-within",
-                    str(PULL_FORWARD_DUE_WITHIN_S),
-                    "--json",
-                ],
+                argv,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -2307,7 +2372,7 @@ def pull_forward_due_producers(
                 "hapax-determine.service for the concurrent fire.",
                 file=sys.stderr,
             )
-            ok = False
+            info["ok"] = False
             continue
         except (OSError, subprocess.SubprocessError) as exc:
             print(
@@ -2317,7 +2382,7 @@ def pull_forward_due_producers(
                 "(`ls -l scripts/hapax-determine`) — no provider state was touched.",
                 file=sys.stderr,
             )
-            ok = False
+            info["ok"] = False
             continue
         if result.returncode != 0:
             print(
@@ -2329,8 +2394,40 @@ def pull_forward_due_producers(
                 "reproduce the producer failure outside the telemetry tick.",
                 file=sys.stderr,
             )
-            ok = False
-    return ok
+            info["ok"] = False
+            continue
+        try:
+            determine_payload = json.loads(result.stdout)
+        except ValueError:
+            determine_payload = None
+        if isinstance(determine_payload, dict):
+            info["ran"].extend(
+                entry.get("producer_id", producer_id)
+                for entry in determine_payload.get("ran", [])
+                if isinstance(entry, dict)
+            )
+            for entry in determine_payload.get("skipped", []):
+                if not isinstance(entry, dict):
+                    continue
+                reason = entry.get("reason", "unknown")
+                info["skipped"].append(
+                    {"producer_id": entry.get("producer_id", producer_id), "reason": reason}
+                )
+                if reason == "lock_timeout":
+                    # A healthy concurrent winner holding the lock is the expected
+                    # collision when the pull and the determine timer cross phases;
+                    # whether it MATTERED is decided by the post-write freshness
+                    # check, not by this skip alone (major finding on #4665, round 2).
+                    print(
+                        "hapax-quota-telemetry-writer: producer pull-forward deferred — "
+                        f"lock held by a concurrent determine fire ({producer_id}, waited "
+                        f"{entry.get('waited_s', PULL_FORWARD_LOCK_WAIT_S):.0f}s). The "
+                        "freshness check after the ledger write reports whether this "
+                        "tick's embedded receipt still covers the next write. Next: "
+                        "journalctl --user -u hapax-determine.service for the holder.",
+                        file=sys.stderr,
+                    )
+    return info
 
 
 def refresh_capability_receipts(*, timeout: float, receipt_dir: Path) -> bool:
@@ -2430,13 +2527,23 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"invalid --now value: {args.now!r}")
 
     receipts_ok = True
-    producers_pulled = False
+    pull_forward: dict[str, Any] = {
+        "invoked": False,
+        "forced": False,
+        "ran": [],
+        "skipped": [],
+        "ok": True,
+    }
     if not args.skip_receipts:
-        producers_pulled = pull_forward_due_producers(repo_root=REPO_ROOT)
-        # The pull (and its due-window sleep) can cross second boundaries; every
-        # scan below must judge receipt freshness against what exists AFTER the
-        # pull, or the mint the pull just produced is rejected as future-dated
-        # (major finding on #4665). --now keeps tests deterministic.
+        pull_forward = pull_forward_due_producers(
+            repo_root=REPO_ROOT,
+            receipt_dir=args.relay_receipt_dir,
+            now=now,
+        )
+        # The pull child runs for real seconds; every scan below must judge
+        # receipt freshness against what exists AFTER the pull, or the mint the
+        # pull just produced is rejected as future-dated (major finding on
+        # #4665). --now keeps tests deterministic.
         if not args.now:
             now = datetime.now(UTC).replace(microsecond=0)
 
@@ -2532,6 +2639,7 @@ def main(argv: list[str] | None = None) -> int:
     # admission was clamped to whatever freshness the stale ledger had left (~300s) or,
     # once that expired, made the surface unobservable despite fresh producer input.
     ledger_rebuilt_after_refresh = False
+    ledger_rebuild_after_refresh_error: str | None = None
     if not args.skip_receipts:
         receipts_ok = refresh_capability_receipts(
             timeout=args.receipt_timeout,
@@ -2557,6 +2665,14 @@ def main(argv: list[str] | None = None) -> int:
                 ) = _scan_build_write(pass2_now)
                 ledger_rebuilt_after_refresh = True
             except (ValueError, QuotaSpendLedgerError) as exc:
+                # The pass-1 ledger stays on disk (the atomic write never
+                # replaced it), but this tick FAILED its reconciliation: the
+                # refreshed receipts and the published ledger now disagree
+                # about Codex. Exit nonzero so the unit's OnFailure surfaces
+                # it, and record the error distinctly from the healthy
+                # "blocker unchanged, no rebuild needed" case (major findings
+                # on #4665, round 2).
+                ledger_rebuild_after_refresh_error = str(exc)
                 print(
                     "hapax-quota-telemetry-writer: live ledger invalid after receipt "
                     f"refresh: {exc}; the pass-1 ledger remains on disk. Next: rerun this "
@@ -2564,13 +2680,48 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
 
+    # The exit predicate, measured on the PUBLISHED ledger: whatever this tick
+    # embedded must stay fresh through the next writer cycle, or the quota
+    # surface flaps for the difference (the defect this PR repairs). A degraded
+    # tick still writes its honest ledger — consumers see the true fresh_until,
+    # never an overclaim — but the degradation is reported here, in the summary,
+    # and on stderr, not silently absorbed into a green tick.
+    admission_freshness_at_write_s: float | None = None
+    admission_freshness_degraded = False
+    if agy_scan.admissions:
+        admission_freshness_at_write_s = round(
+            (max(a.fresh_until for a in agy_scan.admissions) - ledger.captured_at).total_seconds(),
+            1,
+        )
+        admission_freshness_degraded = admission_freshness_at_write_s < WRITER_CYCLE_S
+    else:
+        admission_freshness_degraded = True
+    if admission_freshness_degraded and not args.skip_receipts:
+        detail = (
+            f"{admission_freshness_at_write_s:.0f}s remaining at write"
+            if admission_freshness_at_write_s is not None
+            else "no active admission receipt"
+        )
+        print(
+            "hapax-quota-telemetry-writer: DEGRADED — the embedded agy admission will "
+            f"not cover the next write cycle ({detail} against a {WRITER_CYCLE_S:.0f}s "
+            "cadence); the quota surface will be stale for the difference. Next: "
+            "scripts/hapax-determine --producer agy-review-quota --check --json to see "
+            "the producer state, and journalctl --user -u hapax-determine.service for "
+            "the mint history.",
+            file=sys.stderr,
+        )
+
     summary = {
         "ledger_id": ledger.ledger_id,
         "captured_at": ledger.captured_at.isoformat().replace("+00:00", "Z"),
         "out": str(out_path),
         "receipts_refreshed": receipts_ok,
-        "producers_pulled_forward": producers_pulled,
+        "pull_forward": pull_forward,
+        "admission_freshness_at_write_s": admission_freshness_at_write_s,
+        "admission_freshness_degraded": admission_freshness_degraded,
         "ledger_rebuilt_after_refresh": ledger_rebuilt_after_refresh,
+        "ledger_rebuild_after_refresh_error": ledger_rebuild_after_refresh_error,
         "local_resource_state": resource_state,
         "agy_admissions": len(agy_scan.admissions),
         "agy_ignored_admissions": len(agy_scan.ignored_evidence_refs),
@@ -2592,6 +2743,8 @@ def main(argv: list[str] | None = None) -> int:
             f"(resource={resource_state}, walls={summary['quota_walls'] or 'none'}, "
             f"receipts_refreshed={receipts_ok})"
         )
+    if ledger_rebuild_after_refresh_error is not None:
+        return 1
     return 0 if receipts_ok else 3
 
 

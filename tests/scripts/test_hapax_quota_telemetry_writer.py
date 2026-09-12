@@ -8,6 +8,7 @@ import runpy
 import stat
 import subprocess
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -121,13 +122,17 @@ def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
     ]
 
 
-def test_pull_forward_goes_through_the_determine_cadence_gate(
+def test_pull_forward_invokes_the_harness_with_bounded_budgets_and_freshness_derived_force(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The pull must use the SAME harness and gate (no --force), so one cadence
-    window yields one run regardless of which invoker fires first."""
+    """The pull goes through the SAME harness (per-producer lock, run-ledger
+    gate) with explicitly bounded child budgets, and adds --force exactly when
+    the freshness the next write needs demands a mint NOW — never from a
+    measured timer phase (critical finding on #4665, round 2)."""
     namespace = runpy.run_path(str(SCRIPT))
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
     calls: list[list[str]] = []
 
     def fake_run(argv, *, capture_output, text, timeout):
@@ -135,22 +140,94 @@ def test_pull_forward_goes_through_the_determine_cadence_gate(
         assert capture_output is True
         assert text is True
         assert timeout == namespace["PULL_FORWARD_TIMEOUT_S"]
-        return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(
+                {
+                    "now": NOW,
+                    "ran": [{"producer_id": "agy-review-quota"}],
+                    "skipped": [],
+                }
+            ),
+            stderr="",
+        )
 
     monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
+    now_dt = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
 
-    assert namespace["pull_forward_due_producers"](repo_root=REPO_ROOT) is True
+    # No admission receipt at all: the next write embeds nothing — force.
+    info = namespace["pull_forward_due_producers"](
+        repo_root=REPO_ROOT, receipt_dir=relay, now=now_dt
+    )
     assert calls == [
         [
             sys.executable,
             str(REPO_ROOT / "scripts" / "hapax-determine"),
             "--producer",
             "agy-review-quota",
-            "--due-within",
-            str(namespace["PULL_FORWARD_DUE_WITHIN_S"]),
+            "--lock-wait",
+            str(namespace["PULL_FORWARD_LOCK_WAIT_S"]),
+            "--timeout",
+            str(int(namespace["PULL_FORWARD_PRODUCER_TIMEOUT_S"])),
+            "--force",
             "--json",
         ]
     ]
+    assert info == {
+        "invoked": True,
+        "forced": True,
+        "ran": ["agy-review-quota"],
+        "skipped": [],
+        "ok": True,
+    }
+
+    # A receipt that comfortably covers the next cycle: plain due-check pull,
+    # no --force — the cadence gate alone decides whether a run happens.
+    _agy_admission(relay, observed_at=NOW, stale_after_seconds=900)
+    calls.clear()
+    info = namespace["pull_forward_due_producers"](
+        repo_root=REPO_ROOT, receipt_dir=relay, now=now_dt
+    )
+    assert info["forced"] is False
+    assert "--force" not in calls[0]
+    assert info["ok"] is True
+
+
+def test_pull_forward_force_predicate_matches_freshness_need(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The reviewer's exact repro numbers (codex-1, round 2): a 560s-old
+    admission on a 900s TTL has 340s left — under the 600s write cadence, the
+    receipt lapses mid-cycle and the surface flaps for the difference. The
+    predicate must demand a mint; with 700s left it must not."""
+    namespace = runpy.run_path(str(SCRIPT))
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    now_dt = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+    # No subprocess: the decision is pure receipt arithmetic.
+    monkeypatch.setattr(
+        namespace["subprocess"],
+        "run",
+        lambda *a, **kw: pytest.fail("the predicate must not spawn the harness"),
+    )
+
+    # 560s old, 900s TTL: fresh_until = now + 340s < now + 600 + 15 → force.
+    _agy_admission(
+        relay,
+        observed_at=(now_dt - timedelta(seconds=560)).isoformat().replace("+00:00", "Z"),
+        stale_after_seconds=900,
+    )
+    assert namespace["pull_forward_force_needed"](relay, now=now_dt) is True
+
+    # Fresh mint, 700s horizon: covers the next cycle plus margin → no force.
+    (relay / "agy-quota-admission.yaml").unlink()
+    _agy_admission(relay, observed_at=NOW, stale_after_seconds=700)
+    assert namespace["pull_forward_force_needed"](relay, now=now_dt) is False
+
+    # Nothing on disk → force.
+    (relay / "agy-quota-admission.yaml").unlink()
+    assert namespace["pull_forward_force_needed"](relay, now=now_dt) is True
 
 
 def test_pull_forward_degrades_not_aborts_on_failure_and_timeout(
@@ -159,9 +236,12 @@ def test_pull_forward_degrades_not_aborts_on_failure_and_timeout(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     namespace = runpy.run_path(str(SCRIPT))
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    now_dt = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
     outcomes = [
         subprocess.CompletedProcess(["x"], 5, stdout="", stderr="producer failed"),
-        subprocess.TimeoutExpired(cmd=["x"], timeout=330.0),
+        subprocess.TimeoutExpired(cmd=["x"], timeout=namespace["PULL_FORWARD_TIMEOUT_S"]),
     ]
 
     def fake_run(argv, *, capture_output, text, timeout):
@@ -171,9 +251,14 @@ def test_pull_forward_degrades_not_aborts_on_failure_and_timeout(
         return outcome
 
     monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
-    assert namespace["pull_forward_due_producers"](repo_root=REPO_ROOT) is False
-    assert namespace["pull_forward_due_producers"](repo_root=REPO_ROOT) is False
+    info1 = namespace["pull_forward_due_producers"](
+        repo_root=REPO_ROOT, receipt_dir=relay, now=now_dt
+    )
+    info2 = namespace["pull_forward_due_producers"](
+        repo_root=REPO_ROOT, receipt_dir=relay, now=now_dt
+    )
     assert not outcomes
+    assert info1["ok"] is False and info2["ok"] is False
     stderr = capsys.readouterr().err
     assert "pull-forward failed" in stderr and "rc=5" in stderr
     assert "pull-forward timed out" in stderr
@@ -185,13 +270,65 @@ def test_pull_forward_degrades_on_spawn_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     namespace = runpy.run_path(str(SCRIPT))
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
 
     def fake_run(argv, *, capture_output, text, timeout):
         raise FileNotFoundError("interpreter vanished")
 
     monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
-    assert namespace["pull_forward_due_producers"](repo_root=REPO_ROOT) is False
+    info = namespace["pull_forward_due_producers"](
+        repo_root=REPO_ROOT,
+        receipt_dir=relay,
+        now=datetime.fromisoformat(NOW.replace("Z", "+00:00")),
+    )
+    assert info["ok"] is False
     assert "could not run" in capsys.readouterr().err
+
+
+def test_pull_forward_lock_timeout_is_reported_not_silent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A skip with reason lock_timeout must surface in the returned info and
+    on stderr with a next action — never a silent green pull (major finding on
+    #4665, round 2)."""
+    namespace = runpy.run_path(str(SCRIPT))
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+
+    def fake_run(argv, *, capture_output, text, timeout):
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(
+                {
+                    "now": NOW,
+                    "ran": [],
+                    "skipped": [
+                        {
+                            "producer_id": "agy-review-quota",
+                            "reason": "lock_timeout",
+                            "waited_s": 90.0,
+                        }
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
+    info = namespace["pull_forward_due_producers"](
+        repo_root=REPO_ROOT,
+        receipt_dir=relay,
+        now=datetime.fromisoformat(NOW.replace("Z", "+00:00")),
+    )
+    assert info["ok"] is True  # the harness exited cleanly; the skip is honest
+    assert info["skipped"] == [{"producer_id": "agy-review-quota", "reason": "lock_timeout"}]
+    stderr = capsys.readouterr().err
+    assert "deferred" in stderr and "lock held" in stderr
+    assert "journalctl --user -u hapax-determine.service" in stderr
 
 
 def test_main_pulls_mints_writes_then_refreshes(
@@ -226,7 +363,13 @@ def test_main_pulls_mints_writes_then_refreshes(
         # tick's re-observation time. A broken pull leaves the previous cycle's
         # receipt (observed_at=NOW-600s) and the assertions below catch it.
         _agy_admission(relay, observed_at=NOW)
-        return True
+        return {
+            "invoked": True,
+            "forced": True,
+            "ran": ["agy-review-quota"],
+            "skipped": [],
+            "ok": True,
+        }
 
     seen: dict[str, str] = {}
 
@@ -276,9 +419,14 @@ def test_main_pulls_mints_writes_then_refreshes(
     assert agy_snapshot["subscription_quota_state"] == "fresh"
     assert agy_snapshot["fresh_until"] == "2026-06-10T00:15:00Z"
     summary = json.loads(capsys.readouterr().out)
-    assert summary["producers_pulled_forward"] is True
+    assert summary["pull_forward"]["forced"] is True
+    assert summary["pull_forward"]["ran"] == ["agy-review-quota"]
     assert summary["receipts_refreshed"] is True
     assert summary["ledger_rebuilt_after_refresh"] is False
+    # The exit predicate, on the published ledger: a fresh 900s mint leaves the
+    # full cycle ahead of it — not degraded.
+    assert summary["admission_freshness_at_write_s"] == 900.0
+    assert summary["admission_freshness_degraded"] is False
 
 
 def test_refreshed_codex_receipts_rebuild_the_published_ledger(
@@ -314,7 +462,17 @@ def test_refreshed_codex_receipts_rebuild_the_published_ledger(
         _codex_platform_receipt(platform_receipts)
         return True
 
-    monkeypatch.setitem(main_globals, "pull_forward_due_producers", lambda **kw: True)
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
     monkeypatch.setitem(main_globals, "refresh_capability_receipts", healing_refresh)
     monkeypatch.setitem(main_globals, "write_ledger_atomic", counting_write)
 
@@ -368,7 +526,17 @@ def test_unchanged_codex_receipts_write_the_ledger_once(
         writes.append(ledger.captured_at.isoformat())
         real_write(ledger, path)
 
-    monkeypatch.setitem(main_globals, "pull_forward_due_producers", lambda **kw: True)
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
     monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
     monkeypatch.setitem(main_globals, "write_ledger_atomic", counting_write)
 
@@ -392,6 +560,350 @@ def test_unchanged_codex_receipts_write_the_ledger_once(
     assert len(writes) == 1, writes
     summary = json.loads(capsys.readouterr().out)
     assert summary["ledger_rebuilt_after_refresh"] is False
+
+
+def test_sustained_freshness_across_two_complete_cycles(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The sustained-route-freshness proof the round-2 tests stopped short of
+    (codex-1 major): run two consecutive 600s ticks through the ACTUAL
+    scheduling decision — the pull stub consults the receipts on disk and mints
+    only what the freshness predicate demands — and assert each published
+    ledger's embedded admission covers its full next cycle. The round-2 defect
+    class (a 560s-old admission slipping through as 'not due') flaps tick B;
+    the force predicate repairs it at any timer phase."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    forced: list[bool] = []
+
+    def behavioral_pull(*, repo_root, receipt_dir, now, timeout=None):
+        if namespace["pull_forward_force_needed"](receipt_dir, now=now):
+            forced.append(True)
+            _agy_admission(
+                relay,
+                observed_at=now.isoformat().replace("+00:00", "Z"),
+                stale_after_seconds=900,
+            )
+            return {
+                "invoked": True,
+                "forced": True,
+                "ran": ["agy-review-quota"],
+                "skipped": [],
+                "ok": True,
+            }
+        forced.append(False)
+        return {"invoked": True, "forced": False, "ran": [], "skipped": [], "ok": True}
+
+    monkeypatch.setitem(main_globals, "pull_forward_due_producers", behavioral_pull)
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+
+    # Tick A at T0: the previous cycle's mint is 560s old — the reviewer's
+    # exact repro. Tick B at T0+600: tick A's mint is 600s old.
+    t0 = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+    _agy_admission(
+        relay,
+        observed_at=(t0 - timedelta(seconds=560)).isoformat().replace("+00:00", "Z"),
+        stale_after_seconds=900,
+    )
+    summaries = []
+    for tick, tick_now in enumerate((t0, t0 + timedelta(seconds=600))):
+        out = tmp_path / f"out-{tick}" / "quota-spend-ledger-live.json"
+        rc = namespace["main"](
+            [
+                "--now",
+                tick_now.isoformat().replace("+00:00", "Z"),
+                "--out",
+                str(out),
+                "--relay-receipt-dir",
+                str(relay),
+                "--platform-capability-receipt-dir",
+                str(platform_receipts),
+                "--nvidia-smi",
+                str(stub),
+                "--json",
+            ]
+        )
+        assert rc == 0
+        summaries.append(json.loads(capsys.readouterr().out))
+
+    # Both ticks FORCED a mint (560s and 600s old both fail the freshness
+    # predicate), and every published ledger carried the full cycle ahead.
+    assert forced == [True, True]
+    for summary in summaries:
+        assert summary["admission_freshness_degraded"] is False
+        assert summary["admission_freshness_at_write_s"] >= 600.0
+    payload = json.loads((tmp_path / "out-1" / "quota-spend-ledger-live.json").read_text())
+    agy_snapshot = next(
+        s for s in payload["quota_snapshots"] if s["route_id"] == "agy.review.direct"
+    )
+    captured = datetime.fromisoformat(payload["captured_at"].replace("Z", "+00:00"))
+    fresh_until = datetime.fromisoformat(agy_snapshot["fresh_until"].replace("Z", "+00:00"))
+    assert (fresh_until - captured).total_seconds() >= 600
+
+
+def test_degraded_admission_is_reported_not_silent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When the pull cannot secure a sufficient receipt (here: a lock_timeout
+    skip behind a concurrent winner that leaves the old admission in place),
+    the tick still writes its honest ledger — but the degradation is in the
+    summary and on stderr, never a silent green pull (major finding on #4665,
+    round 2)."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    t0 = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+    # The stale admission a lock_timeout leaves behind: 560s old, 340s left.
+    _agy_admission(
+        relay,
+        observed_at=(t0 - timedelta(seconds=560)).isoformat().replace("+00:00", "Z"),
+        stale_after_seconds=900,
+    )
+
+    def skipping_pull(**kw):
+        return {
+            "invoked": True,
+            "forced": True,
+            "ran": [],
+            "skipped": [{"producer_id": "agy-review-quota", "reason": "lock_timeout"}],
+            "ok": True,
+        }
+
+    monkeypatch.setitem(main_globals, "pull_forward_due_producers", skipping_pull)
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+    assert rc == 0  # honest ledger, visible degradation — not an aborted tick
+    captured = capsys.readouterr()
+    assert "DEGRADED" in captured.err
+    assert "340" in captured.err
+    assert "Next:" in captured.err
+    summary = json.loads(captured.out)
+    assert summary["admission_freshness_degraded"] is True
+    assert summary["admission_freshness_at_write_s"] == 340.0
+
+
+def test_pass2_rebuild_failure_fails_the_tick_and_preserves_the_pass1_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A reconciliation failure after a healing refresh must exit nonzero (the
+    unit's OnFailure fires) and be distinguishable in the summary from the
+    healthy 'blocker unchanged' case, while the pass-1 ledger on disk stays
+    intact (major findings on #4665, round 2)."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", "")
+    monkeypatch.setenv("HAPAX_DEFAULT_DISPATCH_HOST", "")
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(
+        platform_receipts, reason_code="codex_exec_auth_refresh_token_invalidated"
+    )
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    real_build = main_globals["build_live_ledger"]
+    builds: list[int] = []
+
+    def failing_second_build(*a, **kw):
+        builds.append(1)
+        if len(builds) == 1:
+            return real_build(*a, **kw)
+        raise main_globals["QuotaSpendLedgerError"]("injected pass-2 validation failure")
+
+    def healing_refresh(*, timeout, receipt_dir):
+        _codex_platform_receipt(platform_receipts)
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", healing_refresh)
+    monkeypatch.setitem(main_globals, "build_live_ledger", failing_second_build)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+    assert rc == 1
+    assert len(builds) == 2
+    captured = capsys.readouterr()
+    assert "invalid after receipt refresh" in captured.err
+    summary = json.loads(captured.out)
+    assert summary["ledger_rebuilt_after_refresh"] is False
+    assert "injected pass-2 validation failure" in summary["ledger_rebuild_after_refresh_error"]
+    # The pass-1 ledger survived intact and parses.
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["captured_at"] == NOW
+
+
+def test_clock_refresh_branch_without_now_uses_post_pull_time(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The production clock path (no --now): every scan judges receipt
+    freshness against the time AFTER the pull child ran, so a mint the pull
+    produces mid-tick is never rejected as future-dated (major finding on
+    #4665). Round-2 tests only ever passed --now; this exercises main's
+    datetime.now branches directly."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    t0 = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+
+    class ControllableDatetime(datetime):
+        clock = t0
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.clock
+
+    def timed_pull(*, repo_root, receipt_dir, now, timeout=None):
+        # A real pull child takes seconds; advance the wall clock like one did.
+        ControllableDatetime.clock = t0 + timedelta(seconds=27)
+        _agy_admission(
+            relay,
+            observed_at=ControllableDatetime.clock.isoformat().replace("+00:00", "Z"),
+            stale_after_seconds=900,
+        )
+        return {
+            "invoked": True,
+            "forced": True,
+            "ran": ["agy-review-quota"],
+            "skipped": [],
+            "ok": True,
+        }
+
+    monkeypatch.setitem(main_globals, "datetime", ControllableDatetime)
+    monkeypatch.setitem(main_globals, "pull_forward_due_producers", timed_pull)
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+
+    rc = namespace["main"](
+        [
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["captured_at"] == (t0 + timedelta(seconds=27)).isoformat().replace("+00:00", "Z")
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["admission_freshness_at_write_s"] == 900.0
+
+
+class TestPullForwardBudgetPins:
+    """The child budget arithmetic must reconcile with the systemd units, or a
+    drifted constant silently converts a degrade into a guaranteed
+    TimeoutExpired (claude-1/glm-1 majors on #4665, round 2). These pins
+    re-derive the unit-file numbers the comments cite, so neither side can
+    drift alone."""
+
+    SERVICE_UNIT = REPO_ROOT / "systemd/units/hapax-quota-telemetry.service"
+    TIMER_UNIT = REPO_ROOT / "systemd/units/hapax-quota-telemetry.timer"
+
+    @staticmethod
+    def _unit_seconds(path: Path, key: str) -> float:
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if line.startswith(key + "="):
+                value = line.split("=", 1)[1].strip()
+                if value.endswith("min"):
+                    return float(value[:-3]) * 60.0
+                if value.endswith("s"):
+                    return float(value[:-1])
+                return float(value)
+        raise AssertionError(f"{key}= not found in {path}")
+
+    def test_child_worst_case_fits_the_pull_timeout(self) -> None:
+        namespace = runpy.run_path(str(SCRIPT))
+        assert (
+            namespace["PULL_FORWARD_LOCK_WAIT_S"] + namespace["PULL_FORWARD_PRODUCER_TIMEOUT_S"]
+            <= namespace["PULL_FORWARD_TIMEOUT_S"]
+        )
+
+    def test_worst_case_tick_stays_under_the_write_cadence(self) -> None:
+        namespace = runpy.run_path(str(SCRIPT))
+        cadence = self._unit_seconds(self.TIMER_UNIT, "OnUnitActiveSec")
+        assert cadence == namespace["WRITER_CYCLE_S"]
+        # refresh outer timeout: max(3x, +15s) over the 120s argparse default
+        refresh_outer = max(3 * 120.0, 120.0 + 15.0)
+        assert namespace["PULL_FORWARD_TIMEOUT_S"] + refresh_outer < cadence
+
+    def test_kill_bound_covers_a_deferred_cycle(self) -> None:
+        cadence = self._unit_seconds(self.TIMER_UNIT, "OnUnitActiveSec")
+        kill = self._unit_seconds(self.SERVICE_UNIT, "TimeoutStartSec")
+        assert cadence < kill
+
+    def test_margin_stays_inside_the_timer_accuracy_window(self) -> None:
+        namespace = runpy.run_path(str(SCRIPT))
+        accuracy = self._unit_seconds(self.TIMER_UNIT, "AccuracySec")
+        assert 0 < namespace["PULL_FORWARD_MARGIN_S"] <= accuracy
 
 
 def _wall_receipt(
