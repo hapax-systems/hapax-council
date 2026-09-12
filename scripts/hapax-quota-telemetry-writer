@@ -39,12 +39,19 @@ Each tick does four steps:
    the 210s pull timeout, pinned by TestPullForwardBudgetPins) bound the
    pull child itself; the live-ledger lock wait is likewise an enforced
    bound (``LIVE_LEDGER_LOCK_WAIT_S`` — a bounded wait that expires). The
-   pre-mint force-decision scan (``PRE_MINT_SCAN_BOUND_S``) and the
-   scan/build/write passes (``PRE_WRITE_WORK_BOUND_S``) are MEASURED
-   budgets, not execution bounds: they run to completion, their elapsed time
-   is reported in the summary, and an overrun degrades the tick's exit code
-   retroactively (rc=4) so the overrun is surfaced — never silently
-   truncated, and never claimed as pre-empted (codex-1 D1, #4665 round 6).
+   pre-mint force-decision scan (``PRE_MINT_SCAN_BOUND_S``) is a MEASURED
+   budget, not an execution bound: it runs to completion, its elapsed is
+   reported in the summary (``pre_mint_scan_elapsed_s``), and a direct
+   overrun predicate degrades the tick's exit code retroactively (rc=4) so
+   the overrun is surfaced — never silently truncated, and never claimed as
+   pre-empted (codex-1 D1, #4665 round 6). The scan/build/write passes
+   (``PRE_WRITE_WORK_BOUND_S``) have no per-pass elapsed report or direct
+   overrun predicate: their budget is enforced indirectly, through the
+   freshness-at-publication and continuity witnesses below, which charge
+   every pre-publication second against the admissions' remaining lifetime
+   — a pass that overruns its bound but publishes with horizon-remaining
+   freshness still exits 0 (codex-1 D2, #4665 round 8; the budget bounds the
+   horizon derivation, not the exit code by itself).
 
 1. Rebuild and write the live ledger (step 3's scan/build, below) BEFORE any
    receipt refresh, so downstream consumers of the ledger always see the
@@ -174,8 +181,10 @@ from shared.platform_capability_receipts import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
     PlatformCapabilityReceiptError,
+    ensure_utc,
     load_platform_capability_receipt,
     load_platform_capability_receipts,
+    parse_duration_spec,
     receipt_is_fresh,
     receipt_reference,
 )
@@ -211,6 +220,13 @@ QUOTA_SURFACE_PULL_FORWARD_PRODUCER_IDS = ("agy-review-quota",)
 # dot-namespaced, e.g. "agy.review.direct"). A hand-listed "agy." here is
 # exactly how a second producer's flap would ride green while the docstring
 # spoke of the quota surface generally (claude-1 minor, #4665 round 6).
+# CONTRACT: the derivation only holds because every producer id in
+# QUOTA_SURFACE_PULL_FORWARD_PRODUCER_IDS leads with its route dot-namespace as
+# the first hyphen token ("<namespace>-…", e.g. a claude producer would be
+# "claude-…" so its routes "claude.*" stay witnessed). The pinned test
+# test_pull_forward_route_prefix_derivation_is_the_producer_naming_contract
+# fails if a producer id is added whose first token is not its route
+# namespace (claude-1 minor, #4665 round 8).
 QUOTA_SURFACE_PULL_FORWARD_ROUTE_PREFIXES = tuple(
     pid.split("-", 1)[0] + "." for pid in QUOTA_SURFACE_PULL_FORWARD_PRODUCER_IDS
 )
@@ -2666,6 +2682,41 @@ def refresh_capability_receipts(*, timeout: float, receipt_dir: Path) -> bool:
     return True
 
 
+def quota_receipt_surface_expiries(receipt_dir: Path) -> dict[str, tuple[datetime, datetime]]:
+    """Per-platform (observed_at, expiry) of the published capability receipts.
+
+    expiry is observed_at + stale_after — the instant that platform's receipt
+    stops vouching. The publication predicate below compares, per platform
+    the refresh REPLACED, the replacement's landing instant against the
+    predecessor's expiry (critical finding on #4665, round 8, C1). The
+    earliest — not the latest — expiry among replaced platforms binds: a
+    per-platform hole (one platform's receipt dead while another still
+    vouches) is exactly the gap the ledger continuity witness cannot see, and
+    a latest-expiry aggregate would hide it behind the longer-lived receipt.
+    Replacement is detected by observed_at change: the refresh restamps every
+    receipt it covers, so an unchanged observed_at means the refresh did not
+    republish that platform — a lingering dead receipt it never touches is a
+    MAINTENANCE defect (measured live 2026-09-12: retired gemini/antigrav/
+    grok receipts dead since July sit in the real receipt dir), not a
+    replacement hole, and must not flap this tick red forever. Unreadable
+    receipts are skipped; a directory with nothing readable yields {} and the
+    tick asserts no receipt-surface witness rather than guessing.
+    """
+    expiries: dict[str, tuple[datetime, datetime]] = {}
+    if not receipt_dir.is_dir():
+        return expiries
+    for path in sorted(receipt_dir.glob("*.json")):
+        try:
+            receipt = load_platform_capability_receipt(path)
+        except PlatformCapabilityReceiptError:
+            continue
+        expiries[receipt.platform] = (
+            ensure_utc(receipt.observed_at),
+            ensure_utc(receipt.observed_at) + parse_duration_spec(receipt.stale_after),
+        )
+    return expiries
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="hapax-quota-telemetry-writer",
@@ -2891,20 +2942,65 @@ def main(argv: list[str] | None = None) -> int:
     # once that expired, made the surface unobservable despite fresh producer input.
     ledger_rebuilt_after_refresh = False
     ledger_rebuild_after_refresh_error: str | None = None
+    # Captured BEFORE the refresh replaces them: the receipt surface quota
+    # routing consumes lives in the platform capability receipts, so the
+    # predecessor surface's per-platform vouching expiries are read here,
+    # pre-replacement. The publication witness below compares the
+    # replacement's landing instant against the predecessor expiry of every
+    # platform the refresh actually republished (critical finding on #4665,
+    # round 8, C1). --skip-receipts asserts nothing.
+    receipt_surface_predecessors = (
+        quota_receipt_surface_expiries(args.platform_capability_receipt_dir)
+        if not args.skip_receipts
+        else {}
+    )
+    receipt_publication_at: datetime | None = None
+    receipt_surface_replacements: dict[str, tuple[datetime, datetime]] = {}
     if not args.skip_receipts:
         receipts_ok = refresh_capability_receipts(
             timeout=args.receipt_timeout,
             receipt_dir=args.platform_capability_receipt_dir,
         )
-        pass2_now = now if args.now else datetime.now(UTC).replace(microsecond=0)
+        if receipts_ok:
+            # The instant the refresh's replacement receipts landed, from the
+            # immutable invocation clock pair — never a mid-invocation wall
+            # re-sample, which is how publication instants went missing before
+            # (round-4 codex-1). A failed refresh published nothing: the
+            # witness stays empty and the rc=3 path below reports the failure.
+            receipt_publication_at = (
+                invocation_wall_started
+                + timedelta(seconds=monotonic_clock() - invocation_mono_started)
+            ).replace(microsecond=0)
+            # Which platforms the refresh actually republished: observed_at
+            # moved for them. Receipts the refresh never touches (retired
+            # platforms' lingering dead receipts) are a maintenance defect,
+            # not a replacement hole — see the helper's docstring.
+            successors = quota_receipt_surface_expiries(args.platform_capability_receipt_dir)
+            receipt_surface_replacements = {
+                platform: receipt_surface_predecessors[platform]
+                for platform, observed in successors.items()
+                if platform in receipt_surface_predecessors
+                and observed[0] != receipt_surface_predecessors[platform][0]
+            }
+        blocker_now = now if args.now else datetime.now(UTC).replace(microsecond=0)
         # Only the codex blocker reads what the refresh rewrote; recompute it and
         # rebuild only when it actually changed, so the common tick writes once.
+        # blocker_now feeds only the blocker record's own timestamp.
         if (
-            codex_saved_login_blocker(args.platform_capability_receipt_dir, now=pass2_now)
+            codex_saved_login_blocker(args.platform_capability_receipt_dir, now=blocker_now)
             != codex_blocker
         ):
             try:
+                # Re-pair the clocks AFTER the blocker rescan, on adjacent
+                # lines, so the rescan's real seconds land inside pass2_now's
+                # wall value and the rebuild's monotonic anchor. Sampling
+                # pass2_now before the rescan left those seconds outside
+                # published_at entirely — the reviewer's round-8 M1 repro: a
+                # 120s rescan published at T+160 while reporting T+40, keeping
+                # the tick green against a horizon it had already blown
+                # through (major finding on #4665, round 8, M1).
                 rebuild_mono_started = monotonic_clock()
+                pass2_now = now if args.now else datetime.now(UTC).replace(microsecond=0)
                 (
                     ledger,
                     walls,
@@ -3014,6 +3110,27 @@ def main(argv: list[str] | None = None) -> int:
     pre_mint_scan_overrun = (
         pre_mint_scan_elapsed_s is not None and pre_mint_scan_elapsed_s > PRE_MINT_SCAN_BOUND_S
     )
+    # Receipt-surface continuity: the refresh above replaces the capability
+    # receipts quota routing actually consumes, and a replaced platform's
+    # surface is dead from the instant its predecessor receipt's expiry passes
+    # until the replacement lands. The ledger witnesses above cannot see this
+    # stage — the ledger can be continuous while the receipt surface routing
+    # cites has a hole in it (critical finding on #4665, round 8, C1: the
+    # reviewer's two-tick repro had both ticks rc=0 across a 40s receipt
+    # hole). Scoped to platforms the refresh REPLACED (observed_at moved); a
+    # cold start (no readable predecessor surface), a failed refresh (rc=3
+    # below), or a refresh that republished nothing asserts nothing here.
+    receipt_continuity_gap_s: float | None = None
+    receipt_continuity_degraded = False
+    receipt_surface_predecessor_expiry: datetime | None = None
+    if receipt_publication_at is not None and receipt_surface_replacements:
+        receipt_surface_predecessor_expiry = min(
+            expiry for _, expiry in receipt_surface_replacements.values()
+        )
+        receipt_continuity_gap_s = round(
+            (receipt_publication_at - receipt_surface_predecessor_expiry).total_seconds(), 1
+        )
+        receipt_continuity_degraded = receipt_continuity_gap_s > 0.0
     if admission_freshness_degraded and not args.skip_receipts:
         detail = (
             f"{admission_freshness_at_publication_s:.0f}s remaining at publication"
@@ -3045,6 +3162,22 @@ def main(argv: list[str] | None = None) -> int:
             "confirm the mint cadence.",
             file=sys.stderr,
         )
+    if receipt_continuity_degraded and not args.skip_receipts:
+        print(
+            "hapax-quota-telemetry-writer: DEGRADED — receipt-surface coverage gap: "
+            f"{len(receipt_surface_replacements)} refreshed platform receipt(s) "
+            "republished at "
+            f"{receipt_publication_at.isoformat().replace('+00:00', 'Z')} but their "
+            "predecessors stopped vouching at "
+            f"{receipt_surface_predecessor_expiry.isoformat().replace('+00:00', 'Z')} "
+            f"({receipt_continuity_gap_s:.1f}s gap); quota routing consumed a dead "
+            "capability-receipt surface for the difference even though every ledger "
+            "witness passed. Next: journalctl --user -u hapax-quota-telemetry.service "
+            "--since -2h to see this tick's refresh and pull-forward timing, and "
+            "scripts/hapax-platform-capability-receipts --all to reproduce the "
+            "per-platform refresh cost outside the tick.",
+            file=sys.stderr,
+        )
     if pre_mint_scan_overrun and not args.skip_receipts:
         print(
             "hapax-quota-telemetry-writer: DEGRADED — pre-mint force-decision scan "
@@ -3068,6 +3201,19 @@ def main(argv: list[str] | None = None) -> int:
         "admission_freshness_degraded": admission_freshness_degraded,
         "admission_continuity_gap_s": admission_continuity_gap_s,
         "admission_continuity_degraded": admission_continuity_degraded,
+        "receipt_continuity_gap_s": receipt_continuity_gap_s,
+        "receipt_continuity_degraded": receipt_continuity_degraded,
+        "receipt_publication_at": (
+            receipt_publication_at.isoformat().replace("+00:00", "Z")
+            if receipt_publication_at is not None
+            else None
+        ),
+        "receipt_surface_replaced_platforms": sorted(receipt_surface_replacements),
+        "receipt_surface_predecessor_expiry": (
+            receipt_surface_predecessor_expiry.isoformat().replace("+00:00", "Z")
+            if receipt_surface_predecessor_expiry is not None
+            else None
+        ),
         "previous_promise_fresh_until": (
             previous_promise.isoformat().replace("+00:00", "Z")
             if previous_promise is not None
@@ -3103,18 +3249,23 @@ def main(argv: list[str] | None = None) -> int:
     if ledger_rebuild_after_refresh_error is not None:
         return 1
     if (
-        admission_freshness_degraded or admission_continuity_degraded or pre_mint_scan_overrun
+        admission_freshness_degraded
+        or admission_continuity_degraded
+        or receipt_continuity_degraded
+        or pre_mint_scan_overrun
     ) and not args.skip_receipts:
         # Distinct from 1 (pass-2 rebuild error) and 3 (receipt refresh
         # failure): the tick published a surface it knows will flap — the exact
-        # condition this PR exists to make machine-checkable. Covers all three
+        # condition this PR exists to make machine-checkable. Covers all four
         # flap witnesses: remaining lifetime below the horizon, a continuity
-        # gap against the previously published admission, and a pre-mint scan
-        # overrun that invalidates the horizon derivation itself. Gated on the
-        # stderr messages' own condition: --skip-receipts is the tests'
-        # diagnostic mode (no pull, no refresh — production never passes it),
-        # and a skip-receipts run must not fail on freshness it declined to
-        # enforce, silently or otherwise.
+        # gap against the previously published admission, a receipt-surface
+        # hole between the predecessor receipts' expiry and the refresh's
+        # replacement landing, and a pre-mint scan overrun that invalidates
+        # the horizon derivation itself. Gated on the stderr messages' own
+        # condition: --skip-receipts is the tests' diagnostic mode (no pull,
+        # no refresh — production never passes it), and a skip-receipts run
+        # must not fail on freshness it declined to enforce, silently or
+        # otherwise.
         return 4
     return 0 if receipts_ok else 3
 
