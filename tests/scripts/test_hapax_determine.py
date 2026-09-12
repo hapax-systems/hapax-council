@@ -12,7 +12,9 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import os
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -190,6 +192,73 @@ class TestDeclinedIsNotSilence:
             ledger, {"ran_at": det._iso(NOW), "producer_id": "p1", "outcome": "declined"}
         )
         assert det.last_runs(ledger)["p1"]["outcome"] == "declined"
+
+
+class TestProducerTimeoutKillsTheWholeTree:
+    """codex-1 major (#4665, round 10, M1): subprocess.run's timeout killed only
+    the direct child. Producers here spawn the real provider call as their own
+    descendant, so the tree survived the kill, kept running after the timeout
+    record released the producer lock, and a forced invocation overlapped a
+    still-live provider call. The timeout path must kill the whole process
+    group and reap before returning."""
+
+    def test_timeout_kills_and_reaps_descendants_before_returning(self, tmp_path: Path) -> None:
+        child_pid_file = tmp_path / "child.pid"
+        rec = det.run_producer(
+            {
+                "id": "p1",
+                "command": [
+                    "/bin/sh",
+                    "-c",
+                    f"sleep 600 & echo $! > {child_pid_file}; sleep 600",
+                ],
+                "cadence_seconds": 60,
+            },
+            now=NOW,
+            repo_root=tmp_path,
+            timeout=2,
+        )
+        assert rec["outcome"] == "timeout"
+        assert rec["returncode"] is None
+        assert rec["duration_s"] >= 2.0
+        assert rec["completed_at"]
+        # The direct child is reaped by contract: run_producer returned, and it
+        # only returns from this path after communicate() completed the wait.
+        # The DESCENDANT is the regression: SIGKILL'd via the process group,
+        # then reaped by init — poll for its death with a real deadline so a
+        # survivor fails loudly instead of racing green.
+        descendant = int(child_pid_file.read_text().strip())
+        assert descendant > 1
+        assert descendant != os.getpid()
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(descendant, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail(f"descendant sleep(600) pid {descendant} survived the producer timeout")
+
+    def test_fast_producer_completion_path_is_unchanged(self, tmp_path: Path) -> None:
+        """The Popen restructure must not disturb the normal completion path:
+        exit codes, stderr capture, and the stamped witnesses all keep their
+        contracts."""
+        rec = det.run_producer(
+            {
+                "id": "p1",
+                "command": ["/bin/sh", "-c", "echo producer-note >&2; exit 0"],
+                "cadence_seconds": 60,
+                "success_exit_codes": [0],
+            },
+            now=NOW,
+            repo_root=tmp_path,
+            timeout=30,
+        )
+        assert rec["outcome"] == "produced"
+        assert rec["returncode"] == 0
+        assert rec["stderr"] == "producer-note"
+        assert rec["duration_s"] is not None and rec["duration_s"] >= 0.0
 
 
 class TestLivenessReconciler:

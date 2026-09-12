@@ -180,6 +180,8 @@ if str(REPO_ROOT) not in sys.path:
 from shared.platform_capability_receipts import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
+    EvidenceStatus,
+    PlatformCapabilityReceipt,
     PlatformCapabilityReceiptError,
     ensure_utc,
     load_platform_capability_receipt,
@@ -187,6 +189,12 @@ from shared.platform_capability_receipts import (  # noqa: E402
     parse_duration_spec,
     receipt_is_fresh,
     receipt_reference,
+)
+from shared.platform_capability_registry import (  # noqa: E402
+    CapacityPool,
+    PlatformCapabilityRegistryError,
+    QuotaSource,
+    load_platform_capability_registry_for_dispatch,
 )
 from shared.quota_spend_ledger import (  # noqa: E402
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
@@ -2682,26 +2690,128 @@ def refresh_capability_receipts(*, timeout: float, receipt_dir: Path) -> bool:
     return True
 
 
-def quota_receipt_surface_expiries(receipt_dir: Path) -> dict[str, tuple[datetime, datetime]]:
-    """Per-platform (observed_at, expiry) of the published capability receipts.
+# Quota-unobservability reasons the routing consumer treats as expected for
+# subscription/gateway routes (shared.platform_capability_registry.
+# _quota_unobservable_nonblocking): a receipt whose quota is UNOBSERVABLE for
+# exactly these reasons, with capability and resource OBSERVED, keeps routes
+# whose pool carries quota authority without a local probe (subscription_quota;
+# api_paid_spend/bootstrap_budget with the ledger as quota source) vouching for
+# the OUTER receipt stale_after. Every other quota shape — OBSERVED admissions
+# above all — expires routing's quota surface at the quota stale_after, which is
+# what the round-9 witness failed to mirror (critical finding on #4665,
+# round 10, C1: it applied the outer TTL to every predecessor, so the
+# reviewer's 900s-admission repro with a replacement 40s past expiry reported a
+# −85000s gap and a green tick).
+QUOTA_UNOBSERVABLE_NONBLOCKING_REASONS = frozenset(
+    {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
+)
 
-    expiry is observed_at + stale_after — the instant that platform's receipt
-    stops vouching. The publication predicate below compares, per platform
-    the refresh REPLACED, the replacement's landing instant against the
-    predecessor's expiry (critical finding on #4665, round 8, C1). The
-    earliest — not the latest — expiry among replaced platforms binds: a
-    per-platform hole (one platform's receipt dead while another still
-    vouches) is exactly the gap the ledger continuity witness cannot see, and
-    a latest-expiry aggregate would hide it behind the longer-lived receipt.
-    Replacement is detected by observed_at change: the refresh restamps every
-    receipt it covers, so an unchanged observed_at means the refresh did not
-    republish that platform — a lingering dead receipt it never touches is a
-    MAINTENANCE defect (measured live 2026-09-12: retired gemini/antigrav/
-    grok receipts dead since July sit in the real receipt dir), not a
-    replacement hole, and must not flap this tick red forever. Unreadable
-    receipts are skipped; a directory with nothing readable yields {} and the
-    tick asserts no receipt-surface witness rather than guessing.
+_static_registry_route_pools_cache: dict[str, tuple[CapacityPool, QuotaSource]] | None = None
+
+
+def static_registry_route_pools() -> dict[str, tuple[CapacityPool, QuotaSource]]:
+    """route_id -> (capacity_pool, telemetry quota source) from the static registry.
+
+    Loaded once per process with apply_receipts=False: pools and telemetry
+    sources are static registry facts, deliberately not receipt-applied state.
+    A registry that fails to load yields {} — every receipt then fails closed
+    to the quota TTL, which can only tighten the witness, never loosen it.
     """
+    global _static_registry_route_pools_cache
+    if _static_registry_route_pools_cache is None:
+        try:
+            registry, _ = load_platform_capability_registry_for_dispatch(apply_receipts=False)
+            _static_registry_route_pools_cache = {
+                route.route_id: (route.capacity_pool, route.telemetry.quota_source)
+                for route in registry.routes
+            }
+        except PlatformCapabilityRegistryError as exc:
+            print(
+                "hapax-quota-telemetry-writer: static capability registry unavailable "
+                f"({exc}); receipt-surface expiries fail closed to the quota TTL. "
+                "Next: validate config/platform-capability-registry.json with "
+                "scripts/hapax-platform-capability-receipts --all.",
+                file=sys.stderr,
+            )
+            _static_registry_route_pools_cache = {}
+    return _static_registry_route_pools_cache
+
+
+def receipt_surface_effective_expiry(
+    receipt: PlatformCapabilityReceipt,
+    route_pools: dict[str, tuple[CapacityPool, QuotaSource]],
+) -> datetime:
+    """The instant quota routing stops vouching for this receipt's quota surface.
+
+    Mirrors the routing consumer (_apply_receipt_to_route_payload +
+    _quota_unobservable_nonblocking in shared.platform_capability_registry):
+    the quota surface a route consumes from this receipt expires at
+    observed_at + quota.stale_after, except when the receipt's quota is
+    UNOBSERVABLE for exactly the nonblocking reasons with capability and
+    resource OBSERVED — then routes whose pool carries quota authority without
+    a local probe (subscription_quota, or the gateway pools under the ledger
+    quota source) vouch for the full outer stale_after. Receipts bind only the
+    routes they name; the earliest per-route expiry binds the platform, so one
+    non-qualifying named route holds the whole platform at the shorter TTL.
+    Named routes absent from the registry are ignored; a receipt naming no
+    registry route fails closed to the quota TTL.
+    """
+    observed_at = ensure_utc(receipt.observed_at)
+    quota_ttl = parse_duration_spec(receipt.quota.stale_after)
+    if receipt.quota.status is not EvidenceStatus.UNOBSERVABLE:
+        return observed_at + quota_ttl
+    nonblocking = (
+        not (set(receipt.quota.reason_codes) - QUOTA_UNOBSERVABLE_NONBLOCKING_REASONS)
+        and receipt.capability.status is EvidenceStatus.OBSERVED
+        and receipt.resource.status is EvidenceStatus.OBSERVED
+    )
+    if not nonblocking:
+        return observed_at + quota_ttl
+    named_pools = [route_pools[route_id] for route_id in receipt.routes if route_id in route_pools]
+    if not named_pools:
+        return observed_at + quota_ttl
+    outer_ttl = parse_duration_spec(receipt.stale_after)
+    if all(
+        pool == CapacityPool.SUBSCRIPTION_QUOTA
+        or (
+            pool in {CapacityPool.API_PAID_SPEND, CapacityPool.BOOTSTRAP_BUDGET}
+            and source == QuotaSource.LEDGER
+        )
+        for pool, source in named_pools
+    ):
+        return observed_at + outer_ttl
+    return observed_at + min(quota_ttl, outer_ttl)
+
+
+def quota_receipt_surface_expiries(
+    receipt_dir: Path,
+    route_pools: dict[str, tuple[CapacityPool, QuotaSource]] | None = None,
+) -> dict[str, tuple[datetime, datetime]]:
+    """Per-platform (observed_at, effective expiry) of the published capability receipts.
+
+    expiry is the instant quota routing stops vouching for that platform's
+    surface — the routing consumer's effective expiry
+    (receipt_surface_effective_expiry), never the raw outer receipt TTL: a
+    900s admission inside a 24h outer envelope dies at 900s no matter what the
+    envelope says. The publication predicate below compares, per platform the
+    refresh REPLACED, the replacement's landing instant against the
+    predecessor's effective expiry (critical finding on #4665, rounds 8 and
+    10, C1). The earliest — not the latest — expiry among replaced platforms
+    binds: a per-platform hole (one platform's receipt dead while another
+    still vouches) is exactly the gap the ledger continuity witness cannot
+    see, and a latest-expiry aggregate would hide it behind the longer-lived
+    receipt. Replacement is detected by observed_at change: the refresh
+    restamps every receipt it covers, so an unchanged observed_at means the
+    refresh did not republish that platform — a lingering dead receipt it
+    never touches is a MAINTENANCE defect (measured live 2026-09-12: retired
+    gemini/antigrav/grok receipts dead since July sit in the real receipt
+    dir), not a replacement hole, and must not flap this tick red forever.
+    Unreadable receipts are skipped; a directory with nothing readable
+    yields {} and the tick asserts no receipt-surface witness rather than
+    guessing.
+    """
+    if route_pools is None:
+        route_pools = static_registry_route_pools()
     expiries: dict[str, tuple[datetime, datetime]] = {}
     if not receipt_dir.is_dir():
         return expiries
@@ -2712,7 +2822,7 @@ def quota_receipt_surface_expiries(receipt_dir: Path) -> dict[str, tuple[datetim
             continue
         expiries[receipt.platform] = (
             ensure_utc(receipt.observed_at),
-            ensure_utc(receipt.observed_at) + parse_duration_spec(receipt.stale_after),
+            receipt_surface_effective_expiry(receipt, route_pools),
         )
     return expiries
 
