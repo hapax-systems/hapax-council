@@ -9,15 +9,23 @@ checked-in ``config/quota-spend-ledger-fixtures.json`` snapshot.
 Each tick does four steps:
 
 0. Pull forward the determination producer whose receipts the quota surfaces
-   embed (currently the agy admission) whenever the FRESHNESS the next write
-   needs demands it: the pull adds ``--force`` to the same harness exactly
-   when the freshest existing admission's ``fresh_until`` will not cover the
-   next 600s write cycle (plus a 15s pull-to-write margin). Derived from the
-   receipt's own horizon, never from a measured timer phase — the timer's
-   ``AccuracySec=1min`` walks the fire phase across the determine cadence, and
-   a phase-derived window (the first repair's 30s ``--due-within``) leaves a
-   560s-old admission unpulled: 340s of freshness against a 600s cycle, a
-   260s flap (critical finding on #4665, round 2). Without this step at all,
+   embed (currently the agy admission) whenever the FRESHNESS the next
+   publication needs demands it: the pull adds ``--force`` (with
+   ``--force-justified-at``, the decision moment) to the same harness exactly
+   when the freshest existing admission's ``fresh_until``
+   will not cover the next publication deadline — one 600s cycle, slipped by
+   the timer's 60s ``AccuracySec``, plus the next tick's bounded pre-write
+   work (``FRESHNESS_HORIZON_S`` = 600+60+90+60 = 810s; the lock wait and
+   the producer timeout are alternatives, never serial, because the
+   justified-at instant lets a forced waiter defer, under the lock, to a
+   concurrent winner whose run completed after it). Derived from the receipt's own horizon,
+   never from a measured timer phase — the timer's ``AccuracySec=1min``
+   walks the fire phase across the determine cadence, a phase-derived window
+   (the first repair's 30s ``--due-within``) leaves a 560s-old admission
+   unpulled with 340s of freshness against a 600s cycle (critical finding on
+   #4665, round 2), and a 615s horizon still accepted a 620s-remaining
+   admission that a +640s slipped fire plus a 27s publish overran — a 47s
+   flap (critical finding on #4665, round 3). Without this step at all,
    the receipt read below embeds the PREVIOUS cycle's mint — ~600s of its
    900s TTL already spent — and the #4616 anti-overclaim encoding leaves only
    ~300s of surface freshness per 600s write cadence: a permanent ~50% stale
@@ -189,14 +197,11 @@ RELAY_RECEIPT_DIR = Path(
 QUOTA_SURFACE_PULL_FORWARD_PRODUCER_IDS = ("agy-review-quota",)
 # The telemetry timer's OnUnitActiveSec (10min) and the quota surface's
 # stale_after (15m) — the two cadences the pull-forward arithmetic sits between.
-# The timer's AccuracySec=1min means the writer's fire phase walks up to ±60s
-# against the determine timer, which is why the pull decision is derived from
-# the freshness the NEXT write needs (below), never from a measured phase.
+# The timer's AccuracySec=1min means the writer's fire phase walks up to +60s
+# against the nominal cycle, which is why the pull decision is derived from the
+# freshness the NEXT publication needs (below), never from a measured phase.
 WRITER_CYCLE_S = 600.0
-# The pull's force predicate fires this far ahead of pure need: covers the
-# pull→write latency inside the tick plus timer jitter, so a receipt judged
-# sufficient actually still has its full cycle ahead at the ledger write.
-PULL_FORWARD_MARGIN_S = 15.0
+TIMER_ACCURACY_S = 60.0
 # Bounded budgets for the pull's child, pinned relative to PULL_FORWARD_TIMEOUT_S
 # by TestPullForwardBudgetPins: the lock wait covers a colliding determine-timer
 # winner finishing a typical run (measured 2026-09-12: agy-review-quota completes
@@ -208,6 +213,34 @@ PULL_FORWARD_PRODUCER_TIMEOUT_S = 90.0
 # 360s refresh outer budget this stays under the 600s write cadence, so a tick
 # can no longer defer the next fire by duration alone.
 PULL_FORWARD_TIMEOUT_S = PULL_FORWARD_LOCK_WAIT_S + PULL_FORWARD_PRODUCER_TIMEOUT_S + 30.0
+# Bound on the work between a mint's run anchor and this tick's first ledger
+# write: receipt re-scan, ledger build, atomic write (measured 2026-09-12:
+# ~32s on the live force tick; the receipt refresh happens after pass 1).
+PRE_WRITE_WORK_BOUND_S = 60.0
+# The freshness horizon: what the admission embedded by THIS write must outlive
+# to guarantee the published surface never cites a dead admission. Derived from
+# the next publication deadline (critical finding on #4665, round 3: 600+15
+# accepted a 620s-remaining admission that a +640s slipped fire plus a 27s
+# publish overran, a 47s flap):
+#
+#     WRITER_CYCLE_S            — the next fire is one cycle out
+#   + TIMER_ACCURACY_S          — the fire may slip by the timer's accuracy
+#   + max(LOCK_WAIT, PRODUCER)  — the next tick's pre-write work: it either
+#                                  waits on a colliding winner's lock OR runs
+#                                  the producer itself, never both serially —
+#                                  --force-justified-by revalidation in the
+#                                  lock makes the waiter defer to the winner
+#   + PRE_WRITE_WORK_BOUND_S    — scan + build + first write after the mint
+#
+# Steady state: a forced mint leaves 900s - (anchor→write measured 65s) ≈ 835s
+# at the write, comfortably above the horizon; a degraded tick is one whose
+# pre-write work consumed the budget the derivation promised.
+FRESHNESS_HORIZON_S = (
+    WRITER_CYCLE_S
+    + TIMER_ACCURACY_S
+    + max(PULL_FORWARD_LOCK_WAIT_S, PULL_FORWARD_PRODUCER_TIMEOUT_S)
+    + PRE_WRITE_WORK_BOUND_S
+)
 
 # Subscription platforms with quota-wall detection and their canonical
 # dispatch route (the registry's primary subscription route per platform).
@@ -2292,20 +2325,23 @@ def quota_spend_live_lock(path: Path) -> Any:
 
 
 def pull_forward_force_needed(receipt_dir: Path, *, now: datetime) -> bool:
-    """Would the agy admission embedded by this tick lapse before the NEXT write?
+    """Would the agy admission embedded by this tick lapse before the NEXT publication?
 
     The exit predicate the whole pull-forward exists to enforce: the ledger
-    written now must stay fresh through the following writer cycle. Derived
-    from the receipt's own ``fresh_until`` — never from a measured timer phase,
-    which the timer's ``AccuracySec`` window walks across (critical finding on
-    #4665, round 2: a fixed 30s due-window left a 560s-old admission unpulled,
-    340s of remaining freshness against a 600s cycle — a 260s flap).
+    written now must stay fresh until the next write lands — one cycle out,
+    slipped by the timer's accuracy, plus the next tick's bounded pre-write
+    work (see ``FRESHNESS_HORIZON_S``). Derived from the receipt's own
+    ``fresh_until``, never from a measured timer phase, which ``AccuracySec``
+    walks across (critical findings on #4665, rounds 2 and 3: first a fixed
+    30s due-window left a 560s-old admission unpulled, then a 615s horizon
+    accepted 620s-remaining against a +640s slipped fire and a 27s publish —
+    a 47s flap).
     """
 
     scan = active_agy_admission_receipts(receipt_dir, now=now)
     if not scan.admissions:
         return True
-    horizon = now + timedelta(seconds=WRITER_CYCLE_S + PULL_FORWARD_MARGIN_S)
+    horizon = now + timedelta(seconds=FRESHNESS_HORIZON_S)
     return max(a.fresh_until for a in scan.admissions) < horizon
 
 
@@ -2355,6 +2391,12 @@ def pull_forward_due_producers(
         ]
         if force:
             argv.append("--force")
+            # The decision moment travels with the force so the producer lock
+            # can revalidate it: a winner run that completed after this instant
+            # cannot have been counted by the pre-lock scan, so the in-lock
+            # read skips the forced run as superseded instead of duplicating
+            # it (major finding on #4665, round 3).
+            argv.extend(("--force-justified-at", now.isoformat().replace("+00:00", "Z")))
         argv.append("--json")
         try:
             result = subprocess.run(
@@ -2681,11 +2723,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
     # The exit predicate, measured on the PUBLISHED ledger: whatever this tick
-    # embedded must stay fresh through the next writer cycle, or the quota
-    # surface flaps for the difference (the defect this PR repairs). A degraded
-    # tick still writes its honest ledger — consumers see the true fresh_until,
-    # never an overclaim — but the degradation is reported here, in the summary,
-    # and on stderr, not silently absorbed into a green tick.
+    # embedded must outlive the next publication deadline (one cycle, slipped
+    # by the timer's accuracy, plus the next tick's bounded pre-write work —
+    # FRESHNESS_HORIZON_S), or the quota surface cites a dead admission for the
+    # difference (the defect this PR repairs). A degraded tick still writes its
+    # honest ledger — consumers see the true fresh_until, never an overclaim —
+    # but the degradation is reported here, in the summary, on stderr, and in
+    # the exit code (4), so a systemd OnFailure/monitoring consumer cannot miss
+    # a tick that published a surface it knows will flap (minor findings on
+    # #4665, round 3: advisory-only degraded was not machine-checkable).
     admission_freshness_at_write_s: float | None = None
     admission_freshness_degraded = False
     if agy_scan.admissions:
@@ -2693,7 +2739,7 @@ def main(argv: list[str] | None = None) -> int:
             (max(a.fresh_until for a in agy_scan.admissions) - ledger.captured_at).total_seconds(),
             1,
         )
-        admission_freshness_degraded = admission_freshness_at_write_s < WRITER_CYCLE_S
+        admission_freshness_degraded = admission_freshness_at_write_s < FRESHNESS_HORIZON_S
     else:
         admission_freshness_degraded = True
     if admission_freshness_degraded and not args.skip_receipts:
@@ -2704,8 +2750,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(
             "hapax-quota-telemetry-writer: DEGRADED — the embedded agy admission will "
-            f"not cover the next write cycle ({detail} against a {WRITER_CYCLE_S:.0f}s "
-            "cadence); the quota surface will be stale for the difference. Next: "
+            f"not cover the next publication deadline ({detail} against a "
+            f"{FRESHNESS_HORIZON_S:.0f}s horizon: {WRITER_CYCLE_S:.0f}s cycle + "
+            f"{TIMER_ACCURACY_S:.0f}s timer accuracy + bounded pre-write work); the "
+            "quota surface will be stale for the difference. Next: "
             "scripts/hapax-determine --producer agy-review-quota --check --json to see "
             "the producer state, and journalctl --user -u hapax-determine.service for "
             "the mint history.",
@@ -2720,6 +2768,7 @@ def main(argv: list[str] | None = None) -> int:
         "pull_forward": pull_forward,
         "admission_freshness_at_write_s": admission_freshness_at_write_s,
         "admission_freshness_degraded": admission_freshness_degraded,
+        "freshness_horizon_s": FRESHNESS_HORIZON_S,
         "ledger_rebuilt_after_refresh": ledger_rebuilt_after_refresh,
         "ledger_rebuild_after_refresh_error": ledger_rebuild_after_refresh_error,
         "local_resource_state": resource_state,
@@ -2745,6 +2794,15 @@ def main(argv: list[str] | None = None) -> int:
         )
     if ledger_rebuild_after_refresh_error is not None:
         return 1
+    if admission_freshness_degraded and not args.skip_receipts:
+        # Distinct from 1 (pass-2 rebuild error) and 3 (receipt refresh
+        # failure): the tick published a surface it knows will flap — the exact
+        # condition this PR exists to make machine-checkable. Gated on the
+        # stderr message's own condition: --skip-receipts is the tests'
+        # diagnostic mode (no pull, no refresh — production never passes it),
+        # and a skip-receipts run must not fail on freshness it declined to
+        # enforce, silently or otherwise.
+        return 4
     return 0 if receipts_ok else 3
 
 

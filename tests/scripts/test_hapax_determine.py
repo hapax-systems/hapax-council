@@ -360,6 +360,83 @@ class TestPerProducerLock:
         assert payload["liveness"] == []
         assert det.last_runs(ledger)["p1"]["ran_at"] == det._iso(NOW)
 
+    def test_a_forced_waiter_defers_to_a_winner_that_minted_during_the_wait(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """M1 (#4665, round 3): the force decision is computed BEFORE the lock
+        wait. A winner that completed while the forced invoker waited has
+        already minted this window — the in-lock revalidation must supersede
+        the force (skip, no append, no producer run) instead of letting
+        `--force` bypass the due check and duplicate the run."""
+        marker = tmp_path / "producer-ran"
+        producer_sh = tmp_path / "producer.sh"
+        producer_sh.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        producer_sh.chmod(0o755)
+        reg = _registry(tmp_path, command=[str(producer_sh)])
+        ledger = tmp_path / "runs.jsonl"
+        justified_at = NOW - timedelta(seconds=30)
+        winner_ran_at = NOW - timedelta(seconds=10)
+        result: dict[str, int] = {}
+        waiting_in_lock = threading.Event()
+        real_sleep = det.time.sleep
+
+        def _invoker() -> None:
+            result["rc"] = det.main(
+                [
+                    "--registry",
+                    str(reg),
+                    "--run-ledger",
+                    str(ledger),
+                    "--repo-root",
+                    str(tmp_path),
+                    "--now",
+                    det._iso(NOW),
+                    "--force",
+                    "--force-justified-at",
+                    det._iso(justified_at),
+                    "--lock-wait",
+                    "5",
+                    "--json",
+                ]
+            )
+
+        def _sleep_recording_waiter(seconds: float) -> None:
+            waiting_in_lock.set()
+            real_sleep(0.02)
+
+        monkeypatch.setattr(det.time, "sleep", _sleep_recording_waiter)
+
+        with det.producer_lock(ledger, "p1"):
+            late = threading.Thread(target=_invoker)
+            late.start()
+            assert waiting_in_lock.wait(timeout=10), "invoker never reached the lock wait"
+            # The winner's run completed after the force decision — while this
+            # forced invoker was still blocked on the lock.
+            det.append_run(
+                ledger,
+                {
+                    "ran_at": det._iso(winner_ran_at),
+                    "producer_id": "p1",
+                    "outcome": "produced",
+                },
+            )
+        late.join(timeout=10)
+        assert result["rc"] == 0
+        assert not marker.exists()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ran"] == []
+        assert len(payload["skipped"]) == 1
+        skip = payload["skipped"][0]
+        assert skip["producer_id"] == "p1"
+        assert skip["reason"] == "force_superseded"
+        assert det._iso(winner_ran_at) in skip["detail"]
+        # The waiter must not append: the ledger still holds exactly the
+        # winner's run — one run per window even when force crosses locks.
+        assert det.last_runs(ledger)["p1"]["ran_at"] == det._iso(winner_ran_at)
+
     def test_lock_wait_expiry_is_a_recorded_skip_not_a_hang(
         self,
         tmp_path: Path,
@@ -449,3 +526,16 @@ class TestExitCodes:
 
     def test_liveness_deficit_exits_6(self, tmp_path: Path, capsys) -> None:
         assert self._main(tmp_path, "--check") == 6
+
+    def test_invalid_force_justified_at_exits_2(self, tmp_path: Path) -> None:
+        """A malformed force-decision instant must fail loudly before any
+        producer runs, not fall back to an unvalidated force."""
+        assert (
+            self._main(
+                tmp_path,
+                "--force",
+                "--force-justified-at",
+                "not-a-timestamp",
+            )
+            == 2
+        )
