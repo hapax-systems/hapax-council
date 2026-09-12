@@ -71,6 +71,11 @@ DEFAULT_LOCK_WAIT_S = 120.0
 #: Retry cadence while waiting for a contended per-producer lock. Kept as a module constant
 #: so tests can shrink it instead of sleeping real retry intervals.
 LOCK_RETRY_INTERVAL_S = 0.5
+#: Injectable monotonic clock (module global, read at call time): the completion witness
+#: below is derived from invocation-wide monotonic elapsed, so tests must be able to
+#: advance that elapsed — including pre-execution work like lock waits and earlier
+#: producers — without running real time.
+monotonic_clock = time.monotonic
 
 
 def _iso(ts: datetime) -> str:
@@ -205,13 +210,13 @@ def producer_lock(
         # the unit timeout has to kill (review finding on #4665). The retry interval is read
         # from the module global at call time so tests can shrink it.
         interval = retry_interval_s if retry_interval_s is not None else LOCK_RETRY_INTERVAL_S
-        deadline = time.monotonic() + wait_s
+        deadline = monotonic_clock() + wait_s
         while True:
             try:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except OSError:
-                remaining = deadline - time.monotonic()
+                remaining = deadline - monotonic_clock()
                 if remaining <= 0:
                     raise ProducerLockTimeout(
                         f"{producer_id}: producer lock held longer than the {wait_s:.0f}s wait"
@@ -224,14 +229,19 @@ def producer_lock(
 
 
 def run_producer(
-    producer: dict[str, Any], *, now: datetime, repo_root: Path, timeout: int
+    producer: dict[str, Any],
+    *,
+    now: datetime,
+    repo_root: Path,
+    timeout: int,
+    invocation_mono_started: float | None = None,
 ) -> dict[str, Any]:
     """Execute one producer and return its run record. Never raises on producer failure."""
     argv = list(producer["command"])
     exe = argv[0]
     if not os.path.isabs(exe):
         argv[0] = str(repo_root / exe)
-    started = time.monotonic()
+    started = monotonic_clock()
     record: dict[str, Any] = {
         "ran_at": _iso(now),
         "producer_id": producer["id"],
@@ -241,11 +251,18 @@ def run_producer(
         "host": os.uname().nodename,
     }
     # `ran_at` above is the INVOCATION anchor (the caller's decision clock);
-    # `completed_at` is stamped on every terminal path below as anchor +
-    # measured duration, so supersession can compare when the run actually
-    # finished. A winner that started before a forced waiter's justification
-    # and completed while it waited must supersede, and `ran_at` alone cannot
-    # say that (critical finding on #4665, round 4).
+    # `completed_at` is stamped on every terminal path below as the invocation
+    # anchor plus the invocation-wide monotonic elapsed AT THE TERMINAL EVENT
+    # — not the producer's own duration added to the anchor. The registry runs
+    # claude-account-live before agy-review-quota and the lock wait precedes
+    # both, so anchor + this producer's duration undercounts the real
+    # completion instant by exactly that preceding work: a producer that
+    # started at T+100 and ran 20s completed at T+120, not T+20, and a forced
+    # waiter justified at T+110 must defer to it (critical finding on #4665,
+    # round 5, C1). The invocation anchor is passed by main; direct callers
+    # without one fall back to this producer's own start, which is identical
+    # for a single unprompted producer.
+
     # Which code produced this determination, stamped in a `finally` so it is measured AFTER the
     # producer ran, on every exit including timeout and unlaunchable.
     #
@@ -263,22 +280,49 @@ def run_producer(
         try:
             proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
-            duration_s = round(time.monotonic() - started, 2)
+            ended = monotonic_clock()
             record.update(
                 outcome="timeout",
                 returncode=None,
-                duration_s=duration_s,
-                completed_at=_iso(now + timedelta(seconds=duration_s)),
+                duration_s=round(ended - started, 2),
+                # Explicit None test, not `or`: a monotonic anchor of 0.0 is
+                # falsy and would silently fall back to this producer's own
+                # start, re-introducing the undercount the anchor exists to
+                # close.
+                completed_at=_iso(
+                    now
+                    + timedelta(
+                        seconds=ended
+                        - (
+                            invocation_mono_started
+                            if invocation_mono_started is not None
+                            else started
+                        )
+                    )
+                ),
             )
             return record
         except OSError as exc:
+            ended = monotonic_clock()
             record.update(
                 outcome="unlaunchable",
                 returncode=None,
                 error=f"{type(exc).__name__}: {exc}",
-                # The spawn failed at the anchor: "completed" (by failing) at
-                # the same instant, with no measurable duration to add.
-                completed_at=_iso(now),
+                # The spawn failed at the attempt instant: "completed" (by
+                # failing) then, with the invocation-wide elapsed still
+                # covering every lock wait and earlier producer that preceded
+                # this one.
+                completed_at=_iso(
+                    now
+                    + timedelta(
+                        seconds=ended
+                        - (
+                            invocation_mono_started
+                            if invocation_mono_started is not None
+                            else started
+                        )
+                    )
+                ),
             )
             return record
 
@@ -293,12 +337,19 @@ def run_producer(
             outcome = "declined"
         else:
             outcome = "failed"
-        duration_s = round(time.monotonic() - started, 2)
+        ended = monotonic_clock()
+        duration_s = round(ended - started, 2)
         record.update(
             outcome=outcome,
             returncode=rc,
             duration_s=duration_s,
-            completed_at=_iso(now + timedelta(seconds=duration_s)),
+            completed_at=_iso(
+                now
+                + timedelta(
+                    seconds=ended
+                    - (invocation_mono_started if invocation_mono_started is not None else started)
+                )
+            ),
             stderr=(proc.stderr or "").strip()[:500],
         )
         return record
@@ -401,11 +452,22 @@ def main(argv: list[str] | None = None) -> int:
     if now is None:
         print("invalid --now; expected ISO-8601 UTC", file=sys.stderr)
         return 2
+    # Invocation-wide monotonic anchor paired with the decision clock above:
+    # every `completed_at` witness below is `now` + elapsed-since-here, so the
+    # witness includes lock waits and earlier producers, not just the record's
+    # own subprocess duration (critical finding on #4665, round 5, C1).
+    invocation_mono_started = monotonic_clock()
     force_justified_at = None
     if args.force_justified_at:
         force_justified_at = _parse_iso(args.force_justified_at)
         if force_justified_at is None:
-            print("invalid --force-justified-at; expected ISO-8601 UTC", file=sys.stderr)
+            print(
+                "invalid --force-justified-at; expected ISO-8601 UTC, whole-second Z "
+                "form, e.g. --force-justified-at 2026-09-12T20:39:13Z (a corrected "
+                "invocation: scripts/hapax-determine --producer agy-review-quota "
+                "--force --force-justified-at 2026-09-12T20:39:13Z)",
+                file=sys.stderr,
+            )
             return 2
     try:
         producers = load_registry(args.registry)
@@ -487,7 +549,11 @@ def main(argv: list[str] | None = None) -> int:
                         payload["skipped"].append({"producer_id": p["id"], "reason": "not_due"})
                         continue
                     record = run_producer(
-                        p, now=now, repo_root=args.repo_root, timeout=args.timeout
+                        p,
+                        now=now,
+                        repo_root=args.repo_root,
+                        timeout=args.timeout,
+                        invocation_mono_started=invocation_mono_started,
                     )
                     append_run(args.run_ledger, record)
                     runs[p["id"]] = record

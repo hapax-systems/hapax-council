@@ -15,10 +15,12 @@ Each tick does four steps:
    when the freshest existing admission's ``fresh_until``
    will not cover the next publication deadline — one 600s cycle, slipped by
    the timer's 60s ``AccuracySec``, plus the next tick's bounded pre-write
-   work (``FRESHNESS_HORIZON_S`` = 600+60+90+60 = 810s; the lock wait and
-   the producer timeout are alternatives, never serial, because the
-   justified-at instant lets a forced waiter defer, under the lock, to a
-   concurrent winner whose run completed after it). Derived from the receipt's own horizon,
+   work (``FRESHNESS_HORIZON_S``, the sum derived at its definition — cycle +
+   accuracy + pre-mint scan + max(lock wait, producer) + anchor→write work;
+   the lock wait and the producer timeout are alternatives, never serial,
+   because the justified-at instant lets a forced waiter defer, under the
+   lock, to a concurrent winner whose run completed after it). Derived from
+   the receipt's own horizon,
    never from a measured timer phase — the timer's ``AccuracySec=1min``
    walks the fire phase across the determine cadence, a phase-derived window
    (the first repair's 30s ``--due-within``) leaves a 560s-old admission
@@ -34,8 +36,11 @@ Each tick does four steps:
    ``ran_at`` aging keeps exactly one run per cadence window regardless of
    which invoker fires first — force shifts WHEN a needed run happens, never
    HOW MANY — and the bounded child budgets (lock wait 90s + producer 90s ≤
-   the 210s pull timeout, pinned by TestPullForwardBudgetPins) keep the
-   worst-case tick under the 600s cadence.
+   the 210s pull timeout, pinned by TestPullForwardBudgetPins) bound the
+   pull child itself; the pre-mint force-decision scan and the live-ledger
+   lock wait are bounded separately (``PRE_MINT_SCAN_BOUND_S``,
+   ``LIVE_LEDGER_LOCK_WAIT_S``), so no unbounded work remains between the
+   tick's start and its publication.
 
 1. Rebuild and write the live ledger (step 3's scan/build, below) BEFORE any
    receipt refresh, so downstream consumers of the ledger always see the
@@ -222,9 +227,23 @@ PULL_FORWARD_TIMEOUT_S = PULL_FORWARD_LOCK_WAIT_S + PULL_FORWARD_PRODUCER_TIMEOU
 # 81s here on a receipt-spam-inflated scan (3,586 agy + 8,370 claude expired
 # receipts each emitting a stderr line per scan) — receipt retention/GC is a
 # separate follow-up claim, deliberately not folded into this repair. At B=65
-# the steady-state bound is L <= 900 - 815 = 85s, so the inflated 81s tick
+# the steady-state bound is L <= 900 - 819 = 81s, so the inflated 81s tick
 # still publishes non-degraded, with 4s of margin.
 PRE_WRITE_WORK_BOUND_S = 65.0
+# Bound on the pre-mint force-decision scan (`pull_forward_force_needed`), the
+# one piece of pre-publication work round 5 still left outside both the
+# measurement window and the derivation: it runs BEFORE the mint, so neither
+# the mint's run anchor (B above) nor the publication instant (measured from
+# `publish_mono_started`) can see its duration (critical finding on #4665,
+# round 5, C2). Measured 2026-09-12 against the live receipt dir (3,590
+# expired + 1 active agy admission receipt): 0.06-0.07s across three runs, so
+# 4s is a ~57x margin; the scan is dominated by directory iteration, and
+# receipt-accumulation growth beyond the bound degrades the tick outright
+# (`pre_mint_scan_elapsed_s` vs this bound in the summary), which is the
+# honest signal for the receipt-retention/GC follow-up claim. 4 keeps the
+# horizon at 819 so the receipt-spam-inflated 81s anchor-to-write tick still
+# publishes non-degraded (900-819 = 81).
+PRE_MINT_SCAN_BOUND_S = 4.0
 # The freshness horizon: what the admission embedded by THIS write must outlive
 # to guarantee the published surface never cites a dead admission. Derived from
 # the next publication deadline (critical finding on #4665, round 3: 600+15
@@ -238,6 +257,8 @@ PRE_WRITE_WORK_BOUND_S = 65.0
 #                                  the producer itself, never both serially —
 #                                  --force-justified-at revalidation in the
 #                                  lock makes the waiter defer to the winner
+#   + PRE_MINT_SCAN_BOUND_S     — the next tick's pre-mint force-decision
+#                                  scan, which runs before the mint's anchor
 #   + PRE_WRITE_WORK_BOUND_S    — scan + build + first write after the mint
 #
 # Steady state: a forced mint leaves 900s - (anchor→write measured 65s) ≈ 835s
@@ -247,6 +268,7 @@ FRESHNESS_HORIZON_S = (
     WRITER_CYCLE_S
     + TIMER_ACCURACY_S
     + max(PULL_FORWARD_LOCK_WAIT_S, PULL_FORWARD_PRODUCER_TIMEOUT_S)
+    + PRE_MINT_SCAN_BOUND_S
     + PRE_WRITE_WORK_BOUND_S
 )
 
@@ -2373,6 +2395,35 @@ def quota_spend_live_lock(path: Path, *, wait_s: float = LIVE_LEDGER_LOCK_WAIT_S
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+def _previous_agy_promise(out_path: Path) -> datetime | None:
+    """The max agy ``fresh_until`` the currently published ledger promises.
+
+    Continuity is judged against what the PREVIOUS tick actually published,
+    not against what this tick re-derives: a tick may spend arbitrarily long
+    before publication while every per-tick predicate stays green, and only
+    the previously published admission's expiry can witness the coverage gap
+    (critical finding on #4665, round 5, C2). Read once, before this tick's
+    first write replaces the file; unreadable/absent/agy-less ledgers return
+    None (cold start — no promise was made, so no gap is asserted).
+    """
+    try:
+        ledger = json.loads(out_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(ledger, dict):
+        return None
+    best: datetime | None = None
+    for snap in ledger.get("quota_snapshots") or []:
+        if not isinstance(snap, dict):
+            continue
+        if not str(snap.get("route_id") or "").startswith("agy."):
+            continue
+        fresh = _parse_utc(str(snap.get("fresh_until") or ""))
+        if fresh is not None and (best is None or fresh > best):
+            best = fresh
+    return best
+
+
 def pull_forward_force_needed(receipt_dir: Path, *, now: datetime) -> bool:
     """Would the agy admission embedded by this tick lapse before the NEXT publication?
 
@@ -2424,8 +2475,18 @@ def pull_forward_due_producers(
         "ran": [],
         "skipped": [],
         "ok": True,
+        "scan_elapsed_s": None,
+        "scan_bound_s": PRE_MINT_SCAN_BOUND_S,
     }
+    # The force-decision scan runs BEFORE the mint, so neither the mint's run
+    # anchor nor the publication measurement can see its duration; it is timed
+    # here against its own bound and reported, and the bound is part of
+    # FRESHNESS_HORIZON_S for the next tick (critical finding on #4665, round
+    # 5, C2: an unbudgeted 110s scan let a tick publish 30s past the previous
+    # admission's expiry while both freshness predicates read green).
+    scan_mono_started = monotonic_clock()
     force = pull_forward_force_needed(receipt_dir, now=now)
+    info["scan_elapsed_s"] = round(monotonic_clock() - scan_mono_started, 2)
     info["forced"] = force
     for producer_id in QUOTA_SURFACE_PULL_FORWARD_PRODUCER_IDS:
         argv = [
@@ -2491,14 +2552,17 @@ def pull_forward_due_producers(
             determine_payload = json.loads(result.stdout)
         except ValueError:
             determine_payload = None
-        if determine_payload is None:
-            # rc=0 but unparseable output is a degraded pull, not a green one:
-            # the child ran, said nothing usable, and the tick continues on
-            # existing receipts — silently keeping ok=True here hid the
-            # harness breakage entirely (round 4, codex-2 test finding).
+        if not isinstance(determine_payload, dict):
+            # rc=0 but unparseable — or parseable-but-not-an-object (a bare
+            # list or string parses as JSON yet carries no ran/skipped
+            # structure) — is a degraded pull, not a green one: the child ran,
+            # said nothing usable, and the tick continues on existing
+            # receipts — silently keeping ok=True here hid the harness
+            # breakage entirely (round 4 codex-2 test finding; round 5
+            # claude-1 minor closed the parsed-but-not-dict gap).
             print(
                 "hapax-quota-telemetry-writer: producer pull-forward output was "
-                f"not valid JSON ({producer_id}); continuing with existing "
+                f"not a JSON object ({producer_id}); continuing with existing "
                 "receipts. Next: scripts/hapax-determine --producer "
                 f"{producer_id} --json to reproduce and inspect the harness output.",
                 file=sys.stderr,
@@ -2630,6 +2694,18 @@ def main(argv: list[str] | None = None) -> int:
     if now is None:
         parser.error(f"invalid --now value: {args.now!r}")
 
+    # Invocation-wide monotonic anchor paired with `now` above (the same
+    # pattern as the determine harness's completion witness, round-5 C1): the
+    # publication instant below is `now` + elapsed-since-here, so it includes
+    # the pull's force-decision scan and subprocess, the base-ledger load, the
+    # lock wait, and the whole scan→build→write pass. Anchoring at the write
+    # pass alone reported only its last leg: a tick whose 110s scan and 60s
+    # producer preceded a 20s write published 170s after its own anchor while
+    # `published_at` read 20s — and the continuity predicate, which exists to
+    # catch exactly that gap, would have been blind to it (critical finding
+    # on #4665, round 5, C2).
+    invocation_mono_started = monotonic_clock()
+
     receipts_ok = True
     pull_forward: dict[str, Any] = {
         "invoked": False,
@@ -2637,6 +2713,8 @@ def main(argv: list[str] | None = None) -> int:
         "ran": [],
         "skipped": [],
         "ok": True,
+        "scan_elapsed_s": None,
+        "scan_bound_s": PRE_MINT_SCAN_BOUND_S,
     }
     if not args.skip_receipts:
         pull_forward = pull_forward_due_producers(
@@ -2662,6 +2740,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         configured = os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV)
         out_path = Path(configured).expanduser() if configured else DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+
+    # Captured BEFORE the first write replaces the ledger: the continuity
+    # predicate below compares this tick's publication instant against the
+    # promise the previous tick actually published.
+    previous_promise = _previous_agy_promise(out_path)
 
     def _scan_build_write(
         current_now: datetime,
@@ -2721,7 +2804,6 @@ def main(argv: list[str] | None = None) -> int:
             codex_blocker,
         )
 
-    publish_mono_started = monotonic_clock()
     try:
         (
             ledger,
@@ -2745,13 +2827,15 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, QuotaSpendLedgerError) as exc:
         print(f"hapax-quota-telemetry-writer: live ledger invalid: {exc}", file=sys.stderr)
         return 1
-    # The actual publication instant: the tick's `now` plus the monotonic
-    # elapsed across the locked scan→build→write pass just completed (lock
-    # wait, receipt scans, probe, build, atomic write). `captured_at` is
-    # sampled before all of that work and cannot see the overrun (round-4
-    # codex-1 major: a 900s admission with 120s of publication work reported
-    # 870s remaining at write while the surface actually published at 750s).
-    published_at = (now + timedelta(seconds=monotonic_clock() - publish_mono_started)).replace(
+    # The actual publication instant: the tick's `now` plus the invocation-wide
+    # monotonic elapsed at write completion — the pull's scan and subprocess,
+    # the base load, the lock wait, the receipt scans, the probe, the build,
+    # and the atomic write all included, because the ledger lands on disk at
+    # the end of ALL of them (round-4 codex-1 major: a 900s admission with
+    # 120s of publication work reported 870s remaining at write while the
+    # surface actually published at 750s; round-5 C2: anchoring at the write
+    # pass left the pre-mint scan's elapsed outside the measurement entirely).
+    published_at = (now + timedelta(seconds=monotonic_clock() - invocation_mono_started)).replace(
         microsecond=0
     )
 
@@ -2790,9 +2874,16 @@ def main(argv: list[str] | None = None) -> int:
                 ledger_rebuilt_after_refresh = True
                 # The rebuild REPLACED the published ledger: the publication
                 # instant moves to this pass's completion, or the predicate
-                # below would judge the earlier write it just replaced.
+                # below would judge the earlier write it just replaced. The
+                # anchor mirrors pass 1: invocation-wide under --now (time is
+                # synthetic-fixed, so elapsed-since-invocation is the honest
+                # synthetic instant); anchored at the rebuild under a real
+                # clock, because pass2_now was just re-sampled from the wall
+                # and already carries every pre-rebuild second — anchoring at
+                # the invocation there would double-count them.
+                rebuild_anchor = invocation_mono_started if args.now else rebuild_mono_started
                 published_at = (
-                    pass2_now + timedelta(seconds=monotonic_clock() - rebuild_mono_started)
+                    pass2_now + timedelta(seconds=monotonic_clock() - rebuild_anchor)
                 ).replace(microsecond=0)
             except LiveLedgerLockTimeout as exc:
                 # Same contract as the rebuild-failure branch below: the
@@ -2847,6 +2938,24 @@ def main(argv: list[str] | None = None) -> int:
         admission_freshness_degraded = admission_freshness_at_publication_s < FRESHNESS_HORIZON_S
     else:
         admission_freshness_degraded = True
+    # Continuity against the previously published admission: per-tick
+    # remaining-lifetime predicates cannot see work that happened before this
+    # tick's mint, because the mint re-anchors the admission after that work;
+    # only the previous publication's own expiry can witness the coverage gap
+    # (critical finding on #4665, round 5, C2). Publishing exactly at the
+    # promise is continuous; a cold start (no previous promise) asserts
+    # nothing.
+    admission_continuity_gap_s: float | None = None
+    admission_continuity_degraded = False
+    if previous_promise is not None:
+        admission_continuity_gap_s = round(
+            max((published_at - previous_promise).total_seconds(), 0.0), 1
+        )
+        admission_continuity_degraded = admission_continuity_gap_s > 0.0
+    pre_mint_scan_elapsed_s = pull_forward.get("scan_elapsed_s")
+    pre_mint_scan_overrun = (
+        pre_mint_scan_elapsed_s is not None and pre_mint_scan_elapsed_s > PRE_MINT_SCAN_BOUND_S
+    )
     if admission_freshness_degraded and not args.skip_receipts:
         detail = (
             f"{admission_freshness_at_publication_s:.0f}s remaining at publication"
@@ -2864,6 +2973,31 @@ def main(argv: list[str] | None = None) -> int:
             "the mint history.",
             file=sys.stderr,
         )
+    if admission_continuity_degraded and not args.skip_receipts:
+        print(
+            "hapax-quota-telemetry-writer: DEGRADED — coverage gap: published at "
+            f"{published_at.isoformat().replace('+00:00', 'Z')} but the previously "
+            "published agy admission expired at "
+            f"{previous_promise.isoformat().replace('+00:00', 'Z')} "
+            f"({admission_continuity_gap_s:.1f}s gap); the quota surface was dead "
+            "for the difference even though this tick's own freshness predicate "
+            "passed. Next: journalctl --user -u hapax-quota-telemetry.service "
+            "--since -2h to see the intervening tick's pre-publication work, and "
+            "scripts/hapax-determine --producer agy-review-quota --check --json to "
+            "confirm the mint cadence.",
+            file=sys.stderr,
+        )
+    if pre_mint_scan_overrun and not args.skip_receipts:
+        print(
+            "hapax-quota-telemetry-writer: DEGRADED — pre-mint force-decision scan "
+            f"took {pre_mint_scan_elapsed_s:.1f}s against a "
+            f"{PRE_MINT_SCAN_BOUND_S:.0f}s bound; the horizon derivation for the "
+            "next tick no longer holds. Next: count the accumulated admission "
+            "receipts (find ~/.cache/hapax/relay/receipts -maxdepth 1 -name "
+            "'*agy-quota-admission*.yaml' | wc -l) — retention/GC is the "
+            "follow-up claim this signal exists to justify.",
+            file=sys.stderr,
+        )
 
     summary = {
         "ledger_id": ledger.ledger_id,
@@ -2874,6 +3008,16 @@ def main(argv: list[str] | None = None) -> int:
         "pull_forward": pull_forward,
         "admission_freshness_at_publication_s": admission_freshness_at_publication_s,
         "admission_freshness_degraded": admission_freshness_degraded,
+        "admission_continuity_gap_s": admission_continuity_gap_s,
+        "admission_continuity_degraded": admission_continuity_degraded,
+        "previous_promise_fresh_until": (
+            previous_promise.isoformat().replace("+00:00", "Z")
+            if previous_promise is not None
+            else None
+        ),
+        "pre_mint_scan_elapsed_s": pre_mint_scan_elapsed_s,
+        "pre_mint_scan_bound_s": PRE_MINT_SCAN_BOUND_S,
+        "pre_mint_scan_overrun": pre_mint_scan_overrun,
         "freshness_horizon_s": FRESHNESS_HORIZON_S,
         "ledger_rebuilt_after_refresh": ledger_rebuilt_after_refresh,
         "ledger_rebuild_after_refresh_error": ledger_rebuild_after_refresh_error,
@@ -2900,11 +3044,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     if ledger_rebuild_after_refresh_error is not None:
         return 1
-    if admission_freshness_degraded and not args.skip_receipts:
+    if (
+        admission_freshness_degraded or admission_continuity_degraded or pre_mint_scan_overrun
+    ) and not args.skip_receipts:
         # Distinct from 1 (pass-2 rebuild error) and 3 (receipt refresh
         # failure): the tick published a surface it knows will flap — the exact
-        # condition this PR exists to make machine-checkable. Gated on the
-        # stderr message's own condition: --skip-receipts is the tests'
+        # condition this PR exists to make machine-checkable. Covers all three
+        # flap witnesses: remaining lifetime below the horizon, a continuity
+        # gap against the previously published admission, and a pre-mint scan
+        # overrun that invalidates the horizon derivation itself. Gated on the
+        # stderr messages' own condition: --skip-receipts is the tests'
         # diagnostic mode (no pull, no refresh — production never passes it),
         # and a skip-receipts run must not fail on freshness it declined to
         # enforce, silently or otherwise.
