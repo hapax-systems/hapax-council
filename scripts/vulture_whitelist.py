@@ -4750,6 +4750,9 @@ from shared.capability_adapter_protocol import (  # noqa: E402
     CodexAdapter as _CodexAdapter,
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
+    KimiAdapter as _KimiAdapter,
+)
+from shared.capability_adapter_protocol import (  # noqa: E402
     RetiredAntigravFailureClassifier as _RetiredAntigravFailureClassifier,
 )
 from shared.capability_adapter_protocol import (  # noqa: E402
@@ -4776,6 +4779,7 @@ _ = (
     _RetiredAntigravFailureClassifier,
     _ClaudeAdapter,
     _CodexAdapter,
+    _KimiAdapter,
 )
 
 # worker_failure_witness (capability-adapter-worker-path): the receipt-append + guarded

@@ -18,6 +18,7 @@ from shared.capability_adapter_protocol import (
     CapabilityAdapter,
     ClaudeAdapter,
     CodexAdapter,
+    KimiAdapter,
     RetiredAntigravFailureClassifier,
     ReviewSeatAdapter,
     SendCapableAdapter,
@@ -28,6 +29,7 @@ from shared.dispatcher_policy import DispatchAction, RouteDecision
 from shared.failure_classification import (
     ZAI_ERROR_CLASS_BY_CODE,
     FailureCode,
+    FailureReceipt,
     failure_code_for_zai,
 )
 from shared.platform_capability_registry import Platform
@@ -177,10 +179,49 @@ def test_platform_classvars_are_pinned() -> None:
     assert AgyAdapter.PLATFORM is Platform.AGY
     assert ClaudeAdapter.PLATFORM is Platform.CLAUDE
     assert CodexAdapter.PLATFORM is Platform.CODEX
+    assert KimiAdapter.PLATFORM is Platform.KIMI
     assert VibeAdapter.PLATFORM is Platform.VIBE
     assert BudgetAuthorityAdapter.PLATFORM is Platform.API
     assert ReviewSeatAdapter.PLATFORM is Platform.GLMCP
     assert RetiredAntigravFailureClassifier.PLATFORM is Platform.ANTIGRAV
+
+
+# --- kimi adapter: shared CLI failure table + exit-code passthrough (review round 2) ------------
+
+
+def test_kimi_adapter_classifies_quota_wall() -> None:
+    receipt = KimiAdapter().classify_failure("kimi: usage limit reached for membership tier")
+    assert receipt.code is FailureCode.QUOTA_EXHAUSTION
+    assert receipt.platform == "kimi"
+
+
+def test_kimi_adapter_classifies_auth_and_transient_and_unknown() -> None:
+    adapter = KimiAdapter()
+    assert (
+        adapter.classify_failure("401 unauthorized: invalid api key").code
+        is FailureCode.AUTH_FAILURE
+    )
+    assert adapter.classify_failure("connection timed out").code is FailureCode.TRANSIENT
+    assert adapter.classify_failure("").code is FailureCode.UNKNOWN
+    assert adapter.classify_failure("signal", model_stdout="Usage Limit Reached").code is (
+        FailureCode.QUOTA_EXHAUSTION
+    )
+
+
+def test_kimi_adapter_failure_receipt_carries_route_and_error_class() -> None:
+    receipt = KimiAdapter().classify_failure(
+        "worker exited nonzero",
+        route_id="kimi.interactive.lane",
+        error_class="kimi_lane_exit",
+        exit_code=42,
+    )
+    assert receipt.code is FailureCode.UNKNOWN
+    assert receipt.route_id == "kimi.interactive.lane"
+    assert receipt.error_class == "kimi_lane_exit"
+    # Receipt shape is the Claude/Codex contract: FailureReceipt is extra-forbid and has
+    # no exit_code field, so the raw exit code must not leak into the receipt (the
+    # review-round-2 version passed it through and raised ValidationError on every call).
+    assert "exit_code" not in FailureReceipt.model_fields
 
 
 # --- criterion 5: launch() FIRST asserts authority, else AuthorityViolation --------------------

@@ -73,6 +73,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.headless.sonnet",
         "claude.review.opus",
         "claude.interactive.full",
+        "kimi.interactive.lane",
         "codex.headless.full",
         "codex.headless.spark",
         "agy.review.direct",
@@ -93,6 +94,8 @@ CLAUDE_REVIEW_ROUTE_ID = "claude.review.opus"
 CLAUDE_REVIEW_ADMISSION_BLOCKER = "claude_review_seat_receipt_admission_required"
 CLAUDE_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER = "claude_review_route_specific_quota_receipt_absent"
 CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER = "account_live_quota_receipt_absent"
+KIMI_INTERACTIVE_ROUTE_ID = "kimi.interactive.lane"
+KIMI_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
 ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     AGY_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
     GLMCP_REVIEW_ROUTE_ID: GLMCP_REVIEW_ADMISSION_BLOCKER,
@@ -102,6 +105,13 @@ ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     # the route stays held — lane/session presence never clears this.
     CLAUDE_HEADLESS_ROUTE_ID: CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER,
     CLAUDE_REVIEW_ROUTE_ID: CLAUDE_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER,
+    # kimi.interactive.lane: same contract — a hapax.kimi_quota_admission.v1 receipt minted by
+    # ~/.local/bin/hapax-kimi-quota-admission and folded into the live ledger by the telemetry
+    # writer (PR #4660) clears the fail-closed receipt blocker. The route id follows the minter's
+    # live contract (ROUTE_ID = "kimi.interactive.lane"), not the claude .interactive.full shape.
+    # Lane/session presence never clears this (review finding gemini-1, 2026-09-12: a route
+    # missing from this set can never clear its config-recorded blocker).
+    KIMI_INTERACTIVE_ROUTE_ID: KIMI_ROUTE_SPECIFIC_QUOTA_BLOCKER,
 }
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 _WRAPPER_CAPABILITY_REASON_PREFIXES = (
@@ -140,6 +150,7 @@ class Platform(StrEnum):
     CODEX = "codex"
     GEMINI = "gemini"
     GLMCP = "glmcp"
+    KIMI = "kimi"
     LOCAL_TOOL = "local_tool"
     VIBE = "vibe"
 
@@ -160,6 +171,7 @@ class Profile(StrEnum):
     FULL = "full"
     HAIKU = "haiku"
     JR = "jr"
+    LANE = "lane"
     LITE = "lite"
     OPENROUTER = "openrouter"
     OPUS = "opus"
@@ -227,6 +239,7 @@ class ModelId(StrEnum):
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
+    KIMI_K3 = "kimi-code/k3"
     UNKNOWN = "unknown"
 
 
