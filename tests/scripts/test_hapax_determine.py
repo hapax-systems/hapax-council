@@ -363,6 +363,55 @@ class TestProducerCompletionSweepsTheGroup:
         # direct child was waited on; the fallback branch executed without
         # raising (the run completing IS the reap proof).
 
+    def test_timeout_reap_is_bounded_when_descendants_hold_the_pipes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """M1/D2 (#4665, round 12): after the fallback kill, the final reap
+        must never block on descendants holding stdout/stderr — the
+        reviewer's timeout=0.2 repro returned at 12.02s only because the
+        12s sleep ENDED; the old unbounded communicate() hangs the harness
+        on any longer holder. The bounded path closes our read ends, waits
+        on the child alone, and names the leak in the record."""
+
+        def denied_killpg(pgid, sig):
+            raise PermissionError("not our group (test)")
+
+        monkeypatch.setattr(os, "killpg", denied_killpg)
+        started = time.monotonic()
+        rec = det.run_producer(
+            {
+                "id": "p1",
+                # The descendant INHERITS the pipes (no redirect), so the
+                # dead child's stdout/stderr stay open through `sleep 30`:
+                # the 10s-grace communicate times out and the final reap
+                # must still return bounded. The direct child execs into
+                # sleep 600, which the fallback proc.kill() reaps.
+                "command": ["/bin/sh", "-c", "sleep 30 & exec sleep 600"],
+                "cadence_seconds": 60,
+            },
+            now=NOW,
+            repo_root=tmp_path,
+            timeout=0.2,
+        )
+        elapsed = time.monotonic() - started
+        assert rec["outcome"] == "timeout"
+        assert rec["returncode"] is None
+        assert rec["group_sweep"] == "descendants-held-pipes; reaped after pipe close"
+        # Bounded: 0.2s timeout + 10s grace + reap margin — never the pipe
+        # holder's own 30s lifetime (the pre-fix behavior), never unbounded.
+        assert elapsed < 25.0
+
+
+def test_group_sweep_premise_pinned_to_the_real_producer_registry() -> None:
+    """claude-1 minor (#4665, round 12): the unconditional post-completion
+    group sweep was verified against THIS producer set — every producer in
+    the real registry runs under the harness's start_new_session process
+    group, so killpg(proc.pid) reaches whatever it spawned. A producer
+    joining the registry must re-verify that premise; this pin forces the
+    re-verification instead of letting the sweep premise go stale silently."""
+    producers = det.load_registry(det.DEFAULT_REGISTRY)
+    assert sorted(p["id"] for p in producers) == ["agy-review-quota", "claude-account-live"]
+
 
 class TestLivenessReconciler:
     def test_never_ran_is_a_deficit(self, tmp_path: Path) -> None:

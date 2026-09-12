@@ -359,8 +359,30 @@ def run_producer(
             try:
                 proc.communicate(timeout=10)
             except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
+                # The child is dead (SIGKILL above) but descendants still
+                # hold the pipes: an unbounded communicate() here blocks on
+                # their EOF forever — the reviewer's timeout=0.2 repro with a
+                # 12s pipe-holding descendant only returned at 12.02s because
+                # the sleep ENDED; a longer holder never returns (codex-1
+                # major M1, #4665 round 12). Close OUR read ends — the
+                # holders take SIGPIPE/EPIPE on their next write — then wait
+                # on the child alone, bounded. Never communicate() again: the
+                # closed streams would raise, and the pipes are the hang.
+                for stream in (proc.stdout, proc.stderr):
+                    if stream is not None:
+                        stream.close()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    # Unreachable while the child carries a delivered
+                    # SIGKILL, but the harness must never hang on a reap
+                    # that will not finish: name the group and return
+                    # bounded. The operator next-action is the group query.
+                    record["group_sweep"] = (
+                        "unresolved-descendants; next: ps -o pid,pgid,cmd -g <pgid>"
+                    )
+                else:
+                    record["group_sweep"] = "descendants-held-pipes; reaped after pipe close"
             ended = monotonic_clock()
             record.update(
                 outcome="timeout",

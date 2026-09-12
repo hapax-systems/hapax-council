@@ -45,8 +45,10 @@ Each tick does four steps:
    overrun predicate degrades the tick's exit code retroactively (rc=4) so
    the overrun is surfaced — never silently truncated, and never claimed as
    pre-empted (codex-1 D1, #4665 round 6). The scan/build/write passes
-   (``PRE_WRITE_WORK_BOUND_S``) have no per-pass elapsed report or direct
-   overrun predicate: their budget is enforced indirectly, through the
+   (``PRE_WRITE_WORK_BOUND_S``) report their per-pass elapsed in the summary
+   (``pre_write_elapsed_s``, ``pre_write_rebuild_elapsed_s`` — claude-1
+   minor, #4665 round 12) but still have no direct overrun predicate: their
+   budget is enforced indirectly, through the
    freshness-at-publication and continuity witnesses below, which charge
    every pre-publication second against the admissions' remaining lifetime
    — a pass that overruns its bound but publishes with horizon-remaining
@@ -2769,22 +2771,28 @@ def receipt_surface_effective_expiry(
     routes they name; the earliest per-route expiry binds the platform, so one
     non-qualifying named route holds the whole platform at the shorter TTL.
     Named routes absent from the registry are ignored; a receipt naming no
-    registry route fails closed to the quota TTL.
+    registry route fails closed to the quota TTL. Every quota-TTL branch is
+    capped at the OUTER stale_after: routing's loader rejects an expired
+    envelope before applying any quota evidence, so the quota surface can
+    never outlive the receipt it rides in (codex-1 critical C1, #4665 round
+    12; found independently by glm-1 and claude-1 — live shapes are
+    envelope-longer, so the cap only tightens pathological ones).
     """
     observed_at = ensure_utc(receipt.observed_at)
     quota_ttl = parse_duration_spec(receipt.quota.stale_after)
+    outer_ttl = parse_duration_spec(receipt.stale_after)
     if receipt.quota.status is not EvidenceStatus.UNOBSERVABLE:
-        return observed_at + quota_ttl
+        return observed_at + min(quota_ttl, outer_ttl)
     nonblocking = (
         not (set(receipt.quota.reason_codes) - QUOTA_UNOBSERVABLE_NONBLOCKING_REASONS)
         and receipt.capability.status is EvidenceStatus.OBSERVED
         and receipt.resource.status is EvidenceStatus.OBSERVED
     )
     if not nonblocking:
-        return observed_at + quota_ttl
+        return observed_at + min(quota_ttl, outer_ttl)
     named_pools = [route_pools[route_id] for route_id in receipt.routes if route_id in route_pools]
     if not named_pools:
-        return observed_at + quota_ttl
+        return observed_at + min(quota_ttl, outer_ttl)
     outer_ttl = parse_duration_spec(receipt.stale_after)
     if all(
         pool == CapacityPool.SUBSCRIPTION_QUOTA
@@ -2801,8 +2809,9 @@ def receipt_surface_effective_expiry(
 def _scan_receipt_surface(
     receipt_dir: Path,
     route_pools: dict[str, tuple[CapacityPool, QuotaSource]] | None = None,
-) -> dict[str, tuple[datetime, datetime, datetime]]:
-    """Per-platform (observed_at, effective expiry, publication instant) scan.
+) -> tuple[dict[str, tuple[datetime, datetime, datetime]], list[str]]:
+    """Per-platform (observed_at, effective expiry, publication instant) scan
+    plus the platforms whose receipt names no registry route.
 
     The publication instant is the receipt FILE's own mtime: the refresh
     writes each platform's receipt separately, so each file's mtime is that
@@ -2811,24 +2820,34 @@ def _scan_receipt_surface(
     for the whole refresh's tail — a platform replaced 40s into a 260s
     refresh, well inside its predecessor's lifetime, read as a 60s hole and
     flapped rc=4 on uninterrupted coverage).
+
+    The second element names platforms whose receipt binds NO registry route
+    (empty routes, or every named route absent from the registry): their
+    expiry fails closed to the quota TTL — invisible in the gap witnesses,
+    which is exactly why it gets its own summary key (claude-1 minor, #4665
+    round 12: a route-id rename in the registry would silently flip every
+    platform onto the fail-closed leg with no counter to read).
     """
     if route_pools is None:
         route_pools = static_registry_route_pools()
     states: dict[str, tuple[datetime, datetime, datetime]] = {}
+    no_named_route: set[str] = set()
     if not receipt_dir.is_dir():
-        return states
+        return states, []
     for path in sorted(receipt_dir.glob("*.json")):
         try:
             receipt = load_platform_capability_receipt(path)
         except PlatformCapabilityReceiptError:
             continue
+        if not any(route_id in route_pools for route_id in receipt.routes):
+            no_named_route.add(receipt.platform)
         published_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
         states[receipt.platform] = (
             ensure_utc(receipt.observed_at),
             receipt_surface_effective_expiry(receipt, route_pools),
             published_at,
         )
-    return states
+    return states, sorted(no_named_route)
 
 
 def quota_receipt_surface_expiries(
@@ -2859,7 +2878,7 @@ def quota_receipt_surface_expiries(
         platform: (observed_at, expiry)
         for platform, (observed_at, expiry, _published_at) in _scan_receipt_surface(
             receipt_dir, route_pools
-        ).items()
+        )[0].items()
     }
 
 
@@ -2960,6 +2979,14 @@ def main(argv: list[str] | None = None) -> int:
         # #4665). --now keeps tests deterministic.
         if not args.now:
             now = datetime.now(UTC).replace(microsecond=0)
+
+    # Anchor for the per-pass pre-write diagnostic (claude-1 minor, #4665
+    # round 12): the monotonic instant the pull (and its mint) finished, so
+    # the scan→build→write spans the PRE_WRITE_WORK_BOUND_S budget bounds are
+    # measurable per pass instead of only inferable from the freshness
+    # witnesses. Purely diagnostic — no predicate reads these spans.
+    mint_anchor = monotonic_clock()
+    pre_write_rebuild_elapsed_s: float | None = None
 
     try:
         base = load_quota_spend_ledger(args.base)
@@ -3073,6 +3100,11 @@ def main(argv: list[str] | None = None) -> int:
         invocation_wall_started + timedelta(seconds=monotonic_clock() - invocation_mono_started)
     ).replace(microsecond=0)
     pass1_published_at = published_at
+    # Pass 1's pre-write span: mint-anchor → this write. The B bound's
+    # measured counterpart (claude-1 minor, #4665 round 12) — the 81s
+    # receipt-spam tick this budget last reasoned about was read out of
+    # journalctl archaeology; now every tick reports its own span.
+    pre_write_elapsed_s = round(monotonic_clock() - mint_anchor, 2)
     # The promise pass 1 just published, read from the ledger now on disk: if
     # the refresh below forces a rebuild, pass 2's continuity is judged
     # against THIS promise — its immediate predecessor — never against the
@@ -3094,12 +3126,20 @@ def main(argv: list[str] | None = None) -> int:
     # pre-replacement. The publication witness below compares the
     # replacement's landing instant against the predecessor expiry of every
     # platform the refresh actually republished (critical finding on #4665,
-    # round 8, C1). --skip-receipts asserts nothing.
-    receipt_surface_predecessors = (
-        quota_receipt_surface_expiries(args.platform_capability_receipt_dir)
-        if not args.skip_receipts
-        else {}
-    )
+    # round 8, C1). --skip-receipts asserts nothing. The same scan names the
+    # platforms whose receipt binds no registry route — the fail-closed
+    # fallback the gap witnesses cannot see (claude-1 minor, #4665 round 12);
+    # post-refresh state overrides this below when the refresh ran.
+    receipt_surface_no_named_route: list[str] | None = None
+    predecessor_surface_states: dict[str, tuple[datetime, datetime, datetime]] = {}
+    if not args.skip_receipts:
+        predecessor_surface_states, receipt_surface_no_named_route = _scan_receipt_surface(
+            args.platform_capability_receipt_dir
+        )
+    receipt_surface_predecessors = {
+        platform: (observed, expiry)
+        for platform, (observed, expiry, _published_at) in predecessor_surface_states.items()
+    }
     receipt_publication_at: datetime | None = None
     receipt_surface_replacements: dict[str, tuple[datetime, datetime, datetime]] = {}
     if not args.skip_receipts:
@@ -3132,7 +3172,9 @@ def main(argv: list[str] | None = None) -> int:
             # major, #4665 round 11, M1: a platform replaced 40s into a 260s
             # refresh, well inside its predecessor's lifetime, read as a 60s
             # hole and flapped rc=4 on uninterrupted coverage).
-            successors = _scan_receipt_surface(args.platform_capability_receipt_dir)
+            successors, receipt_surface_no_named_route = _scan_receipt_surface(
+                args.platform_capability_receipt_dir
+            )
             receipt_surface_replacements = {
                 platform: (*receipt_surface_predecessors[platform], published_at)
                 for platform, (observed, _expiry, published_at) in successors.items()
@@ -3182,6 +3224,10 @@ def main(argv: list[str] | None = None) -> int:
                 published_at = (
                     pass2_now + timedelta(seconds=monotonic_clock() - rebuild_anchor)
                 ).replace(microsecond=0)
+                # Pass 2's pre-write span: rebuild start → this write — the
+                # refresh-aware rebuild leg B bounds (claude-1 minor, #4665
+                # round 12). Diagnostic only.
+                pre_write_rebuild_elapsed_s = round(monotonic_clock() - rebuild_mono_started, 2)
             except LiveLedgerLockTimeout as exc:
                 # Same contract as the rebuild-failure branch below: the
                 # pass-1 ledger stays on disk, but this tick FAILED its
@@ -3391,6 +3437,7 @@ def main(argv: list[str] | None = None) -> int:
         "registry_pools_loaded": (
             static_registry_route_pools_loaded() if not args.skip_receipts else None
         ),
+        "receipt_surface_no_named_route_platforms": receipt_surface_no_named_route,
         "receipt_surface_predecessor_expiry": (
             receipt_surface_predecessor_expiry.isoformat().replace("+00:00", "Z")
             if receipt_surface_predecessor_expiry is not None
@@ -3404,6 +3451,9 @@ def main(argv: list[str] | None = None) -> int:
         "pre_mint_scan_elapsed_s": pre_mint_scan_elapsed_s,
         "pre_mint_scan_bound_s": PRE_MINT_SCAN_BOUND_S,
         "pre_mint_scan_overrun": pre_mint_scan_overrun,
+        "pre_write_elapsed_s": pre_write_elapsed_s,
+        "pre_write_rebuild_elapsed_s": pre_write_rebuild_elapsed_s,
+        "pre_write_bound_s": PRE_WRITE_WORK_BOUND_S,
         "freshness_horizon_s": FRESHNESS_HORIZON_S,
         "ledger_rebuilt_after_refresh": ledger_rebuilt_after_refresh,
         "ledger_rebuild_after_refresh_error": ledger_rebuild_after_refresh_error,
