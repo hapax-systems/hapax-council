@@ -1644,6 +1644,355 @@ def test_agy_admission_counts_a_doubly_invalid_receipt_once(tmp_path: Path) -> N
     assert summary["agy_ignored_admissions"] == 1
 
 
+def _kimi_admission(
+    relay: Path,
+    *,
+    observed_at: str,
+    stale_after_seconds: int = 900,
+    evidence_ref: str = "kimi-smoke-round-trip-witness",
+    model: str = "kimi-code/k3",
+    name: str = "kimi-quota-admission.yaml",
+    secret_value_persisted: str = "false",
+    route_id: str = "kimi.interactive.lane",
+    measurement: str = "minimal_round_trip_liveness",
+    output_digest_sha256: str = "0123456789abcdef" * 4,
+    quota_fraction: str = "unobservable",
+    limits: str = "availability only; no client-side quota fraction",
+    extra_fields: str = "",
+) -> None:
+    (relay / name).write_text(
+        f"""schema: hapax.kimi_quota_admission.v1
+status: quota_available
+provider: moonshot-kimi-code-managed
+capacity_pool: subscription_quota
+route_id: {route_id}
+supported_tool: hapax-kimi-quota-admission
+model: {model}
+observed_at: {observed_at}
+stale_after_seconds: {stale_after_seconds}
+evidence_ref: {evidence_ref}
+secret_source: kimi:operator-session
+secret_value_persisted: {secret_value_persisted}
+prompt_or_output_persisted: false
+billing_mode: operator_session_subscription
+smoke_command: kimi -p
+smoke_returncode: 0
+smoke_stdout_validated: true
+positive_admission: true
+measurement: {measurement}
+output_digest_sha256: {output_digest_sha256}
+quota_fraction: {quota_fraction}
+limits: "{limits}"
+{extra_fields}""",
+        encoding="utf-8",
+    )
+
+
+def _kimi_snapshot(payload: dict) -> dict:
+    return next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "kimi.interactive.lane"
+    )
+
+
+def test_fresh_kimi_admission_receipt_marks_kimi_lane_fresh(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(relay, observed_at="2026-06-09T23:55:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["provider"] == "moonshot-kimi-code-managed"
+    assert kimi_snapshot["subscription_quota_state"] == "fresh"
+    assert kimi_snapshot["fresh_until"] == "2026-06-10T00:10:00Z"
+    assert any("kimi-quota-admission.yaml" in ref for ref in kimi_snapshot["evidence_refs"])
+    assert any(
+        "witness:kimi-smoke-round-trip-witness" in ref
+        and "supported_tool:hapax-kimi-quota-admission" in ref
+        and "model:kimi-code/k3" in ref
+        for ref in kimi_snapshot["evidence_refs"]
+    )
+    assert (
+        "availability-measured, not quota-fraction-measured"
+        in kimi_snapshot["operator_visible_reason"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 1
+    assert summary["kimi_ignored_admissions"] == 0
+
+
+def test_no_kimi_admission_marks_kimi_lane_unknown(tmp_path: Path) -> None:
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert "relay-receipt:kimi:quota-admission:absent" in kimi_snapshot["evidence_refs"]
+    assert "scripts/hapax-quota-telemetry-writer" in kimi_snapshot["evidence_refs"]
+    assert "availability is the only measurable signal" in kimi_snapshot["operator_visible_reason"]
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+
+
+def test_kimi_admission_rejects_the_stale_route_id(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(relay, observed_at="2026-06-09T23:55:00Z", route_id="kimi.interactive.full")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        "ignored:route-id-missing-or-unsupported" in ref for ref in kimi_snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
+def test_kimi_admission_rejects_unsupported_model(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(relay, observed_at="2026-06-09T23:55:00Z", model="kimi-code/k2")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        "ignored:model-missing-or-unsupported" in ref for ref in kimi_snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
+def test_kimi_admission_rejects_secret_persistence(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(relay, observed_at="2026-06-09T23:55:00Z", secret_value_persisted="true")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        "ignored:secret-value-persisted-missing-or-unsupported" in ref
+        for ref in kimi_snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
+def test_kimi_admission_rejects_non_liveness_measurement(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(relay, observed_at="2026-06-09T23:55:00Z", measurement="deep_quota_probe")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        "ignored:measurement-missing-or-unsupported" in ref
+        for ref in kimi_snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
+def test_kimi_admission_rejects_malformed_output_digest(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(relay, observed_at="2026-06-09T23:55:00Z", output_digest_sha256="not-a-digest")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        "ignored:output-digest-sha256-missing-or-malformed" in ref
+        for ref in kimi_snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
+def test_kimi_admission_rejects_fabricated_quota_fraction(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(relay, observed_at="2026-06-09T23:55:00Z", quota_fraction="0.87")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        "ignored:quota-fraction-missing-or-unsupported" in ref
+        for ref in kimi_snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
+def test_kimi_admission_rejects_secretish_limits(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        limits="headroom 87% remaining, api_key sk-abc123def456",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any("ignored:limits-missing-or-unsafe" in ref for ref in kimi_snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
+def test_kimi_admission_rejects_unsafe_evidence_ref(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(relay, observed_at="2026-06-09T23:55:00Z", evidence_ref="bearer token xyz")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any("ignored:evidence-ref-unsafe" in ref for ref in kimi_snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
+def test_kimi_admission_rejects_future_observed_at(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(relay, observed_at="2026-06-10T00:05:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        "ignored:observed-at-is-in-the-future" in ref for ref in kimi_snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
+def test_kimi_admission_rejects_expired_receipt(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(relay, observed_at="2026-06-09T23:00:00Z")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any("ignored:receipt-expired" in ref for ref in kimi_snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
+def test_kimi_admission_rejects_oversized_stale_after(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(relay, observed_at="2026-06-09T23:55:00Z", stale_after_seconds=3601)
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any(
+        "ignored:stale-after-seconds-exceeds-maximum" in ref
+        for ref in kimi_snapshot["evidence_refs"]
+    )
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
+def test_kimi_admission_rejects_unsupported_key(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        extra_fields="operator_note: forged field\n",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any("ignored:unsupported-key-on-line" in ref for ref in kimi_snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
+def test_kimi_admission_rejects_unsafe_receipt_name(tmp_path: Path) -> None:
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _kimi_admission(
+        relay,
+        observed_at="2026-06-09T23:55:00Z",
+        name="kimi-quota-admission-$(whoami).yaml",
+    )
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    kimi_snapshot = _kimi_snapshot(payload)
+    assert kimi_snapshot["subscription_quota_state"] == "unknown"
+    assert any("ignored:unsafe-receipt-name" in ref for ref in kimi_snapshot["evidence_refs"])
+    summary = json.loads(result.stdout)
+    assert summary["kimi_admissions"] == 0
+    assert summary["kimi_ignored_admissions"] == 1
+
+
 def _claude_admission(
     relay: Path,
     *,
