@@ -337,6 +337,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     parser.add_argument("--producer", action="append", dest="only", help="run only these ids")
     parser.add_argument("--force", action="store_true", help="ignore cadence, run anyway")
+    parser.add_argument(
+        "--force-justified-at",
+        metavar="ISO8601-UTC",
+        help=(
+            "decision instant that justified a --force run; a producer run that "
+            "COMPLETED after it (visible in the in-lock ledger re-read) supersedes "
+            "the force and is skipped instead of duplicated"
+        ),
+    )
     parser.add_argument("--timeout", type=int, default=DEFAULT_PRODUCER_TIMEOUT_S)
     parser.add_argument("--check", action="store_true", help="report liveness only; run nothing")
     parser.add_argument(
@@ -354,6 +363,12 @@ def main(argv: list[str] | None = None) -> int:
     if now is None:
         print("invalid --now; expected ISO-8601 UTC", file=sys.stderr)
         return 2
+    force_justified_at = None
+    if args.force_justified_at:
+        force_justified_at = _parse_iso(args.force_justified_at)
+        if force_justified_at is None:
+            print("invalid --force-justified-at; expected ISO-8601 UTC", file=sys.stderr)
+            return 2
     try:
         producers = load_registry(args.registry)
     except (OSError, ValueError) as exc:
@@ -390,11 +405,37 @@ def main(argv: list[str] | None = None) -> int:
             # intact — a later invoker in the same window re-reads the fresh
             # `ran_at` and skips — so force shifts WHEN a run happens, never
             # HOW MANY.
+            #
+            # `--force-justified-at` revalidates the force under the lock: the
+            # caller's justification was computed BEFORE this invoker waited,
+            # so a run that completed after that instant cannot have been
+            # counted by it — a concurrent winner minted while this invoker
+            # waited. Skipping as superseded (without appending) keeps exactly
+            # one producer run per window even when force and the timer cross
+            # locks (major finding on #4665, round 3: a forced waiter
+            # duplicated the concurrent winner's run because the pre-lock
+            # force decision bypassed the in-lock due check).
             try:
                 with producer_lock(args.run_ledger, p["id"], wait_s=args.lock_wait):
                     latest = last_runs(args.run_ledger).get(p["id"])
                     if latest is not None:
                         runs[p["id"]] = latest
+                    if args.force and force_justified_at is not None and latest is not None:
+                        winner_ran_at = _parse_iso(str(latest.get("ran_at") or ""))
+                        if winner_ran_at is not None and winner_ran_at > force_justified_at:
+                            payload["skipped"].append(
+                                {
+                                    "producer_id": p["id"],
+                                    "reason": "force_superseded",
+                                    "detail": (
+                                        f"run at {latest.get('ran_at')} completed after "
+                                        f"the force decision at "
+                                        f"{args.force_justified_at}; the winner's run "
+                                        "already minted this window"
+                                    ),
+                                }
+                            )
+                            continue
                     if not args.force and not is_due(p, latest, now):
                         payload["skipped"].append({"producer_id": p["id"], "reason": "not_due"})
                         continue

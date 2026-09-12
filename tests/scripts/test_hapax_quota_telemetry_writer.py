@@ -156,7 +156,8 @@ def test_pull_forward_invokes_the_harness_with_bounded_budgets_and_freshness_der
     monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
     now_dt = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
 
-    # No admission receipt at all: the next write embeds nothing — force.
+    # No admission receipt at all: the next write embeds nothing — force, with
+    # the decision instant attached so the producer lock can revalidate it.
     info = namespace["pull_forward_due_producers"](
         repo_root=REPO_ROOT, receipt_dir=relay, now=now_dt
     )
@@ -171,6 +172,8 @@ def test_pull_forward_invokes_the_harness_with_bounded_budgets_and_freshness_der
             "--timeout",
             str(int(namespace["PULL_FORWARD_PRODUCER_TIMEOUT_S"])),
             "--force",
+            "--force-justified-at",
+            NOW,
             "--json",
         ]
     ]
@@ -197,10 +200,13 @@ def test_pull_forward_invokes_the_harness_with_bounded_budgets_and_freshness_der
 def test_pull_forward_force_predicate_matches_freshness_need(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The reviewer's exact repro numbers (codex-1, round 2): a 560s-old
+    """The reviewers' exact repro numbers (codex-1, rounds 2 and 3): a 560s-old
     admission on a 900s TTL has 340s left — under the 600s write cadence, the
-    receipt lapses mid-cycle and the surface flaps for the difference. The
-    predicate must demand a mint; with 700s left it must not."""
+    receipt lapses mid-cycle and the surface flaps for the difference. A
+    280s-old admission (620s left) beat the round-2 615s horizon but NOT the
+    round-3 publication-deadline horizon: a +640s slipped fire plus a 27s
+    publish overran it by 47s. The predicate must demand a mint in both
+    cases; only a receipt that covers the full horizon (810s) escapes force."""
     namespace = runpy.run_path(str(SCRIPT))
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
@@ -212,7 +218,7 @@ def test_pull_forward_force_predicate_matches_freshness_need(
         lambda *a, **kw: pytest.fail("the predicate must not spawn the harness"),
     )
 
-    # 560s old, 900s TTL: fresh_until = now + 340s < now + 600 + 15 → force.
+    # 560s old, 900s TTL: fresh_until = now + 340s < now + 810 → force.
     _agy_admission(
         relay,
         observed_at=(now_dt - timedelta(seconds=560)).isoformat().replace("+00:00", "Z"),
@@ -220,9 +226,22 @@ def test_pull_forward_force_predicate_matches_freshness_need(
     )
     assert namespace["pull_forward_force_needed"](relay, now=now_dt) is True
 
-    # Fresh mint, 700s horizon: covers the next cycle plus margin → no force.
+    # 280s old, 900s TTL: 620s left — beat the round-2 615s horizon, still
+    # under the publication-deadline horizon (codex-1 round-3 repro) → force.
     (relay / "agy-quota-admission.yaml").unlink()
-    _agy_admission(relay, observed_at=NOW, stale_after_seconds=700)
+    _agy_admission(
+        relay,
+        observed_at=(now_dt - timedelta(seconds=280)).isoformat().replace("+00:00", "Z"),
+        stale_after_seconds=900,
+    )
+    assert namespace["pull_forward_force_needed"](relay, now=now_dt) is True
+
+    # Fresh mint, full horizon: covers cycle + accuracy + pre-write work →
+    # no force.
+    (relay / "agy-quota-admission.yaml").unlink()
+    _agy_admission(
+        relay, observed_at=NOW, stale_after_seconds=int(namespace["FRESHNESS_HORIZON_S"])
+    )
     assert namespace["pull_forward_force_needed"](relay, now=now_dt) is False
 
     # Nothing on disk → force.
@@ -446,6 +465,7 @@ def test_refreshed_codex_receipts_rebuild_the_published_ledger(
     platform_receipts = tmp_path / "platform-receipts"
     relay.mkdir()
     platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW)
     _codex_platform_receipt(
         platform_receipts, reason_code="codex_exec_auth_refresh_token_invalidated"
     )
@@ -516,6 +536,7 @@ def test_unchanged_codex_receipts_write_the_ledger_once(
     platform_receipts = tmp_path / "platform-receipts"
     relay.mkdir()
     platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW)
     _codex_platform_receipt(platform_receipts)
     stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
     out = tmp_path / "out" / "quota-spend-ledger-live.json"
@@ -568,12 +589,14 @@ def test_sustained_freshness_across_two_complete_cycles(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The sustained-route-freshness proof the round-2 tests stopped short of
-    (codex-1 major): run two consecutive 600s ticks through the ACTUAL
-    scheduling decision — the pull stub consults the receipts on disk and mints
-    only what the freshness predicate demands — and assert each published
-    ledger's embedded admission covers its full next cycle. The round-2 defect
-    class (a 560s-old admission slipping through as 'not due') flaps tick B;
-    the force predicate repairs it at any timer phase."""
+    (codex-1 major): run two ticks through the ACTUAL scheduling decision —
+    tick A at the phase where the previous mint is 560s old, tick B at the max
+    slippage the timer permits (600s cycle + 60s AccuracySec, the codex-1
+    round-3 repro) — with the pull stub consulting the receipts on disk and
+    minting only what the freshness predicate demands, then assert each
+    published ledger's embedded admission covers its full next cycle. The
+    round-2 defect class (a 560s-old admission slipping through as 'not due')
+    flaps tick B; the force predicate repairs it at any timer phase."""
     namespace = runpy.run_path(str(SCRIPT))
     main_globals = namespace["main"].__globals__
     relay = tmp_path / "relay-receipts"
@@ -606,20 +629,27 @@ def test_sustained_freshness_across_two_complete_cycles(
     monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
 
     # Tick A at T0: the previous cycle's mint is 560s old — the reviewer's
-    # exact repro. Tick B at T0+600: tick A's mint is 600s old.
+    # exact repro. Tick B at T0+660: the MAX SLIPPED fire (600s cycle + 60s
+    # AccuracySec, codex-1 round-3 repro) — and it publishes at +27s of
+    # pre-write work, so tick A's embedded admission had to cover 660+27=687s
+    # to keep the surface gapless.
     t0 = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
     _agy_admission(
         relay,
         observed_at=(t0 - timedelta(seconds=560)).isoformat().replace("+00:00", "Z"),
         stale_after_seconds=900,
     )
+    slipped_fire_s = 660.0
+    publish_work_s = 27.0
     summaries = []
-    for tick, tick_now in enumerate((t0, t0 + timedelta(seconds=600))):
+    for tick, tick_now in enumerate((t0, t0 + timedelta(seconds=slipped_fire_s))):
         out = tmp_path / f"out-{tick}" / "quota-spend-ledger-live.json"
         rc = namespace["main"](
             [
                 "--now",
-                tick_now.isoformat().replace("+00:00", "Z"),
+                (tick_now + timedelta(seconds=publish_work_s) if tick else tick_now)
+                .isoformat()
+                .replace("+00:00", "Z"),
                 "--out",
                 str(out),
                 "--relay-receipt-dir",
@@ -634,19 +664,23 @@ def test_sustained_freshness_across_two_complete_cycles(
         assert rc == 0
         summaries.append(json.loads(capsys.readouterr().out))
 
-    # Both ticks FORCED a mint (560s and 600s old both fail the freshness
-    # predicate), and every published ledger carried the full cycle ahead.
+    # Both ticks FORCED a mint (560s and 660s old both fail the freshness
+    # predicate), every published ledger carried the full horizon ahead, and
+    # tick A's embedded admission covered tick B's slipped, slow publication —
+    # no stale interval anywhere in the two cycles (codex-1 round-3 C1 repro).
     assert forced == [True, True]
+    horizon = namespace["FRESHNESS_HORIZON_S"]
     for summary in summaries:
         assert summary["admission_freshness_degraded"] is False
-        assert summary["admission_freshness_at_write_s"] >= 600.0
+        assert summary["admission_freshness_at_write_s"] >= horizon
+    assert summaries[0]["admission_freshness_at_write_s"] >= slipped_fire_s + publish_work_s
     payload = json.loads((tmp_path / "out-1" / "quota-spend-ledger-live.json").read_text())
     agy_snapshot = next(
         s for s in payload["quota_snapshots"] if s["route_id"] == "agy.review.direct"
     )
     captured = datetime.fromisoformat(payload["captured_at"].replace("Z", "+00:00"))
     fresh_until = datetime.fromisoformat(agy_snapshot["fresh_until"].replace("Z", "+00:00"))
-    assert (fresh_until - captured).total_seconds() >= 600
+    assert (fresh_until - captured).total_seconds() >= slipped_fire_s + publish_work_s
 
 
 def test_degraded_admission_is_reported_not_silent(
@@ -703,14 +737,16 @@ def test_degraded_admission_is_reported_not_silent(
             "--json",
         ]
     )
-    assert rc == 0  # honest ledger, visible degradation — not an aborted tick
+    assert rc == 4  # honest ledger, machine-checkable degradation (not aborted, not green)
     captured = capsys.readouterr()
     assert "DEGRADED" in captured.err
     assert "340" in captured.err
+    assert "810" in captured.err  # the horizon the admission failed to cover
     assert "Next:" in captured.err
     summary = json.loads(captured.out)
     assert summary["admission_freshness_degraded"] is True
     assert summary["admission_freshness_at_write_s"] == 340.0
+    assert summary["freshness_horizon_s"] == 810.0
 
 
 def test_pass2_rebuild_failure_fails_the_tick_and_preserves_the_pass1_ledger(
@@ -900,10 +936,35 @@ class TestPullForwardBudgetPins:
         kill = self._unit_seconds(self.SERVICE_UNIT, "TimeoutStartSec")
         assert cadence < kill
 
-    def test_margin_stays_inside_the_timer_accuracy_window(self) -> None:
+    def test_horizon_accounts_for_the_timer_accuracy_window(self) -> None:
         namespace = runpy.run_path(str(SCRIPT))
         accuracy = self._unit_seconds(self.TIMER_UNIT, "AccuracySec")
-        assert 0 < namespace["PULL_FORWARD_MARGIN_S"] <= accuracy
+        assert namespace["TIMER_ACCURACY_S"] == accuracy
+
+    def test_freshness_horizon_derives_from_the_next_deadline(self) -> None:
+        # codex-1 round-4 critical: the horizon must cover everything between
+        # this write and the next one's publication — cycle + timer accuracy +
+        # the longer of lock wait vs producer timeout (mutually exclusive once
+        # the force revalidation lands) + the bounded pre-write work.
+        namespace = runpy.run_path(str(SCRIPT))
+        assert (
+            namespace["FRESHNESS_HORIZON_S"]
+            == namespace["WRITER_CYCLE_S"]
+            + namespace["TIMER_ACCURACY_S"]
+            + max(
+                namespace["PULL_FORWARD_LOCK_WAIT_S"],
+                namespace["PULL_FORWARD_PRODUCER_TIMEOUT_S"],
+            )
+            + namespace["PRE_WRITE_WORK_BOUND_S"]
+            == 810.0
+        )
+
+    def test_freshness_horizon_stays_under_the_admission_ttl(self) -> None:
+        # The agy admission TTL is 900s. A horizon at or above the TTL would
+        # make every tick degrade; at 810 an at-bound tick degrades (by
+        # design, visibly) while the steady state stays clean.
+        namespace = runpy.run_path(str(SCRIPT))
+        assert namespace["FRESHNESS_HORIZON_S"] < 900.0
 
 
 def _wall_receipt(
