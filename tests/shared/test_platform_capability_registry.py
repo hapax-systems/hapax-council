@@ -24,7 +24,9 @@ from shared.platform_capability_receipts import (
 )
 from shared.platform_capability_registry import (
     AGENTIC_TRUST_EVIDENCE_SURFACE_ID,
+    KIMI_INTERACTIVE_ROUTE_ID,
     REQUIRED_ROUTE_IDS,
+    ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS,
     AuthorityCeiling,
     PlatformCapabilityRegistry,
     PlatformCapabilityRoute,
@@ -1914,3 +1916,85 @@ def test_receipt_dir_from_env_honors_override_and_opt_out(
     for kill in ("", "0", "none", "false"):
         monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", kill)
         assert _receipt_dir_from_env() is None
+
+
+KIMI_ADMISSION_EVIDENCE_REF = (
+    "relay-receipt:kimi-quota-admission-20260911t150000z.yaml:"
+    "witness:kimi-smoke-round-trip-20260911t150000z:"
+    "supported_tool:hapax-kimi-quota-admission:"
+    "model:kimi-code/k3:"
+    "observed_at:2026-09-11T15:00:00Z:"
+    "fresh_until:2026-09-11T15:59:00Z"
+)
+KIMI_NOW = datetime(2026, 9, 11, 15, 5, tzinfo=UTC)
+KIMI_ADMISSION_PROVIDER = "moonshot-kimi-code-managed"
+
+
+def _write_kimi_live_quota_ledger(path: Path) -> None:
+    payload = deepcopy(json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8")))
+    payload["ledger_id"] = "quota-spend-ledger-test-kimi-live"
+    payload["captured_at"] = "2026-09-11T14:59:30Z"
+    payload["generated_from"] = list(
+        dict.fromkeys([*payload["generated_from"], "scripts/hapax-quota-telemetry-writer"])
+    )
+    payload["quota_snapshots"] = [
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot.get("route_id") != KIMI_INTERACTIVE_ROUTE_ID
+    ]
+    payload["quota_snapshots"].append(
+        {
+            "quota_snapshot_schema": 1,
+            "snapshot_id": "quota-kimi-interactive-lane-fresh",
+            "captured_at": "2026-09-11T14:59:00Z",
+            "fresh_until": "2026-09-11T15:59:00Z",
+            "route_id": KIMI_INTERACTIVE_ROUTE_ID,
+            "provider": KIMI_ADMISSION_PROVIDER,
+            "capacity_pool": "subscription_quota",
+            "subscription_quota_state": "fresh",
+            "evidence_refs": [KIMI_ADMISSION_EVIDENCE_REF],
+            "operator_visible_reason": "fixture kimi admission receipt",
+        }
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_kimi_interactive_route_specific_quota_admission_registered() -> None:
+    # The live minter contract (~/.local/bin/hapax-kimi-quota-admission) hard-codes
+    # ROUTE_ID = "kimi.interactive.lane"; the registry and blocker map must follow it
+    # or the config-recorded blocker can never clear.
+    assert KIMI_INTERACTIVE_ROUTE_ID in ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS
+    assert (
+        ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS[KIMI_INTERACTIVE_ROUTE_ID]
+        == "route_specific_quota_receipt_absent"
+    )
+    assert KIMI_INTERACTIVE_ROUTE_ID in REQUIRED_ROUTE_IDS
+
+
+def test_kimi_interactive_route_blocked_with_exact_reasons() -> None:
+    registry = load_platform_capability_registry()
+    route = next(route for route in registry.routes if route.route_id == KIMI_INTERACTIVE_ROUTE_ID)
+
+    assert route.route_state is RouteState.BLOCKED
+    assert route.blocked_reasons == ["route_specific_quota_receipt_absent"]
+
+
+def test_kimi_fresh_live_admission_clears_route_specific_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_kimi_live_quota_ledger(live_ledger)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+    route = _route_payload(_payload(), KIMI_INTERACTIVE_ROUTE_ID)
+
+    _apply_receipt_to_route_payload(
+        route,
+        _make_receipt(observed_at=datetime(2026, 9, 11, 15, 1, tzinfo=UTC)),
+        now=KIMI_NOW,
+    )
+
+    assert route["route_state"] == "active"
+    assert route["blocked_reasons"] == []
+    assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == []
+    assert KIMI_ADMISSION_EVIDENCE_REF in route["freshness"]["evidence"]["quota"]["evidence_refs"]

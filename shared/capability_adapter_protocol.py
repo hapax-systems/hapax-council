@@ -605,13 +605,16 @@ class KimiAdapter(WorkerAdapter, SendCapableAdapter):
         error_class: str | None = None,
         exit_code: int | None = None,
     ) -> FailureReceipt:
+        # Same receipt shape as Claude/Codex: the raw exit code is NOT a FailureReceipt
+        # field (extra-forbid) — callers that need it read it from the process result
+        # alongside this receipt. (Found by review round 2 tests: passing it here made
+        # every classify_failure call raise ValidationError.)
         return FailureReceipt(
             code=_classify_cli_failure(text, model_stdout),
             raw_signal=text,
             platform=self.PLATFORM.value,
             route_id=route_id,
             error_class=error_class,
-            exit_code=exit_code,
         )
 
 

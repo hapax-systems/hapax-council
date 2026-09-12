@@ -22,7 +22,7 @@
     "claude.headless.sonnet",
     "claude.review.opus",
     "claude.interactive.full",
-    "kimi.interactive.full",
+    "kimi.interactive.lane",
     "codex.headless.full",
     "codex.headless.spark",
     "agy.review.direct",
@@ -1802,13 +1802,13 @@
     },
     {
       "registry_schema": 1,
-      "route_id": "kimi.interactive.full",
+      "route_id": "kimi.interactive.lane",
       "platform": "kimi",
       "mode": "interactive",
-      "profile": "full",
+      "profile": "lane",
       "launcher": "~/.local/bin/hapax-kimi <lane>",
       "summary": "Kimi Code managed interactive tmux lane with canonical gate hooks",
-      "notes": "Visible kimi managed-service lane (kimi-code/k3, 1M context). PreToolUse hooks chain into the canonical cc-task-gate via ~/.kimi-code/hooks/kimi-hook-adapter.sh; in-lane mutation denial without claim verified 2026-09-10. Admission is fail-closed on the route-specific quota receipt: a fresh hapax.kimi_quota_admission.v1 receipt from ~/.local/bin/hapax-kimi-quota-admission (minimal kimi -p round-trip; no prompt or output content persisted, digest only), folded by scripts/hapax-quota-telemetry-writer so the live ledger records kimi.interactive.full as fresh. Availability-measured only: the kimi managed service exposes no client-side quota fraction (limits surface only at the wall); quota_fraction: unobservable is contract, not a gap claim. Quality measurement: W-Q pilot epoch 1 (frame/coordination-20260904/WQ-PILOT-REPORT-20260911.md) — kimi-k3 passed all its cells (S1 executable defect fix x2, S2 review found P1+P3 both runs with zero false findings, S3 grounded research 3/3 x2), inside the registered margin vs glm-5.3 and grok-4.6; no routing inference at pilot n=3. Operator ratified the coordinating-lane succession 2026-09-10 (PLATFORM-READINESS-COORDINATOR-EVALUATION-20260910.md, ratified 2026-09-10T14:05Z); routing-plane admission is this entry.",
+      "notes": "Visible kimi managed-service lane (kimi-code/k3, 1M context). PreToolUse hooks chain into the canonical cc-task-gate via ~/.kimi-code/hooks/kimi-hook-adapter.sh; in-lane mutation denial without claim verified 2026-09-10. Admission is fail-closed on the route-specific quota receipt: a fresh hapax.kimi_quota_admission.v1 receipt from ~/.local/bin/hapax-kimi-quota-admission (minimal kimi -p round-trip; no prompt or output content persisted, digest only), folded by scripts/hapax-quota-telemetry-writer so the live ledger records kimi.interactive.lane as fresh. Availability-measured only: the kimi managed service exposes no client-side quota fraction (limits surface only at the wall); quota_fraction: unobservable is contract, not a gap claim. Quality measurement: W-Q pilot epoch 1 (frame/coordination-20260904/WQ-PILOT-REPORT-20260911.md) — kimi-k3 passed all its cells (S1 executable defect fix x2, S2 review found P1+P3 both runs with zero false findings, S3 grounded research 3/3 x2), inside the registered margin vs glm-5.3 and grok-4.6; no routing inference at pilot n=3. Operator ratified the coordinating-lane succession 2026-09-10 (PLATFORM-READINESS-COORDINATOR-EVALUATION-20260910.md, ratified 2026-09-10T14:05Z); routing-plane admission is this entry.",
       "route_state": "blocked",
       "blocked_reasons": [
         "route_specific_quota_receipt_absent"
@@ -1841,7 +1841,7 @@
           ],
           "observed_at": "2026-09-11T02:07:33Z",
           "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:kimi.interactive.full:tool:filesystem"
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:filesystem"
         },
         {
           "tool_id": "local_shell",
@@ -1853,7 +1853,7 @@
           ],
           "observed_at": "2026-09-11T02:07:33Z",
           "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:kimi.interactive.full:tool:local_shell"
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:local_shell"
         },
         {
           "tool_id": "browser",
@@ -1863,7 +1863,7 @@
           ],
           "observed_at": "2026-09-11T02:07:33Z",
           "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:kimi.interactive.full:tool:browser"
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:browser"
         },
         {
           "tool_id": "context7",
@@ -1873,7 +1873,7 @@
           ],
           "observed_at": "2026-09-11T02:07:33Z",
           "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:kimi.interactive.full:tool:context7"
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:context7"
         },
         {
           "tool_id": "github",
@@ -1883,7 +1883,7 @@
           ],
           "observed_at": "2026-09-11T02:07:33Z",
           "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:kimi.interactive.full:tool:github"
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:github"
         },
         {
           "tool_id": "hapax-mcp",
@@ -1893,7 +1893,7 @@
           ],
           "observed_at": "2026-09-11T02:07:33Z",
           "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:kimi.interactive.full:tool:hapax-mcp"
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:hapax-mcp"
         },
         {
           "tool_id": "playwright",
@@ -1903,7 +1903,7 @@
           ],
           "observed_at": "2026-09-11T02:07:33Z",
           "stale_after": "24h",
-          "evidence_ref": "platform-capability-registry:kimi.interactive.full:tool:playwright"
+          "evidence_ref": "platform-capability-registry:kimi.interactive.lane:tool:playwright"
         }
       ],
       "tool_access": {
@@ -2057,7 +2057,7 @@
           "score": 3,
           "confidence": 1,
           "evidence_refs": [
-            "platform-capability-registry:kimi.interactive.full:dimensional-score:multimodal_verification:not-exercised"
+            "platform-capability-registry:kimi.interactive.lane:dimensional-score:multimodal_verification:not-exercised"
           ],
           "observed_at": "2026-09-11T04:25:00Z",
           "stale_after": "24h"

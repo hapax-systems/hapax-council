@@ -165,10 +165,10 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         True,
         "Visible Claude lanes require an explicit task binding or an existing lane claim.",
     ),
-    ("kimi", "interactive", "full"): PlatformPath(
+    ("kimi", "interactive", "lane"): PlatformPath(
         "kimi",
         "interactive",
-        "full",
+        "lane",
         "~/.local/bin/hapax-kimi <lane>",
         "Kimi Code managed interactive tmux lane with canonical gate hooks",
         True,
