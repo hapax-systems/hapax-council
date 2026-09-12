@@ -50,10 +50,17 @@ SyslogIdentifier=hapax-quota-telemetry
 # only in PR prose): after this unit file lands, run
 # `systemctl --user daemon-reload`, then recheck BOTH ceilings took effect:
 # `systemctl --user show hapax-quota-telemetry.service -p MemoryMax -p TimeoutStartUSec`
-# — expected MemoryMax=805306368 (768M) and TimeoutStartUSec=15min. The old
+# — expected MemoryMax=805306368 (768M) and TimeoutStartUSec=15min. The unit
+# sets TimeoutStartSec=900, which systemd RENDERS as TimeoutStartUSec=15min
+# (900s = 15min = 900000000us — all three name the same ceiling; compare
+# values, not renderings) (claude-1 minor, #4665 round 10). The old
 # 256M/3min ceilings timeout-kill a pull-forward tick before the rc=4 surface
 # can report; without the recheck the merged fix is inert on any host still
-# running the pre-merge unit.
+# running the pre-merge unit. If the timer can fire between the activation
+# script resync and the daemon-reload (scripts and unit propagate together;
+# the recheck must precede the next timer fire), mask the timer across the
+# activation window so the first heavier pull-forward tick never runs under
+# the old ceilings.
 # Recheck after any suspected skipped mint:
 # `journalctl --user -u hapax-quota-telemetry.service --since -1d | grep -i oom`.
 MemoryMax=768M

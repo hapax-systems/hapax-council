@@ -1654,9 +1654,11 @@ def test_receipt_surface_gap_degrades_even_when_ledger_witnesses_are_green(
 
     def publishing_refresh(*, timeout, receipt_dir):
         # What the real refresh leaves behind: a replacement receipt observed
-        # now. Only the publication INSTANT matters to the witness — it is
-        # read from the invocation clock pair, not the receipt payload.
+        # now, whose FILE landed at 00:00 — the per-platform publication
+        # instant the round-11 witness reads from the file's own mtime
+        # (codex-1 M1), pinned onto the frozen timeline here.
         _codex_platform_receipt(platform_receipts)
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:00:00Z")
         return True
 
     monkeypatch.setitem(
@@ -1707,6 +1709,10 @@ def test_receipt_surface_gap_degrades_even_when_ledger_witnesses_are_green(
     # (23:59), never the 24h outer envelope (next-day 23:44).
     assert summary["receipt_surface_predecessor_expiry"] == "2026-06-09T23:59:00Z"
     assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+    # THE M1 pin: the landing instant is this platform's own file mtime
+    # (00:00), and the loaded-registry flag sits beside the gap witnesses.
+    assert summary["receipt_surface_publication_instants"] == {"codex": "2026-06-10T00:00:00Z"}
+    assert summary["registry_pools_loaded"] is True
 
 
 def test_receipt_surface_outer_ttl_leg_subscription_unobservable_quota(
@@ -1751,6 +1757,7 @@ def test_receipt_surface_outer_ttl_leg_subscription_unobservable_quota(
             quota_stale_after="15m",
             quota_status="unobservable",
         )
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:00:00Z")
         return True
 
     monkeypatch.setitem(
@@ -1834,6 +1841,7 @@ def test_receipt_surface_fail_closed_leg_blocked_capability_holds_quota_ttl(
             quota_stale_after="15m",
             quota_status="unobservable",
         )
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:00:00Z")
         return True
 
     monkeypatch.setitem(
@@ -1873,6 +1881,163 @@ def test_receipt_surface_fail_closed_leg_blocked_capability_holds_quota_ttl(
     # Fail-closed pin: the quota TTL binds (23:55), never the 24h envelope.
     assert summary["receipt_surface_predecessor_expiry"] == "2026-06-09T23:55:00Z"
     assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+
+
+def test_receipt_surface_staggered_replacements_keep_continuous_coverage_green(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """M1 (#4665, round 11): each replaced platform is judged by its OWN
+    landing instant, never the refresh's completion instant. The refresh
+    writes platforms separately — codex replaced at 23:47 (inside its 23:59
+    predecessor expiry), claude at 00:03 (inside its 00:05 expiry) — and the
+    tick completes at 00:10. The round-10 witness charged every platform the
+    whole refresh's tail: 00:10 against the earliest predecessor expiry
+    (23:59) read a fictitious 660s hole and flapped rc=4 on uninterrupted
+    coverage (the reviewer's T+40/T+200/T+260 repro shape)."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at="2026-06-10T00:10:00Z")
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:44:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="900s",
+    )
+    _codex_platform_receipt(
+        platform_receipts,
+        platform="claude",
+        observed_at="2026-06-09T23:50:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="15m",
+    )
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def staggered_refresh(*, timeout, receipt_dir):
+        _codex_platform_receipt(
+            platform_receipts,
+            outer_stale_after="24h",
+            quota_stale_after="900s",
+        )
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-09T23:47:00Z")
+        _codex_platform_receipt(
+            platform_receipts,
+            platform="claude",
+            outer_stale_after="24h",
+            quota_stale_after="15m",
+        )
+        _utime_platform_receipt(platform_receipts, "claude", "2026-06-10T00:03:00Z")
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", staggered_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            "2026-06-10T00:10:00Z",
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_continuity_degraded"] is False
+    # The worst platform binds: claude's 00:03 landing against its 00:05
+    # predecessor expiry is the tightest coverage, 120s of margin.
+    assert summary["receipt_continuity_gap_s"] == -120.0
+    assert summary["receipt_surface_replaced_platforms"] == ["claude", "codex"]
+    assert summary["receipt_surface_publication_instants"] == {
+        "claude": "2026-06-10T00:03:00Z",
+        "codex": "2026-06-09T23:47:00Z",
+    }
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-09T23:59:00Z"
+
+
+def test_registry_pools_loaded_flag_witnesses_the_fail_closed_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """claude-1 minor (#4665, round 10): a registry that fails to load fails
+    every receipt closed to the quota TTL with only a stderr note. The
+    --json summary carries the loaded flag beside the gap witnesses so the
+    machine-checkable surface can tell fail-closed-from-failure apart from
+    pools-loaded-and-genuinely-tight."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def boom(*args, **kwargs):
+        raise main_globals["PlatformCapabilityRegistryError"]("registry unavailable (test)")
+
+    monkeypatch.setitem(main_globals, "load_platform_capability_registry_for_dispatch", boom)
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
+    assert summary["registry_pools_loaded"] is False
+    assert "static capability registry unavailable" in captured.err
 
 
 POOL_SOURCE_COMBOS = [
@@ -2120,8 +2285,11 @@ def test_lingering_unrefreshed_receipt_is_maintenance_not_a_replacement_hole(
 
     def codex_only_refresh(*, timeout, receipt_dir):
         # Exactly like the real --all refresh: restamps the platforms it
-        # covers, never touches the retired platform's leftover receipt.
+        # covers, never touches the retired platform's leftover receipt. The
+        # restamped file lands at NOW (its mtime is the per-platform
+        # publication instant the round-11 witness reads).
         _codex_platform_receipt(platform_receipts, observed_at="2026-06-09T23:59:30Z")
+        _utime_platform_receipt(platform_receipts, "codex", NOW)
         return True
 
     monkeypatch.setitem(
@@ -2561,6 +2729,7 @@ action: exit_clean_await_restart
 def _codex_platform_receipt(
     receipt_dir: Path,
     *,
+    platform: str = "codex",
     reason_code: str | None = None,
     include_failed_reason: bool = True,
     saved_login_witness: bool = True,
@@ -2604,8 +2773,8 @@ def _codex_platform_receipt(
     payload = {
         "receipt_schema": 1,
         "receipt_id": "codex-auth-blocked-test" if reason_code else "codex-auth-fresh-test",
-        "platform": "codex",
-        "routes": routes or ["codex.headless.full"],
+        "platform": platform,
+        "routes": routes or [f"{platform}.headless.full"],
         "observed_at": observed_at,
         "stale_after": outer_stale_after,
         "cli": {"binary": "codex", "available": True, "version": "codex-test"},
@@ -2650,7 +2819,18 @@ def _codex_platform_receipt(
         },
         "known_unknowns": [],
     }
-    (receipt_dir / "codex.json").write_text(json.dumps(payload), encoding="utf-8")
+    (receipt_dir / f"{platform}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _utime_platform_receipt(receipt_dir: Path, platform: str, iso: str) -> None:
+    """Pin a receipt file's mtime — the per-platform publication instant.
+
+    The round-11 witness reads each replaced platform's landing instant from
+    its own receipt file mtime (codex-1 M1), so tests place successors onto
+    the frozen timeline instead of inheriting the real wall clock.
+    """
+    stamp = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    os.utime(receipt_dir / f"{platform}.json", (stamp, stamp))
 
 
 def _glmcp_admission(
