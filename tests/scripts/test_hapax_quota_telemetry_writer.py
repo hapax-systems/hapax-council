@@ -1344,7 +1344,12 @@ def test_live_ledger_lock_contention_exits_two_not_hanging(
     _codex_platform_receipt(platform_receipts)
     stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
     out = tmp_path / "out" / "quota-spend-ledger-live.json"
-    step = iter((0.0, 100.0, 200.0, 300.0, 400.0))
+    # Six clock reads, exactly sized: the outer holder below (1), the
+    # invocation anchor (2), the mint anchor for the pre-write diagnostic
+    # (3 — round 12), main's lock-deadline base (4), and the two retry
+    # comparisons that must first undershoot then overshoot the deadline
+    # (5, 6) so the bounded wait expires instead of hanging or succeeding.
+    step = iter((0.0, 100.0, 200.0, 300.0, 400.0, 500.0))
 
     monkeypatch.setitem(main_globals, "monotonic_clock", lambda: next(step))
     monkeypatch.setattr(namespace["time"], "sleep", lambda seconds: None)
@@ -1979,6 +1984,94 @@ def test_receipt_surface_staggered_replacements_keep_continuous_coverage_green(
     assert summary["receipt_surface_predecessor_expiry"] == "2026-06-09T23:59:00Z"
 
 
+def test_receipt_surface_expiry_never_outlives_the_outer_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """C1 (#4665, round 12; codex-1 critical, independently confirmed by
+    glm-1 and claude-1): routing's loader rejects an expired OUTER envelope
+    before applying any quota evidence, so a 900s quota admission inside a
+    60s envelope dies WITH the envelope at 23:51 — never at observed+900s
+    (00:05). Before the cap the witness vouched 280s past routing's real
+    death and the 00:00:20 replacement read green (gap −280) against a
+    surface routing had already refused at 23:51; capped, the same tick
+    reports the true 560s hole and flaps rc=4."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at="2026-06-10T00:00:30Z")
+    # Predecessor: quota OBSERVED with a 900s TTL inside a 60s outer
+    # envelope — the reviewer's exact repro shape.
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:50:00Z",
+        outer_stale_after="60s",
+        quota_stale_after="900s",
+    )
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def replace_past_the_envelope(*, timeout, receipt_dir):
+        # The successor names a route NO registry carries, so its own expiry
+        # fails closed to the quota TTL — capped to the same 60s envelope, so
+        # the gap math is untouched while the no-named-route key (claude-1
+        # minor, #4665 round 12) gets its main-flow leg here.
+        _codex_platform_receipt(
+            platform_receipts,
+            observed_at="2026-06-10T00:00:00Z",
+            outer_stale_after="60s",
+            quota_stale_after="900s",
+            routes=["codex.retired.route"],
+        )
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:00:20Z")
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", replace_past_the_envelope)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            "2026-06-10T00:00:30Z",
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 4
+    summary = json.loads(capsys.readouterr().out)
+    # The predecessor's effective expiry is the OUTER envelope edge (23:51),
+    # not observed+900s (00:05): the envelope cap is the fix under test.
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-09T23:51:00Z"
+    assert summary["receipt_continuity_gap_s"] == 560.0
+    assert summary["receipt_continuity_degraded"] is True
+    # The successor names no registry route: the fail-closed fallback the gap
+    # witnesses cannot see is named in the summary, post-refresh state.
+    assert summary["receipt_surface_no_named_route_platforms"] == ["codex"]
+
+
 def test_registry_pools_loaded_flag_witnesses_the_fail_closed_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2123,6 +2216,39 @@ def test_receipt_surface_effective_expiry_mirrors_the_routing_consumer(
         payload = {"capacity_pool": pool, "telemetry": {"quota_source": source}}
         assert expiry_dt(refused_receipt, (pool, source)) == observed + timedelta(minutes=15)
         assert nonblocking_of(payload, refused_receipt) is False
+
+    # Short-envelope legs (#4665 round 12, C1): routing's loader rejects the
+    # receipt once the OUTER envelope dies, BEFORE any quota evidence
+    # applies — and _quota_unobservable_nonblocking itself does no envelope
+    # filtering, so THIS composition must add the cap or the mirror and the
+    # writer diverge on short envelopes. Every branch converges at the
+    # envelope edge when the quota TTL outlives it; none may vouch past it.
+    _codex_platform_receipt(
+        tmp_path,
+        observed_at="2026-06-09T23:00:00Z",
+        outer_stale_after="60s",
+        quota_stale_after="900s",
+    )
+    short_observed = _load_written_receipt(tmp_path)
+    for pool, source, _eligible in POOL_SOURCE_COMBOS:
+        payload = {"capacity_pool": pool, "telemetry": {"quota_source": source}}
+        assert expiry_dt(short_observed, (pool, source)) == observed + timedelta(seconds=60)
+        assert nonblocking_of(payload, short_observed) is False
+
+    _codex_platform_receipt(
+        tmp_path,
+        observed_at="2026-06-09T23:00:00Z",
+        outer_stale_after="60s",
+        quota_stale_after="900s",
+        quota_status="unobservable",
+    )
+    short_unobservable = _load_written_receipt(tmp_path)
+    for pool, source, _eligible in POOL_SOURCE_COMBOS:
+        payload = {"capacity_pool": pool, "telemetry": {"quota_source": source}}
+        # Eligible pools vouch the envelope itself; every other branch caps
+        # the 900s quota TTL at the same 60s edge — converged at 23:01,
+        # never at 23:15.
+        assert expiry_dt(short_unobservable, (pool, source)) == observed + timedelta(seconds=60)
 
 
 def test_mixed_named_route_pools_bind_the_platform_at_the_earliest_expiry(
