@@ -121,6 +121,105 @@ def test_capability_receipt_refresh_preserves_codex_exec_auth_probe(
     ]
 
 
+def test_pull_forward_goes_through_the_determine_cadence_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The pull must use the SAME harness and gate (no --force), so one cadence
+    window yields one run regardless of which invoker fires first."""
+    namespace = runpy.run_path(str(SCRIPT))
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *, capture_output, text, timeout):
+        calls.append(argv)
+        assert capture_output is True
+        assert text is True
+        assert timeout == namespace["PULL_FORWARD_TIMEOUT_S"]
+        return subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+
+    monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
+
+    assert namespace["pull_forward_due_producers"](repo_root=REPO_ROOT) is True
+    assert calls == [
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "hapax-determine"),
+            "--producer",
+            "agy-review-quota",
+            "--json",
+        ]
+    ]
+
+
+def test_pull_forward_degrades_not_aborts_on_failure_and_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+    outcomes = [
+        subprocess.CompletedProcess(["x"], 5, stdout="", stderr="producer failed"),
+        subprocess.TimeoutExpired(cmd=["x"], timeout=330.0),
+    ]
+
+    def fake_run(argv, *, capture_output, text, timeout):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
+    assert namespace["pull_forward_due_producers"](repo_root=REPO_ROOT) is False
+    assert namespace["pull_forward_due_producers"](repo_root=REPO_ROOT) is False
+    assert not outcomes
+
+
+def test_main_pulls_forward_before_receipt_refresh_and_reports_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Without the pull, the refresh always reads the PREVIOUS cycle's agy mint
+    (~600s of its 900s TTL spent) and the surface flaps stale half of every
+    cycle — the measured freshness-flap defect."""
+    namespace = runpy.run_path(str(SCRIPT))
+    # Patch through main's own globals: run_path's returned mapping is not
+    # guaranteed to be the dict main resolves names in, and this test must
+    # observe what main actually calls, not a copy of the namespace.
+    main_globals = namespace["main"].__globals__
+    order: list[str] = []
+    main_globals["pull_forward_due_producers"] = lambda **kw: order.append("pull") or True
+    main_globals["refresh_capability_receipts"] = lambda **kw: order.append("refresh") or True
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    assert order == ["pull", "refresh"]
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["producers_pulled_forward"] is True
+    assert summary["receipts_refreshed"] is True
+
+
 def _wall_receipt(
     relay: Path,
     role: str,

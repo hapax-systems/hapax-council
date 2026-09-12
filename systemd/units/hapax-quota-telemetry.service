@@ -21,7 +21,12 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-quota-telemetry
 MemoryMax=256M
-TimeoutStartSec=180
+# Step 0 of the writer pulls a due determination producer forward (bounded by
+# the 300s producer timeout) before the receipt refresh (bounded by its own
+# 360s outer timeout), in series. 180s could kill the tick that now contains
+# both; a killed tick skips a telemetry write entirely (oneshot, no overlap),
+# so the budget must cover the worst-case serial path with margin.
+TimeoutStartSec=900
 # Killswitch: `systemctl --user mask hapax-quota-telemetry.timer` stops the
 # writer; receipts then lapse after quota stale_after (15m) and the live ledger
 # goes stale after its TTL — the dispatcher falls back to fail-closed HOLDs,
