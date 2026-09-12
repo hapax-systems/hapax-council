@@ -283,3 +283,18 @@ def test_cwd_stdlib_spoof_not_imported(tmp_path: Path) -> None:
     result = _run_caller_mutator(home, cwd, {"PYTHONPATH": f"{cwd}:"})
     assert result.returncode == 2, (result.stdout, result.stderr)
     _assert_route_refusal(result)
+
+
+def test_python_invocations_carry_safe_path_flag() -> None:
+    # Review finding (gemini-1, 2026-09-12 round 2): the PR body documents
+    # `python3 -P` (PYTHONSAFEPATH — no unsafe cwd/script-dir prepend) on both
+    # gate invocations, but the shipped script omitted the flag. The subshell
+    # cd + explicit PYTHONPATH make -P defense-in-depth rather than the primary
+    # control, so the durable check is a source pin: both the classifier and
+    # the receipt-gate invocation must keep the flag.
+    source = HOOK.read_text(encoding="utf-8")
+    invocations = [line for line in source.splitlines() if "python3 " in line and "-m " in line]
+    assert invocations, "gate script no longer invokes python3 -m directly — re-audit isolation"
+    receipt_gate = [line for line in source.splitlines() if 'python3 -P "${args[@]}"' in line]
+    assert len(receipt_gate) == 1, source
+    assert all("python3 -P " in line for line in invocations), source
