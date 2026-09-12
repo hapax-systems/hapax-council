@@ -6,10 +6,10 @@ REQ-20260609-model-capability-cost-routing-operationalization: the dispatcher's
 quota state must come from live telemetry written on a timer, not from the
 checked-in ``config/quota-spend-ledger-fixtures.json`` snapshot.
 
-Each tick does three steps:
+Each tick does four steps:
 
-0. Pull forward any DUE determination producer whose receipts the quota
-   surfaces embed (currently the agy admission). The telemetry timer fires
+0. Pull forward any due-or-nearly-due determination producer whose receipts the
+   quota surfaces embed (currently the agy admission). The telemetry timer fires
    ~18s BEFORE the determine timer mints each cycle's receipt, so without
    this step the receipt read below always embeds the PREVIOUS cycle's mint
    — ~600s of its 900s TTL already spent — and the #4616 anti-overclaim
@@ -17,17 +17,32 @@ Each tick does three steps:
    a permanent ~50% stale duty cycle while the receipt plane itself never
    lapses (measured 2026-09-12,
    REVIEW-ROUTE-FRESHNESS-FLAP-DEFECT-20260912). The pull goes through the
-   SAME harness and cadence gate (no --force), so exactly one run happens
-   per cadence window regardless of which invoker fires first.
+   SAME harness and cadence gate (no --force) and passes --due-within, so the
+   harness sleeps into the cadence boundary when the producer is seconds away
+   from due — a due-check-only pull is a NO-OP in exactly the measured failure
+   phase (18s of every 600s) — and exactly one run happens per cadence window
+   regardless of which invoker fires first.
 
-1. Refresh the per-provider platform capability receipts (quota / resource /
+1. Rebuild and write the live ledger (step 3's scan/build, below) BEFORE any
+   receipt refresh, so downstream consumers of the ledger always see the
+   freshest embedded evidence first.
+
+2. Refresh the per-provider platform capability receipts (quota / resource /
    capability surfaces) via
    ``scripts/hapax-platform-capability-receipts --all --codex-exec-auth-probe``.
-   The registry freshness check reads these; the quota surface carries
-   ``stale_after=15m``, so the paired systemd timer fires inside that window to
-   keep subscription routes from HOLDing on ``quota_telemetry_stale_or_unknown``.
+   This MUST run after the step-1 write: the refresh validates subscription
+   routes against the live ledger ON DISK and caps each receipt's stale_after
+   by that ledger's fresh_until — refreshing against the previous cycle's
+   ledger clamps a fresh 900s admission to the stale ledger's remaining
+   freshness (critical finding on #4665). When the refreshed receipts change
+   the Codex auth blocker, the ledger is rebuilt and rewritten once more so
+   the published surface reflects the post-refresh Codex state in the same
+   tick. The registry freshness check reads these receipts; the quota surface
+   carries ``stale_after=15m``, so the paired systemd timer fires inside that
+   window to keep subscription routes from HOLDing on
+   ``quota_telemetry_stale_or_unknown``.
 
-2. Rebuild the live quota/spend ledger at
+3. Rebuild the live quota/spend ledger at
    ``~/.cache/hapax/orchestration/quota-spend-ledger-live.json`` (or
    ``$HAPAX_QUOTA_SPEND_LEDGER_LIVE``). Governance records (transition budgets,
    dependencies, provenance, renewals) are carried over from the checked-in
@@ -160,6 +175,13 @@ QUOTA_SURFACE_PULL_FORWARD_PRODUCER_IDS = ("agy-review-quota",)
 # timeout plus ledger overhead; the systemd unit's TimeoutStartSec must cover
 # this in series with the receipt refresh that follows.
 PULL_FORWARD_TIMEOUT_S = 330.0
+# The pull fires ~18s before the cadence boundary, where the producer is 582s
+# old on a 600s cadence — not_due to a due-check-only gate, a NO-OP pull, and
+# the freshness flap survives the repair (critical finding on #4665). The
+# harness sleeps into the due window for anything within this horizon; 30s
+# covers the measured phase plus timer jitter while staying far inside the
+# 330s pull budget above.
+PULL_FORWARD_DUE_WITHIN_S = 30.0
 
 # Subscription platforms with quota-wall detection and their canonical
 # dispatch route (the registry's primary subscription route per platform).
@@ -2263,7 +2285,15 @@ def pull_forward_due_producers(
     for producer_id in QUOTA_SURFACE_PULL_FORWARD_PRODUCER_IDS:
         try:
             result = subprocess.run(
-                [sys.executable, str(script), "--producer", producer_id, "--json"],
+                [
+                    sys.executable,
+                    str(script),
+                    "--producer",
+                    producer_id,
+                    "--due-within",
+                    str(PULL_FORWARD_DUE_WITHIN_S),
+                    "--json",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -2271,7 +2301,10 @@ def pull_forward_due_producers(
         except subprocess.TimeoutExpired:
             print(
                 "hapax-quota-telemetry-writer: producer pull-forward timed out "
-                f"({producer_id}) after {timeout:.0f}s; continuing with existing receipts",
+                f"({producer_id}) after {timeout:.0f}s; continuing with existing receipts. "
+                f"Next: scripts/hapax-determine --producer {producer_id} --check --json "
+                "to see whether the producer is wedged mid-run, and journalctl --user -u "
+                "hapax-determine.service for the concurrent fire.",
                 file=sys.stderr,
             )
             ok = False
@@ -2279,7 +2312,9 @@ def pull_forward_due_producers(
         except (OSError, subprocess.SubprocessError) as exc:
             print(
                 "hapax-quota-telemetry-writer: producer pull-forward could not run "
-                f"({producer_id}): {exc}; continuing with existing receipts",
+                f"({producer_id}): {exc}; continuing with existing receipts. "
+                f"Next: verify {script} is present and executable in this checkout "
+                "(`ls -l scripts/hapax-determine`) — no provider state was touched.",
                 file=sys.stderr,
             )
             ok = False
@@ -2288,7 +2323,10 @@ def pull_forward_due_producers(
             print(
                 "hapax-quota-telemetry-writer: producer pull-forward failed "
                 f"({producer_id}) rc={result.returncode}: "
-                f"{(result.stderr or result.stdout).strip()[:400]}",
+                f"{(result.stderr or result.stdout).strip()[:400]}; "
+                "continuing with existing receipts. "
+                f"Next: scripts/hapax-determine --producer {producer_id} --json to "
+                "reproduce the producer failure outside the telemetry tick.",
                 file=sys.stderr,
             )
             ok = False
@@ -2318,14 +2356,20 @@ def refresh_capability_receipts(*, timeout: float, receipt_dir: Path) -> bool:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         print(
-            f"hapax-quota-telemetry-writer: receipt refresh failed: {exc}",
+            f"hapax-quota-telemetry-writer: receipt refresh failed: {exc}. "
+            "Next: rerun scripts/hapax-platform-capability-receipts --all "
+            f"--receipt-dir {receipt_dir} by hand to surface the spawn failure; "
+            "the live ledger below is built from existing receipts.",
             file=sys.stderr,
         )
         return False
     if result.returncode != 0:
         print(
             f"hapax-quota-telemetry-writer: receipt refresh failed rc={result.returncode}: "
-            f"{(result.stderr or result.stdout).strip()[:400]}",
+            f"{(result.stderr or result.stdout).strip()[:400]}. "
+            "Next: scripts/hapax-platform-capability-receipts --all "
+            f"--receipt-dir {receipt_dir} to reproduce the failure outside the "
+            "telemetry tick.",
             file=sys.stderr,
         )
         return False
@@ -2389,10 +2433,12 @@ def main(argv: list[str] | None = None) -> int:
     producers_pulled = False
     if not args.skip_receipts:
         producers_pulled = pull_forward_due_producers(repo_root=REPO_ROOT)
-        receipts_ok = refresh_capability_receipts(
-            timeout=args.receipt_timeout,
-            receipt_dir=args.platform_capability_receipt_dir,
-        )
+        # The pull (and its due-window sleep) can cross second boundaries; every
+        # scan below must judge receipt freshness against what exists AFTER the
+        # pull, or the mint the pull just produced is rejected as future-dated
+        # (major finding on #4665). --now keeps tests deterministic.
+        if not args.now:
+            now = datetime.now(UTC).replace(microsecond=0)
 
     try:
         base = load_quota_spend_ledger(args.base)
@@ -2405,25 +2451,40 @@ def main(argv: list[str] | None = None) -> int:
     else:
         configured = os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV)
         out_path = Path(configured).expanduser() if configured else DEFAULT_QUOTA_SPEND_LEDGER_LIVE
-    with quota_spend_live_lock(out_path):
-        walls = active_quota_walls(args.relay_receipt_dir, now=now)
-        agy_scan = active_agy_admission_receipts(args.relay_receipt_dir, now=now)
-        claude_scan = active_claude_admission_receipts(args.relay_receipt_dir, now=now)
-        glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=now)
-        glmcp_payg_spend_scan = active_glmcp_payg_spend_receipts(
-            args.relay_receipt_dir,
-            base=base,
-            now=now,
-        )
-        codex_auth_blocker = codex_saved_login_blocker(
-            args.platform_capability_receipt_dir,
-            now=now,
-        )
-        resource_state, resource_evidence = probe_local_resource_state(nvidia_smi=args.nvidia_smi)
-        try:
+
+    def _scan_build_write(
+        current_now: datetime,
+    ) -> tuple[
+        QuotaSpendLedger,
+        dict[str, list[QuotaWall]],
+        object,
+        object,
+        object,
+        GlmcpPaygSpendScan,
+        str,
+        CodexAuthBlocker | None,
+    ]:
+        """One full scan→build→atomic-write pass under the live-ledger lock."""
+        with quota_spend_live_lock(out_path):
+            walls = active_quota_walls(args.relay_receipt_dir, now=current_now)
+            agy_scan = active_agy_admission_receipts(args.relay_receipt_dir, now=current_now)
+            claude_scan = active_claude_admission_receipts(args.relay_receipt_dir, now=current_now)
+            glmcp_scan = active_glmcp_admission_receipts(args.relay_receipt_dir, now=current_now)
+            glmcp_payg_spend_scan = active_glmcp_payg_spend_receipts(
+                args.relay_receipt_dir,
+                base=base,
+                now=current_now,
+            )
+            codex_blocker = codex_saved_login_blocker(
+                args.platform_capability_receipt_dir,
+                now=current_now,
+            )
+            resource_state, resource_evidence = probe_local_resource_state(
+                nvidia_smi=args.nvidia_smi
+            )
             ledger = build_live_ledger(
                 base,
-                now=now,
+                now=current_now,
                 walls=walls,
                 agy_admissions=agy_scan.admissions,
                 agy_ignored_receipts=agy_scan.ignored_evidence_refs,
@@ -2433,14 +2494,75 @@ def main(argv: list[str] | None = None) -> int:
                 glmcp_ignored_receipts=glmcp_scan.ignored_evidence_refs,
                 glmcp_payg_spend_receipts=glmcp_payg_spend_scan.receipts,
                 glmcp_ignored_payg_spend_receipts=glmcp_payg_spend_scan.ignored_evidence_refs,
-                codex_auth_blocker=codex_auth_blocker,
+                codex_auth_blocker=codex_blocker,
                 local_resource_state=resource_state,
                 local_resource_evidence=resource_evidence,
             )
-        except (ValueError, QuotaSpendLedgerError) as exc:
-            print(f"hapax-quota-telemetry-writer: live ledger invalid: {exc}", file=sys.stderr)
-            return 1
-        write_ledger_atomic(ledger, out_path)
+            write_ledger_atomic(ledger, out_path)
+        return (
+            ledger,
+            walls,
+            agy_scan,
+            claude_scan,
+            glmcp_scan,
+            glmcp_payg_spend_scan,
+            resource_state,
+            codex_blocker,
+        )
+
+    try:
+        (
+            ledger,
+            walls,
+            agy_scan,
+            claude_scan,
+            glmcp_scan,
+            glmcp_payg_spend_scan,
+            resource_state,
+            codex_blocker,
+        ) = _scan_build_write(now)
+    except (ValueError, QuotaSpendLedgerError) as exc:
+        print(f"hapax-quota-telemetry-writer: live ledger invalid: {exc}", file=sys.stderr)
+        return 1
+
+    # The refresh runs AFTER the pass-1 write, on purpose (critical finding on #4665):
+    # its observe_quota consumer validates routes against the live ledger on disk and
+    # caps each capability receipt's stale_after by that ledger's fresh_until. Refreshing
+    # before the write made it consume the PREVIOUS cycle's ledger, so a fresh 900s
+    # admission was clamped to whatever freshness the stale ledger had left (~300s) or,
+    # once that expired, made the surface unobservable despite fresh producer input.
+    ledger_rebuilt_after_refresh = False
+    if not args.skip_receipts:
+        receipts_ok = refresh_capability_receipts(
+            timeout=args.receipt_timeout,
+            receipt_dir=args.platform_capability_receipt_dir,
+        )
+        pass2_now = now if args.now else datetime.now(UTC).replace(microsecond=0)
+        # Only the codex blocker reads what the refresh rewrote; recompute it and
+        # rebuild only when it actually changed, so the common tick writes once.
+        if (
+            codex_saved_login_blocker(args.platform_capability_receipt_dir, now=pass2_now)
+            != codex_blocker
+        ):
+            try:
+                (
+                    ledger,
+                    walls,
+                    agy_scan,
+                    claude_scan,
+                    glmcp_scan,
+                    glmcp_payg_spend_scan,
+                    resource_state,
+                    codex_blocker,
+                ) = _scan_build_write(pass2_now)
+                ledger_rebuilt_after_refresh = True
+            except (ValueError, QuotaSpendLedgerError) as exc:
+                print(
+                    "hapax-quota-telemetry-writer: live ledger invalid after receipt "
+                    f"refresh: {exc}; the pass-1 ledger remains on disk. Next: rerun this "
+                    "writer with --json after inspecting the platform capability receipts.",
+                    file=sys.stderr,
+                )
 
     summary = {
         "ledger_id": ledger.ledger_id,
@@ -2448,6 +2570,7 @@ def main(argv: list[str] | None = None) -> int:
         "out": str(out_path),
         "receipts_refreshed": receipts_ok,
         "producers_pulled_forward": producers_pulled,
+        "ledger_rebuilt_after_refresh": ledger_rebuilt_after_refresh,
         "local_resource_state": resource_state,
         "agy_admissions": len(agy_scan.admissions),
         "agy_ignored_admissions": len(agy_scan.ignored_evidence_refs),
