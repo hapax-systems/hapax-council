@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -163,6 +164,60 @@ class TestCadence:
         """Fail toward running. A corrupt ledger line must not silently stop a producer."""
         p = det.load_registry(_registry(tmp_path))[0]
         assert det.is_due(p, {"ran_at": "not-a-timestamp"}, NOW)
+
+
+class TestPerProducerLock:
+    """Two invokers share one cadence (timer + telemetry pull-forward); the lock
+    plus in-lock re-check keeps one provider round trip per cadence window
+    regardless of who fires first."""
+
+    def test_lock_path_lives_beside_the_ledger(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "determine" / "runs.jsonl"
+        assert det.producer_lock_path(ledger, "p1") == (
+            tmp_path / "determine" / "locks" / "p1.lock"
+        )
+
+    def test_a_run_that_lands_while_waiting_for_the_lock_is_not_duplicated(
+        self, tmp_path: Path
+    ) -> None:
+        """The quota telemetry writer pulls the agy producer forward ~18s before
+        the determine timer fires. The late invoker must re-read the ledger
+        inside the lock and skip, not run the provider round trip twice."""
+        marker = tmp_path / "producer-ran"
+        producer_sh = tmp_path / "producer.sh"
+        producer_sh.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        producer_sh.chmod(0o755)
+        reg = _registry(tmp_path, command=[str(producer_sh)])
+        ledger = tmp_path / "runs.jsonl"
+        result: dict[str, int] = {}
+
+        def _invoker() -> None:
+            result["rc"] = det.main(
+                [
+                    "--registry",
+                    str(reg),
+                    "--run-ledger",
+                    str(ledger),
+                    "--repo-root",
+                    str(tmp_path),
+                    "--now",
+                    det._iso(NOW),
+                    "--json",
+                ]
+            )
+
+        with det.producer_lock(ledger, "p1"):
+            late = threading.Thread(target=_invoker)
+            late.start()
+            # The concurrent winner's run lands while the late invoker is
+            # blocked on the lock, exactly as an overlapping timer fire sees.
+            det.append_run(
+                ledger,
+                {"ran_at": det._iso(NOW), "producer_id": "p1", "outcome": "produced"},
+            )
+        late.join(timeout=10)
+        assert result["rc"] == 0
+        assert not marker.exists()
 
 
 class TestExitCodes:

@@ -34,11 +34,15 @@ their own receipts; this owns scheduling, liveness, and the run ledger.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -130,6 +134,32 @@ def is_due(producer: dict[str, Any], last: dict[str, Any] | None, now: datetime)
     if at is None:
         return True
     return (now - at).total_seconds() >= producer["cadence_seconds"]
+
+
+def producer_lock_path(ledger: Path, producer_id: str) -> Path:
+    """Per-producer advisory lock beside the run ledger that gates the same run.
+
+    The harness now has two invokers on one cadence: the systemd timer, and
+    `hapax-quota-telemetry-writer` pulling a receipt producer forward so its
+    read cannot land one mint behind (the quota-surface freshness flap). They
+    overlap — the telemetry timer fires ~18s before the determine timer. The
+    lock path derives from the LEDGER's parent, so a test ledger locks inside
+    the test's tmp_path and never the live cache.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", producer_id) or "producer"
+    return ledger.parent / "locks" / f"{safe}.lock"
+
+
+@contextmanager
+def producer_lock(ledger: Path, producer_id: str) -> Iterator[None]:
+    lock_path = producer_lock_path(ledger, producer_id)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def run_producer(
@@ -295,13 +325,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.check:
         for p in producers:
-            if not args.force and not is_due(p, runs.get(p["id"]), now):
-                payload["skipped"].append({"producer_id": p["id"], "reason": "not_due"})
-                continue
-            record = run_producer(p, now=now, repo_root=args.repo_root, timeout=args.timeout)
-            append_run(args.run_ledger, record)
-            runs[p["id"]] = record
-            payload["ran"].append(record)
+            # The due decision is made INSIDE the per-producer lock, against a
+            # fresh read of the ledger. Two invokers share one cadence (timer +
+            # telemetry pull-forward); whoever locks first runs and appends, and
+            # the second re-reads `ran_at` and skips — one provider round trip
+            # per cadence window, no matter who fired or in what order. The
+            # re-read also refreshes the liveness view, so an invoker that
+            # skipped behind a concurrent winner reports the winner's run, not
+            # a false `never_ran` deficit.
+            with producer_lock(args.run_ledger, p["id"]):
+                latest = last_runs(args.run_ledger).get(p["id"])
+                if latest is not None:
+                    runs[p["id"]] = latest
+                if not args.force and not is_due(p, latest, now):
+                    payload["skipped"].append({"producer_id": p["id"], "reason": "not_due"})
+                    continue
+                record = run_producer(p, now=now, repo_root=args.repo_root, timeout=args.timeout)
+                append_run(args.run_ledger, record)
+                runs[p["id"]] = record
+                payload["ran"].append(record)
 
     payload["liveness"] = liveness(producers, runs, now)
 
