@@ -1434,9 +1434,16 @@ def test_clock_refresh_branch_without_now_uses_post_pull_time(
         def now(cls, tz=None):
             return cls.clock
 
+    # The pull advances BOTH clocks like a real 27s child would: the wall
+    # re-sample below judges receipt freshness post-pull, and the monotonic
+    # elapsed carries the pull into the publication instant. A frozen
+    # monotonic with an advancing wall is exactly the combination that masked
+    # the round-7 M1 double-count, so this test refuses to freeze it.
+    mono = {"elapsed": 0.0}
+
     def timed_pull(*, repo_root, receipt_dir, now, timeout=None):
-        # A real pull child takes seconds; advance the wall clock like one did.
         ControllableDatetime.clock = t0 + timedelta(seconds=27)
+        mono["elapsed"] = 27.0
         _agy_admission(
             relay,
             observed_at=ControllableDatetime.clock.isoformat().replace("+00:00", "Z"),
@@ -1453,7 +1460,7 @@ def test_clock_refresh_branch_without_now_uses_post_pull_time(
     monkeypatch.setitem(main_globals, "datetime", ControllableDatetime)
     monkeypatch.setitem(main_globals, "pull_forward_due_producers", timed_pull)
     monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
-    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: mono["elapsed"])
 
     rc = namespace["main"](
         [
@@ -1473,6 +1480,229 @@ def test_clock_refresh_branch_without_now_uses_post_pull_time(
     assert payload["captured_at"] == (t0 + timedelta(seconds=27)).isoformat().replace("+00:00", "Z")
     summary = json.loads(capsys.readouterr().out)
     assert summary["admission_freshness_at_publication_s"] == 900.0
+
+
+def test_publication_anchor_is_the_invocation_wall_clock_not_the_post_pull_resample(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """M1 (#4665, round 7): under a real clock, `now` is re-sampled after the
+    pull so the receipt scans judge post-pull freshness — but publication must
+    anchor at the IMMUTABLE invocation wall clock, because the invocation-wide
+    monotonic elapsed already carries the pull. Anchoring at the re-sample
+    counted the pull twice: the reviewer repro (60s pull, publication 80s
+    after the invocation) reported T+140, shaving 60s of honest freshness and
+    manufacturing a phantom continuity gap into rc=4."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    t0 = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+
+    class ControllableDatetime(datetime):
+        clock = t0
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.clock
+
+    def timed_pull(*, repo_root, receipt_dir, now, timeout=None):
+        # A 60s pull child: the wall moves 60s, the mint lands inside it.
+        ControllableDatetime.clock = t0 + timedelta(seconds=60)
+        _agy_admission(
+            relay,
+            observed_at=ControllableDatetime.clock.isoformat().replace("+00:00", "Z"),
+            stale_after_seconds=900,
+        )
+        return {
+            "invoked": True,
+            "forced": True,
+            "ran": ["agy-review-quota"],
+            "skipped": [],
+            "ok": True,
+        }
+
+    monkeypatch.setitem(main_globals, "datetime", ControllableDatetime)
+    monkeypatch.setitem(main_globals, "pull_forward_due_producers", timed_pull)
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+    # invocation anchor 0.0 (pre-pull), pass-1 lock deadline 0.0,
+    # publication read 80.0: 80s of invocation-wide monotonic elapsed.
+    monkeypatch.setitem(main_globals, "monotonic_clock", SequenceClock([0.0, 0.0, 80.0]))
+
+    rc = namespace["main"](
+        [
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    # The scans judge post-pull time (captured_at t0+60) while the publication
+    # instant is the invocation wall anchor PLUS the measured elapsed (t0+80)
+    # — never the post-pull re-sample plus elapsed (t0+140).
+    assert payload["captured_at"] == (t0 + timedelta(seconds=60)).isoformat().replace("+00:00", "Z")
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["published_at"] == (t0 + timedelta(seconds=80)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    # 900s minted at t0+60, published at t0+80: 880s honestly remaining —
+    # the double-counted T+140 would have read 820 and (against a promise
+    # near expiry) degraded a healthy tick.
+    assert summary["admission_freshness_at_publication_s"] == 880.0
+    assert summary["admission_continuity_gap_s"] is None
+
+
+def test_rebuild_continuity_is_judged_against_the_pass1_promise(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """M2 (#4665, round 7): a refresh-forced rebuild replaces the ledger a
+    SECOND time in one tick, so pass 2's continuity must compare against the
+    promise PASS 1 just published — its immediate predecessor — not the
+    pre-tick promise pass 1 already covered. Reviewer repro shape: previous
+    expiry T+100, pass 1 published inside it covering T+1000, pass 2
+    published past T+100 — the pre-tick comparison read a phantom gap and
+    failed a tick whose coverage never broke."""
+
+    def seeded_tick_pair(tmp: Path, pass_clock: list[float]) -> tuple[int, dict, str]:
+        namespace = runpy.run_path(str(SCRIPT))
+        main_globals = namespace["main"].__globals__
+        relay = tmp / "relay-receipts"
+        platform_receipts = tmp / "platform-receipts"
+        tmp.mkdir(parents=True, exist_ok=True)
+        relay.mkdir()
+        platform_receipts.mkdir()
+        _codex_platform_receipt(platform_receipts)
+        stub = _fake_nvidia_smi(tmp, "echo '1000, 32000'")
+        out = tmp / "out" / "quota-spend-ledger-live.json"
+        argv = [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+        mint_stale_after = [100]
+
+        def behavioral_pull(*, repo_root, receipt_dir, now, timeout=None):
+            if namespace["pull_forward_force_needed"](receipt_dir, now=now):
+                _agy_admission(relay, observed_at=NOW, stale_after_seconds=mint_stale_after[0])
+                return {
+                    "invoked": True,
+                    "forced": True,
+                    "ran": ["agy-review-quota"],
+                    "skipped": [],
+                    "ok": True,
+                }
+            return {"invoked": True, "forced": False, "ran": [], "skipped": [], "ok": True}
+
+        def run_tick(clock_values: list[float]) -> tuple[int, dict, str]:
+            monkeypatch.setitem(main_globals, "monotonic_clock", SequenceClock(clock_values))
+            rc = namespace["main"](argv)
+            captured = capsys.readouterr()
+            return rc, json.loads(captured.out), captured.err
+
+        # Tick A mints a 100s promise (t0+100) — honestly freshness-degraded,
+        # cold start on continuity — and publishes the pre-tick ledger.
+        monkeypatch.setitem(main_globals, "pull_forward_due_producers", behavioral_pull)
+        monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+        rc_a, summary_a, _ = run_tick([0, 0, 0])
+        assert rc_a == 4  # 100s remaining against an 819s horizon
+        assert summary_a["admission_continuity_gap_s"] is None
+
+        # Tick B: a fresh 1000s mint (coverage t0+1020), and the refresh
+        # flips the codex blocker so the ledger is rebuilt — a two-pass tick.
+        mint_stale_after[0] = 1000
+        _codex_platform_receipt(
+            platform_receipts, reason_code="codex_exec_auth_refresh_token_invalidated"
+        )
+
+        def healing_refresh(*, timeout, receipt_dir):
+            _codex_platform_receipt(platform_receipts)
+            return True
+
+        monkeypatch.setitem(main_globals, "refresh_capability_receipts", healing_refresh)
+        return run_tick(pass_clock)
+
+    t0 = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+
+    def z(dt: datetime) -> str:
+        return dt.isoformat().replace("+00:00", "Z")
+
+    # Pass 1 publishes at t0+5 (well inside the t0+100 promise); the rebuild
+    # publishes at t0+120 — 20s past the PRE-TICK promise, fully covered by
+    # pass 1's own t0+1000. The phantom-gap repro needs pass-2 elapsed > 100.
+    rc, summary, _ = seeded_tick_pair(tmp_path / "pair-no-gap", [0, 0, 5, 5, 5, 120])
+    assert rc == 0
+    assert summary["ledger_rebuilt_after_refresh"] is True
+    assert summary["admission_continuity_gap_s"] == 0.0
+    assert summary["admission_continuity_degraded"] is False
+    assert summary["previous_promise_fresh_until"] == z(t0 + timedelta(seconds=100))
+
+    # Retention leg: pass 1 itself publishes at t0+110 — 10s PAST the
+    # pre-tick promise, a real dead interval — and the continuous rebuild at
+    # t0+130 must not erase it. The reported gap stays 10s and cites the
+    # pre-tick predecessor.
+    rc, summary, err = seeded_tick_pair(tmp_path / "pair-retained-gap", [0, 0, 110, 110, 110, 130])
+    assert rc == 4
+    assert summary["ledger_rebuilt_after_refresh"] is True
+    assert summary["admission_continuity_gap_s"] == 10.0
+    assert summary["admission_continuity_degraded"] is True
+    assert z(t0 + timedelta(seconds=100)) in err
+
+
+def test_pre_mint_scan_elapsed_is_scripted_not_wall_assumed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """glm-1 minor (#4665, round 6): the pre-mint scan's elapsed measurement
+    is pinned to a scripted monotonic clock, so dropping or re-anchoring the
+    sampling fails red instead of riding a near-zero real clock on an empty
+    receipt dir."""
+    namespace = runpy.run_path(str(SCRIPT))
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+
+    def fake_run(argv, *, capture_output, text, timeout):
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps({"now": NOW, "ran": [], "skipped": []}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
+    monkeypatch.setitem(
+        namespace["pull_forward_due_producers"].__globals__,
+        "monotonic_clock",
+        SequenceClock([100.0, 103.5]),
+    )
+    info = namespace["pull_forward_due_producers"](
+        repo_root=REPO_ROOT,
+        receipt_dir=relay,
+        now=datetime.fromisoformat(NOW.replace("Z", "+00:00")),
+    )
+    assert info["scan_elapsed_s"] == 3.5
 
 
 class TestPullForwardBudgetPins:

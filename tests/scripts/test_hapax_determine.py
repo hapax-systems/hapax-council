@@ -631,6 +631,92 @@ class TestPerProducerLock:
         rows = ledger.read_text(encoding="utf-8").strip().splitlines()
         assert len(rows) == 1  # the superseded waiter appended nothing
 
+    def test_same_second_completion_supersedes_a_whole_second_decision(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """C1 (#4665, round 7): whole-second truncation made a winner that
+        finished 0.8s AFTER the decision compare EQUAL to it, fail the strict
+        comparison, and get duplicated by the forced waiter. The completion
+        witness now carries sub-second precision, and a completion landing
+        inside the decision's own second supersedes conservatively — a
+        duplicate forced run is a provider round-trip nothing undoes, while a
+        skipped-but-needed run self-heals at the next cadence window."""
+        marker = tmp_path / "producer-ran"
+        producer_sh = tmp_path / "producer.sh"
+        producer_sh.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        producer_sh.chmod(0o755)
+        reg = _registry(tmp_path, command=[str(producer_sh)])
+        ledger = tmp_path / "runs.jsonl"
+        argv = [
+            "--registry",
+            str(reg),
+            "--run-ledger",
+            str(ledger),
+            "--repo-root",
+            str(tmp_path),
+            "--now",
+            det._iso(NOW),
+            "--force",
+            "--force-justified-at",
+            det._iso(NOW),
+            "--json",
+        ]
+
+        # Sub-second leg: the winner completed 0.8s into the decision's
+        # second — strictly after the decision stamp, invisible to a
+        # whole-second comparison. It must supersede; the producer must not
+        # run; the skip detail must carry the precise instant.
+        winner_completed = NOW + timedelta(milliseconds=800)
+        det.append_run(
+            ledger,
+            {
+                "ran_at": det._iso(NOW - timedelta(seconds=30)),
+                "completed_at": det._iso_precise(winner_completed),
+                "producer_id": "p1",
+                "outcome": "produced",
+            },
+        )
+        assert det.main(argv) == 0
+        assert not marker.exists()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ran"] == []
+        assert payload["skipped"][0]["reason"] == "force_superseded"
+        assert det._iso_precise(winner_completed) in payload["skipped"][0]["detail"]
+        rows = ledger.read_text(encoding="utf-8").strip().splitlines()
+        assert len(rows) == 1  # the superseded waiter appended nothing
+
+        # Legacy tie leg: a whole-second row completing exactly ON the
+        # decision second is ambiguous in both directions; it resolves toward
+        # supersession for the same conservative reason.
+        ledger.unlink()
+        det.append_run(
+            ledger,
+            {
+                "ran_at": det._iso(NOW - timedelta(seconds=30)),
+                "completed_at": det._iso(NOW),
+                "producer_id": "p1",
+                "outcome": "produced",
+            },
+        )
+        assert det.main(argv) == 0
+        assert not marker.exists()
+        assert json.loads(capsys.readouterr().out)["ran"] == []
+
+        # Control leg: a completion in the second BEFORE the decision still
+        # runs — the conservative tie rule must not swallow real deficits.
+        ledger.unlink()
+        det.append_run(
+            ledger,
+            {
+                "ran_at": det._iso(NOW - timedelta(seconds=30)),
+                "completed_at": det._iso(NOW - timedelta(seconds=1)),
+                "producer_id": "p1",
+                "outcome": "produced",
+            },
+        )
+        assert det.main(argv) == 0
+        assert marker.exists()
+
     def test_lock_wait_expiry_is_a_recorded_skip_not_a_hang(
         self,
         tmp_path: Path,
@@ -753,6 +839,39 @@ class TestInvocationWideCompletionWitness:
         assert [r["producer_id"] for r in rows] == ["claude-account-live", "agy-review-quota"]
         assert rows[0]["completed_at"] == det._iso(NOW + timedelta(seconds=50))
         assert rows[1]["completed_at"] == det._iso(NOW + timedelta(seconds=120))
+
+    def test_the_completion_witness_preserves_sub_second_precision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """The witness must survive truncation, not just include the elapsed:
+        the supersession comparison runs against a whole-second force
+        decision, so a completion 1.3s after the invocation anchor truncated
+        back onto the anchor's second would tie the decision and duplicate
+        (codex-1 round-7 C1). Fractional digits appear only when nonzero, so
+        whole-second stamps keep their exact prior wire form."""
+        reg = _registry(tmp_path)  # /bin/true, success exit 0
+        ledger = tmp_path / "runs.jsonl"
+        monkeypatch.setattr(det, "monotonic_clock", SequenceClock([0, 0, 0.5, 1.3]))
+        rc = det.main(
+            [
+                "--registry",
+                str(reg),
+                "--run-ledger",
+                str(ledger),
+                "--repo-root",
+                str(tmp_path),
+                "--now",
+                det._iso(NOW),
+                "--json",
+            ]
+        )
+        assert rc == 0
+        (raw_row,) = ledger.read_text(encoding="utf-8").strip().splitlines()
+        row = json.loads(raw_row)
+        expected = det._iso_precise(NOW + timedelta(seconds=1.3))
+        assert expected.endswith(".300Z")
+        assert row["completed_at"] == expected
+        assert det._parse_iso(row["completed_at"]) == NOW + timedelta(seconds=1.3)
 
     def test_a_forced_waiter_justified_mid_invocation_defers_to_the_second_producer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys

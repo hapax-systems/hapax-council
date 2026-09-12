@@ -82,6 +82,22 @@ def _iso(ts: datetime) -> str:
     return ts.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _iso_precise(ts: datetime) -> str:
+    """`_iso`, plus milliseconds when nonzero.
+
+    `completed_at` must survive truncation: the supersession comparison below
+    runs against a whole-second force decision, so a winner finishing 0.8s
+    after the decision must not truncate back onto the decision second, or
+    the forced waiter duplicates it (critical finding on #4665, round 7).
+    Fractional digits are emitted only when nonzero, so whole-second stamps
+    keep their exact prior wire form and `_parse_iso` reads both.
+    """
+    base = _iso(ts)
+    if ts.microsecond:
+        return base[:-1] + f".{ts.microsecond // 1000:03d}Z"
+    return base
+
+
 def _parse_iso(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -289,7 +305,7 @@ def run_producer(
                 # falsy and would silently fall back to this producer's own
                 # start, re-introducing the undercount the anchor exists to
                 # close.
-                completed_at=_iso(
+                completed_at=_iso_precise(
                     now
                     + timedelta(
                         seconds=ended
@@ -312,7 +328,7 @@ def run_producer(
                 # failing) then, with the invocation-wide elapsed still
                 # covering every lock wait and earlier producer that preceded
                 # this one.
-                completed_at=_iso(
+                completed_at=_iso_precise(
                     now
                     + timedelta(
                         seconds=ended
@@ -343,7 +359,7 @@ def run_producer(
             outcome=outcome,
             returncode=rc,
             duration_s=duration_s,
-            completed_at=_iso(
+            completed_at=_iso_precise(
                 now
                 + timedelta(
                     seconds=ended
@@ -431,8 +447,9 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "decision instant that justified a --force run; a producer run whose "
             "completion witness (completed_at; legacy rows: ran_at + duration_s) "
-            "lands after it, per the in-lock ledger re-read, supersedes the force "
-            "and is skipped instead of duplicated"
+            "lands at or after it, per the in-lock ledger re-read, supersedes the "
+            "force and is skipped instead of duplicated — same-second ties skip, "
+            "they never duplicate"
         ),
     )
     parser.add_argument("--timeout", type=int, default=DEFAULT_PRODUCER_TIMEOUT_S)
@@ -521,6 +538,18 @@ def main(argv: list[str] | None = None) -> int:
             # locks (major finding on #4665, round 3: a forced waiter
             # duplicated the concurrent winner's run because the pre-lock
             # force decision bypassed the in-lock due check).
+            #
+            # The comparison is `>=`, not `>`: `completed_at` carries
+            # sub-second precision, but the caller's decision instant is a
+            # whole-second stamp, so a winner completing within the decision's
+            # second lands strictly after the decision stamp yet may precede
+            # or follow the actual decision moment — the same-second case is
+            # ambiguous. Ties resolve toward supersession: a duplicate forced
+            # run is a provider round-trip that nothing undoes, while a
+            # skipped-but-needed run self-heals at the next cadence window
+            # (critical finding on #4665, round 7: whole-second truncation
+            # made a T+0.8 completion equal the T decision and the forced
+            # waiter duplicated the winner).
             try:
                 with producer_lock(args.run_ledger, p["id"], wait_s=args.lock_wait):
                     latest = last_runs(args.run_ledger).get(p["id"])
@@ -530,7 +559,7 @@ def main(argv: list[str] | None = None) -> int:
                         winner_completed_at = _completion_of(latest)
                         if (
                             winner_completed_at is not None
-                            and winner_completed_at > force_justified_at
+                            and winner_completed_at >= force_justified_at
                         ):
                             payload["skipped"].append(
                                 {
@@ -538,9 +567,9 @@ def main(argv: list[str] | None = None) -> int:
                                     "reason": "force_superseded",
                                     "detail": (
                                         f"run at {latest.get('ran_at')} completed at "
-                                        f"{_iso(winner_completed_at)}, after the force "
-                                        f"decision at {args.force_justified_at}; the "
-                                        "winner's run already minted this window"
+                                        f"{_iso_precise(winner_completed_at)}, at or after "
+                                        f"the force decision at {args.force_justified_at}; "
+                                        "the winner's run already minted this window"
                                     ),
                                 }
                             )
