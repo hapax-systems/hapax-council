@@ -155,6 +155,9 @@ def producer_lock(ledger: Path, producer_id: str) -> Iterator[None]:
     lock_path = producer_lock_path(ledger, producer_id)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a", encoding="utf-8") as lock_file:
+        # Blocks with no self-bound; release is guaranteed only by the outer
+        # bounds — the writer's 330s pull-forward kill or the unit timeout of
+        # whichever invoker won the lock.
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             yield
