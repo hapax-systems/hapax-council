@@ -166,6 +166,159 @@ class TestCadence:
         assert det.is_due(p, {"ran_at": "not-a-timestamp"}, NOW)
 
 
+class TestDueWithin:
+    """--due-within closes the measured failure phase: a pull at :X8:24 against
+    a :X-1:42 mint is 582s old on a 600s cadence — not_due to a due-check-only
+    gate, a NO-OP pull, and the flap survives the repair (critical finding on
+    #4665)."""
+
+    def _main(self, tmp_path: Path, ledger_age_s: int, *extra: str) -> dict:
+        marker = tmp_path / "producer-ran"
+        producer_sh = tmp_path / "producer.sh"
+        producer_sh.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        producer_sh.chmod(0o755)
+        reg = _registry(tmp_path, command=[str(producer_sh)])
+        ledger = tmp_path / "runs.jsonl"
+        det.append_run(
+            ledger,
+            {
+                "ran_at": det._iso(NOW - timedelta(seconds=ledger_age_s)),
+                "producer_id": "p1",
+                "outcome": "produced",
+            },
+        )
+        rc = det.main(
+            [
+                "--registry",
+                str(reg),
+                "--run-ledger",
+                str(ledger),
+                "--repo-root",
+                str(tmp_path),
+                "--now",
+                det._iso(NOW),
+                "--json",
+                *extra,
+            ]
+        )
+        assert rc == 0
+        return {"marker": marker, "ledger": ledger}
+
+    def test_waits_into_the_due_window_and_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """The measured phase exactly: 582s of age on a 600s cadence, pulled 18s
+        before the boundary. The harness must sleep those 18s and mint at the
+        boundary, not skip."""
+        slept: list[float] = []
+        monkeypatch.setattr(det.time, "sleep", lambda s: slept.append(s))
+        ctx = self._main(tmp_path, 582, "--due-within", "30")
+        # subprocess.communicate polls in ~1ms sleeps (git identity probes,
+        # producer waits); the due-window sleep is the only cadence-scale one.
+        assert [s for s in slept if s > 0.1] == [18.0]
+        assert ctx["marker"].exists()
+        payload = json.loads(capsys.readouterr().out)
+        assert [r["producer_id"] for r in payload["ran"]] == ["p1"]
+        # The receipt is stamped at the post-sleep boundary, and the reported
+        # now agrees with the stamp (--now advanced by the slept seconds).
+        assert payload["ran"][0]["ran_at"] == det._iso(NOW + timedelta(seconds=18))
+        assert payload["now"] == det._iso(NOW + timedelta(seconds=18))
+        assert payload["skipped"] == []
+
+    def test_out_of_horizon_does_not_wait(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """300s from due is outside a 30s horizon: no sleep, an honest not_due
+        skip — waiting here would make every tick unboundedly slow."""
+        slept: list[float] = []
+        monkeypatch.setattr(det.time, "sleep", lambda s: slept.append(s))
+        ctx = self._main(tmp_path, 300, "--due-within", "30")
+        assert not any(s > 0.1 for s in slept)
+        assert not ctx["marker"].exists()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ran"] == []
+        assert payload["skipped"] == [{"producer_id": "p1", "reason": "not_due"}]
+
+    def test_concurrent_winner_during_the_sleep_short_circuits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """The determine timer fires while the pull sleeps into the boundary and
+        mints first: the sleeper wakes, re-reads under the lock, and skips —
+        still one provider round trip per cadence window."""
+        marker = tmp_path / "producer-ran"
+        producer_sh = tmp_path / "producer.sh"
+        producer_sh.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        producer_sh.chmod(0o755)
+        reg = _registry(tmp_path, command=[str(producer_sh)])
+        ledger = tmp_path / "runs.jsonl"
+        det.append_run(
+            ledger,
+            {
+                "ran_at": det._iso(NOW - timedelta(seconds=582)),
+                "producer_id": "p1",
+                "outcome": "produced",
+            },
+        )
+
+        def _winner_mints_during_sleep(seconds: float) -> None:
+            if seconds <= 0.1:
+                return  # subprocess poll noise, not the due-window sleep
+            assert seconds == 18.0
+            det.append_run(
+                ledger,
+                {
+                    "ran_at": det._iso(NOW + timedelta(seconds=18)),
+                    "producer_id": "p1",
+                    "outcome": "produced",
+                },
+            )
+
+        monkeypatch.setattr(det.time, "sleep", _winner_mints_during_sleep)
+        rc = det.main(
+            [
+                "--registry",
+                str(reg),
+                "--run-ledger",
+                str(ledger),
+                "--repo-root",
+                str(tmp_path),
+                "--now",
+                det._iso(NOW),
+                "--due-within",
+                "30",
+                "--json",
+            ]
+        )
+        assert rc == 0
+        assert not marker.exists()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ran"] == []
+        assert payload["skipped"] == [{"producer_id": "p1", "reason": "not_due"}]
+        assert payload["liveness"] == []
+
+
+class TestInvokerContractPins:
+    def test_determine_unit_runs_the_default_run_ledger(self) -> None:
+        """The pull-forward's lock + in-lock re-read dedup contract holds only
+        while BOTH invokers gate the SAME default run ledger. If the unit ever
+        grows a --run-ledger override, the writer's pull and the timer run
+        different ledgers and both fire the provider round trip (review
+        finding on #4665)."""
+        unit = (REPO_ROOT / "systemd" / "units" / "hapax-determine.service").read_text(
+            encoding="utf-8"
+        )
+        joined = "\n".join(
+            line for line in unit.splitlines() if not line.lstrip().startswith("#")
+        ).replace("\\\n", " ")
+        exec_lines = [line for line in joined.splitlines() if line.strip().startswith("ExecStart=")]
+        assert len(exec_lines) == 1, exec_lines
+        exec_start = exec_lines[0]
+        assert "scripts/hapax-determine" in exec_start
+        assert "--json" in exec_start
+        assert "--run-ledger" not in exec_start
+        assert "--registry" not in exec_start
+
+
 class TestPerProducerLock:
     """Two invokers share one cadence (timer + telemetry pull-forward); the lock
     plus in-lock re-check keeps one provider round trip per cadence window
@@ -178,11 +331,21 @@ class TestPerProducerLock:
         )
 
     def test_a_run_that_lands_while_waiting_for_the_lock_is_not_duplicated(
-        self, tmp_path: Path
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """The quota telemetry writer pulls the agy producer forward ~18s before
         the determine timer fires. The late invoker must re-read the ledger
-        inside the lock and skip, not run the provider round trip twice."""
+        inside the lock and skip, not run the provider round trip twice.
+
+        Synchronization (review finding on #4665): the winner's append is
+        published only AFTER the invoker is observed waiting in the lock-retry
+        loop — which proves it already completed its pre-lock ledger read — so
+        an implementation using only that stale pre-lock read cannot pass: it
+        would see no run, deem the producer due, and mint (marker present).
+        """
         marker = tmp_path / "producer-ran"
         producer_sh = tmp_path / "producer.sh"
         producer_sh.write_text(f"#!/bin/sh\ntouch {marker}\n")
@@ -190,6 +353,8 @@ class TestPerProducerLock:
         reg = _registry(tmp_path, command=[str(producer_sh)])
         ledger = tmp_path / "runs.jsonl"
         result: dict[str, int] = {}
+        waiting_in_lock = threading.Event()
+        real_sleep = det.time.sleep
 
         def _invoker() -> None:
             result["rc"] = det.main(
@@ -206,9 +371,18 @@ class TestPerProducerLock:
                 ]
             )
 
+        def _sleep_recording_waiter(seconds: float) -> None:
+            # First retry-sleep == the invoker finished its pre-lock read and
+            # failed a LOCK_NB attempt: it is provably waiting on the lock.
+            waiting_in_lock.set()
+            real_sleep(0.02)
+
+        monkeypatch.setattr(det.time, "sleep", _sleep_recording_waiter)
+
         with det.producer_lock(ledger, "p1"):
             late = threading.Thread(target=_invoker)
             late.start()
+            assert waiting_in_lock.wait(timeout=10), "invoker never reached the lock wait"
             # The concurrent winner's run lands while the late invoker is
             # blocked on the lock, exactly as an overlapping timer fire sees.
             det.append_run(
@@ -218,6 +392,73 @@ class TestPerProducerLock:
         late.join(timeout=10)
         assert result["rc"] == 0
         assert not marker.exists()
+        payload = json.loads(capsys.readouterr().out)
+        # The skip is recorded, not inferred from the absent marker — and the
+        # liveness view carries the WINNER's run (no false never_ran deficit),
+        # which is the branch that silently re-opens the flap if it regresses
+        # (review finding on #4665).
+        assert payload["ran"] == []
+        assert payload["skipped"] == [{"producer_id": "p1", "reason": "not_due"}]
+        assert payload["liveness"] == []
+        assert det.last_runs(ledger)["p1"]["ran_at"] == det._iso(NOW)
+
+    def test_lock_wait_expiry_is_a_recorded_skip_not_a_hang(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A holder that outlives the bounded wait produces a lock_timeout skip
+        and a clean exit — the previous unbounded flock left this invoker to be
+        killed by the unit timeout instead (major finding on #4665)."""
+        reg = _registry(tmp_path, command=["/bin/true"])
+        ledger = tmp_path / "runs.jsonl"
+        det.append_run(
+            ledger,
+            {
+                "ran_at": det._iso(NOW - timedelta(seconds=60)),
+                "producer_id": "p1",
+                "outcome": "produced",
+            },
+        )
+        result: dict[str, int] = {}
+        monkeypatch.setattr(det, "LOCK_RETRY_INTERVAL_S", 0.01)
+
+        def _invoker() -> None:
+            result["rc"] = det.main(
+                [
+                    "--registry",
+                    str(reg),
+                    "--run-ledger",
+                    str(ledger),
+                    "--repo-root",
+                    str(tmp_path),
+                    "--now",
+                    det._iso(NOW),
+                    "--lock-wait",
+                    "0.2",
+                    "--json",
+                ]
+            )
+
+        with det.producer_lock(ledger, "p1"):
+            late = threading.Thread(target=_invoker)
+            late.start()
+            late.join(timeout=10)
+        assert not late.is_alive()
+        assert result["rc"] == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ran"] == []
+        assert [s["reason"] for s in payload["skipped"]] == ["lock_timeout"]
+        assert payload["skipped"][0]["waited_s"] == 0.2
+        assert payload["liveness"] == []
+
+    def test_producer_lock_raises_when_the_wait_expires(self, tmp_path: Path) -> None:
+        ledger = tmp_path / "runs.jsonl"
+        with det.producer_lock(ledger, "p1"):
+            with pytest.raises(det.ProducerLockTimeout, match="p1"):
+                with det.producer_lock(ledger, "p1", wait_s=0):
+                    pass
 
 
 class TestExitCodes:

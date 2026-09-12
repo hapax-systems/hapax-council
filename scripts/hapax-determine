@@ -43,7 +43,7 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -62,6 +62,15 @@ DEFAULT_RUN_LEDGER = Path.home() / ".cache" / "hapax" / "determination" / "runs.
 #: Cap on a single producer's runtime. A producer that hangs must not stall every other
 #: producer behind it — the harness's own liveness is the thing being protected.
 DEFAULT_PRODUCER_TIMEOUT_S = 300
+
+#: Bounded wait to ACQUIRE a per-producer lock before skipping with reason ``lock_timeout``.
+#: Must stay comfortably below hapax-determine.service's TimeoutStartSec (1200s) so a wedged
+#: lock holder cannot convert the timer invocation into a systemd kill; the concurrent
+#: invoker instead records an honest skip and lets the holder's own bounds resolve it.
+DEFAULT_LOCK_WAIT_S = 120.0
+#: Retry cadence while waiting for a contended per-producer lock. Kept as a module constant
+#: so tests can shrink it instead of sleeping real retry intervals.
+LOCK_RETRY_INTERVAL_S = 0.5
 
 
 def _iso(ts: datetime) -> str:
@@ -150,15 +159,63 @@ def producer_lock_path(ledger: Path, producer_id: str) -> Path:
     return ledger.parent / "locks" / f"{safe}.lock"
 
 
+def seconds_until_due(
+    producer: dict[str, Any], last: dict[str, Any] | None, now: datetime
+) -> float | None:
+    """Seconds until the producer becomes due; ``None`` when already due or never run.
+
+    The mirror of ``is_due`` for invokers that can afford to WAIT into the due window
+    instead of reading one mint behind (the quota-surface freshness flap: the telemetry
+    writer fires ~18s before the cadence boundary, so a due-check-only pull is a NO-OP
+    for 18 of every 600 seconds — exactly the measured failure phase).
+    """
+    if last is None:
+        return None
+    at = _parse_iso(last.get("ran_at"))
+    if at is None:
+        return None
+    remaining = producer["cadence_seconds"] - (now - at).total_seconds()
+    return remaining if remaining > 0 else None
+
+
+class ProducerLockTimeout(RuntimeError):
+    """A per-producer lock stayed held longer than the bounded wait (review finding on #4665).
+
+    Raised, not slept past: the previous unbounded ``LOCK_EX`` made the loser's fate depend
+    on the holder's outer bounds — a wedged holder meant systemd killed the waiter, and the
+    skip path was never reached deterministically.
+    """
+
+
 @contextmanager
-def producer_lock(ledger: Path, producer_id: str) -> Iterator[None]:
+def producer_lock(
+    ledger: Path,
+    producer_id: str,
+    *,
+    wait_s: float = DEFAULT_LOCK_WAIT_S,
+    retry_interval_s: float | None = None,
+) -> Iterator[None]:
     lock_path = producer_lock_path(ledger, producer_id)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a", encoding="utf-8") as lock_file:
-        # Blocks with no self-bound; release is guaranteed only by the outer
-        # bounds — the writer's 330s pull-forward kill or the unit timeout of
-        # whichever invoker won the lock.
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        # LOCK_NB with a bounded retry instead of an unbounded blocking flock: release is no
+        # longer "guaranteed only by the outer bounds" of whichever invoker won. A holder
+        # that outlives the wait produces ProducerLockTimeout — a recorded skip, not a hang
+        # the unit timeout has to kill (review finding on #4665). The retry interval is read
+        # from the module global at call time so tests can shrink it.
+        interval = retry_interval_s if retry_interval_s is not None else LOCK_RETRY_INTERVAL_S
+        deadline = time.monotonic() + wait_s
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ProducerLockTimeout(
+                        f"{producer_id}: producer lock held longer than the {wait_s:.0f}s wait"
+                    ) from None
+                time.sleep(min(interval, remaining))
         try:
             yield
         finally:
@@ -301,6 +358,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true", help="ignore cadence, run anyway")
     parser.add_argument("--timeout", type=int, default=DEFAULT_PRODUCER_TIMEOUT_S)
     parser.add_argument("--check", action="store_true", help="report liveness only; run nothing")
+    parser.add_argument(
+        "--due-within",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "when a producer is not yet due but becomes due within SECONDS, sleep into the "
+            "due window instead of returning not_due (the telemetry writer's pull-forward: "
+            "it fires ~18s before the cadence boundary, and a due-check-only pull is a NO-OP "
+            "for exactly that phase)"
+        ),
+    )
+    parser.add_argument(
+        "--lock-wait",
+        type=float,
+        default=DEFAULT_LOCK_WAIT_S,
+        metavar="SECONDS",
+        help="bounded wait to acquire a per-producer lock before skipping (lock_timeout)",
+    )
     parser.add_argument("--now")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -328,6 +404,22 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.check:
         for p in producers:
+            # The due-window wait happens BEFORE the lock: an invoker that can afford to
+            # wait (the telemetry writer's pull-forward, --due-within) sleeps into the
+            # cadence boundary, then the existing lock+re-read below dedups it against a
+            # concurrent winner that fired during the sleep. Without this, a pull at
+            # :X8:24 against a :X-1:42 mint is 582s old on a 600s cadence — not_due — and
+            # the flap survives the repair (critical finding on #4665). `now` advances with
+            # the slept seconds under --now so the due decision and the receipt stamp agree.
+            if not args.force and args.due_within is not None:
+                wait_for_due = seconds_until_due(p, last_runs(args.run_ledger).get(p["id"]), now)
+                if wait_for_due is not None and wait_for_due <= args.due_within:
+                    time.sleep(wait_for_due)
+                    if args.now:
+                        now = now + timedelta(seconds=wait_for_due)
+                    else:
+                        now = datetime.now(UTC)
+                    payload["now"] = _iso(now)
             # The due decision is made INSIDE the per-producer lock, against a
             # fresh read of the ledger. Two invokers share one cadence (timer +
             # telemetry pull-forward); whoever locks first runs and appends, and
@@ -336,17 +428,32 @@ def main(argv: list[str] | None = None) -> int:
             # re-read also refreshes the liveness view, so an invoker that
             # skipped behind a concurrent winner reports the winner's run, not
             # a false `never_ran` deficit.
-            with producer_lock(args.run_ledger, p["id"]):
-                latest = last_runs(args.run_ledger).get(p["id"])
-                if latest is not None:
-                    runs[p["id"]] = latest
-                if not args.force and not is_due(p, latest, now):
-                    payload["skipped"].append({"producer_id": p["id"], "reason": "not_due"})
-                    continue
-                record = run_producer(p, now=now, repo_root=args.repo_root, timeout=args.timeout)
-                append_run(args.run_ledger, record)
-                runs[p["id"]] = record
-                payload["ran"].append(record)
+            try:
+                with producer_lock(args.run_ledger, p["id"], wait_s=args.lock_wait):
+                    latest = last_runs(args.run_ledger).get(p["id"])
+                    if latest is not None:
+                        runs[p["id"]] = latest
+                    if not args.force and not is_due(p, latest, now):
+                        payload["skipped"].append({"producer_id": p["id"], "reason": "not_due"})
+                        continue
+                    record = run_producer(
+                        p, now=now, repo_root=args.repo_root, timeout=args.timeout
+                    )
+                    append_run(args.run_ledger, record)
+                    runs[p["id"]] = record
+                    payload["ran"].append(record)
+            except ProducerLockTimeout as exc:
+                # A holder that outlives the bounded wait is running the producer itself
+                # (or wedged behind its own unit timeout); this invoker records an honest
+                # skip instead of hanging to a systemd kill (major finding on #4665).
+                payload["skipped"].append(
+                    {
+                        "producer_id": p["id"],
+                        "reason": "lock_timeout",
+                        "waited_s": args.lock_wait,
+                        "detail": str(exc),
+                    }
+                )
 
     payload["liveness"] = liveness(producers, runs, now)
 
@@ -369,6 +476,16 @@ def main(argv: list[str] | None = None) -> int:
     else:
         for r in payload["ran"]:
             print(f"{r['producer_id']}: {r['outcome']} (rc={r.get('returncode')})")
+        for s in payload["skipped"]:
+            print(f"SKIPPED {s['producer_id']}: {s['reason']}", file=sys.stderr)
+            if s["reason"] == "lock_timeout":
+                print(
+                    f"  another invoker held {s['producer_id']} past the {s['waited_s']:.0f}s "
+                    "lock wait. Next: its run (if any) is in the run ledger — "
+                    f"tail the ledger or rerun {sys.argv[0]} --check to reconcile; "
+                    "no action needed if the holder is a live determine fire.",
+                    file=sys.stderr,
+                )
         for d in payload["liveness"]:
             print(f"DEFICIT {d['producer_id']}: {d['deficit']}", file=sys.stderr)
         for pid in payload["runs_without_identified_checkout"]:

@@ -146,6 +146,8 @@ def test_pull_forward_goes_through_the_determine_cadence_gate(
             str(REPO_ROOT / "scripts" / "hapax-determine"),
             "--producer",
             "agy-review-quota",
+            "--due-within",
+            str(namespace["PULL_FORWARD_DUE_WITHIN_S"]),
             "--json",
         ]
     ]
@@ -192,22 +194,24 @@ def test_pull_forward_degrades_on_spawn_error(
     assert "could not run" in capsys.readouterr().err
 
 
-def test_main_pulls_forward_before_receipt_refresh_and_reports_it(
+def test_main_pulls_mints_writes_then_refreshes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Without the pull, the refresh always reads the PREVIOUS cycle's agy mint
-    (~600s of its 900s TTL spent) and the surface flaps stale half of every
-    cycle — the measured freshness-flap defect."""
+    """The measured flap had three cooperating defects (review on #4665): a
+    pull that skipped the producer in the pre-boundary phase, a refresh that
+    consumed the PREVIOUS cycle's ledger (clamping a fresh 900s admission to
+    the stale ledger's remaining freshness), and tests that replaced both
+    operations with constants. The stubs here are behavioral: the pull MINTS
+    the receipt a real pull leaves on disk, and the refresh asserts it is
+    consuming THIS cycle's ledger before it runs."""
     namespace = runpy.run_path(str(SCRIPT))
-    # Patch through main's own globals: run_path's returned mapping is not
-    # guaranteed to be the dict main resolves names in, and this test must
-    # observe what main actually calls, not a copy of the namespace.
+    # Patch through main's own globals via monkeypatch.setitem: run_path's
+    # returned mapping is not guaranteed to be the dict main resolves names in,
+    # and direct assignment would outlive the test (review finding on #4665).
     main_globals = namespace["main"].__globals__
     order: list[str] = []
-    main_globals["pull_forward_due_producers"] = lambda **kw: order.append("pull") or True
-    main_globals["refresh_capability_receipts"] = lambda **kw: order.append("refresh") or True
     relay = tmp_path / "relay-receipts"
     platform_receipts = tmp_path / "platform-receipts"
     relay.mkdir()
@@ -215,6 +219,33 @@ def test_main_pulls_forward_before_receipt_refresh_and_reports_it(
     _codex_platform_receipt(platform_receipts)
     stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
     out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def fake_pull(**kw):
+        order.append("pull")
+        # What the real pull leaves behind: THIS cycle's mint, observed at the
+        # tick's re-observation time. A broken pull leaves the previous cycle's
+        # receipt (observed_at=NOW-600s) and the assertions below catch it.
+        _agy_admission(relay, observed_at=NOW)
+        return True
+
+    seen: dict[str, str] = {}
+
+    def fake_refresh(*, timeout, receipt_dir):
+        order.append("refresh")
+        # Behavioral: the refresh's ledger consumer (_ledger_fresh_routes)
+        # validates routes and caps stale_after from the live ledger ON DISK.
+        # If the pass-1 write had not landed between pull and refresh, this
+        # reads the previous cycle's ledger — the clamping critical.
+        payload = json.loads(out.read_text(encoding="utf-8"))
+        seen["captured_at_at_refresh"] = payload["captured_at"]
+        agy_at_refresh = next(
+            s for s in payload["quota_snapshots"] if s["route_id"] == "agy.review.direct"
+        )
+        seen["agy_fresh_until_at_refresh"] = agy_at_refresh["fresh_until"]
+        return True
+
+    monkeypatch.setitem(main_globals, "pull_forward_due_producers", fake_pull)
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", fake_refresh)
 
     rc = namespace["main"](
         [
@@ -234,9 +265,133 @@ def test_main_pulls_forward_before_receipt_refresh_and_reports_it(
 
     assert rc == 0
     assert order == ["pull", "refresh"]
+    # The refresh consumed THIS cycle's ledger: written this tick, embedding
+    # the mint the pull just produced (900s TTL from NOW, not from NOW-600s).
+    assert seen["captured_at_at_refresh"] == NOW
+    assert seen["agy_fresh_until_at_refresh"] == "2026-06-10T00:15:00Z"
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    agy_snapshot = next(
+        s for s in payload["quota_snapshots"] if s["route_id"] == "agy.review.direct"
+    )
+    assert agy_snapshot["subscription_quota_state"] == "fresh"
+    assert agy_snapshot["fresh_until"] == "2026-06-10T00:15:00Z"
     summary = json.loads(capsys.readouterr().out)
     assert summary["producers_pulled_forward"] is True
     assert summary["receipts_refreshed"] is True
+    assert summary["ledger_rebuilt_after_refresh"] is False
+
+
+def test_refreshed_codex_receipts_rebuild_the_published_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The refresh rewrites the receipts only the codex blocker reads; when
+    they change the blocker, the published ledger must be rebuilt in the same
+    tick or the surface keeps the pre-refresh codex state until the next
+    600s cycle (critical #2's write-side counterpart on #4665)."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", "")
+    monkeypatch.setenv("HAPAX_DEFAULT_DISPATCH_HOST", "")
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(
+        platform_receipts, reason_code="codex_exec_auth_refresh_token_invalidated"
+    )
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    writes: list[str] = []
+    real_write = main_globals["write_ledger_atomic"]
+
+    def counting_write(ledger, path):
+        writes.append(ledger.captured_at.isoformat())
+        real_write(ledger, path)
+
+    def healing_refresh(*, timeout, receipt_dir):
+        _codex_platform_receipt(platform_receipts)
+        return True
+
+    monkeypatch.setitem(main_globals, "pull_forward_due_producers", lambda **kw: True)
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", healing_refresh)
+    monkeypatch.setitem(main_globals, "write_ledger_atomic", counting_write)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    assert len(writes) == 2, writes
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    codex_snapshot = next(
+        s for s in payload["quota_snapshots"] if s["route_id"] == "codex.headless.full"
+    )
+    assert codex_snapshot["subscription_quota_state"] == "fresh"
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["ledger_rebuilt_after_refresh"] is True
+
+
+def test_unchanged_codex_receipts_write_the_ledger_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The second pass is conditional: an unchanged codex blocker must not
+    churn the published ledger every tick."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    writes: list[str] = []
+    real_write = main_globals["write_ledger_atomic"]
+
+    def counting_write(ledger, path):
+        writes.append(ledger.captured_at.isoformat())
+        real_write(ledger, path)
+
+    monkeypatch.setitem(main_globals, "pull_forward_due_producers", lambda **kw: True)
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+    monkeypatch.setitem(main_globals, "write_ledger_atomic", counting_write)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    assert len(writes) == 1, writes
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["ledger_rebuilt_after_refresh"] is False
 
 
 def _wall_receipt(

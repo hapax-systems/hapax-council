@@ -25,12 +25,31 @@ SyslogIdentifier=hapax-quota-telemetry
 # smoke) that normally runs under hapax-determine.service's 512M cgroup;
 # match that ceiling so the smoke is not OOM-killed into a skipped tick
 # (a skip re-forwards the stale-receipt problem this writer repairs).
+# Caveat (review finding on #4665): 512M is the determine unit's PROVEN
+# ceiling for the smoke alone. Here the writer's own working set (pydantic
+# models, receipt scan, ledger assembly) rides IN SERIES inside the same
+# cgroup — additive in a way the split units never were — and no peak-RSS
+# measurement of the combined tick has been recorded. If an overlap tick
+# ever shows oom-kill in the journal, raise this before investigating
+# elsewhere.
 MemoryMax=512M
 # Step 0 of the writer pulls a due determination producer forward (bounded by
-# the 330s producer timeout) before the receipt refresh (bounded by its own
+# the 330s producer timeout, which also contains the --due-within sleep into
+# the cadence boundary) before the receipt refresh (bounded by its own
 # 360s outer timeout), in series. 180s could kill the tick that now contains
 # both; a killed tick skips a telemetry write entirely (oneshot, no overlap),
 # so the budget must cover the worst-case serial path with margin.
+#
+# Overrun semantics, stated so no future operator has to infer them (review
+# findings on #4665): the worst-case serial path is 330s pull + 360s refresh
+# = 690s against the 600s timer cadence. A tick whose serial path crosses the
+# next cadence boundary DEFERS that fire — systemd will not overlap a oneshot
+# unit — which is a silently skipped write cycle, the quieter failure mode.
+# That deferral is ACCEPTED here: the pull-forward dedups through the
+# determine lock, so the determine timer still mints the receipt on cadence
+# and the following writer tick embeds it; one deferred write never lapses
+# the 15m receipt window. TimeoutStartSec=900 bounds the kill so a wedged
+# tick cannot linger past one deferred cycle.
 TimeoutStartSec=900
 # Killswitch: `systemctl --user mask hapax-quota-telemetry.timer` stops the
 # writer; receipts then lapse after quota stale_after (15m) and the live ledger
