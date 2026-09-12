@@ -384,6 +384,26 @@ def run_producer(
             )
             return record
 
+        # Normal completion still sweeps the producer's whole process group
+        # before the terminal record publishes and the producer lock releases
+        # (codex-1 major, #4665 round 11, M2): a producer that handles its OWN
+        # inner timeout — the agy admission producer's 240s smoke timeout
+        # inside this harness's 300s budget — kills its direct child, exits
+        # rc=2 through this ordinary path, and can leave provider descendants
+        # alive in the group. proc.pid is the pgid (start_new_session above
+        # made the child a group leader at spawn), so killpg needs no getpgid
+        # — the child is already reaped here and its pid must not be re-read.
+        # An empty group raises ProcessLookupError: the common healthy exit,
+        # nothing to kill. PermissionError means the surviving members left
+        # our group entirely — a bounded leak the record names rather than
+        # hides (glm-1 minor, #4665 round 10).
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            record["group_sweep"] = "permission-denied-bounded-leak"
+
         rc = proc.returncode
         success = set(producer.get("success_exit_codes") or [0])
         declined = set(producer.get("declined_exit_codes") or [])

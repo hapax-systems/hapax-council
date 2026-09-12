@@ -2707,6 +2707,19 @@ QUOTA_UNOBSERVABLE_NONBLOCKING_REASONS = frozenset(
 )
 
 _static_registry_route_pools_cache: dict[str, tuple[CapacityPool, QuotaSource]] | None = None
+_static_registry_route_pools_state = "unloaded"
+
+
+def static_registry_route_pools_loaded() -> bool:
+    """Did the static registry load? The fail-closed {} is otherwise invisible.
+
+    A registry load failure degrades every expiry to the quota TTL with only a
+    stderr note (claude-1 minor, #4665 round 10): the --json summary reports
+    this flag beside the gap witnesses so the machine-checkable surface can
+    tell "fail-closed because the registry did not load" from "pools loaded,
+    receipts genuinely bound at the quota TTL".
+    """
+    return _static_registry_route_pools_state == "loaded"
 
 
 def static_registry_route_pools() -> dict[str, tuple[CapacityPool, QuotaSource]]:
@@ -2717,7 +2730,7 @@ def static_registry_route_pools() -> dict[str, tuple[CapacityPool, QuotaSource]]
     A registry that fails to load yields {} — every receipt then fails closed
     to the quota TTL, which can only tighten the witness, never loosen it.
     """
-    global _static_registry_route_pools_cache
+    global _static_registry_route_pools_cache, _static_registry_route_pools_state
     if _static_registry_route_pools_cache is None:
         try:
             registry, _ = load_platform_capability_registry_for_dispatch(apply_receipts=False)
@@ -2725,6 +2738,7 @@ def static_registry_route_pools() -> dict[str, tuple[CapacityPool, QuotaSource]]
                 route.route_id: (route.capacity_pool, route.telemetry.quota_source)
                 for route in registry.routes
             }
+            _static_registry_route_pools_state = "loaded"
         except PlatformCapabilityRegistryError as exc:
             print(
                 "hapax-quota-telemetry-writer: static capability registry unavailable "
@@ -2734,6 +2748,7 @@ def static_registry_route_pools() -> dict[str, tuple[CapacityPool, QuotaSource]]
                 file=sys.stderr,
             )
             _static_registry_route_pools_cache = {}
+            _static_registry_route_pools_state = "failed"
     return _static_registry_route_pools_cache
 
 
@@ -2783,6 +2798,39 @@ def receipt_surface_effective_expiry(
     return observed_at + min(quota_ttl, outer_ttl)
 
 
+def _scan_receipt_surface(
+    receipt_dir: Path,
+    route_pools: dict[str, tuple[CapacityPool, QuotaSource]] | None = None,
+) -> dict[str, tuple[datetime, datetime, datetime]]:
+    """Per-platform (observed_at, effective expiry, publication instant) scan.
+
+    The publication instant is the receipt FILE's own mtime: the refresh
+    writes each platform's receipt separately, so each file's mtime is that
+    platform's actual replacement landing instant (codex-1 major, #4665 round
+    11, M1: the refresh's single completion instant charged every platform
+    for the whole refresh's tail — a platform replaced 40s into a 260s
+    refresh, well inside its predecessor's lifetime, read as a 60s hole and
+    flapped rc=4 on uninterrupted coverage).
+    """
+    if route_pools is None:
+        route_pools = static_registry_route_pools()
+    states: dict[str, tuple[datetime, datetime, datetime]] = {}
+    if not receipt_dir.is_dir():
+        return states
+    for path in sorted(receipt_dir.glob("*.json")):
+        try:
+            receipt = load_platform_capability_receipt(path)
+        except PlatformCapabilityReceiptError:
+            continue
+        published_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        states[receipt.platform] = (
+            ensure_utc(receipt.observed_at),
+            receipt_surface_effective_expiry(receipt, route_pools),
+            published_at,
+        )
+    return states
+
+
 def quota_receipt_surface_expiries(
     receipt_dir: Path,
     route_pools: dict[str, tuple[CapacityPool, QuotaSource]] | None = None,
@@ -2794,13 +2842,10 @@ def quota_receipt_surface_expiries(
     (receipt_surface_effective_expiry), never the raw outer receipt TTL: a
     900s admission inside a 24h outer envelope dies at 900s no matter what the
     envelope says. The publication predicate below compares, per platform the
-    refresh REPLACED, the replacement's landing instant against the
-    predecessor's effective expiry (critical finding on #4665, rounds 8 and
-    10, C1). The earliest — not the latest — expiry among replaced platforms
-    binds: a per-platform hole (one platform's receipt dead while another
-    still vouches) is exactly the gap the ledger continuity witness cannot
-    see, and a latest-expiry aggregate would hide it behind the longer-lived
-    receipt. Replacement is detected by observed_at change: the refresh
+    refresh REPLACED, that platform's OWN replacement landing instant (its
+    receipt file's mtime, see _scan_receipt_surface) against its OWN
+    predecessor effective expiry (critical finding on #4665, rounds 8, 10 and
+    11, C1/M1). Replacement is detected by observed_at change: the refresh
     restamps every receipt it covers, so an unchanged observed_at means the
     refresh did not republish that platform — a lingering dead receipt it
     never touches is a MAINTENANCE defect (measured live 2026-09-12: retired
@@ -2810,21 +2855,12 @@ def quota_receipt_surface_expiries(
     yields {} and the tick asserts no receipt-surface witness rather than
     guessing.
     """
-    if route_pools is None:
-        route_pools = static_registry_route_pools()
-    expiries: dict[str, tuple[datetime, datetime]] = {}
-    if not receipt_dir.is_dir():
-        return expiries
-    for path in sorted(receipt_dir.glob("*.json")):
-        try:
-            receipt = load_platform_capability_receipt(path)
-        except PlatformCapabilityReceiptError:
-            continue
-        expiries[receipt.platform] = (
-            ensure_utc(receipt.observed_at),
-            receipt_surface_effective_expiry(receipt, route_pools),
-        )
-    return expiries
+    return {
+        platform: (observed_at, expiry)
+        for platform, (observed_at, expiry, _published_at) in _scan_receipt_surface(
+            receipt_dir, route_pools
+        ).items()
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3065,18 +3101,22 @@ def main(argv: list[str] | None = None) -> int:
         else {}
     )
     receipt_publication_at: datetime | None = None
-    receipt_surface_replacements: dict[str, tuple[datetime, datetime]] = {}
+    receipt_surface_replacements: dict[str, tuple[datetime, datetime, datetime]] = {}
     if not args.skip_receipts:
         receipts_ok = refresh_capability_receipts(
             timeout=args.receipt_timeout,
             receipt_dir=args.platform_capability_receipt_dir,
         )
         if receipts_ok:
-            # The instant the refresh's replacement receipts landed, from the
-            # immutable invocation clock pair — never a mid-invocation wall
-            # re-sample, which is how publication instants went missing before
-            # (round-4 codex-1). A failed refresh published nothing: the
-            # witness stays empty and the rc=3 path below reports the failure.
+            # The refresh's COMPLETION instant, from the immutable invocation
+            # clock pair — never a mid-invocation wall re-sample, which is how
+            # publication instants went missing before (round-4 codex-1). It
+            # gates the witness below (a refresh that completed republished
+            # something worth judging); the per-platform LANDING instants the
+            # gap compares come from each receipt file's own mtime, so this
+            # completion instant is never charged to any platform's coverage
+            # (round-11 M1). A failed refresh published nothing: the witness
+            # stays empty and the rc=3 path below reports the failure.
             receipt_publication_at = (
                 invocation_wall_started
                 + timedelta(seconds=monotonic_clock() - invocation_mono_started)
@@ -3084,13 +3124,20 @@ def main(argv: list[str] | None = None) -> int:
             # Which platforms the refresh actually republished: observed_at
             # moved for them. Receipts the refresh never touches (retired
             # platforms' lingering dead receipts) are a maintenance defect,
-            # not a replacement hole — see the helper's docstring.
-            successors = quota_receipt_surface_expiries(args.platform_capability_receipt_dir)
+            # not a replacement hole — see the helper's docstring. Each
+            # platform carries its OWN publication instant — its receipt
+            # file's mtime, the instant that platform's replacement actually
+            # landed — never the refresh's single completion instant, which
+            # charges every platform for the whole refresh's tail (codex-1
+            # major, #4665 round 11, M1: a platform replaced 40s into a 260s
+            # refresh, well inside its predecessor's lifetime, read as a 60s
+            # hole and flapped rc=4 on uninterrupted coverage).
+            successors = _scan_receipt_surface(args.platform_capability_receipt_dir)
             receipt_surface_replacements = {
-                platform: receipt_surface_predecessors[platform]
-                for platform, observed in successors.items()
+                platform: (*receipt_surface_predecessors[platform], published_at)
+                for platform, (observed, _expiry, published_at) in successors.items()
                 if platform in receipt_surface_predecessors
-                and observed[0] != receipt_surface_predecessors[platform][0]
+                and observed != receipt_surface_predecessors[platform][0]
             }
         blocker_now = now if args.now else datetime.now(UTC).replace(microsecond=0)
         # Only the codex blocker reads what the refresh rewrote; recompute it and
@@ -3235,10 +3282,20 @@ def main(argv: list[str] | None = None) -> int:
     receipt_surface_predecessor_expiry: datetime | None = None
     if receipt_publication_at is not None and receipt_surface_replacements:
         receipt_surface_predecessor_expiry = min(
-            expiry for _, expiry in receipt_surface_replacements.values()
+            expiry for _observed, expiry, _published in receipt_surface_replacements.values()
         )
+        # Per-platform, never aggregate: each replaced platform's OWN landing
+        # instant against its OWN predecessor expiry, and the WORST platform
+        # binds (codex-1 major, #4665 round 11, M1). A single refresh-wide
+        # instant here re-charged the earliest-replaced platform for every
+        # later platform's refresh time — a 40s-early replacement inside a
+        # 260s refresh read as a 60s hole against uninterrupted coverage.
         receipt_continuity_gap_s = round(
-            (receipt_publication_at - receipt_surface_predecessor_expiry).total_seconds(), 1
+            max(
+                (published - expiry).total_seconds()
+                for _observed, expiry, published in receipt_surface_replacements.values()
+            ),
+            1,
         )
         receipt_continuity_degraded = receipt_continuity_gap_s > 0.0
     if admission_freshness_degraded and not args.skip_receipts:
@@ -3273,17 +3330,23 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
     if receipt_continuity_degraded and not args.skip_receipts:
+        worst_platform = max(
+            receipt_surface_replacements,
+            key=lambda p: (
+                receipt_surface_replacements[p][2] - receipt_surface_replacements[p][1]
+            ).total_seconds(),
+        )
         print(
             "hapax-quota-telemetry-writer: DEGRADED — receipt-surface coverage gap: "
-            f"{len(receipt_surface_replacements)} refreshed platform receipt(s) "
-            "republished at "
-            f"{receipt_publication_at.isoformat().replace('+00:00', 'Z')} but their "
-            "predecessors stopped vouching at "
-            f"{receipt_surface_predecessor_expiry.isoformat().replace('+00:00', 'Z')} "
+            f"{len(receipt_surface_replacements)} refreshed platform receipt(s); worst "
+            f"platform {worst_platform} republished at "
+            f"{receipt_surface_replacements[worst_platform][2].isoformat().replace('+00:00', 'Z')} "
+            "but its predecessor stopped vouching at "
+            f"{receipt_surface_replacements[worst_platform][1].isoformat().replace('+00:00', 'Z')} "
             f"({receipt_continuity_gap_s:.1f}s gap); quota routing consumed a dead "
             "capability-receipt surface for the difference even though every ledger "
             "witness passed. Next: journalctl --user -u hapax-quota-telemetry.service "
-            "--since -2h to see this tick's refresh and pull-forward timing, and "
+            "--since -2h to see this tick's per-platform refresh timing, and "
             "scripts/hapax-platform-capability-receipts --all to reproduce the "
             "per-platform refresh cost outside the tick.",
             file=sys.stderr,
@@ -3319,6 +3382,15 @@ def main(argv: list[str] | None = None) -> int:
             else None
         ),
         "receipt_surface_replaced_platforms": sorted(receipt_surface_replacements),
+        "receipt_surface_publication_instants": {
+            platform: published.isoformat().replace("+00:00", "Z")
+            for platform, (_observed, _expiry, published) in sorted(
+                receipt_surface_replacements.items()
+            )
+        },
+        "registry_pools_loaded": (
+            static_registry_route_pools_loaded() if not args.skip_receipts else None
+        ),
         "receipt_surface_predecessor_expiry": (
             receipt_surface_predecessor_expiry.isoformat().replace("+00:00", "Z")
             if receipt_surface_predecessor_expiry is not None

@@ -261,6 +261,109 @@ class TestProducerTimeoutKillsTheWholeTree:
         assert rec["duration_s"] is not None and rec["duration_s"] >= 0.0
 
 
+class TestProducerCompletionSweepsTheGroup:
+    """codex-1 major (#4665, round 11, M2): a producer that handles its OWN
+    inner timeout — the agy admission producer's 240s smoke timeout inside
+    this harness's 300s budget — kills its direct child, exits rc=2 through
+    the ORDINARY completion path, and can leave provider descendants alive
+    when the terminal record publishes and the lock releases. Normal
+    completion must sweep the whole process group too, not just the timeout
+    path."""
+
+    def test_producer_handled_failure_leaves_no_descendant(self, tmp_path: Path) -> None:
+        child_pid_file = tmp_path / "child.pid"
+        rec = det.run_producer(
+            {
+                "id": "p1",
+                # The producer-handled inner-timeout shape (codex's scaled
+                # repro returned failed/rc=2 in 0.22s with the descendant
+                # still running): the producer exits on its own, the
+                # descendant holds NO pipe fds, and only the group sweep can
+                # reach it.
+                "command": [
+                    "/bin/sh",
+                    "-c",
+                    (f"sleep 600 >/dev/null 2>&1 </dev/null & echo $! > {child_pid_file}; exit 2"),
+                ],
+                "cadence_seconds": 60,
+            },
+            now=NOW,
+            repo_root=tmp_path,
+            timeout=30,
+        )
+        assert rec["outcome"] == "failed"
+        assert rec["returncode"] == 2
+        descendant = int(child_pid_file.read_text().strip())
+        assert descendant > 1
+        assert descendant != os.getpid()
+        # The sweep must have SIGKILL'd the surviving group member before the
+        # record published: a live descendant here is a provider call that
+        # outlived the producer lock.
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(descendant, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail(f"descendant sleep(600) pid {descendant} survived the producer's own exit")
+
+    def test_killpg_permission_error_on_normal_completion_is_a_named_bounded_leak(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """glm-1 minor (#4665, round 10) + claude-1 minor (round 10): when the
+        group is not ours to signal, the sweep cannot close the leak — the
+        record must NAME it instead of hiding it."""
+
+        def denied_killpg(pgid, sig):
+            raise PermissionError(f"not our group (test), pgid={pgid}")
+
+        monkeypatch.setattr(os, "killpg", denied_killpg)
+        rec = det.run_producer(
+            {
+                "id": "p1",
+                "command": ["/bin/sh", "-c", "exit 0"],
+                "cadence_seconds": 60,
+                "success_exit_codes": [0],
+            },
+            now=NOW,
+            repo_root=tmp_path,
+            timeout=30,
+        )
+        assert rec["outcome"] == "produced"
+        assert rec["returncode"] == 0
+        assert rec["group_sweep"] == "permission-denied-bounded-leak"
+
+    def test_killpg_permission_error_on_timeout_still_reaps_the_child(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The timeout path's PermissionError fallback (proc.kill) stays
+        functional: untested branches run precisely when the system is
+        misbehaving, and a crash there would strand the lock holder
+        (claude-1 minor, #4665 round 10)."""
+
+        def denied_killpg(pgid, sig):
+            raise PermissionError("not our group (test)")
+
+        monkeypatch.setattr(os, "killpg", denied_killpg)
+        rec = det.run_producer(
+            {
+                "id": "p1",
+                "command": ["/bin/sh", "-c", "sleep 600"],
+                "cadence_seconds": 60,
+            },
+            now=NOW,
+            repo_root=tmp_path,
+            timeout=2,
+        )
+        assert rec["outcome"] == "timeout"
+        assert rec["returncode"] is None
+        # run_producer returned through the fallback kill + reap, so the
+        # direct child was waited on; the fallback branch executed without
+        # raising (the run completing IS the reap proof).
+
+
 class TestLivenessReconciler:
     def test_never_ran_is_a_deficit(self, tmp_path: Path) -> None:
         producers = det.load_registry(_registry(tmp_path))
