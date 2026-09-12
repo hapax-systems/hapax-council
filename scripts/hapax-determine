@@ -43,7 +43,7 @@ import sys
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +85,26 @@ def _parse_iso(value: object) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _completion_of(record: dict[str, Any]) -> datetime | None:
+    """When a run actually finished: the stamped witness, else the legacy
+    anchor plus measured duration, else the anchor alone.
+
+    Supersession compares THIS, never ``ran_at`` alone: ``ran_at`` is the
+    invocation anchor, so a winner that STARTED before a forced waiter's
+    justification but finished while it waited compares as older than the
+    decision and would be duplicated (critical finding on #4665, round 4).
+    Legacy rows without the witness fall back to anchor + duration_s.
+    """
+    completed = _parse_iso(str(record.get("completed_at") or ""))
+    if completed is not None:
+        return completed
+    ran_at = _parse_iso(str(record.get("ran_at") or ""))
+    duration_s = record.get("duration_s")
+    if ran_at is not None and isinstance(duration_s, (int, float)):
+        return ran_at + timedelta(seconds=duration_s)
+    return ran_at
 
 
 def load_registry(path: Path) -> list[dict[str, Any]]:
@@ -220,6 +240,12 @@ def run_producer(
         "provenance": producer.get("provenance"),
         "host": os.uname().nodename,
     }
+    # `ran_at` above is the INVOCATION anchor (the caller's decision clock);
+    # `completed_at` is stamped on every terminal path below as anchor +
+    # measured duration, so supersession can compare when the run actually
+    # finished. A winner that started before a forced waiter's justification
+    # and completed while it waited must supersede, and `ran_at` alone cannot
+    # say that (critical finding on #4665, round 4).
     # Which code produced this determination, stamped in a `finally` so it is measured AFTER the
     # producer ran, on every exit including timeout and unlaunchable.
     #
@@ -237,13 +263,22 @@ def run_producer(
         try:
             proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
+            duration_s = round(time.monotonic() - started, 2)
             record.update(
-                outcome="timeout", returncode=None, duration_s=round(time.monotonic() - started, 2)
+                outcome="timeout",
+                returncode=None,
+                duration_s=duration_s,
+                completed_at=_iso(now + timedelta(seconds=duration_s)),
             )
             return record
         except OSError as exc:
             record.update(
-                outcome="unlaunchable", returncode=None, error=f"{type(exc).__name__}: {exc}"
+                outcome="unlaunchable",
+                returncode=None,
+                error=f"{type(exc).__name__}: {exc}",
+                # The spawn failed at the anchor: "completed" (by failing) at
+                # the same instant, with no measurable duration to add.
+                completed_at=_iso(now),
             )
             return record
 
@@ -258,10 +293,12 @@ def run_producer(
             outcome = "declined"
         else:
             outcome = "failed"
+        duration_s = round(time.monotonic() - started, 2)
         record.update(
             outcome=outcome,
             returncode=rc,
-            duration_s=round(time.monotonic() - started, 2),
+            duration_s=duration_s,
+            completed_at=_iso(now + timedelta(seconds=duration_s)),
             stderr=(proc.stderr or "").strip()[:500],
         )
         return record
@@ -341,9 +378,10 @@ def main(argv: list[str] | None = None) -> int:
         "--force-justified-at",
         metavar="ISO8601-UTC",
         help=(
-            "decision instant that justified a --force run; a producer run that "
-            "COMPLETED after it (visible in the in-lock ledger re-read) supersedes "
-            "the force and is skipped instead of duplicated"
+            "decision instant that justified a --force run; a producer run whose "
+            "completion witness (completed_at; legacy rows: ran_at + duration_s) "
+            "lands after it, per the in-lock ledger re-read, supersedes the force "
+            "and is skipped instead of duplicated"
         ),
     )
     parser.add_argument("--timeout", type=int, default=DEFAULT_PRODUCER_TIMEOUT_S)
@@ -408,10 +446,16 @@ def main(argv: list[str] | None = None) -> int:
             #
             # `--force-justified-at` revalidates the force under the lock: the
             # caller's justification was computed BEFORE this invoker waited,
-            # so a run that completed after that instant cannot have been
+            # so a run that finished after that instant cannot have been
             # counted by it — a concurrent winner minted while this invoker
-            # waited. Skipping as superseded (without appending) keeps exactly
-            # one producer run per window even when force and the timer cross
+            # waited. The comparison is on the run's COMPLETION instant
+            # (`completed_at`, legacy rows: `ran_at + duration_s`), never
+            # `ran_at` alone: a winner that started before the decision and
+            # completed during the wait is exactly the duplicate the round-4
+            # critical described — its invocation anchor predates the force
+            # decision, so only the completion witness can supersede it.
+            # Skipping as superseded (without appending) keeps exactly one
+            # producer run per window even when force and the timer cross
             # locks (major finding on #4665, round 3: a forced waiter
             # duplicated the concurrent winner's run because the pre-lock
             # force decision bypassed the in-lock due check).
@@ -421,17 +465,20 @@ def main(argv: list[str] | None = None) -> int:
                     if latest is not None:
                         runs[p["id"]] = latest
                     if args.force and force_justified_at is not None and latest is not None:
-                        winner_ran_at = _parse_iso(str(latest.get("ran_at") or ""))
-                        if winner_ran_at is not None and winner_ran_at > force_justified_at:
+                        winner_completed_at = _completion_of(latest)
+                        if (
+                            winner_completed_at is not None
+                            and winner_completed_at > force_justified_at
+                        ):
                             payload["skipped"].append(
                                 {
                                     "producer_id": p["id"],
                                     "reason": "force_superseded",
                                     "detail": (
-                                        f"run at {latest.get('ran_at')} completed after "
-                                        f"the force decision at "
-                                        f"{args.force_justified_at}; the winner's run "
-                                        "already minted this window"
+                                        f"run at {latest.get('ran_at')} completed at "
+                                        f"{_iso(winner_completed_at)}, after the force "
+                                        f"decision at {args.force_justified_at}; the "
+                                        "winner's run already minted this window"
                                     ),
                                 }
                             )

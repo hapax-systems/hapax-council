@@ -437,6 +437,151 @@ class TestPerProducerLock:
         # winner's run — one run per window even when force crosses locks.
         assert det.last_runs(ledger)["p1"]["ran_at"] == det._iso(winner_ran_at)
 
+    def test_a_forced_waiter_defers_to_a_winner_that_started_before_the_decision(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """C1 (#4665, round 4): `ran_at` is the invocation anchor, so a winner
+        that STARTED before the forced waiter's decision and COMPLETED while
+        it waited compares as older than the decision on `ran_at` alone — and
+        the round-4 code duplicated it. The completion witness
+        (`completed_at`) is what supersedes: the run finished after the
+        justification, so this window is already minted."""
+        marker = tmp_path / "producer-ran"
+        producer_sh = tmp_path / "producer.sh"
+        producer_sh.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        producer_sh.chmod(0o755)
+        reg = _registry(tmp_path, command=[str(producer_sh)])
+        ledger = tmp_path / "runs.jsonl"
+        justified_at = NOW - timedelta(seconds=30)
+        winner_ran_at = NOW - timedelta(seconds=40)  # started BEFORE the decision
+        winner_completed_at = NOW - timedelta(seconds=10)  # finished during the wait
+        result: dict[str, int] = {}
+        waiting_in_lock = threading.Event()
+        real_sleep = det.time.sleep
+
+        def _invoker() -> None:
+            result["rc"] = det.main(
+                [
+                    "--registry",
+                    str(reg),
+                    "--run-ledger",
+                    str(ledger),
+                    "--repo-root",
+                    str(tmp_path),
+                    "--now",
+                    det._iso(NOW),
+                    "--force",
+                    "--force-justified-at",
+                    det._iso(justified_at),
+                    "--lock-wait",
+                    "5",
+                    "--json",
+                ]
+            )
+
+        def _sleep_recording_waiter(seconds: float) -> None:
+            waiting_in_lock.set()
+            real_sleep(0.02)
+
+        monkeypatch.setattr(det.time, "sleep", _sleep_recording_waiter)
+
+        with det.producer_lock(ledger, "p1"):
+            late = threading.Thread(target=_invoker)
+            late.start()
+            assert waiting_in_lock.wait(timeout=10), "invoker never reached the lock wait"
+            det.append_run(
+                ledger,
+                {
+                    "ran_at": det._iso(winner_ran_at),
+                    "completed_at": det._iso(winner_completed_at),
+                    "producer_id": "p1",
+                    "outcome": "produced",
+                },
+            )
+        late.join(timeout=10)
+        assert result["rc"] == 0
+        assert not marker.exists()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ran"] == []
+        assert len(payload["skipped"]) == 1
+        skip = payload["skipped"][0]
+        assert skip["reason"] == "force_superseded"
+        assert det._iso(winner_completed_at) in skip["detail"]
+        # One run per window: the ledger still holds exactly the winner's row.
+        rows = ledger.read_text(encoding="utf-8").strip().splitlines()
+        assert len(rows) == 1
+        assert det.last_runs(ledger)["p1"]["ran_at"] == det._iso(winner_ran_at)
+
+    def test_legacy_winner_rows_supersede_via_ran_at_plus_duration(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Rows predating the `completed_at` witness (rounds <= 4 of #4665)
+        must still supersede correctly: completion = ran_at + duration_s. The
+        negative leg proves the comparison is on COMPLETION, not ran_at alone
+        in either direction: a legacy row whose derived completion precedes
+        the decision does NOT supersede, and the force runs."""
+        marker = tmp_path / "producer-ran"
+        producer_sh = tmp_path / "producer.sh"
+        producer_sh.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        producer_sh.chmod(0o755)
+        reg = _registry(tmp_path, command=[str(producer_sh)])
+        argv = [
+            "--registry",
+            str(reg),
+            "--run-ledger",
+            str(reg.parent / "runs.jsonl"),
+            "--repo-root",
+            str(tmp_path),
+            "--now",
+            det._iso(NOW),
+            "--force",
+            "--force-justified-at",
+            det._iso(NOW - timedelta(seconds=30)),
+            "--json",
+        ]
+        ledger = tmp_path / "runs.jsonl"
+
+        # Legacy row completed BEFORE the decision: NOW-40 + 5s = NOW-35,
+        # older than the NOW-30 justification → the window is not minted and
+        # the force must run the producer.
+        det.append_run(
+            ledger,
+            {
+                "ran_at": det._iso(NOW - timedelta(seconds=40)),
+                "duration_s": 5.0,
+                "producer_id": "p1",
+                "outcome": "produced",
+            },
+        )
+        assert det.main(argv) == 0
+        assert marker.exists()
+        capsys.readouterr()
+
+        # Legacy row completed AFTER the decision: NOW-40 + 35s = NOW-5,
+        # newer than the NOW-30 justification → superseded; no producer run.
+        ledger.unlink()
+        marker.unlink()
+        det.append_run(
+            ledger,
+            {
+                "ran_at": det._iso(NOW - timedelta(seconds=40)),
+                "duration_s": 35.0,
+                "producer_id": "p1",
+                "outcome": "produced",
+            },
+        )
+        assert det.main(argv) == 0
+        assert not marker.exists()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ran"] == []
+        assert len(payload["skipped"]) == 1
+        assert payload["skipped"][0]["reason"] == "force_superseded"
+        rows = ledger.read_text(encoding="utf-8").strip().splitlines()
+        assert len(rows) == 1  # the superseded waiter appended nothing
+
     def test_lock_wait_expiry_is_a_recorded_skip_not_a_hang(
         self,
         tmp_path: Path,

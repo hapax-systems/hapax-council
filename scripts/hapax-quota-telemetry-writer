@@ -134,7 +134,7 @@ proves the write→refresh ordering and the freshness-derived force predicate
 against stubbed producers; ``TestPullForwardBudgetPins`` pins the child budget
 arithmetic to the systemd unit files; live:
 ``journalctl --user -u hapax-quota-telemetry.service --since -1h | grep -E 'DEGRADED|pull-forward'``
-plus the ``admission_freshness_at_write_s`` / ``pull_forward`` keys in this
+plus the ``admission_freshness_at_publication_s`` / ``pull_forward`` keys in this
 writer's ``--json`` summary are the operating truth.
 """
 
@@ -149,6 +149,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -214,9 +215,16 @@ PULL_FORWARD_PRODUCER_TIMEOUT_S = 90.0
 # can no longer defer the next fire by duration alone.
 PULL_FORWARD_TIMEOUT_S = PULL_FORWARD_LOCK_WAIT_S + PULL_FORWARD_PRODUCER_TIMEOUT_S + 30.0
 # Bound on the work between a mint's run anchor and this tick's first ledger
-# write: receipt re-scan, ledger build, atomic write (measured 2026-09-12:
-# ~32s on the live force tick; the receipt refresh happens after pass 1).
-PRE_WRITE_WORK_BOUND_S = 60.0
+# write: receipt re-scan, ledger build, atomic write. The round-4 value of 60
+# was below its own cited measurement (2026-09-12: 33s mint + 32s write-side
+# = 65s anchor-to-write — glm-1 minor), so the horizon undercounted by ~5s.
+# 65 covers the measured anchor-to-write; the worst observed LIVE tick spent
+# 81s here on a receipt-spam-inflated scan (3,586 agy + 8,370 claude expired
+# receipts each emitting a stderr line per scan) — receipt retention/GC is a
+# separate follow-up claim, deliberately not folded into this repair. At B=65
+# the steady-state bound is L <= 900 - 815 = 85s, so the inflated 81s tick
+# still publishes non-degraded, with 4s of margin.
+PRE_WRITE_WORK_BOUND_S = 65.0
 # The freshness horizon: what the admission embedded by THIS write must outlive
 # to guarantee the published surface never cites a dead admission. Derived from
 # the next publication deadline (critical finding on #4665, round 3: 600+15
@@ -228,19 +236,38 @@ PRE_WRITE_WORK_BOUND_S = 60.0
 #   + max(LOCK_WAIT, PRODUCER)  — the next tick's pre-write work: it either
 #                                  waits on a colliding winner's lock OR runs
 #                                  the producer itself, never both serially —
-#                                  --force-justified-by revalidation in the
+#                                  --force-justified-at revalidation in the
 #                                  lock makes the waiter defer to the winner
 #   + PRE_WRITE_WORK_BOUND_S    — scan + build + first write after the mint
 #
 # Steady state: a forced mint leaves 900s - (anchor→write measured 65s) ≈ 835s
-# at the write, comfortably above the horizon; a degraded tick is one whose
-# pre-write work consumed the budget the derivation promised.
+# at the publication instant, comfortably above the horizon; a degraded tick is
+# one whose pre-write work consumed the budget the derivation promised.
 FRESHNESS_HORIZON_S = (
     WRITER_CYCLE_S
     + TIMER_ACCURACY_S
     + max(PULL_FORWARD_LOCK_WAIT_S, PULL_FORWARD_PRODUCER_TIMEOUT_S)
     + PRE_WRITE_WORK_BOUND_S
 )
+
+# Bounded wait to acquire the live-ledger lock: the last previously-unbounded
+# wait in the tick (review finding on #4665, round 4). A colliding holder is
+# another writer instance (timer + manual); the measured write-side pass is
+# ~32s typical, 81s on the receipt-spam-inflated tick, so 120s bounds the wait
+# with margin, and expiry is a clean nonzero exit instead of a hang the unit's
+# TimeoutStartSec has to kill.
+LIVE_LEDGER_LOCK_WAIT_S = 120.0
+# Retry cadence while the live-ledger lock is contended; a module constant so
+# tests can shrink it instead of sleeping real intervals.
+LIVE_LEDGER_LOCK_RETRY_INTERVAL_S = 0.5
+
+# Injectable monotonic clock: the exit predicate derives the actual
+# publication instant from elapsed monotonic time added to the tick's `now`
+# (major finding on #4665, round 4 — freshness measured at `captured_at`,
+# which is sampled BEFORE the scans and the write, cannot see pre-write work
+# overruns between sampling and publication). Tests replace this to advance
+# the publication instant without sleeping.
+monotonic_clock = time.monotonic
 
 # Subscription platforms with quota-wall detection and their canonical
 # dispatch route (the registry's primary subscription route per platform).
@@ -2312,12 +2339,34 @@ def write_ledger_atomic(ledger: QuotaSpendLedger, path: Path) -> None:
         raise
 
 
+class LiveLedgerLockTimeout(RuntimeError):
+    """The live-ledger lock stayed held past the bounded wait (round 4, claude-3)."""
+
+
 @contextmanager
-def quota_spend_live_lock(path: Path) -> Any:
+def quota_spend_live_lock(path: Path, *, wait_s: float = LIVE_LEDGER_LOCK_WAIT_S) -> Any:
     lock_path = path.with_name(f"{path.name}.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a", encoding="utf-8") as lock_file:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        # LOCK_NB with a bounded retry, mirroring determine's producer lock:
+        # this was the last unbounded wait in the tick. A holder that outlives
+        # the wait raises LiveLedgerLockTimeout — the caller exits nonzero
+        # with next actions instead of hanging into the unit's kill timeout.
+        # The retry interval is read from the module global at call time so
+        # tests can shrink it.
+        interval = LIVE_LEDGER_LOCK_RETRY_INTERVAL_S
+        deadline = monotonic_clock() + wait_s
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                remaining = deadline - monotonic_clock()
+                if remaining <= 0:
+                    raise LiveLedgerLockTimeout(
+                        f"live ledger lock {lock_path} held longer than the {wait_s:.0f}s wait"
+                    ) from None
+                time.sleep(min(interval, remaining))
         try:
             yield
         finally:
@@ -2442,6 +2491,19 @@ def pull_forward_due_producers(
             determine_payload = json.loads(result.stdout)
         except ValueError:
             determine_payload = None
+        if determine_payload is None:
+            # rc=0 but unparseable output is a degraded pull, not a green one:
+            # the child ran, said nothing usable, and the tick continues on
+            # existing receipts — silently keeping ok=True here hid the
+            # harness breakage entirely (round 4, codex-2 test finding).
+            print(
+                "hapax-quota-telemetry-writer: producer pull-forward output was "
+                f"not valid JSON ({producer_id}); continuing with existing "
+                "receipts. Next: scripts/hapax-determine --producer "
+                f"{producer_id} --json to reproduce and inspect the harness output.",
+                file=sys.stderr,
+            )
+            info["ok"] = False
         if isinstance(determine_payload, dict):
             info["ran"].extend(
                 entry.get("producer_id", producer_id)
@@ -2659,6 +2721,7 @@ def main(argv: list[str] | None = None) -> int:
             codex_blocker,
         )
 
+    publish_mono_started = monotonic_clock()
     try:
         (
             ledger,
@@ -2670,9 +2733,27 @@ def main(argv: list[str] | None = None) -> int:
             resource_state,
             codex_blocker,
         ) = _scan_build_write(now)
+    except LiveLedgerLockTimeout as exc:
+        print(
+            f"hapax-quota-telemetry-writer: {exc}; this tick wrote no ledger. "
+            "Next: check for a concurrent writer holding the live ledger "
+            "(ps -ef | grep hapax-quota-telemetry-writer) and rerun with "
+            "--json; the on-disk ledger keeps its previous fresh_until.",
+            file=sys.stderr,
+        )
+        return 2
     except (ValueError, QuotaSpendLedgerError) as exc:
         print(f"hapax-quota-telemetry-writer: live ledger invalid: {exc}", file=sys.stderr)
         return 1
+    # The actual publication instant: the tick's `now` plus the monotonic
+    # elapsed across the locked scan→build→write pass just completed (lock
+    # wait, receipt scans, probe, build, atomic write). `captured_at` is
+    # sampled before all of that work and cannot see the overrun (round-4
+    # codex-1 major: a 900s admission with 120s of publication work reported
+    # 870s remaining at write while the surface actually published at 750s).
+    published_at = (now + timedelta(seconds=monotonic_clock() - publish_mono_started)).replace(
+        microsecond=0
+    )
 
     # The refresh runs AFTER the pass-1 write, on purpose (critical finding on #4665):
     # its observe_quota consumer validates routes against the live ledger on disk and
@@ -2695,6 +2776,7 @@ def main(argv: list[str] | None = None) -> int:
             != codex_blocker
         ):
             try:
+                rebuild_mono_started = monotonic_clock()
                 (
                     ledger,
                     walls,
@@ -2706,6 +2788,24 @@ def main(argv: list[str] | None = None) -> int:
                     codex_blocker,
                 ) = _scan_build_write(pass2_now)
                 ledger_rebuilt_after_refresh = True
+                # The rebuild REPLACED the published ledger: the publication
+                # instant moves to this pass's completion, or the predicate
+                # below would judge the earlier write it just replaced.
+                published_at = (
+                    pass2_now + timedelta(seconds=monotonic_clock() - rebuild_mono_started)
+                ).replace(microsecond=0)
+            except LiveLedgerLockTimeout as exc:
+                # Same contract as the rebuild-failure branch below: the
+                # pass-1 ledger stays on disk, but this tick FAILED its
+                # reconciliation and must not exit green.
+                ledger_rebuild_after_refresh_error = str(exc)
+                print(
+                    "hapax-quota-telemetry-writer: reconciliation pass could not "
+                    f"acquire the live ledger lock: {exc}; the pass-1 ledger "
+                    "remains on disk. Next: check for a concurrent writer and "
+                    "rerun this writer with --json.",
+                    file=sys.stderr,
+                )
             except (ValueError, QuotaSpendLedgerError) as exc:
                 # The pass-1 ledger stays on disk (the atomic write never
                 # replaced it), but this tick FAILED its reconciliation: the
@@ -2722,30 +2822,35 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
 
-    # The exit predicate, measured on the PUBLISHED ledger: whatever this tick
-    # embedded must outlive the next publication deadline (one cycle, slipped
-    # by the timer's accuracy, plus the next tick's bounded pre-write work —
-    # FRESHNESS_HORIZON_S), or the quota surface cites a dead admission for the
-    # difference (the defect this PR repairs). A degraded tick still writes its
-    # honest ledger — consumers see the true fresh_until, never an overclaim —
-    # but the degradation is reported here, in the summary, on stderr, and in
-    # the exit code (4), so a systemd OnFailure/monitoring consumer cannot miss
-    # a tick that published a surface it knows will flap (minor findings on
-    # #4665, round 3: advisory-only degraded was not machine-checkable).
-    admission_freshness_at_write_s: float | None = None
+    # The exit predicate, measured at the PUBLICATION instant, not at
+    # `captured_at`: whatever this tick embedded must outlive the next
+    # publication deadline (one cycle, slipped by the timer's accuracy, plus
+    # the next tick's bounded pre-write work — FRESHNESS_HORIZON_S), or the
+    # quota surface cites a dead admission for the difference (the defect
+    # this PR repairs). `captured_at` is sampled before the scans and the
+    # write, so freshness measured there was blind to pre-write work
+    # overruns (round-4 codex-1 major); `published_at` above is the actual
+    # write instant derived from measured monotonic elapsed. A degraded tick
+    # still writes its honest ledger — consumers see the true fresh_until,
+    # never an overclaim — but the degradation is reported here, in the
+    # summary, on stderr, and in the exit code (4), so a systemd
+    # OnFailure/monitoring consumer cannot miss a tick that published a
+    # surface it knows will flap (minor findings on #4665, round 3:
+    # advisory-only degraded was not machine-checkable).
+    admission_freshness_at_publication_s: float | None = None
     admission_freshness_degraded = False
     if agy_scan.admissions:
-        admission_freshness_at_write_s = round(
-            (max(a.fresh_until for a in agy_scan.admissions) - ledger.captured_at).total_seconds(),
+        admission_freshness_at_publication_s = round(
+            (max(a.fresh_until for a in agy_scan.admissions) - published_at).total_seconds(),
             1,
         )
-        admission_freshness_degraded = admission_freshness_at_write_s < FRESHNESS_HORIZON_S
+        admission_freshness_degraded = admission_freshness_at_publication_s < FRESHNESS_HORIZON_S
     else:
         admission_freshness_degraded = True
     if admission_freshness_degraded and not args.skip_receipts:
         detail = (
-            f"{admission_freshness_at_write_s:.0f}s remaining at write"
-            if admission_freshness_at_write_s is not None
+            f"{admission_freshness_at_publication_s:.0f}s remaining at publication"
+            if admission_freshness_at_publication_s is not None
             else "no active admission receipt"
         )
         print(
@@ -2763,10 +2868,11 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "ledger_id": ledger.ledger_id,
         "captured_at": ledger.captured_at.isoformat().replace("+00:00", "Z"),
+        "published_at": published_at.isoformat().replace("+00:00", "Z"),
         "out": str(out_path),
         "receipts_refreshed": receipts_ok,
         "pull_forward": pull_forward,
-        "admission_freshness_at_write_s": admission_freshness_at_write_s,
+        "admission_freshness_at_publication_s": admission_freshness_at_publication_s,
         "admission_freshness_degraded": admission_freshness_degraded,
         "freshness_horizon_s": FRESHNESS_HORIZON_S,
         "ledger_rebuilt_after_refresh": ledger_rebuilt_after_refresh,

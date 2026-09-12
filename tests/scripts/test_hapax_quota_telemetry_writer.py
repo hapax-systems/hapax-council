@@ -408,6 +408,10 @@ def test_main_pulls_mints_writes_then_refreshes(
 
     monkeypatch.setitem(main_globals, "pull_forward_due_producers", fake_pull)
     monkeypatch.setitem(main_globals, "refresh_capability_receipts", fake_refresh)
+    # Frozen monotonic clock: the publication instant derives from measured
+    # monotonic elapsed, and this test asserts exact freshness numbers — a
+    # real clock would make them depend on machine speed (round-4 codex-1).
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
 
     rc = namespace["main"](
         [
@@ -442,10 +446,11 @@ def test_main_pulls_mints_writes_then_refreshes(
     assert summary["pull_forward"]["ran"] == ["agy-review-quota"]
     assert summary["receipts_refreshed"] is True
     assert summary["ledger_rebuilt_after_refresh"] is False
-    # The exit predicate, on the published ledger: a fresh 900s mint leaves the
-    # full cycle ahead of it — not degraded.
-    assert summary["admission_freshness_at_write_s"] == 900.0
+    # The exit predicate, on the published ledger at the PUBLICATION instant:
+    # a fresh 900s mint leaves the full cycle ahead of it — not degraded.
+    assert summary["admission_freshness_at_publication_s"] == 900.0
     assert summary["admission_freshness_degraded"] is False
+    assert summary["published_at"] == NOW  # zero measured elapsed, pinned now
 
 
 def test_refreshed_codex_receipts_rebuild_the_published_ledger(
@@ -607,6 +612,21 @@ def test_sustained_freshness_across_two_complete_cycles(
     stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
     forced: list[bool] = []
 
+    # Injectable monotonic clock (round-4 codex-1: the publication instant is
+    # now MEASURED inside the scan→build→write pass). The first read in a
+    # tick anchors the pass start; later reads (the lock deadline, the
+    # post-pass publication read) include the modeled publication work — 27s
+    # in the codex-1 round-3 repro — with no sleeping and no wall clock.
+    class PublicationClock:
+        advance = False
+        calls = 0
+
+        def __call__(self) -> float:
+            self.calls += 1
+            return 1000.0 + (publish_work_s if self.advance and self.calls > 1 else 0.0)
+
+    clock = PublicationClock()
+
     def behavioral_pull(*, repo_root, receipt_dir, now, timeout=None):
         if namespace["pull_forward_force_needed"](receipt_dir, now=now):
             forced.append(True)
@@ -627,12 +647,15 @@ def test_sustained_freshness_across_two_complete_cycles(
 
     monkeypatch.setitem(main_globals, "pull_forward_due_producers", behavioral_pull)
     monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+    monkeypatch.setitem(main_globals, "monotonic_clock", clock)
 
     # Tick A at T0: the previous cycle's mint is 560s old — the reviewer's
-    # exact repro. Tick B at T0+660: the MAX SLIPPED fire (600s cycle + 60s
-    # AccuracySec, codex-1 round-3 repro) — and it publishes at +27s of
-    # pre-write work, so tick A's embedded admission had to cover 660+27=687s
-    # to keep the surface gapless.
+    # exact repro; its publication instant is T0 itself (zero elapsed). Tick
+    # B at T0+660: the MAX SLIPPED fire (600s cycle + 60s AccuracySec,
+    # codex-1 round-3 repro) — and its scan→build→write pass takes 27s of
+    # publication work (advanced into the injectable clock), so tick A's
+    # embedded admission had to cover 660+27=687s to keep the surface
+    # gapless.
     t0 = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
     _agy_admission(
         relay,
@@ -644,12 +667,12 @@ def test_sustained_freshness_across_two_complete_cycles(
     summaries = []
     for tick, tick_now in enumerate((t0, t0 + timedelta(seconds=slipped_fire_s))):
         out = tmp_path / f"out-{tick}" / "quota-spend-ledger-live.json"
+        clock.calls = 0
+        clock.advance = bool(tick)  # tick B's in-pass publication work
         rc = namespace["main"](
             [
                 "--now",
-                (tick_now + timedelta(seconds=publish_work_s) if tick else tick_now)
-                .isoformat()
-                .replace("+00:00", "Z"),
+                tick_now.isoformat().replace("+00:00", "Z"),
                 "--out",
                 str(out),
                 "--relay-receipt-dir",
@@ -665,22 +688,29 @@ def test_sustained_freshness_across_two_complete_cycles(
         summaries.append(json.loads(capsys.readouterr().out))
 
     # Both ticks FORCED a mint (560s and 660s old both fail the freshness
-    # predicate), every published ledger carried the full horizon ahead, and
-    # tick A's embedded admission covered tick B's slipped, slow publication —
-    # no stale interval anywhere in the two cycles (codex-1 round-3 C1 repro).
+    # predicate), every published ledger carried the full horizon ahead at
+    # its ACTUAL publication instant, and tick A's embedded admission
+    # covered tick B's slipped, slow publication — no stale interval anywhere
+    # in the two cycles (codex-1 round-3 C1 repro, judged at the round-4
+    # publication instant).
     assert forced == [True, True]
     horizon = namespace["FRESHNESS_HORIZON_S"]
     for summary in summaries:
         assert summary["admission_freshness_degraded"] is False
-        assert summary["admission_freshness_at_write_s"] >= horizon
-    assert summaries[0]["admission_freshness_at_write_s"] >= slipped_fire_s + publish_work_s
-    payload = json.loads((tmp_path / "out-1" / "quota-spend-ledger-live.json").read_text())
-    agy_snapshot = next(
-        s for s in payload["quota_snapshots"] if s["route_id"] == "agy.review.direct"
-    )
-    captured = datetime.fromisoformat(payload["captured_at"].replace("Z", "+00:00"))
-    fresh_until = datetime.fromisoformat(agy_snapshot["fresh_until"].replace("Z", "+00:00"))
-    assert (fresh_until - captured).total_seconds() >= slipped_fire_s + publish_work_s
+        assert summary["admission_freshness_at_publication_s"] >= horizon
+    # The TRUE no-flap predicate (round-4 codex-2): tick A's embedded
+    # admission outlives tick B's measured publication instant — the slipped
+    # fire PLUS the 27s of publication work — not merely tick B's captured_at.
+    published_b = datetime.fromisoformat(summaries[1]["published_at"].replace("Z", "+00:00"))
+    assert published_b == t0 + timedelta(seconds=slipped_fire_s + publish_work_s)
+    payload_a = json.loads((tmp_path / "out-0" / "quota-spend-ledger-live.json").read_text())
+    fresh_until_a = next(
+        s for s in payload_a["quota_snapshots"] if s["route_id"] == "agy.review.direct"
+    )["fresh_until"]
+    assert datetime.fromisoformat(fresh_until_a.replace("Z", "+00:00")) >= published_b
+    # Tick B minted at its fire instant and published 27s later: 900-27=873s
+    # of admission freshness remained at the actual publication instant.
+    assert summaries[1]["admission_freshness_at_publication_s"] == 873.0
 
 
 def test_degraded_admission_is_reported_not_silent(
@@ -721,6 +751,7 @@ def test_degraded_admission_is_reported_not_silent(
 
     monkeypatch.setitem(main_globals, "pull_forward_due_producers", skipping_pull)
     monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
 
     rc = namespace["main"](
         [
@@ -741,12 +772,236 @@ def test_degraded_admission_is_reported_not_silent(
     captured = capsys.readouterr()
     assert "DEGRADED" in captured.err
     assert "340" in captured.err
-    assert "810" in captured.err  # the horizon the admission failed to cover
+    assert "at publication" in captured.err
+    assert "815" in captured.err  # the horizon the admission failed to cover
     assert "Next:" in captured.err
     summary = json.loads(captured.out)
     assert summary["admission_freshness_degraded"] is True
-    assert summary["admission_freshness_at_write_s"] == 340.0
-    assert summary["freshness_horizon_s"] == 810.0
+    assert summary["admission_freshness_at_publication_s"] == 340.0
+    assert summary["freshness_horizon_s"] == 815.0
+
+
+def test_publication_work_overrun_degrades_instead_of_reporting_captured_at(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """codex-1 round-4 major, exact repro shape: a 900s admission and 120s of
+    publication work inside the scan→build→write pass. Judged at `captured_at`
+    — sampled before the work — the tick reported 870-900s remaining and
+    exited green while the surface actually published at 780s remaining, under
+    the 815s horizon. The exit predicate must evaluate freshness at the
+    MEASURED publication instant, so this tick is degraded and machine-
+    checkable, not green."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    _agy_admission(relay, observed_at=NOW, stale_after_seconds=900)
+
+    class OverrunClock:
+        advance = False
+        calls = 0
+
+        def __call__(self) -> float:
+            self.calls += 1
+            return 1000.0 + (120.0 if self.advance and self.calls > 1 else 0.0)
+
+    clock = OverrunClock()
+    clock.advance = True  # every read after the pass anchor includes the overrun
+
+    monkeypatch.setitem(main_globals, "monotonic_clock", clock)
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {"invoked": True, "forced": False, "ran": [], "skipped": [], "ok": True},
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+    assert rc == 4
+    captured = capsys.readouterr()
+    assert "DEGRADED" in captured.err
+    assert "780" in captured.err
+    assert "at publication" in captured.err
+    summary = json.loads(captured.out)
+    # 900s of admission freshness minus the 120s the pass actually took.
+    assert summary["admission_freshness_at_publication_s"] == 780.0
+    assert summary["admission_freshness_degraded"] is True
+    assert summary["freshness_horizon_s"] == 815.0
+    # The ledger's own captured_at is still the pre-work sampling instant —
+    # the summary must not pretend it was the publication instant.
+    assert summary["captured_at"] == NOW
+    assert summary["published_at"] == "2026-06-10T00:02:00Z"
+
+
+def test_pull_forward_reports_unparseable_harness_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """codex-2 round-4 test finding: rc=0 with unparseable stdout used to
+    leave the pull silently green (ok=True, nothing recorded) — a harness
+    whose --json contract broke degraded NOTHING. It must report the
+    malformed output and mark the pull not-ok while continuing on existing
+    receipts (degrade, never abort)."""
+    namespace = runpy.run_path(str(SCRIPT))
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+
+    def fake_run(argv, *, capture_output, text, timeout):
+        return subprocess.CompletedProcess(argv, 0, stdout="not json at all\n", stderr="")
+
+    monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
+    info = namespace["pull_forward_due_producers"](
+        repo_root=REPO_ROOT,
+        receipt_dir=relay,
+        now=datetime.fromisoformat(NOW.replace("Z", "+00:00")),
+    )
+    assert info["ok"] is False
+    assert info["ran"] == [] and info["skipped"] == []
+    stderr = capsys.readouterr().err
+    assert "not valid JSON" in stderr
+    assert "Next:" in stderr
+    assert "agy-review-quota" in stderr
+
+
+def test_receipt_refresh_failure_exits_three(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """rc=3 (receipt refresh failed) had no main-flow coverage: the refresh
+    contract is 'degrade, not abort', and the nonzero exit is what makes the
+    degradation machine-checkable (round-4 codex-2 test finding)."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    _agy_admission(relay, observed_at=NOW, stale_after_seconds=900)
+
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {"invoked": True, "forced": False, "ran": [], "skipped": [], "ok": True},
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: False)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+    assert rc == 3  # fresh admission, honest write, refresh failed
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipts_refreshed"] is False
+    assert summary["admission_freshness_degraded"] is False
+
+
+def test_live_ledger_lock_timeout_raises_instead_of_hanging(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """claude-3 (round 4): acquiring the live-ledger lock was the tick's last
+    unbounded wait — a holder that never released hung the tick into the
+    unit's kill timeout. Bounded acquisition must raise a typed error the
+    caller can exit on, mirroring determine's producer lock."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    out.parent.mkdir(parents=True)
+    ticks = iter((0.0, 100.0, 200.0, 300.0))
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: next(ticks))
+    monkeypatch.setattr(namespace["time"], "sleep", lambda seconds: None)
+    with namespace["quota_spend_live_lock"](out, wait_s=150.0):
+        with pytest.raises(namespace["LiveLedgerLockTimeout"]):
+            with namespace["quota_spend_live_lock"](out, wait_s=150.0):
+                pass
+
+
+def test_live_ledger_lock_contention_exits_two_not_hanging(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The main-flow contract for the bounded lock: a tick that cannot
+    acquire the live ledger inside the wait writes NOTHING, exits 2 with next
+    actions, and leaves the on-disk ledger untouched (claude-3, round 4)."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    step = iter((0.0, 100.0, 200.0, 300.0, 400.0))
+
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: next(step))
+    monkeypatch.setattr(namespace["time"], "sleep", lambda seconds: None)
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {"invoked": True, "forced": False, "ran": [], "skipped": [], "ok": True},
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+
+    with namespace["quota_spend_live_lock"](out):
+        rc = namespace["main"](
+            [
+                "--now",
+                NOW,
+                "--out",
+                str(out),
+                "--relay-receipt-dir",
+                str(relay),
+                "--platform-capability-receipt-dir",
+                str(platform_receipts),
+                "--nvidia-smi",
+                str(stub),
+                "--json",
+            ]
+        )
+    assert rc == 2
+    stderr = capsys.readouterr().err
+    assert "held longer than" in stderr
+    assert "Next:" in stderr
+    assert not out.exists()  # nothing was published by the lock-starved tick
 
 
 def test_pass2_rebuild_failure_fails_the_tick_and_preserves_the_pass1_ledger(
@@ -872,6 +1127,7 @@ def test_clock_refresh_branch_without_now_uses_post_pull_time(
     monkeypatch.setitem(main_globals, "datetime", ControllableDatetime)
     monkeypatch.setitem(main_globals, "pull_forward_due_producers", timed_pull)
     monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
 
     rc = namespace["main"](
         [
@@ -890,7 +1146,7 @@ def test_clock_refresh_branch_without_now_uses_post_pull_time(
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["captured_at"] == (t0 + timedelta(seconds=27)).isoformat().replace("+00:00", "Z")
     summary = json.loads(capsys.readouterr().out)
-    assert summary["admission_freshness_at_write_s"] == 900.0
+    assert summary["admission_freshness_at_publication_s"] == 900.0
 
 
 class TestPullForwardBudgetPins:
@@ -945,7 +1201,9 @@ class TestPullForwardBudgetPins:
         # codex-1 round-4 critical: the horizon must cover everything between
         # this write and the next one's publication — cycle + timer accuracy +
         # the longer of lock wait vs producer timeout (mutually exclusive once
-        # the force revalidation lands) + the bounded pre-write work.
+        # the force revalidation lands) + the bounded pre-write work. The
+        # pre-write bound is 65s (glm-1 minor, round 4): the round-4 value of
+        # 60 was below its own cited 33s mint + 32s write-side measurement.
         namespace = runpy.run_path(str(SCRIPT))
         assert (
             namespace["FRESHNESS_HORIZON_S"]
@@ -956,12 +1214,33 @@ class TestPullForwardBudgetPins:
                 namespace["PULL_FORWARD_PRODUCER_TIMEOUT_S"],
             )
             + namespace["PRE_WRITE_WORK_BOUND_S"]
-            == 810.0
+            == 815.0
         )
+
+    def test_pre_write_bound_covers_its_own_cited_measurement(self) -> None:
+        # glm-1 minor (round 4): PRE_WRITE_WORK_BOUND_S must not sit below the
+        # measurement the comment cites (33s mint + 32s write-side = 65s
+        # anchor-to-write, 2026-09-12), and the steady-state bound it implies
+        # (L <= 900 - horizon = 85s) must stay above the worst observed
+        # inflated tick (81s).
+        namespace = runpy.run_path(str(SCRIPT))
+        assert namespace["PRE_WRITE_WORK_BOUND_S"] >= 33.0 + 32.0
+        assert 900.0 - namespace["FRESHNESS_HORIZON_S"] >= 81.0
+
+    def test_production_execstart_never_skips_receipts(self) -> None:
+        # claude-1 minor (round 4): rc=4 suppression under --skip-receipts is
+        # one flag away from hiding the exit predicate in production; pin the
+        # shipped ExecStart the same way the budget pins bind the constants.
+        for raw in self.SERVICE_UNIT.read_text(encoding="utf-8").splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if line.startswith("ExecStart="):
+                assert "--skip-receipts" not in line
+                return
+        raise AssertionError(f"ExecStart= not found in {self.SERVICE_UNIT}")
 
     def test_freshness_horizon_stays_under_the_admission_ttl(self) -> None:
         # The agy admission TTL is 900s. A horizon at or above the TTL would
-        # make every tick degrade; at 810 an at-bound tick degrades (by
+        # make every tick degrade; at 815 an at-bound tick degrades (by
         # design, visibly) while the steady state stays clean.
         namespace = runpy.run_path(str(SCRIPT))
         assert namespace["FRESHNESS_HORIZON_S"] < 900.0
