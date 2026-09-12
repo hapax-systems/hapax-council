@@ -35,15 +35,17 @@ SyslogIdentifier=hapax-quota-telemetry
 # smoke) that normally runs under hapax-determine.service's 512M cgroup.
 # Measured evidence (review findings on #4665, rounds 2-3), recheck with
 # `systemctl --user show hapax-quota-telemetry.service hapax-determine.service
-# -p MemoryPeak`: writer-alone tick peak 191 MiB, determine tick peak 217 MiB
-# (both 2026-09-12); the combined tick runs them IN SERIES in one cgroup
-# (~408 MiB additive). BUT hapax-determine.service itself took a cgroup OOM
+# CAVEAT FIRST (review finding on #4665, round 4): 768M is a judgment call,
+# not an evidence-derived ceiling. hapax-determine.service took a cgroup OOM
 # kill at 2026-09-12T14:59:26Z under 512M (journal: kernel OOM, unit context)
-# — the demonstrated spike exceeds the additive estimate, so this unit inherits
-# a ceiling the evidence already showed insufficient once (review finding on
-# #4665, round 3). Raised 512M → 768M to clear the demonstrated spike by
-# ~256 MiB; follow-up: profile the determine spike's source (likely the agy
-# smoke's node/python chain) before treating 768M as settled.
+# — the demonstrated spike exceeds the additive estimate below, so this unit
+# inherits a ceiling the evidence already showed insufficient once. Raised
+# 512M → 768M to clear the demonstrated spike by ~256 MiB; follow-up: profile
+# the determine spike's source (likely the agy smoke's node/python chain)
+# before treating 768M as settled. The additive estimate it clears:
+# `systemd-run -p MemoryPeak`: writer-alone tick peak 191 MiB, determine tick
+# peak 217 MiB (both 2026-09-12); the combined tick runs them IN SERIES in
+# one cgroup (~408 MiB additive).
 # Recheck after any suspected skipped mint:
 # `journalctl --user -u hapax-quota-telemetry.service --since -1d | grep -i oom`.
 MemoryMax=768M
@@ -55,19 +57,22 @@ MemoryMax=768M
 # test_hapax_quota_telemetry_writer.py re-derives this from the unit files and
 # the writer constants, so the arithmetic cannot drift silently. This does NOT
 # bound the tick end to end (review finding on #4665, round 3): the receipt
-# scans and the two ledger passes sit outside those subprocess budgets, and
-# the live ledger lock is currently unbounded under contention — a tick that
-# crosses the next cadence boundary DEFERS that fire (systemd will not overlap
-# a oneshot unit), which is a silently skipped write cycle. That deferral is
+# scans and the two ledger passes sit outside those subprocess budgets — a
+# tick that crosses the next cadence boundary DEFERS that fire (systemd will
+# not overlap a oneshot unit), which is a silently skipped write cycle. The
+# live ledger lock wait itself is bounded (120s, round 4): expiry exits rc=2
+# instead of hanging into this unit's TimeoutStartSec. The deferral is
 # not covered by duration arithmetic; it is covered by the exit predicate
 # below, which is why the predicate — not this comment — is the contract.
 #
 # Exit codes are the machine-checkable surface (review findings on #4665,
-# round 3): 0 = healthy tick; 1 = pass-2 ledger rebuild failed (pass-1 ledger
-# stays on disk); 3 = receipt refresh failed; 4 = DEGRADED — the embedded agy
-# admission will not cover the next publication deadline
-# (admission_freshness_at_write_s < FRESHNESS_HORIZON_S = 810s: one 600s
-# cycle + 60s timer accuracy + bounded pre-write work), so the quota surface
+# rounds 3-4): 0 = healthy tick; 1 = pass-2 ledger rebuild failed (pass-1
+# ledger stays on disk); 2 = the live ledger lock stayed held past its 120s
+# bound (this tick wrote no ledger); 3 = receipt refresh failed; 4 = DEGRADED
+# — the embedded agy admission will not cover the next publication deadline
+# (admission_freshness_at_publication_s < FRESHNESS_HORIZON_S = 815s: one
+# 600s cycle + 60s timer accuracy + bounded pre-write work), so the quota
+# surface
 # cites an admission that dies before the next write lands. A DEGRADED tick
 # still writes its honest ledger — consumers see true fresh_until, never an
 # overclaim — and OnFailure=notify-failure@%n.service surfaces the rc=4, so
@@ -76,7 +81,7 @@ MemoryMax=768M
 # skips the pull and refresh; production ExecStart never passes it.)
 # Recheck: `journalctl --user -u hapax-quota-telemetry.service --since -1d |
 # grep -E 'DEGRADED|rc=4'` and `scripts/hapax-quota-telemetry-writer --json`
-# (summary key admission_freshness_at_write_s vs freshness_horizon_s).
+# (summary key admission_freshness_at_publication_s vs freshness_horizon_s).
 # TimeoutStartSec=900 bounds the kill so a wedged tick cannot linger past one
 # deferred cycle.
 TimeoutStartSec=900
