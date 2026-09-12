@@ -160,6 +160,29 @@ class TestDeclinedIsNotSilence:
         )
         assert rec["outcome"] == "unlaunchable"
 
+    def test_unlaunchable_record_shape_is_witnessed_without_duration(self, tmp_path: Path) -> None:
+        """claude-1 minor (#4665, round 8): the unlaunchable branch stamps
+        completed_at but deliberately no duration_s — the producer never ran,
+        so there is no producer duration to report. Pin the conservative
+        asymmetry: completion reads the stamped witness directly, and the
+        legacy ran_at+duration_s fallback never manufactures a later instant
+        for a spawn that failed."""
+        rec = det.run_producer(
+            {"id": "p1", "command": [str(tmp_path / "nope")], "cadence_seconds": 60},
+            now=NOW,
+            repo_root=tmp_path,
+            timeout=30,
+        )
+        assert rec["outcome"] == "unlaunchable"
+        assert rec["returncode"] is None
+        assert "duration_s" not in rec
+        completed = det._completion_of(rec)
+        assert completed is not None
+        assert completed == det._parse_iso(str(rec["completed_at"]))
+        # The witness lands at or after the invocation anchor it extends —
+        # never before it.
+        assert completed >= NOW
+
     def test_a_run_is_witnessed_even_when_it_produces_nothing(self, tmp_path: Path) -> None:
         """Without this, declining and never running are the same observable."""
         ledger = tmp_path / "runs.jsonl"

@@ -46,6 +46,14 @@ SyslogIdentifier=hapax-quota-telemetry
 # `systemd-run -p MemoryPeak`: writer-alone tick peak 191 MiB, determine tick
 # peak 217 MiB (both 2026-09-12); the combined tick runs them IN SERIES in
 # one cgroup (~408 MiB additive).
+# POST-MERGE ACTIVATION (claude-1 minor, #4665 round 8 — previously recorded
+# only in PR prose): after this unit file lands, run
+# `systemctl --user daemon-reload`, then recheck BOTH ceilings took effect:
+# `systemctl --user show hapax-quota-telemetry.service -p MemoryMax -p TimeoutStartUSec`
+# — expected MemoryMax=805306368 (768M) and TimeoutStartUSec=15min. The old
+# 256M/3min ceilings timeout-kill a pull-forward tick before the rc=4 surface
+# can report; without the recheck the merged fix is inert on any host still
+# running the pre-merge unit.
 # Recheck after any suspected skipped mint:
 # `journalctl --user -u hapax-quota-telemetry.service --since -1d | grep -i oom`.
 MemoryMax=768M
@@ -69,16 +77,23 @@ MemoryMax=768M
 # rounds 3-4): 0 = healthy tick; 1 = pass-2 ledger rebuild failed (pass-1
 # ledger stays on disk); 2 = the live ledger lock stayed held past its 120s
 # bound (this tick wrote no ledger); 3 = receipt refresh failed; 4 = DEGRADED
-# — one of three flap witnesses fired: the embedded agy admission will not
+# — one of four flap witnesses fired: the embedded agy admission will not
 # cover the next publication deadline (admission_freshness_at_publication_s <
 # FRESHNESS_HORIZON_S = 819s: one 600s cycle + 60s timer accuracy + 4s
 # pre-mint scan bound + bounded pre-write work), OR the tick published after
 # the previously published admission expired (admission_continuity_gap_s > 0:
 # the surface was dead for the gap even though this tick's own predicate
-# passed), OR the pre-mint force-decision scan overran its bound
-# (pre_mint_scan_elapsed_s > 4s), which invalidates the horizon derivation
-# itself. In all three the quota surface
-# cites an admission that dies before the next write lands, or did. A DEGRADED tick
+# passed), OR the capability-receipt surface went dark between the
+# predecessor receipts' expiry and the refresh's replacement landing
+# (receipt_continuity_gap_s > 0, scoped to the platforms the refresh
+# REPUBLISHED: quota routing consumed a dead receipt surface for the gap
+# even though every ledger witness passed — critical finding on #4665,
+# round 8, C1; lingering retired receipts the refresh never touches are a
+# maintenance defect for the capability-surface claim, not this witness), OR
+# the pre-mint force-decision scan overran
+# its bound (pre_mint_scan_elapsed_s > 4s), which invalidates the horizon
+# derivation itself. In all of these the quota surface vouches past evidence
+# that died before the next write lands, or did. A DEGRADED tick
 # still writes its honest ledger — consumers see true fresh_until, never an
 # overclaim — and OnFailure=notify-failure@%n.service surfaces the rc=4, so
 # the flap condition this PR repairs cannot ride green in systemd monitoring.
@@ -87,8 +102,8 @@ MemoryMax=768M
 # Recheck: `journalctl --user -u hapax-quota-telemetry.service --since -1d |
 # grep -E 'DEGRADED|rc=4'` and `scripts/hapax-quota-telemetry-writer --json`
 # (summary keys admission_freshness_at_publication_s vs freshness_horizon_s,
-# admission_continuity_gap_s, pre_mint_scan_elapsed_s vs
-# pre_mint_scan_bound_s).
+# admission_continuity_gap_s, receipt_continuity_gap_s,
+# pre_mint_scan_elapsed_s vs pre_mint_scan_bound_s).
 # TimeoutStartSec=900 bounds the kill so a wedged tick cannot linger past one
 # deferred cycle.
 TimeoutStartSec=900

@@ -324,6 +324,14 @@ def run_producer(
                 outcome="unlaunchable",
                 returncode=None,
                 error=f"{type(exc).__name__}: {exc}",
+                # No duration_s by design (claude-1 minor, #4665 round 8): the
+                # producer never ran, so there is no producer duration to
+                # report — only the spawn attempt itself. Completion consumers
+                # go through _completion_of, which prefers the completed_at
+                # witness below and falls back to ran_at ALONE when duration_s
+                # is absent, so an unlaunchable record never claims a later
+                # completion than its witness — the asymmetry is conservative
+                # and pinned by test.
                 # The spawn failed at the attempt instant: "completed" (by
                 # failing) then, with the invocation-wide elapsed still
                 # covering every lock wait and earlier producer that preceded

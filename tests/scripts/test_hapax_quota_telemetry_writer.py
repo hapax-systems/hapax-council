@@ -256,6 +256,31 @@ def test_pull_forward_force_predicate_matches_freshness_need(
     assert namespace["pull_forward_force_needed"](relay, now=now_dt) is True
 
 
+def test_pull_forward_route_prefix_derivation_is_the_producer_naming_contract() -> None:
+    """claude-1 minor (#4665, round 8): QUOTA_SURFACE_PULL_FORWARD_ROUTE_PREFIXES
+    is derived from the producer ids under a naming CONTRACT — every producer
+    id leads with its route dot-namespace as the first hyphen token. Pin both
+    halves: the published prefixes stay derived (never hand-listed), and a
+    second producer id would widen the witness to its routes automatically
+    instead of riding green outside the continuity contract."""
+    namespace = runpy.run_path(str(SCRIPT))
+    producers = namespace["QUOTA_SURFACE_PULL_FORWARD_PRODUCER_IDS"]
+    prefixes = namespace["QUOTA_SURFACE_PULL_FORWARD_ROUTE_PREFIXES"]
+
+    # Derived, not hand-listed: the constant is exactly the split derivation
+    # over the live producer tuple.
+    assert prefixes == tuple(pid.split("-", 1)[0] + "." for pid in producers)
+    assert "agy." in prefixes
+
+    # The naming contract itself, pinned on a hypothetical second producer:
+    # "claude-account-live" (deliberately absent today) must derive "claude."
+    # so claude.* routes stay witnessed the day it is added.
+    assert tuple(pid.split("-", 1)[0] + "." for pid in (*producers, "claude-account-live")) == (
+        *prefixes,
+        "claude.",
+    )
+
+
 def test_pull_forward_degrades_not_aborts_on_failure_and_timeout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1563,6 +1588,288 @@ def test_publication_anchor_is_the_invocation_wall_clock_not_the_post_pull_resam
     # near expiry) degraded a healthy tick.
     assert summary["admission_freshness_at_publication_s"] == 880.0
     assert summary["admission_continuity_gap_s"] is None
+
+
+def test_receipt_surface_gap_degrades_even_when_ledger_witnesses_are_green(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """C1 (#4665, round 8): the continuity witness measures the LEDGER's
+    promise, but quota routing consumes the CAPABILITY RECEIPTS the refresh
+    replaces — the reviewer's two-tick repro (900s admissions, ticks at T and
+    T+660, a 260s second refresh) had the old receipt surface die at T+900
+    with its replacement landing at T+940: a 40s hole both ticks reported as
+    a zero gap. This models the second tick: the predecessor receipt on disk
+    is what the previous tick published, it dies before this tick's
+    replacement lands, and every ledger witness is green — only the
+    receipt-surface witness may catch it."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    # A fresh agy admission keeps every LEDGER witness green: 900s remaining
+    # at publication, no previous promise on disk, no pass-2 continuity gap.
+    _agy_admission(relay, observed_at=NOW)
+    # The predecessor surface: a receipt that stopped vouching 300s before
+    # this tick's replacement lands (observed 23:40, stale 15m -> dies 23:55;
+    # the replacement lands at the publication instant NOW, 00:00).
+    _codex_platform_receipt(platform_receipts, observed_at="2026-06-09T23:40:00Z")
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def publishing_refresh(*, timeout, receipt_dir):
+        # What the real refresh leaves behind: a replacement receipt observed
+        # now. Only the publication INSTANT matters to the witness — it is
+        # read from the invocation clock pair, not the receipt payload.
+        _codex_platform_receipt(platform_receipts)
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", publishing_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    # rc=4 driven ONLY by the receipt-surface witness: the reviewer's
+    # condition — every ledger witness green across a dead receipt surface —
+    # is now machine-checkable.
+    assert rc == 4
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["admission_freshness_degraded"] is False
+    # The ledger continuity witness is green — 0.0, not None, when the
+    # refresh's receipt rewrite forces a pass-2 rebuild judged against the
+    # promise pass 1 just published. Green either way: the hole this test
+    # pins lives in the RECEIPT surface, which the ledger cannot see.
+    assert summary["admission_continuity_degraded"] is False
+    assert summary["receipt_continuity_degraded"] is True
+    assert summary["receipt_continuity_gap_s"] == 300.0
+    assert summary["receipt_publication_at"] == NOW
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-09T23:55:00Z"
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+
+
+def test_lingering_unrefreshed_receipt_is_maintenance_not_a_replacement_hole(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Measured live 2026-09-12 (round 9 of #4665): the real receipt dir holds
+    retired gemini/antigrav/grok receipts dead since July that the --all
+    refresh never touches. An aggregate receipt-surface witness over every
+    published receipt would flap every production tick rc=4 forever. The
+    witness must scope to platforms the refresh actually REPLACED (observed_at
+    moved); a lingering dead receipt the refresh does not republish is a
+    maintenance defect for the capability-surface claim, not a replacement
+    hole."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW)
+    # A live platform the refresh restamps...
+    _codex_platform_receipt(platform_receipts)
+    # ...and a retired platform's receipt dead since June beside it, which
+    # the refresh below deliberately never rewrites.
+    retired = json.loads((platform_receipts / "codex.json").read_text(encoding="utf-8"))
+    retired["platform"] = "gemini"
+    retired["receipt_id"] = "gemini-retired-test"
+    retired["routes"] = ["gemini.review.direct"]
+    retired["observed_at"] = "2026-06-30T17:05:59Z"
+    for section in ("capability", "resource", "quota"):
+        retired[section]["observed_at"] = "2026-06-30T17:05:59Z"
+    retired["provider_docs"]["fetched_at"] = "2026-06-30T17:05:59Z"
+    (platform_receipts / "gemini.json").write_text(json.dumps(retired), encoding="utf-8")
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def codex_only_refresh(*, timeout, receipt_dir):
+        # Exactly like the real --all refresh: restamps the platforms it
+        # covers, never touches the retired platform's leftover receipt.
+        _codex_platform_receipt(platform_receipts, observed_at="2026-06-09T23:59:30Z")
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", codex_only_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    # The months-dead gemini receipt does not fire the witness: only codex
+    # was republished, and codex's PREDECESSOR (observed 23:59:00, not the
+    # restamp) still vouches past the replacement — a negative gap, reported
+    # honestly, degraded=False.
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-10T00:14:00Z"
+    assert summary["receipt_continuity_gap_s"] == -840.0
+    assert summary["receipt_continuity_degraded"] is False
+
+
+def test_rebuild_publication_includes_the_post_refresh_blocker_rescan(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """M1 (#4665, round 8): without --now, pass2_now was sampled BEFORE the
+    post-refresh blocker recompute while the rebuild's monotonic anchor was
+    sampled AFTER it, so the rescan's real seconds vanished from published_at
+    — the reviewer repro: a 120s blocker rescan published the ledger at T+160
+    while reporting T+40, keeping rc green against the 819s horizon the
+    surface had already blown through. The rebuild must re-pair the clocks
+    AFTER the rescan so its seconds land inside the wall value publication
+    anchors on; judged at that honest instant, this tick degrades (rc=4) —
+    exactly the false green the round-8 defect manufactured."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", "")
+    monkeypatch.setenv("HAPAX_DEFAULT_DISPATCH_HOST", "")
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    t0 = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+
+    class ControllableDatetime(datetime):
+        clock = t0
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.clock
+
+    mono = {"elapsed": 0.0}
+    real_blocker = main_globals["codex_saved_login_blocker"]
+    blocker_calls = {"n": 0}
+
+    def rescan_advancing_blocker(receipt_dir, *, now):
+        blocker_calls["n"] += 1
+        if blocker_calls["n"] == 2:
+            # The post-refresh recompute is the reviewer's 120s rescan: both
+            # clocks advance while it runs, as real receipt-dir probing does.
+            ControllableDatetime.clock = t0 + timedelta(seconds=140)
+            mono["elapsed"] += 120.0
+        return real_blocker(receipt_dir, now=now)
+
+    def timed_pull(*, repo_root, receipt_dir, now, timeout=None):
+        ControllableDatetime.clock = t0 + timedelta(seconds=20)
+        mono["elapsed"] += 20.0
+        _agy_admission(
+            relay,
+            observed_at=ControllableDatetime.clock.isoformat().replace("+00:00", "Z"),
+            stale_after_seconds=900,
+        )
+        return {
+            "invoked": True,
+            "forced": True,
+            "ran": ["agy-review-quota"],
+            "skipped": [],
+            "ok": True,
+        }
+
+    def healing_refresh(*, timeout, receipt_dir):
+        # Rewrites the receipt into a blocked state so the recompute below
+        # differs from pass 1 and triggers the rebuild.
+        _codex_platform_receipt(
+            platform_receipts, reason_code="codex_exec_auth_refresh_token_invalidated"
+        )
+        return True
+
+    monkeypatch.setitem(main_globals, "datetime", ControllableDatetime)
+    monkeypatch.setitem(main_globals, "pull_forward_due_producers", timed_pull)
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", healing_refresh)
+    monkeypatch.setitem(main_globals, "codex_saved_login_blocker", rescan_advancing_blocker)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: mono["elapsed"])
+
+    rc = namespace["main"](
+        [
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+    assert rc == 4
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["ledger_rebuilt_after_refresh"] is True
+    # The rebuild's publication instant carries the 120s rescan: pass 1
+    # published at t0+20, the rescan ran to t0+140, and pass 2 published AT
+    # t0+140 — the round-8 defect would report exactly t0+20, dropping the
+    # rescan from the surface's own freshness arithmetic.
+    assert summary["published_at"] == (t0 + timedelta(seconds=140)).isoformat().replace(
+        "+00:00", "Z"
+    )
+    # Judged at that honest instant: the t0+20 mint leaves 920-140=780s
+    # against the 819s horizon — degraded. The defect claimed 900s of
+    # freshness the surface did not have and exited green.
+    assert summary["admission_freshness_at_publication_s"] == 780.0
+    assert summary["admission_freshness_degraded"] is True
+    # The rebuild's own continuity witness stays green: judged against the
+    # promise pass 1 just published (0.0, not None — a two-pass tick always
+    # reports a per-pass value), never against the pre-tick promise.
+    assert summary["admission_continuity_gap_s"] == 0.0
+    assert summary["admission_continuity_degraded"] is False
+    assert summary["receipt_continuity_degraded"] is False
 
 
 def test_rebuild_continuity_is_judged_against_the_pass1_promise(
