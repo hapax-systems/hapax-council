@@ -10,6 +10,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -177,13 +178,19 @@ def test_pull_forward_invokes_the_harness_with_bounded_budgets_and_freshness_der
             "--json",
         ]
     ]
-    assert info == {
+    assert {k: v for k, v in info.items() if k not in {"scan_elapsed_s", "scan_bound_s"}} == {
         "invoked": True,
         "forced": True,
         "ran": ["agy-review-quota"],
         "skipped": [],
         "ok": True,
     }
+    # The pre-mint force-decision scan is timed against its own bound
+    # (round 5, codex-1 C2): elapsed is measured (real clock here, near
+    # zero against an empty receipt dir) and the bound rides along for the
+    # summary.
+    assert info["scan_bound_s"] == namespace["PRE_MINT_SCAN_BOUND_S"]
+    assert info["scan_elapsed_s"] >= 0.0
 
     # A receipt that comfortably covers the next cycle: plain due-check pull,
     # no --force — the cadence gate alone decides whether a run happens.
@@ -206,7 +213,7 @@ def test_pull_forward_force_predicate_matches_freshness_need(
     280s-old admission (620s left) beat the round-2 615s horizon but NOT the
     round-3 publication-deadline horizon: a +640s slipped fire plus a 27s
     publish overran it by 47s. The predicate must demand a mint in both
-    cases; only a receipt that covers the full horizon (810s) escapes force."""
+    cases; only a receipt that covers the full horizon (FRESHNESS_HORIZON_S) escapes force."""
     namespace = runpy.run_path(str(SCRIPT))
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
@@ -218,7 +225,7 @@ def test_pull_forward_force_predicate_matches_freshness_need(
         lambda *a, **kw: pytest.fail("the predicate must not spawn the harness"),
     )
 
-    # 560s old, 900s TTL: fresh_until = now + 340s < now + 810 → force.
+    # 560s old, 900s TTL: fresh_until = now + 340s < now + 819 → force.
     _agy_admission(
         relay,
         observed_at=(now_dt - timedelta(seconds=560)).isoformat().replace("+00:00", "Z"),
@@ -713,6 +720,293 @@ def test_sustained_freshness_across_two_complete_cycles(
     assert summaries[1]["admission_freshness_at_publication_s"] == 873.0
 
 
+class SequenceClock:
+    """Monotonic fake returning scripted values in order, holding the last.
+
+    Scripts the elapsed profile of a tick — invocation anchor, pre-mint scan,
+    lock deadline, publication read — with no sleeping and no wall clock."""
+
+    def __init__(self, values: list[float]) -> None:
+        self._values = values
+        self.calls = 0
+
+    def __call__(self) -> float:
+        value = self._values[min(self.calls, len(self._values) - 1)]
+        self.calls += 1
+        return value
+
+
+def test_continuity_gap_degrades_even_when_freshness_is_green(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """codex-1 round-5 C2, the consumer leg no remaining-lifetime predicate
+    can see: tick B slips past tick A's published promise and THEN mints a
+    fresh 2000s admission, so B's own freshness reads 2000s remaining — green —
+    while the surface was dead for the 30s between A's expiry and B's
+    publication. Only continuity against the promise A actually published
+    witnesses the gap. Both ticks write the SAME ledger path, exactly the
+    deployed surface."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    t0 = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+
+    def run_tick(tick_now: datetime) -> tuple[int, dict, str]:
+        rc = namespace["main"](
+            [
+                "--now",
+                tick_now.isoformat().replace("+00:00", "Z"),
+                "--out",
+                str(out),
+                "--relay-receipt-dir",
+                str(relay),
+                "--platform-capability-receipt-dir",
+                str(platform_receipts),
+                "--nvidia-smi",
+                str(stub),
+                "--json",
+            ]
+        )
+        captured = capsys.readouterr()
+        return rc, json.loads(captured.out), captured.err
+
+    # Tick A's mint promises t0+900; tick B slips to t0+930 — past that
+    # promise — and mints 2000s, so its own admission is green on arrival.
+    mint_stale_after = [900]
+
+    def behavioral_pull(*, repo_root, receipt_dir, now, timeout=None):
+        if namespace["pull_forward_force_needed"](receipt_dir, now=now):
+            _agy_admission(
+                relay,
+                observed_at=now.isoformat().replace("+00:00", "Z"),
+                stale_after_seconds=mint_stale_after[0],
+            )
+            return {
+                "invoked": True,
+                "forced": True,
+                "ran": ["agy-review-quota"],
+                "skipped": [],
+                "ok": True,
+            }
+        return {"invoked": True, "forced": False, "ran": [], "skipped": [], "ok": True}
+
+    monkeypatch.setitem(main_globals, "pull_forward_due_producers", behavioral_pull)
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc_a, summary_a, _ = run_tick(t0)
+    assert rc_a == 0  # cold start: no previous promise to be continuous with
+    assert summary_a["admission_continuity_gap_s"] is None
+    assert summary_a["previous_promise_fresh_until"] is None
+
+    mint_stale_after[0] = 2000
+    rc_b, summary_b, err_b = run_tick(t0 + timedelta(seconds=930))
+    assert rc_b == 4
+    assert "DEGRADED" in err_b and "coverage gap" in err_b
+    assert summary_b["admission_freshness_degraded"] is False
+    assert summary_b["admission_freshness_at_publication_s"] == 2000.0
+    assert summary_b["admission_continuity_degraded"] is True
+    assert summary_b["admission_continuity_gap_s"] == 30.0
+    assert summary_b["previous_promise_fresh_until"] == (
+        (t0 + timedelta(seconds=900)).isoformat().replace("+00:00", "Z")
+    )
+    assert summary_b["pull_forward"]["forced"] is True
+
+
+def test_c2_counterexample_slow_pre_mint_scan_publishes_past_previous_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """codex-1 round-5 C2, the producer leg, through the REAL pull-forward:
+    the force-decision scan runs before the mint, so neither the mint's anchor
+    nor the write-pass measurement can see its duration. Tick B's scan takes
+    250s against a 4s bound and its publication lands at t0+930 — 30s past
+    tick A's t0+900 promise — while B's own 2000s admission reads green. The
+    tick must exit 4 on BOTH witnesses (continuity gap + scan overrun), or a
+    horizon derived from an unbounded scan keeps flapping the surface."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    t0 = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+
+    def run_tick(tick_now: datetime, clock_values: list[float]) -> tuple[int, dict, str]:
+        monkeypatch.setitem(main_globals, "monotonic_clock", SequenceClock(clock_values))
+        rc = namespace["main"](
+            [
+                "--now",
+                tick_now.isoformat().replace("+00:00", "Z"),
+                "--out",
+                str(out),
+                "--relay-receipt-dir",
+                str(relay),
+                "--platform-capability-receipt-dir",
+                str(platform_receipts),
+                "--nvidia-smi",
+                str(stub),
+                "--json",
+            ]
+        )
+        captured = capsys.readouterr()
+        return rc, json.loads(captured.out), captured.err
+
+    real_run = subprocess.run
+    determine_calls = {"count": 0}
+
+    def routing_run(argv, *args, **kwargs):
+        if not any(str(part).endswith("hapax-determine") for part in argv):
+            return real_run(argv, *args, **kwargs)
+        determine_calls["count"] += 1
+        justified = argv[argv.index("--force-justified-at") + 1]
+        # The mint the forced determine child would have produced: 900s on
+        # tick A (promise t0+900), 2000s on tick B so B's own freshness
+        # predicate reads green at its slipped publication.
+        _agy_admission(
+            relay,
+            observed_at=justified,
+            stale_after_seconds=900 if determine_calls["count"] == 1 else 2000,
+        )
+        return subprocess.CompletedProcess(
+            args=argv,
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "now": justified,
+                    "ran": [{"producer_id": "agy-review-quota"}],
+                    "skipped": [],
+                }
+            ),
+        )
+
+    monkeypatch.setitem(
+        main_globals,
+        "subprocess",
+        SimpleNamespace(
+            run=routing_run,
+            TimeoutExpired=subprocess.TimeoutExpired,
+            SubprocessError=subprocess.SubprocessError,
+        ),
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+
+    # Tick A: scan 0s, publication 0s elapsed — published at t0, promise t0+900.
+    rc_a, summary_a, _ = run_tick(t0, [0, 0, 0, 0, 0])
+    assert rc_a == 0
+    assert summary_a["admission_continuity_gap_s"] is None
+
+    # Tick B fires at t0+660 (max slippage): the scan reads 250s elapsed
+    # (anchor 0 → scan end 250), the write lands 20s later (read 270), so the
+    # ledger publishes at t0+660+270 — the invocation-wide anchor is what
+    # makes that arithmetic visible at all.
+    rc_b, summary_b, err_b = run_tick(t0 + timedelta(seconds=660), [0, 0, 250, 250, 270])
+    assert rc_b == 4
+    assert "DEGRADED" in err_b and "coverage gap" in err_b
+    assert "DEGRADED" in err_b and "pre-mint force-decision scan" in err_b
+    assert summary_b["admission_freshness_degraded"] is False
+    assert summary_b["admission_freshness_at_publication_s"] == 1730.0
+    assert summary_b["admission_continuity_degraded"] is True
+    assert summary_b["admission_continuity_gap_s"] == 30.0
+    assert summary_b["pre_mint_scan_elapsed_s"] == 250.0
+    assert summary_b["pre_mint_scan_overrun"] is True
+    assert summary_b["previous_promise_fresh_until"] == (
+        (t0 + timedelta(seconds=900)).isoformat().replace("+00:00", "Z")
+    )
+    assert summary_b["pull_forward"]["forced"] is True
+    assert summary_b["pull_forward"]["ran"] == ["agy-review-quota"]
+    assert determine_calls["count"] == 2
+
+
+def test_continuity_green_when_published_within_promise(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The negative leg: a tick that slips but publishes INSIDE the previous
+    promise — 20s of write work on a t0+660 fire against a t0+900 promise —
+    reports a 0.0 gap and exits 0. Continuity must witness gaps, not flag
+    every slow tick."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    t0 = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+
+    def run_tick(tick_now: datetime, clock_values: list[float]) -> tuple[int, dict, str]:
+        monkeypatch.setitem(main_globals, "monotonic_clock", SequenceClock(clock_values))
+        rc = namespace["main"](
+            [
+                "--now",
+                tick_now.isoformat().replace("+00:00", "Z"),
+                "--out",
+                str(out),
+                "--relay-receipt-dir",
+                str(relay),
+                "--platform-capability-receipt-dir",
+                str(platform_receipts),
+                "--nvidia-smi",
+                str(stub),
+                "--json",
+            ]
+        )
+        captured = capsys.readouterr()
+        return rc, json.loads(captured.out), captured.err
+
+    mint_stale_after = [900]
+
+    def behavioral_pull(*, repo_root, receipt_dir, now, timeout=None):
+        if namespace["pull_forward_force_needed"](receipt_dir, now=now):
+            _agy_admission(
+                relay,
+                observed_at=now.isoformat().replace("+00:00", "Z"),
+                stale_after_seconds=mint_stale_after[0],
+            )
+            return {
+                "invoked": True,
+                "forced": True,
+                "ran": ["agy-review-quota"],
+                "skipped": [],
+                "ok": True,
+            }
+        return {"invoked": True, "forced": False, "ran": [], "skipped": [], "ok": True}
+
+    monkeypatch.setitem(main_globals, "pull_forward_due_producers", behavioral_pull)
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", lambda **kw: True)
+
+    rc_a, _, _ = run_tick(t0, [0, 0, 0])
+    assert rc_a == 0
+
+    mint_stale_after[0] = 2000
+    rc_b, summary_b, err_b = run_tick(t0 + timedelta(seconds=660), [0, 0, 20])
+    assert rc_b == 0
+    assert "DEGRADED" not in err_b
+    assert summary_b["admission_continuity_degraded"] is False
+    assert summary_b["admission_continuity_gap_s"] == 0.0
+    assert summary_b["admission_freshness_degraded"] is False
+    assert summary_b["admission_freshness_at_publication_s"] == 1980.0
+    assert summary_b["previous_promise_fresh_until"] == (
+        (t0 + timedelta(seconds=900)).isoformat().replace("+00:00", "Z")
+    )
+
+
 def test_degraded_admission_is_reported_not_silent(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -773,12 +1067,12 @@ def test_degraded_admission_is_reported_not_silent(
     assert "DEGRADED" in captured.err
     assert "340" in captured.err
     assert "at publication" in captured.err
-    assert "815" in captured.err  # the horizon the admission failed to cover
+    assert "819" in captured.err  # the horizon the admission failed to cover
     assert "Next:" in captured.err
     summary = json.loads(captured.out)
     assert summary["admission_freshness_degraded"] is True
     assert summary["admission_freshness_at_publication_s"] == 340.0
-    assert summary["freshness_horizon_s"] == 815.0
+    assert summary["freshness_horizon_s"] == 819.0
 
 
 def test_publication_work_overrun_degrades_instead_of_reporting_captured_at(
@@ -847,7 +1141,7 @@ def test_publication_work_overrun_degrades_instead_of_reporting_captured_at(
     # 900s of admission freshness minus the 120s the pass actually took.
     assert summary["admission_freshness_at_publication_s"] == 780.0
     assert summary["admission_freshness_degraded"] is True
-    assert summary["freshness_horizon_s"] == 815.0
+    assert summary["freshness_horizon_s"] == 819.0
     # The ledger's own captured_at is still the pre-work sampling instant —
     # the summary must not pretend it was the publication instant.
     assert summary["captured_at"] == NOW
@@ -880,9 +1174,41 @@ def test_pull_forward_reports_unparseable_harness_output(
     assert info["ok"] is False
     assert info["ran"] == [] and info["skipped"] == []
     stderr = capsys.readouterr().err
-    assert "not valid JSON" in stderr
+    assert "not a JSON object" in stderr
     assert "Next:" in stderr
     assert "agy-review-quota" in stderr
+
+
+def test_pull_forward_reports_parsed_non_object_harness_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """claude-1 round-5 minor: rc=0 with stdout that parses as JSON but is
+    not an object (a bare list or string) used to slip past the is-None
+    guard and the isinstance-dict reader alike — ok stayed True with nothing
+    recorded, the same silently-green case one type away from the round-4
+    unparseable finding. Parsed-but-not-an-object must degrade identically."""
+    namespace = runpy.run_path(str(SCRIPT))
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+
+    def fake_run(argv, *, capture_output, text, timeout):
+        return subprocess.CompletedProcess(
+            argv, 0, stdout='["ran", "but", "no", "object"]\n', stderr=""
+        )
+
+    monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
+    info = namespace["pull_forward_due_producers"](
+        repo_root=REPO_ROOT,
+        receipt_dir=relay,
+        now=datetime.fromisoformat(NOW.replace("Z", "+00:00")),
+    )
+    assert info["ok"] is False
+    assert info["ran"] == [] and info["skipped"] == []
+    stderr = capsys.readouterr().err
+    assert "not a JSON object" in stderr
+    assert "Next:" in stderr
 
 
 def test_receipt_refresh_failure_exits_three(
@@ -1204,6 +1530,7 @@ class TestPullForwardBudgetPins:
         # the force revalidation lands) + the bounded pre-write work. The
         # pre-write bound is 65s (glm-1 minor, round 4): the round-4 value of
         # 60 was below its own cited 33s mint + 32s write-side measurement.
+        # The pre-mint scan bound (round 5, codex-1 C2) is its own term.
         namespace = runpy.run_path(str(SCRIPT))
         assert (
             namespace["FRESHNESS_HORIZON_S"]
@@ -1213,9 +1540,23 @@ class TestPullForwardBudgetPins:
                 namespace["PULL_FORWARD_LOCK_WAIT_S"],
                 namespace["PULL_FORWARD_PRODUCER_TIMEOUT_S"],
             )
+            + namespace["PRE_MINT_SCAN_BOUND_S"]
             + namespace["PRE_WRITE_WORK_BOUND_S"]
-            == 815.0
+            == 819.0
         )
+
+    def test_pre_mint_scan_bound_covers_its_own_cited_measurement(self) -> None:
+        # codex-1 critical C2 (round 5): the pre-mint force-decision scan must
+        # be a bounded, derivation-visible term. Measured 2026-09-12 against
+        # the live receipt dir (3,590 expired + 1 active agy admission
+        # receipt): 0.06-0.07s across three runs; the bound must not sit below
+        # that measurement, and the steady-state bound it implies
+        # (L <= 900 - horizon) must stay at or above the worst observed
+        # inflated tick (81s) so receipt-spam inflation degrades via the
+        # scan-elapsed signal, not by silently re-tightening the horizon.
+        namespace = runpy.run_path(str(SCRIPT))
+        assert namespace["PRE_MINT_SCAN_BOUND_S"] >= 0.1
+        assert 900.0 - namespace["FRESHNESS_HORIZON_S"] >= 81.0
 
     def test_pre_write_bound_covers_its_own_cited_measurement(self) -> None:
         # glm-1 minor (round 4): PRE_WRITE_WORK_BOUND_S must not sit below the
@@ -1240,7 +1581,7 @@ class TestPullForwardBudgetPins:
 
     def test_freshness_horizon_stays_under_the_admission_ttl(self) -> None:
         # The agy admission TTL is 900s. A horizon at or above the TTL would
-        # make every tick degrade; at 815 an at-bound tick degrades (by
+        # make every tick degrade; at 819 an at-bound tick degrades (by
         # design, visibly) while the steady state stays clean.
         namespace = runpy.run_path(str(SCRIPT))
         assert namespace["FRESHNESS_HORIZON_S"] < 900.0

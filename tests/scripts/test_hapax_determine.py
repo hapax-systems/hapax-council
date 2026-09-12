@@ -50,6 +50,55 @@ def _registry(tmp_path: Path, **over) -> Path:
     return p
 
 
+def _two_producer_registry(tmp_path: Path) -> Path:
+    """The live registry's ordering: claude-account-live runs BEFORE
+    agy-review-quota, so agy's terminal event is preceded by real pre-execution
+    work its own subprocess duration does not include."""
+
+    def _producer(pid: str) -> dict:
+        return {
+            "id": pid,
+            "property": "account_live_quota",
+            "subjects": ["some.route"],
+            "command": ["/bin/true"],
+            "cadence_seconds": 600,
+            "evidence_ttl_seconds": 1800,
+            "provenance": "mechanical",
+            "success_exit_codes": [0],
+            "declined_exit_codes": [3, 4],
+        }
+
+    p = tmp_path / "two-producer-registry.json"
+    p.write_text(
+        json.dumps(
+            {
+                "schema": "x",
+                "producers": [
+                    _producer("claude-account-live"),
+                    _producer("agy-review-quota"),
+                ],
+            }
+        )
+    )
+    return p
+
+
+class SequenceClock:
+    """Monotonic fake returning scripted values in order, holding the last.
+
+    Lets a test script the exact elapsed profile of an invocation — lock
+    waits, per-producer start/end — with no sleeping and no wall clock."""
+
+    def __init__(self, values: list[float]) -> None:
+        self._values = values
+        self.calls = 0
+
+    def __call__(self) -> float:
+        value = self._values[min(self.calls, len(self._values) - 1)]
+        self.calls += 1
+        return value
+
+
 class TestRegistryRefusesGuaranteedLapse:
     def test_cadence_at_or_above_ttl_is_an_error(self, tmp_path: Path) -> None:
         """This is exactly how agy lapsed: evidence lived 900s, nothing ran inside it."""
@@ -639,6 +688,112 @@ class TestPerProducerLock:
             with pytest.raises(det.ProducerLockTimeout, match="p1"):
                 with det.producer_lock(ledger, "p1", wait_s=0):
                     pass
+
+
+class TestInvocationWideCompletionWitness:
+    """codex-1 round-5 C1: ``completed_at`` is the invocation anchor plus the
+    invocation-wide monotonic elapsed at the terminal event — never the anchor
+    plus the producer's OWN duration, which undercounts the real completion
+    instant by every second of earlier producers and lock waits and breaks the
+    forced waiter's supersession comparison exactly there."""
+
+    def _run_two_producers(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys,
+        clock_values: list[float],
+    ) -> tuple[Path, Path, dict]:
+        reg = _two_producer_registry(tmp_path)
+        ledger = tmp_path / "runs.jsonl"
+        monkeypatch.setattr(det, "monotonic_clock", SequenceClock(clock_values))
+        rc = det.main(
+            [
+                "--registry",
+                str(reg),
+                "--run-ledger",
+                str(ledger),
+                "--repo-root",
+                str(tmp_path),
+                "--now",
+                det._iso(NOW),
+                "--json",
+            ]
+        )
+        assert rc == 0
+        return reg, ledger, json.loads(capsys.readouterr().out)
+
+    def test_the_second_producers_completion_includes_the_first_ones_elapsed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """The registry runs claude-account-live before agy-review-quota. With
+        claude occupying 30→50 and agy 100→120 on the monotonic clock, agy's
+        own subprocess ran 20s — but it COMPLETED 120s after the invocation
+        anchor, and only the invocation-wide stamp records that. The ledger
+        row must carry the same witness: it is what a later forced invoker's
+        supersession comparison reads."""
+        _, ledger, payload = self._run_two_producers(
+            tmp_path, monkeypatch, capsys, [0, 0, 30, 50, 60, 100, 120]
+        )
+        assert [r["producer_id"] for r in payload["ran"]] == [
+            "claude-account-live",
+            "agy-review-quota",
+        ]
+        claude, agy = payload["ran"]
+        assert claude["ran_at"] == det._iso(NOW)
+        assert agy["ran_at"] == det._iso(NOW)
+        assert claude["duration_s"] == 20.0
+        assert agy["duration_s"] == 20.0
+        assert claude["completed_at"] == det._iso(NOW + timedelta(seconds=50))
+        # NOT now+20: the anchor-plus-own-duration stamp that round 5 removed.
+        assert agy["completed_at"] == det._iso(NOW + timedelta(seconds=120))
+        rows = [
+            json.loads(line) for line in ledger.read_text(encoding="utf-8").strip().splitlines()
+        ]
+        assert [r["producer_id"] for r in rows] == ["claude-account-live", "agy-review-quota"]
+        assert rows[0]["completed_at"] == det._iso(NOW + timedelta(seconds=50))
+        assert rows[1]["completed_at"] == det._iso(NOW + timedelta(seconds=120))
+
+    def test_a_forced_waiter_justified_mid_invocation_defers_to_the_second_producer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    ) -> None:
+        """The C1 counterexample's consumer, generated through main(): a
+        forced waiter justified at NOW+110 must defer to the agy run that
+        COMPLETED at NOW+120 — a supersession that only holds because the
+        completion witness includes the first producer's elapsed. Under the
+        anchor-plus-own-duration stamp the agy row read NOW+20 and this waiter
+        would have minted a duplicate window."""
+        reg, ledger, _ = self._run_two_producers(
+            tmp_path, monkeypatch, capsys, [0, 0, 30, 50, 60, 100, 120]
+        )
+        assert len(ledger.read_text(encoding="utf-8").strip().splitlines()) == 2
+        monkeypatch.setattr(det, "monotonic_clock", SequenceClock([0, 0]))
+        rc = det.main(
+            [
+                "--registry",
+                str(reg),
+                "--run-ledger",
+                str(ledger),
+                "--repo-root",
+                str(tmp_path),
+                "--now",
+                det._iso(NOW),
+                "--producer",
+                "agy-review-quota",
+                "--force",
+                "--force-justified-at",
+                det._iso(NOW + timedelta(seconds=110)),
+                "--json",
+            ]
+        )
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ran"] == []
+        assert [s["reason"] for s in payload["skipped"]] == ["force_superseded"]
+        # The superseded waiter appended nothing: the ledger still holds
+        # exactly the two runs the first invocation generated.
+        rows_after = ledger.read_text(encoding="utf-8").strip().splitlines()
+        assert len(rows_after) == 2
 
 
 class TestExitCodes:
