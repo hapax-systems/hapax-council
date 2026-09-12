@@ -154,6 +154,7 @@ def test_pull_forward_goes_through_the_determine_cadence_gate(
 def test_pull_forward_degrades_not_aborts_on_failure_and_timeout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     namespace = runpy.run_path(str(SCRIPT))
     outcomes = [
@@ -171,6 +172,24 @@ def test_pull_forward_degrades_not_aborts_on_failure_and_timeout(
     assert namespace["pull_forward_due_producers"](repo_root=REPO_ROOT) is False
     assert namespace["pull_forward_due_producers"](repo_root=REPO_ROOT) is False
     assert not outcomes
+    stderr = capsys.readouterr().err
+    assert "pull-forward failed" in stderr and "rc=5" in stderr
+    assert "pull-forward timed out" in stderr
+
+
+def test_pull_forward_degrades_on_spawn_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    namespace = runpy.run_path(str(SCRIPT))
+
+    def fake_run(argv, *, capture_output, text, timeout):
+        raise FileNotFoundError("interpreter vanished")
+
+    monkeypatch.setattr(namespace["subprocess"], "run", fake_run)
+    assert namespace["pull_forward_due_producers"](repo_root=REPO_ROOT) is False
+    assert "could not run" in capsys.readouterr().err
 
 
 def test_main_pulls_forward_before_receipt_refresh_and_reports_it(

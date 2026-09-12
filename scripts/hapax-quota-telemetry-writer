@@ -2276,6 +2276,14 @@ def pull_forward_due_producers(
             )
             ok = False
             continue
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(
+                "hapax-quota-telemetry-writer: producer pull-forward could not run "
+                f"({producer_id}): {exc}; continuing with existing receipts",
+                file=sys.stderr,
+            )
+            ok = False
+            continue
         if result.returncode != 0:
             print(
                 "hapax-quota-telemetry-writer: producer pull-forward failed "
@@ -2378,7 +2386,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"invalid --now value: {args.now!r}")
 
     receipts_ok = True
-    producers_pulled = True
+    producers_pulled = False
     if not args.skip_receipts:
         producers_pulled = pull_forward_due_producers(repo_root=REPO_ROOT)
         receipts_ok = refresh_capability_receipts(

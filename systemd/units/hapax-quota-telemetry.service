@@ -20,9 +20,14 @@ EnvironmentFile=-/run/user/1000/hapax-secrets.env
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-quota-telemetry
-MemoryMax=256M
+# On the overlap tick where this unit wins the producer lock, it hosts the
+# agy producer chain (hapax-determine → hapax-agy-quota-admission → reviewer
+# smoke) that normally runs under hapax-determine.service's 512M cgroup;
+# match that ceiling so the smoke is not OOM-killed into a skipped tick
+# (a skip re-forwards the stale-receipt problem this writer repairs).
+MemoryMax=512M
 # Step 0 of the writer pulls a due determination producer forward (bounded by
-# the 300s producer timeout) before the receipt refresh (bounded by its own
+# the 330s producer timeout) before the receipt refresh (bounded by its own
 # 360s outer timeout), in series. 180s could kill the tick that now contains
 # both; a killed tick skips a telemetry write entirely (oneshot, no overlap),
 # so the budget must cover the worst-case serial path with margin.
