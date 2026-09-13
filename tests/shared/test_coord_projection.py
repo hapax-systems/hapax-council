@@ -3660,14 +3660,31 @@ def test_rebuilt_noreplace_promotes_a_directory_across_directories(
     assert not journal.exists()
 
 
+@pytest.mark.parametrize(
+    ("occupant", "label"),
+    [
+        ({"manifest.json": b'{"final": true}\n'}, "a populated journal"),
+        ({}, "an empty directory"),
+    ],
+    ids=["populated-journal", "empty-directory"],
+)
 def test_rebuilt_directory_noreplace_refuses_an_occupied_destination(
     tmp_path: Path,
+    occupant: dict[str, bytes],
+    label: str,
 ) -> None:
-    """A real journal at the destination is the case NOREPLACE exists to refuse.
+    """Both occupied shapes get NOREPLACE's answer, and nothing is touched.
 
-    `rmdir` is what settles it, and it settles it without a check-then-act
-    window: it cannot remove a directory holding anything, so it fails here and
-    the rebuild answers EEXIST — the same answer, with the occupant untouched.
+    Called directly rather than through `_renameat2`, because the wrapper cannot
+    reach this branch on the mount being modelled: the VFS runs NOREPLACE's
+    existence check before consulting the filesystem, so an occupied destination
+    already returns EEXIST from the syscall and the rebuild never runs. Driving
+    this through the wrapper would assert the simulator's own answer and stay
+    green with the branch deleted — it did, until the mutation check caught it.
+
+    The branch is still load-bearing: with the destination absent the syscall
+    EINVALs, the rebuild does run, and `rename(2)` on directories would let an
+    empty one through where every other shape is refused unconditionally.
     """
 
     staging = tmp_path / "staging"
@@ -3677,62 +3694,21 @@ def test_rebuilt_directory_noreplace_refuses_an_occupied_destination(
     (staging / "txn-1").mkdir()
     (staging / "txn-1" / "manifest.json").write_bytes(b'{"staged": true}\n')
     (final / "txn-1").mkdir()
-    (final / "txn-1" / "manifest.json").write_bytes(b'{"final": true}\n')
+    for name, payload in occupant.items():
+        (final / "txn-1" / name).write_bytes(payload)
 
     src_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     dst_fd = os.open(final, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        with mock.patch.object(
-            cp,
-            "_renameat2_primitive",
-            side_effect=_unsupported_flag_mount(),
-        ):
-            with pytest.raises(OSError) as raised:
-                cp._renameat2(src_fd, "txn-1", dst_fd, "txn-1", cp._RENAME_NOREPLACE)
+        with pytest.raises(OSError) as raised:
+            cp._fallback_noreplace(src_fd, "txn-1", dst_fd, "txn-1")
     finally:
         os.close(src_fd)
         os.close(dst_fd)
 
-    assert raised.value.errno == errno.EEXIST
-    assert (final / "txn-1" / "manifest.json").read_bytes() == b'{"final": true}\n'
+    assert raised.value.errno == errno.EEXIST, label
     assert (staging / "txn-1" / "manifest.json").read_bytes() == b'{"staged": true}\n'
-
-
-def test_rebuilt_directory_noreplace_refuses_an_empty_destination_directory(
-    tmp_path: Path,
-) -> None:
-    """An empty directory at the destination is the one case plain `rename(2)`
-    would let through, so it is the case the rebuild has to refuse itself.
-
-    Everything else — a populated journal, a regular file — the rename refuses
-    unconditionally, which is why one check is enough rather than a guard per
-    shape.
-    """
-
-    staging = tmp_path / "staging"
-    final = tmp_path / "final"
-    staging.mkdir()
-    final.mkdir()
-    (staging / "txn-1").mkdir()
-    (staging / "txn-1" / "manifest.json").write_bytes(b"{}\n")
-    (final / "txn-1").mkdir()
-
-    src_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    dst_fd = os.open(final, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-    try:
-        with mock.patch.object(
-            cp,
-            "_renameat2_primitive",
-            side_effect=_unsupported_flag_mount(),
-        ):
-            with pytest.raises(OSError) as raised:
-                cp._renameat2(src_fd, "txn-1", dst_fd, "txn-1", cp._RENAME_NOREPLACE)
-    finally:
-        os.close(src_fd)
-        os.close(dst_fd)
-
-    assert raised.value.errno == errno.EEXIST
-    assert (staging / "txn-1" / "manifest.json").read_bytes() == b"{}\n"
+    assert sorted(path.name for path in (final / "txn-1").iterdir()) == sorted(occupant)
 
 
 def test_rebuilt_directory_noreplace_leaves_the_staged_journal_promotable(
