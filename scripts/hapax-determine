@@ -350,11 +350,20 @@ def run_producer(
             # producer lock, so nothing of this tree may still be running when
             # the next invocation takes it.
             try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                group_id = os.getpgid(proc.pid)
             except (ProcessLookupError, PermissionError):
-                # Group already gone, or not ours to signal as a group: fall
-                # back to the direct child so the reap below still has a
-                # process to wait on.
+                # Group already gone, or not ours to address as a group: the
+                # direct child is the only target that can still be named.
+                group_id = None
+            try:
+                if group_id is None:
+                    proc.kill()
+                else:
+                    os.killpg(group_id, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                # Belt and braces: the group dissolved between lookup and
+                # signal — fall back to the direct child so the reap below
+                # still has a process to wait on.
                 proc.kill()
             try:
                 proc.communicate(timeout=10)
@@ -377,10 +386,19 @@ def run_producer(
                     # Unreachable while the child carries a delivered
                     # SIGKILL, but the harness must never hang on a reap
                     # that will not finish: name the group and return
-                    # bounded. The operator next-action is the group query.
-                    record["group_sweep"] = (
-                        "unresolved-descendants; next: ps -o pid,pgid,cmd -g <pgid>"
-                    )
+                    # bounded. The operator next-action is the group query,
+                    # against the concrete group id this tree ran under
+                    # (codex-1 minor D2, #4665 round 13: the diagnostic used
+                    # to print a literal <pgid> placeholder, leaving the
+                    # next action unexecutable as written).
+                    if group_id is not None:
+                        record["group_sweep"] = (
+                            f"unresolved-descendants; next: ps -o pid,pgid,cmd -g {group_id}"
+                        )
+                    else:
+                        record["group_sweep"] = (
+                            f"unresolved-descendants; next: ps -o pid,pgid,cmd -p {proc.pid}"
+                        )
                 else:
                     record["group_sweep"] = "descendants-held-pipes; reaped after pipe close"
             ended = monotonic_clock()

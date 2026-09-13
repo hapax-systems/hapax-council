@@ -2813,6 +2813,14 @@ def _scan_receipt_surface(
     """Per-platform (observed_at, effective expiry, publication instant) scan
     plus the platforms whose receipt names no registry route.
 
+    When one platform has several receipt files in the directory, the SELECTED
+    receipt is the one routing's loader would consume — the greatest
+    observed_at, exact ties keeping the first file in name order — never
+    whichever filename lands last alphabetically (codex-1 critical C1, #4665
+    round 13: an older z-codex-backup.json shadowed the refreshed codex.json,
+    so the platform read as not replaced and a real continuity gap went
+    unwitnessed).
+
     The publication instant is the receipt FILE's own mtime: the refresh
     writes each platform's receipt separately, so each file's mtime is that
     platform's actual replacement landing instant (codex-1 major, #4665 round
@@ -2834,16 +2842,33 @@ def _scan_receipt_surface(
     no_named_route: set[str] = set()
     if not receipt_dir.is_dir():
         return states, []
+    # Per-platform selection must mirror routing's loader
+    # (load_platform_capability_receipts): the receipt with the greatest
+    # observed_at wins, and an exact tie keeps the first file in name order.
+    # The previous shape let the LAST filename alphabetically win by plain
+    # dict overwrite, so an older `z-codex-backup.json` shadowed the refreshed
+    # `codex.json`: the platform read as not-replaced-this-refresh and a real
+    # continuity gap went unwitnessed while routing still consumed the fresh
+    # receipt (codex-1 critical C1, #4665 round 13).
+    selected: dict[str, tuple[datetime, Path, PlatformCapabilityReceipt]] = {}
     for path in sorted(receipt_dir.glob("*.json")):
         try:
             receipt = load_platform_capability_receipt(path)
         except PlatformCapabilityReceiptError:
             continue
+        observed_at = ensure_utc(receipt.observed_at)
+        prior = selected.get(receipt.platform)
+        if prior is None or observed_at > prior[0]:
+            selected[receipt.platform] = (observed_at, path, receipt)
+    for platform, (observed_at, path, receipt) in selected.items():
+        # Route coverage is judged on the SELECTED receipt — the one routing
+        # would actually consume for this platform — not on a shadowed
+        # sibling's routes.
         if not any(route_id in route_pools for route_id in receipt.routes):
-            no_named_route.add(receipt.platform)
+            no_named_route.add(platform)
         published_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
-        states[receipt.platform] = (
-            ensure_utc(receipt.observed_at),
+        states[platform] = (
+            observed_at,
             receipt_surface_effective_expiry(receipt, route_pools),
             published_at,
         )
