@@ -4887,6 +4887,20 @@ def _content_address_for_file(path: Path, content: bytes) -> ContentAddress:
 
 
 _CLAIM_PUBLICATION_DIRECTORY_RE = re.compile(r"^claim-pub-[0-9a-f]{64}$")
+#: A journal an operator has already quarantined in place.
+#:
+#: Deliberately tolerant after the suffix, because **no code in this estate
+#: produces this name.** Every "quarantine …" string in this module and in
+#: ``coord_projection`` is a *repair action* addressed to a person, so the suffix
+#: is a hand-applied convention and the four journals on disk carry three
+#: different shapes (``.quarantined-20260821``, ``.quarantined-20260905T0041Z``,
+#: ``.quarantined-20260913T205924Z``). A regex pinning any one timestamp grammar
+#: would leave the others holding forever, so this matches the marker and not the
+#: stamp. Tightening it requires first giving the estate a quarantine *verb* —
+#: filed separately, not assumed here.
+_CLAIM_PUBLICATION_QUARANTINED_DIRECTORY_RE = re.compile(
+    r"^claim-pub-[0-9a-f]{64}\.quarantined-\S+$"
+)
 _CLAIM_PUBLICATION_BLOB_RE = re.compile(r"^[0-9]{4}\.(?:before|after)$")
 _MAX_CLAIM_PUBLICATIONS = 4096
 _MAX_CLAIM_JOURNAL_CHILDREN = 32
@@ -5045,6 +5059,16 @@ def _capture_claim_journals(
     root_frontier = (listing, _directory_address(directory))
     for name in names:
         if _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(name) is None:
+            if _CLAIM_PUBLICATION_QUARANTINED_DIRECTORY_RE.fullmatch(name) is not None:
+                # An already-quarantined journal is the completed remedy, not an
+                # unknown entry. Holding on it prescribed "quarantine every entry
+                # outside the exact grammar" — the very act that produced this
+                # name — so the hold demanded its own cause and could only be
+                # cleared by moving the journal out of the scan root by hand
+                # (measured 2026-09-13: cx-p0 had to do exactly that). The names
+                # stay in the content-addressed listing above, so skipping the
+                # hold drops the verdict, not the evidence.
+                continue
             entries.append(
                 _ClaimJournalCaptureFailure(
                     name,
