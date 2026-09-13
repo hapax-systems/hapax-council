@@ -86,8 +86,10 @@ MemoryMax=768M
 # bound (this tick wrote no ledger); 3 = receipt refresh failed; 4 = DEGRADED
 # — one of four flap witnesses fired: the embedded agy admission will not
 # cover the next publication deadline (admission_freshness_at_publication_s <
-# FRESHNESS_HORIZON_S = 819s: one 600s cycle + 60s timer accuracy + 4s
-# pre-mint scan bound + bounded pre-write work), OR the tick published after
+# FRESHNESS_HORIZON_S = 819s: one 600s cycle + 60s timer accuracy +
+# max(90s colliding-lock wait, 90s producer run) + 4s pre-mint scan bound +
+# 65s bounded pre-write work — the term sums at the constant's definition in
+# scripts/hapax-quota-telemetry-writer), OR the tick published after
 # the previously published admission expired (admission_continuity_gap_s > 0:
 # the surface was dead for the gap even though this tick's own predicate
 # passed), OR the capability-receipt surface went dark between the

@@ -401,6 +401,92 @@ class TestProducerCompletionSweepsTheGroup:
         # holder's own 30s lifetime (the pre-fix behavior), never unbounded.
         assert elapsed < 25.0
 
+    @pytest.mark.parametrize(
+        ("resolvable_group_id", "expected_query"),
+        [
+            (987654, "unresolved-descendants; next: ps -o pid,pgid,cmd -g 987654"),
+            (None, "unresolved-descendants; next: ps -o pid,pgid,cmd -p 424242"),
+        ],
+    )
+    def test_unresolved_descendants_diagnostic_names_the_concrete_group(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        resolvable_group_id: int | None,
+        expected_query: str,
+    ) -> None:
+        """D2 (#4665, round 13): when even the bounded final reap times out,
+        the record's operator next-action must be executable as written — it
+        used to print a literal `<pgid>` placeholder. With the group id
+        resolvable the query targets that group; when the group cannot be
+        named at all, it degrades to the direct child's pid so the operator
+        reads the real pgid out of the result. claude-1 minor (#4665, round
+        13): the branch is only reachable through a proc whose wait never
+        returns — impossible for a real SIGKILLed child, exactly the shape
+        that misbehaves when the system misbehaves, so it is pinned by fake
+        rather than left uncovered."""
+
+        import subprocess
+
+        class _Pipe:
+            def close(self) -> None:
+                pass
+
+        class UnreapableProc:
+            pid = 424242
+
+            def __init__(self) -> None:
+                self.stdout = _Pipe()
+                self.stderr = _Pipe()
+
+            def communicate(self, timeout=None):
+                raise subprocess.TimeoutExpired("p1", timeout)
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired("p1", timeout)
+
+            def kill(self) -> None:
+                pass
+
+        def gone_getpgid(pid: int) -> int:
+            if resolvable_group_id is None:
+                raise ProcessLookupError(pid)
+            return resolvable_group_id
+
+        def gone_killpg(pgid: int, sig: int) -> None:
+            raise ProcessLookupError(pgid)
+
+        monkeypatch.setattr(os, "getpgid", gone_getpgid)
+        monkeypatch.setattr(os, "killpg", gone_killpg)
+        # Only the PRODUCER launch is unreapable: it is the sole Popen call
+        # that passes start_new_session=True (the process-group timeout
+        # design). adjudicator_identity's internal git subprocesses route
+        # through the same module attribute and must keep working, or the
+        # record loses the adjudicator witness this fake would silently
+        # destroy.
+        real_popen = det.subprocess.Popen
+
+        def producer_only_popen(*a, **kw):
+            if kw.get("start_new_session"):
+                return UnreapableProc()
+            return real_popen(*a, **kw)
+
+        monkeypatch.setattr(det.subprocess, "Popen", producer_only_popen)
+
+        rec = det.run_producer(
+            {
+                "id": "p1",
+                "command": ["/bin/true"],
+                "cadence_seconds": 60,
+            },
+            now=NOW,
+            repo_root=tmp_path,
+            timeout=2,
+        )
+        assert rec["outcome"] == "timeout"
+        assert rec["returncode"] is None
+        assert rec["group_sweep"] == expected_query
+
 
 def test_group_sweep_premise_pinned_to_the_real_producer_registry() -> None:
     """claude-1 minor (#4665, round 12): the unconditional post-completion

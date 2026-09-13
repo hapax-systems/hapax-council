@@ -1720,6 +1720,154 @@ def test_receipt_surface_gap_degrades_even_when_ledger_witnesses_are_green(
     assert summary["registry_pools_loaded"] is True
 
 
+def _backup_codex_receipt(platform_receipts: Path, *, observed_at: str) -> None:
+    """An older same-platform receipt under an alphabetically-later name.
+
+    The C1 round-13 shadow: `z-...` sorts after `codex.json`, so the old
+    last-filename-wins scan consumed it even though routing's loader selects
+    by greatest observed_at.
+    """
+    source = platform_receipts.parent / "backup-source"
+    _codex_platform_receipt(
+        source,
+        observed_at=observed_at,
+        outer_stale_after="24h",
+        quota_stale_after="900s",
+    )
+    backup = platform_receipts / "z-codex-backup.json"
+    backup.write_text((source / "codex.json").read_text(), encoding="utf-8")
+    stamp = datetime.fromisoformat(observed_at.replace("Z", "+00:00")).timestamp()
+    os.utime(backup, (stamp, stamp))
+
+
+def test_receipt_surface_scan_selects_the_newest_observed_receipt_per_platform(
+    tmp_path: Path,
+) -> None:
+    """C1 (#4665, round 13), selection pin: per platform the scan must keep the
+    receipt routing's loader would consume — greatest observed_at, exact ties
+    keeping the first file in name order — never whichever filename sorts
+    last. An older z-codex-backup.json used to overwrite the refreshed
+    codex.json's state, so the platform read as not replaced and a real
+    continuity gap went unwitnessed."""
+    namespace = runpy.run_path(str(SCRIPT))
+    receipt_dir = tmp_path / "platform-receipts"
+    receipt_dir.mkdir()
+    _backup_codex_receipt(receipt_dir, observed_at="2026-06-09T22:00:00Z")
+    _codex_platform_receipt(
+        receipt_dir,
+        observed_at="2026-06-09T23:44:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="900s",
+    )
+    _utime_platform_receipt(receipt_dir, "codex", "2026-06-09T23:47:00Z")
+
+    states, no_named_route = namespace["_scan_receipt_surface"](receipt_dir)
+
+    assert no_named_route == []
+    observed_at, _expiry, published_at = states["codex"]
+    # The refreshed receipt wins over the alphabetically-later backup…
+    assert observed_at.isoformat() == "2026-06-09T23:44:00+00:00"
+    # …so the publication instant is the refreshed file's own mtime, not the
+    # backup's.
+    assert published_at.isoformat() == "2026-06-09T23:47:00+00:00"
+
+
+def test_receipt_surface_scan_tie_keeps_first_file_in_name_order(tmp_path: Path) -> None:
+    """C1 (#4665, round 13), tie-break pin: routing's loader resolves equal
+    observed_at stamps in favor of the first file in name order (strict >
+    comparison over a sorted walk); the scan must resolve ties identically or
+    the two surfaces can disagree about which file published a platform."""
+    namespace = runpy.run_path(str(SCRIPT))
+    receipt_dir = tmp_path / "platform-receipts"
+    receipt_dir.mkdir()
+    _backup_codex_receipt(receipt_dir, observed_at="2026-06-09T23:44:00Z")
+    _codex_platform_receipt(
+        receipt_dir,
+        observed_at="2026-06-09T23:44:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="900s",
+    )
+    _utime_platform_receipt(receipt_dir, "codex", "2026-06-09T23:50:00Z")
+
+    states, _ = namespace["_scan_receipt_surface"](receipt_dir)
+
+    _observed_at, _expiry, published_at = states["codex"]
+    assert published_at.isoformat() == "2026-06-09T23:50:00+00:00"
+
+
+def test_receipt_surface_backup_receipt_cannot_mask_a_continuity_gap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """C1 (#4665, round 13), end-to-end: the reviewer's masking repro. Same
+    dead-surface tick as the round-8/10 gap test above, plus an older
+    z-codex-backup.json in the receipt dir. The last-filename-wins scan
+    selected the backup before AND after the refresh, so the platform read as
+    unchanged, no replacement was witnessed, and the tick reported rc=0 across
+    a 60s hole — while routing still consumed codex.json. With the
+    newest-observed selection the backup is inert and every gap assertion
+    matches the no-backup tick exactly."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW)
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:44:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="900s",
+    )
+    _backup_codex_receipt(platform_receipts, observed_at="2026-06-09T22:00:00Z")
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def publishing_refresh(*, timeout, receipt_dir):
+        _codex_platform_receipt(platform_receipts)
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:00:00Z")
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", publishing_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 4
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_continuity_degraded"] is True
+    assert summary["receipt_continuity_gap_s"] == 60.0
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+    assert summary["receipt_surface_publication_instants"] == {"codex": "2026-06-10T00:00:00Z"}
+
+
 def test_receipt_surface_outer_ttl_leg_subscription_unobservable_quota(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
