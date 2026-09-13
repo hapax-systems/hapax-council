@@ -1105,7 +1105,7 @@ CODEX_ARGS=(
   --skip-git-repo-check
   --json
   --cd "$WORKDIR"
-  -c 'model="gpt-5.5"'
+  -c 'model="gpt-6-astra"'
   -c 'model_reasoning_effort="xhigh"'
   -c 'approval_policy="never"'
   -c 'sandbox_mode="danger-full-access"'
