@@ -316,7 +316,10 @@ class TestProducerCompletionSweepsTheGroup:
         group is not ours to signal, the sweep cannot close the leak — the
         record must NAME it instead of hiding it."""
 
+        seen_pgids: list[int] = []
+
         def denied_killpg(pgid, sig):
+            seen_pgids.append(pgid)
             raise PermissionError(f"not our group (test), pgid={pgid}")
 
         monkeypatch.setattr(os, "killpg", denied_killpg)
@@ -333,7 +336,13 @@ class TestProducerCompletionSweepsTheGroup:
         )
         assert rec["outcome"] == "produced"
         assert rec["returncode"] == 0
-        assert rec["group_sweep"] == "permission-denied-bounded-leak"
+        # D2 (#4665, round 14): the leak is named against the CONCRETE group
+        # the producer led (proc.pid is the pgid under start_new_session), so
+        # the operator query is executable as written — the killpg the sweep
+        # attempted names the same id.
+        assert rec["group_sweep"] == (
+            f"permission-denied-bounded-leak; next: ps -o pid,pgid,cmd -g {seen_pgids[0]}"
+        )
 
     def test_killpg_permission_error_on_timeout_still_reaps_the_child(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -373,7 +382,10 @@ class TestProducerCompletionSweepsTheGroup:
         on any longer holder. The bounded path closes our read ends, waits
         on the child alone, and names the leak in the record."""
 
+        seen_pgids: list[int] = []
+
         def denied_killpg(pgid, sig):
+            seen_pgids.append(pgid)
             raise PermissionError("not our group (test)")
 
         monkeypatch.setattr(os, "killpg", denied_killpg)
@@ -396,7 +408,13 @@ class TestProducerCompletionSweepsTheGroup:
         elapsed = time.monotonic() - started
         assert rec["outcome"] == "timeout"
         assert rec["returncode"] is None
-        assert rec["group_sweep"] == "descendants-held-pipes; reaped after pipe close"
+        # D2 (#4665, round 14): the holders are named against the CONCRETE
+        # group the killpg attempt addressed, so the audit query is
+        # executable as written.
+        assert rec["group_sweep"] == (
+            f"descendants-held-pipes; reaped after pipe close; "
+            f"next: ps -o pid,pgid,cmd -g {seen_pgids[0]}"
+        )
         # Bounded: 0.2s timeout + 10s grace + reap margin — never the pipe
         # holder's own 30s lifetime (the pre-fix behavior), never unbounded.
         assert elapsed < 25.0

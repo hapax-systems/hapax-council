@@ -1720,21 +1720,31 @@ def test_receipt_surface_gap_degrades_even_when_ledger_witnesses_are_green(
     assert summary["registry_pools_loaded"] is True
 
 
-def _backup_codex_receipt(platform_receipts: Path, *, observed_at: str) -> None:
-    """An older same-platform receipt under an alphabetically-later name.
+def _backup_codex_receipt(
+    platform_receipts: Path,
+    *,
+    observed_at: str,
+    outer_stale_after: str = "24h",
+    quota_stale_after: str = "900s",
+    name: str = "z-codex-backup.json",
+) -> None:
+    """A same-platform sibling receipt under an alphabetically-later name.
 
-    The C1 round-13 shadow: `z-...` sorts after `codex.json`, so the old
+    Round 13's C1 shadow: `z-...` sorts after `codex.json`, so the old
     last-filename-wins scan consumed it even though routing's loader selects
-    by greatest observed_at.
+    by greatest observed_at. Round 14's C1 shadows pass extreme stamps or
+    short envelopes: a future-dated backup is newest-observed but routing
+    REJECTS it, and an expired-newer backup is newest-observed but routing
+    retains nothing from it.
     """
     source = platform_receipts.parent / "backup-source"
     _codex_platform_receipt(
         source,
         observed_at=observed_at,
-        outer_stale_after="24h",
-        quota_stale_after="900s",
+        outer_stale_after=outer_stale_after,
+        quota_stale_after=quota_stale_after,
     )
-    backup = platform_receipts / "z-codex-backup.json"
+    backup = platform_receipts / name
     backup.write_text((source / "codex.json").read_text(), encoding="utf-8")
     stamp = datetime.fromisoformat(observed_at.replace("Z", "+00:00")).timestamp()
     os.utime(backup, (stamp, stamp))
@@ -1761,7 +1771,9 @@ def test_receipt_surface_scan_selects_the_newest_observed_receipt_per_platform(
     )
     _utime_platform_receipt(receipt_dir, "codex", "2026-06-09T23:47:00Z")
 
-    states, no_named_route = namespace["_scan_receipt_surface"](receipt_dir)
+    states, no_named_route = namespace["_scan_receipt_surface"](
+        receipt_dir, now=datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+    )
 
     assert no_named_route == []
     observed_at, _expiry, published_at = states["codex"]
@@ -1789,7 +1801,9 @@ def test_receipt_surface_scan_tie_keeps_first_file_in_name_order(tmp_path: Path)
     )
     _utime_platform_receipt(receipt_dir, "codex", "2026-06-09T23:50:00Z")
 
-    states, _ = namespace["_scan_receipt_surface"](receipt_dir)
+    states, _ = namespace["_scan_receipt_surface"](
+        receipt_dir, now=datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+    )
 
     _observed_at, _expiry, published_at = states["codex"]
     assert published_at.isoformat() == "2026-06-09T23:50:00+00:00"
@@ -1866,6 +1880,481 @@ def test_receipt_surface_backup_receipt_cannot_mask_a_continuity_gap(
     assert summary["receipt_continuity_gap_s"] == 60.0
     assert summary["receipt_surface_replaced_platforms"] == ["codex"]
     assert summary["receipt_surface_publication_instants"] == {"codex": "2026-06-10T00:00:00Z"}
+
+
+def test_receipt_surface_scan_selection_mirrors_routing_freshness_eligibility(
+    tmp_path: Path,
+) -> None:
+    """C1 (#4665, round 14), eligibility pin: routing's loader consumes only
+    receipts passing receipt_is_fresh — a stamp more than one minute into the
+    future is rejected, and so is anything past its own stale_after. The scan
+    must select among the ELIGIBLE receipts, so a future-dated backup cannot
+    out-win the canonical receipt and an expired-newer backup cannot shadow a
+    live envelope. Pinned against load_platform_capability_receipts itself
+    (codex-1 D1, round 14): whenever the loader vouches for a platform, the
+    scan's selected observed_at is the loader's; once nothing is eligible the
+    scan falls back to newest-observed, because then routing holds nothing and
+    the expired predecessor's evidence is exactly what the witness measures."""
+    namespace = runpy.run_path(str(SCRIPT))
+    receipt_dir = tmp_path / "platform-receipts"
+    receipt_dir.mkdir()
+    _codex_platform_receipt(
+        receipt_dir,
+        observed_at="2026-06-09T23:44:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="900s",
+    )
+    # Newest observed of all, but dated 10 minutes into the future: routing
+    # rejects it, so the scan must never let it win while it stays future.
+    _backup_codex_receipt(
+        receipt_dir, observed_at="2026-06-10T00:10:00Z", name="z-codex-backup-future.json"
+    )
+    # Observed after the canonical receipt but already past its own 5m
+    # envelope at NOW: routing retains nothing from it.
+    _backup_codex_receipt(
+        receipt_dir,
+        observed_at="2026-06-09T23:50:00Z",
+        outer_stale_after="5m",
+        quota_stale_after="5m",
+        name="z-codex-backup-expired.json",
+    )
+    # A plain older eligible sibling: never selected over the canonical.
+    _backup_codex_receipt(
+        receipt_dir, observed_at="2026-06-09T22:00:00Z", name="z-codex-backup-older.json"
+    )
+    now = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
+
+    states, _no_named_route = namespace["_scan_receipt_surface"](receipt_dir, now=now)
+    loaded = namespace["load_platform_capability_receipts"](receipt_dir, now=now)
+
+    assert set(loaded) == {"codex"}
+    assert states["codex"][0] == namespace["ensure_utc"](loaded["codex"].observed_at)
+    assert states["codex"][0].isoformat() == "2026-06-09T23:44:00+00:00"
+
+    # Nothing eligible a day and an hour later (even the newest backup's own
+    # 24h envelope has lapsed): the loader holds nothing, and the scan keeps
+    # the newest-observed evidence for the historical-gap measurement.
+    later = now + timedelta(days=1, hours=1)
+    states_later, _ = namespace["_scan_receipt_surface"](receipt_dir, now=later)
+    assert namespace["load_platform_capability_receipts"](receipt_dir, now=later) == {}
+    assert states_later["codex"][0].isoformat() == "2026-06-10T00:10:00+00:00"
+
+
+def test_receipt_surface_future_dated_backup_cannot_mask_a_continuity_gap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """C1 (#4665, round 14), end-to-end: the reviewer's masking repro. A
+    z-codex-backup.json dated 10 minutes into the future won round-13's plain
+    newest-observed scan before AND after the refresh, so codex read as
+    unchanged, no replacement was witnessed, and the tick reported rc=0 with a
+    null gap across a real 60s hole — while routing rejected the backup and
+    kept consuming codex.json. Routing's freshness eligibility in the scan
+    makes the future-dated backup inert and every gap assertion matches the
+    no-backup tick exactly."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW)
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:44:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="900s",
+    )
+    _backup_codex_receipt(platform_receipts, observed_at="2026-06-10T00:10:00Z")
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def publishing_refresh(*, timeout, receipt_dir):
+        _codex_platform_receipt(platform_receipts)
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:00:00Z")
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", publishing_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 4
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_continuity_degraded"] is True
+    assert summary["receipt_continuity_gap_s"] == 60.0
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-09T23:59:00Z"
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+    assert summary["receipt_surface_publication_instants"] == {"codex": "2026-06-10T00:00:00Z"}
+
+
+def test_receipt_surface_expired_newer_backup_cannot_fabricate_a_gap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """C1 (#4665, round 14), end-to-end: the inverse repro. A backup observed
+    AFTER the canonical receipt (23:50) but already past its own 5m envelope at
+    NOW won round-13's newest-observed scan, so the predecessor read as a 23:55
+    quota-TTL expiry and the 00:00 replacement fabricated a 300s hole (rc=4)
+    across a surface routing still accepted at the 24h envelope. Routing
+    retains nothing from the expired backup; the scan must not either."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW)
+    # Eligible-unobservable canonical receipt: the 24h envelope vouches until
+    # next-day 23:44 (codex.headless.full is subscription_quota).
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:44:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="15m",
+        quota_status="unobservable",
+    )
+    _backup_codex_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:50:00Z",
+        outer_stale_after="5m",
+        quota_stale_after="5m",
+    )
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def publishing_refresh(*, timeout, receipt_dir):
+        _codex_platform_receipt(
+            platform_receipts,
+            outer_stale_after="24h",
+            quota_stale_after="15m",
+            quota_status="unobservable",
+        )
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:00:00Z")
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", publishing_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_continuity_degraded"] is False
+    assert summary["receipt_continuity_gap_s"] == -85440.0
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-10T23:44:00Z"
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+
+
+@pytest.mark.parametrize(
+    ("route_wrappers", "expected_expiry"),
+    [
+        # Unreadable named wrapper: routing recomputes capability BLOCKED, the
+        # unobservable-quota envelope leg fails, and the quota TTL binds
+        # (23:44 + 15m = 23:59) — the reviewer's round-14 M1 repro shape.
+        (
+            {
+                "codex.headless.full": {
+                    "path": "scripts/hapax-codex-headless",
+                    "exists": False,
+                    "executable": False,
+                    "sha256": None,
+                }
+            },
+            "2026-06-09T23:59:00Z",
+        ),
+        # Readable named wrapper: statuses stay OBSERVED under recomputation
+        # and the subscription envelope leg survives (next-day 23:44).
+        (
+            {
+                "codex.headless.full": {
+                    "path": "scripts/hapax-codex-headless",
+                    "exists": True,
+                    "executable": True,
+                    "sha256": "0" * 64,
+                }
+            },
+            "2026-06-10T23:44:00Z",
+        ),
+    ],
+)
+def test_receipt_surface_expiry_mirrors_route_payload_recomputation(
+    tmp_path: Path,
+    route_wrappers: dict[str, dict[str, object]],
+    expected_expiry: str,
+) -> None:
+    """M1 (#4665, round 14): routing recomputes per-route capability/resource
+    statuses from the receipt's route_wrappers BEFORE the unobservable-quota
+    envelope decision, so receipt-level statuses are not what routing consumes.
+    The witness's expiry must equal observed_at plus the quota stale_after
+    _apply_receipt_to_route_payload — routing's own applier — actually applied
+    to the named route (codex-1 D1, round 14), for both the failing and the
+    surviving recomputation."""
+    namespace = runpy.run_path(str(SCRIPT))
+    receipt_dir = tmp_path / "platform-receipts"
+    receipt_dir.mkdir()
+    _codex_platform_receipt(
+        receipt_dir,
+        observed_at="2026-06-09T23:44:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="15m",
+        quota_status="unobservable",
+        route_wrappers=route_wrappers,
+    )
+    from shared.platform_capability_registry import _apply_receipt_to_route_payload
+
+    receipt = namespace["load_platform_capability_receipt"](receipt_dir / "codex.json")
+    route_pools = namespace["static_registry_route_pools"]()
+    pool, source = route_pools["codex.headless.full"]
+    route_payload = {
+        "route_id": "codex.headless.full",
+        "capacity_pool": pool.value,
+        "telemetry": {"quota_source": source.value},
+        "freshness": {
+            "evidence": {"capability": {}, "resource": {}, "quota": {}, "provider_docs": {}}
+        },
+    }
+    _apply_receipt_to_route_payload(route_payload, receipt)
+    applied_expiry = namespace["ensure_utc"](receipt.observed_at) + namespace[
+        "parse_duration_spec"
+    ](route_payload["freshness"]["quota_stale_after"])
+
+    expiry = namespace["receipt_surface_effective_expiry"](receipt, route_pools)
+
+    assert expiry == applied_expiry
+    assert expiry.isoformat().replace("+00:00", "Z") == expected_expiry
+
+
+def test_receipt_surface_unreadable_route_wrapper_holds_the_quota_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """M1 (#4665, round 14), end-to-end: the reviewer's repro. An eligible
+    unobservable quota with OBSERVED receipt-level statuses but an UNREADABLE
+    named route wrapper: routing recomputes the per-route capability status to
+    blocked, fails the nonblocking test, and holds the platform at the quota
+    TTL — while the round-13 helper trusted receipt-level statuses, granted
+    the 24h envelope, and read a green tick across a real 60s hole."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW)
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:44:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="15m",
+        quota_status="unobservable",
+        route_wrappers={
+            "codex.headless.full": {
+                "path": "scripts/hapax-codex-headless",
+                "exists": False,
+                "executable": False,
+                "sha256": None,
+            }
+        },
+    )
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def publishing_refresh(*, timeout, receipt_dir):
+        _codex_platform_receipt(
+            platform_receipts,
+            outer_stale_after="24h",
+            quota_stale_after="15m",
+            quota_status="unobservable",
+        )
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:00:00Z")
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", publishing_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 4
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_continuity_degraded"] is True
+    assert summary["receipt_continuity_gap_s"] == 60.0
+    # The quota TTL binds despite the 24h envelope: routing's per-route
+    # recomputation saw the unreadable wrapper.
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-09T23:59:00Z"
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+    assert summary["receipt_surface_publication_instants"] == {"codex": "2026-06-10T00:00:00Z"}
+
+
+def test_receipt_surface_readable_route_wrapper_keeps_the_envelope_leg(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """M1 (#4665, round 14), positive control: with a READABLE named route
+    wrapper the per-route recomputation keeps both statuses OBSERVED, the
+    subscription envelope leg survives exactly as the wrapper-less shape
+    does, and an uninterrupted surface stays honestly green. Without this
+    control, a mirror that held every route_wrappers-bearing receipt at the
+    quota TTL would pass the unreadable repro while flapping every live
+    envelope."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW)
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:30:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="15m",
+        quota_status="unobservable",
+        route_wrappers={
+            "codex.headless.full": {
+                "path": "scripts/hapax-codex-headless",
+                "exists": True,
+                "executable": True,
+                "sha256": "0" * 64,
+            }
+        },
+    )
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def publishing_refresh(*, timeout, receipt_dir):
+        _codex_platform_receipt(
+            platform_receipts,
+            outer_stale_after="24h",
+            quota_stale_after="15m",
+            quota_status="unobservable",
+            route_wrappers={
+                "codex.headless.full": {
+                    "path": "scripts/hapax-codex-headless",
+                    "exists": True,
+                    "executable": True,
+                    "sha256": "0" * 64,
+                }
+            },
+        )
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:00:00Z")
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", publishing_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_continuity_degraded"] is False
+    assert summary["receipt_continuity_gap_s"] == -84600.0
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-10T23:30:00Z"
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
 
 
 def test_receipt_surface_outer_ttl_leg_subscription_unobservable_quota(
@@ -2302,13 +2791,15 @@ def _load_written_receipt(receipt_dir: Path):
 def test_receipt_surface_effective_expiry_mirrors_the_routing_consumer(
     tmp_path: Path,
 ) -> None:
-    """The C1 pin (#4665, round 10): the writer's expiry helper must agree with
-    the routing consumer's own eligibility rule on every pool/source combo.
-    Production code deliberately does NOT import the private
-    _quota_unobservable_nonblocking; this test does, and pins the equivalence
-    the main-flow legs only sample. The pin passes the receipt-level
-    capability/resource statuses the writer reads; the registry's own
-    per-route wrapper recomputation stays the registry's concern."""
+    """The C1 pin (#4665, rounds 10 and 14): the writer's expiry helper must
+    agree with the routing consumer's own eligibility rule on every
+    pool/source combo. Since round 14 the helper mirrors by CALLING the
+    registry's private helpers (drift-proof against re-derivation, codex-1
+    M1); this test still pins the envelope decision against the registry's
+    own nonblocking rule as reference, over wrapper-less receipts where
+    routing passes receipt-level statuses through unchanged — the per-route
+    wrapper recomputation itself is pinned separately by the round-14
+    route_payload_recomputation test."""
     sys.path.insert(0, str(REPO_ROOT))
     import shared.platform_capability_registry as capability_registry
 
@@ -2318,7 +2809,16 @@ def test_receipt_surface_effective_expiry_mirrors_the_routing_consumer(
     observed = datetime.fromisoformat("2026-06-09T23:00:00+00:00")
 
     def expiry_dt(receipt, pools):
-        return expiry_of(receipt, {receipt.routes[0]: pools})
+        pool, source = pools
+        return expiry_of(
+            receipt,
+            {
+                receipt.routes[0]: (
+                    capability_registry.CapacityPool(pool),
+                    capability_registry.QuotaSource(source),
+                )
+            },
+        )
 
     # OBSERVED quota: the admission's own TTL binds on every combo — pools
     # never buy an observed admission the outer envelope.
@@ -2418,16 +2918,18 @@ def test_mixed_named_route_pools_bind_the_platform_at_the_earliest_expiry(
         routes=["codex.headless.full", "codex.local.compute"],
     )
     receipt = _load_written_receipt(tmp_path)
+    pool_of = namespace["CapacityPool"]
+    source_of = namespace["QuotaSource"]
     mixed = {
-        "codex.headless.full": ("subscription_quota", "manual"),
-        "codex.local.compute": ("local_compute", "cli"),
+        "codex.headless.full": (pool_of("subscription_quota"), source_of("manual")),
+        "codex.local.compute": (pool_of("local_compute"), source_of("cli")),
     }
     # The local_compute route dies at the 15m quota TTL while the subscription
     # route would carry the 24h envelope: the platform binds at 15m.
     assert expiry_of(receipt, mixed) == observed + timedelta(minutes=15)
     all_eligible = {
-        "codex.headless.full": ("subscription_quota", "manual"),
-        "codex.local.compute": ("api_paid_spend", "ledger"),
+        "codex.headless.full": (pool_of("subscription_quota"), source_of("manual")),
+        "codex.local.compute": (pool_of("api_paid_spend"), source_of("ledger")),
     }
     assert expiry_of(receipt, all_eligible) == observed + timedelta(hours=24)
     # A receipt naming no registry route at all fails closed to the quota TTL.
@@ -3015,6 +3517,7 @@ def _codex_platform_receipt(
     quota_status: str = "observed",
     quota_reason_codes: list[str] | None = None,
     routes: list[str] | None = None,
+    route_wrappers: dict[str, dict[str, object]] | None = None,
 ) -> None:
     receipt_dir.mkdir(parents=True, exist_ok=True)
     status = "blocked" if reason_code is not None else "observed"
@@ -3093,6 +3596,8 @@ def _codex_platform_receipt(
         },
         "known_unknowns": [],
     }
+    if route_wrappers:
+        payload["route_wrappers"] = route_wrappers
     (receipt_dir / f"{platform}.json").write_text(json.dumps(payload), encoding="utf-8")
 
 

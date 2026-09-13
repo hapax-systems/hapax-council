@@ -196,6 +196,11 @@ from shared.platform_capability_registry import (  # noqa: E402
     CapacityPool,
     PlatformCapabilityRegistryError,
     QuotaSource,
+    _quota_unobservable_nonblocking,
+    _route_receipt_capability_reason_codes,
+    _route_receipt_resource_reason_codes,
+    _route_wrapper_for_receipt,
+    _surface_status_from_reasons,
     load_platform_capability_registry_for_dispatch,
 )
 from shared.quota_spend_ledger import (  # noqa: E402
@@ -2692,22 +2697,6 @@ def refresh_capability_receipts(*, timeout: float, receipt_dir: Path) -> bool:
     return True
 
 
-# Quota-unobservability reasons the routing consumer treats as expected for
-# subscription/gateway routes (shared.platform_capability_registry.
-# _quota_unobservable_nonblocking): a receipt whose quota is UNOBSERVABLE for
-# exactly these reasons, with capability and resource OBSERVED, keeps routes
-# whose pool carries quota authority without a local probe (subscription_quota;
-# api_paid_spend/bootstrap_budget with the ledger as quota source) vouching for
-# the OUTER receipt stale_after. Every other quota shape — OBSERVED admissions
-# above all — expires routing's quota surface at the quota stale_after, which is
-# what the round-9 witness failed to mirror (critical finding on #4665,
-# round 10, C1: it applied the outer TTL to every predecessor, so the
-# reviewer's 900s-admission repro with a replacement 40s past expiry reported a
-# −85000s gap and a green tick).
-QUOTA_UNOBSERVABLE_NONBLOCKING_REASONS = frozenset(
-    {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
-)
-
 _static_registry_route_pools_cache: dict[str, tuple[CapacityPool, QuotaSource]] | None = None
 _static_registry_route_pools_state = "unloaded"
 
@@ -2761,46 +2750,94 @@ def receipt_surface_effective_expiry(
     """The instant quota routing stops vouching for this receipt's quota surface.
 
     Mirrors the routing consumer (_apply_receipt_to_route_payload +
-    _quota_unobservable_nonblocking in shared.platform_capability_registry):
-    the quota surface a route consumes from this receipt expires at
-    observed_at + quota.stale_after, except when the receipt's quota is
-    UNOBSERVABLE for exactly the nonblocking reasons with capability and
-    resource OBSERVED — then routes whose pool carries quota authority without
-    a local probe (subscription_quota, or the gateway pools under the ledger
-    quota source) vouch for the full outer stale_after. Receipts bind only the
-    routes they name; the earliest per-route expiry binds the platform, so one
-    non-qualifying named route holds the whole platform at the shorter TTL.
-    Named routes absent from the registry are ignored; a receipt naming no
-    registry route fails closed to the quota TTL. Every quota-TTL branch is
-    capped at the OUTER stale_after: routing's loader rejects an expired
-    envelope before applying any quota evidence, so the quota surface can
-    never outlive the receipt it rides in (codex-1 critical C1, #4665 round
-    12; found independently by glm-1 and claude-1 — live shapes are
-    envelope-longer, so the cap only tightens pathological ones).
+    _quota_unobservable_nonblocking in shared.platform_capability_registry)
+    by CALLING it: the quota surface a route consumes from this receipt
+    expires at observed_at + quota.stale_after, except when the receipt's
+    quota is UNOBSERVABLE for exactly the nonblocking reasons with capability
+    and resource OBSERVED — then routes whose pool carries quota authority
+    without a local probe (subscription_quota, or the gateway pools under the
+    ledger quota source) vouch for the full outer stale_after. The status
+    inputs to that decision are the PER-ROUTE statuses routing recomputes
+    from the receipt's route_wrappers (codex-1 major M1, #4665 round 14:
+    with observed platform statuses, eligible unobservable quota, and an
+    unreadable named route wrapper, routing recomputes the capability status
+    to blocked, fails the nonblocking test, and applies the quota TTL — while
+    receipt-level statuses granted the 24h envelope and read a fictitious
+    −85440s green gap across a real 60s hole). Receipts without route
+    wrappers pass their receipt-level reasons through unchanged, exactly as
+    routing does. Receipts bind only the routes they name; the earliest
+    per-route expiry binds the platform, so one non-qualifying named route
+    holds the whole platform at the shorter TTL. Named routes absent from
+    the registry are ignored; a receipt naming no registry route fails
+    closed to the quota TTL. Every quota-TTL branch is capped at the OUTER
+    stale_after: routing's loader rejects an expired envelope before applying
+    any quota evidence, so the quota surface can never outlive the receipt
+    it rides in (codex-1 critical C1, #4665 round 12; found independently by
+    glm-1 and claude-1 — live shapes are envelope-longer, so the cap only
+    tightens pathological ones).
     """
     observed_at = ensure_utc(receipt.observed_at)
     quota_ttl = parse_duration_spec(receipt.quota.stale_after)
     outer_ttl = parse_duration_spec(receipt.stale_after)
     if receipt.quota.status is not EvidenceStatus.UNOBSERVABLE:
         return observed_at + min(quota_ttl, outer_ttl)
-    nonblocking = (
-        not (set(receipt.quota.reason_codes) - QUOTA_UNOBSERVABLE_NONBLOCKING_REASONS)
-        and receipt.capability.status is EvidenceStatus.OBSERVED
-        and receipt.resource.status is EvidenceStatus.OBSERVED
-    )
-    if not nonblocking:
-        return observed_at + min(quota_ttl, outer_ttl)
-    named_pools = [route_pools[route_id] for route_id in receipt.routes if route_id in route_pools]
-    if not named_pools:
-        return observed_at + min(quota_ttl, outer_ttl)
-    outer_ttl = parse_duration_spec(receipt.stale_after)
-    if all(
-        pool == CapacityPool.SUBSCRIPTION_QUOTA
-        or (
-            pool in {CapacityPool.API_PAID_SPEND, CapacityPool.BOOTSTRAP_BUDGET}
-            and source == QuotaSource.LEDGER
+    route_expiries = [
+        _route_quota_surface_expiry(
+            receipt,
+            route_id,
+            pool,
+            source,
+            observed_at=observed_at,
+            quota_ttl=quota_ttl,
+            outer_ttl=outer_ttl,
         )
-        for pool, source in named_pools
+        for route_id, (pool, source) in route_pools.items()
+        if route_id in receipt.routes
+    ]
+    if not route_expiries:
+        return observed_at + min(quota_ttl, outer_ttl)
+    return min(route_expiries)
+
+
+def _route_quota_surface_expiry(
+    receipt: PlatformCapabilityReceipt,
+    route_id: str,
+    pool: CapacityPool,
+    source: QuotaSource,
+    *,
+    observed_at: datetime,
+    quota_ttl: timedelta,
+    outer_ttl: timedelta,
+) -> datetime:
+    """One named route's expiry under routing's own recomputation.
+
+    Builds the minimal route payload _quota_unobservable_nonblocking and
+    _route_wrapper_for_receipt actually read (route_id, capacity_pool,
+    telemetry.quota_source) from the registry pool fact, recomputes the
+    per-route capability/resource statuses exactly as
+    _apply_receipt_to_route_payload does, and applies the same envelope
+    decision with them. Calling the consumer's own helpers — not a re-derivation
+    — is what makes the mirror drift-proof.
+    """
+    route_payload: dict[str, Any] = {
+        "route_id": route_id,
+        "capacity_pool": pool.value,
+        "telemetry": {"quota_source": source.value},
+    }
+    wrapper = _route_wrapper_for_receipt(route_payload, receipt)
+    capability_status = _surface_status_from_reasons(
+        receipt.capability.status,
+        _route_receipt_capability_reason_codes(receipt, wrapper),
+    )
+    resource_status = _surface_status_from_reasons(
+        receipt.resource.status,
+        _route_receipt_resource_reason_codes(receipt, wrapper),
+    )
+    if _quota_unobservable_nonblocking(
+        route_payload,
+        receipt,
+        capability_status=capability_status,
+        resource_status=resource_status,
     ):
         return observed_at + outer_ttl
     return observed_at + min(quota_ttl, outer_ttl)
@@ -2809,17 +2846,26 @@ def receipt_surface_effective_expiry(
 def _scan_receipt_surface(
     receipt_dir: Path,
     route_pools: dict[str, tuple[CapacityPool, QuotaSource]] | None = None,
+    *,
+    now: datetime | None = None,
 ) -> tuple[dict[str, tuple[datetime, datetime, datetime]], list[str]]:
     """Per-platform (observed_at, effective expiry, publication instant) scan
     plus the platforms whose receipt names no registry route.
 
     When one platform has several receipt files in the directory, the SELECTED
     receipt is the one routing's loader would consume — the greatest
-    observed_at, exact ties keeping the first file in name order — never
-    whichever filename lands last alphabetically (codex-1 critical C1, #4665
-    round 13: an older z-codex-backup.json shadowed the refreshed codex.json,
-    so the platform read as not replaced and a real continuity gap went
-    unwitnessed).
+    observed_at among receipts passing routing's freshness eligibility
+    (receipt_is_fresh: future-dated beyond one minute is rejected, and so is
+    anything past its own stale_after), with exact ties keeping the first file
+    in name order. When NO receipt for a platform is eligible, the scan falls
+    back to the newest observed among all readable ones: routing then holds
+    nothing for the platform — exactly the dead-surface condition the
+    continuity witness must measure, so the expired predecessor's evidence is
+    retained rather than dropped (codex-1 critical C1, #4665 rounds 13-14:
+    round 13's plain newest-observed selection let a future-dated backup that
+    routing REJECTS win both scans and mask a real 60s gap, and let an
+    already-expired newer backup that routing RETAINS nothing from win and
+    fabricate a 50s gap across a surface the consumer still accepted).
 
     The publication instant is the receipt FILE's own mtime: the refresh
     writes each platform's receipt separately, so each file's mtime is that
@@ -2842,25 +2888,32 @@ def _scan_receipt_surface(
     no_named_route: set[str] = set()
     if not receipt_dir.is_dir():
         return states, []
-    # Per-platform selection must mirror routing's loader
-    # (load_platform_capability_receipts): the receipt with the greatest
-    # observed_at wins, and an exact tie keeps the first file in name order.
-    # The previous shape let the LAST filename alphabetically win by plain
-    # dict overwrite, so an older `z-codex-backup.json` shadowed the refreshed
-    # `codex.json`: the platform read as not-replaced-this-refresh and a real
-    # continuity gap went unwitnessed while routing still consumed the fresh
-    # receipt (codex-1 critical C1, #4665 round 13).
-    selected: dict[str, tuple[datetime, Path, PlatformCapabilityReceipt]] = {}
+    candidates: dict[str, list[tuple[datetime, Path, PlatformCapabilityReceipt]]] = {}
     for path in sorted(receipt_dir.glob("*.json")):
         try:
             receipt = load_platform_capability_receipt(path)
         except PlatformCapabilityReceiptError:
             continue
-        observed_at = ensure_utc(receipt.observed_at)
-        prior = selected.get(receipt.platform)
-        if prior is None or observed_at > prior[0]:
-            selected[receipt.platform] = (observed_at, path, receipt)
-    for platform, (observed_at, path, receipt) in selected.items():
+        candidates.setdefault(receipt.platform, []).append(
+            (ensure_utc(receipt.observed_at), path, receipt)
+        )
+    for platform, platform_candidates in candidates.items():
+        # Routing's temporal eligibility first; the expired fallback below
+        # exists ONLY to keep predecessor evidence measurable when routing
+        # holds nothing (the historical-gap case).
+        eligible = [
+            candidate
+            for candidate in platform_candidates
+            if receipt_is_fresh(candidate[2], now=now)
+        ]
+        pool = eligible or platform_candidates
+        # Greatest observed_at wins; exact ties keep the first file in name
+        # order — the same strict-> comparison over a sorted walk that
+        # load_platform_capability_receipts uses.
+        observed_at, path, receipt = pool[0]
+        for candidate in pool[1:]:
+            if candidate[0] > observed_at:
+                observed_at, path, receipt = candidate
         # Route coverage is judged on the SELECTED receipt — the one routing
         # would actually consume for this platform — not on a shadowed
         # sibling's routes.
@@ -2878,6 +2931,8 @@ def _scan_receipt_surface(
 def quota_receipt_surface_expiries(
     receipt_dir: Path,
     route_pools: dict[str, tuple[CapacityPool, QuotaSource]] | None = None,
+    *,
+    now: datetime | None = None,
 ) -> dict[str, tuple[datetime, datetime]]:
     """Per-platform (observed_at, effective expiry) of the published capability receipts.
 
@@ -2902,7 +2957,7 @@ def quota_receipt_surface_expiries(
     return {
         platform: (observed_at, expiry)
         for platform, (observed_at, expiry, _published_at) in _scan_receipt_surface(
-            receipt_dir, route_pools
+            receipt_dir, route_pools, now=now
         )[0].items()
     }
 
@@ -3159,7 +3214,7 @@ def main(argv: list[str] | None = None) -> int:
     predecessor_surface_states: dict[str, tuple[datetime, datetime, datetime]] = {}
     if not args.skip_receipts:
         predecessor_surface_states, receipt_surface_no_named_route = _scan_receipt_surface(
-            args.platform_capability_receipt_dir
+            args.platform_capability_receipt_dir, now=now
         )
     receipt_surface_predecessors = {
         platform: (observed, expiry)
@@ -3198,7 +3253,7 @@ def main(argv: list[str] | None = None) -> int:
             # refresh, well inside its predecessor's lifetime, read as a 60s
             # hole and flapped rc=4 on uninterrupted coverage).
             successors, receipt_surface_no_named_route = _scan_receipt_surface(
-                args.platform_capability_receipt_dir
+                args.platform_capability_receipt_dir, now=now
             )
             receipt_surface_replacements = {
                 platform: (*receipt_surface_predecessors[platform], published_at)

@@ -400,7 +400,20 @@ def run_producer(
                             f"unresolved-descendants; next: ps -o pid,pgid,cmd -p {proc.pid}"
                         )
                 else:
-                    record["group_sweep"] = "descendants-held-pipes; reaped after pipe close"
+                    # Reaped after the pipe close, but the holders were real:
+                    # name the concrete group so the sweep is auditable as
+                    # written (codex-1 minor D2, #4665 round 14 — the bare
+                    # label left the next action unexecutable).
+                    if group_id is not None:
+                        record["group_sweep"] = (
+                            f"descendants-held-pipes; reaped after pipe close; "
+                            f"next: ps -o pid,pgid,cmd -g {group_id}"
+                        )
+                    else:
+                        record["group_sweep"] = (
+                            f"descendants-held-pipes; reaped after pipe close; "
+                            f"next: ps -o pid,pgid,cmd -p {proc.pid}"
+                        )
             ended = monotonic_clock()
             record.update(
                 outcome="timeout",
@@ -442,7 +455,13 @@ def run_producer(
         except ProcessLookupError:
             pass
         except PermissionError:
-            record["group_sweep"] = "permission-denied-bounded-leak"
+            # proc.pid is the pgid (start_new_session made the child a group
+            # leader at spawn): name the concrete group the survivors left, so
+            # the bounded leak is locatable as written (codex-1 minor D2,
+            # #4665 round 14 — the bare label left the leak unlocatable).
+            record["group_sweep"] = (
+                f"permission-denied-bounded-leak; next: ps -o pid,pgid,cmd -g {proc.pid}"
+            )
 
         rc = proc.returncode
         success = set(producer.get("success_exit_codes") or [0])
