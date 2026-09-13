@@ -4057,12 +4057,19 @@ def test_exchange_fallback_refuses_a_replacement_racing_after_the_pin(
         os.close(dir_fd)
 
     # Nothing of the racer's was destroyed, and nothing of ours was installed.
-    assert (tmp_path / "dst").read_bytes() == b"racing-writer\n"
+    surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    assert b"racing-writer\n" in surviving
+    assert b"replacement\n" in surviving
+    assert b"displaced\n" in surviving
     assert (tmp_path / ".src").read_bytes() == b"replacement\n"
-    # The pin is gone, so the live entry is back to one link — `_entry_state_at`
-    # compares nlink, and a stray pin would make every later readback mismatch.
-    assert not list(tmp_path.glob("*transition-pin*"))
-    assert os.stat(tmp_path / "dst").st_nlink == 1
+    # The scratches are deliberately LEFT: after the leg has moved dst aside, a scratch can
+    # be the sole name of a live entry, so the failure path unlinks nothing at all. This
+    # assertion used to require no residue, which was the wrong contract — tidying up here
+    # is what would have destroyed the raced preimage.
+    assert list(tmp_path.glob("*transition-*"))
+    # And every remnant is named in the refusal, so the operator has exact names.
+    for remnant in tmp_path.glob("*transition-*"):
+        assert remnant.name in str(caught.value)
 
 
 def test_noreplace_fallback_refuses_a_replacement_racing_after_the_link(
@@ -4126,105 +4133,130 @@ def test_race_detection_refuses_the_whole_transaction(
         "transition_projection_exchange_failed",
         "transition_projection_recovery_required",
     }
-    # What actually matters: the racer's bytes survived and NOTHING recorded applied.
-    assert note.read_bytes() == b"racing-writer\n"
+    # What actually matters: nothing recorded applied, and no bytes were destroyed.
     event_types = [event.event_type for event in log.replay().events]
     assert cp.CANON_TRANSITION_APPLIED not in event_types
     assert event_types[0] == cp.CANON_TRANSITION_PREPARED
-    assert not list(vault.glob("*transition-pin*"))
+
+    # A consequence of move-or-fail worth asserting rather than glossing: when the race is
+    # caught at step 3, `dst` has already been MOVED aside and the publish never happened,
+    # so the live name is left VACANT with both generations under computable scratch names.
+    # That is a crash-consistent intermediate for recovery to reconcile — no loss — but it
+    # is a real behaviour change from the previous shape, where the live name always held
+    # something. Stated here so it cannot be discovered later as a surprise.
+    assert not note.exists()
+    surviving = {path.read_bytes() for path in vault.iterdir() if path.is_file()}
+    assert b"racing-writer\n" in surviving, "the racing writer's bytes must survive"
+    assert b"stage: S6\n" in surviving, "the displaced preimage must survive"
+    assert vault / cp._fallback_scratch_name(note.name, "holding") in set(vault.iterdir())
 
 
-def test_pin_names_are_always_dotted_whatever_the_operand(tmp_path: Path) -> None:
-    """The docstring promised dotted pins; the name only inherited a dot from its source.
+def test_scratch_names_are_dotted_and_deterministic(tmp_path: Path) -> None:
+    """Two properties, and the second is the one that matters for recovery.
 
-    `_atomic_install`'s rollback passes an ordinary journal filename as `src`, so real
-    pins were landing as `manifest.json.transition-pin.<hex>` — precisely where the
-    dotted-scratch sweeps do not look. Every crash test supplied `.src`, which is why
+    **Dotted** for any operand: the name used to inherit its dot from `src_name`, and
+    `_atomic_install`'s rollback passes ordinary journal filenames, so real pins landed as
+    `manifest.json.transition-pin.<hex>`. Every crash test supplied `.src`, which is why
     nothing saw it.
+
+    **Deterministic**: the name used to carry `os.urandom(8).hex()`, which made every
+    remnant unfindable — recovery addresses the exact computed `scratch.path.name`, and a
+    random name is neither recorded nor recomputable. Derived from the operand, a remnant
+    is computable by anything that can recompute the operand. That is not the same as
+    recovery *discovering* it — nothing in this module sweeps a directory — and the
+    difference is stated in `_fallback_scratch_name` rather than implied away.
     """
 
     for operand in ("manifest.json", ".src", "0001.after", "task-1.md"):
-        assert cp._pin_name_for(operand).startswith("."), operand
-        assert ".transition-pin." in cp._pin_name_for(operand)
-    # Unique per call, or the collision retry below could never terminate.
-    assert cp._pin_name_for("x") != cp._pin_name_for("x")
+        for role in cp._FALLBACK_SCRATCH_ROLES:
+            name = cp._fallback_scratch_name(operand, role)
+            assert name.startswith("."), (operand, role, name)
+            assert name.endswith(f".transition-{role}"), name
+            # Same input, same name — every call, not just within one process.
+            assert name == cp._fallback_scratch_name(operand, role)
+        # The three roles never collide with each other.
+        assert len({cp._fallback_scratch_name(operand, r) for r in cp._FALLBACK_SCRATCH_ROLES}) == 3
 
-    # And the name the leg actually creates is dotted for a non-dotted operand.
+    # And the names the leg actually creates are the computable ones, for a non-dotted
+    # operand — which is the case that used to produce a visible, unfindable pin.
     (tmp_path / "manifest.json").write_bytes(b"replacement\n")
     (tmp_path / "dst").write_bytes(b"displaced\n")
-    seen: list[str] = []
-    real_link = os.link
+    created: list[str] = []
+    real_link, real_rename = os.link, os.rename
 
     def recording_link(src: object, dst: object, **kwargs: object) -> None:
-        seen.append(str(dst))
+        created.append(str(dst))
         return real_link(src, dst, **kwargs)  # type: ignore[arg-type]
+
+    def recording_rename(src: object, dst: object, **kwargs: object) -> None:
+        created.append(str(dst))
+        return real_rename(src, dst, **kwargs)  # type: ignore[arg-type]
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        with mock.patch.object(os, "link", recording_link):
+        with (
+            mock.patch.object(os, "link", recording_link),
+            mock.patch.object(os, "rename", recording_rename),
+        ):
             cp._fallback_exchange(dir_fd, "manifest.json", dir_fd, "dst")
     finally:
         os.close(dir_fd)
-    assert seen and all(name.startswith(".") for name in seen), seen
+
+    scratch_names = {name for name in created if ".transition-" in name}
+    assert scratch_names, created
+    assert all(name.startswith(".") for name in scratch_names), scratch_names
+    # Every scratch the leg touched is one an operator can recompute from the operands.
+    computable = {
+        cp._fallback_scratch_name(base, role)
+        for base in ("manifest.json", "dst")
+        for role in cp._FALLBACK_SCRATCH_ROLES
+    }
+    assert scratch_names <= computable, scratch_names - computable
 
 
-def test_pin_collision_retries_then_refuses(tmp_path: Path) -> None:
-    """The retry loop and its exhaustion, neither of which had a test.
+def test_a_prior_attempts_remnant_refuses_instead_of_being_renamed_around(
+    tmp_path: Path,
+) -> None:
+    """Deterministic names turn a collision into information, so it is a refusal.
 
-    A collision must never overwrite the entry being pinned, so the leg retries under a
-    fresh name; after `_RENAME_FALLBACK_PIN_ATTEMPTS` it refuses rather than proceeding
-    without a pin.
+    The old random-name scheme retried under a fresh name on EEXIST, which had to be a
+    guess about the cause. With the name derived from the operand, a collision can only
+    mean a previous attempt's remnant is still on disk — the same condition
+    `_write_scratch` already reads as `transition_projection_scratch_exists`, and the same
+    remedy: recover or quarantine it. Renaming around it would abandon the remnant and
+    lose whatever it was holding.
     """
 
     (tmp_path / ".src").write_bytes(b"replacement\n")
     (tmp_path / "dst").write_bytes(b"displaced\n")
-    real_link = os.link
-    attempts = 0
-
-    def colliding_link(*args: object, **kwargs: object) -> None:
-        nonlocal attempts
-        attempts += 1
-        if attempts <= 2:
-            raise FileExistsError(errno.EEXIST, "pin name taken")
-        return real_link(*args, **kwargs)  # type: ignore[arg-type]
+    remnant = tmp_path / cp._fallback_scratch_name(".src", "pin")
+    remnant.write_bytes(b"a previous attempt left this\n")
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        with mock.patch.object(os, "link", colliding_link):
+        with pytest.raises(cp.LifecycleTransitionError) as raised:
             cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
-        assert attempts == 3  # two collisions, then success
-        assert (tmp_path / "dst").read_bytes() == b"replacement\n"
-        assert (tmp_path / ".src").read_bytes() == b"displaced\n"
-
-        # Exhaustion refuses, and refuses without having touched either entry.
-        always_collides = mock.Mock(side_effect=FileExistsError(errno.EEXIST, "taken"))
-        with mock.patch.object(os, "link", always_collides):
-            with pytest.raises(OSError) as caught:
-                cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
-        assert caught.value.errno == errno.EEXIST
-        assert always_collides.call_count == cp._RENAME_FALLBACK_PIN_ATTEMPTS
     finally:
         os.close(dir_fd)
 
-    assert (tmp_path / "dst").read_bytes() == b"replacement\n"
-    assert (tmp_path / ".src").read_bytes() == b"displaced\n"
+    assert raised.value.reason_code == "transition_projection_scratch_exists"
+    # Refused before touching either live entry, and the remnant is untouched.
+    assert (tmp_path / "dst").read_bytes() == b"displaced\n"
+    assert (tmp_path / ".src").read_bytes() == b"replacement\n"
+    assert remnant.read_bytes() == b"a previous attempt left this\n"
 
 
-def test_the_residual_race_window_is_open_and_this_is_the_documented_limit(
+def test_exchange_preserves_a_replacement_arriving_at_the_install_itself(
     tmp_path: Path,
 ) -> None:
-    """**This test asserts a known limitation, deliberately.**
+    """The window that used to be the documented limit, now closed.
 
-    The identity check narrows the window from the whole pin-to-install span to the gap
-    between the check and the next syscall. It cannot close it: the only atomic
-    primitives on the target mount are unconditional `rename` and create-or-EEXIST
-    `link`, so there is no atomic compare-and-rename to check *and* act as one step.
-
-    A racer landing inside that gap still loses its bytes, and this pins that so the
-    guarantee in the code, the design (§8) and the PR cannot drift into claiming
-    race-proof. If someone closes the window — by taking the projection lock on every
-    writer to a projected path, which is the follow-up task — this test should fail and
-    be deleted in the same change. A failure here is good news, not a regression.
+    This replaces `test_the_residual_race_window_is_open_and_this_is_the_documented_limit`,
+    which asserted the loss and said in its own docstring that a failure there was good
+    news and it should be deleted with the design caveat. Three reviewer families made that
+    due. The racer is injected at the same cut — the destructive step itself, past every
+    check — and the leg now relocates rather than replaces, so there is nothing left to
+    lose at any interleaving.
     """
 
     (tmp_path / ".src").write_bytes(b"replacement\n")
@@ -4233,7 +4265,7 @@ def test_the_residual_race_window_is_open_and_this_is_the_documented_limit(
     fired = False
 
     def racing_rename(*args: object, **kwargs: object) -> None:
-        # Strictly after the identity check: inside the residual gap.
+        # The old residual gap: strictly after the identity check.
         nonlocal fired
         if not fired:
             fired = True
@@ -4243,19 +4275,18 @@ def test_the_residual_race_window_is_open_and_this_is_the_documented_limit(
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         with mock.patch.object(os, "rename", racing_rename):
-            cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
+            with pytest.raises(OSError) as caught:
+                cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
+        assert caught.value.errno == errno.EBUSY
     finally:
         os.close(dir_fd)
 
     assert fired
     surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
-    assert b"racing-writer\n" not in surviving, (
-        "the residual window closed — good; delete this test and update design §8"
-    )
-    # The exact shape of the loss, so the limit is legible rather than merely asserted:
-    # the post-state is the syscall's, which is why no caller check can see it.
-    assert (tmp_path / "dst").read_bytes() == b"replacement\n"
-    assert (tmp_path / ".src").read_bytes() == b"displaced\n"
+    # All three generations survive: the racer's, ours, and the entry being displaced.
+    assert b"racing-writer\n" in surviving
+    assert b"replacement\n" in surviving
+    assert b"displaced\n" in surviving
 
 
 def test_delete_leg_preserves_a_replacement_arriving_after_the_check(
@@ -4303,7 +4334,7 @@ def test_delete_leg_preserves_a_replacement_arriving_after_the_check(
     assert (tmp_path / ".task.md.scratch").read_bytes() == b"live-preimage\n"
     # Both names are reported, so a human or a recovery sweep can find them.
     assert ".task.md.scratch" in str(caught.value)
-    assert "transition-pin" in str(caught.value)
+    assert cp._fallback_scratch_name("task.md", "holding") in str(caught.value)
 
 
 def test_missing_entry_at_the_check_is_a_refusal_not_a_crash(tmp_path: Path) -> None:
@@ -4357,34 +4388,79 @@ def test_noreplace_interrupted_after_linking_loses_nothing(tmp_path: Path) -> No
 
 
 @pytest.mark.parametrize("leg", ["exchange", "noreplace"])
-def test_fsync_failure_in_a_fallback_never_loses_bytes(tmp_path: Path, leg: str) -> None:
-    """T1: neither fallback's `fsync` failures were covered.
+@pytest.mark.parametrize("cut", [1, 2, 3, 4, 5])
+def test_fsync_failure_at_every_cut_loses_nothing_and_leaves_reachable_remnants(
+    tmp_path: Path, leg: str, cut: int
+) -> None:
+    """T1, done properly: a failure at EVERY step, not only the first.
 
-    An fsync failure is a real fault, not an absent feature, so it must propagate — and
-    whatever partial state it leaves must still hold every byte under some name.
+    The previous version raised on *every* `fsync`, so it always fired at the earliest one
+    — before installation or retirement — and the later cuts went untested. A reviewer was
+    right that this made the test weaker than its name. Now the failure is injected at the
+    Nth `fsync`, which walks it through pin, move-aside, publish, retire and finalise.
+
+    Two properties at each cut, and the second is what recovery needs:
+
+    * **No bytes are lost.** Every generation that existed is still readable under some
+      name, because each step is a move or a create-or-fail.
+    * **Every remnant is reachable.** The leftover names are exactly the ones computable
+      from the operands, so an operator — or the discovery work owed by the projection-lock
+      task — can enumerate them without a directory sweep, which this module does not have.
+
+    Cuts beyond a leg's fsync count simply complete; that is asserted rather than skipped,
+    so a leg that silently loses an fsync shows up here.
     """
 
     if leg == "exchange":
         (tmp_path / ".src").write_bytes(b"replacement\n")
         (tmp_path / "dst").write_bytes(b"displaced\n")
-        call = lambda fd: cp._fallback_exchange(fd, ".src", fd, "dst")  # noqa: E731
+        operands = (".src", "dst")
+
+        def call(fd: int) -> None:
+            cp._fallback_exchange(fd, ".src", fd, "dst")
+
         expected = {b"replacement\n", b"displaced\n"}
     else:
         (tmp_path / "task.md").write_bytes(b"live-preimage\n")
-        call = lambda fd: cp._fallback_noreplace(fd, "task.md", fd, ".task.md.scratch")  # noqa: E731
+        operands = ("task.md", ".task.md.scratch")
+
+        def call(fd: int) -> None:
+            cp._fallback_noreplace(fd, "task.md", fd, ".task.md.scratch")
+
         expected = {b"live-preimage\n"}
 
-    def failing_fsync(_fd: int) -> None:
-        raise OSError(errno.EIO, os.strerror(errno.EIO), "fsync")
+    seen = 0
+    real_fsync = os.fsync
+
+    def failing_fsync(fd: int) -> None:
+        nonlocal seen
+        seen += 1
+        if seen == cut:
+            raise OSError(errno.EIO, os.strerror(errno.EIO), f"fsync #{cut}")
+        real_fsync(fd)
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         with mock.patch.object(os, "fsync", failing_fsync):
-            with pytest.raises(OSError) as caught:
+            try:
                 call(dir_fd)
-        assert caught.value.errno == errno.EIO
+                completed = True
+            except OSError as exc:
+                assert exc.errno == errno.EIO, (leg, cut, exc)
+                completed = False
     finally:
         os.close(dir_fd)
 
-    surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
-    assert expected <= surviving, (leg, surviving)
+    # The cut either fired inside the leg, or the leg had fewer fsyncs than `cut`.
+    assert completed == (seen < cut), (leg, cut, seen, completed)
+
+    present = {path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    assert expected <= set(present.values()), (leg, cut, present)
+
+    computable = {
+        cp._fallback_scratch_name(base, role)
+        for base in operands
+        for role in cp._FALLBACK_SCRATCH_ROLES
+    } | set(operands)
+    unreachable = set(present) - computable
+    assert not unreachable, (leg, cut, unreachable)

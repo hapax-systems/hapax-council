@@ -112,9 +112,6 @@ _RENAME_EXCHANGE = 2
 _RENAME_FLAG_UNSUPPORTED_ERRNOS = frozenset(
     {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}
 )
-#: A pin-name collision is astronomically unlikely, but it must never overwrite
-#: the entry being pinned, so the fallback retries under a fresh name instead.
-_RENAME_FALLBACK_PIN_ATTEMPTS = 8
 
 #: Opt-in env var: when set (and no event_log is injected) the best-effort
 #: evidence mirror writes to the default coord log instead of no-op'ing.
@@ -3660,19 +3657,50 @@ def _entry_matches(state: _EntryState | None, payload: bytes | None, mode: int |
     return state.content == payload and state.mode == mode
 
 
-def _pin_name_for(src_name: str) -> str:
-    """A dotted, unique scratch name for a fallback pin.
+#: The scratch roles a rebuilt leg can leave behind. Named here so a reader — or a future
+#: recovery sweep — has one list to work from instead of three string literals.
+_FALLBACK_SCRATCH_ROLES = ("pin", "holding", "spent")
 
-    The leading dot is load-bearing and was missing: the name was built as
-    ``f"{src_name}.transition-pin.{hex}"``, which is hidden only when ``src_name``
-    already begins with one. ``_atomic_install``'s rollback passes an ordinary journal
-    filename, so real pins were landing as ``manifest.json.transition-pin.<hex>`` —
-    exactly where the dotted-scratch sweeps do not look, while the docstring promised
-    they would. The crash test always supplied ``.src`` and so could never see it.
+
+def _fallback_scratch_name(base_name: str, role: str) -> str:
+    """A dotted, **deterministic** scratch name for one leg of a rebuilt rename.
+
+    Deterministic on purpose, and this is a correction of two earlier claims rather than a
+    preference:
+
+    * The name used to carry ``os.urandom(8).hex()``. Random names are **not
+      discoverable**: recovery and finalization address the deterministic
+      ``scratch.path.name`` computed by :func:`_scratch_for`, and a random remnant is
+      neither recorded anywhere nor recomputable, so nothing can ever find it. Deriving
+      the name from the operand makes every remnant computable by anything that can
+      recompute the operand — which for a projection leg is the transaction's own scratch
+      name, itself derived from ``sha256(transaction_id:index:path)``.
+    * The leading dot was missing for non-dotted operands: the name was
+      ``f"{src_name}.transition-pin.{hex}"``, hidden only when ``src_name`` already began
+      with one, and ``_atomic_install``'s rollback passes ordinary journal filenames. Every
+      crash test supplied ``.src``, which is why nothing saw it.
+
+    **Do not read a leading dot as recovery integration.** There is no directory sweep in
+    this module — the only scratch reference anywhere is the exact computed path — so a dot
+    buys visibility to a person, not discovery by code. What determinism buys is that the
+    person, or a later sweep, has an exact name to look for. Actual discovery is owed by the
+    projection-lock task; see ``NFS-EXCHANGE-FALLBACK-DESIGN-20260911.md`` §8.
+
+    A collision therefore means a previous attempt's remnant is still present, which is a
+    condition to refuse rather than to rename around — the same reading
+    :func:`_write_scratch` already gives ``transition_projection_scratch_exists``.
     """
 
-    stem = src_name if src_name.startswith(".") else f".{src_name}"
-    return f"{stem}.transition-pin.{os.urandom(8).hex()}"
+    if role not in _FALLBACK_SCRATCH_ROLES:  # pragma: no cover - guards a typo, not input
+        raise ValueError(f"unknown fallback scratch role: {role}")
+    stem = base_name if base_name.startswith(".") else f".{base_name}"
+    return f"{stem}.transition-{role}"
+
+
+def _same_entry(left: os.stat_result, right: os.stat_result) -> bool:
+    """Identity, not equality: the same inode on the same device."""
+
+    return (left.st_ino, left.st_dev) == (right.st_ino, right.st_dev)
 
 
 def _refuse_if_displaced_entry_moved(
@@ -3692,17 +3720,16 @@ def _refuse_if_displaced_entry_moved(
     whatever occupied the name at the instant of the call, which is how the callers'
     precondition checks came to be trusted at all.
 
-    So atomicity was supplying race *detection*, not only atomicity. This restores as
-    much of it as the mount allows: the destination's identity is re-read immediately
-    before the destructive step, and a changed inode aborts before anything is lost.
+    So atomicity was supplying race *detection*, not only atomicity. This re-reads the
+    destination's identity immediately before the step that retires it.
 
-    **The residual window cannot be closed.** The only atomic primitives here are
-    unconditional ``rename`` and create-or-EEXIST ``link``; there is no atomic
-    compare-and-rename, so a replacement landing between this check and the next
-    syscall is still undetectable. What remains is a stat-to-rename gap rather than the
-    whole pin-to-install span. The durable repair is to stop the concurrency instead of
-    racing it — every writer to a projected path taking the projection lock — which is
-    a separate task, not this one. See ``NFS-EXCHANGE-FALLBACK-DESIGN-20260911.md`` §8.
+    **Correction, and it was mine to make.** This docstring used to say "the residual
+    window cannot be closed", which is false and a reviewer was right to call it: what
+    cannot be closed *by a check* is not what cannot be closed *at all*. Both legs that
+    use this now retire an entry by **moving** it rather than unlinking or overwriting it,
+    so a replacement landing after this check is relocated and identified rather than
+    destroyed — there is no lossy window left on either. The check is still worth keeping:
+    it catches the common case one syscall earlier and gives the clearer diagnosis.
 
     ``EBUSY`` rather than a precondition-changed predicate: every call site already maps
     an ``OSError`` from these legs onto a typed hold that preserves both entries and
@@ -3741,23 +3768,41 @@ def _fallback_exchange(
     the contract: ``dst`` holds the replacement and ``src`` holds the displaced
     entry, which is what this rebuilds.
 
-    The displaced inode is pinned under a dotted ``.transition-pin.<hex>`` name
-    first, so it is never reachable only through a name that is about to be
-    overwritten, and so the existing dotted-scratch recovery sweeps can see it.
-    Crash windows: before the first rename both the pin and the original ``dst``
-    are intact; between the two renames the pin holds the displaced bytes under a
-    scan-visible name; after the second the state is identical to the syscall's.
+    **Move-or-fail throughout: no step can destroy an entry it has not identified.**
+    Three reviewer families rejected the earlier check-then-replace shape, and correctly:
+    reproducing the syscall's post-state does not inherit the syscall's atomicity, and the
+    callers depended on that atomicity to *surface* a concurrent writer rather than only to
+    order the writes. A ``rename`` over an occupied name destroys what it replaces and the
+    victim's inode leaves no trace, so no amount of checking beforehand could close it —
+    the raced and unraced post-states are byte-, inode- and nlink-identical.
 
-    **Race-detecting, not race-proof — and post-state equality is NOT the whole
-    contract.** Reproducing the syscall's post-state does not inherit the syscall's
-    atomicity, and the callers depended on that atomicity to *surface* a concurrent
-    writer, not only to order the writes. See
-    :func:`_refuse_if_displaced_entry_moved` for what is detected, what residual window
-    remains, and why it cannot be closed with the primitives this mount offers.
+    What closes it is that neither primitive here is a blind replace. ``rename`` into a
+    **vacant** name destroys nothing, and ``link`` into an **occupied** name **fails**:
 
-    Same-directory only, which every EXCHANGE call site is — the pin has to land
-    beside the entries it is pinning for the restock leg to be a rename rather
-    than a copy, and only a copy could cross a filesystem.
+    1. ``link(dst → pin)``       — pin the displaced inode
+    2. ``rename(dst → holding)`` — MOVE dst aside; a writer's replacement keeps its inode
+    3. verify ``holding``        — identify what was actually there
+    4. ``link(src → dst)``       — publish into a vacant name; a racing create is REFUSED
+    5. ``rename(src → spent)``   — retire src by moving it
+    6. verify ``spent`` and ``dst`` — two writers could have intervened, at either name
+    7. ``rename(pin → src)``     — refill src, giving the syscall's exact post-state
+    8. cleanup, success path only
+
+    Crash windows, all recoverable, none lossy: before step 2 the pin and the original
+    ``dst`` are both intact; between 2 and 4 the displaced bytes are at ``pin`` and
+    ``holding`` while ``dst`` is absent; between 4 and 7 both generations exist under
+    distinct names; after 7 the state is the syscall's. **A failure at any step returns
+    without unlinking anything**, because after step 2 a scratch can be the sole name of a
+    live entry.
+
+    Cost, ratified: 7 syscalls and 5 fsyncs against the syscall's one. Three scratch
+    classes (:data:`_FALLBACK_SCRATCH_ROLES`) where the previous shape had one — and
+    nothing in this module discovers any of them; see :func:`_fallback_scratch_name` for
+    why they are at least computable, and §8 of the design for the discovery that is owed.
+
+    Same-directory only, which every EXCHANGE call site is: the scratch names have to land
+    beside the entries they hold for every leg to be a rename rather than a copy, and only
+    a copy could cross a filesystem.
     """
 
     if src_dir_fd != dst_dir_fd:
@@ -3767,44 +3812,86 @@ def _fallback_exchange(
             f"{src_name}->{dst_name} (exchange fallback is same-directory only)",
         )
     dir_fd = src_dir_fd
-    pin_name: str | None = None
-    pinned: os.stat_result | None = None
-    for _ in range(_RENAME_FALLBACK_PIN_ATTEMPTS):
-        candidate = _pin_name_for(src_name)
-        try:
-            os.link(
-                dst_name,
-                candidate,
-                src_dir_fd=dir_fd,
-                dst_dir_fd=dir_fd,
-                follow_symlinks=False,
-            )
-        except FileExistsError:
-            continue
-        pin_name = candidate
-        pinned = os.stat(candidate, dir_fd=dir_fd, follow_symlinks=False)
-        break
-    if pin_name is None or pinned is None:
-        raise OSError(
-            errno.EEXIST,
-            os.strerror(errno.EEXIST),
-            f"{src_name}->{dst_name} (exchange fallback could not pin the displaced entry)",
-        )
+    displaced = os.lstat(dst_name, dir_fd=dir_fd)
+    replacement = os.lstat(src_name, dir_fd=dir_fd)
+    pin = _fallback_scratch_name(src_name, "pin")
+    holding = _fallback_scratch_name(dst_name, "holding")
+    spent = _fallback_scratch_name(src_name, "spent")
+    scratches = f"pin={pin} holding={holding} spent={spent}"
+
+    # 1. Pin the displaced inode, so it is never reachable only through a name that is
+    #    about to change. EEXIST here is a previous attempt's remnant, not a race.
     try:
-        os.fsync(dir_fd)
-        _refuse_if_displaced_entry_moved(dir_fd, dst_name, pinned, src_name)
-        os.rename(src_name, dst_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-    except BaseException:
-        # Until the install lands, the pin is a second link to bytes that are still
-        # reachable under their own name, so dropping it restores the exact prior
-        # state — including nlink, which `_entry_state_at` compares.
-        with suppress(OSError):
-            os.unlink(pin_name, dir_fd=dir_fd)
-        raise
-    # Deliberately outside the guard above: once the install has landed the pin holds
-    # the ONLY reference to the displaced bytes, so a failure here must leave it in
-    # place for recovery rather than clean it up.
-    os.rename(pin_name, src_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        os.link(dst_name, pin, src_dir_fd=dir_fd, dst_dir_fd=dir_fd, follow_symlinks=False)
+    except FileExistsError as exc:
+        raise LifecycleTransitionError(
+            "transition_projection_scratch_exists",
+            "recover or quarantine the prior exact transaction scratch before retrying",
+            pin,
+        ) from exc
+    os.fsync(dir_fd)
+
+    # 2. MOVE dst aside rather than letting a later step replace it. This is the whole
+    #    repair: `rename` relocates whatever occupies the name, so a writer that replaced
+    #    dst keeps its own inode at `holding` instead of being unlinked by our install.
+    os.rename(dst_name, holding, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    os.fsync(dir_fd)
+
+    # 3. Whatever was actually there is now in hand and can be identified.
+    if not _same_entry(os.lstat(holding, dir_fd=dir_fd), displaced):
+        raise OSError(
+            errno.EBUSY,
+            os.strerror(errno.EBUSY),
+            f"{src_name}->{dst_name} (dst was replaced; that writer's bytes are preserved "
+            f"at {holding} and the displaced entry at {pin}; {scratches})",
+        )
+
+    # 4. Publish into a name that is now vacant, with create-or-EEXIST semantics. A writer
+    #    that created dst in the gap is REFUSED here, not overwritten — which is the step
+    #    an unconditional rename could never do.
+    try:
+        os.link(src_name, dst_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd, follow_symlinks=False)
+    except FileExistsError as exc:
+        raise OSError(
+            errno.EBUSY,
+            os.strerror(errno.EBUSY),
+            f"{src_name}->{dst_name} (a writer created dst; nothing was overwritten, and "
+            f"the displaced entry is preserved at {holding}; {scratches})",
+        ) from exc
+    os.fsync(dir_fd)
+
+    # 5. Retire src by moving it, for the same reason as step 2.
+    os.rename(src_name, spent, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    os.fsync(dir_fd)
+
+    # 6. Two identities, because two different writers could have intervened: one that
+    #    replaced src before it was retired, and one that replaced dst after we published.
+    if not _same_entry(os.lstat(spent, dir_fd=dir_fd), replacement):
+        raise OSError(
+            errno.EBUSY,
+            os.strerror(errno.EBUSY),
+            f"{src_name}->{dst_name} (src was replaced; that writer's bytes are preserved "
+            f"at {spent}; {scratches})",
+        )
+    if not _same_entry(os.lstat(dst_name, dir_fd=dir_fd), replacement):
+        raise OSError(
+            errno.EBUSY,
+            os.strerror(errno.EBUSY),
+            f"{src_name}->{dst_name} (dst was replaced after publication; {scratches})",
+        )
+
+    # 7. Refill src from the pin, giving the syscall's exact post-state.
+    os.rename(pin, src_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+
+    # 8. Cleanup runs ONLY here, on the success path, and only on names now proven
+    #    redundant: `holding` is a second name for the inode step 7 just put at src, and
+    #    `spent` is a second name for the inode at dst. Every failure above returns without
+    #    unlinking anything at all — deliberately, because after step 2 a scratch can be the
+    #    sole name of a live entry (the raced preimage), so a tidy-up on the failure path
+    #    would destroy exactly what the repair exists to preserve.
+    for redundant in (spent, holding):
+        with suppress(FileNotFoundError):
+            os.unlink(redundant, dir_fd=dir_fd)
     os.fsync(dir_fd)
 
 
@@ -3869,7 +3956,7 @@ def _fallback_noreplace(
     # reserved: a collision would have to be a pre-existing file whose name embeds this
     # call's random hex, which no producer in the estate creates, and even then the entry
     # clobbered would be in our own `.transition-pin.` namespace.
-    holding = _pin_name_for(src_name)
+    holding = _fallback_scratch_name(src_name, "holding")
     os.rename(src_name, holding, src_dir_fd=src_dir_fd, dst_dir_fd=src_dir_fd)
     os.fsync(src_dir_fd)
     moved = os.lstat(holding, dir_fd=src_dir_fd)

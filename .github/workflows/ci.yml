@@ -613,6 +613,17 @@ jobs:
           LANGFUSE_HOST: "http://0.0.0.0:1"
           PYTEST_SHARD: ${{ matrix.shard }}
           PYTEST_SHARD_COUNT: ${{ matrix.shard_count }}
+          # tests/shared/test_coord_projection_nfs_integration.py verifies the rebuilt
+          # renameat2 legs against a mount that actually refuses the flags, and it FAILS
+          # CLOSED when no mount is offered. A reviewer observed that nothing set the
+          # variable, so the witness could stay permanently and invisibly skipped while the
+          # repair's central claim rested on a one-off transcript.
+          #
+          # GitHub-hosted runners cannot mount NFS4, so this lane declares the absence out
+          # loud rather than skipping in silence. The honest live lane is self-hosted on
+          # appendix and is tracked separately; when it exists it sets
+          # HAPAX_NFS_INTEGRATION_DIR instead and this waiver comes out.
+          HAPAX_NFS_INTEGRATION_WAIVED: "github-hosted runner cannot mount nfs4; live witness runs on the self-hosted appendix lane"
         run: |
           # pytest hangs post-session due to open sockets from module-level
           # LiteLLM/Qdrant clients. Root conftest.py has a pytest_sessionfinish

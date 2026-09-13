@@ -34,6 +34,13 @@ from shared import coord_projection as cp
 from shared.coord_event_log import CoordEventLog
 
 _ENV_DIR = "HAPAX_NFS_INTEGRATION_DIR"
+#: Declaring an absence out loud. Without `_ENV_DIR` and without this, the fixture FAILS
+#: rather than skipping — a reviewer observed that nothing set the variable, so the witness
+#: could stay permanently and invisibly skipped while the PR's central claim rested on a
+#: one-off transcript. GitHub-hosted runners cannot mount NFS4, so CI declares the waiver
+#: in `.github/workflows/ci.yml`; the honest live lane is self-hosted on appendix and is
+#: tracked separately.
+_ENV_WAIVER = "HAPAX_NFS_INTEGRATION_WAIVED"
 _RENAME_NOREPLACE = 1
 _RENAME_EXCHANGE = 2
 
@@ -91,7 +98,22 @@ def unsupporting_mount() -> Path:
 
     configured = os.environ.get(_ENV_DIR, "").strip()
     if not configured:
-        pytest.skip(f"{_ENV_DIR} is unset — no mount offered for live verification")
+        waiver = os.environ.get(_ENV_WAIVER, "").strip()
+        if waiver:
+            pytest.skip(
+                f"{_ENV_DIR} unset; live verification EXPLICITLY WAIVED by "
+                f"{_ENV_WAIVER}={waiver}. The waiver is a visible, greppable declaration "
+                "that this lane has no NFS mount — not a silent skip."
+            )
+        pytest.fail(
+            f"FAIL-CLOSED: {_ENV_DIR} is unset and no waiver is declared.\n"
+            "This is an infrastructure absence, not a code defect, and it is red on "
+            "purpose: the central claim of this repair — that the rebuilt renameat2 legs "
+            "work on the real NFS4.2 vault SSOT — must not rest on a test that can be "
+            "permanently and invisibly skipped.\n"
+            f"Either point {_ENV_DIR} at a directory on a mount that refuses the flags, or "
+            f"set {_ENV_WAIVER}=<reason> to declare the absence out loud."
+        )
     root = Path(configured).expanduser()
     try:
         root.mkdir(parents=True, exist_ok=True)
