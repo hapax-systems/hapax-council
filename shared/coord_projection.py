@@ -97,6 +97,24 @@ _LIFECYCLE_SOURCE_BLOB = "lifecycle-source.yaml"
 _LIFECYCLE_DEFINITION_BLOB = "lifecycle-definition.json"
 _RENAME_NOREPLACE = 1
 _RENAME_EXCHANGE = 2
+#: Errnos that mean "this renameat2 flag is not implemented on this mount", as
+#: opposed to "the operation was attempted and failed". That distinction is the
+#: fallback's entire safety precondition, and the kernel decides it at the call,
+#: so it is machine-checkable at the moment of use rather than asserted about the
+#: environment.
+#:
+#: Measured on the estate's NFS4.2 vault SSOT (2026-09-13,
+#: NFS-RENAMEAT2-PROBE-MEASUREMENT-20260913.md): RENAME_NOREPLACE and
+#: RENAME_EXCHANGE both return EINVAL while flags=0 succeeds, because the NFS
+#: inode operations register no ``.rename2`` and ``vfs_rename`` refuses any
+#: non-zero flag before the filesystem is reached. tmpfs and xfs support both,
+#: and keep the unchanged fast path.
+_RENAME_FLAG_UNSUPPORTED_ERRNOS = frozenset(
+    {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}
+)
+#: A pin-name collision is astronomically unlikely, but it must never overwrite
+#: the entry being pinned, so the fallback retries under a fresh name instead.
+_RENAME_FALLBACK_PIN_ATTEMPTS = 8
 
 #: Opt-in env var: when set (and no event_log is injected) the best-effort
 #: evidence mirror writes to the default coord log instead of no-op'ing.
@@ -3642,6 +3660,76 @@ def _entry_matches(state: _EntryState | None, payload: bytes | None, mode: int |
     return state.content == payload and state.mode == mode
 
 
+def _fallback_exchange(dir_fd: int, src_name: str, dst_name: str) -> None:
+    """Reproduce ``RENAME_EXCHANGE``'s post-state where the mount lacks the flag.
+
+    Every EXCHANGE call site installs ``src`` at ``dst`` while keeping the
+    displaced ``dst`` bytes recoverable **at** ``src`` — the rollback legs
+    exchange back and expect exactly that. So the post-state, not the syscall, is
+    the contract: ``dst`` holds the replacement and ``src`` holds the displaced
+    entry, which is what this rebuilds.
+
+    The displaced inode is pinned under a dotted ``.transition-pin.<hex>`` name
+    first, so it is never reachable only through a name that is about to be
+    overwritten, and so the existing dotted-scratch recovery sweeps can see it.
+    Crash windows: before the first rename both the pin and the original ``dst``
+    are intact; between the two renames the pin holds the displaced bytes under a
+    scan-visible name; after the second the state is identical to the syscall's.
+    """
+
+    pin_name: str | None = None
+    for _ in range(_RENAME_FALLBACK_PIN_ATTEMPTS):
+        candidate = f"{src_name}.transition-pin.{os.urandom(8).hex()}"
+        try:
+            os.link(
+                dst_name,
+                candidate,
+                src_dir_fd=dir_fd,
+                dst_dir_fd=dir_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            continue
+        pin_name = candidate
+        break
+    if pin_name is None:
+        raise OSError(
+            errno.EEXIST,
+            os.strerror(errno.EEXIST),
+            f"{src_name}->{dst_name} (exchange fallback could not pin the displaced entry)",
+        )
+    os.fsync(dir_fd)
+    os.rename(src_name, dst_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    os.rename(pin_name, src_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    os.fsync(dir_fd)
+
+
+def _fallback_noreplace(dir_fd: int, src_name: str, dst_name: str) -> None:
+    """Reproduce ``RENAME_NOREPLACE``'s refusal where the mount lacks the flag.
+
+    ``link(2)`` is create-or-``EEXIST``, which *is* the NOREPLACE property, and it
+    is the property every call site actually depends on — they each already map an
+    ``EEXIST``-shaped outcome onto a precondition-changed refusal. Measured on the
+    NFS4.2 vault mount: ``link`` to a fresh name succeeds and ``link`` to an
+    existing name returns ``EEXIST``.
+
+    Not atomic: between the link and the unlink both names address the one inode.
+    A crash there leaves the source under its dotted scratch name, which the
+    existing scratch-exists refusal already holds on rather than deciding.
+    """
+
+    os.link(
+        src_name,
+        dst_name,
+        src_dir_fd=dir_fd,
+        dst_dir_fd=dir_fd,
+        follow_symlinks=False,
+    )
+    os.fsync(dir_fd)
+    os.unlink(src_name, dir_fd=dir_fd)
+    os.fsync(dir_fd)
+
+
 def _renameat2(
     src_dir_fd: int,
     src_name: str,
@@ -3671,9 +3759,29 @@ def _renameat2(
         os.fsencode(dst_name),
         flags,
     )
-    if result != 0:
-        value = ctypes.get_errno()
-        raise OSError(value, os.strerror(value), f"{src_name}->{dst_name}")
+    if result == 0:
+        return
+    value = ctypes.get_errno()
+    failure = OSError(value, os.strerror(value), f"{src_name}->{dst_name}")
+    # The fallback runs only where the kernel has said this flag does not exist
+    # here, and only where the rebuilt sequence can be equivalent: one directory,
+    # so every leg is dir-fd relative and the post-state is addressable by name.
+    # A cross-directory call, or any other errno, is the primary's failure and is
+    # raised unchanged — the fallback must never convert a real refusal into an
+    # attempt by another route.
+    if flags == 0 or value not in _RENAME_FLAG_UNSUPPORTED_ERRNOS or src_dir_fd != dst_dir_fd:
+        raise failure
+    try:
+        if flags == _RENAME_EXCHANGE:
+            _fallback_exchange(src_dir_fd, src_name, dst_name)
+        elif flags == _RENAME_NOREPLACE:
+            _fallback_noreplace(src_dir_fd, src_name, dst_name)
+        else:
+            raise failure
+    except OSError as exc:
+        # Callers discriminate on errno (EEXIST is a precondition change, not a
+        # fault), so the fallback's own errno must reach them unaltered.
+        raise exc from failure
 
 
 def _write_scratch(dir_fd: int, name: str, payload: bytes, mode: int) -> _EntryState:
@@ -3842,8 +3950,14 @@ def _cas_project(projection: FileProjection, scratch: _ProjectionScratch) -> Non
             try:
                 _renameat2(dir_fd, name, dir_fd, scratch_name, _RENAME_NOREPLACE)
             except OSError as exc:
+                # This leg displaces with RENAME_NOREPLACE; it has never exchanged.
+                # The old name said "exchange" and cost a real diagnosis: the same
+                # predicate is raised by the update leg below under
+                # RENAME_EXCHANGE, so one name covered two different flags and a
+                # journal reading `exchange_failed` could not say which syscall
+                # EINVAL'd (NFS-RENAMEAT2-PROBE-MEASUREMENT-20260913.md §1).
                 raise LifecycleTransitionError(
-                    "transition_projection_exchange_failed",
+                    "transition_projection_displace_failed",
                     "hold the transaction and recover its exact displaced entry",
                     str(projection.path),
                 ) from exc
