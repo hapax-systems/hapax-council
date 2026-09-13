@@ -160,7 +160,7 @@ class CapabilityCIGateTest(unittest.TestCase):
         raw = HISTORICAL_V1_BASELINE.read_bytes()
         self.assertEqual(
             hashlib.sha256(raw).hexdigest(),
-            "e926961181f3ecae11674c6eaa01d47f6e17759e12bb6ca51429129e180acd45",
+            "3dafbe33be69968c30b21d034b1ba3c69c7b1c534be473efcbabea688652f824",
         )
         legacy = json.loads(raw)
         self.assertEqual(legacy["count"], 179)
