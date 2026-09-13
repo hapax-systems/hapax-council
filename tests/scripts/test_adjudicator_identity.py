@@ -1256,25 +1256,39 @@ def test_the_run_record_identity_is_measured_after_the_producer_ran(monkeypatch)
     field exists to detect, in the code that writes the field.
 
     Asserted by ordering rather than by timing: the identity call must land after the producer
-    subprocess, on the ordinary path.
+    subprocess COMPLETES (communicate returns), on the ordinary path — not merely after it
+    launches.
     """
     from datetime import UTC, datetime
 
     module = _load_determine()
     order: list[str] = []
     real_identity = module.adjudicator_identity
-    real_run = module.subprocess.run
+    real_launch = module.subprocess.Popen
 
     def tracking_identity(*a, **kw):
         order.append("identity")
         return real_identity(*a, **kw)
 
-    def tracking_run(args, **kwargs):
-        order.append("producer")
-        return real_run(args, **kwargs)
+    # The producer launches via Popen, not run, since the process-group
+    # timeout fix: patching run here never saw the producer and instead
+    # misattributed adjudicator_identity's internal git subprocess.run calls
+    # as producer activity. The probe must witness COMPLETION, not launch:
+    # Popen returns before the producer finishes, so a marker on the launch
+    # call alone passed a mutant that stamped identity immediately after
+    # launch, right before communicate (codex-1 minor D1, #4665 round 13).
+    # Recording on communicate's return pins the producer as finished before
+    # identity may be measured. Identity's own internal git subprocesses also
+    # route through this Popen; their markers land after "identity" and
+    # cannot reorder the first producer completion ahead of it.
+    class CompletingPopen(real_launch):
+        def communicate(self, *a, **kw):
+            result = super().communicate(*a, **kw)
+            order.append("producer")
+            return result
 
     monkeypatch.setattr(module, "adjudicator_identity", tracking_identity)
-    monkeypatch.setattr(module.subprocess, "run", tracking_run)
+    monkeypatch.setattr(module.subprocess, "Popen", CompletingPopen)
 
     record = module.run_producer(
         {

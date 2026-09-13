@@ -10,8 +10,18 @@ Type=oneshot
 # the paired timer fires every 10m to stay inside that window) and rebuilds the
 # live quota/spend ledger at ~/.cache/hapax/orchestration/quota-spend-ledger-live.json,
 # which load_dispatch_policy_sources prefers over the checked-in fixtures.
-# No secrets are read or persisted; the EnvironmentFile is wired only so future
-# account-live probes inherit the standard credential surface.
+# Credential use (review findings on #4665, rounds 2-3, re-measured against
+# scripts/hapax-agy-reviewer): the step-0 pull-forward hosts the agy admission
+# chain (hapax-determine → hapax-agy-quota-admission → reviewer smoke), whose
+# credential surface is the operator's FILE-BACKED agy login —
+# ~/.gemini/antigravity-cli/antigravity-oauth-token — which the chain copies
+# into a temporary isolated HOME for the smoke invocation (HOME/XDG_* are
+# rewritten into the sandbox; the chain's environment allowlist drops provider
+# variables). This is the same file-backed login hapax-determine.service uses
+# (that unit deliberately has NO EnvironmentFile); the EnvironmentFile below
+# feeds the writer's OTHER steps, not the agy chain. No secret VALUES are
+# persisted anywhere: receipts carry secret_source names with
+# secret_value_persisted=false.
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/hapax-quota-telemetry-writer
 WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 Environment=HOME=%h
@@ -20,8 +30,92 @@ EnvironmentFile=-/run/user/1000/hapax-secrets.env
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=hapax-quota-telemetry
-MemoryMax=256M
-TimeoutStartSec=180
+# On the overlap tick where this unit wins the producer lock, it hosts the
+# agy producer chain (hapax-determine → hapax-agy-quota-admission → reviewer
+# smoke) that normally runs under hapax-determine.service's 512M cgroup.
+# Measured evidence (review findings on #4665, rounds 2-3), recheck with
+# `systemctl --user show -p MemoryMax hapax-quota-telemetry.service hapax-determine.service`.
+# CAVEAT FIRST (review finding on #4665, round 4): 768M is a judgment call,
+# not an evidence-derived ceiling. hapax-determine.service took a cgroup OOM
+# kill at 2026-09-12T14:59:26Z under 512M (journal: kernel OOM, unit context)
+# — the demonstrated spike exceeds the additive estimate below, so this unit
+# inherits a ceiling the evidence already showed insufficient once. Raised
+# 512M → 768M to clear the demonstrated spike by ~256 MiB; follow-up: profile
+# the determine spike's source (likely the agy smoke's node/python chain)
+# before treating 768M as settled. The additive estimate it clears:
+# `systemd-run -p MemoryPeak`: writer-alone tick peak 191 MiB, determine tick
+# peak 217 MiB (both 2026-09-12); the combined tick runs them IN SERIES in
+# one cgroup (~408 MiB additive).
+# POST-MERGE ACTIVATION (claude-1 minor, #4665 round 8 — previously recorded
+# only in PR prose): after this unit file lands, run
+# `systemctl --user daemon-reload`, then recheck BOTH ceilings took effect:
+# `systemctl --user show hapax-quota-telemetry.service -p MemoryMax -p TimeoutStartUSec`
+# — expected MemoryMax=805306368 (768M) and TimeoutStartUSec=15min. The unit
+# sets TimeoutStartSec=900, which systemd RENDERS as TimeoutStartUSec=15min
+# (900s = 15min = 900000000us — all three name the same ceiling; compare
+# values, not renderings) (claude-1 minor, #4665 round 10). The old
+# 256M/3min ceilings timeout-kill a pull-forward tick before the rc=4 surface
+# can report; without the recheck the merged fix is inert on any host still
+# running the pre-merge unit. If the timer can fire between the activation
+# script resync and the daemon-reload (scripts and unit propagate together;
+# the recheck must precede the next timer fire), mask the timer across the
+# activation window so the first heavier pull-forward tick never runs under
+# the old ceilings.
+# Recheck after any suspected skipped mint:
+# `journalctl --user -u hapax-quota-telemetry.service --since -1d | grep -i oom`.
+MemoryMax=768M
+# Step 0 of the writer pulls the determination producer forward (child budgets:
+# 90s lock wait + 90s producer run ≤ a 210s pull timeout) before the receipt
+# refresh (bounded by its own 360s outer timeout), in series. The BOUNDED
+# worst-case serial path of those two subprocess budgets is 210s + 360s = 570s
+# against the 600s timer cadence; TestPullForwardBudgetPins in tests/scripts/
+# test_hapax_quota_telemetry_writer.py re-derives this from the unit files and
+# the writer constants, so the arithmetic cannot drift silently. This does NOT
+# bound the tick end to end (review finding on #4665, round 3): the receipt
+# scans and the two ledger passes sit outside those subprocess budgets — a
+# tick that crosses the next cadence boundary DEFERS that fire (systemd will
+# not overlap a oneshot unit), which is a silently skipped write cycle. The
+# live ledger lock wait itself is bounded (120s, round 4): expiry exits rc=2
+# instead of hanging into this unit's TimeoutStartSec. The deferral is
+# not covered by duration arithmetic; it is covered by the exit predicate
+# below, which is why the predicate — not this comment — is the contract.
+#
+# Exit codes are the machine-checkable surface (review findings on #4665,
+# rounds 3-4): 0 = healthy tick; 1 = pass-2 ledger rebuild failed (pass-1
+# ledger stays on disk); 2 = the live ledger lock stayed held past its 120s
+# bound (this tick wrote no ledger); 3 = receipt refresh failed; 4 = DEGRADED
+# — one of four flap witnesses fired: the embedded agy admission will not
+# cover the next publication deadline (admission_freshness_at_publication_s <
+# FRESHNESS_HORIZON_S = 819s: one 600s cycle + 60s timer accuracy +
+# max(90s colliding-lock wait, 90s producer run) + 4s pre-mint scan bound +
+# 65s bounded pre-write work — the term sums at the constant's definition in
+# scripts/hapax-quota-telemetry-writer), OR the tick published after
+# the previously published admission expired (admission_continuity_gap_s > 0:
+# the surface was dead for the gap even though this tick's own predicate
+# passed), OR the capability-receipt surface went dark between the
+# predecessor receipts' expiry and the refresh's replacement landing
+# (receipt_continuity_gap_s > 0, scoped to the platforms the refresh
+# REPUBLISHED: quota routing consumed a dead receipt surface for the gap
+# even though every ledger witness passed — critical finding on #4665,
+# round 8, C1; lingering retired receipts the refresh never touches are a
+# maintenance defect for the capability-surface claim, not this witness), OR
+# the pre-mint force-decision scan overran
+# its bound (pre_mint_scan_elapsed_s > 4s), which invalidates the horizon
+# derivation itself. In all of these the quota surface vouches past evidence
+# that died before the next write lands, or did. A DEGRADED tick
+# still writes its honest ledger — consumers see true fresh_until, never an
+# overclaim — and OnFailure=notify-failure@%n.service surfaces the rc=4, so
+# the flap condition this PR repairs cannot ride green in systemd monitoring.
+# (rc=4 never fires under --skip-receipts — the tests' diagnostic mode that
+# skips the pull and refresh; production ExecStart never passes it.)
+# Recheck: `journalctl --user -u hapax-quota-telemetry.service --since -1d |
+# grep -E 'DEGRADED|rc=4'` and `scripts/hapax-quota-telemetry-writer --json`
+# (summary keys admission_freshness_at_publication_s vs freshness_horizon_s,
+# admission_continuity_gap_s, receipt_continuity_gap_s,
+# pre_mint_scan_elapsed_s vs pre_mint_scan_bound_s).
+# TimeoutStartSec=900 bounds the kill so a wedged tick cannot linger past one
+# deferred cycle.
+TimeoutStartSec=900
 # Killswitch: `systemctl --user mask hapax-quota-telemetry.timer` stops the
 # writer; receipts then lapse after quota stale_after (15m) and the live ledger
 # goes stale after its TTL — the dispatcher falls back to fail-closed HOLDs,
