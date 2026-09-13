@@ -3889,3 +3889,83 @@ def test_displace_leg_predicate_names_the_flag_it_actually_uses(tmp_path: Path) 
 
     assert raised.value.reason_code == "transition_projection_displace_failed"
     assert note.read_bytes() == b"stage: S6\n"
+
+
+def test_rebuilt_file_noreplace_refuses_an_occupied_destination(tmp_path: Path) -> None:
+    """The NOREPLACE property, asserted on the rebuilt leg itself.
+
+    ``test_rebuilt_noreplace_still_refuses_a_racing_create`` drives the whole
+    transition and **passes even when this leg is replaced by a plain rename**
+    (measured; a coverage probe confirms it does reach this leg, so it is exercised
+    and still does not discriminate — it is satisfied by something downstream, not
+    by the refusal it is named for). A property that survives its own destruction is
+    not pinned, so this asserts it where it lives, at the leg, where nothing else
+    can satisfy it.
+
+    A plain rename here would silently destroy the occupant, which is the precise
+    fail-open ``RENAME_NOREPLACE`` exists to prevent.
+    """
+
+    (tmp_path / "src").write_bytes(b"replacement\n")
+    (tmp_path / "dst").write_bytes(b"occupant\n")
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(OSError) as caught:
+            cp._fallback_noreplace(dir_fd, "src", dir_fd, "dst")
+        assert caught.value.errno == errno.EEXIST
+
+        # Neither side moved: the occupant is intact and the source is still there
+        # for the caller's retry. Nothing was decided quietly.
+        assert (tmp_path / "dst").read_bytes() == b"occupant\n"
+        assert (tmp_path / "src").read_bytes() == b"replacement\n"
+
+        # And the refusal is not an accident of the destination existing: onto a
+        # free name the same leg installs and consumes the source.
+        cp._fallback_noreplace(dir_fd, "src", dir_fd, "free")
+        assert (tmp_path / "free").read_bytes() == b"replacement\n"
+        assert not (tmp_path / "src").exists()
+    finally:
+        os.close(dir_fd)
+
+
+def test_renameat2_never_rebuilds_a_real_fault(tmp_path: Path) -> None:
+    """The errno boundary is the fallback's safety precondition — pin it directly.
+
+    ``_RENAME_FLAG_UNSUPPORTED_ERRNOS`` is what separates "this mount does not
+    implement the flag" from "the write failed". Widening it by one entry — adding
+    ``EIO`` — left the whole suite green (measured), so the boundary was asserted
+    nowhere. That is the fallback-discipline hazard in its exact form: on a genuine
+    I/O fault the code would stop failing and start **attempting the write again by
+    another route**, which is the one thing a failure path must never do.
+
+    Driven at the wrapper with the fallbacks replaced by recorders, so the assertion
+    is about the dispatch decision and cannot be satisfied by a fallback that
+    happens to work on the filesystem the tests run on.
+    """
+
+    (tmp_path / "src").write_bytes(b"src\n")
+    (tmp_path / "dst").write_bytes(b"dst\n")
+    entered: list[tuple[object, ...]] = []
+
+    def recorder(*args: object) -> None:
+        entered.append(args)
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with (
+            mock.patch.object(cp, "_renameat2_primitive", return_value=errno.EIO),
+            mock.patch.dict(
+                cp._RENAME_FLAG_FALLBACKS,
+                {cp._RENAME_EXCHANGE: recorder, cp._RENAME_NOREPLACE: recorder},
+            ),
+        ):
+            for flags in (cp._RENAME_EXCHANGE, cp._RENAME_NOREPLACE):
+                with pytest.raises(OSError) as caught:
+                    cp._renameat2(dir_fd, "src", dir_fd, "dst", flags)
+                assert caught.value.errno == errno.EIO
+    finally:
+        os.close(dir_fd)
+
+    assert entered == []
+    assert (tmp_path / "src").read_bytes() == b"src\n"
+    assert (tmp_path / "dst").read_bytes() == b"dst\n"
