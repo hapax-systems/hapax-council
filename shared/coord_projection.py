@@ -3740,13 +3740,22 @@ _RENAME_FLAG_FALLBACKS: dict[int, Callable[[int, str, str], None]] = {
 }
 
 
-def _renameat2(
+def _renameat2_primitive(
     src_dir_fd: int,
     src_name: str,
     dst_dir_fd: int,
     dst_name: str,
     flags: int,
-) -> None:
+) -> int:
+    """Call ``renameat2`` and report its errno, or 0 on success.
+
+    Split out from :func:`_renameat2` so the flag support of the *mount* is
+    something a test can state. Substituting this function is the only honest way
+    to exercise the fallback: patching :func:`_renameat2` itself would replace the
+    very branch under test, and a test that never runs an EINVAL through the real
+    dispatch would go green on a broken fallback.
+    """
+
     libc = ctypes.CDLL(None, use_errno=True)
     function = getattr(libc, "renameat2", None)
     if function is None:
@@ -3769,9 +3778,19 @@ def _renameat2(
         os.fsencode(dst_name),
         flags,
     )
-    if result == 0:
+    return 0 if result == 0 else ctypes.get_errno()
+
+
+def _renameat2(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+    flags: int,
+) -> None:
+    value = _renameat2_primitive(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+    if value == 0:
         return
-    value = ctypes.get_errno()
     failure = OSError(value, os.strerror(value), f"{src_name}->{dst_name}")
     # The fallback runs only where the kernel has said this flag does not exist
     # here, and only where the rebuilt sequence can be equivalent: one directory,
