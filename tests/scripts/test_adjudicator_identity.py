@@ -1263,18 +1263,22 @@ def test_the_run_record_identity_is_measured_after_the_producer_ran(monkeypatch)
     module = _load_determine()
     order: list[str] = []
     real_identity = module.adjudicator_identity
-    real_run = module.subprocess.run
+    real_launch = module.subprocess.Popen
 
     def tracking_identity(*a, **kw):
         order.append("identity")
         return real_identity(*a, **kw)
 
-    def tracking_run(args, **kwargs):
+    # The producer launches via Popen, not run, since the process-group
+    # timeout fix: patching run here never saw the producer and instead
+    # misattributed adjudicator_identity's internal git subprocess.run calls
+    # as producer activity. The probe tracks the launch call itself.
+    def tracking_launch(*a, **kw):
         order.append("producer")
-        return real_run(args, **kwargs)
+        return real_launch(*a, **kw)
 
     monkeypatch.setattr(module, "adjudicator_identity", tracking_identity)
-    monkeypatch.setattr(module.subprocess, "run", tracking_run)
+    monkeypatch.setattr(module.subprocess, "Popen", tracking_launch)
 
     record = module.run_producer(
         {
