@@ -218,6 +218,7 @@ class ModelId(StrEnum):
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
+    GPT_6_ASTRA = "gpt-6-astra"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
     GPT_OSS_120B = "gpt-oss-120b"
     COMMAND_R_08_2024 = "command-r-08-2024"
@@ -2420,7 +2421,7 @@ def _apply_surface(
 
 
 #: Effort tokens historically smuggled into ``model_or_engine`` (e.g. codex.headless.full's
-#: ``gpt-5.5-xhigh``). ``derive_execution_descriptor`` splits them back into structured axes.
+#: ``gpt-6-astra-xhigh``). ``derive_execution_descriptor`` splits them back into structured axes.
 _SMUGGLED_EFFORT_SUFFIXES: dict[str, Effort] = {
     "-max": Effort.MAX,
     "-xhigh": Effort.XHIGH,
@@ -2448,6 +2449,7 @@ _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
     "claude-sonnet-5": ModelId.CLAUDE_SONNET_5,
     "claude-haiku": ModelId.CLAUDE_HAIKU_4_5,
     "gpt-5.5": ModelId.GPT_5_5,
+    "gpt-6-astra": ModelId.GPT_6_ASTRA,
     "gpt-5.3-codex-spark": ModelId.GPT_5_3_CODEX_SPARK,
     "gpt-oss-120b": ModelId.GPT_OSS_120B,
     "mistral-vibe": ModelId.MISTRAL_MEDIUM_3_5,
@@ -2464,8 +2466,8 @@ _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
 def derive_execution_descriptor(route: PlatformCapabilityRoute) -> ExecutionDescriptor:
     """Project a route's implicit execution descriptor from its legacy ``model_or_engine``.
 
-    Best-effort: it surfaces effort smuggled into the model string (``gpt-5.5-xhigh`` ->
-    model_id ``gpt-5.5`` + effort ``XHIGH``) and maps the model onto the dated
+    Best-effort: it surfaces effort smuggled into the model string (``gpt-6-astra-xhigh`` ->
+    model_id ``gpt-6-astra`` + effort ``XHIGH``) and maps the model onto the dated
     :class:`ModelId` catalog (unmapped -> ``ModelId.UNKNOWN``). effort that the data never
     carried is ``Effort.NONE``; context_mode/quantization stay at conservative defaults.
     Used to GENERATE the stored ``execution_descriptor`` backfill and demonstrate the

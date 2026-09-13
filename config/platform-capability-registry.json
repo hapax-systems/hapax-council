@@ -2706,14 +2706,14 @@
       "profile": "full",
       "launcher": "scripts/hapax-codex --session <lane> --terminal tmux --task <task>",
       "summary": "Codex full-capability tmux lane with methodology bootstrap",
-      "notes": "Default Codex SOP: GPT-5.5 xhigh from the Codex launcher.",
+      "notes": "Default Codex SOP: GPT-6 Astra xhigh from the Codex launcher.",
       "route_state": "blocked",
       "blocked_reasons": [
         "account_live_quota_receipt_absent"
       ],
-      "model_or_engine": "gpt-5.5-xhigh",
+      "model_or_engine": "gpt-6-astra-xhigh",
       "execution_descriptor": {
-        "model_id": "gpt-5.5",
+        "model_id": "gpt-6-astra",
         "effort": "xhigh",
         "context_mode": "standard",
         "fast_mode": "off",

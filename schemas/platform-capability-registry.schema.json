@@ -508,6 +508,7 @@
         "claude-haiku-4-5",
         "claude-fable-5",
         "gpt-5.5",
+        "gpt-6-astra",
         "gpt-5.3-codex-spark",
         "gpt-oss-120b",
         "command-r-08-2024",

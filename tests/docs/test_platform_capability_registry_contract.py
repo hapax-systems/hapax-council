@@ -31,7 +31,9 @@ REGISTRY = REPO_ROOT / "config" / "platform-capability-registry.json"
 #: composite_assemblies field is absent, the registry's behavior is byte-identical — and the
 #: promise was aspiration, not fact. This pins the file's sha256: a registry edit must move the
 #: pin in the same commit, so the byte surface changes only deliberately and diff-visibly.
-REGISTRY_BYTE_PIN = "9cc5d81a64225588c0a3c6b879075300b81b9dc04427bf8f6ba0dae6964b5a92"
+REGISTRY_BYTE_PIN = (
+    "29fdbfc953ead9233524561d53e5b3af5c603f8ff29519fc3b77b344d53a04ec"  # pragma: allowlist secret
+)
 
 
 def test_registry_bytes_are_pinned() -> None:
@@ -267,7 +269,7 @@ def test_schema_pins_r2_route_fields_and_enums() -> None:
 def test_schema_pins_execution_descriptor_axes_and_model_catalog() -> None:
     """The execution_descriptor sub-object is a required route field carrying the five
     operator-steered axes, and model_id is a STRUCTURED dated catalog that splits the
-    gpt-5.5-xhigh smuggle (gpt-5.5 distinct from the codex spark)."""
+    gpt-6-astra-xhigh smuggle (gpt-6-astra distinct from the codex spark)."""
     schema = _json(SCHEMA)
     desc = schema["$defs"]["execution_descriptor"]
     assert set(desc["required"]) == {
@@ -288,14 +290,14 @@ def test_schema_pins_execution_descriptor_axes_and_model_catalog() -> None:
     }
     assert "extended_1m" in set(schema["$defs"]["context_mode"]["enum"])
     model_ids = set(schema["$defs"]["model_id"]["enum"])
-    assert {"gpt-5.5", "gpt-5.3-codex-spark", "claude-opus-4-8"} <= model_ids
+    assert {"gpt-6-astra", "gpt-5.5", "gpt-5.3-codex-spark", "claude-opus-4-8"} <= model_ids
     # the retired placeholder must NOT be a structured model identity
     assert "claude-code-default" not in model_ids
 
 
 def test_seed_registry_retires_claude_code_default_and_splits_the_smuggle() -> None:
     """No route keeps the free-text 'claude-code-default' placeholder, and the smuggled
-    'gpt-5.5-xhigh' is split into structured model_id + effort on codex.headless.full."""
+    'gpt-6-astra-xhigh' is split into structured model_id + effort on codex.headless.full."""
     registry = _json(REGISTRY)
     routes = {r["route_id"]: r for r in registry["routes"]}
 
@@ -305,7 +307,7 @@ def test_seed_registry_retires_claude_code_default_and_splits_the_smuggle() -> N
         )
 
     codex = routes["codex.headless.full"]["execution_descriptor"]
-    assert codex["model_id"] == "gpt-5.5"
+    assert codex["model_id"] == "gpt-6-astra"
     assert codex["effort"] == "xhigh"
 
 
