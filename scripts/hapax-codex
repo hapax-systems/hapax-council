@@ -1409,7 +1409,7 @@ fi
 CODEX_ARGS=(
   --dangerously-bypass-approvals-and-sandbox
   --cd "$WORKDIR"
-  -c 'model="gpt-5.5"'
+  -c 'model="gpt-6-astra"'
   -c 'model_reasoning_effort="xhigh"'
   -c 'approval_policy="never"'
   -c 'sandbox_mode="danger-full-access"'
