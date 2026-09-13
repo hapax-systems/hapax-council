@@ -37,7 +37,7 @@ import secrets
 import stat
 import struct
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -3660,6 +3660,73 @@ def _entry_matches(state: _EntryState | None, payload: bytes | None, mode: int |
     return state.content == payload and state.mode == mode
 
 
+def _pin_name_for(src_name: str) -> str:
+    """A dotted, unique scratch name for a fallback pin.
+
+    The leading dot is load-bearing and was missing: the name was built as
+    ``f"{src_name}.transition-pin.{hex}"``, which is hidden only when ``src_name``
+    already begins with one. ``_atomic_install``'s rollback passes an ordinary journal
+    filename, so real pins were landing as ``manifest.json.transition-pin.<hex>`` —
+    exactly where the dotted-scratch sweeps do not look, while the docstring promised
+    they would. The crash test always supplied ``.src`` and so could never see it.
+    """
+
+    stem = src_name if src_name.startswith(".") else f".{src_name}"
+    return f"{stem}.transition-pin.{os.urandom(8).hex()}"
+
+
+def _refuse_if_displaced_entry_moved(
+    dir_fd: int,
+    name: str,
+    expected: os.stat_result,
+    subject: str,
+) -> None:
+    """Refuse when `name` no longer holds the inode a fallback leg is about to destroy.
+
+    **This is the fallback's race detection, and it is not a guarantee.** The rebuilt
+    legs are `link`-then-mutate, which is not atomic, so a writer that atomically
+    replaces the destination between those steps would have its bytes destroyed by the
+    step that follows — and, worse, the rebuild's post-state is *exactly* the syscall's,
+    so the caller's readback would pass and the transaction would record ``applied``
+    over the loss. The native flags never had that hole: they swapped or refused against
+    whatever occupied the name at the instant of the call, which is how the callers'
+    precondition checks came to be trusted at all.
+
+    So atomicity was supplying race *detection*, not only atomicity. This restores as
+    much of it as the mount allows: the destination's identity is re-read immediately
+    before the destructive step, and a changed inode aborts before anything is lost.
+
+    **The residual window cannot be closed.** The only atomic primitives here are
+    unconditional ``rename`` and create-or-EEXIST ``link``; there is no atomic
+    compare-and-rename, so a replacement landing between this check and the next
+    syscall is still undetectable. What remains is a stat-to-rename gap rather than the
+    whole pin-to-install span. The durable repair is to stop the concurrency instead of
+    racing it — every writer to a projected path taking the projection lock — which is
+    a separate task, not this one. See ``NFS-EXCHANGE-FALLBACK-DESIGN-20260911.md`` §8.
+
+    ``EBUSY`` rather than a precondition-changed predicate: every call site already maps
+    an ``OSError`` from these legs onto a typed hold that preserves both entries and
+    reconciles by hand, which is the correct outcome for a detected race and needs no
+    caller change. Mapping it onto ``transition_precondition_changed`` for a cleaner
+    retry story would touch the callers and belongs with the locking work.
+    """
+
+    try:
+        current = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError as exc:
+        raise OSError(
+            errno.EBUSY,
+            os.strerror(errno.EBUSY),
+            f"{subject}->{name} (concurrent writer removed the entry being displaced)",
+        ) from exc
+    if (current.st_ino, current.st_dev) != (expected.st_ino, expected.st_dev):
+        raise OSError(
+            errno.EBUSY,
+            os.strerror(errno.EBUSY),
+            f"{subject}->{name} (concurrent writer replaced the entry being displaced)",
+        )
+
+
 def _fallback_exchange(
     src_dir_fd: int,
     src_name: str,
@@ -3681,6 +3748,13 @@ def _fallback_exchange(
     are intact; between the two renames the pin holds the displaced bytes under a
     scan-visible name; after the second the state is identical to the syscall's.
 
+    **Race-detecting, not race-proof — and post-state equality is NOT the whole
+    contract.** Reproducing the syscall's post-state does not inherit the syscall's
+    atomicity, and the callers depended on that atomicity to *surface* a concurrent
+    writer, not only to order the writes. See
+    :func:`_refuse_if_displaced_entry_moved` for what is detected, what residual window
+    remains, and why it cannot be closed with the primitives this mount offers.
+
     Same-directory only, which every EXCHANGE call site is — the pin has to land
     beside the entries it is pinning for the restock leg to be a rename rather
     than a copy, and only a copy could cross a filesystem.
@@ -3694,8 +3768,9 @@ def _fallback_exchange(
         )
     dir_fd = src_dir_fd
     pin_name: str | None = None
+    pinned: os.stat_result | None = None
     for _ in range(_RENAME_FALLBACK_PIN_ATTEMPTS):
-        candidate = f"{src_name}.transition-pin.{os.urandom(8).hex()}"
+        candidate = _pin_name_for(src_name)
         try:
             os.link(
                 dst_name,
@@ -3707,15 +3782,28 @@ def _fallback_exchange(
         except FileExistsError:
             continue
         pin_name = candidate
+        pinned = os.stat(candidate, dir_fd=dir_fd, follow_symlinks=False)
         break
-    if pin_name is None:
+    if pin_name is None or pinned is None:
         raise OSError(
             errno.EEXIST,
             os.strerror(errno.EEXIST),
             f"{src_name}->{dst_name} (exchange fallback could not pin the displaced entry)",
         )
-    os.fsync(dir_fd)
-    os.rename(src_name, dst_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    try:
+        os.fsync(dir_fd)
+        _refuse_if_displaced_entry_moved(dir_fd, dst_name, pinned, src_name)
+        os.rename(src_name, dst_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        # Until the install lands, the pin is a second link to bytes that are still
+        # reachable under their own name, so dropping it restores the exact prior
+        # state — including nlink, which `_entry_state_at` compares.
+        with suppress(OSError):
+            os.unlink(pin_name, dir_fd=dir_fd)
+        raise
+    # Deliberately outside the guard above: once the install has landed the pin holds
+    # the ONLY reference to the displaced bytes, so a failure here must leave it in
+    # place for recovery rather than clean it up.
     os.rename(pin_name, src_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
     os.fsync(dir_fd)
 
@@ -3733,7 +3821,8 @@ def _fallback_noreplace(
     under this flag.
     """
 
-    if stat.S_ISDIR(os.lstat(src_name, dir_fd=src_dir_fd).st_mode):
+    intended = os.lstat(src_name, dir_fd=src_dir_fd)
+    if stat.S_ISDIR(intended.st_mode):
         _fallback_noreplace_directory(src_dir_fd, src_name, dst_dir_fd, dst_name)
         return
     # `link(2)` is create-or-EEXIST, which *is* the NOREPLACE property, and it is
@@ -3753,6 +3842,21 @@ def _fallback_noreplace(
         follow_symlinks=False,
     )
     os.fsync(dst_dir_fd)
+    try:
+        # On the delete leg `src` is the LIVE projection path, so the unlink below is
+        # destructive and a writer can atomically replace `src` in the gap the link
+        # opened. Without this the unlink would destroy the replacement while the
+        # scratch still held the expected preimage, so `_cas_project` would compare the
+        # displaced entry against its own expectation, match, and accept a deletion that
+        # threw away someone else's bytes. Same hazard and same residual window as
+        # :func:`_refuse_if_displaced_entry_moved`, which documents both.
+        _refuse_if_displaced_entry_moved(src_dir_fd, src_name, intended, dst_name)
+    except BaseException:
+        # The link is ours and holds bytes still reachable under their own name, so
+        # dropping it restores the exact prior state, nlink included.
+        with suppress(OSError):
+            os.unlink(dst_name, dir_fd=dst_dir_fd)
+        raise
     os.unlink(src_name, dir_fd=src_dir_fd)
     os.fsync(src_dir_fd)
 
