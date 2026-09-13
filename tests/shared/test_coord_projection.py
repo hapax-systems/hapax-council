@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import dataclasses
+import errno
 import hashlib
 import json
 import os
 import stat
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
@@ -3232,3 +3234,506 @@ def test_read_only_fs_snapshot_refuses_unbounded_root_observation() -> None:
             snapshot.pin_absolute_dir(Path("/"), private_final=False)
 
     assert raised.value.reason_code == "fs_snapshot_root_observation_forbidden"
+
+
+# --- renameat2 flag fallback: mounts that refuse every non-zero flag ----------
+#
+# The vault SSOT moved onto NFS4.2, where `vfs_rename` rejects any non-zero
+# renameat2 flag before the filesystem is reached, so RENAME_EXCHANGE and
+# RENAME_NOREPLACE both return EINVAL while flags=0 succeeds (measured:
+# NFS-RENAMEAT2-PROBE-MEASUREMENT-20260913.md). These tests state that mount
+# rather than needing one: they substitute `_renameat2_primitive`, so the
+# injected errno travels the real dispatch inside `_renameat2`.
+
+
+class _Crash(Exception):
+    """Stands in for the process dying between two steps of a rebuilt sequence."""
+
+
+def _exists_at(dir_fd: int, name: str) -> bool:
+    try:
+        os.lstat(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _unsupported_flag_mount(
+    *,
+    unsupported_errno: int = errno.EINVAL,
+    flags_that_fail: frozenset[int] = frozenset({cp._RENAME_EXCHANGE, cp._RENAME_NOREPLACE}),
+) -> Callable[[int, str, int, str, int], int]:
+    """Return a `_renameat2_primitive` substitute for a mount lacking those flags.
+
+    NOREPLACE keeps its EEXIST answer when the destination exists: the VFS runs
+    that existence check before it ever consults the filesystem, so a mount that
+    cannot honour the flag still refuses a racing create correctly, and only the
+    dst-absent case reaches `vfs_rename` and EINVALs. Reproducing that asymmetry
+    is what makes this a mount simulation rather than a blanket error injector.
+    """
+
+    real = cp._renameat2_primitive
+
+    def primitive(
+        src_dir_fd: int,
+        src_name: str,
+        dst_dir_fd: int,
+        dst_name: str,
+        flags: int,
+    ) -> int:
+        if flags in flags_that_fail:
+            if flags == cp._RENAME_NOREPLACE and _exists_at(dst_dir_fd, dst_name):
+                return errno.EEXIST
+            return unsupported_errno
+        return real(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+
+    return primitive
+
+
+def test_update_projects_on_a_mount_that_refuses_rename_exchange(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"stage: S6\n")
+    projection = cp.FileProjection.capture(note, after=b"stage: S7\n")
+
+    with mock.patch.object(cp, "_renameat2_primitive", side_effect=_unsupported_flag_mount()):
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+        )
+
+    assert note.read_bytes() == b"stage: S7\n"
+    assert stat.S_IMODE(note.stat().st_mode) == projection.after_mode
+    assert not list(note.parent.glob(".*.transition-scratch"))
+    assert not list(note.parent.glob("*.transition-pin.*"))
+    assert [event.event_type for event in log.replay().events] == [
+        cp.CANON_TRANSITION_PREPARED,
+        cp.CANON_TRANSITION_APPLIED,
+    ]
+
+
+def test_create_projects_on_a_mount_that_refuses_rename_noreplace(tmp_path: Path) -> None:
+    """The create leg is the one such a mount breaks on every single call.
+
+    NOREPLACE's existence check passes when the destination is absent, so the
+    unsupported flag reaches `vfs_rename` and EINVALs — which is exactly the
+    shape of a fresh claim publication, where neither note nor marker exists yet.
+    """
+
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    projection = cp.FileProjection.capture(note, after=b"created by transition\n")
+
+    with mock.patch.object(cp, "_renameat2_primitive", side_effect=_unsupported_flag_mount()):
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+        )
+
+    assert note.read_bytes() == b"created by transition\n"
+    assert not list(note.parent.glob(".*.transition-scratch"))
+    assert not list(note.parent.glob("*.transition-pin.*"))
+    assert [event.event_type for event in log.replay().events] == [
+        cp.CANON_TRANSITION_PREPARED,
+        cp.CANON_TRANSITION_APPLIED,
+    ]
+
+
+def test_claim_shaped_projection_lands_note_and_marker_on_such_a_mount(
+    tmp_path: Path,
+) -> None:
+    """The production shape that failed: an updated note plus a created marker.
+
+    A claim publication projects both in one transaction — the note flips
+    offered->claimed (update, EXCHANGE) and the role marker appears (create,
+    NOREPLACE) — so the two legs exercise different fallbacks. The measured
+    failure left the note reverted to `offered` and no marker on disk, so both
+    halves of the post-state are asserted here.
+    """
+
+    log = _log(tmp_path)
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    note = vault / "task-1.md"
+    note.write_bytes(b"status: offered\nassigned_to: unassigned\n")
+    marker = vault / "task-1.claimed-by-beta"
+
+    projections = [
+        cp.FileProjection.capture(note, after=b"status: claimed\nassigned_to: beta\n"),
+        cp.FileProjection.capture(marker, after=b"beta\n"),
+    ]
+
+    with mock.patch.object(cp, "_renameat2_primitive", side_effect=_unsupported_flag_mount()):
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=projections,
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+        )
+
+    assert note.read_bytes() == b"status: claimed\nassigned_to: beta\n"
+    assert marker.read_bytes() == b"beta\n"
+    assert not list(vault.glob(".*.transition-scratch"))
+    assert not list(vault.glob("*.transition-pin.*"))
+    assert [event.event_type for event in log.replay().events] == [
+        cp.CANON_TRANSITION_PREPARED,
+        cp.CANON_TRANSITION_APPLIED,
+    ]
+
+
+def test_rebuilt_noreplace_still_refuses_a_racing_create(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    projection = cp.FileProjection.capture(note, after=b"created by transition\n")
+    mount = _unsupported_flag_mount()
+    raced = False
+
+    def race_then_refuse(
+        src_dir_fd: int,
+        src_name: str,
+        dst_dir_fd: int,
+        dst_name: str,
+        flags: int,
+    ) -> int:
+        nonlocal raced
+        if flags == cp._RENAME_NOREPLACE and dst_name == note.name and not raced:
+            raced = True
+            note.write_bytes(b"third-party\n")
+        return mount(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+
+    with mock.patch.object(cp, "_renameat2_primitive", side_effect=race_then_refuse):
+        with pytest.raises(cp.LifecycleTransitionError, match="precondition_changed"):
+            cp.execute_lifecycle_transition(
+                event_log=log,
+                intent=_intent(),
+                projections=[projection],
+                transaction_root=tmp_path / "transactions",
+                lock_root=tmp_path / "locks",
+            )
+
+    assert raced
+    assert note.read_bytes() == b"third-party\n"
+    assert not list(note.parent.glob("*.transition-pin.*"))
+
+
+def test_rebuilt_exchange_restores_a_racing_preimage_without_loss(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"stage: S6\n")
+    projection = cp.FileProjection.capture(note, after=b"stage: S7\n")
+    mount = _unsupported_flag_mount()
+    raced = False
+
+    def race_exchange(
+        src_dir_fd: int,
+        src_name: str,
+        dst_dir_fd: int,
+        dst_name: str,
+        flags: int,
+    ) -> int:
+        nonlocal raced
+        if flags == cp._RENAME_EXCHANGE and not raced:
+            raced = True
+            note.write_bytes(b"third-party\n")
+        return mount(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+
+    with mock.patch.object(cp, "_renameat2_primitive", side_effect=race_exchange):
+        with pytest.raises(cp.LifecycleTransitionError, match="precondition_changed"):
+            cp.execute_lifecycle_transition(
+                event_log=log,
+                intent=_intent(),
+                projections=[projection],
+                transaction_root=tmp_path / "transactions",
+                lock_root=tmp_path / "locks",
+            )
+
+    assert raced
+    assert note.read_bytes() == b"third-party\n"
+    assert not list(note.parent.glob("*.transition-pin.*"))
+    assert [event.event_type for event in log.replay().events] == [
+        cp.CANON_TRANSITION_PREPARED,
+        cp.CANON_TRANSITION_ABORTED,
+    ]
+
+
+def test_exchange_fallback_reproduces_the_syscall_post_state(tmp_path: Path) -> None:
+    """Post-state equivalence is the whole contract; the rollback legs rely on it.
+
+    Both names must survive — `dst` holding what `src` held and `src` holding the
+    displaced bytes — so a rollback exchange can put them back. The inodes must
+    swap too: callers detect races by comparing entry state, so a copy where the
+    syscall moved an inode would read as a third-party write.
+    """
+
+    directory = tmp_path / "dir"
+    directory.mkdir()
+    (directory / "src").write_bytes(b"replacement\n")
+    (directory / "dst").write_bytes(b"displaced\n")
+    src_inode = (directory / "src").stat().st_ino
+    dst_inode = (directory / "dst").stat().st_ino
+
+    dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        cp._fallback_exchange(dir_fd, "src", "dst")
+    finally:
+        os.close(dir_fd)
+
+    assert (directory / "dst").read_bytes() == b"replacement\n"
+    assert (directory / "src").read_bytes() == b"displaced\n"
+    assert (directory / "dst").stat().st_ino == src_inode
+    assert (directory / "src").stat().st_ino == dst_inode
+    assert sorted(path.name for path in directory.iterdir()) == ["dst", "src"]
+
+
+def test_exchange_fallback_keeps_both_entries_recoverable_at_every_cut(
+    tmp_path: Path,
+) -> None:
+    """Crash injection between each step of the rebuilt sequence.
+
+    The syscall is atomic and the rebuild is not, so what the rebuild owes is not
+    atomicity but that no cut can lose bytes. At every cut both the replacement
+    and the displaced entry must still be reachable under some name, and any
+    surviving pin must carry the dotted prefix the scratch sweeps look for.
+    """
+
+    for cut in range(1, 5):
+        directory = tmp_path / f"cut-{cut}"
+        directory.mkdir()
+        (directory / ".src").write_bytes(b"replacement\n")
+        (directory / "dst").write_bytes(b"displaced\n")
+
+        calls = 0
+        real_link, real_rename = os.link, os.rename
+
+        def counted_link(*args: object, **kwargs: object) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == cut:
+                raise _Crash()
+            return real_link(*args, **kwargs)  # type: ignore[arg-type]
+
+        def counted_rename(*args: object, **kwargs: object) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == cut:
+                raise _Crash()
+            return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            with (
+                mock.patch.object(os, "link", counted_link),
+                mock.patch.object(os, "rename", counted_rename),
+            ):
+                try:
+                    cp._fallback_exchange(dir_fd, ".src", "dst")
+                except _Crash:
+                    pass
+        finally:
+            os.close(dir_fd)
+
+        surviving = {path.read_bytes() for path in directory.iterdir() if path.is_file()}
+        assert b"replacement\n" in surviving, f"cut {cut} lost the replacement"
+        assert b"displaced\n" in surviving, f"cut {cut} lost the displaced entry"
+        for path in directory.iterdir():
+            if ".transition-pin." in path.name:
+                assert path.name.startswith("."), (
+                    f"cut {cut} left {path.name} where the scratch sweeps cannot see it"
+                )
+
+
+def test_fallback_never_answers_an_errno_that_is_not_unsupported(tmp_path: Path) -> None:
+    """A real refusal must not be retried by another route.
+
+    ENOSPC means the operation was attempted and failed; rebuilding it from
+    link+rename would attempt MORE than the primary did. The safety precondition
+    is the kernel's own "this flag does not exist here", nothing weaker.
+    """
+
+    directory = tmp_path / "dir"
+    directory.mkdir()
+    (directory / "src").write_bytes(b"replacement\n")
+    (directory / "dst").write_bytes(b"displaced\n")
+    rebuilt = False
+
+    def refusing(*_args: object) -> int:
+        return errno.ENOSPC
+
+    def record(*_args: object) -> None:
+        nonlocal rebuilt
+        rebuilt = True
+
+    dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        with (
+            mock.patch.object(cp, "_renameat2_primitive", side_effect=refusing),
+            mock.patch.dict(
+                cp._RENAME_FLAG_FALLBACKS,
+                {cp._RENAME_EXCHANGE: record, cp._RENAME_NOREPLACE: record},
+            ),
+        ):
+            with pytest.raises(OSError) as raised:
+                cp._renameat2(dir_fd, "src", dir_fd, "dst", cp._RENAME_EXCHANGE)
+    finally:
+        os.close(dir_fd)
+
+    assert raised.value.errno == errno.ENOSPC
+    assert not rebuilt
+    assert (directory / "dst").read_bytes() == b"displaced\n"
+
+
+def test_fallback_never_runs_across_directories(tmp_path: Path) -> None:
+    """Every rebuilt leg is relative to one dir fd, so it cannot be equivalent for
+    a cross-directory rename. The wrapper refuses rather than approximating."""
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "src").write_bytes(b"replacement\n")
+    (second / "dst").write_bytes(b"displaced\n")
+    rebuilt = False
+
+    def unsupported(*_args: object) -> int:
+        return errno.EINVAL
+
+    def record(*_args: object) -> None:
+        nonlocal rebuilt
+        rebuilt = True
+
+    src_fd = os.open(first, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    dst_fd = os.open(second, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        with (
+            mock.patch.object(cp, "_renameat2_primitive", side_effect=unsupported),
+            mock.patch.dict(
+                cp._RENAME_FLAG_FALLBACKS,
+                {cp._RENAME_EXCHANGE: record, cp._RENAME_NOREPLACE: record},
+            ),
+        ):
+            with pytest.raises(OSError) as raised:
+                cp._renameat2(src_fd, "src", dst_fd, "dst", cp._RENAME_EXCHANGE)
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert raised.value.errno == errno.EINVAL
+    assert not rebuilt
+    assert (second / "dst").read_bytes() == b"displaced\n"
+
+
+def test_supported_mount_never_reaches_the_fallback(tmp_path: Path) -> None:
+    """Zero behaviour change where the flags work, which is every local filesystem
+    the estate runs on."""
+
+    directory = tmp_path / "dir"
+    directory.mkdir()
+    (directory / "src").write_bytes(b"replacement\n")
+    (directory / "dst").write_bytes(b"displaced\n")
+    rebuilt = False
+
+    def record(*_args: object) -> None:
+        nonlocal rebuilt
+        rebuilt = True
+
+    dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        with mock.patch.dict(
+            cp._RENAME_FLAG_FALLBACKS,
+            {cp._RENAME_EXCHANGE: record, cp._RENAME_NOREPLACE: record},
+        ):
+            cp._renameat2(dir_fd, "src", dir_fd, "dst", cp._RENAME_EXCHANGE)
+    finally:
+        os.close(dir_fd)
+
+    assert not rebuilt
+    assert (directory / "dst").read_bytes() == b"replacement\n"
+    assert (directory / "src").read_bytes() == b"displaced\n"
+
+
+def test_create_leg_types_its_install_failure_instead_of_leaking_an_oserror(
+    tmp_path: Path,
+) -> None:
+    """The create leg had no typed predicate for anything but EEXIST.
+
+    On the unsupporting mount that hole swallowed the defect itself, surfacing as
+    `transaction_entry_unknown` rather than as a projection refusal. The fallback
+    answers EINVAL now, so the hole is pinned with an errno it does not claim.
+    """
+
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    projection = cp.FileProjection.capture(note, after=b"created by transition\n")
+    real_primitive = cp._renameat2_primitive
+
+    def out_of_space(
+        src_dir_fd: int,
+        src_name: str,
+        dst_dir_fd: int,
+        dst_name: str,
+        flags: int,
+    ) -> int:
+        if flags == cp._RENAME_NOREPLACE and dst_name == note.name:
+            return errno.ENOSPC
+        return real_primitive(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+
+    with mock.patch.object(cp, "_renameat2_primitive", side_effect=out_of_space):
+        with pytest.raises(cp.LifecycleTransitionError) as raised:
+            cp.execute_lifecycle_transition(
+                event_log=log,
+                intent=_intent(),
+                projections=[projection],
+                transaction_root=tmp_path / "transactions",
+                lock_root=tmp_path / "locks",
+            )
+
+    assert raised.value.reason_code == "transition_projection_install_failed"
+    assert not note.exists()
+
+
+def test_displace_leg_predicate_names_the_flag_it_actually_uses(tmp_path: Path) -> None:
+    """`exchange_failed` on a NOREPLACE leg cost a real diagnosis: one predicate
+    covered two flags, so a journal could not say which syscall had failed."""
+
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"stage: S6\n")
+    projection = cp.FileProjection.capture(note, after=None)
+    real_primitive = cp._renameat2_primitive
+
+    def refuse_displace(
+        src_dir_fd: int,
+        src_name: str,
+        dst_dir_fd: int,
+        dst_name: str,
+        flags: int,
+    ) -> int:
+        if flags == cp._RENAME_NOREPLACE and src_name == note.name:
+            return errno.ENOSPC
+        return real_primitive(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+
+    with mock.patch.object(cp, "_renameat2_primitive", side_effect=refuse_displace):
+        with pytest.raises(cp.LifecycleTransitionError) as raised:
+            cp.execute_lifecycle_transition(
+                event_log=log,
+                intent=_intent(),
+                projections=[projection],
+                transaction_root=tmp_path / "transactions",
+                lock_root=tmp_path / "locks",
+            )
+
+    assert raised.value.reason_code == "transition_projection_displace_failed"
+    assert note.read_bytes() == b"stage: S6\n"
