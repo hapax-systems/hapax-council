@@ -3730,6 +3730,16 @@ def _fallback_noreplace(dir_fd: int, src_name: str, dst_name: str) -> None:
     os.fsync(dir_fd)
 
 
+#: ``flags == 0`` is absent deliberately: a plain rename that failed has failed,
+#: and there is nothing to rebuild. Any other flag is likewise left to the
+#: primary, so a flag this module does not use cannot silently acquire a
+#: fallback that was never designed for it.
+_RENAME_FLAG_FALLBACKS: dict[int, Callable[[int, str, str], None]] = {
+    _RENAME_EXCHANGE: _fallback_exchange,
+    _RENAME_NOREPLACE: _fallback_noreplace,
+}
+
+
 def _renameat2(
     src_dir_fd: int,
     src_name: str,
@@ -3769,15 +3779,11 @@ def _renameat2(
     # A cross-directory call, or any other errno, is the primary's failure and is
     # raised unchanged — the fallback must never convert a real refusal into an
     # attempt by another route.
-    if flags == 0 or value not in _RENAME_FLAG_UNSUPPORTED_ERRNOS or src_dir_fd != dst_dir_fd:
+    rebuild = _RENAME_FLAG_FALLBACKS.get(flags)
+    if rebuild is None or value not in _RENAME_FLAG_UNSUPPORTED_ERRNOS or src_dir_fd != dst_dir_fd:
         raise failure
     try:
-        if flags == _RENAME_EXCHANGE:
-            _fallback_exchange(src_dir_fd, src_name, dst_name)
-        elif flags == _RENAME_NOREPLACE:
-            _fallback_noreplace(src_dir_fd, src_name, dst_name)
-        else:
-            raise failure
+        rebuild(src_dir_fd, src_name, dst_name)
     except OSError as exc:
         # Callers discriminate on errno (EEXIST is a precondition change, not a
         # fault), so the fallback's own errno must reach them unaltered.
@@ -3931,7 +3937,20 @@ def _cas_project(projection: FileProjection, scratch: _ProjectionScratch) -> Non
                         "preserve the racing create and prepare a new transition",
                         str(projection.path),
                     ) from exc
-                raise
+                # Anything other than EEXIST used to escape as a bare OSError, so
+                # the one leg that installs a brand-new entry was also the one leg
+                # with no typed predicate. That showed: on the NFS mount this leg
+                # EINVAL'd every time (NOREPLACE's existence check passes when dst
+                # is absent, so the unsupported flag reaches vfs_rename), and the
+                # transaction surfaced as `transaction_entry_unknown` — a shape
+                # that names nothing — instead of a projection refusal. The
+                # fallback now answers EINVAL, but the untyped hole was never
+                # specific to it: ENOSPC or EIO would read the same way.
+                raise LifecycleTransitionError(
+                    "transition_projection_install_failed",
+                    "hold the transaction and discard its exact unlinked scratch",
+                    str(projection.path),
+                ) from exc
             os.fsync(dir_fd)
             if (
                 _entry_state_at(
