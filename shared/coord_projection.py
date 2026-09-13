@@ -3843,13 +3843,13 @@ def _fallback_noreplace(
     )
     os.fsync(dst_dir_fd)
     try:
-        # On the delete leg `src` is the LIVE projection path, so the unlink below is
+        # On the delete leg `src` is the LIVE projection path, so retiring it is
         # destructive and a writer can atomically replace `src` in the gap the link
-        # opened. Without this the unlink would destroy the replacement while the
-        # scratch still held the expected preimage, so `_cas_project` would compare the
-        # displaced entry against its own expectation, match, and accept a deletion that
-        # threw away someone else's bytes. Same hazard and same residual window as
-        # :func:`_refuse_if_displaced_entry_moved`, which documents both.
+        # opened. Unchecked, that replacement is lost while the scratch still holds the
+        # expected preimage — so `_cas_project` compares the displaced entry against its
+        # own expectation, matches, and accepts a deletion that threw away someone
+        # else's bytes. This check closes that gap; the move below closes the one this
+        # check leaves. See :func:`_refuse_if_displaced_entry_moved`.
         _refuse_if_displaced_entry_moved(src_dir_fd, src_name, intended, dst_name)
     except BaseException:
         # The link is ours and holds bytes still reachable under their own name, so
@@ -3857,7 +3857,35 @@ def _fallback_noreplace(
         with suppress(OSError):
             os.unlink(dst_name, dir_fd=dst_dir_fd)
         raise
-    os.unlink(src_name, dir_fd=src_dir_fd)
+    # Retire `src` by MOVING it, never by unlinking it. The check above closes the gap
+    # the link opened; this closes the gap the check itself leaves, which detection alone
+    # could not. `rename` relocates whatever occupies the name, so a replacement that
+    # landed after the check survives at `holding` and is visible as an identity
+    # mismatch, where `unlink` would have destroyed it and left the caller's
+    # displaced-entry comparison matching its own expectation.
+    #
+    # The destination name carries 64 bits from `os.urandom` inside the transaction's own
+    # directory, and `rename` does not report EEXIST, so it is generated rather than
+    # reserved: a collision would have to be a pre-existing file whose name embeds this
+    # call's random hex, which no producer in the estate creates, and even then the entry
+    # clobbered would be in our own `.transition-pin.` namespace.
+    holding = _pin_name_for(src_name)
+    os.rename(src_name, holding, src_dir_fd=src_dir_fd, dst_dir_fd=src_dir_fd)
+    os.fsync(src_dir_fd)
+    moved = os.lstat(holding, dir_fd=src_dir_fd)
+    if (moved.st_ino, moved.st_dev) != (intended.st_ino, intended.st_dev):
+        # A replacement landed after the check. Keep BOTH and name both: `holding` has
+        # the other writer's bytes, and `dst_name` is now the preimage's ONLY name,
+        # because that writer's own rename removed the original `src`. Withdrawing the
+        # link here — which is what the failure path above does, correctly, before
+        # anything has moved — would destroy the very entry this leg exists to displace.
+        raise OSError(
+            errno.EBUSY,
+            os.strerror(errno.EBUSY),
+            f"{src_name} (concurrent replacement preserved at {holding}; "
+            f"displaced preimage preserved at {dst_name})",
+        )
+    os.unlink(holding, dir_fd=src_dir_fd)
     os.fsync(src_dir_fd)
 
 

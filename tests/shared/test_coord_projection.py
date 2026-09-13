@@ -3468,12 +3468,20 @@ def test_rebuilt_exchange_restores_a_racing_preimage_without_loss(tmp_path: Path
 
 
 def test_exchange_fallback_reproduces_the_syscall_post_state(tmp_path: Path) -> None:
-    """Post-state equivalence is the whole contract; the rollback legs rely on it.
+    """Post-state equivalence, which the rollback legs rely on — but it is NOT the whole
+    contract, and this docstring used to say it was.
 
     Both names must survive — `dst` holding what `src` held and `src` holding the
     displaced bytes — so a rollback exchange can put them back. The inodes must
     swap too: callers detect races by comparing entry state, so a copy where the
     syscall moved an inode would read as a third-party write.
+
+    What equivalence does **not** carry is the syscall's atomicity, and the callers
+    depended on that to *surface* a concurrent writer rather than only to order the
+    writes. A rebuild can satisfy every assertion here and still lose a racer's bytes
+    while the readback passes. See `_refuse_if_displaced_entry_moved`, the race tests
+    below, and NFS-EXCHANGE-FALLBACK-DESIGN-20260911.md §8, which corrects the ratified
+    design on exactly this point.
     """
 
     directory = tmp_path / "dir"
@@ -3630,10 +3638,15 @@ def test_rebuilt_noreplace_promotes_a_directory_across_directories(
     tmp_path: Path,
 ) -> None:
     """Journal materialization renames a whole staged transaction directory into
-    the canonical root under NOREPLACE. `link(2)` refuses directories, so this
-    leg needs the mkdir-reservation rebuild, and it is cross-directory by
-    construction — the shape the ratified design's projection-leg inventory
-    did not cover."""
+    the canonical root under NOREPLACE. `link(2)` refuses directories, so this leg
+    cannot use the file rebuild; it checks the destination with `lstat` and then
+    renames, because plain `rename(2)` already carries the NOREPLACE property for
+    directories unconditionally — ENOTEMPTY onto a populated directory, ENOTDIR onto
+    a file — leaving only an empty destination directory to be refused explicitly.
+    A mkdir-reservation design was drafted for this and **rejected**; see
+    `_fallback_noreplace_directory`, which says why. Cross-directory by
+    construction — the shape the ratified design's projection-leg inventory did not
+    cover."""
 
     staging = tmp_path / "staging"
     final = tmp_path / "final"
@@ -4243,3 +4256,135 @@ def test_the_residual_race_window_is_open_and_this_is_the_documented_limit(
     # the post-state is the syscall's, which is why no caller check can see it.
     assert (tmp_path / "dst").read_bytes() == b"replacement\n"
     assert (tmp_path / ".src").read_bytes() == b"displaced\n"
+
+
+def test_delete_leg_preserves_a_replacement_arriving_after_the_check(
+    tmp_path: Path,
+) -> None:
+    """The delete leg retires `src` by MOVING it, so nothing is destroyed even in the gap
+    the identity check cannot cover.
+
+    This is the window that remains open on the exchange leg (see the test above) and is
+    closed here, because retiring an entry does not require replacing an occupied name:
+    `rename` relocates whatever it finds, so a replacement that landed after the check
+    survives at the holding name and shows up as an identity mismatch. `unlink` would have
+    destroyed it while the caller's displaced-entry comparison still matched.
+    """
+
+    (tmp_path / "task.md").write_bytes(b"live-preimage\n")
+    real_rename = os.rename
+    fired = False
+
+    def racing_rename(*args: object, **kwargs: object) -> None:
+        # Strictly after the check: at the very syscall that retires `src`.
+        nonlocal fired
+        if not fired:
+            fired = True
+            _replace_atomically(tmp_path, "task.md", b"racing-writer\n")
+        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with mock.patch.object(os, "rename", racing_rename):
+            with pytest.raises(OSError) as caught:
+                cp._fallback_noreplace(dir_fd, "task.md", dir_fd, ".task.md.scratch")
+        assert caught.value.errno == errno.EBUSY
+    finally:
+        os.close(dir_fd)
+
+    assert fired
+    surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    # Both sets of bytes live: the other writer's, and the preimage this leg displaced.
+    assert b"racing-writer\n" in surviving
+    assert b"live-preimage\n" in surviving
+    # The preimage's ONLY name is now the scratch, because the racer's own rename removed
+    # the original. Withdrawing it on this path would destroy it — the trap this test
+    # exists to pin.
+    assert (tmp_path / ".task.md.scratch").read_bytes() == b"live-preimage\n"
+    # Both names are reported, so a human or a recovery sweep can find them.
+    assert ".task.md.scratch" in str(caught.value)
+    assert "transition-pin" in str(caught.value)
+
+
+def test_missing_entry_at_the_check_is_a_refusal_not_a_crash(tmp_path: Path) -> None:
+    """T1: the `FileNotFoundError` branch of the identity check had no test.
+
+    A writer that *removes* the entry rather than replacing it must produce the same
+    typed refusal as a replacement, not an unhandled `FileNotFoundError` escaping the leg
+    as an untyped fault the callers do not discriminate.
+    """
+
+    (tmp_path / "gone").write_bytes(b"x\n")
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        expected = os.stat("gone", dir_fd=dir_fd, follow_symlinks=False)
+        os.unlink("gone", dir_fd=dir_fd)
+        with pytest.raises(OSError) as caught:
+            cp._refuse_if_displaced_entry_moved(dir_fd, "gone", expected, "subject")
+        assert caught.value.errno == errno.EBUSY
+        assert "removed" in str(caught.value)
+    finally:
+        os.close(dir_fd)
+
+
+def test_noreplace_interrupted_after_linking_loses_nothing(tmp_path: Path) -> None:
+    """T1: interruption between the link and the retire, which nothing covered.
+
+    Process termination does not run cleanup handlers, so the state a crash leaves is the
+    state on disk at that instant — both names addressing one inode. Nothing may be lost,
+    and the leftover must be a dotted name the scratch sweeps can see.
+    """
+
+    (tmp_path / "task.md").write_bytes(b"live-preimage\n")
+    real_rename = os.rename
+
+    def crash_on_retire(*args: object, **kwargs: object) -> None:
+        raise _Crash()
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with mock.patch.object(os, "rename", crash_on_retire):
+            with pytest.raises(_Crash):
+                cp._fallback_noreplace(dir_fd, "task.md", dir_fd, ".task.md.scratch")
+    finally:
+        os.close(dir_fd)
+        os.rename = real_rename  # type: ignore[assignment]
+
+    # The inode is reachable under both names; no bytes are gone.
+    assert (tmp_path / "task.md").read_bytes() == b"live-preimage\n"
+    assert (tmp_path / ".task.md.scratch").read_bytes() == b"live-preimage\n"
+    assert os.stat(tmp_path / "task.md").st_ino == os.stat(tmp_path / ".task.md.scratch").st_ino
+
+
+@pytest.mark.parametrize("leg", ["exchange", "noreplace"])
+def test_fsync_failure_in_a_fallback_never_loses_bytes(tmp_path: Path, leg: str) -> None:
+    """T1: neither fallback's `fsync` failures were covered.
+
+    An fsync failure is a real fault, not an absent feature, so it must propagate — and
+    whatever partial state it leaves must still hold every byte under some name.
+    """
+
+    if leg == "exchange":
+        (tmp_path / ".src").write_bytes(b"replacement\n")
+        (tmp_path / "dst").write_bytes(b"displaced\n")
+        call = lambda fd: cp._fallback_exchange(fd, ".src", fd, "dst")  # noqa: E731
+        expected = {b"replacement\n", b"displaced\n"}
+    else:
+        (tmp_path / "task.md").write_bytes(b"live-preimage\n")
+        call = lambda fd: cp._fallback_noreplace(fd, "task.md", fd, ".task.md.scratch")  # noqa: E731
+        expected = {b"live-preimage\n"}
+
+    def failing_fsync(_fd: int) -> None:
+        raise OSError(errno.EIO, os.strerror(errno.EIO), "fsync")
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with mock.patch.object(os, "fsync", failing_fsync):
+            with pytest.raises(OSError) as caught:
+                call(dir_fd)
+        assert caught.value.errno == errno.EIO
+    finally:
+        os.close(dir_fd)
+
+    surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    assert expected <= surviving, (leg, surviving)
