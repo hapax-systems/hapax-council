@@ -619,11 +619,13 @@ jobs:
           # variable, so the witness could stay permanently and invisibly skipped while the
           # repair's central claim rested on a one-off transcript.
           #
-          # GitHub-hosted runners cannot mount NFS4, so this lane declares the absence out
-          # loud rather than skipping in silence. The honest live lane is self-hosted on
-          # appendix and is tracked separately; when it exists it sets
-          # HAPAX_NFS_INTEGRATION_DIR instead and this waiver comes out.
-          HAPAX_NFS_INTEGRATION_WAIVED: "github-hosted runner cannot mount nfs4; live witness runs on the self-hosted appendix lane"
+          # Hosted runners cannot mount NFS4, so this lane declares the absence out loud
+          # rather than skipping in silence. Any runner that CAN reach such a mount sets
+          # HAPAX_NFS_INTEGRATION_DIR instead and this waiver comes out. Where that lane
+          # should live is a governance question, not a CI edit: the runner-topology
+          # decision is recorded as deferred behind its own gate, so this comment
+          # deliberately asserts no plan about it.
+          HAPAX_NFS_INTEGRATION_WAIVED: "hosted runner cannot mount nfs4; the live witness runs outside CI against the operator's vault export"
         run: |
           # pytest hangs post-session due to open sockets from module-level
           # LiteLLM/Qdrant clients. Root conftest.py has a pytest_sessionfinish
