@@ -3660,7 +3660,12 @@ def _entry_matches(state: _EntryState | None, payload: bytes | None, mode: int |
     return state.content == payload and state.mode == mode
 
 
-def _fallback_exchange(dir_fd: int, src_name: str, dst_name: str) -> None:
+def _fallback_exchange(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+) -> None:
     """Reproduce ``RENAME_EXCHANGE``'s post-state where the mount lacks the flag.
 
     Every EXCHANGE call site installs ``src`` at ``dst`` while keeping the
@@ -3675,8 +3680,19 @@ def _fallback_exchange(dir_fd: int, src_name: str, dst_name: str) -> None:
     Crash windows: before the first rename both the pin and the original ``dst``
     are intact; between the two renames the pin holds the displaced bytes under a
     scan-visible name; after the second the state is identical to the syscall's.
+
+    Same-directory only, which every EXCHANGE call site is — the pin has to land
+    beside the entries it is pinning for the restock leg to be a rename rather
+    than a copy, and only a copy could cross a filesystem.
     """
 
+    if src_dir_fd != dst_dir_fd:
+        raise OSError(
+            errno.EXDEV,
+            os.strerror(errno.EXDEV),
+            f"{src_name}->{dst_name} (exchange fallback is same-directory only)",
+        )
+    dir_fd = src_dir_fd
     pin_name: str | None = None
     for _ in range(_RENAME_FALLBACK_PIN_ATTEMPTS):
         candidate = f"{src_name}.transition-pin.{os.urandom(8).hex()}"
@@ -3704,37 +3720,89 @@ def _fallback_exchange(dir_fd: int, src_name: str, dst_name: str) -> None:
     os.fsync(dir_fd)
 
 
-def _fallback_noreplace(dir_fd: int, src_name: str, dst_name: str) -> None:
+def _fallback_noreplace(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+) -> None:
     """Reproduce ``RENAME_NOREPLACE``'s refusal where the mount lacks the flag.
 
-    ``link(2)`` is create-or-``EEXIST``, which *is* the NOREPLACE property, and it
-    is the property every call site actually depends on — they each already map an
-    ``EEXIST``-shaped outcome onto a precondition-changed refusal. Measured on the
-    NFS4.2 vault mount: ``link`` to a fresh name succeeds and ``link`` to an
-    existing name returns ``EEXIST``.
-
-    Not atomic: between the link and the unlink both names address the one inode.
-    A crash there leaves the source under its dotted scratch name, which the
-    existing scratch-exists refusal already holds on rather than deciding.
+    Two shapes, because the source decides which primitive can carry the
+    property, and the module renames both files and whole journal directories
+    under this flag.
     """
 
+    if stat.S_ISDIR(os.lstat(src_name, dir_fd=src_dir_fd).st_mode):
+        _fallback_noreplace_directory(src_dir_fd, src_name, dst_dir_fd, dst_name)
+        return
+    # `link(2)` is create-or-EEXIST, which *is* the NOREPLACE property, and it is
+    # the property every file call site actually depends on — each already maps an
+    # EEXIST-shaped outcome onto a precondition-changed refusal. Measured on the
+    # NFS4.2 vault mount: link to a fresh name succeeds, link to an existing name
+    # returns EEXIST.
+    #
+    # Not atomic: between the link and the unlink both names address the one
+    # inode. A crash there leaves the source under its dotted scratch name, which
+    # the existing scratch-exists refusal already holds on rather than deciding.
     os.link(
         src_name,
         dst_name,
-        src_dir_fd=dir_fd,
-        dst_dir_fd=dir_fd,
+        src_dir_fd=src_dir_fd,
+        dst_dir_fd=dst_dir_fd,
         follow_symlinks=False,
     )
-    os.fsync(dir_fd)
-    os.unlink(src_name, dir_fd=dir_fd)
-    os.fsync(dir_fd)
+    os.fsync(dst_dir_fd)
+    os.unlink(src_name, dir_fd=src_dir_fd)
+    os.fsync(src_dir_fd)
+
+
+def _fallback_noreplace_directory(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+) -> None:
+    """NOREPLACE for a directory, which ``link(2)`` refuses outright.
+
+    Journal materialization promotes a whole staged transaction directory into
+    the canonical root under this flag, across two directories. The ratified
+    design's inventory read the projection legs, all of which rename files within
+    one directory, so it did not cover this leg — the regression suite did.
+
+    Plain ``rename(2)`` already carries most of the property for directories, and
+    carries it unconditionally: onto a non-empty directory it fails ``ENOTEMPTY``,
+    onto a non-directory ``ENOTDIR``. The one case it would allow is a destination
+    that is an *empty* directory, so that is the case this checks for and refuses
+    with the errno every call site already discriminates on.
+
+    The check and the rename are not one atomic step, and they do not need to be.
+    Everything that can appear at the destination after the check is refused by
+    the rename itself, except an empty directory — and taking over the name of an
+    empty directory destroys nothing, because an empty directory holds nothing.
+    So no interleaving of this sequence can lose a journal, which is the property
+    NOREPLACE is guarding here; the earlier draft's ``mkdir`` reservation bought
+    an atomic name claim at the price of a wedge state, and the wedge could not
+    even be cleared on the mount it was written for: NFS answers ``EEXIST`` from
+    the VFS before the flag is consulted, so a retry never reaches this rebuild.
+    """
+
+    try:
+        os.lstat(dst_name, dir_fd=dst_dir_fd)
+    except FileNotFoundError:
+        pass
+    else:
+        raise OSError(errno.EEXIST, os.strerror(errno.EEXIST), f"{src_name}->{dst_name}")
+    os.rename(src_name, dst_name, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+    os.fsync(src_dir_fd)
+    os.fsync(dst_dir_fd)
 
 
 #: ``flags == 0`` is absent deliberately: a plain rename that failed has failed,
 #: and there is nothing to rebuild. Any other flag is likewise left to the
 #: primary, so a flag this module does not use cannot silently acquire a
 #: fallback that was never designed for it.
-_RENAME_FLAG_FALLBACKS: dict[int, Callable[[int, str, str], None]] = {
+_RENAME_FLAG_FALLBACKS: dict[int, Callable[[int, str, int, str], None]] = {
     _RENAME_EXCHANGE: _fallback_exchange,
     _RENAME_NOREPLACE: _fallback_noreplace,
 }
@@ -3793,16 +3861,15 @@ def _renameat2(
         return
     failure = OSError(value, os.strerror(value), f"{src_name}->{dst_name}")
     # The fallback runs only where the kernel has said this flag does not exist
-    # here, and only where the rebuilt sequence can be equivalent: one directory,
-    # so every leg is dir-fd relative and the post-state is addressable by name.
-    # A cross-directory call, or any other errno, is the primary's failure and is
-    # raised unchanged — the fallback must never convert a real refusal into an
-    # attempt by another route.
+    # here. Any other errno is the primary's own refusal and is raised unchanged —
+    # the fallback must never convert a real failure into an attempt by another
+    # route. Whether a given rebuild can be equivalent for *these* operands is the
+    # rebuild's own question; each refuses the shapes it cannot reproduce.
     rebuild = _RENAME_FLAG_FALLBACKS.get(flags)
-    if rebuild is None or value not in _RENAME_FLAG_UNSUPPORTED_ERRNOS or src_dir_fd != dst_dir_fd:
+    if rebuild is None or value not in _RENAME_FLAG_UNSUPPORTED_ERRNOS:
         raise failure
     try:
-        rebuild(src_dir_fd, src_name, dst_name)
+        rebuild(src_dir_fd, src_name, dst_dir_fd, dst_name)
     except OSError as exc:
         # Callers discriminate on errno (EEXIST is a precondition change, not a
         # fault), so the fallback's own errno must reach them unaltered.

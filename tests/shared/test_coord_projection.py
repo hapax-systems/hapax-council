@@ -3485,7 +3485,7 @@ def test_exchange_fallback_reproduces_the_syscall_post_state(tmp_path: Path) -> 
 
     dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        cp._fallback_exchange(dir_fd, "src", "dst")
+        cp._fallback_exchange(dir_fd, "src", dir_fd, "dst")
     finally:
         os.close(dir_fd)
 
@@ -3537,7 +3537,7 @@ def test_exchange_fallback_keeps_both_entries_recoverable_at_every_cut(
                 mock.patch.object(os, "rename", counted_rename),
             ):
                 try:
-                    cp._fallback_exchange(dir_fd, ".src", "dst")
+                    cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
                 except _Crash:
                     pass
         finally:
@@ -3593,9 +3593,11 @@ def test_fallback_never_answers_an_errno_that_is_not_unsupported(tmp_path: Path)
     assert (directory / "dst").read_bytes() == b"displaced\n"
 
 
-def test_fallback_never_runs_across_directories(tmp_path: Path) -> None:
-    """Every rebuilt leg is relative to one dir fd, so it cannot be equivalent for
-    a cross-directory rename. The wrapper refuses rather than approximating."""
+def test_rebuilt_exchange_refuses_a_cross_directory_rename(tmp_path: Path) -> None:
+    """The exchange rebuild pins the displaced inode beside the entries it swaps,
+    so it cannot span two directories: across a filesystem boundary the restock
+    leg would have to be a copy, and a copy is not an exchange. It refuses rather
+    than approximating — and every EXCHANGE call site is same-directory anyway."""
 
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -3603,24 +3605,14 @@ def test_fallback_never_runs_across_directories(tmp_path: Path) -> None:
     second.mkdir()
     (first / "src").write_bytes(b"replacement\n")
     (second / "dst").write_bytes(b"displaced\n")
-    rebuilt = False
-
-    def unsupported(*_args: object) -> int:
-        return errno.EINVAL
-
-    def record(*_args: object) -> None:
-        nonlocal rebuilt
-        rebuilt = True
 
     src_fd = os.open(first, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     dst_fd = os.open(second, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        with (
-            mock.patch.object(cp, "_renameat2_primitive", side_effect=unsupported),
-            mock.patch.dict(
-                cp._RENAME_FLAG_FALLBACKS,
-                {cp._RENAME_EXCHANGE: record, cp._RENAME_NOREPLACE: record},
-            ),
+        with mock.patch.object(
+            cp,
+            "_renameat2_primitive",
+            side_effect=_unsupported_flag_mount(),
         ):
             with pytest.raises(OSError) as raised:
                 cp._renameat2(src_fd, "src", dst_fd, "dst", cp._RENAME_EXCHANGE)
@@ -3628,9 +3620,193 @@ def test_fallback_never_runs_across_directories(tmp_path: Path) -> None:
         os.close(src_fd)
         os.close(dst_fd)
 
-    assert raised.value.errno == errno.EINVAL
-    assert not rebuilt
+    assert raised.value.errno == errno.EXDEV
+    assert (first / "src").read_bytes() == b"replacement\n"
     assert (second / "dst").read_bytes() == b"displaced\n"
+    assert not list(first.glob("*.transition-pin.*"))
+
+
+def test_rebuilt_noreplace_promotes_a_directory_across_directories(
+    tmp_path: Path,
+) -> None:
+    """Journal materialization renames a whole staged transaction directory into
+    the canonical root under NOREPLACE. `link(2)` refuses directories, so this
+    leg needs the mkdir-reservation rebuild, and it is cross-directory by
+    construction — the shape the ratified design's projection-leg inventory
+    did not cover."""
+
+    staging = tmp_path / "staging"
+    final = tmp_path / "final"
+    staging.mkdir()
+    final.mkdir()
+    journal = staging / "txn-1"
+    journal.mkdir()
+    (journal / "manifest.json").write_bytes(b"{}\n")
+
+    src_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    dst_fd = os.open(final, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        with mock.patch.object(
+            cp,
+            "_renameat2_primitive",
+            side_effect=_unsupported_flag_mount(),
+        ):
+            cp._renameat2(src_fd, "txn-1", dst_fd, "txn-1", cp._RENAME_NOREPLACE)
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert (final / "txn-1" / "manifest.json").read_bytes() == b"{}\n"
+    assert not journal.exists()
+
+
+def test_rebuilt_directory_noreplace_refuses_an_occupied_destination(
+    tmp_path: Path,
+) -> None:
+    """A real journal at the destination is the case NOREPLACE exists to refuse.
+
+    `rmdir` is what settles it, and it settles it without a check-then-act
+    window: it cannot remove a directory holding anything, so it fails here and
+    the rebuild answers EEXIST — the same answer, with the occupant untouched.
+    """
+
+    staging = tmp_path / "staging"
+    final = tmp_path / "final"
+    staging.mkdir()
+    final.mkdir()
+    (staging / "txn-1").mkdir()
+    (staging / "txn-1" / "manifest.json").write_bytes(b'{"staged": true}\n')
+    (final / "txn-1").mkdir()
+    (final / "txn-1" / "manifest.json").write_bytes(b'{"final": true}\n')
+
+    src_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    dst_fd = os.open(final, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        with mock.patch.object(
+            cp,
+            "_renameat2_primitive",
+            side_effect=_unsupported_flag_mount(),
+        ):
+            with pytest.raises(OSError) as raised:
+                cp._renameat2(src_fd, "txn-1", dst_fd, "txn-1", cp._RENAME_NOREPLACE)
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert raised.value.errno == errno.EEXIST
+    assert (final / "txn-1" / "manifest.json").read_bytes() == b'{"final": true}\n'
+    assert (staging / "txn-1" / "manifest.json").read_bytes() == b'{"staged": true}\n'
+
+
+def test_rebuilt_directory_noreplace_refuses_an_empty_destination_directory(
+    tmp_path: Path,
+) -> None:
+    """An empty directory at the destination is the one case plain `rename(2)`
+    would let through, so it is the case the rebuild has to refuse itself.
+
+    Everything else — a populated journal, a regular file — the rename refuses
+    unconditionally, which is why one check is enough rather than a guard per
+    shape.
+    """
+
+    staging = tmp_path / "staging"
+    final = tmp_path / "final"
+    staging.mkdir()
+    final.mkdir()
+    (staging / "txn-1").mkdir()
+    (staging / "txn-1" / "manifest.json").write_bytes(b"{}\n")
+    (final / "txn-1").mkdir()
+
+    src_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    dst_fd = os.open(final, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        with mock.patch.object(
+            cp,
+            "_renameat2_primitive",
+            side_effect=_unsupported_flag_mount(),
+        ):
+            with pytest.raises(OSError) as raised:
+                cp._renameat2(src_fd, "txn-1", dst_fd, "txn-1", cp._RENAME_NOREPLACE)
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert raised.value.errno == errno.EEXIST
+    assert (staging / "txn-1" / "manifest.json").read_bytes() == b"{}\n"
+
+
+def test_rebuilt_directory_noreplace_leaves_the_staged_journal_promotable(
+    tmp_path: Path,
+) -> None:
+    """A failed rename must leave nothing at the destination and the staged journal
+    exactly where a retry will find it."""
+
+    staging = tmp_path / "staging"
+    final = tmp_path / "final"
+    staging.mkdir()
+    final.mkdir()
+    (staging / "txn-1").mkdir()
+    (staging / "txn-1" / "manifest.json").write_bytes(b"{}\n")
+
+    def refuse_rename(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    src_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    dst_fd = os.open(final, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        with (
+            mock.patch.object(cp, "_renameat2_primitive", side_effect=_unsupported_flag_mount()),
+            mock.patch.object(os, "rename", refuse_rename),
+        ):
+            with pytest.raises(OSError) as raised:
+                cp._renameat2(src_fd, "txn-1", dst_fd, "txn-1", cp._RENAME_NOREPLACE)
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert raised.value.errno == errno.EIO
+    assert list(final.iterdir()) == []
+    assert (staging / "txn-1" / "manifest.json").read_bytes() == b"{}\n"
+
+
+def test_rebuilt_directory_noreplace_cannot_lose_a_journal_it_did_not_see(
+    tmp_path: Path,
+) -> None:
+    """The residual window between the check and the rename, stated as a property.
+
+    A populated journal appearing at the destination after the check is refused by
+    the rename itself, with the staged copy intact — so no interleaving of this
+    sequence can lose bytes, which is what NOREPLACE guards here.
+    """
+
+    staging = tmp_path / "staging"
+    final = tmp_path / "final"
+    staging.mkdir()
+    final.mkdir()
+    (staging / "txn-1").mkdir()
+    (staging / "txn-1" / "manifest.json").write_bytes(b'{"staged": true}\n')
+    real_rename = os.rename
+
+    def race_then_rename(*args: object, **kwargs: object) -> None:
+        (final / "txn-1").mkdir()
+        (final / "txn-1" / "manifest.json").write_bytes(b'{"final": true}\n')
+        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+    src_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    dst_fd = os.open(final, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        with (
+            mock.patch.object(cp, "_renameat2_primitive", side_effect=_unsupported_flag_mount()),
+            mock.patch.object(os, "rename", race_then_rename),
+        ):
+            with pytest.raises(OSError):
+                cp._renameat2(src_fd, "txn-1", dst_fd, "txn-1", cp._RENAME_NOREPLACE)
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
+
+    assert (final / "txn-1" / "manifest.json").read_bytes() == b'{"final": true}\n'
+    assert (staging / "txn-1" / "manifest.json").read_bytes() == b'{"staged": true}\n'
 
 
 def test_supported_mount_never_reaches_the_fallback(tmp_path: Path) -> None:
