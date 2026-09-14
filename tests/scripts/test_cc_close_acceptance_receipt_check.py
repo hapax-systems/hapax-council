@@ -254,6 +254,96 @@ class TestIndependentReviewRequirement:
         assert "missing_acceptance_receipt" in message
         assert "frontier_review_required" in message
 
+    def test_schema_truthy_string_arms_the_gate(self, tmp_path: Path) -> None:
+        """The critical: a schema-valid demand spelled as a string must arm.
+
+        ``ReviewRequirement.independent_review_required`` is a coercing pydantic
+        ``bool``, so ``"true"`` validates as demanding review. The gate reads raw
+        frontmatter, where it is the string ``'true'`` — an identity test against
+        Python ``True`` let exactly this row close unreviewed.
+        """
+        checker = _load_checker()
+        note = tmp_path / "task-s.md"
+        note.write_text(
+            textwrap.dedent(
+                """\
+                ---
+                type: cc-task
+                task_id: task-s
+                status: in_progress
+                quality_floor: verification_receipt
+                review_requirement:
+                  independent_review_required: "true"
+                ---
+
+                # task-s
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        code, message = checker.gate(note)
+
+        assert code == 2
+        assert "independent_review_required" in message
+
+    def test_malformed_declaration_arms_and_says_so(self, tmp_path: Path) -> None:
+        """An unreadable requirement must not read as no requirement."""
+        checker = _load_checker()
+        note = tmp_path / "task-m.md"
+        note.write_text(
+            textwrap.dedent(
+                """\
+                ---
+                type: cc-task
+                task_id: task-m
+                status: in_progress
+                quality_floor: verification_receipt
+                review_requirement:
+                  independent_review_required: maybe
+                ---
+
+                # task-m
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        code, message = checker.gate(note)
+
+        assert code == 2
+        assert "malformed" in message
+        assert "not a recognized" in message
+
+    def test_combined_triggers_emit_both_sentences(self, tmp_path: Path) -> None:
+        """Legibility: a row armed twice is told both reasons."""
+        checker = _load_checker()
+        note = _write_note(
+            tmp_path,
+            "task-b",
+            quality_floor="frontier_review_required",
+            independent_review_required=True,
+        )
+
+        _, message = checker.gate(note)
+
+        assert "quality_floor is frontier_review_required" in message
+        assert "independent_review_required" in message
+
+    def test_refusal_names_the_sanctioned_bypass(self, tmp_path: Path) -> None:
+        """A newly load-bearing gate must name its escape hatch."""
+        checker = _load_checker()
+        note = _write_note(
+            tmp_path,
+            "task-v",
+            quality_floor="verification_receipt",
+            independent_review_required=True,
+        )
+
+        _, message = checker.gate(note)
+
+        assert "HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF" in message
+
     def test_both_triggers_share_the_receipt_path(self, tmp_path: Path) -> None:
         """The shared-path test: one receipt satisfies either trigger."""
         checker = _load_checker()

@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""cc-close-acceptance-receipt-check — review-floor closure receipt gate.
+"""cc-close-acceptance-receipt-check — closure receipt gate.
 
-Routing Phase 0.2 (REQ-20260609): ``frontier_review_required`` is only honest
+Routing Phase 0.2 (REQ-20260609): a declared review requirement is only honest
 if acceptance is enforced. Reads a cc-task .md file and returns:
 
-- exit 0 when the task does not declare the review floor (top-level or
-  ``route_metadata.quality_floor``) — non-review-floor flows are untouched.
+- exit 0 when the task carries **no receipt-arming declaration**. Two
+  declarations arm the gate, either sufficient: ``quality_floor:
+  frontier_review_required`` and ``review_requirement.
+  independent_review_required`` (each read top-level and in the
+  ``route_metadata`` mirror). A row is untouched only when neither applies —
+  the floor alone is no longer the test, because a row may demand independent
+  review under any floor and a ``verification_receipt`` row that did exactly
+  that closed unreviewed (measured 2026-09-13T21:53Z).
 - exit 0 when a valid signed acceptance receipt exists beside the note as
   ``<task_id>.acceptance.yaml`` carrying acceptor, verdict ``accepted``,
   timestamp, and an artifact ref.
@@ -39,6 +45,8 @@ if str(REPO_ROOT) not in sys.path:
 from shared.sdlc_lifecycle import (  # noqa: E402
     ACCEPTANCE_RECEIPT_REQUIRED_FIELDS,
     RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+    RECEIPT_TRIGGER_MALFORMED_REVIEW,
+    RECEIPT_TRIGGER_REVIEW_FLOOR,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     acceptance_receipt_triggers,
@@ -71,22 +79,33 @@ def gate(path: Path) -> tuple[int, str]:
 
     task_id = str(frontmatter.get("task_id") or path.stem)
     receipt = acceptance_receipt_path(path, task_id)
-    # Name what armed the gate. A lane reading a generic receipt error on a
-    # non-review floor cannot tell a misfire from its own row's demand.
-    if RECEIPT_TRIGGER_INDEPENDENT_REVIEW in triggers:
-        demand = (
-            "This row declares review_requirement.independent_review_required: true, so it"
-            " closes only after an independent review — whatever its quality_floor. Have the"
+    # Name what armed the gate, one sentence per trigger. A lane reading a
+    # generic receipt error on a non-review floor cannot tell a misfire from its
+    # own row's demand, and a row carrying both triggers needs both reasons.
+    demands: list[str] = []
+    if RECEIPT_TRIGGER_REVIEW_FLOOR in triggers:
+        demands.append(
+            "quality_floor is frontier_review_required, which closes only after a signed review."
         )
-    else:
-        demand = "frontier_review_required work closes only after a signed review. Have the"
+    if RECEIPT_TRIGGER_INDEPENDENT_REVIEW in triggers:
+        demands.append(
+            "This row declares review_requirement.independent_review_required, so it closes"
+            " only after an independent review — whatever its quality_floor."
+        )
+    if RECEIPT_TRIGGER_MALFORMED_REVIEW in triggers:
+        demands.append(
+            "review_requirement.independent_review_required is present but not a recognized"
+            " boolean, so its intent cannot be read. An unreadable review requirement arms the"
+            " gate rather than disabling it. Fix the declaration (true/false) to resolve this."
+        )
     lines = [
         f"cc-close BLOCKED: task '{task_id}' lacks a valid acceptance receipt.",
         f"Armed by: {', '.join(triggers)}",
         "",
         *(f"  - {blocker}" for blocker in blockers),
         "",
-        demand,
+        *demands,
+        "Have the",
         "acceptor (frontier reviewer or operator) record the verdict at:",
         f"  {receipt}",
         "with the minimal schema (all fields required):",

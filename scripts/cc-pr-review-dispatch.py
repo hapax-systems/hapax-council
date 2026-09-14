@@ -2478,10 +2478,17 @@ def write_acceptance_receipt_if_due(
     outage_witness: dict[str, str] | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
 ) -> Path | None:
-    """The dossier IS the acceptance receipt for review-floor tasks (spec §5).
+    """The dossier IS the acceptance receipt for receipt-armed tasks (spec §5).
 
-    Only on quorum-accept, only for ``frontier_review_required`` tasks, and an
-    existing receipt (e.g. operator-signed) is never overwritten.
+    Only on quorum-accept, only for tasks whose declarations arm the receipt
+    gate — ``quality_floor: frontier_review_required`` **or** a declared
+    ``review_requirement.independent_review_required`` (see
+    ``shared.sdlc_lifecycle.acceptance_receipt_triggers``) — and an existing
+    receipt (e.g. operator-signed) is never overwritten.
+
+    This shares one predicate with the close gate deliberately. If close armed
+    on a declaration that minting ignored, such rows would block at close with
+    no path to obtain a receipt.
     """
 
     if dossier["review_team_verdict"] != review_team.QUORUM_ACCEPT:

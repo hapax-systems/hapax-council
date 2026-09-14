@@ -293,24 +293,68 @@ ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
 #: Declaration names reported when the acceptance-receipt gate arms.
 RECEIPT_TRIGGER_REVIEW_FLOOR = f"quality_floor:{REVIEW_FLOOR_QUALITY_FLOOR}"
 RECEIPT_TRIGGER_INDEPENDENT_REVIEW = "review_requirement.independent_review_required"
+RECEIPT_TRIGGER_MALFORMED_REVIEW = "review_requirement.independent_review_required:malformed"
+
+#: Scalar spellings the route schema coerces to ``True`` / ``False`` for
+#: ``ReviewRequirement.independent_review_required``. Enumerated from the model
+#: itself rather than assumed, so frontmatter read as raw text is judged by the
+#: same semantics as frontmatter read through the schema.
+_INDEPENDENT_REVIEW_TRUTHY = frozenset({"true", "yes", "y", "on", "t", "1"})
+_INDEPENDENT_REVIEW_FALSY = frozenset({"false", "no", "n", "off", "f", "0"})
+
+#: Per-block verdicts for ``independent_review_required``.
+_REVIEW_ABSENT = "absent"
+_REVIEW_DEMANDED = "demanded"
+_REVIEW_DECLINED = "declined"
+_REVIEW_MALFORMED = "malformed"
 
 
-def _independent_review_required(frontmatter: Mapping[str, Any]) -> bool:
-    """True when either ``review_requirement`` block demands independent review.
+def _independent_review_state(block: object) -> str:
+    """Classify one ``review_requirement`` block's independent-review flag.
 
-    Mirrors the floor lookup: the top-level block and the
-    ``route_metadata.review_requirement`` mirror are both consulted and a
-    demand in either arms the gate (fail-closed on disagreement).
+    The close gate reads frontmatter as raw text (``frontmatter_from_text``)
+    while the route schema reads it through ``ReviewRequirement``, whose ``bool``
+    field coerces ``"true"``, ``"yes"``, ``"y"``, ``"on"``, ``"t"``, ``"1"`` and
+    ``1``. An identity test against Python ``True`` therefore disagreed with the
+    schema: a row spelling the flag ``"true"`` validated as *requiring*
+    independent review while the gate read it as absent and permitted closure —
+    the same fail-open shape the trigger exists to close, reintroduced by the
+    parser boundary rather than by the floor.
+
+    Unrecognized-but-present values (``null``, ``maybe``, ``2``, a list) are
+    ``malformed``, never ``declined``. The schema rejects them outright, so the
+    only safe reading here is that the row's intent is unknown — and an unknown
+    review requirement must arm the gate, not silently disable it.
+    """
+
+    if not isinstance(block, Mapping) or "independent_review_required" not in block:
+        return _REVIEW_ABSENT
+    raw = block["independent_review_required"]
+    if isinstance(raw, bool):
+        return _REVIEW_DEMANDED if raw else _REVIEW_DECLINED
+    token = _frontmatter_scalar(raw).strip().lower()
+    if not token:
+        return _REVIEW_MALFORMED
+    if token in _INDEPENDENT_REVIEW_TRUTHY:
+        return _REVIEW_DEMANDED
+    if token in _INDEPENDENT_REVIEW_FALSY:
+        return _REVIEW_DECLINED
+    return _REVIEW_MALFORMED
+
+
+def _independent_review_states(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
+    """States of the top-level block and the ``route_metadata`` mirror.
+
+    Both are consulted and each is classified independently, so a demand or a
+    malformed declaration in *either* arms the gate (fail-closed on
+    disagreement) exactly as the floor lookup treats its own mirror.
     """
 
     blocks = [frontmatter.get("review_requirement")]
     route_metadata = frontmatter.get("route_metadata")
     if isinstance(route_metadata, Mapping):
         blocks.append(route_metadata.get("review_requirement"))
-    for block in blocks:
-        if isinstance(block, Mapping) and block.get("independent_review_required") is True:
-            return True
-    return False
+    return tuple(_independent_review_state(block) for block in blocks)
 
 
 def acceptance_receipt_triggers(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
@@ -320,8 +364,16 @@ def acceptance_receipt_triggers(frontmatter: Mapping[str, Any]) -> tuple[str, ..
 
     - ``quality_floor: frontier_review_required`` (top-level or the
       ``route_metadata`` mirror), and
-    - ``review_requirement.independent_review_required: true`` (likewise
-      mirrored).
+    - ``review_requirement.independent_review_required`` demanding review
+      (likewise mirrored). The flag is normalized with the route schema's own
+      boolean spellings — ``"true"``, ``"yes"``, ``"y"``, ``"on"``, ``"t"``,
+      ``"1"``, ``1`` all demand — because this gate reads raw frontmatter while
+      the schema reads a coercing ``bool`` field, and an identity test against
+      Python ``True`` let a schema-valid demand spelled ``"true"`` disarm the
+      gate entirely. A present-but-unrecognized value is reported as
+      ``…:malformed`` and *also* arms: the schema rejects such values, so their
+      intent is unknown, and an unknown review requirement may not read as no
+      requirement.
 
     The second exists because the floor alone was not enough. Measured
     2026-09-13T21:53Z: a row carrying ``quality_floor: verification_receipt``
@@ -343,8 +395,11 @@ def acceptance_receipt_triggers(frontmatter: Mapping[str, Any]) -> tuple[str, ..
         floors.add(_frontmatter_scalar(route_metadata.get("quality_floor")).lower())
     if REVIEW_FLOOR_QUALITY_FLOOR in floors:
         triggers.append(RECEIPT_TRIGGER_REVIEW_FLOOR)
-    if _independent_review_required(frontmatter):
+    states = _independent_review_states(frontmatter)
+    if _REVIEW_DEMANDED in states:
         triggers.append(RECEIPT_TRIGGER_INDEPENDENT_REVIEW)
+    elif _REVIEW_MALFORMED in states:
+        triggers.append(RECEIPT_TRIGGER_MALFORMED_REVIEW)
     return tuple(triggers)
 
 
@@ -388,9 +443,13 @@ def _acceptance_receipt_validity_blockers(receipt_path: Path) -> tuple[str, ...]
 
 
 def acceptance_receipt_blockers(frontmatter: Mapping[str, Any], note_path: Path) -> tuple[str, ...]:
-    """Receipt blockers for a review-floor task; empty for non-review-floor tasks.
+    """Receipt blockers for a receipt-armed task; empty when the gate is unarmed.
 
-    A review-floor note without a resolvable ``task_id`` fails closed with
+    "Armed" is :func:`acceptance_receipt_triggers` — the review floor **or** a
+    declared ``independent_review_required`` (see there). Not floor-only: a row
+    may demand independent review under any quality floor.
+
+    An armed note without a resolvable ``task_id`` fails closed with
     ``missing_acceptance_receipt`` — the receipt is keyed by task_id, so an
     anonymous note can never present one.
     """

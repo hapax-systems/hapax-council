@@ -3167,6 +3167,47 @@ public_gate_authority:
         _, _, _, note = _review(tmp_path)  # frontier_required, not review floor
         assert not (note.parent / "task-a.acceptance.yaml").is_file()
 
+    def test_receipt_minted_for_non_review_floor_row_demanding_independent_review(
+        self, tmp_path: Path
+    ) -> None:
+        """Minting arms on the same declarations the close gate arms on.
+
+        The close gate refuses a non-review-floor row that declares
+        ``independent_review_required``. If minting stayed floor-only, such a row
+        would block at close with no path to obtain a receipt through the normal
+        review-team flow — a terminal trap. Both consume
+        ``acceptance_receipt_triggers``; this pins the minting half.
+        """
+        _, _, _, note = _review(
+            tmp_path,
+            task_kwargs={
+                "quality_floor": "verification_receipt",
+                "extra_frontmatter": ("review_requirement:\n  independent_review_required: true\n"),
+            },
+        )
+
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        assert receipt_path.is_file()
+        receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
+        assert receipt["verdict"] == "accepted"
+        assert receipt["acceptor"].startswith("review-team:")
+
+    def test_no_receipt_when_non_review_floor_row_declines_independent_review(
+        self, tmp_path: Path
+    ) -> None:
+        """The widening is scoped: an explicit decline still mints nothing."""
+        _, _, _, note = _review(
+            tmp_path,
+            task_kwargs={
+                "quality_floor": "verification_receipt",
+                "extra_frontmatter": (
+                    "review_requirement:\n  independent_review_required: false\n"
+                ),
+            },
+        )
+
+        assert not (note.parent / "task-a.acceptance.yaml").is_file()
+
     def test_block_with_critical_fires_auto_wake(self, tmp_path: Path) -> None:
         sent: list[list[str]] = []
         reviewers = RecordingReviewers(replies={"glm": BLOCK_REPLY})

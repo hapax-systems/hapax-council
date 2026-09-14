@@ -22,6 +22,9 @@ import pytest
 from shared.blocked_witness import evaluate_blocked_witness
 from shared.sdlc_lifecycle import (
     PR_ACTIONS,
+    RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+    RECEIPT_TRIGGER_MALFORMED_REVIEW,
+    RECEIPT_TRIGGER_REVIEW_FLOOR,
     SDLC_STAGE_METADATA,
     SDLC_STAGE_METADATA_PATH,
     STAGE_RE,
@@ -30,6 +33,7 @@ from shared.sdlc_lifecycle import (
     StageMetadataError,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
+    acceptance_receipt_triggers,
     active_blocked_task_blockers,
     frontmatter_from_text,
     is_active_blocked_with_evidence,
@@ -937,3 +941,119 @@ class TestAcceptanceReceiptEnforcement:
         )
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
         assert acceptance_receipt_blockers(frontmatter, note) == ("missing_acceptance_receipt",)
+
+
+def _rr(value: object) -> dict[str, object]:
+    return {"review_requirement": {"independent_review_required": value}}
+
+
+class TestIndependentReviewTriggerNormalization:
+    """The flag is read from raw frontmatter but written against a coercing schema.
+
+    ``route_metadata_schema.ReviewRequirement.independent_review_required`` is a
+    pydantic ``bool``, so ``"true"``, ``"yes"``, ``"y"``, ``"on"``, ``"t"``,
+    ``"1"`` and ``1`` all validate as *demanding* independent review. The close
+    gate reads the same frontmatter as raw text. An identity test against Python
+    ``True`` therefore disagreed with the schema and let a schema-valid demand
+    spelled ``"true"`` disarm the gate — the exact fail-open the trigger exists
+    to close, reintroduced at the parser boundary.
+    """
+
+    @pytest.mark.parametrize("value", ["true", "True", "TRUE", "yes", "y", "on", "t", "1", 1, True])
+    def test_schema_truthy_spellings_arm_the_gate(self, value: object) -> None:
+        assert acceptance_receipt_triggers(_rr(value)) == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,)
+
+    @pytest.mark.parametrize("value", ["false", "False", "no", "n", "off", "f", "0", 0, False])
+    def test_schema_falsy_spellings_do_not_arm(self, value: object) -> None:
+        assert acceptance_receipt_triggers(_rr(value)) == ()
+
+    @pytest.mark.parametrize("value", [None, "maybe", "", 2, [], {}])
+    def test_unrecognized_values_arm_as_malformed(self, value: object) -> None:
+        """The schema rejects these outright, so their intent is unknown.
+
+        An unknown review requirement must not read as *no* requirement: that is
+        how a malformed declaration would silently disable enforcement.
+        """
+        assert acceptance_receipt_triggers(_rr(value)) == (RECEIPT_TRIGGER_MALFORMED_REVIEW,)
+
+    def test_absent_block_does_not_arm(self) -> None:
+        assert acceptance_receipt_triggers({"quality_floor": "verification_receipt"}) == ()
+
+    def test_absent_flag_within_present_block_does_not_arm(self) -> None:
+        frontmatter = {"review_requirement": {"support_artifact_allowed": True}}
+        assert acceptance_receipt_triggers(frontmatter) == ()
+
+
+class TestIndependentReviewMirror:
+    """The ``route_metadata`` mirror is consulted, fail-closed on disagreement."""
+
+    def test_mirror_only_declaration_arms(self) -> None:
+        frontmatter = {
+            "quality_floor": "verification_receipt",
+            "route_metadata": {"review_requirement": {"independent_review_required": True}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,)
+
+    def test_mirror_demand_overrides_benign_top_level(self) -> None:
+        """Disagreement fails closed: a demand anywhere arms."""
+        frontmatter = {
+            "quality_floor": "verification_receipt",
+            "review_requirement": {"independent_review_required": False},
+            "route_metadata": {"review_requirement": {"independent_review_required": True}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,)
+
+    def test_top_level_demand_overrides_benign_mirror(self) -> None:
+        frontmatter = {
+            "quality_floor": "verification_receipt",
+            "review_requirement": {"independent_review_required": True},
+            "route_metadata": {"review_requirement": {"independent_review_required": False}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,)
+
+    def test_both_declining_does_not_arm(self) -> None:
+        frontmatter = {
+            "quality_floor": "verification_receipt",
+            "review_requirement": {"independent_review_required": False},
+            "route_metadata": {"review_requirement": {"independent_review_required": False}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == ()
+
+    def test_malformed_mirror_arms_even_when_top_level_declines(self) -> None:
+        frontmatter = {
+            "review_requirement": {"independent_review_required": False},
+            "route_metadata": {"review_requirement": {"independent_review_required": "maybe"}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_MALFORMED_REVIEW,)
+
+
+class TestBothTriggersTogether:
+    def test_both_declarations_are_reported(self) -> None:
+        frontmatter = {
+            "quality_floor": "frontier_review_required",
+            "review_requirement": {"independent_review_required": True},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (
+            RECEIPT_TRIGGER_REVIEW_FLOOR,
+            RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+        )
+
+    def test_floor_alone_reports_only_the_floor(self) -> None:
+        assert acceptance_receipt_triggers({"quality_floor": "frontier_review_required"}) == (
+            RECEIPT_TRIGGER_REVIEW_FLOOR,
+        )
+
+    def test_boolean_predicate_derives_from_triggers(self) -> None:
+        """One definition of "armed" — the boolean may never disagree."""
+        for frontmatter in (
+            {"quality_floor": "frontier_review_required"},
+            {"quality_floor": "verification_receipt"},
+            _rr(True),
+            _rr("true"),
+            _rr(False),
+            _rr("maybe"),
+            {},
+        ):
+            assert requires_acceptance_receipt(frontmatter) is bool(
+                acceptance_receipt_triggers(frontmatter)
+            )
