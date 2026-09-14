@@ -117,7 +117,11 @@ class _Parser(argparse.ArgumentParser):
 
     def error(self, message: str) -> None:  # type: ignore[override]
         self.print_usage(sys.stderr)
-        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        print(
+            f"{self.prog}: error: {message}. Next: pass the vault path plus exactly "
+            "one of --excluded-folders or --from-sync-config; see --help.",
+            file=sys.stderr,
+        )
         raise SystemExit(ERROR)
 
 
@@ -362,7 +366,11 @@ def _config_category(rel_in_config_dir: str) -> str | None:
 
 
 def predict_config_uploads(
-    vault: Path, config_dir: str, configs: frozenset[str], entries: list[str]
+    vault: Path,
+    config_dir: str,
+    configs: frozenset[str],
+    entries: list[str],
+    links: _LinkPolicy,
 ) -> dict:
     """The config-dir files ob uploads when ``configs`` is non-empty.
 
@@ -388,23 +396,23 @@ def predict_config_uploads(
             "by_category": {},
             "config_dir": config_dir,
             "traversal_errors": errors,
-            "symlinks": [],
         }
-    symlinks: list[dict] = []
-    # No followlinks: ob reaches the config dir through `watchHiddenRecursive`, which
-    # recurses on `lstat(...).isDirectory()` — false for a symlink — so it does not
-    # descend into one either. They are reported so the omission is not silent.
-    for dirpath, dirnames, filenames in os.walk(root, onerror=_on_error):
-        for name in list(dirnames):
-            if os.path.islink(os.path.join(dirpath, name)):
-                symlinks.append(
-                    {
-                        "path": f"{config_dir}/"
-                        + os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/"),
-                        "note": "directory symlink; ob does not descend into it either",
-                    }
-                )
+    # followlinks=True: the seed scanner reaches config files through adapter
+    # list/stat, which FOLLOW a link. `watchHiddenRecursive` only installs watchers,
+    # so its lstat-based recursion is not what decides whether a config file syncs.
+    # The same _LinkPolicy governs here, so an in-vault alias is skipped and an
+    # escaping one is followed, exactly as in the main walk.
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True, onerror=_on_error):
+
+        def _crel(name: str, _dirpath: str = dirpath) -> str:
+            rel = os.path.relpath(os.path.join(_dirpath, name), root).replace(os.sep, "/")
+            return f"{_emitted(config_dir)}/{_emitted(rel)}"
+
         dirnames[:] = [d for d in dirnames if d != "node_modules" and not d.startswith(".")]
+        for name in list(dirnames):
+            child = os.path.join(dirpath, name)
+            if os.path.islink(child) and not links.follow(child, _crel(name), _on_error):
+                dirnames.remove(name)
         for name in filenames:
             rel = os.path.relpath(os.path.join(dirpath, name), root)
             rel_emitted = _emitted(rel).replace(os.sep, "/")
@@ -431,7 +439,6 @@ def predict_config_uploads(
         "by_category": {k: {"bytes": v[0], "files": v[1]} for k, v in sorted(by_category.items())},
         "config_dir": config_dir,
         "traversal_errors": errors,
-        "symlinks": symlinks,
     }
 
 
@@ -440,14 +447,50 @@ def _overlaps(a: str, b: str) -> bool:
     return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
 
 
-def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict:
+class _LinkPolicy:
+    """ob's symlink rule, in ONE place for every walk and every entry kind.
+
+    ``reconcileSymbolicLinkCreation`` resolves the link and RETURNS when the target
+    overlaps the resolved path of an already-watched path — before it distinguishes a
+    file from a directory. The vault root is always watched, so a link into the vault
+    (or to a directory containing it) is reconciled through neither route; a link
+    escaping to a disjoint subtree is followed and becomes watched itself.
+
+    This was patched three times as separate cases — directory links, then file links,
+    then the config dir — which is the signal to stop patching and state the rule
+    once. Registration happens only for links the caller has already decided are
+    visible: a hidden link is rejected by ob before its target is ever registered, so
+    registering it here would let a hidden link suppress a visible upload of the same
+    target, and make the result depend on traversal order.
+    """
+
+    def __init__(self, vault: Path) -> None:
+        self.accepted = [os.path.realpath(vault)]
+        self.skipped: list[dict] = []
+        self.escaping: list[dict] = []
+
+    def follow(self, abspath: str, relpath: str, on_error) -> bool:
+        try:
+            target = os.path.realpath(abspath)
+        except OSError as exc:  # pragma: no cover
+            on_error(exc)
+            return False
+        if any(_overlaps(target, seen) for seen in self.accepted):
+            self.skipped.append({"path": relpath, "target": target})
+            return False
+        self.accepted.append(target)
+        self.escaping.append({"path": relpath, "target": target})
+        return True
+
+
+def predict(
+    vault: Path, entries: list[str], file_types: frozenset[str], links: _LinkPolicy
+) -> dict:
     by_class: dict[str, list[int]] = {}
     by_ext: dict[str, list[int]] = {}
     by_top: dict[str, list[int]] = {}
     upload_bytes = upload_files = 0
     largest: list[tuple[int, str]] = []
-    escaping_links: list[dict] = []
-    overlapping_links: list[dict] = []
     traversal_errors: list[dict] = []
 
     def _on_error(exc: OSError) -> None:
@@ -468,7 +511,6 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
     # further and counted a vault-INTERNAL alias under both routes; that over-predicts,
     # because ob skips it. The overlap rule is also the cycle guard: any link back
     # into the vault, or to an ancestor of it, overlaps and is pruned.
-    accepted_link_targets = [os.path.realpath(vault)]
     for dirpath, dirnames, filenames in os.walk(vault, followlinks=True, onerror=_on_error):
         rel_dir = os.path.relpath(dirpath, vault)
         rel_dir = "" if rel_dir == "." else _emitted(rel_dir)
@@ -476,34 +518,20 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
         def _rel(name: str, _rel_dir: str = rel_dir) -> str:
             return f"{_rel_dir}/{_emitted(name)}" if _rel_dir else _emitted(name)
 
-        # Resolve link handling BEFORE pruning, so the report distinguishes "ob skips
-        # this" from "the exclusion list removed it".
-        for name in list(dirnames):
-            child = os.path.join(dirpath, name)
-            if not os.path.islink(child):
-                continue
-            try:
-                target = os.path.realpath(child)
-            except OSError as exc:  # pragma: no cover
-                _on_error(exc)
-                dirnames.remove(name)
-                continue
-            if any(_overlaps(target, seen) for seen in accepted_link_targets):
-                # ob returns early here: the subtree is not reconciled through this
-                # path at all. Reported rather than dropped silently.
-                overlapping_links.append({"path": _rel(name), "target": target})
-                dirnames.remove(name)
-                continue
-            accepted_link_targets.append(target)
-            escaping_links.append({"path": _rel(name), "target": target})
-
-        # Prune in place. Pruning every dotted directory at every level is
-        # equivalent to cli.js ``Is(s)`` ("hidden if ANY path component is
-        # dotted"), because no descendant of a pruned directory is ever visited;
-        # dotted FILES are skipped by name just below.
+        # Prune FIRST. Pruning every dotted directory at every level is equivalent to
+        # cli.js ``Is(s)`` ("hidden if ANY path component is dotted"), because no
+        # descendant of a pruned directory is ever visited; dotted FILES are skipped
+        # by name below. Pruning must precede link registration: ob rejects a hidden
+        # path before registering its target, so registering a hidden link's target
+        # here would let it suppress a visible link to the same place.
         dirnames[:] = [
             d for d in dirnames if not d.startswith(".") and not _excluded(_rel(d), entries)
         ]
+        # Then apply ob's link rule to what survives.
+        for name in list(dirnames):
+            child = os.path.join(dirpath, name)
+            if os.path.islink(child) and not links.follow(child, _rel(name), _on_error):
+                dirnames.remove(name)
 
         for name in filenames:
             if name.startswith("."):
@@ -511,8 +539,14 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
             rel = f"{rel_dir}/{_emitted(name)}" if rel_dir else _emitted(name)
             if _excluded(rel, entries):
                 continue
+            child = os.path.join(dirpath, name)
+            # The overlap rule applies to FILE links too: ob rejects on overlap before
+            # it distinguishes a file from a directory, so an in-vault file alias is
+            # not uploaded even though os.stat would happily follow it.
+            if os.path.islink(child) and not links.follow(child, rel, _on_error):
+                continue
             try:
-                size = os.stat(os.path.join(dirpath, name)).st_size
+                size = os.stat(child).st_size
             except OSError as exc:
                 _on_error(exc)
                 continue
@@ -551,8 +585,8 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
             "by_class": {k: {"bytes": v[0], "files": v[1]} for k, v in sorted(by_class.items())},
         },
         "largest_included_files": [{"bytes": b, "path": p} for b, p in largest[:20]],
-        "symlinks_escaping_vault": escaping_links,
-        "symlinks_skipped_overlapping": overlapping_links,
+        "symlinks_escaping_vault": links.escaping,
+        "symlinks_skipped_overlapping": links.skipped,
         "traversal_errors": traversal_errors,
     }
 
@@ -746,9 +780,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     bad = [f for f in findings if f["verdict"] != "ok"]
     effective = [f["normalized"] for f in findings if f["verdict"] == "ok"]
-    prediction = predict(vault, effective, frozenset(file_types))
+    # One policy across both walks: ob's watcher set is global, so a target accepted
+    # in the main tree must not be re-followed from the config dir either.
+    links = _LinkPolicy(vault)
+    prediction = predict(vault, effective, frozenset(file_types), links)
 
-    config_uploads = predict_config_uploads(vault, config_dir, configs, effective)
+    config_uploads = predict_config_uploads(vault, config_dir, configs, effective, links)
     prediction["config_uploads"] = config_uploads
     prediction["traversal_errors"].extend(config_uploads["traversal_errors"])
     prediction["predicted_upload"]["bytes"] += config_uploads["bytes"]

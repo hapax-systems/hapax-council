@@ -442,6 +442,7 @@ def test_usage_error_does_not_collide_with_refused(vault: pathlib.Path) -> None:
     missing_source = _run(str(vault))
     assert missing_source.returncode == ERROR
     assert "error:" in missing_source.stderr
+    assert "Next:" in missing_source.stderr, "a usage error must name the next action too"
 
 
 def test_config_errors_name_a_next_action(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
@@ -469,10 +470,15 @@ def test_structurally_unmatchable_entries_are_refused(
     assert needle in report["findings"][0]["detail"]
 
 
-def test_per_file_stat_failure_refuses(vault: pathlib.Path) -> None:
+def test_per_file_stat_failure_refuses(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
     """A dangling symlink makes os.stat fail for ONE file (the directory case is
-    covered separately). A partial total must still not exit 0."""
-    (vault / "30-areas" / "dangling.md").symlink_to(vault / "30-areas" / "gone.md")
+    covered separately). A partial total must still not exit 0.
+
+    The link must point OUTSIDE the vault: an in-vault target overlaps the watched
+    root, so ob skips it and there is no stat to fail — which is itself pinned by
+    test_in_vault_file_alias_is_skipped.
+    """
+    (vault / "30-areas" / "dangling.md").symlink_to(tmp_path / "outside-gone.md")
     result = _run(str(vault), "--excluded-folders", "20-projects/_dashboard", "--json")
     assert result.returncode == ERROR, result.stdout + result.stderr
     errors = json.loads(result.stdout)["traversal_errors"]
@@ -630,6 +636,93 @@ def test_internal_alias_is_skipped_like_the_client(vault: pathlib.Path) -> None:
     )
     delta = report["predicted_upload"]["bytes"] - excluded["predicted_upload"]["bytes"]
     assert delta == 77, "the aliased file was counted more than once"
+
+
+def test_in_vault_file_alias_is_skipped(vault: pathlib.Path) -> None:
+    """The overlap rule applies before ob distinguishes a file from a directory, so a
+    file alias pointing inside the vault is not uploaded — even though os.stat would
+    follow it and report the target's size."""
+    secret = vault / "30-areas" / "hapax" / "keep.md"  # 50 bytes, already in the tree
+    (vault / "alias.md").symlink_to(secret)
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--json",
+    )
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert not any(i["path"] == "alias.md" for i in report["largest_included_files"])
+    assert [link["path"] for link in report["symlinks_skipped_overlapping"]] == ["alias.md"]
+    assert report["predicted_upload"]["bytes"] == 161, "the aliased file was counted twice"
+
+
+def test_escaping_file_link_is_followed(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    outside = tmp_path / "outside.md"
+    outside.write_bytes(b"o" * 33)
+    (vault / "alias.md").symlink_to(outside)
+    report = json.loads(
+        _run(
+            str(vault),
+            "--excluded-folders",
+            "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+            "--json",
+        ).stdout
+    )
+    assert report["predicted_upload"]["bytes"] == 161 + 33
+    assert [link["path"] for link in report["symlinks_escaping_vault"]] == ["alias.md"]
+
+
+def test_hidden_link_does_not_suppress_a_visible_one(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """Registration must happen AFTER hidden pruning. ob rejects a hidden path before
+    registering its target, so a hidden link must not claim a target and make the
+    visible link to the same place look like a duplicate — which would also make the
+    result depend on which name the walk reached first."""
+    outside = tmp_path / "shared"
+    outside.mkdir()
+    (outside / "note.md").write_bytes(b"n" * 44)
+    # '.hidden' sorts before 'visible', so the hidden one is reached first.
+    (vault / ".hidden").symlink_to(outside, target_is_directory=True)
+    (vault / "visible").symlink_to(outside, target_is_directory=True)
+
+    report = json.loads(
+        _run(
+            str(vault),
+            "--excluded-folders",
+            "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+            "--json",
+        ).stdout
+    )
+    paths = {i["path"] for i in report["largest_included_files"]}
+    assert "visible/note.md" in paths, "a hidden link suppressed a visible upload"
+    assert not any(p.startswith(".hidden") for p in paths)
+    assert report["predicted_upload"]["bytes"] == 161 + 44
+
+
+def test_config_dir_symlink_is_followed(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """The seed scanner reaches config files through adapter list/stat, which follow a
+    link; only the watcher installer uses lstat. A plugin directory replaced by a link
+    must still be counted."""
+    obsidian = vault / ".obsidian"
+    (obsidian / "plugins").mkdir(parents=True)
+    real_plugin = tmp_path / "dataview"
+    real_plugin.mkdir()
+    (real_plugin / "main.js").write_bytes(b"m" * 77)
+    (obsidian / "plugins" / "dataview").symlink_to(real_plugin, target_is_directory=True)
+
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["community-plugin-data"],
+    )
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["config_uploads"]["bytes"] == 77, "config-dir symlink was not followed"
 
 
 def test_link_to_a_vault_ancestor_is_skipped(vault: pathlib.Path) -> None:
