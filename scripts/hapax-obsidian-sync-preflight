@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""hapax-obsidian-sync-preflight — validate an Obsidian Sync exclusion list and
+predict the upload set BEFORE a seed sync runs.
+
+Why this exists (measured, 2026-09-14, task obsidian-sync-freshvault-headless-20260914):
+``ob sync-config --excluded-folders`` accepts any string. The client matches each
+entry as a **vault-relative path prefix** — in ``obsidian-headless`` 0.0.14,
+``_allowSyncFile(e, t)`` begins::
+
+    for (let r of this.ignoreFolders)
+        if (t && e === r || e.startsWith(r + "/")) return !1;
+
+so an entry that is not a real vault-relative prefix matches nothing, reports no
+error, and the data uploads. The failure mode is **silent admission**, and the
+only witness is a size readback taken after the upload already happened.
+
+Three separate hand-transcriptions of one 14/15/17-entry exclusion list each
+introduced at least one unmatchable path: ``terrain1-chunks-lex`` and
+``terrain1-chunks-sem`` (neither directory exists), then
+``ingestion-gold/ocr/pages`` missing its ``30-areas/hapax/`` prefix — the last
+would have leaked 196 PNGs / 379.5 MiB past an exclusion the operator had
+explicitly accepted. A path list carried by hand is a transcription channel with
+no checksum; this is the checksum.
+
+It also predicts the upload set by replaying the client's own admission rules, so
+a seed has an expected byte/file count to be verified against instead of a
+figure derived by subtracting estimates.
+
+Usage:
+    hapax-obsidian-sync-preflight VAULT --excluded-folders a,b,c [--file-types ...]
+    hapax-obsidian-sync-preflight VAULT --from-sync-config          # audit the LIVE list
+    hapax-obsidian-sync-preflight VAULT --from-sync-config --json
+
+Exit: 0 list valid (prediction printed), 2 refused (an entry cannot match
+anything, so the list would fail open), 3 usage / IO / no sync config.
+
+Rules replayed from obsidian-headless 0.0.14 ``cli.js``:
+  * hidden pruning — ``Is(s)`` walks every path component and rejects the path if
+    ANY component starts with ``.``; the sync adapter treats such paths as absent.
+  * exclusion — vault-relative prefix match, quoted above.
+  * attachment classes — ``md``/``canvas``/``base`` always sync; the rest gate on
+    ``--file-types``, and anything in no class is ``unsupported`` (OFF by default).
+    ``webm`` counts as audio OR video.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+OK = 0
+REFUSED = 2
+ERROR = 3
+
+# obsidian-headless 0.0.14 cli.js: Vt, Wt, Ht, Gt, fo, ks, ho
+IMAGE = frozenset({"bmp", "png", "jpg", "jpeg", "gif", "svg", "webp", "avif"})
+AUDIO = frozenset({"mp3", "wav", "m4a", "3gp", "flac", "ogg", "oga", "opus"})
+VIDEO = frozenset({"mp4", "webm", "ogv", "mov", "mkv"})
+PDF = frozenset({"pdf"})
+ALWAYS = frozenset({"md", "canvas", "base"})  # native: never gated on --file-types
+VALID_FILE_TYPES = ("image", "audio", "video", "pdf", "unsupported")
+DEFAULT_FILE_TYPES = ("image", "audio", "pdf", "video")  # cli.js `me`
+
+
+def _extension(name: str) -> str:
+    """Mirror cli.js ``$(s)``: last dot wins, lowercased, no leading-dot match."""
+    idx = name.rfind(".")
+    if idx in (-1, 0, len(name) - 1):
+        return ""
+    return name[idx + 1 :].lower()
+
+
+def _classify(ext: str) -> str:
+    if ext in ALWAYS:
+        return "native"
+    if ext in IMAGE:
+        return "image"
+    if ext == "webm":
+        return "audio_or_video"
+    if ext in AUDIO:
+        return "audio"
+    if ext in VIDEO:
+        return "video"
+    if ext in PDF:
+        return "pdf"
+    return "unsupported"
+
+
+def _admitted(klass: str, file_types: frozenset[str]) -> bool:
+    if klass == "native":
+        return True
+    if klass == "audio_or_video":
+        return bool({"audio", "video"} & file_types)
+    return klass in file_types
+
+
+def validate_entries(vault: Path, entries: list[str]) -> list[dict]:
+    """Classify each exclusion entry. Anything not ``ok`` cannot match and so
+    fails OPEN — the data it names would upload."""
+    findings: list[dict] = []
+    for raw in entries:
+        entry = raw.strip()
+        finding: dict = {"entry": raw, "normalized": entry}
+        if not entry:
+            finding.update(verdict="malformed", detail="empty entry")
+            findings.append(finding)
+            continue
+        if entry.startswith("/") or entry.endswith("/") or "//" in entry:
+            # ob uses the string raw: a trailing slash makes the probe
+            # `startswith("foo//")`, which never matches; a leading slash never
+            # matches a vault-relative path.
+            finding.update(
+                verdict="malformed",
+                detail="leading, trailing or doubled slash — ob compares the raw "
+                "string, so this can never match a vault-relative path",
+            )
+            findings.append(finding)
+            continue
+        if Path(entry).is_absolute() or entry.split("/")[0] in (".", ".."):
+            finding.update(verdict="malformed", detail="not vault-relative")
+            findings.append(finding)
+            continue
+        target = vault / entry
+        if not target.exists():
+            finding.update(
+                verdict="missing",
+                detail="no such path in the vault — this entry excludes nothing",
+            )
+        elif target.is_file():
+            finding.update(
+                verdict="file_not_folder",
+                detail="names a file; ob's exclusion is a folder-prefix test, so "
+                "this entry excludes nothing",
+            )
+        else:
+            finding.update(verdict="ok")
+        findings.append(finding)
+
+    # Redundancy is not a refusal, but it hides intent — report it.
+    ok_entries = [f["normalized"] for f in findings if f["verdict"] == "ok"]
+    for finding in findings:
+        if finding["verdict"] != "ok":
+            continue
+        entry = finding["normalized"]
+        covered_by = [
+            other for other in ok_entries if other != entry and entry.startswith(other + "/")
+        ]
+        if covered_by:
+            finding["redundant_under"] = covered_by
+    return findings
+
+
+def _excluded(rel: str, entries: list[str]) -> bool:
+    return any(rel == e or rel.startswith(e + "/") for e in entries)
+
+
+def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict:
+    by_class: dict[str, list[int]] = {}
+    by_ext: dict[str, list[int]] = {}
+    by_top: dict[str, list[int]] = {}
+    upload_bytes = upload_files = 0
+    largest: list[tuple[int, str]] = []
+
+    for dirpath, dirnames, filenames in os.walk(vault):
+        rel_dir = os.path.relpath(dirpath, vault)
+        rel_dir = "" if rel_dir == "." else rel_dir
+        # Prune in place. Pruning every dotted directory at every level is
+        # equivalent to cli.js ``Is(s)`` ("hidden if ANY path component is
+        # dotted"), because no descendant of a pruned directory is ever visited;
+        # dotted FILES are skipped by name just below.
+        dirnames[:] = [
+            d
+            for d in dirnames
+            if not d.startswith(".") and not _excluded(f"{rel_dir}/{d}" if rel_dir else d, entries)
+        ]
+        for name in filenames:
+            if name.startswith("."):
+                continue
+            rel = f"{rel_dir}/{name}" if rel_dir else name
+            if _excluded(rel, entries):
+                continue
+            try:
+                size = os.stat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue
+            klass = _classify(_extension(name))
+            bucket = by_class.setdefault(klass, [0, 0])
+            bucket[0] += size
+            bucket[1] += 1
+            if not _admitted(klass, file_types):
+                continue
+            upload_bytes += size
+            upload_files += 1
+            ext = by_ext.setdefault(_extension(name), [0, 0])
+            ext[0] += size
+            ext[1] += 1
+            top = rel.split("/")[0] if "/" in rel else "(root)"
+            tb = by_top.setdefault(top, [0, 0])
+            tb[0] += size
+            tb[1] += 1
+            largest.append((size, rel))
+
+    largest.sort(reverse=True)
+    return {
+        "predicted_upload": {
+            "bytes": upload_bytes,
+            "gib": round(upload_bytes / 1073741824, 3),
+            "files": upload_files,
+            "by_ext": {
+                k: {"bytes": v[0], "files": v[1]}
+                for k, v in sorted(by_ext.items(), key=lambda kv: -kv[1][0])
+            },
+            "by_top_dir": {k: {"bytes": v[0], "files": v[1]} for k, v in sorted(by_top.items())},
+        },
+        "after_pruning_all_classes": {
+            "bytes": sum(v[0] for v in by_class.values()),
+            "files": sum(v[1] for v in by_class.values()),
+            "by_class": {k: {"bytes": v[0], "files": v[1]} for k, v in sorted(by_class.items())},
+        },
+        "largest_included_files": [{"bytes": b, "path": p} for b, p in largest[:20]],
+    }
+
+
+def _sync_config_dir() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "obsidian-headless" / "sync"
+
+
+def load_live_config(vault: Path) -> dict:
+    """Find the ob sync config whose vaultPath is this vault (mirrors cli.js ``He``)."""
+    root = _sync_config_dir()
+    if not root.is_dir():
+        raise FileNotFoundError(f"no ob sync state directory at {root}")
+    for entry in sorted(root.iterdir()):
+        config = entry / "config.json"
+        if not config.is_file():
+            continue
+        try:
+            data = json.loads(config.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if Path(data.get("vaultPath", "")).resolve() == vault:
+            return data
+    raise FileNotFoundError(f"no ob sync configuration found for {vault}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="hapax-obsidian-sync-preflight",
+        description="Validate an Obsidian Sync exclusion list and predict the upload set.",
+    )
+    parser.add_argument("vault", help="local vault path")
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--excluded-folders",
+        help="comma-separated list to validate before applying it",
+    )
+    source.add_argument(
+        "--from-sync-config",
+        action="store_true",
+        help="audit the list ob already holds for this vault",
+    )
+    parser.add_argument(
+        "--file-types",
+        default=None,
+        help=f"comma-separated subset of {','.join(VALID_FILE_TYPES)} "
+        f"(default from sync config, else {','.join(DEFAULT_FILE_TYPES)})",
+    )
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="report unmatchable entries but exit 0 anyway",
+    )
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    args = parser.parse_args(argv)
+
+    vault = Path(args.vault).expanduser()
+    if not vault.is_dir():
+        print(f"not a directory: {vault}", file=sys.stderr)
+        return ERROR
+    vault = vault.resolve()
+
+    live: dict = {}
+    if args.from_sync_config:
+        try:
+            live = load_live_config(vault)
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return ERROR
+        entries = list(live.get("excludedFolders") or [])
+    else:
+        entries = args.excluded_folders.split(",")
+
+    if args.file_types is not None:
+        file_types = tuple(t.strip().lower() for t in args.file_types.split(",") if t.strip())
+    elif live.get("fileTypes"):
+        file_types = tuple(live["fileTypes"])
+    else:
+        file_types = DEFAULT_FILE_TYPES
+    invalid = [t for t in file_types if t not in VALID_FILE_TYPES]
+    if invalid:
+        print(
+            f"invalid file type(s): {','.join(invalid)}; valid: {','.join(VALID_FILE_TYPES)}",
+            file=sys.stderr,
+        )
+        return ERROR
+
+    findings = validate_entries(vault, entries)
+    bad = [f for f in findings if f["verdict"] != "ok"]
+    effective = [f["normalized"] for f in findings if f["verdict"] == "ok"]
+    prediction = predict(vault, effective, frozenset(file_types))
+
+    report = {
+        "vault": str(vault),
+        "source": "sync-config" if args.from_sync_config else "argument",
+        "vault_name": live.get("vaultName"),
+        "file_types": list(file_types),
+        "entries_total": len(findings),
+        "entries_effective": len(effective),
+        "entries_unmatchable": len(bad),
+        "findings": findings,
+        **prediction,
+    }
+
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        print(f"vault: {vault}" + (f"  ({live['vaultName']})" if live.get("vaultName") else ""))
+        print(f"file types: {','.join(file_types)}")
+        print(f"exclusion entries: {len(findings)} total, {len(effective)} effective")
+        for finding in findings:
+            mark = "ok  " if finding["verdict"] == "ok" else "FAIL"
+            line = f"  [{mark}] {finding['normalized']}"
+            if finding["verdict"] != "ok":
+                line += f"  <- {finding['verdict']}: {finding['detail']}"
+            elif finding.get("redundant_under"):
+                line += f"  (redundant under {', '.join(finding['redundant_under'])})"
+            print(line)
+        upload = prediction["predicted_upload"]
+        print(
+            f"predicted upload: {upload['bytes']} B = {upload['gib']} GiB / {upload['files']} files"
+        )
+        for ext, stats in list(upload["by_ext"].items())[:8]:
+            print(f"  .{ext or '(none)'}: {stats['bytes']} B / {stats['files']} files")
+
+    if bad and not args.allow_missing:
+        print(
+            f"REFUSED: {len(bad)} exclusion entr{'y' if len(bad) == 1 else 'ies'} "
+            "cannot match anything. ob accepts them silently and the data they name "
+            "WOULD UPLOAD. Fix the paths, or pass --allow-missing if that is intended.",
+            file=sys.stderr,
+        )
+        return REFUSED
+    return OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())
