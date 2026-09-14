@@ -267,6 +267,21 @@ check's silence is not evidence of agreement:
 - `marker_dir_unreadable` / `marker_unreadable` (violation) — enumeration or a
   specific file could not be read. Repair the permission, then re-sweep.
 
+### Silencing it
+
+`stale_claim_marker` has no killswitch of its own. It is covered by the sweeper's,
+which stops every check:
+
+```bash
+HAPAX_CC_HYGIENE_OFF=1     # sweeper-wide: silences all checks, not just this one
+```
+
+Deliberately not per-check. A reconciliation whose job is noticing that live state
+disagrees with declared state is the last check that should be individually
+muteable — silencing it leaves the drift and removes the only thing reporting it.
+If it is firing repeatedly, the `next_action` is the thing to act on; if the events
+are wrong, that is a defect to file, not a check to mute.
+
 Recheck the remediation matrix and the two incomplete-sweep behaviours:
 
 ```bash

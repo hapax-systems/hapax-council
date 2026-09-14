@@ -1253,6 +1253,35 @@ def check_stale_claim_marker(
             # cannot work. And for a terminal note still in active/, cc-close
             # defaults to `done`, which would overwrite the outcome it already has.
             status_text = (note.status or "").strip()
+            # An owner we could not name cannot be handed a close command: the
+            # label is `<unattributable:...>`, and bash reads the angle brackets as
+            # redirections. It even passes `bash -n`, so a parse check does not
+            # catch it. Route these to a person BEFORE any command is constructed,
+            # which is also the honest disposition — a close needs a closing
+            # identity, and that is exactly what is unknown here.
+            if role is None:
+                events.append(
+                    HygieneEvent(
+                        timestamp=now,
+                        check_id="stale_claim_marker",
+                        severity="violation",
+                        task_id=task_id,
+                        session=None,
+                        message=(
+                            f"claim marker 'cc-active-task-{key}' holds terminal task "
+                            f"'{task_id}' but names no role the vault knows — no close "
+                            "command can be constructed without a closing identity"
+                        ),
+                        metadata={
+                            "marker": str(marker_dir / f"cc-active-task-{key}"),
+                            "role": role_label,
+                            "vault_status": status_text,
+                            "next_action": "operator-adjudication",
+                            "reason": "role_unattributable",
+                        },
+                    )
+                )
+                continue
             if already_closed or status_text not in CC_CLOSE_ACCEPTED_STATUSES:
                 # cc-close cannot reach this note. Either it is already in closed/,
                 # or its status is one cc-close's own --status validator rejects:
@@ -1278,16 +1307,24 @@ def check_stale_claim_marker(
                 )
             else:
                 next_action = "re-emit-close"
-                # A RUNNABLE command, with the closing role selected explicitly and
-                # no prose inside it. The first cut emitted
-                # `cc-close t1 --status withdrawn (as role eta)`, which the runbook
-                # told operators to run verbatim and which `bash -n` rejects at the
-                # parenthesis — and merely stripping the annotation would have left
-                # the closing role unset, so cc-close would resolve whatever role the
-                # operator's shell happened to carry. The role goes in as an env
-                # assignment: executable and explicit.
+                # A RUNNABLE command that selects the right identity and the right
+                # roots. Three separate ways this went wrong:
+                #
+                # 1. `cc-close t1 --status withdrawn (as role eta)` — prose inside
+                #    the command; `bash -n` rejects it at the parenthesis.
+                # 2. `HAPAX_AGENT_ROLE=eta ...` — WRONG VARIABLE. cc-close resolves
+                #    identity through agent-role.sh, where HAPAX_AGENT_NAME (and the
+                #    CODEX_* names) outrank HAPAX_AGENT_ROLE. With an inherited
+                #    HAPAX_AGENT_NAME the command silently closed as that lane and
+                #    left the reported markers untouched. HAPAX_AGENT_NAME is the top
+                #    of the ladder, so that is what gets set.
+                # 3. A bare command inherits the operator's roots, so a sweep of
+                #    another vault or cache recommended a close that would act on
+                #    LOCAL state while leaving the observed orphan intact. The
+                #    observed roots are pinned into the command.
                 remediation = (
-                    f"HAPAX_AGENT_ROLE={role_label} cc-close {task_id} --status {status_text}"
+                    f"HAPAX_AGENT_NAME={role} HOME={marker_dir.parent.parent} "
+                    f"cc-close {task_id} --status {status_text}"
                 )
             events.append(
                 HygieneEvent(

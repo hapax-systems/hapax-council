@@ -339,8 +339,9 @@ sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
 # is skipped, which is correct for a liveness question — it is not evidence of
 # life.
 hapax_session_id_has_live_process() {
-  local sid="${1:-}" d pid chain p
+  local sid="${1:-}" d pid chain p uid owner
   [ -n "$sid" ] || return 1
+  uid="$(id -u)"
   chain=" $$ "
   p="${PPID:-0}"
   while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ]; do
@@ -352,11 +353,57 @@ hapax_session_id_has_live_process() {
     case "$chain" in
       *" $pid "*) continue ;;
     esac
+    # Only processes WE own can be one of our lanes, so a pid belonging to
+    # another user is not evidence either way and is skipped. That scoping is
+    # what makes the conservative branch below usable: without it, every
+    # unreadable root daemon would read as "inconclusive" and succession could
+    # never fire.
+    owner="$(stat -c %u "$d" 2>/dev/null || printf '')"
+    [ "$owner" = "$uid" ] || continue
     if grep -qz "^HAPAX_SESSION_ID=$sid$" "$d/environ" 2>/dev/null; then
       return 0
     fi
+    # OUR process, environ unreadable (hardening, a namespace, or a race with
+    # exit): INCONCLUSIVE, and inconclusive must not establish that the incumbent
+    # stopped. But only for a process that could BE a lane — measured on this
+    # host, six of our own processes have unreadable environ and none of them is
+    # one: (sd-pam), sshd-session, gpg-agent, scdaemon, ssh-agent. Treating those
+    # as inconclusive reports "live" unconditionally and succession never fires at
+    # all, which is how the first cut of this branch broke every resume.
+    #
+    # `comm` stays readable when `environ` does not, so the harness name is the
+    # available discriminator. Over-inclusive on purpose: a shell or interpreter
+    # could be a launcher mid-exec, and the cost of a false "live" is one fresh
+    # mint, while the cost of a false "absent" is two lanes sharing an identity.
+    if [ ! -r "$d/environ" ]; then
+      case "$(cat "$d/comm" 2>/dev/null || printf '')" in
+        claude | codex | vibe | kimi | node | python3 | bash | sh)
+          return 0
+          ;;
+      esac
+    fi
   done
   return 1
+}
+
+# Atomically reserve a session id for succession. mkdir is the reservation: it
+# succeeds for exactly one caller and fails for every other, which is the property
+# a liveness SNAPSHOT cannot provide. Two concurrent relaunches could both observe
+# the incumbent absent and both adopt its id — check-then-act, with the window
+# between them wide enough that a synchronized probe reproduced it.
+#
+# The reservation is deliberately PERMANENT. Releasing it on exit is unreliable
+# (a crash leaves it held anyway), and "this id has already been handed on once"
+# is the right durable fact: a second successor to the same id means the identity
+# has now outlived two processes, and minting is the safe answer. Reservations are
+# append-only alongside the spent markers the row requires preserving.
+hapax_reserve_session_succession() {
+  local sid="${1:-}" dir="${HOME:-/nonexistent}/.cache/hapax/succession-reservations"
+  [ -n "$sid" ] || return 1
+  mkdir -p "$dir" 2>/dev/null || return 1
+  mkdir "$dir/$sid" 2>/dev/null || return 1
+  printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" >"$dir/$sid/claimed-by" 2>/dev/null || true
+  return 0
 }
 
 hapax_role_succession_session_id() {
@@ -385,6 +432,11 @@ hapax_role_succession_session_id() {
     found="$candidate"
   done
   [ "$n" = 1 ] || return 1
+  # Snapshot -> reservation. Everything above is check-then-act; this is the
+  # atomic step that makes the handoff exclusive, and it must be the LAST thing
+  # before returning the id. Losing the race means another successor took it:
+  # mint instead.
+  hapax_reserve_session_succession "$found" || return 1
   printf '%s\n' "$found"
 }
 

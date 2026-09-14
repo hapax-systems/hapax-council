@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -476,6 +477,68 @@ class TestRoleSessionSuccession:
 
         # With the incumbent gone, the same marker IS succeeded.
         assert self._succeed(tmp_path, "eta") == sid
+
+    def test_only_one_of_two_concurrent_successors_adopts(self, tmp_path: Path) -> None:
+        """A liveness snapshot is not a reservation.
+
+        Two concurrent relaunches could both observe the incumbent absent and both
+        adopt its id before either exported it — check-then-act, with a window a
+        synchronized probe reproduced. `mkdir` is the atomic step that closes it:
+        exactly one caller wins, the loser mints.
+        """
+        sid = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+        self._marker(tmp_path, f"eta-{sid}")
+
+        env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+        env["HOME"] = str(tmp_path)
+        script = f'. "{AGENT_ROLE}"\nhapax_role_succession_session_id eta || printf "MINT\\n"'
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = [
+                f.result().stdout.strip()
+                for f in [
+                    pool.submit(
+                        subprocess.run,
+                        ["bash", "-c", script],
+                        env=env,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    for _ in range(8)
+                ]
+            ]
+
+        adopters = [r for r in results if r == sid]
+        assert len(adopters) == 1, (
+            f"{len(adopters)} concurrent successors adopted one identity: {results}"
+        )
+        assert all(r == sid or r == "MINT" for r in results), results
+
+    def test_inconclusive_liveness_does_not_establish_absence(self, tmp_path: Path) -> None:
+        """Unreadable process state must not read as "the incumbent stopped".
+
+        A process we own whose environ cannot be read (namespace, hardening, or a
+        race with exit) is INCONCLUSIVE. The first cut treated that as absence, so
+        an unreadable incumbent was succeeded. Reported live instead — the narrow
+        answer, costing a fresh mint rather than a shared identity.
+        """
+        result = _bash(
+            'if hapax_session_id_has_live_process "$TARGET"; then printf "LIVE\\n"; '
+            'else printf "ABSENT\\n"; fi',
+            {"HOME": str(tmp_path), "TARGET": "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"},
+        )
+        assert result.returncode == 0, result.stderr
+        # Nothing carries that id, and every readable environ is checked — so the
+        # honest answer here is ABSENT. The discriminating case is the unreadable
+        # one, which the launcher-level test below drives.
+        assert result.stdout.strip() == "ABSENT"
+
+    def test_reservation_is_not_reusable(self, tmp_path: Path) -> None:
+        """One handoff per identity. A second successor means it outlived two."""
+        sid = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+        self._marker(tmp_path, f"eta-{sid}")
+        assert self._succeed(tmp_path, "eta") == sid
+        assert self._succeed(tmp_path, "eta") == "MINT", "the same identity was handed on twice"
 
     def test_no_live_claim_mints(self, tmp_path: Path) -> None:
         (tmp_path / ".cache" / "hapax").mkdir(parents=True)

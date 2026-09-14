@@ -13,6 +13,7 @@ side is pinned in test_route_metadata_capability_shape.py.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -171,6 +172,33 @@ class TestCcClaimIntegration:
         """`(cc-claim, session=…)` is a format other readers match on."""
         note = self._claim(tmp_path / "home", "task-order", HAPAX_AGENT_INTERFACE="claude")
         assert "claimed (cc-claim, session=12345678-1234-4321-8765-123456789abc)" in note
+
+    def test_unresolvable_scaffold_revision_is_omitted_not_faked(self, tmp_path: Path) -> None:
+        """_scaffold_revision's failure path: no git answer means NOT RECORDED.
+
+        It shells `git -C <repo> rev-parse --short HEAD`. When that cannot answer —
+        no git on PATH, not a repository, a permission error — the field must be
+        absent rather than carry a placeholder, because a fabricated revision in a
+        condition vector is worse than a missing one.
+        """
+        import shutil
+
+        fakebin = tmp_path / "nogit"
+        fakebin.mkdir()
+        broken = fakebin / "git"
+        broken.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+        broken.chmod(0o755)
+        real_path = shutil.which("bash")
+        assert real_path is not None
+
+        note = self._claim(
+            tmp_path / "home",
+            "task-noscaffold",
+            HAPAX_AGENT_INTERFACE="claude",
+            PATH=f"{fakebin}:{os.environ.get('PATH', '')}",
+        )
+        assert "harness=claude" in note, f"the rest of the shape must still record\n{note}"
+        assert "scaffold_revision" not in note, "an unresolvable revision was recorded anyway"
 
     def test_nothing_recorded_stamps_no_empty_shape(self, tmp_path: Path) -> None:
         """`shape=()` would read as a measured emptiness rather than an absence."""

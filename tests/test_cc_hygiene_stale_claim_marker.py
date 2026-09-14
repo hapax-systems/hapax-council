@@ -186,7 +186,15 @@ class TestDisagreementMatrix:
         assert "(" not in remediation and ")" not in remediation, (
             f"prose inside the command: {remediation!r}"
         )
-        assert "HAPAX_AGENT_ROLE=eta" in remediation, "closing role not selected"
+        # HAPAX_AGENT_NAME, not HAPAX_AGENT_ROLE: agent-role.sh resolves NAME (and
+        # the CODEX_* names) BEFORE ROLE, so a command setting only ROLE closes as
+        # whatever lane the operator's shell already names and leaves the reported
+        # markers untouched.
+        assert "HAPAX_AGENT_NAME=eta" in remediation, "closing identity not selected"
+        assert "HAPAX_AGENT_ROLE=" not in remediation, (
+            "HAPAX_AGENT_ROLE is outranked by HAPAX_AGENT_NAME; setting it does not "
+            "establish the closing identity"
+        )
         bash = shutil.which("bash")
         assert bash is not None
         parsed = subprocess.run(
@@ -194,6 +202,59 @@ class TestDisagreementMatrix:
         )
         assert parsed.returncode == 0, (
             f"remediation does not parse: {remediation!r}\n{parsed.stderr}"
+        )
+
+    def test_identity_in_the_remediation_actually_wins_in_cc_close(self) -> None:
+        """Proven against cc-close's real resolver, not by reading the command.
+
+        The previous cut set HAPAX_AGENT_ROLE and passed a `bash -n` check while
+        resolving to a completely different lane, because agent-role.sh consults
+        HAPAX_AGENT_NAME first. A parse check cannot see that; running the resolver
+        with a rival identity inherited can.
+        """
+        import os
+        import subprocess
+
+        events = check_stale_claim_marker(
+            {"eta": "t1"}, [_note("t1", status="withdrawn")], now=_now()
+        )
+        remediation = events[0].metadata["remediation"]
+        prefix = " ".join(p for p in remediation.split() if "=" in p and "cc-close" not in p)
+
+        helper = REPO_ROOT / "hooks" / "scripts" / "agent-role.sh"
+        env = {k: v for k, v in os.environ.items()}
+        env["HAPAX_AGENT_NAME"] = "cx-review"  # a rival identity, inherited
+        env["HAPAX_AGENT_ROLE"] = "cx-review"
+        resolved = subprocess.run(
+            ["bash", "-c", f"{prefix} bash -c '. \"{helper}\"; hapax_effective_role'"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert resolved.stdout.strip() == "eta", (
+            f"the emitted command resolves as {resolved.stdout.strip()!r}, not eta — "
+            "it would close as the wrong lane and leave the reported markers"
+        )
+
+    def test_unattributable_owner_gets_adjudication_not_a_close_command(self) -> None:
+        """`<unattributable:...>` in a command is shell redirection, and parses.
+
+        Terminal handling ran before the unattributable branch, so an unknown owner
+        beside a terminal task received
+        `HAPAX_AGENT_ROLE=<unattributable:key> cc-close ...`. Bash reads the angle
+        brackets as redirections; `bash -n` accepts it, so the parse test missed it.
+        """
+        events = check_stale_claim_marker(
+            {"eta-sess1": "t1"},
+            [_note("t1", status="withdrawn", assigned_to="eta")],
+            now=_now(),
+        )
+        assert len(events) == 1
+        assert events[0].metadata["next_action"] == "operator-adjudication"
+        assert events[0].metadata["reason"] == "role_unattributable"
+        assert "remediation" not in events[0].metadata, (
+            "a close command was constructed for an owner that could not be named"
         )
 
     def test_event_reports_the_disagreement_not_an_inferred_cause(self) -> None:
