@@ -402,9 +402,22 @@ def run_sweep(
     relay_root: Path = DEFAULT_RELAY_ROOT,
     repo_root: Path = DEFAULT_REPO_ROOT,
     claim_marker_dir: Path | None = None,
+    reap: bool = True,
     now: datetime | None = None,
 ) -> HygieneState:
-    """Perform one sweep and return the snapshot. Does NOT write to disk."""
+    """Perform one sweep and return the snapshot.
+
+    The docstring used to say "Does NOT write to disk", and that was false in the
+    one way that matters: `reap_dead_lanes` runs `hapax-relay-retire` against every
+    lane with no live process, so a sweep MUTATES relay state before it computes a
+    single event. `--no-write --no-actions` did not stop it, and the gate0b runbook
+    recommended exactly that pair as a diagnostic — measured 2026-09-14T10:46:26Z:
+    running it to verify the runbook retired `alpha`.
+
+    So `reap` is a parameter, off in diagnostic mode. Events are still computed;
+    only the action is withheld, which is what "observational" has to mean for a
+    tool whose whole job is reporting on state it can also change.
+    """
     now = now or datetime.now(UTC)
     started = time.monotonic()
     # Derived from relay_root, not from $HOME: cc-claim writes the markers beside
@@ -440,9 +453,12 @@ def run_sweep(
         else "passed explicitly by the caller"
     )
 
-    reaped = reap_dead_lanes(relay_root)
-    if reaped:
-        LOG.info("Reaped %d dead lane(s): %s", len(reaped), ", ".join(reaped))
+    if reap:
+        reaped = reap_dead_lanes(relay_root)
+        if reaped:
+            LOG.info("Reaped %d dead lane(s): %s", len(reaped), ", ".join(reaped))
+    else:
+        LOG.info("Reaping skipped (observational mode) — no relay was retired")
 
     # ONE read of each directory, here, for the whole sweep. Every consumer below
     # — including the live↔declared join, which recommends deleting runtime state —
@@ -664,6 +680,11 @@ def main(argv: list[str] | None = None) -> int:
         relay_root=args.relay_root,
         repo_root=args.repo_root,
         claim_marker_dir=claim_marker_dir,
+        # Retiring a relay is an ACTION, so --no-actions withholds it. --no-write
+        # counts too: a flag pair a runbook offers as "writes no state" must not
+        # leave one mutation outside both of them, which is how a diagnostic run
+        # retired a live lane.
+        reap=not (args.no_actions or args.no_write),
     )
     LOG.info(
         "sweep complete: %d events in %d ms",

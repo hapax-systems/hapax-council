@@ -325,7 +325,11 @@ flag exists to close.
 
 `cc-close` and `cc-claim` now take one exclusive lock per task id
 (`shared/cc_task_lock.py`; the files live in
-`~/.cache/hapax/cc-task-locks/<task-id>.lock`). Before it existed, cc-close's
+`~/.cache/hapax/cc-task-locks/tasks/<task-id>.lock`, with role locks alongside in
+`.../cc-task-locks/roles/<role>.lock` — **disjoint directories**, because a shared
+directory with a `role-` prefix collided exactly: a task named `role-eta` claimed by
+role `eta` resolved both to one file and self-deadlocked). Before it existed,
+cc-close's
 sequence — read the note, validate it, write it into `closed/`, unlink the
 original — was not atomic against a concurrent resume: a `cc-claim` landing after
 the read made cc-close write its stale snapshot to `closed/` and delete the
@@ -494,6 +498,32 @@ Expected: all pass. `test_an_unreadable_note_is_not_reported_as_a_nonexistent_ta
 and `test_every_event_records_where_the_join_looked` carry these two properties by
 name.
 
+### Reading `shape=(...)` off a claim — what `scaffold_revision` is NOT
+
+`cc-claim` stamps a capability shape into the session-log line:
+`shape=(model_family=…, harness=…, route=…, scaffold_revision=…)`.
+
+**`scaffold_revision` is the CLAIMING WORKTREE's HEAD, not the revision the
+capability was dispatched under.** In a worktree-per-lane estate that is the lane's
+feature branch, so two lanes running the same model on the same route legitimately
+record different values. **Do not group a measurement series on it** — it
+over-partitions, and a consumer reading docs alone would reasonably infer the
+dispatch scaffold. The caveat lives in
+`shared/route_metadata_schema.py::CapabilityShape` too; it is repeated here because
+the person comparing capability numbers is reading this, not the model.
+
+Recheck what it actually reports:
+
+```bash
+git -C "$(git rev-parse --show-toplevel)" rev-parse --short HEAD
+grep -o 'scaffold_revision=[0-9a-f]*' ~/Documents/Personal/20-projects/hapax-cc-tasks/active/*.md | tail -5
+```
+
+Expected: the revisions in claims made from this worktree equal this worktree's
+HEAD — which is the point. A dispatcher-side writer is owed work and is tracked
+separately; until it lands, `model_family`, `harness` and `route` are the terms of
+the shape key that mean what they say.
+
 ### `cc-close` refuses with "declares task_id ..."
 
 cc-close selects a note by filename and then checks that the note's own
@@ -537,12 +567,21 @@ directory without writing any state:
 ```bash
 HAPAX_CC_HYGIENE_CLAIM_MARKER_DIR=~/.cache/hapax \
   uv run python scripts/cc-hygiene-sweeper.py --no-write --no-actions -v 2>&1 |
-  grep -i 'marker'
+  grep -iE 'marker|Reaping skipped'
 ```
 
 Expected: any `stale_claim_marker` event names `~/.cache/hapax` as its
-`marker_dir`, and `--no-write` means nothing is recorded while you check. Recheck
-the mechanism itself:
+`marker_dir`, plus the line `Reaping skipped (observational mode)`.
+
+> **A sweep is not read-only by default.** `run_sweep` retires the relay of every
+> lane with no live process before it computes a single event, so a plain sweep
+> mutates relay state. Either diagnostic flag now withholds that, and the
+> `Reaping skipped` line is the evidence it was withheld — check for it rather than
+> assuming. This runbook recommended `--no-write --no-actions` as non-mutating
+> while it was not, and running that command to verify this section retired lane
+> `alpha` (2026-09-14T10:46:26Z).
+
+Recheck the mechanism itself:
 
 ```bash
 uv run pytest tests/test_cc_hygiene_stale_claim_marker.py -q \

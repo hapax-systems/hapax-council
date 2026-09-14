@@ -355,7 +355,14 @@ if ! command -v flock >/dev/null 2>&1; then
   echo "cc-close: refusing — 'flock' not found, so this close cannot be serialized against a concurrent cc-claim. Next action: install util-linux. Nothing was modified." >&2
   exit 2
 fi
-exec 9>"$lock_path"
+# Guarded, because `set -euo pipefail` is in force: an existing but unwritable lock
+# file makes `exec 9>` fail, and an unguarded redirection there kills cc-close with
+# a bare shell error before any of the explanatory handlers below can run. The
+# failure is a permissions problem with an obvious remedy; it should say so.
+if ! exec 9>"$lock_path"; then
+  echo "cc-close: refusing — cannot open the cc-task lock file '$lock_path' for writing. Next action: check ownership and permissions on it and on its directory (rm it if it is a stale root-owned file), then re-run. Nothing was modified." >&2
+  exit 2
+fi
 flock_rc=0
 flock -x -w "$lock_timeout" 9 || flock_rc=$?
 if [[ "$flock_rc" -eq 1 ]]; then
@@ -397,7 +404,10 @@ if [[ -n "$role" ]]; then
     echo "cc-close: refusing — could not resolve the role lease lock path for role '$role'. Retiring this role's leases without it would race a concurrent cc-claim. Next action: run from a complete council checkout (shared/cc_task_lock.py must be importable). Nothing was modified." >&2
     exit 2
   fi
-  exec 8>"$role_lock_path"
+  if ! exec 8>"$role_lock_path"; then
+    echo "cc-close: refusing — cannot open the role lease lock file '$role_lock_path' for writing. Next action: check ownership and permissions on it and on its directory, then re-run. Nothing was modified." >&2
+    exit 2
+  fi
   role_flock_rc=0
   flock -x -w "$lock_timeout" 8 || role_flock_rc=$?
   if [[ "$role_flock_rc" -eq 1 ]]; then

@@ -218,14 +218,7 @@ class TestCcClaimIntegration:
         `return None`. Both must leave the claim written with no `shape=` revision
         rather than an empty or placeholder one.
 
-        The remaining branch (OSError — git absent entirely) is not exercised
-        directly: PATH lookup skips a dangling or non-executable entry and finds
-        the real git, and emptying PATH stops the shell resolving `bash` before
-        cc-claim runs at all. Shadowing `git` with a file of an unexecutable FORMAT
-        was tried too, on the theory that ENOEXEC would raise rather than return —
-        the real revision still came back, so that is not a trigger either. The
-        branch shares this one's `return None`, so the behaviour is covered even
-        though the trigger is not.
+        The sibling below covers the `except` handler itself, via the 5s timeout.
         """
         shadow = tmp_path / "shadowbin"
         shadow.mkdir()
@@ -240,6 +233,38 @@ class TestCcClaimIntegration:
         )
         assert "claimed (cc-claim" in note, f"the claim itself was not written\n{note}"
         assert "scaffold_revision" not in note
+
+    def test_a_git_that_never_returns_omits_the_revision(self, tmp_path: Path) -> None:
+        """`_scaffold_revision`'s EXCEPTION handler, reached through the timeout.
+
+        I twice recorded this branch as untriggerable, having tried only the
+        `git`-is-absent half — PATH lookup skips a dangling or unexecutable entry
+        and finds the real binary. Review round 18 pointed out the other half:
+        `subprocess.run(..., timeout=5)` raises `TimeoutExpired`, which IS a
+        `SubprocessError`, so a `git` that hangs reaches the same handler. A
+        five-second wait is the cost of covering it, and it covers the only
+        failure mode here that can stall a claim rather than fail it.
+        """
+        slow = tmp_path / "slowbin"
+        slow.mkdir()
+        hang = slow / "git"
+        hang.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+        hang.chmod(0o755)
+
+        note = self._claim(
+            tmp_path / "home",
+            "task-git-hangs",
+            HAPAX_AGENT_INTERFACE="claude",
+            HAPAX_CAPABILITY_MODEL="claude-opus-5",
+            PATH=f"{slow}:{os.environ.get('PATH', '')}",
+        )
+        assert "claimed (cc-claim" in note, f"a hanging git blocked the claim\n{note}"
+        assert "harness=claude" in note, "the rest of the shape must still record"
+        assert "model_family=claude-opus-5" in note
+        assert "scaffold_revision" not in note, (
+            "a revision was recorded from a git that never answered"
+        )
+        assert "shape=()" not in note
 
     def test_cc_claim_in_a_tree_that_is_not_a_git_repository(self, tmp_path: Path) -> None:
         """The branch through the REAL git, not a stub that exits non-zero.

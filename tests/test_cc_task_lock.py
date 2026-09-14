@@ -549,6 +549,41 @@ class TestTheRoleLockIsTakenBeforeTheClosure:
         )
         assert "Nothing was modified" in result.stderr, result.stderr
 
+    def test_an_unwritable_lock_file_refuses_with_a_permissions_remedy(
+        self, tmp_path: Path
+    ) -> None:
+        """`exec 9>` under `set -euo pipefail` dies bare if the file is unwritable.
+
+        The explanatory flock handlers below it never run, so the operator gets a
+        shell redirection error and no remedy for a problem whose remedy is obvious.
+        """
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        note = _write_note(vault, "t1", "withdrawn")
+        env = _lane_env(home)
+
+        stale = lock_path("t1", home / ".cache" / "hapax" / "cc-task-locks")
+        stale.write_text("", encoding="utf-8")
+        stale.chmod(0o400)
+        try:
+            result = subprocess.run(
+                ["bash", str(CC_CLOSE), "t1", "--status", "withdrawn"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=120,
+            )
+        finally:
+            stale.chmod(0o600)
+
+        assert result.returncode == 2, f"{result.stdout}\n{result.stderr}"
+        assert "cannot open the cc-task lock file" in result.stderr, (
+            f"cc-close died on the redirection with no remedy\n{result.stderr}"
+        )
+        assert "permissions" in result.stderr and "Nothing was modified" in result.stderr
+        assert note.exists()
+
     def test_a_held_role_lock_refuses_with_the_note_untouched(self, tmp_path: Path) -> None:
         """A timeout must not arrive after the closure is already committed."""
         home = tmp_path / "home"

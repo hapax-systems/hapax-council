@@ -663,6 +663,79 @@ class TestSweepBinding:
         assert rc == 0
         assert seen.get("claim_marker_dir") == explicit
 
+    def test_observational_mode_retires_no_relay(self, tmp_path: Path, monkeypatch) -> None:
+        """A "diagnostic" sweep must not mutate relay state.
+
+        `run_sweep` called `reap_dead_lanes` unconditionally, and reaping runs
+        `hapax-relay-retire`. So `--no-write --no-actions` — the pair this repo's
+        runbook offered as non-mutating, and which I ran to verify that runbook —
+        retired a live lane (measured 2026-09-14T10:46:26Z on this host: `alpha`).
+        Both flags now withhold it, and the events are still computed.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cc_hygiene_sweeper_reap", REPO_ROOT / "scripts" / "cc-hygiene-sweeper.py"
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        called: list[Path] = []
+        monkeypatch.setattr(mod, "reap_dead_lanes", lambda root: called.append(root) or [])
+
+        relay = tmp_path / "cache" / "hapax" / "relay"
+        relay.mkdir(parents=True)
+        vault = tmp_path / "vault"
+        (vault / "active").mkdir(parents=True)
+        (vault / "closed").mkdir(parents=True)
+
+        mod.run_sweep(vault_root=vault, relay_root=relay, repo_root=tmp_path, reap=False)
+        assert not called, "observational mode retired relays anyway"
+
+        mod.run_sweep(vault_root=vault, relay_root=relay, repo_root=tmp_path)
+        assert called, (
+            "the production sweep stopped reaping — withholding the action in "
+            "diagnostic mode must not disable it everywhere"
+        )
+
+    def test_the_cli_withholds_reaping_for_both_diagnostic_flags(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Neither flag may leave the one mutation outside both of them."""
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cc_hygiene_sweeper_reapcli", REPO_ROOT / "scripts" / "cc-hygiene-sweeper.py"
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        relay = tmp_path / "cache" / "hapax" / "relay"
+        relay.mkdir(parents=True)
+        vault = tmp_path / "vault"
+        (vault / "active").mkdir(parents=True)
+        (vault / "closed").mkdir(parents=True)
+        seen: list[object] = []
+        real = mod.run_sweep
+        monkeypatch.setattr(
+            mod, "run_sweep", lambda **kw: seen.append(kw.get("reap")) or real(**kw)
+        )
+
+        base = [
+            "--vault-root",
+            str(vault),
+            "--relay-root",
+            str(relay),
+            "--repo-root",
+            str(tmp_path),
+        ]
+        for flags in (["--no-write", "--no-actions"], ["--no-write"], ["--no-actions"]):
+            seen.clear()
+            assert mod.main([*base, *flags]) == 0
+            assert seen == [False], f"{flags} did not withhold reaping: reap={seen}"
+
     def test_a_first_read_that_fails_is_not_erased_by_a_second_that_succeeds(
         self, tmp_path: Path
     ) -> None:
