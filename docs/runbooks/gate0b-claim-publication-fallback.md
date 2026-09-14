@@ -261,11 +261,30 @@ because the four cases have genuinely different remedies.
 Two further events report that the sweep itself was incomplete, and mean the
 check's silence is not evidence of agreement:
 
-- `marker_dir_absent` (warning) — the marker directory does not exist, so the
-  join checked nothing. Usually a misconfigured `--relay-root`, since the marker
+- `marker_dir_absent` (**violation** — ntfy alerts gate on that tier, and a
+  reconciliation that checked nothing is exactly the case someone has to notice)
+  — the marker directory does not exist, so the join checked nothing. Usually a misconfigured `--relay-root`, since the marker
   dir is derived from its parent.
 - `marker_dir_unreadable` / `marker_unreadable` (violation) — enumeration or a
   specific file could not be read. Repair the permission, then re-sweep.
+- `marker_dir_empty` (warning) — the DERIVED marker directory exists but holds no
+  markers. Expected on an idle host; otherwise `--relay-root` has been relocated
+  away from cc-claim's cache and the join is reconciling an empty directory.
+
+### `cc-close` refuses with "declares task_id ..."
+
+cc-close selects a note by filename and then checks that the note's own
+`task_id:` is the one you asked for. Two refusals (both exit 2, nothing mutated):
+
+- **`declares task_id 'X', not 'Y'`** — the only note matching your id by filename
+  belongs to a different task. Most often a prefix neighbour: asking for `t1` when
+  only `t1-next.md` exists. Pass the exact id, or repair the filename/frontmatter
+  so they agree.
+- **`declares no readable task_id`** — the note's frontmatter has no parseable
+  `task_id` scalar. Repair it (`task_id: <id>`, single-line) and re-run.
+
+This guard exists because the filename glob can only ever match a prefix: without
+it, `cc-close t1` selected `t1-next.md` and withdrew different, live work.
 
 ### Silencing it
 

@@ -200,6 +200,34 @@ class TestCcClaimIntegration:
         assert "harness=claude" in note, f"the rest of the shape must still record\n{note}"
         assert "scaffold_revision" not in note, "an unresolvable revision was recorded anyway"
 
+    def test_git_returning_nothing_also_omits_the_revision(self, tmp_path: Path) -> None:
+        """_scaffold_revision's empty-stdout branch — the third of its three.
+
+        The sibling test covers a git that exits non-zero. This covers one that
+        SUCCEEDS and prints nothing, which is a different branch reaching the same
+        `return None`. Both must leave the claim written with no `shape=` revision
+        rather than an empty or placeholder one.
+
+        The remaining branch (OSError — git absent entirely) is not exercised
+        directly: PATH lookup skips a dangling or non-executable entry and finds
+        the real git, and emptying PATH stops the shell resolving `bash` before
+        cc-claim runs at all. It shares this branch's `return None`, so the
+        behaviour is covered even though the trigger is not.
+        """
+        shadow = tmp_path / "shadowbin"
+        shadow.mkdir()
+        silent = shadow / "git"
+        silent.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        silent.chmod(0o755)
+        note = self._claim(
+            tmp_path / "home",
+            "task-git-silent",
+            HAPAX_AGENT_INTERFACE="claude",
+            PATH=f"{shadow}:{os.environ.get('PATH', '')}",
+        )
+        assert "claimed (cc-claim" in note, f"the claim itself was not written\n{note}"
+        assert "scaffold_revision" not in note
+
     def test_nothing_recorded_stamps_no_empty_shape(self, tmp_path: Path) -> None:
         """`shape=()` would read as a measured emptiness rather than an absence."""
         note = self._claim(tmp_path / "home", "task-bare")

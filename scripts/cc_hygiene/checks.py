@@ -1157,8 +1157,19 @@ def check_stale_claim_marker(
     # sweeping another cache to delete their LOCAL claim files instead of the
     # observed ones — a destructive instruction aimed at the wrong machine's state.
     marker_dir = cache_dir if cache_dir is not None else Path.home() / ".cache" / "hapax"
-    active = {n.task_id: n for n in notes}
-    closed = {n.task_id: n for n in closed_notes}
+    # Count BEFORE collapsing. `{n.task_id: n for n in notes}` silently keeps the
+    # last note for a duplicated id: with active/t1-a.md (in_progress) and
+    # active/t1-z.md (withdrawn) both declaring task_id t1, the dict yields the
+    # withdrawn one, the check emits `cc-close t1 --status withdrawn`, and cc-close
+    # selects t1-a.md as its first prefix match — which passes the identity guard,
+    # because it really does declare t1 — and withdraws the LIVE note. The
+    # exact-filename fix does not help when NEITHER file is t1.md.
+    active_notes = list(notes)
+    closed_note_list = list(closed_notes)
+    _active_counts = Counter(n.task_id for n in active_notes)
+    _closed_counts = Counter(n.task_id for n in closed_note_list)
+    active = {n.task_id: n for n in active_notes}
+    closed = {n.task_id: n for n in closed_note_list}
 
     events: list[HygieneEvent] = []
     if scan.enumeration_error is not None:
@@ -1250,6 +1261,43 @@ def check_stale_claim_marker(
         # went true from the closed/ duplicate, so a LIVE in_progress claim was
         # reported as vault_location=closed and its marker recommended for
         # deletion. Report the conflict; do not infer which record is real.
+        # Duplicate identities WITHIN one collection are the same class of vault
+        # inconsistency as the cross-directory case below, and more dangerous:
+        # cc-close resolves by filename, so it can select a different note than the
+        # one whose status shaped the remediation. Refuse to construct a command.
+        dupe_in = [
+            name
+            for name, counts in (("active", _active_counts), ("closed", _closed_counts))
+            if counts[task_id] > 1
+        ]
+        if dupe_in:
+            where = " and ".join(dupe_in)
+            paths = sorted(
+                n.path for n in (*active_notes, *closed_note_list) if n.task_id == task_id
+            )
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="violation",
+                    task_id=task_id,
+                    session=role,
+                    message=(
+                        f"task '{task_id}' is declared by more than one note in "
+                        f"{where}/ ({', '.join(paths)}) — cc-close resolves by "
+                        "filename, so any generated command could mutate the wrong one"
+                    ),
+                    metadata={
+                        "marker": str(marker_dir / f"cc-active-task-{key}"),
+                        "role": role_label,
+                        "duplicate_notes": ", ".join(paths),
+                        "next_action": "operator-adjudication",
+                        "reason": "duplicate_task_id_within_collection",
+                    },
+                )
+            )
+            continue
+
         if task_id in active and task_id in closed:
             events.append(
                 HygieneEvent(

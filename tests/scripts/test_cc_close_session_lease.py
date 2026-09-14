@@ -311,18 +311,23 @@ def test_cc_close_guard_failure_spares_the_lease_rather_than_deleting_it(
     foreign = cache / "cc-active-task-eta-3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
     foreign.write_text("foo\n", encoding="utf-8")
 
-    # Fail ONLY the guard invocation. A python3 that always exits 70 kills cc-close
-    # at its note rewrite, long before the foreign-lease predicate — so the
-    # marker-survives assertion stayed green even with the predicate deleted. The
-    # guard is the only caller passing `-I -` with three argv items, so delegate
-    # everything else to the real interpreter and fail just that shape.
+    # Fail ONLY the foreign-lease guard. A python3 that always exits 70 kills
+    # cc-close at its note rewrite, long before the predicate — so the
+    # marker-survives assertion stayed green even with the predicate deleted. And
+    # matching on `-I -` alone is now too broad: the frontmatter identity guard
+    # uses that shape too, and failing it refuses the close before cleanup. The
+    # lease guard is the call passing THREE positional args (repo_root, claim_key,
+    # role) — `-I`, `-`, plus three — so discriminate on argv count and delegate
+    # everything else to the real interpreter.
     real_python = shutil.which("python3")
     assert real_python is not None
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir()
     broken = fakebin / "python3"
     broken.write_text(
-        f'#!/bin/sh\ncase "$*" in\n  *-I\\ -*) exit 70 ;;\n  *) exec {real_python} "$@" ;;\nesac\n',
+        "#!/bin/sh\n"
+        'if [ "$1" = "-I" ] && [ "$2" = "-" ] && [ $# -eq 5 ]; then exit 70; fi\n'
+        f'exec {real_python} "$@"\n',
         encoding="utf-8",
     )
     broken.chmod(0o755)

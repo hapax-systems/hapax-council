@@ -372,6 +372,7 @@ def run_sweep(
     # catches a MISSING one, but a relocated-and-existing one reports clean while
     # checking nothing. Pass claim_marker_dir explicitly rather than relying on the
     # coincidence whenever the two are not siblings.
+    derived_marker_dir = claim_marker_dir is None
     if claim_marker_dir is None:
         claim_marker_dir = relay_root.parent
 
@@ -430,9 +431,37 @@ def run_sweep(
             )
         )
     else:
+        scan = read_claim_markers(claim_marker_dir)
+        # A DERIVED marker dir that exists but holds nothing is the relocation
+        # hazard the comment above names: the absent-dir branch catches a missing
+        # directory, not a relocated-and-empty one, so without this the join
+        # reports clean while reconciling nothing. An empty cache is legitimate on
+        # an idle host, so this is a warning that names where it looked — not a
+        # violation — and it is raised only when the dir was derived rather than
+        # passed, since an explicit dir is the caller's assertion about where to look.
+        if derived_marker_dir and not scan.markers and scan.enumeration_error is None:
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="warning",
+                    message=(
+                        f"claim marker directory {claim_marker_dir} (derived from "
+                        f"relay_root {relay_root}) holds no cc-active-task-* markers — "
+                        "the live↔declared join reconciled nothing. Expected on an idle "
+                        "host; otherwise the derivation points at the wrong directory."
+                    ),
+                    metadata={
+                        "marker_dir": str(claim_marker_dir),
+                        "relay_root": str(relay_root),
+                        "next_action": "operator-adjudication",
+                        "reason": "marker_dir_empty",
+                    },
+                )
+            )
         events.extend(
             check_stale_claim_marker(
-                read_claim_markers(claim_marker_dir),
+                scan,
                 notes,
                 closed_notes,
                 cache_dir=claim_marker_dir,

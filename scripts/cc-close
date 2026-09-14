@@ -82,8 +82,29 @@ fi
 # (`t1-next` when asked for `t1`) is reachable; comparing the note's own
 # `task_id:` closes that without depending on filename conventions.
 if [[ -n "$note_path" ]]; then
-  selected_task_id="$(sed -n 's/^task_id:[[:space:]]*//p' "$note_path" | head -n1 | tr -d '"'\''[:space:]')"
-  if [[ -n "$selected_task_id" && "$selected_task_id" != "$task_id" ]]; then
+  # Canonical frontmatter parser, not sed. The first cut matched only an unquoted
+  # `task_id:` at column zero and ADMITTED an empty result, so `"task_id": t1-next`
+  # passed a request for t1 and a missing value passed everything — while a valid
+  # `task_id: t1 # comment` was rejected. A guard whose failure mode is "admit" is
+  # not a guard.
+  selected_task_id="$(python3 -I - "$SCRIPT_DIR/.." "$note_path" <<'PYEOF' || true
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+
+from shared.frontmatter import parse_frontmatter
+
+fm, _body = parse_frontmatter(Path(sys.argv[2]))
+value = (fm or {}).get("task_id")
+print(str(value).strip() if value is not None else "")
+PYEOF
+  )"
+  if [[ -z "$selected_task_id" ]]; then
+    echo "cc-close: refusing — '$note_path' declares no readable task_id. Next action: repair the note's frontmatter (a single-line 'task_id: <id>' scalar), then re-run. Nothing was modified." >&2
+    exit 2
+  fi
+  if [[ "$selected_task_id" != "$task_id" ]]; then
     echo "cc-close: refusing — '$note_path' declares task_id '$selected_task_id', not '$task_id'. Next action: pass the exact task id, or repair the note's filename/frontmatter so they agree. Nothing was modified." >&2
     exit 2
   fi

@@ -1,0 +1,178 @@
+"""Run the emitted remediation through real cc-close, and see what survives.
+
+Every earlier test of this remediation checked the STRING: that it parses under
+`bash -n`, that it names the right identity variable, that it carries the observed
+roots. None executed it. So each round found a new way for a syntactically valid,
+correctly-parameterised command to act on the wrong thing — a prefix-matched
+neighbour, a note whose id disagreed, a duplicate identity inside one directory.
+The string was fine every time.
+
+These build an isolated vault and cache, ask the check what to run, run it, and
+assert which notes and markers are left. That is the only shape that can catch
+"the command was well-formed and did the wrong thing".
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+from cc_hygiene.checks import check_stale_claim_marker, parse_task_note  # noqa: E402
+
+CC_CLOSE = REPO_ROOT / "scripts" / "cc-close"
+
+_IDENTITY_ENV = (
+    "HAPAX_AGENT_NAME",
+    "HAPAX_AGENT_ROLE",
+    "HAPAX_AGENT_INTERFACE",
+    "HAPAX_SESSION_ID",
+    "CLAUDE_ROLE",
+    "CLAUDECODE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_THREAD_NAME",
+    "CODEX_SESSION_NAME",
+    "CODEX_SESSION",
+    "CODEX_ROLE",
+    "CODEX_HOME",
+    "HAPAX_CC_TASKS_ROOT",
+)
+
+
+def _write_note(vault: Path, filename: str, task_id: str, status: str) -> Path:
+    path = vault / "active" / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    (vault / "closed").mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        textwrap.dedent(
+            f"""\
+            ---
+            type: cc-task
+            task_id: {task_id}
+            title: "{task_id}"
+            status: {status}
+            assigned_to: eta
+            completed_at:
+            updated_at:
+            pr:
+            ---
+
+            # {task_id}
+
+            ## Session log
+            """
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _sweep(vault: Path, cache: Path, marker_key: str, task_id: str):
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / f"cc-active-task-{marker_key}").write_text(f"{task_id}\n", encoding="utf-8")
+    active = [n for n in (parse_task_note(p) for p in (vault / "active").glob("*.md")) if n]
+    closed = [n for n in (parse_task_note(p) for p in (vault / "closed").glob("*.md")) if n]
+    return check_stale_claim_marker({marker_key: task_id}, active, closed, cache_dir=cache)
+
+
+def _run(command: str, home: Path) -> subprocess.CompletedProcess[str]:
+    env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+    env["HOME"] = str(home)
+    bash = shutil.which("bash")
+    assert bash is not None
+    # cc-close is invoked by absolute path; the emitted command says `cc-close`.
+    return subprocess.run(
+        [bash, "-c", command.replace("cc-close ", f"{CC_CLOSE} ", 1)],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_emitted_remediation_closes_the_reported_task_and_retires_its_marker(
+    tmp_path: Path,
+) -> None:
+    """The happy path, executed rather than parsed."""
+    home = tmp_path / "home"
+    vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    cache = home / ".cache" / "hapax"
+    _write_note(vault, "t1.md", "t1", "withdrawn")
+
+    events = _sweep(vault, cache, "eta", "t1")
+    assert len(events) == 1 and events[0].metadata["next_action"] == "re-emit-close"
+
+    result = _run(events[0].metadata["remediation"], home)
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert not (vault / "active" / "t1.md").exists(), "the reported task was not closed"
+    assert not (cache / "cc-active-task-eta").exists(), "the reported marker survived"
+
+
+def test_duplicate_active_identities_emit_no_command_at_all(tmp_path: Path) -> None:
+    """The round-9 critical, caught where a string check could not see it.
+
+    active/t1-a.md (in_progress) and active/t1-z.md (withdrawn) both declare
+    task_id t1. Collapsing them by id kept the withdrawn one, so the check emitted
+    `cc-close t1 --status withdrawn` — and cc-close selects t1-a.md as its first
+    prefix match, which passes the identity guard because it really does declare
+    t1, and withdraws the LIVE note. Every string assertion about that command was
+    satisfied.
+    """
+    home = tmp_path / "home"
+    vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    cache = home / ".cache" / "hapax"
+    _write_note(vault, "t1-a.md", "t1", "in_progress")
+    _write_note(vault, "t1-z.md", "t1", "withdrawn")
+
+    events = _sweep(vault, cache, "eta", "t1")
+
+    assert len(events) == 1
+    assert events[0].metadata["reason"] == "duplicate_task_id_within_collection"
+    assert events[0].metadata["next_action"] == "operator-adjudication"
+    assert "remediation" not in events[0].metadata, (
+        "a command was emitted for an ambiguous identity; running it would have "
+        "withdrawn the live note"
+    )
+    # And the live note is still there, because nothing was recommended.
+    assert (vault / "active" / "t1-a.md").exists()
+
+
+def test_a_descriptor_named_note_is_closed_by_its_own_id(tmp_path: Path) -> None:
+    """Most notes carry a descriptor suffix; the command must still work."""
+    home = tmp_path / "home"
+    vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    cache = home / ".cache" / "hapax"
+    _write_note(vault, "t1-with-descriptor.md", "t1", "withdrawn")
+
+    events = _sweep(vault, cache, "eta", "t1")
+    result = _run(events[0].metadata["remediation"], home)
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert not (vault / "active" / "t1-with-descriptor.md").exists()
+
+
+def test_a_prefix_neighbour_is_left_alone(tmp_path: Path) -> None:
+    """`cc-close t1` must not reach t1-next, which is different, live work."""
+    home = tmp_path / "home"
+    vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    cache = home / ".cache" / "hapax"
+    _write_note(vault, "t1.md", "t1", "withdrawn")
+    _write_note(vault, "t1-next.md", "t1-next", "in_progress")
+
+    events = _sweep(vault, cache, "eta", "t1")
+    remediation = next(e.metadata["remediation"] for e in events if "remediation" in e.metadata)
+    result = _run(remediation, home)
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert not (vault / "active" / "t1.md").exists(), "the reported task was not closed"
+    assert (vault / "active" / "t1-next.md").exists(), (
+        "the remediation reached a prefix neighbour — different, live work"
+    )
