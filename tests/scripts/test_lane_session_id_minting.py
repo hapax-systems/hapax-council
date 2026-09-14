@@ -333,6 +333,34 @@ def test_launcher_calls_the_helper_outside_a_command_substitution(name: str) -> 
     )
 
 
+def test_codex_runner_pins_a_VARIABLE_not_a_literal_identity() -> None:
+    """The Codex re-entry path, pinned precisely because it is not reachable.
+
+    Replacing hapax-codex's HAPAX_SESSION_ID export with a constant left every
+    earlier assertion passing. The right answer would be a stub-harness test like
+    the Claude one, and it is NOT here: hapax-codex refuses before writing its
+    runner unless a real codex-native worktree exists, and stubbing far enough to
+    reach it produced a test faithful to nothing. A skip would have been worse than
+    this — it reads as coverage while never running.
+
+    So the chain is: the helper mints a fresh id per call (proved behaviourally in
+    TestLaunchSessionId), and the runner interpolates that VARIABLE rather than a
+    literal (proved here). A constant export cannot satisfy both.
+    """
+    code = _strip_comments((SCRIPTS / "hapax-codex").read_text(encoding="utf-8"))
+    pin_lines = [
+        line.strip()
+        for line in code.splitlines()
+        if "export HAPAX_SESSION_ID=" in line and "printf" in line
+    ]
+    assert pin_lines, "hapax-codex's runner no longer pins a session id at all"
+    for line in pin_lines:
+        assert '"$SESSION_UUID"' in line, (
+            f"the runner pins a literal rather than the minted variable: {line!r} — "
+            "every re-exec would then carry the same identity"
+        )
+
+
 def test_codex_runner_pins_the_id_it_propagates() -> None:
     """The one legitimate inheritor must say so explicitly.
 
@@ -546,11 +574,13 @@ class TestLauncherBehaviour:
                 check=False,
                 timeout=30,
             )
-            if not out.exists():
-                pytest.skip(
-                    "hapax-claude did not reach its harness in this sandbox: "
-                    f"{result.stderr.strip()[-160:]}"
-                )
+            # FAIL, do not skip. A skip here lets a launch regression evade the
+            # assertion entirely: the launcher failing to reach its harness is
+            # itself the thing that would hide a broken identity path.
+            assert out.exists(), (
+                "hapax-claude never reached its harness, so the exported identity "
+                f"was not observed: rc={result.returncode}\n{result.stderr.strip()[-400:]}"
+            )
             seen.append(out.read_text().strip())
 
         assert seen[0] and seen[1], f"no identity reached the child: {seen}"

@@ -60,13 +60,46 @@ fi
 cc_task_root_resolve || exit $?
 vault_root="$CC_TASK_ROOT"
 note_path=""
-# EXACT filename first. The descriptor glob below used to run first, so with both
-# `t1.md` and `t1-next.md` present, `cc-close t1` selected t1-next.md and withdrew
-# a DIFFERENT, live task — and cc-hygiene's remediation emits exactly that command
-# shape, so following the runbook verbatim could close unrelated work. An exact
-# name is never ambiguous; a prefix always can be.
-if [[ -f "$vault_root/active/$task_id.md" ]]; then
-  note_path="$vault_root/active/$task_id.md"
+# EVERY candidate that DECLARES this id must be considered, and more than one is
+# fatal. Selecting the "first" match — by any ordering — is what let
+# `cc-close t1` withdraw live work: first t1-next.md by prefix, then t1-a.md when
+# two notes declared t1 and the caller had only seen one of them. A caller cannot
+# make this safe, because a checker reasons about a FILTERED view of the vault
+# (parse_task_note drops notes missing `type: cc-task`) while cc-close mutates the
+# unfiltered filesystem. Revalidating here, at the point of mutation, is the only
+# place the whole truth is available.
+shopt -s nullglob
+_cc_candidates=("$vault_root/active/$task_id.md" "$vault_root/active/$task_id-"*.md)
+shopt -u nullglob
+_cc_matching=()
+for _cc_candidate in "${_cc_candidates[@]}"; do
+  [[ -f "$_cc_candidate" ]] || continue
+  _cc_declared="$(python3 -I - "$SCRIPT_DIR/.." "$_cc_candidate" <<'PYEOF' || true
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+
+from shared.frontmatter import parse_frontmatter
+
+fm, _body = parse_frontmatter(Path(sys.argv[2]))
+value = (fm or {}).get("task_id")
+print(str(value).strip() if value is not None else "")
+PYEOF
+  )"
+  if [[ "$_cc_declared" == "$task_id" ]]; then
+    _cc_matching+=("$_cc_candidate")
+  fi
+done
+if [[ "${#_cc_matching[@]}" -gt 1 ]]; then
+  printf "cc-close: refusing — %d notes in %s/active/ declare task_id '%s':\n" \
+    "${#_cc_matching[@]}" "$vault_root" "$task_id" >&2
+  printf '  %s\n' "${_cc_matching[@]}" >&2
+  echo "Next action: resolve the duplicate identity (one note per task_id), then re-run. Nothing was modified." >&2
+  exit 2
+fi
+if [[ "${#_cc_matching[@]}" -eq 1 ]]; then
+  note_path="${_cc_matching[0]}"
 fi
 # Then `<task_id>-<descriptor>.md` (most tasks carry a descriptor suffix).
 if [[ -z "$note_path" ]]; then
@@ -386,17 +419,24 @@ key, role = sys.argv[2], sys.argv[3]
 # operator-adjudication. split_claim_marker_key resolves that correctly only when
 # given every role that exists, which a closing lane does not know.
 remainder = key[len(role) + 1 :] if key.startswith(f"{role}-") else ""
-sys.exit(0 if is_minted_session_id(remainder) else 1)
+# 0 = retire, 3 = definitely-not-ours. NOT 1: an ImportError or any other uncaught
+# exception also exits 1, and folding that into "not ours" meant an unevaluable
+# guard silently skipped cleanup while cc-close reported success — with the note
+# already moved to closed/, so a rerun could never reach it again. A distinct
+# negative code keeps "the predicate said no" separable from "the predicate did
+# not run".
+sys.exit(0 if is_minted_session_id(remainder) else 3)
 PYEOF
-      if [[ "$guard_rc" -gt 1 ]]; then
+      if [[ "$guard_rc" -eq 3 ]]; then
+        # The predicate ran and said no. Leave the lease alone; nothing to report.
+        continue
+      fi
+      if [[ "$guard_rc" -ne 0 ]]; then
         # Could not EVALUATE. Preserve the lease (uncertainty never deletes) and
         # say so with an exact remedy, because the note is about to move to
         # closed/ and a rerun of cc-close can no longer reach this cleanup.
         echo "cc-close: WARNING — cleanup incomplete: could not evaluate the foreign-lease guard for '$claim_file' (python3 exited $guard_rc). The lease was PRESERVED. Next action: repair python3/PYTHONPATH for this checkout, then retire it by hand once you have confirmed the closure: rm -f '$claim_file' '$HOME/.cache/hapax/cc-claim-epoch-$claim_key'" >&2
         cleanup_incomplete=1
-        continue
-      fi
-      if [[ "$guard_rc" -eq 1 ]]; then
         continue
       fi
     fi

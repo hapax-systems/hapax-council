@@ -372,6 +372,12 @@ def run_sweep(
     # catches a MISSING one, but a relocated-and-existing one reports clean while
     # checking nothing. Pass claim_marker_dir explicitly rather than relying on the
     # coincidence whenever the two are not siblings.
+    # Two options were on the table for the relocation hazard: resolve from the
+    # same source cc-claim uses ($HOME/.cache/hapax), or emit an event when the
+    # derivation finds nothing. The first was TRIED and reverted — reading the real
+    # $HOME makes a sweep of some other vault report on this host's live lanes,
+    # which is the isolation defect this default was introduced to fix. So the
+    # derivation stays, and the fail-open is closed below by an event instead.
     derived_marker_dir = claim_marker_dir is None
     if claim_marker_dir is None:
         claim_marker_dir = relay_root.parent
@@ -440,6 +446,15 @@ def run_sweep(
         # violation — and it is raised only when the dir was derived rather than
         # passed, since an explicit dir is the caller's assertion about where to look.
         if derived_marker_dir and not scan.markers and scan.enumeration_error is None:
+            # WARNING, not violation — and the reason matters, because escalating
+            # here was TRIED and is unsound. "The vault records held tasks, so the
+            # cache must hold markers" looks compelling and is false twice over: a
+            # ghost claim is precisely a claimed note with no marker (cc-hygiene has
+            # a separate check for exactly that), and a task held by a lane on
+            # another host has no marker here either. Escalating on that inference
+            # pages falsely on both. This records where the join looked and what it
+            # found; escalation belongs to the checks that can tell those apart.
+            held = [n for n in notes if (n.status or "").strip() in {"claimed", "in_progress"}]
             events.append(
                 HygieneEvent(
                     timestamp=now,
@@ -447,13 +462,16 @@ def run_sweep(
                     severity="warning",
                     message=(
                         f"claim marker directory {claim_marker_dir} (derived from "
-                        f"relay_root {relay_root}) holds no cc-active-task-* markers — "
-                        "the live↔declared join reconciled nothing. Expected on an idle "
-                        "host; otherwise the derivation points at the wrong directory."
+                        f"relay_root {relay_root}) holds no cc-active-task-* markers "
+                        f"while the vault records {len(held)} claimed/in_progress "
+                        "task(s) — the join reconciled nothing. Expected on an idle "
+                        "host, or where those tasks are held elsewhere or are ghost "
+                        "claims; otherwise the derivation points at the wrong directory"
                     ),
                     metadata={
                         "marker_dir": str(claim_marker_dir),
                         "relay_root": str(relay_root),
+                        "held_task_count": str(len(held)),
                         "next_action": "operator-adjudication",
                         "reason": "marker_dir_empty",
                     },

@@ -319,6 +319,12 @@ def test_cc_close_guard_failure_spares_the_lease_rather_than_deleting_it(
     # lease guard is the call passing THREE positional args (repo_root, claim_key,
     # role) — `-I`, `-`, plus three — so discriminate on argv count and delegate
     # everything else to the real interpreter.
+    #
+    # It exits **1**, not 70, on purpose: exit 1 is what an ImportError or any
+    # other uncaught Python exception produces, and that is the failure this
+    # handler used to misread as "not this role's lease". Injecting an exotic code
+    # tested only the exotic case. The predicate now returns 3 for a real negative,
+    # so 1 is unambiguously an execution failure.
     real_python = shutil.which("python3")
     assert real_python is not None
     fakebin = tmp_path / "fakebin"
@@ -326,7 +332,7 @@ def test_cc_close_guard_failure_spares_the_lease_rather_than_deleting_it(
     broken = fakebin / "python3"
     broken.write_text(
         "#!/bin/sh\n"
-        'if [ "$1" = "-I" ] && [ "$2" = "-" ] && [ $# -eq 5 ]; then exit 70; fi\n'
+        'if [ "$1" = "-I" ] && [ "$2" = "-" ] && [ $# -eq 5 ]; then exit 1; fi\n'
         f'exec {real_python} "$@"\n',
         encoding="utf-8",
     )

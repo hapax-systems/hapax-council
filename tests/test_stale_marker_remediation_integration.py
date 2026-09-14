@@ -145,6 +145,46 @@ def test_duplicate_active_identities_emit_no_command_at_all(tmp_path: Path) -> N
     assert (vault / "active" / "t1-a.md").exists()
 
 
+def test_a_note_the_checker_could_not_parse_still_blocks_closure(tmp_path: Path) -> None:
+    """The checker sees a FILTERED vault; cc-close mutates the real one.
+
+    `parse_task_note` drops a note missing `type: cc-task`, so with active/t1-a.md
+    (in_progress, no type) and active/t1-z.md (withdrawn, valid) both declaring
+    task_id t1, the checker sees only the withdrawn one — no duplicate to detect —
+    and emits `cc-close t1 --status withdrawn`. cc-close then selects t1-a.md, its
+    identity guard passes because it really declares t1, and `withdrawn` skips the
+    completion gates: the live note is withdrawn.
+
+    No caller can prevent this, because the caller's view is the filtered one.
+    cc-close revalidates at the point of mutation, where the whole truth is.
+    """
+    home = tmp_path / "home"
+    vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    cache = home / ".cache" / "hapax"
+    _write_note(vault, "t1-z.md", "t1", "withdrawn")
+    # Declares t1 but has no `type: cc-task`, so the checker never sees it.
+    unparsed = vault / "active" / "t1-a.md"
+    unparsed.write_text(
+        "---\ntask_id: t1\nstatus: in_progress\nassigned_to: eta\n---\n\n# t1\n",
+        encoding="utf-8",
+    )
+
+    events = _sweep(vault, cache, "eta", "t1")
+    remediation = next(
+        (e.metadata["remediation"] for e in events if "remediation" in e.metadata), None
+    )
+    if remediation is None:
+        return  # the checker refused outright; nothing to execute
+
+    result = _run(remediation, home)
+
+    assert result.returncode != 0, (
+        f"the emitted command ran against an ambiguous identity\n{result.stdout}"
+    )
+    assert unparsed.exists(), "the LIVE note the checker could not see was mutated"
+    assert "declare task_id" in result.stderr or "declares task_id" in result.stderr, result.stderr
+
+
 def test_a_descriptor_named_note_is_closed_by_its_own_id(tmp_path: Path) -> None:
     """Most notes carry a descriptor suffix; the command must still work."""
     home = tmp_path / "home"
