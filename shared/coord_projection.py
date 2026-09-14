@@ -31,6 +31,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -3703,6 +3704,91 @@ def _same_entry(left: os.stat_result, right: os.stat_result) -> bool:
     return (left.st_ino, left.st_dev) == (right.st_ino, right.st_dev)
 
 
+#: Stable reason code for a scratch this module declined to remove because the name no
+#: longer holds the inode this transition put there. Greppable, so an operator sweeping for
+#: remnants has a term to search even though nothing in this module sweeps for them.
+_SCRATCH_ABANDONED = "transition_scratch_abandoned_not_ours"
+
+_logger = logging.getLogger(__name__)
+
+
+def _refuse_if_scratch_occupied(
+    dir_fd: int,
+    names: Sequence[str],
+    subject: str,
+) -> None:
+    """Refuse before moving anything if any scratch destination is already taken.
+
+    Every leg below relocates entries into these names, and **no rename in the sequence may
+    land on an occupied name**, because a rename onto an occupied name destroys what is
+    there. An occupied scratch is never a race — the names are derived from the
+    transaction's own scratch operand, so nothing else computes them — it is a previous
+    attempt's remnant, and a previous attempt may have deliberately preserved another
+    writer's only copy there. Renaming over it would destroy exactly what that attempt
+    saved.
+
+    This is the guard that was missing: the earlier shape reserved only the pin (via
+    ``link``'s EEXIST) and used plain renames for the rest, so a second attempt on the same
+    operand silently ate the first attempt's preserved bytes **and reported success**.
+    """
+
+    for name in names:
+        try:
+            os.lstat(name, dir_fd=dir_fd)
+        except FileNotFoundError:
+            continue
+        raise LifecycleTransitionError(
+            "transition_projection_scratch_exists",
+            "recover or quarantine the prior exact transaction scratch before retrying: "
+            f"inspect {name} — it may hold the only copy of a concurrent writer's bytes "
+            "preserved by an earlier attempt — then rerun "
+            "`cc-claim --recover-claim-publications <task_id>`",
+            f"{subject}:{name}",
+        )
+
+
+def _unlink_scratch_if_ours(
+    dir_fd: int,
+    name: str,
+    expected: os.stat_result,
+    *,
+    subject: str,
+) -> bool:
+    """Remove a scratch only while it still holds the inode this transition put there.
+
+    Cleanup is the last place a repair like this loses data, and it lost it here: an
+    unconditional ``unlink`` of a scratch destroys whatever occupies that name, including an
+    entry some other writer put there while the leg was running. Identity is re-read
+    immediately before the removal, and a mismatch means the name is **not ours to remove**.
+
+    A mismatch is left in place for the recovery sweep and logged under
+    :data:`_SCRATCH_ABANDONED` rather than raised: by the time cleanup runs the projection
+    has already succeeded, so raising would convert a completed transition into a failure
+    and lose the very post-state the caller verified. Leaving a remnant is recoverable;
+    destroying an entry is not.
+
+    Returns True when the name is gone (removed, or already absent), False when it was left.
+    """
+
+    try:
+        current = os.lstat(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return True
+    if not _same_entry(current, expected):
+        _logger.warning(
+            "%s: %s name=%s expected_inode=%s found_inode=%s — left for the recovery sweep; "
+            "inspect it before removing, it is another writer's entry",
+            _SCRATCH_ABANDONED,
+            subject,
+            name,
+            expected.st_ino,
+            current.st_ino,
+        )
+        return False
+    os.unlink(name, dir_fd=dir_fd)
+    return True
+
+
 def _refuse_if_displaced_entry_moved(
     dir_fd: int,
     name: str,
@@ -3814,10 +3900,21 @@ def _fallback_exchange(
     dir_fd = src_dir_fd
     displaced = os.lstat(dst_name, dir_fd=dir_fd)
     replacement = os.lstat(src_name, dir_fd=dir_fd)
+    # ALL THREE derive from `src_name`, never from `dst_name`. On every projection leg
+    # `src_name` is the transaction's own scratch (`.<note>.<sha24>.transition-scratch`), so
+    # deriving from it makes these names transaction-unique. Deriving `holding` from the
+    # LIVE filename — which the previous shape did — made every transaction touching the
+    # same note compute the same name, which is what let one attempt destroy another's
+    # preserved bytes.
     pin = _fallback_scratch_name(src_name, "pin")
-    holding = _fallback_scratch_name(dst_name, "holding")
+    holding = _fallback_scratch_name(src_name, "holding")
     spent = _fallback_scratch_name(src_name, "spent")
     scratches = f"pin={pin} holding={holding} spent={spent}"
+    recover = "then rerun `cc-claim --recover-claim-publications <task_id>`"
+
+    # 0. No rename in this sequence may land on an occupied name, so establish that none of
+    #    them is occupied before anything moves.
+    _refuse_if_scratch_occupied(dir_fd, (pin, holding, spent), f"{src_name}->{dst_name}")
 
     # 1. Pin the displaced inode, so it is never reachable only through a name that is
     #    about to change. EEXIST here is a previous attempt's remnant, not a race.
@@ -3826,7 +3923,8 @@ def _fallback_exchange(
     except FileExistsError as exc:
         raise LifecycleTransitionError(
             "transition_projection_scratch_exists",
-            "recover or quarantine the prior exact transaction scratch before retrying",
+            f"recover or quarantine the prior exact transaction scratch before retrying: "
+            f"inspect {pin}, {recover}",
             pin,
         ) from exc
     os.fsync(dir_fd)
@@ -3843,7 +3941,9 @@ def _fallback_exchange(
             errno.EBUSY,
             os.strerror(errno.EBUSY),
             f"{src_name}->{dst_name} (dst was replaced; that writer's bytes are preserved "
-            f"at {holding} and the displaced entry at {pin}; {scratches})",
+            f"at {holding} and the displaced entry at {pin}; {scratches}). "
+            f"Next: reconcile {holding} against {pin} by hand — do not delete either, "
+            f"{holding} may be another writer's only copy — {recover}",
         )
 
     # 4. Publish into a name that is now vacant, with create-or-EEXIST semantics. A writer
@@ -3856,7 +3956,9 @@ def _fallback_exchange(
             errno.EBUSY,
             os.strerror(errno.EBUSY),
             f"{src_name}->{dst_name} (a writer created dst; nothing was overwritten, and "
-            f"the displaced entry is preserved at {holding}; {scratches})",
+            f"the displaced entry is preserved at {holding}; {scratches}). "
+            f"Next: restore {dst_name} from {holding} only after confirming the entry now at "
+            f"{dst_name} is not wanted — {recover}",
         ) from exc
     os.fsync(dir_fd)
 
@@ -3871,27 +3973,50 @@ def _fallback_exchange(
             errno.EBUSY,
             os.strerror(errno.EBUSY),
             f"{src_name}->{dst_name} (src was replaced; that writer's bytes are preserved "
-            f"at {spent}; {scratches})",
+            f"at {spent}; {scratches}). "
+            f"Next: reconcile {spent} by hand before removing it — {recover}",
         )
     if not _same_entry(os.lstat(dst_name, dir_fd=dir_fd), replacement):
         raise OSError(
             errno.EBUSY,
             os.strerror(errno.EBUSY),
-            f"{src_name}->{dst_name} (dst was replaced after publication; {scratches})",
+            f"{src_name}->{dst_name} (dst was replaced after publication; {scratches}). "
+            f"Next: the entry now at {dst_name} is another writer's — reconcile against "
+            f"{spent} and {pin} by hand, {recover}",
         )
 
-    # 7. Refill src from the pin, giving the syscall's exact post-state.
-    os.rename(pin, src_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    # 7. Refill src by CREATE-OR-FAIL, never by rename. A writer can recreate `src` between
+    #    its retirement at step 5 and this refill, and a rename would destroy that entry —
+    #    both identity checks above happen before it, so neither could see it. `link` refuses
+    #    instead, and the pin keeps holding the displaced bytes for recovery.
+    try:
+        os.link(pin, src_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd, follow_symlinks=False)
+    except FileExistsError as exc:
+        raise OSError(
+            errno.EBUSY,
+            os.strerror(errno.EBUSY),
+            f"{src_name}->{dst_name} (a writer recreated {src_name} after it was retired; "
+            f"nothing was overwritten, the displaced entry is preserved at {pin} and the "
+            f"published entry stands at {dst_name}; {scratches}). "
+            f"Next: reconcile {src_name} against {pin} by hand — do not delete {pin}, it is "
+            f"the only remaining name for the displaced entry — {recover}",
+        ) from exc
 
-    # 8. Cleanup runs ONLY here, on the success path, and only on names now proven
-    #    redundant: `holding` is a second name for the inode step 7 just put at src, and
-    #    `spent` is a second name for the inode at dst. Every failure above returns without
-    #    unlinking anything at all — deliberately, because after step 2 a scratch can be the
-    #    sole name of a live entry (the raced preimage), so a tidy-up on the failure path
-    #    would destroy exactly what the repair exists to preserve.
-    for redundant in (spent, holding):
-        with suppress(FileNotFoundError):
-            os.unlink(redundant, dir_fd=dir_fd)
+    # 8. Cleanup runs ONLY here, on the success path, and only on names still holding the
+    #    inode this transition put there — `holding` and `pin` name the displaced entry now
+    #    at src, `spent` names the published entry now at dst. Every failure above returns
+    #    without unlinking anything at all, deliberately: after step 2 a scratch can be the
+    #    sole name of a live entry, so tidying up on a failure path would destroy exactly
+    #    what this repair exists to preserve.
+    #
+    #    Each removal is identity-checked rather than unconditional. A writer can replace a
+    #    scratch name while the leg runs, and an unconditional unlink would destroy that
+    #    entry — the same defect as an unconditional rename, in the one place it is easiest
+    #    to overlook. A mismatch is left for the recovery sweep and logged, never raised:
+    #    the projection has already succeeded by this point, so raising would discard a
+    #    verified post-state over a remnant that is merely untidy.
+    for redundant, expected in ((spent, replacement), (holding, displaced), (pin, displaced)):
+        _unlink_scratch_if_ours(dir_fd, redundant, expected, subject=f"{src_name}->{dst_name}")
     os.fsync(dir_fd)
 
 
@@ -3951,16 +4076,21 @@ def _fallback_noreplace(
     # mismatch, where `unlink` would have destroyed it and left the caller's
     # displaced-entry comparison matching its own expectation.
     #
-    # The destination name carries 64 bits from `os.urandom` inside the transaction's own
-    # directory, and `rename` does not report EEXIST, so it is generated rather than
-    # reserved: a collision would have to be a pre-existing file whose name embeds this
-    # call's random hex, which no producer in the estate creates, and even then the entry
-    # clobbered would be in our own `.transition-pin.` namespace.
+    # The destination name is DETERMINISTIC, derived from the transaction's own scratch
+    # operand — see `_fallback_scratch_name`. This comment used to argue the opposite, that
+    # the name carried 64 bits of `os.urandom` so "a collision would have to be a
+    # pre-existing file whose name embeds this call's random hex". That argument did not
+    # survive the switch to deterministic names, and leaving it here **hid a real defect**:
+    # the name is fully predictable, `rename` does not report EEXIST, so a remnant from a
+    # prior attempt on the same operand was silently clobbered — possibly a remnant holding
+    # another writer's only copy, preserved by that attempt on purpose. The reservation
+    # below is what makes the rename safe; the prose never did.
     holding = _fallback_scratch_name(src_name, "holding")
+    _refuse_if_scratch_occupied(src_dir_fd, (holding,), src_name)
     os.rename(src_name, holding, src_dir_fd=src_dir_fd, dst_dir_fd=src_dir_fd)
     os.fsync(src_dir_fd)
     moved = os.lstat(holding, dir_fd=src_dir_fd)
-    if (moved.st_ino, moved.st_dev) != (intended.st_ino, intended.st_dev):
+    if not _same_entry(moved, intended):
         # A replacement landed after the check. Keep BOTH and name both: `holding` has
         # the other writer's bytes, and `dst_name` is now the preimage's ONLY name,
         # because that writer's own rename removed the original `src`. Withdrawing the
@@ -3970,9 +4100,17 @@ def _fallback_noreplace(
             errno.EBUSY,
             os.strerror(errno.EBUSY),
             f"{src_name} (concurrent replacement preserved at {holding}; "
-            f"displaced preimage preserved at {dst_name})",
+            f"displaced preimage preserved at {dst_name}). "
+            f"Next: reconcile {holding} against {dst_name} by hand — delete neither, "
+            f"{holding} may be the other writer's only copy and {dst_name} is now the "
+            "preimage's only name — then rerun "
+            "`cc-claim --recover-claim-publications <task_id>`",
         )
-    os.unlink(holding, dir_fd=src_dir_fd)
+    # Identity-checked, for the same reason as the exchange leg's cleanup: an unconditional
+    # unlink of a scratch destroys whatever occupies that name, and by this point the
+    # retirement has already succeeded, so a mismatch is left for the recovery sweep and
+    # logged rather than raised.
+    _unlink_scratch_if_ours(src_dir_fd, holding, intended, subject=src_name)
     os.fsync(src_dir_fd)
 
 
