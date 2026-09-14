@@ -109,8 +109,18 @@ def _safe_name(task_id: str) -> str:
 
 
 def lock_path(task_id: str, cache_dir: Path | None = None) -> Path:
-    """The lock file for ``task_id``, with its directory created."""
-    directory = lock_dir(cache_dir)
+    """The lock file for ``task_id``, with its directory created.
+
+    In a ``tasks/`` subdirectory, and role locks in ``roles/``, because the two
+    namespaces must be DISJOINT and a naming convention inside one directory is not.
+    The first cut prefixed role locks with ``role-``, which collides exactly:
+    ``lock_path("role-eta")`` and ``role_lock_path("eta")`` both resolved to
+    ``role-eta.lock``, so a task actually named ``role-eta`` claimed by role ``eta``
+    took the task lock and then timed out waiting for the same inode through a
+    second descriptor — a self-deadlock, reproduced in review round 17. Any prefix
+    scheme has such a task id; a separate directory has none.
+    """
+    directory = lock_dir(cache_dir) / "tasks"
     directory.mkdir(parents=True, exist_ok=True)
     return directory / f"{_safe_name(task_id)}.lock"
 
@@ -129,10 +139,13 @@ def role_lock_path(role: str, cache_dir: Path | None = None) -> Path:
     **Lock order is task, then role.** Both writers take them in that order and
     neither takes them in the other, which is what makes two locks safe rather than
     a deadlock waiting for load. Nothing takes the role lock alone.
+
+    In ``roles/``, disjoint from ``tasks/`` by directory rather than by prefix — see
+    :func:`lock_path` for the collision a prefix produced.
     """
-    directory = lock_dir(cache_dir)
+    directory = lock_dir(cache_dir) / "roles"
     directory.mkdir(parents=True, exist_ok=True)
-    return directory / f"role-{_safe_name(role)}.lock"
+    return directory / f"{_safe_name(role)}.lock"
 
 
 class TaskLockTimeout(RuntimeError):

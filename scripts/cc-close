@@ -371,6 +371,44 @@ elif [[ "$flock_rc" -ne 0 ]]; then
   exit 2
 fi
 
+# --- The ROLE lease lock, taken HERE: before the closure, not after it ---------
+#
+# A SECOND lock, because there is a second resource. fd 9 is keyed by task id and
+# protects the note. The lease files are keyed by `<role>[-<session>]`, and both
+# cc-close's sweep and cc-claim's publication write that namespace — so keying
+# their exclusion by task id excludes nothing. Round 16 reproduced it: cc-close
+# closing task A read a marker naming A, and by the time it removed the file
+# cc-claim had republished it as task B under B's own, different, task lock. The
+# head check cannot save us; it is the read half of the race.
+#
+# LOCK ORDER IS TASK THEN ROLE, in both writers, and nothing takes the role lock
+# alone. That ordering is the whole reason two locks are safe rather than a
+# deadlock waiting for load.
+#
+# BEFORE the writer, because the first cut took it just before the sweep — after
+# the note had already moved to closed/. Round 17 found both consequences: a
+# timeout there returned SUCCESS with the leases retained and prescribed a re-run
+# that exits at the active-note lookup and can never reach cleanup again, and the
+# missing-path branch set a flag without clearing `role`, so the sweep ran
+# unlocked anyway. Acquiring up front makes every failure here a refusal with
+# nothing modified, which is a state the operator can actually act on.
+if [[ -n "$role" ]]; then
+  if [[ -z "$role_lock_path" ]]; then
+    echo "cc-close: refusing — could not resolve the role lease lock path for role '$role'. Retiring this role's leases without it would race a concurrent cc-claim. Next action: run from a complete council checkout (shared/cc_task_lock.py must be importable). Nothing was modified." >&2
+    exit 2
+  fi
+  exec 8>"$role_lock_path"
+  role_flock_rc=0
+  flock -x -w "$lock_timeout" 8 || role_flock_rc=$?
+  if [[ "$role_flock_rc" -eq 1 ]]; then
+    echo "cc-close: refusing — another process has held the role lease lock for '$role' ($role_lock_path) for more than ${lock_timeout}s. A hung cc-claim for ANY task of this role holds it. Next action: find the holder with 'fuser -v $role_lock_path', let it finish or kill it, then re-run. Nothing was modified." >&2
+    exit 2
+  elif [[ "$role_flock_rc" -ne 0 ]]; then
+    echo "cc-close: refusing — could not acquire the role lease lock for '$role' ($role_lock_path): flock exited $role_flock_rc, which is not contention. Next action: check that $role_lock_path is writable. Nothing was modified." >&2
+    exit 2
+  fi
+fi
+
 python3 - "$SCRIPT_DIR/.." "$note_path" "$task_id" "$final_status" "$pr" "$role" \
   "${expect_status:-}" <<'PYEOF'
 import re
@@ -633,38 +671,6 @@ PYEOF
 # (reform finding #12/#13). Clear this session's lease forms, each only when its
 # head still names the closed task (never clobber a lease for other work).
 if [[ -n "$role" ]]; then
-  # --- The ROLE lease lock, taken here and held to exit -------------------------
-  #
-  # A SECOND lock, because there is a second resource. fd 9 is keyed by task id and
-  # protects the note. These files are keyed by `<role>[-<session>]`, and both
-  # cc-close's sweep and cc-claim's publication write that namespace — so keying
-  # their exclusion by task id excludes nothing. Review round 16 reproduced it:
-  # cc-close closing task A read a marker naming A, and by the time it removed the
-  # file cc-claim had republished it as task B, under B's own different task lock.
-  # The head check cannot save us; it is the read half of the race.
-  #
-  # LOCK ORDER IS TASK THEN ROLE, in both writers, and nothing takes the role lock
-  # alone. That ordering is the whole reason two locks are safe here rather than a
-  # deadlock waiting for load.
-  #
-  # Taken BEFORE the loop, so every head read below happens under it — a read
-  # before acquisition is a fact about a file another writer was still free to
-  # replace.
-  if [[ -z "$role_lock_path" ]]; then
-    echo "cc-close: WARNING — cleanup incomplete: could not resolve the role lease lock path for role '$role'. The leases were PRESERVED. Next action: run from a complete council checkout, then retire them by hand once you have confirmed the closure." >&2
-    cleanup_incomplete=1
-  else
-    exec 8>"$role_lock_path"
-    role_flock_rc=0
-    flock -x -w "$lock_timeout" 8 || role_flock_rc=$?
-    if [[ "$role_flock_rc" -ne 0 ]]; then
-      echo "cc-close: WARNING — cleanup incomplete: could not take the role lease lock for '$role' ($role_lock_path); flock exited $role_flock_rc. The leases were PRESERVED rather than retired against a namespace another writer may be publishing into. Next action: find the holder with 'fuser -v $role_lock_path', let it finish, then re-run cc-close for this task." >&2
-      cleanup_incomplete=1
-      role=""
-    fi
-  fi
-fi
-if [[ -n "$role" ]]; then
   cleared_claim=0
   # Sweep the ROLE's lease forms, not just the closing session's: the legacy
   # shared file plus EVERY session-keyed lease this role holds. The writer
@@ -777,6 +783,18 @@ PYEOF
   done
   if [[ "$cleared_claim" == 1 ]]; then
     systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
+  fi
+  # Partial failure reaches the EXIT STATUS. `cleanup_incomplete` was set in three
+  # places and read in none, so a close that kept a lease it could not evaluate
+  # returned 0 — indistinguishable from a clean one to anything scripting cc-close.
+  #
+  # A distinct code, not a generic failure: the closure DID happen, the note IS in
+  # closed/, and re-running cc-close cannot reach cleanup again (it exits at the
+  # active-note lookup). 3 means "closed, leases not fully retired"; the exact `rm`
+  # for each survivor was printed above.
+  if [[ "${cleanup_incomplete:-0}" == 1 ]]; then
+    echo "cc-close: task '$task_id' IS closed, but lease cleanup did not complete — exiting 3. The surviving lease paths and their removal commands are named above; retire them by hand once you have confirmed the closure. Re-running cc-close will NOT reach cleanup: the note is no longer in active/." >&2
+    exit 3
   fi
 fi
 

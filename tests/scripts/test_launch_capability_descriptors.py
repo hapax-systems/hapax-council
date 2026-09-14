@@ -297,6 +297,53 @@ def test_only_a_dispatched_launcher_names_an_addressee(name: str) -> None:
         )
 
 
+def test_the_pinner_writes_the_whole_set_not_only_the_route() -> None:
+    """A pin says "these descriptors are yours" — so a member left unwritten is
+    inherited UNDER the pin's authority, which is worse than no pin at all.
+
+    `_pin_capability_descriptors` pops HAPAX_CAPABILITY_MODEL precisely so the
+    launcher publishes what it executed with. Nothing asserted that from the
+    dispatch side: the launcher-side tests cover clearing an UNPINNED environment,
+    and this is the pinned one. Driven through the real function with an ambient
+    model in the dispatcher's own environment, which is how it would arrive.
+    """
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader(
+        "hapax_methodology_dispatch_pin", str(SCRIPTS / "hapax-methodology-dispatch")
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = mod
+    loader.exec_module(mod)
+
+    route = mod.PlatformPath(
+        platform="claude",
+        mode="headless",
+        profile="opus",
+        launcher="hapax-claude-headless",
+        summary="test route",
+        mutable=True,
+        notes=(),
+    )
+    env = {
+        "HAPAX_CAPABILITY_MODEL": "gpt-5.3-codex",  # the dispatcher's own, inherited
+        "HAPAX_CAPABILITY_ROUTE": "codex.headless.full",
+        "UNRELATED": "kept",
+    }
+    mod._pin_capability_descriptors(env, "hapax-claude-headless", route)
+
+    assert env["HAPAX_CAPABILITY_ROUTE"] == "claude.headless.opus"
+    assert "HAPAX_CAPABILITY_MODEL" not in env, (
+        "the pinner authorised the launcher to keep a model it inherited from the "
+        f"dispatcher — a half-written set under a full grant: {env}"
+    )
+    assert env["HAPAX_CAPABILITY_PINNED"] == "hapax-claude-headless"
+    assert env["UNRELATED"] == "kept", "the pinner reached beyond the descriptor set"
+
+
 def test_the_dispatcher_addresses_the_launcher_it_pins() -> None:
     """The two halves of the grant must name the same launcher.
 

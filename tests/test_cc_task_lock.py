@@ -33,6 +33,7 @@ from shared.cc_task_lock import (  # noqa: E402
     DEFAULT_TIMEOUT_SECONDS,
     TIMEOUT_ENV,
     TaskLockTimeout,
+    hold_role_lease_lock,
     hold_task_note_lock,
     lock_path,
     role_lock_path,
@@ -195,8 +196,37 @@ class TestTheHelper:
             check=False,
         )
         assert result.returncode == 0, result.stderr
-        expected = home / ".cache" / "hapax" / "cc-task-locks" / "t1.lock"
+        expected = home / ".cache" / "hapax" / "cc-task-locks" / "tasks" / "t1.lock"
         assert Path(result.stdout.strip()) == expected
+
+    def test_task_and_role_locks_cannot_name_the_same_file(self, tmp_path: Path) -> None:
+        """Disjoint namespaces, not a prefix convention.
+
+        `role_lock_path("eta")` once returned `role-eta.lock` — exactly what
+        `lock_path("role-eta")` returns. A task genuinely named `role-eta`, claimed
+        by role `eta`, then took the task lock and timed out waiting for the SAME
+        inode through a second descriptor: a self-deadlock that looks like
+        contention and has no holder to find. Any prefix scheme has such a task id.
+        """
+        locks = tmp_path / "locks"
+        collided = [
+            (lock_path("role-eta", locks), role_lock_path("eta", locks)),
+            (lock_path("roles", locks), role_lock_path("", locks)),
+            (lock_path("eta", locks), role_lock_path("eta", locks)),
+        ]
+        for task_lock, role_lock in collided:
+            assert task_lock != role_lock, (
+                f"a task lock and a role lock resolve to one file: {task_lock}"
+            )
+        # And the split is structural, so the property holds for ids never listed.
+        assert lock_path("x", locks).parent != role_lock_path("x", locks).parent
+
+    def test_the_two_locks_are_independently_holdable(self, tmp_path: Path) -> None:
+        """The self-deadlock, as behaviour rather than as two path strings."""
+        locks = tmp_path / "locks"
+        hold_task_note_lock("role-eta", cache_dir=locks, timeout=0.3)
+        # Would raise TaskLockTimeout against the same inode.
+        assert hold_role_lease_lock("eta", cache_dir=locks, timeout=0.3)
 
 
 class TestOneTimeoutParser:
@@ -460,6 +490,113 @@ class TestTheRoleLeaseNamespace:
             f"published while it waited\n{stdout}\n{stderr}"
         )
         assert epoch.exists(), "the replacement's epoch sidecar was deleted with it"
+
+
+class TestTheRoleLockIsTakenBeforeTheClosure:
+    """Where the acquisition sits decides what a failure can be.
+
+    Taken just before the lease sweep, the note had already moved to closed/, so a
+    timeout returned SUCCESS with leases retained and prescribed a re-run that
+    exits at the active-note lookup — cleanup unreachable forever. And the
+    missing-path branch set a flag without clearing `role`, so the sweep ran
+    unlocked regardless. Both are review round 17's findings, and both are
+    consequences of the placement rather than of the branches.
+
+    Taken before the writer, every failure here is a refusal with nothing modified.
+    """
+
+    def test_an_unresolvable_role_lock_path_refuses_instead_of_sweeping(
+        self, tmp_path: Path
+    ) -> None:
+        """The fallthrough: a flag was set, `role` was left populated, the sweep ran.
+
+        The path is made unresolvable by pointing HOME at a tree whose cache
+        directory cannot be created, which is what an unimportable helper or an
+        unwritable cache looks like from cc-close's side.
+        """
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        note = _write_note(vault, "t1", "withdrawn")
+        cache = home / ".cache" / "hapax"
+        cache.mkdir(parents=True, exist_ok=True)
+        lease = cache / "cc-active-task-eta"
+        lease.write_text("t1\n", encoding="utf-8")
+        env = _lane_env(home)
+
+        # A FILE where the roles lock directory must be: mkdir fails, so
+        # role_lock_path cannot resolve and cc-close must refuse before writing.
+        locks = cache / "cc-task-locks"
+        locks.mkdir(parents=True, exist_ok=True)
+        (locks / "roles").write_text("not a directory\n", encoding="utf-8")
+
+        result = subprocess.run(
+            ["bash", str(CC_CLOSE), "t1", "--status", "withdrawn"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+
+        assert result.returncode != 0, (
+            f"cc-close swept leases without a role lock it could not resolve\n{result.stdout}"
+        )
+        assert note.exists(), "the note was closed despite the refusal"
+        assert lease.exists(), "the lease was retired without the lock that makes retirement safe"
+        assert "could not resolve the role lease lock path" in result.stderr, (
+            "cc-close failed for some other reason — the fallthrough this pins let "
+            f"the sweep run after merely setting a flag\n{result.stderr}"
+        )
+        assert "Nothing was modified" in result.stderr, result.stderr
+
+    def test_a_held_role_lock_refuses_with_the_note_untouched(self, tmp_path: Path) -> None:
+        """A timeout must not arrive after the closure is already committed."""
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        note = _write_note(vault, "t1", "withdrawn")
+        cache = home / ".cache" / "hapax"
+        cache.mkdir(parents=True, exist_ok=True)
+        lease = cache / "cc-active-task-eta"
+        lease.write_text("t1\n", encoding="utf-8")
+        env = _lane_env(home, HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS="0.4")
+
+        held = role_lock_path("eta", cache / "cc-task-locks")
+        handle = os.open(held, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            result = subprocess.run(
+                ["bash", str(CC_CLOSE), "t1", "--status", "withdrawn"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=120,
+            )
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
+
+        assert result.returncode == 2, (
+            "a role-lock timeout reported success after committing the closure — the "
+            f"prescribed re-run can never reach cleanup again\n{result.stdout}"
+        )
+        assert note.exists(), "the note moved to closed/ before the role lock was taken"
+        assert lease.exists()
+        assert "role lease lock" in result.stderr and "Nothing was modified" in result.stderr, (
+            result.stderr
+        )
+        # And re-running once the holder is gone must work, which is what makes the
+        # prescribed next action true.
+        again = subprocess.run(
+            ["bash", str(CC_CLOSE), "t1", "--status", "withdrawn"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        assert again.returncode == 0, f"{again.stdout}\n{again.stderr}"
+        assert not note.exists() and not lease.exists()
 
 
 class TestBothWritersParticipate:

@@ -365,9 +365,31 @@ Both writers therefore take **the task lock, then the role lock**, and neither
 takes them in the other order or takes the role lock alone. That ordering is what
 makes a second lock safe rather than a deadlock waiting for load.
 
-If the role lock cannot be taken, cc-close completes the closure and **preserves
-the leases**, saying so on stderr with the paths — retiring leases against a
-namespace another writer may be publishing into is the failure being avoided.
+Both locks are taken **before anything is written**, so a failure to take either
+is a refusal with nothing modified. An earlier revision took the role lock just
+before the lease sweep — after the note had moved to `closed/` — where a timeout
+returned success with the leases retained and prescribed a re-run that exits at the
+active-note lookup and can never reach cleanup again.
+
+**A hung cc-claim blocks role-wide closure for the whole role.** Both locks are
+held to process exit by design, so a wedged `cc-claim` for *any* task of a role
+holds that role's lease namespace against every sibling session until it exits.
+That is the intended trade — the alternative is retiring leases into a namespace
+someone is publishing into — but it means a stuck close may have nothing to do with
+the task being closed:
+
+```bash
+role=cx-blue
+fuser -v "${XDG_CACHE_HOME:-$HOME/.cache}"/hapax/cc-task-locks/roles/"$role".lock
+```
+
+Expected: no output when nothing holds it. Any pid listed is the holder to let
+finish or kill; cc-close names this same path in its refusal.
+
+**Lease cleanup that cannot finish exits 3**, not 0. The closure happened and the
+note is in `closed/`, but at least one lease survived — the paths and their exact
+`rm` commands are on stderr. Re-running cc-close will not reach cleanup, because
+the note is no longer in `active/`.
 
 `HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS` bounds the wait for both locks and both
 writers (default 30s). It bounds the wait only — there is no value that skips acquisition, and a
@@ -509,7 +531,18 @@ HAPAX_CC_HYGIENE_CLAIM_MARKER_DIR=~/.cache/hapax uv run python scripts/cc-hygien
 
 Expected: the `marker_dir_provenance` on every `stale_claim_marker` event changes
 from "derived from relay_root …" to "passed explicitly by the caller", and the
-events describe the directory you named. Recheck:
+events describe the directory you named. Confirm that against a redirected
+directory without writing any state:
+
+```bash
+HAPAX_CC_HYGIENE_CLAIM_MARKER_DIR=~/.cache/hapax \
+  uv run python scripts/cc-hygiene-sweeper.py --no-write --no-actions -v 2>&1 |
+  grep -i 'marker'
+```
+
+Expected: any `stale_claim_marker` event names `~/.cache/hapax` as its
+`marker_dir`, and `--no-write` means nothing is recorded while you check. Recheck
+the mechanism itself:
 
 ```bash
 uv run pytest tests/test_cc_hygiene_stale_claim_marker.py -q \

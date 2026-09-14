@@ -354,9 +354,16 @@ def test_cc_close_guard_failure_spares_the_lease_rather_than_deleting_it(
 
     # Closure must actually COMPLETE — otherwise the marker surviving proves only
     # that cc-close died early, which is what made the first version of this test
-    # vacuous.
-    assert result.returncode == 0, (
-        f"cc-close did not complete, so lease survival proves nothing\n"
+    # vacuous. So the note must be gone from active/, AND the exit status must say
+    # the cleanup did not finish.
+    #
+    # Exit 3, not 0. `cleanup_incomplete` was set in three places and read in none,
+    # so a close that kept a lease it could not evaluate was indistinguishable from
+    # a clean one to anything scripting cc-close (review round 17). The closure DID
+    # happen, which is why this is not a generic failure code: re-running cc-close
+    # cannot reach cleanup again, because the note is no longer in active/.
+    assert result.returncode == 3, (
+        "a partially-completed close did not report itself through the exit status\n"
         f"stdout={result.stdout}\nstderr={result.stderr}"
     )
     assert not (vault / "active" / "foo.md").exists(), "task was not closed"
