@@ -4592,26 +4592,50 @@ def test_rollback_preserves_a_writer_who_replaced_the_live_destination(
     """
 
     (tmp_path / ".staged").write_bytes(b"the transition's content\n")
-    real_rename = os.rename
     replaced = False
 
-    def replace_the_live_file_just_before_withdrawal(*args: object, **kwargs: object) -> None:
-        nonlocal replaced
-        # The first rename in the withdrawal path is the one that moves the live name aside.
-        if not replaced and len(args) > 1 and str(args[0]) == "live-note.md":
-            replaced = True
-            _replace_atomically(tmp_path, "live-note.md", b"ANOTHER WRITER'S ONLY COPY\n")
-        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+    withdrawing = False
 
     def fail_the_source_check(*_args: object, **_kwargs: object) -> None:
+        nonlocal withdrawing
+        withdrawing = True  # everything after this point is the withdrawal
         raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    # Fire on the withdrawal's FIRST touch of the live name, whichever syscall that is. The
+    # two implementations shape the withdrawal differently — the old one reads identity then
+    # unlinks, this one renames — so no single named syscall is "the gap" in both. The first
+    # touch is the analogous moment in either, which makes this a property test rather than a
+    # test of one implementation's call sequence.
+    #
+    # That distinction is the finding: an earlier version keyed the injection on `rename` of
+    # the live name, a call only the fixed implementation makes, so the mutation failed at
+    # `assert replaced` without ever reproducing the loss. A mutation that cannot reach the
+    # injected state proves nothing. Under the old withdrawal this fires on its `lstat`, the
+    # replacement lands in the gap before its `unlink`, and the entry is destroyed.
+    def inject_on_first_touch(real: Callable[..., object]) -> Callable[..., object]:
+        def wrapper(*args: object, **kwargs: object) -> object:
+            nonlocal replaced
+            result = real(*args, **kwargs)
+            # AFTER the call returns, deliberately. Injecting before it would let the old
+            # withdrawal's `lstat` see the replacement, mismatch, and route to the
+            # abandonment branch, which preserves it — a path that is already safe. The
+            # reviewed defect is the replacement landing in the gap AFTER identity matched
+            # ours: the following `unlink` then removes a writer's entry the check never saw.
+            if withdrawing and not replaced and args and str(args[0]) == "live-note.md":
+                replaced = True
+                _replace_atomically(tmp_path, "live-note.md", b"ANOTHER WRITER'S ONLY COPY\n")
+            return result
+
+        return wrapper
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         with caplog.at_level("WARNING"):
             with (
                 mock.patch.object(cp, "_refuse_if_displaced_entry_moved", fail_the_source_check),
-                mock.patch.object(os, "rename", replace_the_live_file_just_before_withdrawal),
+                mock.patch.object(os, "lstat", inject_on_first_touch(os.lstat)),
+                mock.patch.object(os, "rename", inject_on_first_touch(os.rename)),
+                mock.patch.object(os, "unlink", inject_on_first_touch(os.unlink)),
             ):
                 with pytest.raises(OSError) as raised:
                     cp._fallback_noreplace(dir_fd, ".staged", dir_fd, "live-note.md")
@@ -4625,12 +4649,65 @@ def test_rollback_preserves_a_writer_who_replaced_the_live_destination(
         "the rollback destroyed a writer who replaced the live destination — the exact "
         "loss this path was rebuilt to stop"
     )
-    # The original error still propagates, the live name is clear, and the preserved entry
-    # is named with a next action rather than silently stranded.
-    assert not (tmp_path / "live-note.md").exists()
-    assert cp._SCRATCH_ABANDONED in caplog.text
+    # The withdrawal still did its job: our publication is gone, the staged source is intact
+    # for a retry, and nothing of ours is stranded under a scratch name.
+    assert (tmp_path / ".staged").read_bytes() == b"the transition's content\n"
+    assert not (tmp_path / cp._fallback_scratch_name("live-note.md", "rollback")).exists(), (
+        "our own publication was left behind under the rollback scratch name"
+    )
+    # Where the writer's entry ends up depends on which side of the rename it landed, and
+    # both are correct: either it is live (the name was vacant by then) or it was carried to
+    # the rollback scratch, which is reported. Assert the disjunction, not one branch.
+    at_live = (tmp_path / "live-note.md").exists()
+    assert at_live or (
+        cp._SCRATCH_ABANDONED in caplog.text and "recover-claim-publications" in caplog.text
+    ), "the writer's entry was neither left live nor reported as preserved"
+
+
+@pytest.mark.parametrize("failing", ["lstat", "unlink"])
+def test_a_stranded_rollback_entry_is_never_silent(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, failing: str
+) -> None:
+    """Both post-move error branches of the withdrawal, which returned silently.
+
+    After the live entry is moved to `.transition-rollback`, two things can still fail: the
+    identity read, and the removal of our own copy. Both used to return without a word — and
+    nothing in this module sweeps `.transition-rollback` names, so the entry was simply gone
+    from view. It can be a displaced writer's only copy, or an extra link to the source that
+    makes the next readback refuse as `path_unsafe`; either way the operator has to see it.
+    """
+
+    (tmp_path / ".staged").write_bytes(b"the transition's content\n")
+    aside = cp._fallback_scratch_name("live-note.md", "rollback")
+    real = getattr(os, failing)
+
+    def fail_on_the_rollback_scratch(*args: object, **kwargs: object) -> object:
+        if args and str(args[0]) == aside:
+            raise OSError(errno.EIO, os.strerror(errno.EIO), failing)
+        return real(*args, **kwargs)
+
+    def fail_the_source_check(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with caplog.at_level("WARNING"):
+            with (
+                mock.patch.object(cp, "_refuse_if_displaced_entry_moved", fail_the_source_check),
+                mock.patch.object(os, failing, fail_on_the_rollback_scratch),
+            ):
+                with pytest.raises(OSError):
+                    cp._fallback_noreplace(dir_fd, ".staged", dir_fd, "live-note.md")
+    finally:
+        os.close(dir_fd)
+
+    # The entry really is stranded — that is the state being reported, not prevented.
+    assert (tmp_path / aside).exists()
+    assert cp._SCRATCH_ABANDONED in caplog.text, f"{failing} failure was silent"
+    assert aside in caplog.text, "the report does not name the file to look at"
     assert "recover-claim-publications" in caplog.text
-    assert cp._fallback_scratch_name("live-note.md", "rollback") in caplog.text
+    # executive_function: a reader must be told why it matters, not just that it happened.
+    assert "path_unsafe" in caplog.text
 
 
 def test_rollback_drops_its_own_publication_when_nobody_raced_it(tmp_path: Path) -> None:
@@ -5138,6 +5215,54 @@ def test_directory_noreplace_refuses_an_empty_destination_appearing_after_the_ch
 # case; the protectable one is a second writer using this module's own acquisition path.
 
 
+def test_a_placeholder_reservation_leaves_the_live_entrys_link_count_alone(
+    tmp_path: Path,
+) -> None:
+    """The measurement the relocation's whole design rests on, as a runnable test.
+
+    This lived only in a docstring table and a probe script in the operator's vault, which
+    three reviewers correctly said is not a recheck a reader can run. It is the reason
+    `_relocate_to_scratch` reserves with `O_CREAT|O_EXCL` rather than `link`: both are
+    create-or-EEXIST, but `link` refuses by making a second name for the LIVE inode, and
+    `_entry_state_at` rejects any projected entry at `st_nlink != 1`.
+
+    If this ever fails, the reservation is no longer a legal way to take the name here and
+    the design needs revisiting — which is exactly why it belongs in the suite and not in a
+    file nobody but its author can open.
+    """
+
+    live = tmp_path / "note.md"
+    live.write_bytes(b"live projection\n")
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+    def invariant_verdict() -> str:
+        try:
+            cp._entry_state_at(dir_fd, "note.md", max_bytes=1 << 20)
+        except cp.LifecycleTransitionError as refusal:
+            return refusal.reason_code
+        return "accepted"
+
+    try:
+        assert live.stat().st_nlink == 1
+        assert invariant_verdict() == "accepted"
+
+        # (a) `link` — the rejected primitive. The LIVE entry gains a name.
+        os.link("note.md", "probe-link", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        assert live.stat().st_nlink == 2
+        assert invariant_verdict() == "transition_projection_path_unsafe"
+        os.unlink("probe-link", dir_fd=dir_fd)
+        assert live.stat().st_nlink == 1
+
+        # (b) an O_CREAT|O_EXCL placeholder — a SEPARATE inode. The live entry is untouched.
+        holding = cp._fallback_scratch_name("note.md", "holding")
+        os.close(os.open(holding, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600, dir_fd=dir_fd))
+        assert live.stat().st_nlink == 1, "the placeholder touched the live entry"
+        assert (tmp_path / holding).stat().st_nlink == 1
+        assert invariant_verdict() == "accepted"
+    finally:
+        os.close(dir_fd)
+
+
 def _participant_takes(dir_fd: int, name: str, payload: bytes) -> str:
     """A second writer acquiring the scratch name the way `_relocate_to_scratch` does.
 
@@ -5430,6 +5555,53 @@ def test_an_unconsumed_reservation_is_released_so_the_next_attempt_can_retry(
 
     # ... and the operand is untouched, so the retry has something to retry.
     assert (tmp_path / ".src").read_bytes() == b"replacement\n"
+
+
+def test_the_release_does_not_delete_an_EMPTY_entry_it_did_not_create(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Emptiness is not identity, and treating it as identity deleted a writer's only entry.
+
+    The release used to accept "an empty regular file" as proof the placeholder was still
+    ours. A writer can create an empty file too — a truncate-then-write in progress, a
+    zero-byte marker — so a reviewer replayed the sequence that destroys it: replace the live
+    source with an EMPTY file, fail the rename, and the release removes what the writer left.
+
+    Every earlier test here injected a NON-empty replacement or failed before the rename, so
+    all of them passed over the one case that mattered. The placeholder is identified by
+    inode now, and this is the case that tells the two apart.
+    """
+
+    (tmp_path / ".src").write_bytes(b"replacement\n")
+    (tmp_path / "dst").write_bytes(b"displaced\n")
+    holding = cp._fallback_scratch_name(".src", "holding")
+    real_rename = os.rename
+
+    def swap_in_an_empty_entry_then_fail(*args: object, **kwargs: object) -> None:
+        if len(args) > 1 and str(args[1]) == holding:
+            # Their entry, at our reserved name, indistinguishable from our placeholder by
+            # size and type — and distinguishable by inode.
+            _replace_atomically(tmp_path, holding, b"")
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with caplog.at_level("WARNING"):
+            with mock.patch.object(os, "rename", swap_in_an_empty_entry_then_fail):
+                with pytest.raises(OSError):
+                    cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
+    finally:
+        os.close(dir_fd)
+
+    assert (tmp_path / holding).exists(), (
+        "the release deleted an empty entry it did not create — emptiness was taken for "
+        "identity again"
+    )
+    # It is not ours, so the name stays taken; that blocks retries, so it must be reported.
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert "did not create" in caplog.text
+    assert "recover-claim-publications" in caplog.text
 
 
 def test_a_reservation_that_cannot_be_released_is_reported_as_a_wedge(

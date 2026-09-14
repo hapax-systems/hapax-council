@@ -3753,22 +3753,21 @@ def _relocate_to_scratch(
     ===========================================  ==============  ===========================
 
     The export was measured to give a real exclusive create, not an emulated one: eight
-    racing processes, one winner. Both claims are recheckable rather than asserted —
+    racing processes, one winner. Both claims are committed tests, so a reader rechecks them
+    by running the suite rather than by trusting this docstring::
 
-    * the table, on any filesystem::
+        uv run --no-sync pytest tests/shared/test_coord_projection.py \\
+          -k a_placeholder_reservation_leaves_the_live_entrys_link_count_alone
 
-        uv run --no-sync python \\
-          ~/Documents/Personal/30-areas/hapax/frame/coordination-20260904/\\
-          probe_scratch_reservation_alternative_20260914.py <worktree-root>
-
-    * the exclusive create, on the export itself, as a committed test::
-
-        HAPAX_NFS_INTEGRATION_DIR=... uv run --no-sync pytest \\
+        HAPAX_NFS_INTEGRATION_DIR=<a dir on such a mount> uv run --no-sync pytest \\
           tests/shared/test_coord_projection_nfs_integration.py \\
           -k the_scratch_reservation_is_genuinely_exclusive
 
-    Findings and the measurement record are in
+    The narrative record of how the design got here — including the eleven rounds spent
+    defending a false impossibility — is kept outside this repo, in the operator's vault at
     ``30-areas/hapax/frame/coordination-20260904/SCRATCH-RESERVATION-ALTERNATIVE-MEASUREMENT-20260914.md``.
+    That is a location, not a command: nothing in this module depends on it, and the two
+    invocations above are the evidence.
 
     This replaces a plain ``rename(live → scratch)``. That rename relocated whatever occupied
     the live name — which is what preserves a racing writer — but could not refuse an occupied
@@ -3809,14 +3808,20 @@ def _relocate_to_scratch(
             f"delete it only after reconciling, {recover}",
             f"{subject}:{live_name}->{scratch_name}",
         ) from exc
-    os.close(reservation)
+    # Identify the placeholder by INODE, while we still hold the descriptor that created it.
+    # Emptiness is not identity: a writer can put an empty file at the name too, and the
+    # release below would then have deleted their entry believing it was ours.
+    try:
+        placeholder = os.fstat(reservation)
+    finally:
+        os.close(reservation)
 
     try:
         os.rename(live_name, scratch_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
     except BaseException:
         # The reservation is ours and unconsumed, so releasing it is safe and required:
         # an abandoned placeholder refuses every later attempt on this operand.
-        _release_scratch_reservation(dir_fd, scratch_name)
+        _release_scratch_reservation(dir_fd, scratch_name, placeholder)
         raise
     os.fsync(dir_fd)
     if not _same_entry(os.lstat(scratch_name, dir_fd=dir_fd), expected):
@@ -3829,13 +3834,22 @@ def _relocate_to_scratch(
         )
 
 
-def _release_scratch_reservation(dir_fd: int, name: str) -> None:
+def _release_scratch_reservation(
+    dir_fd: int,
+    name: str,
+    placeholder: os.stat_result,
+) -> None:
     """Drop a placeholder this attempt took and could not use. Never raises.
 
-    Only ever called on a name this attempt reserved and has not yet renamed onto, and it
-    re-checks that the entry is still the empty placeholder before unlinking — so a writer
-    that ignored the protocol and dropped real bytes there is left alone for
-    :func:`_retire_scratch`, which knows how to preserve what it cannot identify.
+    ``placeholder`` is the ``fstat`` of the descriptor that created the reservation, and the
+    entry at ``name`` is unlinked **only if it is still that inode**.
+
+    An earlier version identified it as "an empty regular file", which is not identity at
+    all: a writer can put an empty file at the name too, and a reviewer replayed the sequence
+    that then deletes their only entry — replace the live source with an empty file, let the
+    rename fail, and the release removes what the writer left. Emptiness was a property this
+    attempt's placeholder happened to have, not a property only it has. Ownership must be
+    proven, and ``st_dev``/``st_ino`` prove it.
 
     An unreleased reservation is worse than the window it closed: it survives the process and
     refuses every later attempt on that operand. The window between taking it and consuming
@@ -3850,9 +3864,9 @@ def _release_scratch_reservation(dir_fd: int, name: str) -> None:
     except OSError as exc:
         _wedged(name, exc)
         return
-    if current.st_size or not stat.S_ISREG(current.st_mode):
-        # Somebody else's bytes are here now. Leaving them is correct; the name stays taken,
-        # which blocks retries, so it is still reported as a stuck state.
+    if not _same_entry(current, placeholder):
+        # Not the inode we created. Leaving it is correct — it may be somebody's only copy —
+        # and the name stays taken, which blocks retries, so it is reported as a stuck state.
         _wedged(name, "the name now holds an entry this attempt did not create")
         return
     try:
@@ -3927,11 +3941,45 @@ def _withdraw_publication_by_moving(
         return
     try:
         moved = os.lstat(aside, dir_fd=dir_fd)
-    except OSError:
+    except OSError as exc:
+        # The entry is off the live path but we cannot say whose it is, and nothing in this
+        # module sweeps `.transition-rollback` names. Returning silently would strand it:
+        # possibly a displaced writer's only copy, possibly an extra link that makes the next
+        # readback refuse as path_unsafe. Either way the operator has to see the name.
+        _logger.warning(
+            "%s: %s name=%s was moved off the live path to %s but could not then be "
+            "examined (%s), so it is LEFT THERE and unattributed — it may hold another "
+            "writer's only copy, or an extra link that will fail the next readback as "
+            "transition_projection_path_unsafe. Inspect %s, then rerun "
+            "`cc-claim --recover-claim-publications <task_id>`",
+            _SCRATCH_ABANDONED,
+            subject,
+            live_name,
+            aside,
+            exc,
+            aside,
+        )
         return
     if _same_entry(moved, expected):
-        with suppress(OSError):
+        try:
             os.unlink(aside, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            _logger.warning(
+                "%s: %s name=%s was withdrawn to %s but that copy could not be removed "
+                "(%s) — it is OURS and redundant, so nothing is lost, but it is an extra "
+                "link to the source inode and the next readback of %s will refuse as "
+                "transition_projection_path_unsafe until it is cleared. Remove %s, then "
+                "rerun `cc-claim --recover-claim-publications <task_id>`",
+                _SCRATCH_ABANDONED,
+                subject,
+                live_name,
+                aside,
+                exc,
+                live_name,
+                aside,
+            )
         return
     _logger.warning(
         "%s: %s name=%s was replaced by another writer before this publication could be "
@@ -3973,11 +4021,14 @@ def _move_aside_atomically(dir_fd: int, name: str, target: str) -> bool:
         )
     except OSError:
         return False
-    os.close(reservation)
+    try:
+        placeholder = os.fstat(reservation)
+    finally:
+        os.close(reservation)
     try:
         os.rename(name, target, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
     except OSError:
-        _release_scratch_reservation(dir_fd, target)
+        _release_scratch_reservation(dir_fd, target, placeholder)
         return False
     with suppress(OSError):
         os.fsync(dir_fd)
@@ -4081,10 +4132,17 @@ def _retire_scratch(
       lives elsewhere, so removing it loses nothing *unless a replacement lands in the gap
       described above*;
     * **anything else** — never ``unlink``. The entry is moved aside under a
-      ``.transition-abandoned`` name via ``link`` (create-or-EEXIST, so it cannot overwrite
-      either), leaving the scratch name free for the next attempt while the bytes survive
-      under a name a sweep can find. If even that cannot be done, the entry is left exactly
-      where it is.
+      ``.transition-abandoned`` name by :func:`_move_aside_atomically`, which reserves that
+      name with ``O_CREAT|O_EXCL`` and then ``rename``\\ s onto its own placeholder. The
+      scratch name is freed for the next attempt and the bytes survive under a name a sweep
+      can find. If even that cannot be done, the entry is left exactly where it is.
+
+      This bullet used to say the move was done "via ``link`` (create-or-EEXIST, so it cannot
+      overwrite either)", and that was the defect, not a description of it: ``link`` followed
+      by ``unlink`` leaves the name unprotected between the two syscalls, so an entry arriving
+      there was destroyed while the inode the ``link`` captured was preserved — the exact
+      inversion of this bullet's own promise. A reader reasoning from the old text would put
+      it back. One ``rename`` carries an arrival across; two syscalls cannot.
 
     Why abandon rather than simply leave: leaving it blocks every later attempt on that
     operand at the vacancy check, so the system cannot unstick itself. Moving it preserves
