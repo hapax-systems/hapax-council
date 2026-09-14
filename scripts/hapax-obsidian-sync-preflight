@@ -52,9 +52,14 @@ Rules replayed from obsidian-headless 0.0.14 ``cli.js``:
     is not trimmed at all; it is compared byte for byte.
   * hidden pruning — ``Is(s)`` walks every path component and rejects the path if
     ANY component starts with ``.``; the adapter treats such paths as absent.
-  * symlinks — the adapter resolves real paths and reconciles links as ordinary
-    entries, so a directory symlink is FOLLOWED, including out of the vault, and a
-    directory reachable by two routes is emitted under both.
+  * symlinks — ``reconcileSymbolicLinkCreation`` resolves the link and RETURNS when
+    the target overlaps an already-watched resolved path. The vault root is always
+    watched, so a link INTO the vault (or to a directory containing it) is skipped
+    entirely, while a link escaping to a disjoint subtree is followed and then
+    watched itself. The overlap rule is also what bounds the walk.
+  * exclusions precede everything — the ``ignoreFolders`` loop runs before the
+    hidden-path check and before the config-dir branch, so an entry naming a hidden
+    or config-dir path does match.
   * attachment classes — ``md``/``canvas``/``base`` always sync; the rest gate on
     the selection, and anything in no class is ``unsupported`` (off by default).
     ``webm`` counts as audio OR video.
@@ -207,12 +212,11 @@ def resolve_entry(vault: Path, entry: str) -> tuple[bool, str]:
             "contains a '.' or '..' component; the filesystem resolves it but ob "
             "emits normalized relative paths that never contain dot segments",
         )
-    if any(part.startswith(".") for part in parts):
-        return (
-            False,
-            "dotted component — ob prunes hidden paths before the exclusion test, "
-            "so this entry is unreachable (the data is already never synced)",
-        )
+    # NOTE: no refusal for a dotted component. ob runs the ignoreFolders loop BEFORE
+    # the hidden-path check, so a hidden entry does match — and it is load-bearing for
+    # the config dir, whose files DO sync when `configs` is enabled. Refusing these
+    # rejected valid config-dir exclusions. Ones that cannot matter are annotated as
+    # redundant by the caller instead.
 
     current = vault
     for depth, part in enumerate(parts):
@@ -243,7 +247,14 @@ def resolve_entry(vault: Path, entry: str) -> tuple[bool, str]:
     return True, ""
 
 
-def validate_entries(vault: Path, entries: list[str], *, trim: bool) -> list[dict]:
+def validate_entries(
+    vault: Path,
+    entries: list[str],
+    *,
+    trim: bool,
+    config_dir: str = ".obsidian",
+    configs_enabled: bool = False,
+) -> list[dict]:
     """Classify each exclusion entry. Anything not ``ok`` cannot match and so
     fails OPEN — the data it names would upload.
 
@@ -274,6 +285,19 @@ def validate_entries(vault: Path, entries: list[str], *, trim: bool) -> list[dic
         ]
         if covered_by:
             finding["redundant_under"] = covered_by
+        parts = entry.split("/")
+        # ob's Is() rejects a path when ANY component is dotted, so a dotted
+        # component at any depth means nothing under this entry was going to sync —
+        # unless it is the config dir and config syncing is on, which is the one
+        # hidden subtree ob does reach.
+        if any(p.startswith(".") for p in parts) and not (
+            parts[0] == config_dir and configs_enabled
+        ):
+            finding["no_effect_reason"] = (
+                "config syncing is disabled, so nothing under the config dir syncs"
+                if parts[0] == config_dir
+                else "hidden path: nothing under it syncs anyway"
+            )
     return findings
 
 
@@ -337,7 +361,9 @@ def _config_category(rel_in_config_dir: str) -> str | None:
     return None
 
 
-def predict_config_uploads(vault: Path, config_dir: str, configs: frozenset[str]) -> dict:
+def predict_config_uploads(
+    vault: Path, config_dir: str, configs: frozenset[str], entries: list[str]
+) -> dict:
     """The config-dir files ob uploads when ``configs`` is non-empty.
 
     Without this, auditing a vault that HAS config syncing enabled under-predicts
@@ -362,12 +388,31 @@ def predict_config_uploads(vault: Path, config_dir: str, configs: frozenset[str]
             "by_category": {},
             "config_dir": config_dir,
             "traversal_errors": errors,
+            "symlinks": [],
         }
+    symlinks: list[dict] = []
+    # No followlinks: ob reaches the config dir through `watchHiddenRecursive`, which
+    # recurses on `lstat(...).isDirectory()` — false for a symlink — so it does not
+    # descend into one either. They are reported so the omission is not silent.
     for dirpath, dirnames, filenames in os.walk(root, onerror=_on_error):
+        for name in list(dirnames):
+            if os.path.islink(os.path.join(dirpath, name)):
+                symlinks.append(
+                    {
+                        "path": f"{config_dir}/"
+                        + os.path.relpath(os.path.join(dirpath, name), root).replace(os.sep, "/"),
+                        "note": "directory symlink; ob does not descend into it either",
+                    }
+                )
         dirnames[:] = [d for d in dirnames if d != "node_modules" and not d.startswith(".")]
         for name in filenames:
             rel = os.path.relpath(os.path.join(dirpath, name), root)
-            category = _config_category(_emitted(rel).replace(os.sep, "/"))
+            rel_emitted = _emitted(rel).replace(os.sep, "/")
+            # ob runs the ignoreFolders loop BEFORE the config-dir branch, so an
+            # exclusion naming a config path excludes it.
+            if _excluded(f"{_emitted(config_dir)}/{rel_emitted}", entries):
+                continue
+            category = _config_category(rel_emitted)
             if category is None or category not in configs:
                 continue
             try:
@@ -386,34 +431,13 @@ def predict_config_uploads(vault: Path, config_dir: str, configs: frozenset[str]
         "by_category": {k: {"bytes": v[0], "files": v[1]} for k, v in sorted(by_category.items())},
         "config_dir": config_dir,
         "traversal_errors": errors,
+        "symlinks": symlinks,
     }
 
 
-def _is_cycle(dirpath: str, vault: Path, on_error) -> bool:
-    """True when ``dirpath`` resolves to one of its own ancestors.
-
-    That is the only loop ``followlinks=True`` can produce, and the only case a walk
-    must refuse to descend. Anything else — the same directory reached by two
-    different routes — is real content that ob uploads under both paths.
-    """
-    try:
-        real = os.path.realpath(dirpath)
-    except OSError as exc:  # pragma: no cover - realpath rarely raises
-        on_error(exc)
-        return False
-    root = str(vault)
-    parent = os.path.dirname(dirpath)
-    while parent and parent != dirpath and (parent == root or parent.startswith(root + os.sep)):
-        try:
-            if os.path.realpath(parent) == real:
-                return True
-        except OSError as exc:  # pragma: no cover
-            on_error(exc)
-            return False
-        if parent == root:
-            break
-        parent = os.path.dirname(parent)
-    return False
+def _overlaps(a: str, b: str) -> bool:
+    """Whether two resolved paths are the same subtree, either way round."""
+    return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
 
 
 def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict:
@@ -423,57 +447,63 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
     upload_bytes = upload_files = 0
     largest: list[tuple[int, str]] = []
     escaping_links: list[dict] = []
+    overlapping_links: list[dict] = []
     traversal_errors: list[dict] = []
 
     def _on_error(exc: OSError) -> None:
         # A skipped subtree makes every total below a floor, not a measurement.
         traversal_errors.append({"path": str(exc.filename), "error": exc.strerror})
 
-    # followlinks=True because ob FOLLOWS symlinked directories: its adapter
-    # resolves real paths and reconciles symlinks as ordinary entries. Measured
-    # 2026-09-14 — a single vault symlink to a source repo outside the vault put
-    # 678 markdown files / 11.8 MiB into a remote that nobody's accounting
-    # included. A walk that does not follow links under-predicts by exactly that
-    # mass, so matching ob here is not optional. `_is_cycle` is the loop guard that
-    # followlinks otherwise lacks.
+    # ob's symlink rule, read off cli.js `reconcileSymbolicLinkCreation`: it resolves
+    # the link, and if the target OVERLAPS the resolved path of an already-watched
+    # path it RETURNS — reconciling nothing. The vault root is always watched
+    # (`startWatchPath("/")`), so a link whose target is inside the vault, or which
+    # contains the vault, is skipped entirely; only a link that escapes to a disjoint
+    # subtree is descended into, and it then becomes watched itself, so a later link
+    # overlapping IT is skipped too.
+    #
+    # Measured both halves: the live vault's `20-projects/hapax-research` escapes to
+    # a source repo and the seed uploaded 678 markdown files / 11.8 MiB from behind
+    # it, so escaping links must be followed. An earlier revision of this walk went
+    # further and counted a vault-INTERNAL alias under both routes; that over-predicts,
+    # because ob skips it. The overlap rule is also the cycle guard: any link back
+    # into the vault, or to an ancestor of it, overlaps and is pruned.
+    accepted_link_targets = [os.path.realpath(vault)]
     for dirpath, dirnames, filenames in os.walk(vault, followlinks=True, onerror=_on_error):
-        # Prune ONLY a true cycle — a directory that is its own ancestor. A global
-        # "already seen this inode" set would be wrong: ob emits one relative path
-        # per route that reaches a directory, so a vault-internal link makes the
-        # same real directory upload under BOTH paths. Deduplicating globally
-        # dropped whichever route was walked second, which made the prediction
-        # depend on traversal order and could hide an entire unexcluded subtree.
-        if _is_cycle(dirpath, vault, _on_error):
-            dirnames[:] = []
-            continue
-
         rel_dir = os.path.relpath(dirpath, vault)
         rel_dir = "" if rel_dir == "." else _emitted(rel_dir)
+
+        def _rel(name: str, _rel_dir: str = rel_dir) -> str:
+            return f"{_rel_dir}/{_emitted(name)}" if _rel_dir else _emitted(name)
+
+        # Resolve link handling BEFORE pruning, so the report distinguishes "ob skips
+        # this" from "the exclusion list removed it".
+        for name in list(dirnames):
+            child = os.path.join(dirpath, name)
+            if not os.path.islink(child):
+                continue
+            try:
+                target = os.path.realpath(child)
+            except OSError as exc:  # pragma: no cover
+                _on_error(exc)
+                dirnames.remove(name)
+                continue
+            if any(_overlaps(target, seen) for seen in accepted_link_targets):
+                # ob returns early here: the subtree is not reconciled through this
+                # path at all. Reported rather than dropped silently.
+                overlapping_links.append({"path": _rel(name), "target": target})
+                dirnames.remove(name)
+                continue
+            accepted_link_targets.append(target)
+            escaping_links.append({"path": _rel(name), "target": target})
+
         # Prune in place. Pruning every dotted directory at every level is
         # equivalent to cli.js ``Is(s)`` ("hidden if ANY path component is
         # dotted"), because no descendant of a pruned directory is ever visited;
         # dotted FILES are skipped by name just below.
         dirnames[:] = [
-            d
-            for d in dirnames
-            if not d.startswith(".")
-            and not _excluded(f"{rel_dir}/{_emitted(d)}" if rel_dir else _emitted(d), entries)
+            d for d in dirnames if not d.startswith(".") and not _excluded(_rel(d), entries)
         ]
-        # A link that leaves the vault is reported, not pruned: ob uploads what
-        # is behind it, so silently omitting it would recreate the same blind spot.
-        for name in list(dirnames):
-            child = os.path.join(dirpath, name)
-            if not os.path.islink(child):
-                continue
-            target = os.path.realpath(child)
-            if target == str(vault) or target.startswith(str(vault) + os.sep):
-                continue
-            escaping_links.append(
-                {
-                    "path": f"{rel_dir}/{_emitted(name)}" if rel_dir else _emitted(name),
-                    "target": target,
-                }
-            )
 
         for name in filenames:
             if name.startswith("."):
@@ -522,6 +552,7 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
         },
         "largest_included_files": [{"bytes": b, "path": p} for b, p in largest[:20]],
         "symlinks_escaping_vault": escaping_links,
+        "symlinks_skipped_overlapping": overlapping_links,
         "traversal_errors": traversal_errors,
     }
 
@@ -704,15 +735,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return ERROR
 
-    findings = validate_entries(vault, entries, trim=not args.from_sync_config)
+    configs = frozenset(live.get(PERSISTED_CONFIGS_KEY) or ())
+    config_dir = str(live.get("configDir") or ".obsidian")
+    findings = validate_entries(
+        vault,
+        entries,
+        trim=not args.from_sync_config,
+        config_dir=config_dir,
+        configs_enabled=bool(configs),
+    )
     bad = [f for f in findings if f["verdict"] != "ok"]
     effective = [f["normalized"] for f in findings if f["verdict"] == "ok"]
     prediction = predict(vault, effective, frozenset(file_types))
 
-    configs = frozenset(live.get(PERSISTED_CONFIGS_KEY) or ())
-    config_uploads = predict_config_uploads(
-        vault, str(live.get("configDir") or ".obsidian"), configs
-    )
+    config_uploads = predict_config_uploads(vault, config_dir, configs, effective)
     prediction["config_uploads"] = config_uploads
     prediction["traversal_errors"].extend(config_uploads["traversal_errors"])
     prediction["predicted_upload"]["bytes"] += config_uploads["bytes"]

@@ -341,12 +341,54 @@ def test_nfc_normalization_mismatch_is_refused(vault: pathlib.Path) -> None:
     assert not any("private.md" in p for p in kept)
 
 
-def test_dotted_component_entry_is_refused_as_unreachable(vault: pathlib.Path) -> None:
-    """Hidden pruning happens before the exclusion test, so a dotted entry is
-    unreachable — reporting it 'ok' would credit an exclusion that never runs."""
+def test_hidden_entry_is_effective_but_annotated(vault: pathlib.Path) -> None:
+    """ob runs the ignoreFolders loop BEFORE the hidden check, so a dotted entry DOES
+    match and must not be refused. It just cannot change anything here, which is
+    reported rather than treated as an error."""
     result = _run(str(vault), "--excluded-folders", "30-areas/.venv", "--json")
-    assert result.returncode == REFUSED
-    assert "hidden" in json.loads(result.stdout)["findings"][0]["detail"]
+    assert result.returncode == OK, result.stdout + result.stderr
+    finding = json.loads(result.stdout)["findings"][0]
+    assert finding["verdict"] == "ok"
+    assert "nothing under it syncs" in finding["no_effect_reason"]
+
+
+def test_config_dir_exclusion_is_effective_when_configs_are_enabled(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """The case the blanket dotted-refusal broke: with config syncing on, a
+    `.obsidian/...` exclusion is real and must remove that file from the total."""
+    obsidian = vault / ".obsidian"
+    (obsidian / "snippets").mkdir(parents=True)
+    (obsidian / "app.json").write_bytes(b"a" * 10)
+    (obsidian / "snippets" / "x.css").write_bytes(b"d" * 30)
+    xdg = tmp_path / "xdg"
+
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["app", "appearance-data"],
+    )
+    without = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
+    assert without["config_uploads"]["bytes"] == 40
+
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=[
+            "20-projects/_dashboard",
+            "30-areas/hapax/ocr/pages",
+            ".obsidian/snippets",
+        ],
+        allowSpecialFiles=["app", "appearance-data"],
+    )
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == OK, result.stdout + result.stderr
+    with_excl = json.loads(result.stdout)
+    assert with_excl["config_uploads"]["bytes"] == 10, "config-dir exclusion had no effect"
+    findings = {f["normalized"]: f for f in with_excl["findings"]}
+    assert findings[".obsidian/snippets"]["verdict"] == "ok"
+    assert "no_effect_reason" not in findings[".obsidian/snippets"]
 
 
 def test_empty_cli_file_types_restores_defaults(vault: pathlib.Path) -> None:
@@ -559,41 +601,62 @@ def test_nonbreaking_space_exclusions_are_refused_and_the_fix_accepted(
     assert not any("secret.md" in item["path"] for item in accepted["largest_included_files"])
 
 
-def test_internal_link_uploads_under_both_paths(vault: pathlib.Path) -> None:
-    """ob emits one relative path per route to a directory, so a vault-internal
-    link means the same file uploads twice under different paths. A global inode
-    dedup dropped whichever route came second, making totals order-dependent."""
+def test_internal_alias_is_skipped_like_the_client(vault: pathlib.Path) -> None:
+    """cli.js ``reconcileSymbolicLinkCreation`` resolves the link and RETURNS when the
+    target overlaps an already-watched resolved path. The vault root is always
+    watched, so a vault-internal alias is reconciled through neither route: it is
+    skipped, not counted twice. Counting both routes over-predicts."""
     target = vault / "30-areas" / "target"
     (target / "private").mkdir(parents=True)
     (target / "private" / "secret.md").write_bytes(b"s" * 77)
     (vault / "alias").symlink_to(target, target_is_directory=True)
 
-    # Excluding only the alias route must leave the real route admitted.
-    result = _run(str(vault), "--excluded-folders", "alias/private", "--json")
+    result = _run(str(vault), "--excluded-folders", "30-areas/hapax", "--json")
     assert result.returncode == OK, result.stdout + result.stderr
     report = json.loads(result.stdout)
     paths = {item["path"] for item in report["largest_included_files"]}
+    # The real route is content and counts once; the alias route does not exist for ob.
     assert "30-areas/target/private/secret.md" in paths
-    assert "alias/private/secret.md" not in paths
-
-    # With neither route excluded the file is counted under BOTH, as ob uploads it.
-    both = json.loads(_run(str(vault), "--excluded-folders", "30-areas/hapax", "--json").stdout)
-    counted = {item["path"] for item in both["largest_included_files"]}
-    assert "alias/private/secret.md" in counted
-    assert "30-areas/target/private/secret.md" in counted
-
-    # Excluding BOTH routes removes exactly one 77-byte file per route, and the
-    # result must not depend on which route the walk reached first.
-    neither = json.loads(
+    assert not any(p.startswith("alias/") for p in paths)
+    assert report["symlinks_skipped_overlapping"] == [
+        {"path": "alias", "target": str(target.resolve())}
+    ]
+    assert report["symlinks_escaping_vault"] == []
+    # Counted exactly once: excluding the real route removes it entirely.
+    excluded = json.loads(
         _run(
-            str(vault),
-            "--excluded-folders",
-            "30-areas/hapax,alias/private,30-areas/target/private",
-            "--json",
+            str(vault), "--excluded-folders", "30-areas/hapax,30-areas/target/private", "--json"
         ).stdout
     )
-    assert both["predicted_upload"]["bytes"] - neither["predicted_upload"]["bytes"] == 154
-    assert both["predicted_upload"]["files"] - neither["predicted_upload"]["files"] == 2
+    delta = report["predicted_upload"]["bytes"] - excluded["predicted_upload"]["bytes"]
+    assert delta == 77, "the aliased file was counted more than once"
+
+
+def test_link_to_a_vault_ancestor_is_skipped(vault: pathlib.Path) -> None:
+    """A link to a directory CONTAINING the vault overlaps the other way round
+    (``c.startsWith(n + sep)``) and must also be skipped — it is what stops the walk
+    recursing forever."""
+    (vault / "up").symlink_to(vault.parent, target_is_directory=True)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            str(vault),
+            "--excluded-folders",
+            "20-projects/_dashboard",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert [link["path"] for link in report["symlinks_skipped_overlapping"]] == ["up"]
+    assert not any(
+        p.startswith("up/") for p in {i["path"] for i in report["largest_included_files"]}
+    )
 
 
 def test_unreadable_config_directory_is_an_error_not_a_traceback(
