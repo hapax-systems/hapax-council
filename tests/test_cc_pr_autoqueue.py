@@ -10229,6 +10229,66 @@ def test_graphql_row_invalid_rollup_is_unknown_without_rest(
     assert "no_status_checks" in decision.reasons
 
 
+@pytest.mark.parametrize("include_pending_auto", [True, False], ids=["permitted", "not-permitted"])
+def test_graphql_row_preserves_rest_indeterminate_pending_rollup_without_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, include_pending_auto: bool
+) -> None:
+    """The GraphQL consumer preserves indeterminate evidence and applies pending policy."""
+    rollup = [
+        {
+            "name": autoqueue.REST_INDETERMINATE_CHECK_NAME,
+            "status": "PENDING",
+            "conclusion": None,
+        }
+    ]
+    expected_rollup = [dict(check) for check in rollup]
+    row = {**_GRAPHQL_ROW, "transport": "graphql", "statusCheckRollup": rollup}
+    route = _graphql_route()
+    # Inject the sentinel at the same defensive consumer boundary as malformed rollups.
+    monkeypatch.setattr(autoqueue, "list_open_pr_statuses", lambda **_: ([row], route))
+
+    def no_rest(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("GraphQL sentinel row must not rehydrate through REST")
+
+    monkeypatch.setattr(autoqueue, "get_pull_rest", no_rest)
+    monkeypatch.setattr(autoqueue, "_fetch_status_check_rollup", no_rest)
+    prs, returned_route = autoqueue.fetch_open_prs(
+        repo="owner/repo", repo_root=tmp_path, runner=no_rest
+    )
+
+    assert returned_route is route
+    assert row["statusCheckRollup"] == expected_rollup
+    assert row["statusCheckRollup"] is rollup
+    assert len(prs) == 1
+    summary = prs[0].check_summary
+    assert summary.observed == {autoqueue.REST_INDETERMINATE_CHECK_NAME}
+    assert summary.pending == [autoqueue.REST_INDETERMINATE_CHECK_NAME]
+    assert summary.has_pending
+    assert summary.passed == []
+    assert summary.failed == []
+    assert summary.verified_passed == []
+
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="task-a", pr=row["number"])
+    decision = autoqueue.classify_pr(
+        prs[0],
+        tasks=autoqueue.load_task_notes(vault),
+        queued_prs=set(),
+        require_route_metadata=True,
+        include_pending_auto=include_pending_auto,
+        required_checks=(),
+        expected_auto_merge_method="SQUASH",
+        expected_auto_merge_method_source="test",
+        require_expected_auto_merge_method=True,
+    )
+    if include_pending_auto:
+        assert decision.action == "enable_auto_merge"
+        assert decision.reasons == ()
+    else:
+        assert decision.action == "blocked"
+        assert decision.reasons == ("pending_checks:" + autoqueue.REST_INDETERMINATE_CHECK_NAME,)
+
+
 def test_fetch_open_prs_skips_the_cycle_when_both_pools_are_exhausted(tmp_path: Path) -> None:
     """Caller-level coverage for the RestPoolExhausted path (codex-1, major).
 
