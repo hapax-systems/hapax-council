@@ -200,6 +200,28 @@ class TestPinIsConsumedOnce:
             "launcher in the subtree would honour it"
         )
 
+    @pytest.mark.parametrize(
+        "addressee", ["hapax-kimi", "hapax-claude-headless", "hapax-codex-headless", ""]
+    )
+    def test_a_pin_addressed_elsewhere_is_ignored(self, addressee: str) -> None:
+        """Only the launcher a pin NAMES may honour it.
+
+        Consume-once alone was still too broad: a launcher invoked into an
+        environment carrying any pin adopted the outer id, regressing the paths
+        that minted unconditionally. Every non-addressee — and a launcher passing
+        no addressee at all — must mint.
+        """
+        pinned = "041482e9-0535-4502-a3f2-100149a03a8c"
+        result = _bash(
+            f"hapax_consume_launch_session_id {addressee}\n"
+            'printf "%s\\n" "$HAPAX_LAUNCH_SESSION_ID"',
+            {"HAPAX_SESSION_ID": pinned, "HAPAX_SESSION_ID_PINNED": "hapax-codex"},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() != pinned, (
+            f"a pin addressed to hapax-codex was honoured by {addressee or '<no addressee>'}"
+        )
+
     def test_pin_is_cleared_even_when_it_was_not_honoured(self) -> None:
         """An unusable pin must not linger for the next launcher to pick up."""
         result = _bash(
@@ -343,6 +365,71 @@ def test_dispatch_launcher_scrubs_inherited_session_id(func: str) -> None:
         f"{func} propagates the dispatcher's own HAPAX_SESSION_ID to the lane — "
         "two same-role re-dispatched lanes then share a claim key"
     )
+
+
+class TestRoleSessionSuccession:
+    """A resume keeps the identity its admitted claim is bound to; a fresh launch does not.
+
+    A Gate-0B claim binds `session_id`, and resolve_applied_claim_publication
+    refuses with `claim_binding_vector_mismatch` when the resolving session
+    differs — so a lane relaunched under a new id cannot resume its own claim. That
+    is already true on main for any relaunch from a clean shell (the base
+    `${HAPAX_SESSION_ID:-<mint>}` form mints whenever the var is unset); the
+    accidental inheritance this task removes was doing succession's job by luck.
+    `--continue` makes it deliberate.
+    """
+
+    def _succeed(self, home: Path, role: str) -> str:
+        result = _bash(
+            f'hapax_role_succession_session_id {role} || printf "MINT\\n"',
+            {"HOME": str(home)},
+        )
+        return result.stdout.strip()
+
+    def _marker(self, home: Path, key: str, task: str = "t1") -> None:
+        cache = home / ".cache" / "hapax"
+        cache.mkdir(parents=True, exist_ok=True)
+        (cache / f"cc-active-task-{key}").write_text(f"{task}\n", encoding="utf-8")
+
+    def test_one_live_claim_is_succeeded(self, tmp_path: Path) -> None:
+        sid = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+        self._marker(tmp_path, f"eta-{sid}")
+        assert self._succeed(tmp_path, "eta") == sid
+
+    def test_no_live_claim_mints(self, tmp_path: Path) -> None:
+        (tmp_path / ".cache" / "hapax").mkdir(parents=True)
+        assert self._succeed(tmp_path, "eta") == "MINT"
+
+    def test_two_live_claims_refuse_rather_than_guess(self, tmp_path: Path) -> None:
+        """Ambiguous claim state must not be resolved by picking one."""
+        self._marker(tmp_path, "eta-3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01")
+        self._marker(tmp_path, "eta-b8e2d7c4-1a55-4f93-8c60-77ad3e9b0125")
+        assert self._succeed(tmp_path, "eta") == "MINT"
+
+    def test_a_role_extending_this_name_is_not_succeeded(self, tmp_path: Path) -> None:
+        """`cx-blue` must not adopt `cx-blue-shadow`'s session — that steals a claim."""
+        self._marker(tmp_path, "cx-blue-shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e")
+        assert self._succeed(tmp_path, "cx-blue") == "MINT"
+
+    def test_a_foreign_marker_does_not_make_a_real_one_ambiguous(self, tmp_path: Path) -> None:
+        sid = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+        self._marker(tmp_path, f"cx-blue-{sid}")
+        self._marker(tmp_path, "cx-blue-shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e")
+        assert self._succeed(tmp_path, "cx-blue") == sid
+
+    def test_only_continue_succeeds_in_the_launcher(self) -> None:
+        """A fresh launch must not adopt a live claim — that is how lanes collide."""
+        for name in ("hapax-claude", "hapax-kimi"):
+            code = _strip_comments((SCRIPTS / name).read_text(encoding="utf-8"))
+            assert "hapax_role_succession_session_id" in code, f"{name} cannot resume"
+            call = next(
+                line for line in code.splitlines() if "hapax_role_succession_session_id" in line
+            )
+            guard_window = code[: code.index(call)]
+            assert "RESUMING" in guard_window or "CONTINUE" in guard_window, (
+                f"{name} calls succession without a resume guard — a fresh launch "
+                "would adopt a live claim session"
+            )
 
 
 #: Argv that reaches each launcher's identity block. These differ — hapax-kimi

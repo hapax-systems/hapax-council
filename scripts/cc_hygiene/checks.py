@@ -1069,6 +1069,13 @@ _SLOT_ROLES: frozenset[str] = frozenset(
     {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
 )
 
+#: The statuses `cc-close --status` actually accepts (scripts/cc-close:45). A
+#: STRICT SUBSET of TASK_TERMINAL_STATUSES, which is why a remedy cannot be built
+#: from terminality alone — `cc-close <task> --status refused` exits 1 before
+#: cleaning anything. Pinned by tests/test_cc_hygiene_stale_claim_marker.py against
+#: the script itself, so the two cannot drift apart silently.
+CC_CLOSE_ACCEPTED_STATUSES: frozenset[str] = frozenset({"done", "withdrawn", "superseded"})
+
 
 def check_stale_claim_marker(
     markers: Mapping[str, str],
@@ -1168,18 +1175,33 @@ def check_stale_claim_marker(
             # reaching marker cleanup, so prescribing it there names a command that
             # cannot work. And for a terminal note still in active/, cc-close
             # defaults to `done`, which would overwrite the outcome it already has.
-            if already_closed:
+            status_text = (note.status or "").strip()
+            if already_closed or status_text not in CC_CLOSE_ACCEPTED_STATUSES:
+                # cc-close cannot reach this note. Either it is already in closed/,
+                # or its status is one cc-close's own --status validator rejects:
+                # that validator accepts {done, withdrawn, superseded}, while
+                # TASK_TERMINAL_STATUSES also carries refused, completed, closed,
+                # closed_poisoned, rejected, not_applicable and deferred. Emitting
+                # `cc-close <task> --status refused` would name a command that exits
+                # 1 before cleaning anything — a next_action that cannot run is
+                # worse than none, because it looks handled.
                 next_action = "retire-orphan-marker"
+                why = (
+                    "note already in closed/"
+                    if already_closed
+                    else (
+                        f"status {status_text!r} is not one cc-close accepts "
+                        f"({', '.join(sorted(CC_CLOSE_ACCEPTED_STATUSES))})"
+                    )
+                )
                 remediation = (
-                    f"no governed tool retires a marker whose note is already in "
-                    f"closed/; remove ~/.cache/hapax/cc-active-task-{key} and "
+                    f"no governed tool retires this marker ({why}); remove "
+                    f"~/.cache/hapax/cc-active-task-{key} and "
                     f"~/.cache/hapax/cc-claim-epoch-{key} after confirming the closure"
                 )
             else:
                 next_action = "re-emit-close"
-                remediation = (
-                    f"cc-close {task_id} --status {str(note.status).strip()} (as role {role_label})"
-                )
+                remediation = f"cc-close {task_id} --status {status_text} (as role {role_label})"
             events.append(
                 HygieneEvent(
                     timestamp=now,

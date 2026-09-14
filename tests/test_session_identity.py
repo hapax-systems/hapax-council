@@ -102,6 +102,73 @@ class TestMint:
         assert is_claim_keyable_session_id(mint_session_id())
 
 
+class TestMintedShapeRecognizer:
+    """`is_minted_session_id` must stay in step with BOTH minters.
+
+    cc-close needs "did this system mint this id" before retiring a marker it did
+    not write, and it carried that as a hand-rolled bash regex — the second
+    divergent copy this module's contract exists to prevent. The predicate now
+    lives beside the minter; these pins are what keep them from drifting.
+    """
+
+    def test_python_mint_is_recognized(self) -> None:
+        from shared.session_identity import is_minted_session_id
+
+        assert is_minted_session_id(mint_session_id())
+
+    def test_bash_mint_is_recognized(self) -> None:
+        """The bash mirror's uuid branch."""
+        import subprocess
+
+        from shared.session_identity import is_minted_session_id
+
+        out = subprocess.run(
+            ["bash", "-c", f'. "{AGENT_ROLE}"; hapax_mint_session_id'],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        assert is_minted_session_id(out), f"bash mint not recognized: {out!r}"
+
+    def test_bash_last_resort_shape_is_recognized(self) -> None:
+        """`sid<nanos>x<rand><rand>` — the branch taken with no uuid source."""
+        import subprocess
+
+        from shared.session_identity import is_minted_session_id
+
+        out = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'printf "sid%sx%s%s" "$(date +%s%N)" "$RANDOM" "$RANDOM"',
+            ],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        assert is_minted_session_id(out), f"last-resort mint not recognized: {out!r}"
+
+    def test_is_narrower_than_claim_keyable(self) -> None:
+        """The distinction is the point: a foreign role suffix is keyable, not minted.
+
+        `cc-active-task-cx-blue-shadow-<uuid>` split against the single role
+        `cx-blue` leaves `shadow-<uuid>`, which IS keyable — so a keyable check
+        would let cc-close delete another role's lease.
+        """
+        from shared.session_identity import is_minted_session_id
+
+        foreign = "shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e"
+        assert is_claim_keyable_session_id(foreign)
+        assert not is_minted_session_id(foreign)
+
+    def test_pid_shape_is_not_minted(self) -> None:
+        from shared.session_identity import is_minted_session_id
+
+        assert not is_minted_session_id("12345")
+        assert not is_minted_session_id("epsilon-12345")
+        assert not is_minted_session_id(None)
+
+
 class TestClaimKeyablePredicate:
     """Claim-by-pid unrepresentable: ids without per-session entropy (bare pids,
     the retired `<role>-$$` launcher fallback) must never key a claim."""

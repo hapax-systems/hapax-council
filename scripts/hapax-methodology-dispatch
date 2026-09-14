@@ -1542,6 +1542,11 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
         )
         return 9
     env["HAPAX_CLAUDE_MODEL"] = pinned_model
+    # The route id this lane is executing under. Without a writer here,
+    # shared.session_identity.capability_shape_from_env could only ever record
+    # route=None, and item 3's whole point is that a capability number carries its
+    # condition vector.
+    env["HAPAX_CAPABILITY_ROUTE"] = f"{route.platform}.{route.mode}.{route.profile}"
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "claude"))
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
@@ -1887,6 +1892,12 @@ def launch_codex_headless(
     # this from the start; codex and vibe did not, so a codex lane inherited the
     # dispatcher's id straight through os.environ.copy().
     env.pop("HAPAX_SESSION_ID", None)
+    # A codex lane dispatched from a claude lane would otherwise inherit the
+    # parent's model pin and record it beside harness=codex. The producer now
+    # selects by harness, and clearing the foreign pin here removes the ambiguity
+    # at the source as well.
+    env.pop("HAPAX_CLAUDE_MODEL", None)
+    env["HAPAX_CAPABILITY_ROUTE"] = f"{route.platform}.{route.mode}.{route.profile}"
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
     if local_fallback_allowed:

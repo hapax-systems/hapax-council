@@ -124,6 +124,7 @@ while [ $# -gt 0 ]; do
       ;;
     --continue|-c)
       CLAUDE_EXTRA+=("--continue")
+      RESUMING=1
       shift
       ;;
     --help|-h)
@@ -324,6 +325,18 @@ fi
 # addressed to it and it always mints. Passing nothing is the way to say that.
 hapax_consume_launch_session_id
 SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
+# --continue is a RESUME: the same lane carrying on, so it succeeds its own live
+# claim session rather than minting. Without this, a resumed lane cannot resolve
+# the admitted claim bound to its previous session and HOLDs on
+# claim_binding_vector_mismatch. Succession requires exactly one live
+# session-keyed claim for the role — zero or several, and we mint rather than guess.
+if [ "${RESUMING:-0}" = "1" ]; then
+  if _hc_succeeded="$(hapax_role_succession_session_id "$ROLE" 2>/dev/null)" &&
+    [ -n "$_hc_succeeded" ]; then
+    SESSION_UUID="$_hc_succeeded"
+    echo "hapax-claude: resuming role '$ROLE' under its live claim session $SESSION_UUID" >&2
+  fi
+fi
 export HAPAX_AGENT_INTERFACE="claude"
 export HAPAX_AGENT_NAME="$ROLE"
 export CLAUDE_ROLE="$ROLE"

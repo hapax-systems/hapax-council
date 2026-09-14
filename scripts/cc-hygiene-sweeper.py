@@ -393,14 +393,37 @@ def run_sweep(
     # The live<->declared join: every other check reads the vault and asks whether
     # the DECLARED state is self-consistent. This one reads the runtime markers the
     # gate actually keys on and asks whether they still agree with it.
-    events.extend(
-        check_stale_claim_marker(
-            read_claim_markers(claim_marker_dir),
-            notes,
-            closed_notes,
-            now=now,
+    # An absent marker dir makes this check inert, and read_claim_markers returns
+    # {} for both "no drift" and "I could not read anything" — so a reconciliation
+    # check would report clean while checking nothing. Say so instead.
+    if not claim_marker_dir.is_dir():
+        events.append(
+            HygieneEvent(
+                timestamp=now,
+                check_id="stale_claim_marker",
+                severity="warning",
+                task_id=None,
+                session=None,
+                message=(
+                    f"claim marker directory {claim_marker_dir} does not exist — the "
+                    "live↔declared join checked nothing this sweep"
+                ),
+                metadata={
+                    "marker_dir": str(claim_marker_dir),
+                    "next_action": "operator-adjudication",
+                    "reason": "marker_dir_absent",
+                },
+            )
         )
-    )
+    else:
+        events.extend(
+            check_stale_claim_marker(
+                read_claim_markers(claim_marker_dir),
+                notes,
+                closed_notes,
+                now=now,
+            )
+        )
 
     sessions = _build_session_states(relay_payloads, notes)
     summaries = _summarize_checks(events)

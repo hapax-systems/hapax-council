@@ -104,6 +104,36 @@ class TestDisagreementMatrix:
         assert events[0].metadata["vault_location"] == "active"
         assert "--status withdrawn" in events[0].metadata["remediation"]
 
+    def test_terminal_status_cc_close_rejects_does_not_get_a_cc_close_remedy(self) -> None:
+        """`refused` is terminal but cc-close's --status validator rejects it.
+
+        TASK_TERMINAL_STATUSES is a SUPERSET of what cc-close accepts, so building
+        a remedy from terminality alone emits `cc-close <task> --status refused`,
+        which exits 1 before cleaning anything.
+        """
+        for status in ("refused", "completed", "closed_poisoned", "rejected", "deferred"):
+            events = check_stale_claim_marker(
+                {"eta": "t1"}, [_note("t1", status=status)], now=_now()
+            )
+            assert len(events) == 1, status
+            assert events[0].metadata["next_action"] == "retire-orphan-marker", status
+            # The explanation may NAME cc-close (saying why it is not the remedy);
+            # what must not appear is a runnable `cc-close <task>` invocation.
+            assert "cc-close t1" not in events[0].metadata["remediation"], status
+            assert f"--status {status}" not in events[0].metadata["remediation"], status
+
+    def test_cc_close_accepted_statuses_match_the_script(self) -> None:
+        """The constant and cc-close's own validator must not drift apart."""
+        from cc_hygiene.checks import CC_CLOSE_ACCEPTED_STATUSES
+
+        script = (REPO_ROOT / "scripts" / "cc-close").read_text(encoding="utf-8")
+        # scripts/cc-close:45 — `*) echo "cc-close: --status must be done, withdrawn, or superseded`
+        for status in CC_CLOSE_ACCEPTED_STATUSES:
+            assert status in script, f"{status} not named in cc-close"
+        assert "done|withdrawn|superseded" in script, (
+            "cc-close's accepted --status set changed; update CC_CLOSE_ACCEPTED_STATUSES"
+        )
+
     def test_event_reports_the_disagreement_not_an_inferred_cause(self) -> None:
         """ "the lane never ran cc-close" was an unobserved cause, and wrong.
 
@@ -229,6 +259,42 @@ class TestSweepBinding:
     host's live lanes and paged for them. cc-claim writes the markers beside the
     relay dir, so relay_root.parent is the anchor that moves with the sweep.
     """
+
+    def test_absent_marker_dir_is_reported_not_reported_clean(self, tmp_path: Path) -> None:
+        """An inert reconciliation check must be visible as inert.
+
+        read_claim_markers returns {} for "no drift" AND for "I could not read
+        anything" (it swallows OSError), so without this the sweep reports a clean
+        join while having checked nothing — fail-open for the one check whose whole
+        job is noticing that state disagrees.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cc_hygiene_sweeper_absent", REPO_ROOT / "scripts" / "cc-hygiene-sweeper.py"
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        # relay_root exists but its parent holds no marker dir of its own.
+        relay = tmp_path / "nowhere" / "relay"
+        relay.mkdir(parents=True)
+        vault = tmp_path / "vault"
+        (vault / "active").mkdir(parents=True)
+        (vault / "closed").mkdir(parents=True)
+
+        state = mod.run_sweep(
+            vault_root=vault,
+            relay_root=relay,
+            repo_root=tmp_path,
+            claim_marker_dir=tmp_path / "definitely-absent",
+        )
+
+        stale = [e for e in state.events if e.check_id == "stale_claim_marker"]
+        assert len(stale) == 1
+        assert stale[0].metadata["reason"] == "marker_dir_absent"
+        assert stale[0].severity == "warning"
 
     def test_marker_dir_defaults_to_the_relay_root_parent(self, tmp_path: Path) -> None:
         import importlib.util

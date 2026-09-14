@@ -315,19 +315,35 @@ if [[ -n "$role" ]]; then
     # The task-id guard above does not save us: two roles holding one task id is
     # precisely the contested case.
     #
-    # So a globbed key is retired only when its remainder is a session id THIS
-    # system mints: a uuid4, or the alpha-infixed last resort agent-role.sh falls
-    # back to when no uuid source exists (`sid<nanos>x<rand><rand>`). Both are
-    # single tokens with no further role boundary, so `shadow-<uuid>` matches
-    # neither and is left alone. The closing session's own key is listed
-    # explicitly above, so a lease keyed on any other id shape still retires
-    # itself — only FOREIGN sessions are held to the mint shapes.
+    # A foreign-session key is retired only when its remainder is a real session
+    # id AND names no further role. The predicate is the Python SSOT —
+    # shared.session_identity.split_claim_marker_key, the same authority the
+    # hygiene check uses — never a second hand-rolled copy here. An earlier cut
+    # matched two hardcoded id shapes with a bash regex, which would drift from
+    # the minter the first time the minter changed: exactly the "five divergent
+    # copies" failure this task exists to repair, re-introduced in the closer.
+    # The closing session's own key and the legacy file skip the check: they are
+    # this role's by construction, whatever id shape they carry.
     if [[ "$claim_key" != "$role" && "$claim_key" != "$role-$session_id" ]]; then
-      remainder="${claim_key#"$role"-}"
-      if [[ ! "$remainder" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] &&
-        [[ ! "$remainder" =~ ^sid[0-9]+x[0-9]+$ ]]; then
-        continue
-      fi
+      # Bare python3 is correct here: shared/session_identity.py is stdlib-only by
+      # contract precisely so it imports under the system interpreter on every
+      # dispatch host (appendix has no PyYAML outside the uv venv).
+      python3 -I - "$SCRIPT_DIR/.." "$claim_key" "$role" <<'PYEOF' || continue
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from shared.session_identity import is_minted_session_id
+
+key, role = sys.argv[2], sys.argv[3]
+# Retire only `<this role>-<an id this system minted>`. The remainder must be a
+# MINTED shape, not merely a claim-keyable one: `cx-blue-shadow-<uuid>` leaves the
+# keyable remainder `shadow-<uuid>`, so a keyable test would delete another role's
+# lease and destroy the contention evidence the hygiene check routes to
+# operator-adjudication. split_claim_marker_key resolves that correctly only when
+# given every role that exists, which a closing lane does not know.
+remainder = key[len(role) + 1 :] if key.startswith(f"{role}-") else ""
+sys.exit(0 if is_minted_session_id(remainder) else 1)
+PYEOF
     fi
     # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
     # clear it with its claim file so a stale epoch can never mis-age a future

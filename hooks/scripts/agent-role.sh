@@ -289,6 +289,54 @@ sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
 # Usage in a launcher — never inside a command substitution:
 #     hapax_consume_launch_session_id hapax-codex
 #     SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
+# --- Session succession (claims-ontology-correction, row item 1) --------------
+# A RESUME is the same lane continuing, so it must keep the session identity its
+# admitted claim is bound to. A fresh launch is a new lane and must not.
+#
+# Why this is required rather than nice: a claim published through the Gate-0B
+# path binds `session_id`, and resolve_applied_claim_publication refuses with
+# `claim_binding_vector_mismatch` when the resolving session differs. So a lane
+# that relaunches under a new id cannot resume its own admitted claim — it HOLDs.
+# That is true on main today for every relaunch from a clean shell (measured: the
+# base `${HAPAX_SESSION_ID:-<mint>}` form mints whenever the var is unset), and
+# minting per launch would make it the only outcome. The accidental inheritance
+# this task removes was, for resumes, doing succession's job by luck.
+#
+# Succeeds ONLY when the role holds exactly one live session-keyed claim. Two
+# means the role's claim state is ambiguous and picking one would be a guess; zero
+# means there is nothing to succeed. Both mint.
+hapax_role_succession_session_id() {
+  local role="${1:-}" dir="${HOME:-/nonexistent}/.cache/hapax" f n=0 found=""
+  [ -n "$role" ] || return 1
+  for f in "$dir/cc-active-task-$role-"*; do
+    [ -f "$f" ] || continue
+    local base="${f##*/}"
+    local candidate="${base#cc-active-task-"$role"-}"
+    # Only ids this system minted: `<role>-shadow-<uuid>` belongs to another lane
+    # whose name extends this one's, and succeeding it would steal its claim.
+    hapax_session_id_is_minted "$candidate" || continue
+    n=$((n + 1))
+    found="$candidate"
+  done
+  [ "$n" = 1 ] || return 1
+  printf '%s\n' "$found"
+}
+
+# True when $1 has a shape this system's minter produces. Delegates to the Python
+# SSOT (shared/session_identity.is_minted_session_id) so the recognizer and the
+# minter cannot drift into two answers.
+hapax_session_id_is_minted() {
+  local candidate="${1:-}" root
+  [ -n "$candidate" ] || return 1
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || return 1
+  python3 -c '
+import sys
+sys.path.insert(0, sys.argv[2])
+from shared.session_identity import is_minted_session_id
+sys.exit(0 if is_minted_session_id(sys.argv[1]) else 1)
+' "$candidate" "$root" 2>/dev/null
+}
+
 hapax_consume_launch_session_id() {
   local me="${1:-}"
   local pinned="${HAPAX_SESSION_ID_PINNED:-}"

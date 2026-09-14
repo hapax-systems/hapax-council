@@ -71,7 +71,9 @@ class TestSessionIdNotInherited:
             captured["env"] = env
             return 0
 
-        route = SimpleNamespace(profile="full")
+        # Stands in for PlatformPath, which always carries platform/mode/profile;
+        # the launcher derives HAPAX_CAPABILITY_ROUTE from all three.
+        route = SimpleNamespace(platform="claude", mode="headless", profile="full")
         with (
             patch.dict(os.environ, {"HAPAX_SESSION_ID": "parent-leaked-id"}),
             patch.object(mod, "_sliced_call", fake_sliced),

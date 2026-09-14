@@ -211,8 +211,25 @@ same path, stop and inspect the archive before removing anything else.
 If the task id cannot be recovered from the claim file, inspect the matching
 `cc-claim-epoch-*` and `cc-claim-dispatch-*.json` files for the same lane or
 session key, set `task_id='<recovered-task-id>'`, and rerun the exact-path
-procedure. Do not use `cc-close` for another session's stale claim file: it
-does not target that file.
+procedure.
+
+**`cc-close` is not a stale-lease tool, but it is no longer blind to other
+sessions.** Two different operations, easily confused:
+
+- **Role-wide closure** — `cc-close <task-id>` retires *every* lease **this role**
+  holds that names **the task being closed**, including leases keyed to the role's
+  other sessions. It sweeps `cc-active-task-<role>-*`, retiring a globbed key only
+  when the remainder is an id this system minted, so a role whose name extends
+  this one (`cx-blue` vs `cx-blue-shadow`) is never touched. This is closure
+  cleanup: it exists so a lane that restarted mid-task cannot leave the marker set
+  disagreeing with the vault.
+- **Exact-file stale-lease release** — the procedure above. Use it for a lease
+  naming a *different* task, a lease belonging to a *different role*, or any lease
+  you must retire without closing the task. `cc-close` will not touch those, by
+  design: a lease for other work is another session's live claim.
+
+So: closing a task no longer requires hand-releasing the closing role's other
+leases for it. Everything else still does.
 
 ## Roll Back To Normal
 

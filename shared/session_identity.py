@@ -83,6 +83,41 @@ def mint_session_id() -> str:
     return str(uuid.uuid4())
 
 
+#: uuid4 as it lands in a filename, and the alpha-infixed last resort the bash
+#: mirror falls back to when no uuid source exists
+#: (agent-role.sh ``hapax_mint_session_id``: ``sid<nanos>x<rand><rand>``).
+_MINTED_ID_RE = re.compile(
+    r"(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|sid[0-9]+x[0-9]+)\Z"
+)
+
+
+def is_minted_session_id(session_id: str | None) -> bool:
+    """True when ``session_id`` has a shape :func:`mint_session_id` (or its bash
+    mirror's last-resort branch) actually produces.
+
+    Narrower than :func:`is_claim_keyable_session_id`, and for a different
+    question. *Keyable* asks "may this id key an artifact" — deliberately
+    permissive, since ids arrive from several spawners. *Minted* asks "did THIS
+    system's minter produce this", which is what a sweep needs before retiring a
+    marker it did not write.
+
+    The distinction has teeth: ``cc-active-task-cx-blue-shadow-<uuid>`` split
+    against the single role ``cx-blue`` yields the remainder
+    ``shadow-<uuid>``, which IS keyable — so a keyable check would let cc-close
+    delete a different role's lease. :func:`split_claim_marker_key` resolves that
+    correctly only when given every role that exists, which a closing lane does
+    not know.
+
+    Lives here, beside the minter, on purpose: cc-close carried this as a
+    hand-rolled bash regex, which is the second-divergent-copy shape this module's
+    own contract exists to prevent. **Change the minter and change this together**
+    — tests/test_session_identity.py holds them in step.
+    """
+    if not session_id:
+        return False
+    return bool(_MINTED_ID_RE.fullmatch(session_id.strip()))
+
+
 def is_claim_keyable_session_id(session_id: str | None) -> bool:
     """True when ``session_id`` may key coordination-plane artifacts.
 
@@ -157,16 +192,26 @@ def session_role_marker_path(session_id: str, *, cache_dir: Path) -> Path:
 #: Env vars naming the dispatched model, highest precedence first. The dispatcher
 #: pins HAPAX_CLAUDE_MODEL per route (CapabilityExecutionInvariant drift guard), so
 #: it is the value that actually decided execution rather than a config default.
-_MODEL_ENV_PRECEDENCE: tuple[str, ...] = (
-    "HAPAX_CAPABILITY_MODEL",
-    "HAPAX_CLAUDE_MODEL",
-    "HAPAX_CODEX_MODEL",
-)
+#: The model variable each harness's dispatcher actually pins, keyed by harness.
+#: Deliberately NOT a flat precedence list. The first cut tried
+#: HAPAX_CAPABILITY_MODEL -> HAPAX_CLAUDE_MODEL -> HAPAX_CODEX_MODEL in order and
+#: recorded whichever was present, so a codex lane dispatched from a claude lane —
+#: dispatchers do `os.environ.copy()` and do not clear the parent's pins — recorded
+#: `model_family=<the claude model>` beside `harness=codex`. Reproduced exactly as
+#: reported in round 2. A cross-harness value is worse than no value: it is a wrong
+#: record that reads as a measured one, and the whole point of this field is that a
+#: capability number carries a TRUE condition vector.
+_MODEL_ENV_BY_HARNESS: dict[str, str] = {
+    "claude": "HAPAX_CLAUDE_MODEL",
+}
 
-_ROUTE_ENV_PRECEDENCE: tuple[str, ...] = (
-    "HAPAX_CAPABILITY_ROUTE",
-    "HAPAX_METHODOLOGY_DISPATCH_ROUTE",
-)
+#: Explicit override, honoured for any harness — the one var a caller sets when it
+#: knows its own execution descriptor. No harness-specific fallback beyond the map
+#: above: if the harness's own pin is absent, the model is simply not recorded.
+_MODEL_ENV_EXPLICIT = "HAPAX_CAPABILITY_MODEL"
+
+#: Route id, written by hapax-methodology-dispatch at each governed launch.
+_ROUTE_ENV = "HAPAX_CAPABILITY_ROUTE"
 
 
 def capability_shape_from_env(
@@ -178,23 +223,25 @@ def capability_shape_from_env(
     this module stays stdlib-only (it must import under the bare system python3 on
     every dispatch host). The schema side is the typed contract; this is the
     producer, and a field the environment cannot answer stays ``None`` — "not
-    recorded", never a guess.
+    recorded", never a guess, and never another harness's value.
 
     Credential location is deliberately absent here as it is there: these values
     land in vault notes that sync.
     """
 
-    def _first(names: tuple[str, ...]) -> str | None:
-        for var in names:
-            value = (env.get(var) or "").strip()
-            if value:
-                return value
-        return None
+    def _clean(name: str) -> str | None:
+        return (env.get(name) or "").strip() or None
+
+    harness = _clean("HAPAX_AGENT_INTERFACE")
+    model = _clean(_MODEL_ENV_EXPLICIT)
+    if model is None and harness is not None:
+        harness_var = _MODEL_ENV_BY_HARNESS.get(harness)
+        model = _clean(harness_var) if harness_var else None
 
     return {
-        "model_family": _first(_MODEL_ENV_PRECEDENCE),
-        "harness": (env.get("HAPAX_AGENT_INTERFACE") or "").strip() or None,
-        "route": _first(_ROUTE_ENV_PRECEDENCE),
+        "model_family": model,
+        "harness": harness,
+        "route": _clean(_ROUTE_ENV),
         "scaffold_revision": scaffold_revision,
     }
 

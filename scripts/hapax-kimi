@@ -54,6 +54,15 @@ fi
 # this keeps its pre-existing unconditional mint.
 hapax_consume_launch_session_id
 SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
+# --continue is a RESUME (see hapax-claude for the full reasoning): succeed this
+# role's live claim session so the resumed lane can resolve its own admitted claim.
+if [ "$CONTINUE" = "1" ]; then
+  if _hk_succeeded="$(hapax_role_succession_session_id "$ROLE" 2>/dev/null)" &&
+    [ -n "$_hk_succeeded" ]; then
+    SESSION_UUID="$_hk_succeeded"
+    echo "hapax-kimi: resuming role '$ROLE' under its live claim session $SESSION_UUID" >&2
+  fi
+fi
 WORKDIR="${HAPAX_KIMI_WORKDIR:-$HOME}"
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
