@@ -91,6 +91,10 @@ from shared.release_gate import (  # noqa: E402
     evaluate_avsdlc_release_gate,
 )
 from shared.sdlc_lifecycle import (  # noqa: E402
+    FRONTMATTER_ABSENT,
+    FRONTMATTER_NOT_A_MAPPING,
+    FRONTMATTER_PARSE_ERROR,
+    FRONTMATTER_UNTERMINATED,
     RELEASE_MITIGATION_CHECKS,
     REVIEW_TEAM_QUORUM_EVIDENCE,
     TASK_MERGE_READY_STATUSES,
@@ -99,6 +103,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     apply_release_auto_arm,
     assess_release_auto_arm,
     frontmatter_from_text,
+    frontmatter_state_from_text,
     release_auto_arm_waivers,
     task_closure_validity,
 )
@@ -1681,21 +1686,28 @@ def _frontmatter(path: Path) -> tuple[dict[str, Any] | None, str | None]:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         return None, f"unreadable: {exc.__class__.__name__}"
-    if not text.startswith("---"):
-        return None, "no frontmatter fence"
-    end = text.find("\n---", 3)
-    if end == -1:
-        return None, "unterminated frontmatter fence"
-    raw = text[3:end].strip()
-    if "\x1b[" in raw:
+    # Fence scanning and YAML loading come from the SHARED parser. This function
+    # used to carry its own copy (``text.find("\n---", 3)``), which truncated the
+    # block at any line merely *starting* with ``---`` — a legal YAML key such as
+    # ``---extra: abc``. Admission then saw no arming declaration on a note whose
+    # close gate demanded a receipt, so the row was admitted while being
+    # unclosable. One parser, one reading.
+    #
+    # The ANSI check and the typed reason strings stay here: they are this
+    # caller's legibility contract (operator directive 2026-06-10 — a reason code
+    # must name the true failure), not parsing.
+    if "\x1b[" in text:
         # ANSI escapes silently break YAML and made a task invisible on
         # 2026-06-10 (admission reported missing_cc_task_link — a lie).
         return None, "ANSI escape sequences in frontmatter"
-    try:
-        parsed = yaml.safe_load(raw) or {}
-    except yaml.YAMLError as exc:
-        return None, f"YAML error: {str(exc).splitlines()[0][:90]}"
-    if not isinstance(parsed, dict):
+    parsed, state = frontmatter_state_from_text(text)
+    if state == FRONTMATTER_ABSENT and not text.startswith("---"):
+        return None, "no frontmatter fence"
+    if state == FRONTMATTER_UNTERMINATED:
+        return None, "unterminated frontmatter fence"
+    if state == FRONTMATTER_PARSE_ERROR:
+        return None, "YAML error: frontmatter did not parse"
+    if state == FRONTMATTER_NOT_A_MAPPING:
         return None, "frontmatter is not a mapping"
     return parsed, None
 

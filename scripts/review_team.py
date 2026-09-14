@@ -81,7 +81,11 @@ from shared.quota_spend_ledger import (  # noqa: E402
     load_quota_spend_ledger_resolved,
     subscription_quota_state_for_route,
 )
-from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES  # noqa: E402
+from shared.sdlc_lifecycle import (  # noqa: E402
+    FRONTMATTER_OK,
+    TASK_TERMINAL_STATUSES,
+    frontmatter_state_from_text,
+)
 
 DEFAULT_REGISTRY_PATH = REPO_ROOT / "config" / "review-lenses" / "registry.yaml"
 LENS_DIR = REPO_ROOT / "config" / "review-lenses"
@@ -1091,20 +1095,28 @@ def constitute_team(
 
 
 def _note_frontmatter(path: Path) -> dict[str, Any] | None:
+    """Parse a task note's frontmatter via the SHARED parser.
+
+    This used to carry its own copy of the fence scan (``text.find("\\n---")``),
+    which truncated the block at any line merely *starting* with ``---`` — a
+    legal YAML key such as ``---extra: abc``. Because the close gate reads the
+    shared parser and this one fed dispatch, the two disagreed about what a note
+    declared: close demanded a receipt while minting saw no arming declaration
+    and produced none, so the row could never obtain the receipt its own close
+    required. Sharing the *predicate* did not prevent that — the predicate was
+    being handed different frontmatter.
+
+    One parser, one reading. See ``shared.sdlc_lifecycle``.
+    """
+
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return None
-    if not text.startswith("---\n"):
+    frontmatter, state = frontmatter_state_from_text(text)
+    if state != FRONTMATTER_OK:
         return None
-    end = text.find("\n---", 4)
-    if end == -1:
-        return None
-    try:
-        parsed = yaml.safe_load(text[4:end])
-    except yaml.YAMLError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
+    return frontmatter
 
 
 def find_task_notes(

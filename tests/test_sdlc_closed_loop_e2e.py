@@ -313,6 +313,49 @@ def test_receipt_gate_does_not_depend_on_the_close_admission() -> None:
     assert "shared.sdlc_lifecycle" in imports
 
 
+def test_every_surface_parses_a_note_the_same_way(tmp_path: Path) -> None:
+    """Sharing the PREDICATE is not enough if the surfaces parse differently.
+
+    ``review_team._note_frontmatter`` and ``cc-pr-autoqueue._frontmatter`` each
+    carried their own copy of the fence scan, which truncated the block at any
+    line merely *starting* with ``---``. A legal YAML key like ``---extra: abc``
+    therefore produced a closure trap: the close gate (shared parser) saw the
+    review demand below it and required a receipt, while dispatch and admission
+    saw no arming declaration — so minting never ran and the row could never
+    obtain the receipt its own close demanded.
+
+    One parser, one reading. Pinned across all three surfaces on one note.
+    """
+    import sys
+
+    from shared.sdlc_lifecycle import acceptance_receipt_triggers, frontmatter_from_text
+
+    scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import review_team
+
+    note_text = (
+        "---\n"
+        "task_id: t\n"
+        "pr: 42\n"
+        "---extra: abc\n"
+        "review_requirement:\n"
+        "  independent_review_required: true\n"
+        "---\n\nbody\n"
+    )
+    note = tmp_path / "t.md"
+    note.write_text(note_text, encoding="utf-8")
+
+    shared = acceptance_receipt_triggers(frontmatter_from_text(note_text))
+    dispatch = acceptance_receipt_triggers(review_team._note_frontmatter(note) or {})
+
+    assert shared, "the shared parser must see the demand at all"
+    assert dispatch == shared, (
+        "dispatch parses a different declaration than close — the closure trap"
+    )
+
+
 def test_both_close_gates_share_one_receipt_predicate() -> None:
     """The two gates must agree by construction, not by coincidence.
 

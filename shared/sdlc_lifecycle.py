@@ -227,11 +227,17 @@ def frontmatter_state_from_text(text: str) -> tuple[dict[str, Any], str]:
     # success. Line-based matching also makes ``---\n---`` and ``---\n\n---``
     # agree: both are empty frontmatter, where the offset scan called the first
     # unterminated and the second absent.
+    # ``rstrip``, never ``strip``: a fence sits at column 0. An INDENTED ``---``
+    # is content — inside a literal or folded scalar (``description: |``) it is
+    # part of the value, and treating it as the closing fence truncates the
+    # block and drops every field below, including a review demand or the
+    # quality floor itself. Trailing whitespace on a real fence is tolerated;
+    # leading whitespace disqualifies it.
     lines = text.split("\n")
-    if lines[0].strip() != "---":
+    if lines[0].rstrip() != "---":
         return {}, FRONTMATTER_ABSENT
     for index in range(1, len(lines)):
-        if lines[index].strip() == "---":
+        if lines[index].rstrip() == "---":
             raw = "\n".join(lines[1:index]).strip()
             break
     else:

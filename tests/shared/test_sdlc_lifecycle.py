@@ -1183,6 +1183,34 @@ class TestFrontmatterParseState:
 
         assert adjacent == blank_separated == ({}, FRONTMATTER_ABSENT)
 
+    def test_indented_dashes_inside_a_literal_scalar_are_not_a_fence(self) -> None:
+        """A fence sits at column 0; an indented ``---`` is scalar content.
+
+        ``strip()`` accepted it, truncating the block and dropping every field
+        below — including the review demand. It also regressed frontier
+        enforcement: a ``quality_floor`` placed after such a scalar vanished.
+        """
+        text = (
+            "---\ntask_id: x\ndescription: |\n  ---\n"
+            "review_requirement:\n  independent_review_required: true\n---\nbody\n"
+        )
+
+        loaded, state = frontmatter_state_from_text(text)
+
+        assert state == FRONTMATTER_OK
+        assert acceptance_receipt_triggers(loaded) == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,)
+
+    def test_indented_dashes_do_not_hide_the_quality_floor(self) -> None:
+        """The frontier-enforcement regression, pinned in its own right."""
+        text = (
+            "---\ntask_id: x\ndescription: >\n  ---\n"
+            "quality_floor: frontier_review_required\n---\nbody\n"
+        )
+
+        loaded, _ = frontmatter_state_from_text(text)
+
+        assert acceptance_receipt_triggers(loaded) == (RECEIPT_TRIGGER_REVIEW_FLOOR,)
+
     def test_fence_with_trailing_whitespace_still_closes(self) -> None:
         loaded, state = frontmatter_state_from_text("---\ntask_id: x\n--- \nbody\n")
         assert state == FRONTMATTER_OK
