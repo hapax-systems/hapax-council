@@ -286,6 +286,40 @@ def frontmatter_block_text(text: str) -> tuple[str, str]:
     return "", FRONTMATTER_UNTERMINATED
 
 
+def frontmatter_write_partition(text: str) -> tuple[str, str, str]:
+    """Split a note for EDITING: ``(head, tail, state)``.
+
+    ``head`` is everything before the closing fence line; ``tail`` begins at that
+    line. ``head + tail`` reproduces ``text`` exactly, so a caller may rewrite or
+    append fields inside ``head`` and rejoin without disturbing the body. Both
+    are empty unless ``state`` is :data:`FRONTMATTER_OK`.
+
+    Exists because readers and writers were using different fence rules, and the
+    asymmetry was worse than either being wrong alone. Once the parser learned
+    that ``---extra: abc`` is a mapping key rather than a fence, a writer still
+    treating it as the fence inserted its updates ABOVE that line while the
+    original fields stayed below — and YAML's last-key-wins meant the note parsed
+    back with the OLD values. Terminal close then projected that note into
+    ``closed/`` and cleared the claim, recording a stage it had not actually
+    written. Before the reader improved, the same note was simply refused.
+
+    A capability added to one side of a read/write pair is a defect until the
+    other side has it.
+    """
+
+    lines = text.split("\n")
+    if not is_frontmatter_fence(lines[0]):
+        if lines[0].startswith("---"):
+            return "", "", FRONTMATTER_INVALID_OPENING_FENCE
+        return "", "", FRONTMATTER_ABSENT
+    for index in range(1, len(lines)):
+        if is_frontmatter_fence(lines[index]):
+            head = "\n".join(lines[:index])
+            tail = "\n" + "\n".join(lines[index:])
+            return head, tail, FRONTMATTER_OK
+    return "", "", FRONTMATTER_UNTERMINATED
+
+
 def frontmatter_state_from_text(text: str) -> tuple[dict[str, Any], str]:
     """Frontmatter plus WHY it is what it is.
 
