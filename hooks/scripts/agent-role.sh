@@ -260,16 +260,49 @@ sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
 ' "$candidate" "$root" 2>/dev/null
 }
 
-# The id a launcher must give the lane it is starting. Inherits ONLY an
-# explicitly pinned, claim-keyable id; mints in every other case.
-hapax_launch_session_id() {
-  if [ "${HAPAX_SESSION_ID_PINNED:-}" = "1" ] &&
+# The id a launcher must give the lane it is starting. Inherits ONLY an explicitly
+# pinned, claim-keyable id, and the pin is CONSUMED — one hop, never a standing grant.
+#
+# Sets `HAPAX_LAUNCH_SESSION_ID` in the CALLER's shell rather than printing, which
+# is the whole point: `$(...)` is a subshell, so a helper that printed could not
+# clear the pin where it matters. Review round 1 on PR #4668 found all four families
+# converging on this — the first cut exported HAPAX_SESSION_ID_PINNED=1 into the
+# codex runner and never cleared it, so the pin was inherited by every process in
+# the lane's subtree. A grandchild launcher then saw pin=1 plus the outer id and
+# adopted it, reconstructing the exact
+# cc-active-task-{cx-glmcp,cx-p0,cx-crit}-041482e9-… collision this is meant to
+# repair, and regressing hapax-claude-headless and hapax-kimi, which had minted
+# unconditionally before. Reproduced, then fixed here.
+#
+# An env var is inherited transitively by construction, so "is the pin set" can
+# never express "this invocation is the re-exec my own outer invocation created".
+# Consuming it makes the grant single-use, which is the only shape that does.
+#
+# The pin is ADDRESSED as well as consumed. Its value names the launcher entitled
+# to honour it, and only `hapax-codex` ever writes one, because only hapax-codex
+# re-execs itself. A one-shot boolean was still too broad: a headless lane
+# dispatched into an environment that happened to carry pin=1 would adopt the
+# outer id, which is a net regression for hapax-claude-headless and hapax-kimi —
+# they minted unconditionally before this helper existed. Caught by this suite's
+# own behavioural test, after review round 1 predicted it.
+#
+# Usage in a launcher — never inside a command substitution:
+#     hapax_consume_launch_session_id hapax-codex
+#     SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
+hapax_consume_launch_session_id() {
+  local me="${1:-}"
+  local pinned="${HAPAX_SESSION_ID_PINNED:-}"
+  # Clear FIRST and unconditionally, in the caller's shell, so the grant cannot
+  # outlive this call by any path — including the early returns below and any
+  # child this shell later spawns. `unset` drops the export attribute with it.
+  unset HAPAX_SESSION_ID_PINNED
+  if [ -n "$me" ] && [ "$pinned" = "$me" ] &&
     [ -n "${HAPAX_SESSION_ID:-}" ] &&
     hapax_session_id_is_claim_keyable "$HAPAX_SESSION_ID"; then
-    printf '%s\n' "$HAPAX_SESSION_ID"
+    HAPAX_LAUNCH_SESSION_ID="$HAPAX_SESSION_ID"
     return 0
   fi
-  hapax_mint_session_id
+  HAPAX_LAUNCH_SESSION_ID="$(hapax_mint_session_id)"
 }
 
 # --- Per-session identity marker (reform-identity-coherence, cluster 11) -------

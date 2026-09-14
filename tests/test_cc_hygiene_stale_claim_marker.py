@@ -67,8 +67,16 @@ class TestDisagreementMatrix:
         )
         assert "cc-close t1" in ev.metadata["remediation"]
 
-    def test_marker_for_a_closed_note_is_flagged_even_when_status_looks_live(self) -> None:
-        """Presence in closed/ is terminal regardless of the status string."""
+    def test_marker_for_a_closed_note_gets_a_remedy_that_can_actually_run(self) -> None:
+        """Presence in closed/ is terminal regardless of the status string — and
+        ``cc-close`` is NOT the remedy there.
+
+        codex-1 caught the first cut prescribing ``cc-close <task>`` for every
+        terminal case. cc-close resolves only active/ notes and exits 2 on one
+        already in closed/, before it ever reaches marker cleanup, so the marker
+        this check reported survived the action it recommended. A next_action that
+        cannot run is worse than none: it looks handled.
+        """
         events = check_stale_claim_marker(
             {"eta": "t1"},
             [],
@@ -76,7 +84,35 @@ class TestDisagreementMatrix:
             now=_now(),
         )
         assert len(events) == 1
+        assert events[0].metadata["next_action"] == "retire-orphan-marker"
+        assert events[0].metadata["vault_location"] == "closed"
+        assert "cc-active-task-eta" in events[0].metadata["remediation"]
+        assert "cc-claim-epoch-eta" in events[0].metadata["remediation"]
+
+    def test_terminal_note_still_in_active_preserves_its_outcome(self) -> None:
+        """The emitted cc-close carries --status, so re-closing cannot rewrite it.
+
+        cc-close defaults to `done`; a withdrawn task re-closed without --status
+        would silently become done — the remedy corrupting the record it was
+        meant to reconcile.
+        """
+        events = check_stale_claim_marker(
+            {"eta": "t1"}, [_note("t1", status="withdrawn")], now=_now()
+        )
+        assert len(events) == 1
         assert events[0].metadata["next_action"] == "re-emit-close"
+        assert events[0].metadata["vault_location"] == "active"
+        assert "--status withdrawn" in events[0].metadata["remediation"]
+
+    def test_event_reports_the_disagreement_not_an_inferred_cause(self) -> None:
+        """ "the lane never ran cc-close" was an unobserved cause, and wrong.
+
+        An interrupted close, a failed cleanup, or the cross-session sweep defect
+        this ships alongside all produce the same state *after* cc-close ran.
+        """
+        events = check_stale_claim_marker({"eta": "t1"}, [_note("t1", status="done")], now=_now())
+        assert len(events) == 1
+        assert "never ran cc-close" not in events[0].message
 
     def test_marker_for_an_unknown_task_needs_a_person(self) -> None:
         """Nothing here can tell a deleted note from a corrupt marker."""

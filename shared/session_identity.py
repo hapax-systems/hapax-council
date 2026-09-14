@@ -154,6 +154,61 @@ def session_role_marker_path(session_id: str, *, cache_dir: Path) -> Path:
     return cache_dir / f"{_MARKER_PREFIX}{session_id}"
 
 
+#: Env vars naming the dispatched model, highest precedence first. The dispatcher
+#: pins HAPAX_CLAUDE_MODEL per route (CapabilityExecutionInvariant drift guard), so
+#: it is the value that actually decided execution rather than a config default.
+_MODEL_ENV_PRECEDENCE: tuple[str, ...] = (
+    "HAPAX_CAPABILITY_MODEL",
+    "HAPAX_CLAUDE_MODEL",
+    "HAPAX_CODEX_MODEL",
+)
+
+_ROUTE_ENV_PRECEDENCE: tuple[str, ...] = (
+    "HAPAX_CAPABILITY_ROUTE",
+    "HAPAX_METHODOLOGY_DISPATCH_ROUTE",
+)
+
+
+def capability_shape_from_env(
+    env: Mapping[str, str], *, scaffold_revision: str | None = None
+) -> dict[str, str | None]:
+    """The condition vector for whatever this session produces.
+
+    Mirrors ``shared/route_metadata_schema.CapabilityShape`` as a plain dict so
+    this module stays stdlib-only (it must import under the bare system python3 on
+    every dispatch host). The schema side is the typed contract; this is the
+    producer, and a field the environment cannot answer stays ``None`` — "not
+    recorded", never a guess.
+
+    Credential location is deliberately absent here as it is there: these values
+    land in vault notes that sync.
+    """
+
+    def _first(names: tuple[str, ...]) -> str | None:
+        for var in names:
+            value = (env.get(var) or "").strip()
+            if value:
+                return value
+        return None
+
+    return {
+        "model_family": _first(_MODEL_ENV_PRECEDENCE),
+        "harness": (env.get("HAPAX_AGENT_INTERFACE") or "").strip() or None,
+        "route": _first(_ROUTE_ENV_PRECEDENCE),
+        "scaffold_revision": scaffold_revision,
+    }
+
+
+def format_capability_shape(shape: Mapping[str, str | None]) -> str:
+    """One-line ``k=v`` rendering for a session-log entry; omits unrecorded fields.
+
+    Returns ``""`` when nothing is known, so a caller can append it unconditionally
+    without emitting an empty ``shape=()`` that would read as a recorded absence.
+    """
+    parts = [f"{k}={v}" for k, v in shape.items() if v]
+    return ", ".join(parts)
+
+
 def identity_stamp(env: Mapping[str, str], host: str | None = None) -> dict[str, str | None]:
     """The canonical identity block for relay receipts and witness artifacts.
 

@@ -24,7 +24,7 @@ if [ -f "$ROLE_HELPER" ]; then
   # shellcheck disable=SC1091
   . "$ROLE_HELPER"
 fi
-if ! declare -F hapax_launch_session_id >/dev/null 2>&1; then
+if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1; then
   echo "hapax-codex-headless: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
   exit 9
 fi
@@ -832,7 +832,10 @@ PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
 # hapax-claude-headless fixed in #3875 and this sibling never adopted. This
 # launcher execs `codex` directly and never re-enters itself, so there is no
 # pinned-propagation case (claims-ontology-correction).
-SESSION_UUID="$(normalize_session_uuid "$(hapax_launch_session_id)")"
+# No addressee: this launcher execs `codex` directly and never re-enters itself,
+# so it always mints — including inside a pane whose pin is addressed to hapax-codex.
+hapax_consume_launch_session_id
+SESSION_UUID="$(normalize_session_uuid "$HAPAX_LAUNCH_SESSION_ID")"
 export HAPAX_PARENT_AGENT_INTERFACE="$PARENT_INTERFACE"
 export HAPAX_PARENT_AGENT_NAME="$PARENT_NAME"
 export HAPAX_AGENT_INTERFACE="codex"

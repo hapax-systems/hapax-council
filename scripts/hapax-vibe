@@ -16,7 +16,7 @@ if [ -f "$ROLE_HELPER" ]; then
   # shellcheck disable=SC1091
   . "$ROLE_HELPER"
 fi
-if ! declare -F hapax_launch_session_id >/dev/null 2>&1; then
+if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1; then
   echo "hapax-vibe: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
   exit 9
 fi
@@ -290,7 +290,9 @@ PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
 # MINTED, never inherited: this launcher's runner execs $VIBE_BIN directly and
 # never re-enters here, so an ambient HAPAX_SESSION_ID has no claim on this
 # lane's identity (claims-ontology-correction).
-SESSION_UUID="$(hapax_launch_session_id)"
+# No addressee: the runner execs $VIBE_BIN directly and never re-enters here.
+hapax_consume_launch_session_id
+SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
 export HAPAX_AGENT_INTERFACE="vibe"
 export HAPAX_AGENT_NAME="$SESSION"
 export HAPAX_AGENT_SLOT="$SESSION"

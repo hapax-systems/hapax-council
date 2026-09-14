@@ -1080,18 +1080,28 @@ def check_stale_claim_marker(
 ) -> list[HygieneEvent]:
     """Flag runtime claim markers that disagree with the vault SSOT.
 
-    Three disagreements, each with a different remedy, so each carries its own
-    ``next_action`` rather than one generic "investigate":
+    Each disagreement carries its own ``next_action``, rather than one generic
+    "investigate", and the action must be a command that actually works:
 
-    - ``re-emit-close`` — the task is terminal (closed/ or a terminal status in
-      active/). The marker is simply left over; re-running ``cc-close`` as that
-      role, or deleting the marker pair, resolves it. ``warning``.
+    - ``re-emit-close`` — terminal status, note still in **active/**. ``cc-close``
+      can reach it; the emitted command carries ``--status`` so re-closing cannot
+      overwrite the outcome the note already has. ``warning``.
+    - ``retire-orphan-marker`` — note already in **closed/**. ``cc-close`` exits 2
+      on those before reaching marker cleanup, so it is not the remedy; the event
+      names the marker and sidecar paths instead, and says plainly that no governed
+      tool retires them. ``warning``.
     - ``operator-adjudication`` — the marker names a task that exists **nowhere**
       in the vault. Nothing here can tell a deleted note from a corrupt marker,
       and guessing either way destroys evidence. ``violation``.
     - ``operator-adjudication`` — the task is live but ``assigned_to`` names a
       **different** role. Two parties believe they hold it; that is a contested
       claim, not a cleanup. ``violation``.
+
+    Events report the **observed disagreement**, never an inferred cause. A
+    terminal note beside a surviving marker does not establish that "the lane never
+    ran cc-close" — an interrupted close, a failed cleanup, or the cross-session
+    sweep defect this ships alongside all produce the same state after cc-close
+    ran. The cause is not observable from here, so it is not asserted.
 
     A marker for a live task assigned to its own role is the healthy case and
     emits nothing.
@@ -1150,8 +1160,26 @@ def check_stale_claim_marker(
                 )
                 continue
 
-        terminal = note.task_id in closed or (note.status or "").strip() in TASK_TERMINAL_STATUSES
+        already_closed = note.task_id in closed
+        terminal = already_closed or (note.status or "").strip() in TASK_TERMINAL_STATUSES
         if terminal:
+            # The remedy differs by WHERE the note is, because cc-close resolves
+            # only active/ notes — it exits 2 on one already in closed/ before ever
+            # reaching marker cleanup, so prescribing it there names a command that
+            # cannot work. And for a terminal note still in active/, cc-close
+            # defaults to `done`, which would overwrite the outcome it already has.
+            if already_closed:
+                next_action = "retire-orphan-marker"
+                remediation = (
+                    f"no governed tool retires a marker whose note is already in "
+                    f"closed/; remove ~/.cache/hapax/cc-active-task-{key} and "
+                    f"~/.cache/hapax/cc-claim-epoch-{key} after confirming the closure"
+                )
+            else:
+                next_action = "re-emit-close"
+                remediation = (
+                    f"cc-close {task_id} --status {str(note.status).strip()} (as role {role_label})"
+                )
             events.append(
                 HygieneEvent(
                     timestamp=now,
@@ -1162,14 +1190,15 @@ def check_stale_claim_marker(
                     message=(
                         f"claim marker 'cc-active-task-{key}' still holds "
                         f"'{task_id}', which the vault records as "
-                        f"{note.status!r} — the lane never ran cc-close"
+                        f"{note.status!r}"
                     ),
                     metadata={
                         "marker": f"cc-active-task-{key}",
                         "role": role_label,
                         "vault_status": str(note.status),
-                        "next_action": "re-emit-close",
-                        "remediation": f"cc-close {task_id} (as role {role_label})",
+                        "vault_location": "closed" if already_closed else "active",
+                        "next_action": next_action,
+                        "remediation": remediation,
                     },
                 )
             )

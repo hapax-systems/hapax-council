@@ -179,12 +179,12 @@ def test_cc_close_clears_a_lease_for_this_task_held_by_another_session(
     _write_task(vault, "foo")
     cache = _cache(home)
     # Claimed by session A (a lane that has since restarted), closed by session B.
-    stale = cache / "cc-active-task-eta-sessA"
-    stale_sidecar = cache / "cc-claim-epoch-eta-sessA"
+    stale = cache / "cc-active-task-eta-3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+    stale_sidecar = cache / "cc-claim-epoch-eta-3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
     stale.write_text("foo\n", encoding="utf-8")
     stale_sidecar.write_text("1780000000 foo\n", encoding="utf-8")
 
-    result = _run_close(home, "foo", role="eta", session_id="sessB")
+    result = _run_close(home, "foo", role="eta", session_id="b8e2d7c4-1a55-4f93-8c60-77ad3e9b0125")
 
     assert result.returncode == 0, result.stderr
     assert not stale.exists(), (
@@ -203,12 +203,70 @@ def test_cc_close_orphan_sweep_spares_other_roles(tmp_path: Path) -> None:
     other = cache / "cc-active-task-epsilon-sessX"
     other.write_text("foo\n", encoding="utf-8")
 
-    result = _run_close(home, "foo", role="eta", session_id="sessB")
+    result = _run_close(home, "foo", role="eta", session_id="b8e2d7c4-1a55-4f93-8c60-77ad3e9b0125")
 
     assert result.returncode == 0, result.stderr
     assert other.exists(), (
         "cc-close cleared a DIFFERENT role's claim marker — a role may only retire its own leases"
     )
+
+
+def test_cc_close_orphan_sweep_spares_a_role_sharing_its_prefix(
+    tmp_path: Path,
+) -> None:
+    """`cx-blue` must not sweep `cx-blue-shadow`'s lease.
+
+    The sweep globs `cc-active-task-<role>-*`, which is prefix-based, so a role
+    whose name extends another's is caught by it. The same-task guard does NOT
+    save us here: two roles naming one task is precisely the contested state the
+    hygiene check routes to operator-adjudication, so deleting it destroys the
+    contention evidence. The existing eta-vs-epsilon case cannot detect this —
+    those names share no prefix.
+
+    A globbed key is retired only when its remainder is a session id this system
+    mints (uuid4, or the alpha-infixed last resort); `shadow-<uuid>` is neither.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, "foo")
+    cache = _cache(home)
+    other_role = cache / "cc-active-task-cx-blue-shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e"
+    other_role.write_text("foo\n", encoding="utf-8")
+    mine = cache / "cc-active-task-cx-blue-3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+    mine.write_text("foo\n", encoding="utf-8")
+
+    result = _run_close(
+        home, "foo", role="cx-blue", session_id="b8e2d7c4-1a55-4f93-8c60-77ad3e9b0125"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert other_role.exists(), (
+        "cc-close swept a DIFFERENT role's lease because its name extends this "
+        f"role's — contention evidence destroyed\nstdout={result.stdout}"
+    )
+    assert not mine.exists(), (
+        f"this role's own foreign-session lease was not swept\nstdout={result.stdout}"
+    )
+
+
+def test_cc_close_sweeps_a_last_resort_minted_session_id(tmp_path: Path) -> None:
+    """The alpha-infixed fallback mint is a real session id and must be swept.
+
+    agent-role.sh falls back to `sid<nanos>x<rand><rand>` when no uuid source
+    exists. Restricting the foreign-session sweep to uuids alone would silently
+    skip those, so both mint shapes are accepted.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, "foo")
+    cache = _cache(home)
+    stale = cache / "cc-active-task-eta-sid1789999999999999999x1234527891"
+    stale.write_text("foo\n", encoding="utf-8")
+
+    result = _run_close(home, "foo", role="eta", session_id="b8e2d7c4-1a55-4f93-8c60-77ad3e9b0125")
+
+    assert result.returncode == 0, result.stderr
+    assert not stale.exists(), f"last-resort-minted lease leaked\nstdout={result.stdout}"
 
 
 def test_cc_close_orphan_sweep_reports_what_it_cleared(tmp_path: Path) -> None:
@@ -217,11 +275,13 @@ def test_cc_close_orphan_sweep_reports_what_it_cleared(tmp_path: Path) -> None:
     vault = _vault(home)
     _write_task(vault, "foo")
     cache = _cache(home)
-    (cache / "cc-active-task-eta-sessA").write_text("foo\n", encoding="utf-8")
+    (cache / "cc-active-task-eta-3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01").write_text(
+        "foo\n", encoding="utf-8"
+    )
 
-    result = _run_close(home, "foo", role="eta", session_id="sessB")
+    result = _run_close(home, "foo", role="eta", session_id="b8e2d7c4-1a55-4f93-8c60-77ad3e9b0125")
 
     assert result.returncode == 0, result.stderr
-    assert "cc-active-task-eta-sessA" in result.stdout, (
+    assert "cc-active-task-eta-3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01" in result.stdout, (
         f"the orphaned marker was cleared without naming it\nstdout={result.stdout}"
     )

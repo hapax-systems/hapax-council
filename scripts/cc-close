@@ -289,9 +289,14 @@ if [[ -n "$role" ]]; then
   # because sibling lanes used to INHERIT one session id; now that every launch
   # mints its own (claims-ontology-correction), it is the common case — which is
   # why the two changes ship together.
+  session_id=""
+  if declare -F hapax_session_id >/dev/null 2>&1; then
+    session_id="$(hapax_session_id 2>/dev/null || true)"
+  fi
   shopt -s nullglob
   claim_files=(
     "$HOME/.cache/hapax/cc-active-task-$role"
+    ${session_id:+"$HOME/.cache/hapax/cc-active-task-$role-$session_id"}
     "$HOME/.cache/hapax/cc-active-task-$role-"*
   )
   shopt -u nullglob
@@ -300,13 +305,35 @@ if [[ -n "$role" ]]; then
     # Only leases naming THIS task. A lease for other work is another session's
     # live claim and is never ours to retire.
     [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]] || continue
-    # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
-    # clear it with its claim file so a stale epoch can never mis-age a future
-    # claim. The key comes from the BASENAME with a non-greedy prefix strip —
-    # `${path##*/cc-active-task-}` over the full path would strip through a
-    # parent directory that happened to contain the same substring.
     claim_base="$(basename "$claim_file")"
     claim_key="${claim_base#cc-active-task-}"
+    # The glob is prefix-based, so closing as `cx` would also match
+    # `cc-active-task-cx-crit-<sid>` and closing as `cx-blue` would match
+    # `cc-active-task-cx-blue-shadow-<sid>`. Deleting those erases ANOTHER role's
+    # claim — and, worse, erases the contention evidence in exactly the state the
+    # hygiene check routes to operator-adjudication rather than silent deletion.
+    # The task-id guard above does not save us: two roles holding one task id is
+    # precisely the contested case.
+    #
+    # So a globbed key is retired only when its remainder is a session id THIS
+    # system mints: a uuid4, or the alpha-infixed last resort agent-role.sh falls
+    # back to when no uuid source exists (`sid<nanos>x<rand><rand>`). Both are
+    # single tokens with no further role boundary, so `shadow-<uuid>` matches
+    # neither and is left alone. The closing session's own key is listed
+    # explicitly above, so a lease keyed on any other id shape still retires
+    # itself — only FOREIGN sessions are held to the mint shapes.
+    if [[ "$claim_key" != "$role" && "$claim_key" != "$role-$session_id" ]]; then
+      remainder="${claim_key#"$role"-}"
+      if [[ ! "$remainder" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] &&
+        [[ ! "$remainder" =~ ^sid[0-9]+x[0-9]+$ ]]; then
+        continue
+      fi
+    fi
+    # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
+    # clear it with its claim file so a stale epoch can never mis-age a future
+    # claim. claim_key came from the BASENAME above with a non-greedy prefix strip
+    # — `${path##*/cc-active-task-}` over the full path would strip through a
+    # parent directory that happened to contain the same substring.
     rm -f "$claim_file" "$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
     echo "cc-close: cleared claim file '$claim_file' (role '$role')"
     cleared_claim=1

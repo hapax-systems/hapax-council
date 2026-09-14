@@ -18,7 +18,7 @@ if [ -f "$ROLE_HELPER" ]; then
   # shellcheck disable=SC1091
   . "$ROLE_HELPER"
 fi
-if ! declare -F hapax_launch_session_id >/dev/null 2>&1; then
+if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1; then
   echo "hapax-codex: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
   exit 9
 fi
@@ -1103,13 +1103,22 @@ PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:
 
 # Per-session id (coordination reform Phase 1): stable uuid so the gate keys a
 # claim lease to THIS session — two same-role sessions never collide (FM-2).
-# hapax_launch_session_id honours an inherited id ONLY when the sender also set
-# HAPAX_SESSION_ID_PINNED=1 — which the tmux runner below does, because it really
+# hapax_consume_launch_session_id honours an inherited id ONLY when the sender also
+# set HAPAX_SESSION_ID_PINNED=1 — which the tmux runner below does, because it really
 # does re-exec THIS launcher and the inner process must keep the outer's id. An
-# ambient id from whatever shell the operator happened to be in is now ignored
-# (claims-ontology-correction). normalize_session_uuid still runs afterwards so a
-# pinned-but-path-hostile id can never reach a filename.
-SESSION_UUID="$(normalize_session_uuid "$(hapax_launch_session_id)")"
+# ambient id from whatever shell the operator happened to be in is ignored
+# (claims-ontology-correction).
+#
+# CONSUME form, called outside any command substitution: the helper clears the pin
+# in THIS shell, so it is gone from the environment every child of this lane
+# inherits. Without that, the pin authorised the whole subtree and a grandchild
+# launcher re-created the very collision this repairs — the defect this PR's own
+# first round shipped and all four reviewer families caught.
+#
+# normalize_session_uuid still runs afterwards so a pinned-but-path-hostile id can
+# never reach a filename.
+hapax_consume_launch_session_id hapax-codex
+SESSION_UUID="$(normalize_session_uuid "$HAPAX_LAUNCH_SESSION_ID")"
 TMUX_NAME="hapax-codex-$SESSION"
 DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
 DISPATCH_HOST=""
@@ -1575,11 +1584,16 @@ else
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
     # Propagate the session id so the re-exec'd inner hapax-codex keeps ONE stable
     # uuid (reform Phase 1, FM-2) instead of minting a fresh one. The PIN is what
-    # makes that legitimate rather than accidental: hapax_launch_session_id ignores
-    # a bare inherited id precisely so an ancestor shell cannot hand three lanes one
-    # claim key, and this is the one caller entitled to say "no, keep mine".
+    # makes that legitimate rather than accidental: hapax_consume_launch_session_id
+    # ignores a bare inherited id precisely so an ancestor shell cannot hand three
+    # lanes one claim key, and this is the one caller entitled to say "no, keep mine".
+    # The grant is ONE HOP: the inner hapax-codex consumes and unsets it before
+    # exporting anything to its own children, so it never becomes ambient.
+    # The pin NAMES its addressee, so it authorises this re-exec and nothing else:
+    # a headless or kimi lane launched from inside this pane sees a pin addressed
+    # to hapax-codex, ignores it, and mints.
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
-    printf 'export HAPAX_SESSION_ID_PINNED=1\n'
+    printf 'export HAPAX_SESSION_ID_PINNED=hapax-codex\n'
     printf 'cd %q\n' "$WORKDIR"
     printf 'exec %q' "$COUNCIL_DIR/scripts/hapax-codex"
     for arg in "${CHILD_ARGS[@]}"; do

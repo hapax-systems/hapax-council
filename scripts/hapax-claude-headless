@@ -106,11 +106,18 @@ if [ -f "$ROLE_HELPER" ]; then
   # shellcheck disable=SC1091
   . "$ROLE_HELPER"
 fi
-if ! declare -F hapax_launch_session_id >/dev/null 2>&1; then
+if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1; then
   echo "hapax-claude-headless: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
   exit 9
 fi
-SESSION_UUID="$(hapax_launch_session_id)"
+# Consume form, outside a command substitution: this lane minted unconditionally
+# before the helper existed (#3875), and a standing pin would silently regress it
+# back to inheriting whenever it is dispatched from inside a pinned codex pane.
+# No addressee: every headless launch is a fresh lane and this launcher never
+# re-execs itself after minting, so it mints unconditionally — preserving #3875's
+# behaviour exactly, including when dispatched from inside a pinned codex pane.
+hapax_consume_launch_session_id
+SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
 export HAPAX_SESSION_ID="$SESSION_UUID"
 # Per-session identity marker (WM-independent): record THIS session's role keyed by
 # the session id so agent-role.sh / hapax-whoami resolve identity without a

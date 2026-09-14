@@ -343,6 +343,7 @@ def _summarize_checks(events: list[HygieneEvent]) -> list[CheckSummary]:
         "refusal_dormancy",
         "spec_staleness",
         "vault_link_integrity",
+        "stale_claim_marker",
     )
     return [CheckSummary(check_id=cid, fired=counter.get(cid, 0)) for cid in all_ids]
 

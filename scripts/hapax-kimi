@@ -42,7 +42,7 @@ if [ -f "$ROLE_HELPER" ]; then
   # shellcheck disable=SC1091
   . "$ROLE_HELPER"
 fi
-if ! declare -F hapax_launch_session_id >/dev/null 2>&1; then
+if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1; then
   echo "hapax-kimi: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
   exit 9
 fi
@@ -50,7 +50,10 @@ fi
 # helper so all six launchers carry ONE implementation of the contract. This
 # launcher's runner execs $KIMI_BIN directly, so there is no pinned-propagation
 # case (claims-ontology-correction).
-SESSION_UUID="$(hapax_launch_session_id)"
+# No addressee: the runner execs $KIMI_BIN directly and never re-enters here, so
+# this keeps its pre-existing unconditional mint.
+hapax_consume_launch_session_id
+SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
 WORKDIR="${HAPAX_KIMI_WORKDIR:-$HOME}"
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then

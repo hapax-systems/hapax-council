@@ -414,6 +414,55 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     frontmatter_from_text,
     task_closure_validity,
 )
+from shared.session_identity import (  # noqa: E402
+    capability_shape_from_env,
+    format_capability_shape,
+)
+
+
+def _scaffold_revision() -> str | None:
+    """The repo revision this claim was made from — part of the shape.
+
+    Two runs of one model on one route are different shapes when the scaffold
+    between them changed. Read from git; ``None`` when it cannot be determined,
+    because an unreadable revision is not a recorded one.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    revision = result.stdout.strip()
+    return revision if result.returncode == 0 and revision else None
+
+
+def _shape_suffix() -> str:
+    """`` shape=(…)`` appended AFTER the existing log entry, or "" when unknown.
+
+    Deliberately outside the `(cc-claim, session=…)` parentheses: that substring is
+    a format other readers match on — tests/scripts/test_cc_claim_session_identity.py
+    pins it exactly — and appending inside would have changed a line shape this
+    change has no business changing.
+
+    This is the writer the capability_shape field exists for: without it the
+    schema can represent a shape and no claim ever carries one, so "which
+    capability shape held this claim" still needs transcript archaeology —
+    exactly the gap the row names. An empty string rather than ``shape=()`` so an
+    absence is never recorded as a finding.
+    """
+    import os
+
+    rendered = format_capability_shape(
+        capability_shape_from_env(os.environ, scaffold_revision=_scaffold_revision())
+    )
+    return f" shape=({rendered})" if rendered else ""
 
 note_before = path.read_bytes()
 text = note_before.decode("utf-8")
@@ -1211,11 +1260,11 @@ if claim_mode == "claim":
         sys.exit(6)
     text = _front + _rest
     session_suffix = f", session={session_id}" if session_id else ""
-    log_line = f"- {now} {role} claimed (cc-claim{session_suffix})\n"
+    log_line = f"- {now} {role} claimed (cc-claim{session_suffix}){_shape_suffix()}\n"
     result_message = f"cc-claim: claimed task '{task_id}' for role '{role}'"
 else:
     session_suffix = f", session={session_id}" if session_id else ""
-    log_line = f"- {now} {role} resumed ready-state task (cc-claim{session_suffix})\n"
+    log_line = f"- {now} {role} resumed ready-state task (cc-claim{session_suffix}){_shape_suffix()}\n"
     result_message = f"cc-claim: resumed task '{task_id}' for role '{role}'"
 
 text = re.sub(
