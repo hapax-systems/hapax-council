@@ -186,39 +186,187 @@ def test_allow_missing_downgrades_refusal_to_report(vault: pathlib.Path) -> None
     assert json.loads(result.stdout)["entries_unmatchable"] == 1
 
 
-def test_from_sync_config_audits_the_live_list(
-    vault: pathlib.Path, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The post-apply audit path: read what ob actually holds, including its
-    fileTypes, rather than trusting the string someone meant to apply."""
-    xdg = tmp_path / "xdg"
+def _write_live_config(xdg: pathlib.Path, vault: pathlib.Path, **overrides: object) -> pathlib.Path:
+    """Write a config.json in the schema ob ACTUALLY persists.
+
+    This matters and is pinned deliberately. cli.js stores the live object via
+    ``ys(t.vaultId, t)`` using ``ignoreFolders`` / ``allowTypes`` /
+    ``allowSpecialFiles``; only the printer ``_r(t)`` renames those to
+    ``excludedFolders`` / ``fileTypes`` / ``configs`` for ``sync-status --json``.
+    An earlier version of this fixture used the PRINTED names, so it passed while
+    the reader found nothing in a real file — a fixture that encoded the bug.
+    Verified against a production config holding 17 exclusions, in which
+    ``allowTypes`` was absent entirely because the default was never overridden.
+    """
     state = xdg / "obsidian-headless" / "sync" / "vault-id-1"
-    state.mkdir(parents=True)
-    (state / "config.json").write_text(
-        json.dumps(
-            {
-                "vaultId": "vault-id-1",
-                "vaultName": "personal-kept-test",
-                "vaultPath": str(vault),
-                "fileTypes": ["image", "audio", "pdf", "video"],
-                "excludedFolders": ["20-projects/_dashboard", "30-areas/hapax/ocr/nope"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT), str(vault), "--from-sync-config", "--json"],
+    state.mkdir(parents=True, exist_ok=True)
+    config: dict = {
+        "vaultId": "vault-id-1",
+        "vaultName": "personal-kept-test",
+        "vaultPath": str(vault),
+        "host": "sync-72.obsidian.md",
+        "encryptionVersion": 3,
+        "encryptionKey": "not-a-real-key",
+        "encryptionSalt": "00",
+        "conflictStrategy": "merge",
+        "deviceName": "podium-headless",
+        "ignoreFolders": ["20-projects/_dashboard", "30-areas/hapax/ocr/nope"],
+    }
+    config.update(overrides)
+    path = state / "config.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+    return path
+
+
+def _run_env(vault: pathlib.Path, xdg: pathlib.Path, *args: str):
+    import os as _os
+
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), str(vault), *args],
         capture_output=True,
         text=True,
         check=False,
-        env={**__import__("os").environ, "XDG_CONFIG_HOME": str(xdg)},
+        env={**_os.environ, "XDG_CONFIG_HOME": str(xdg)},
     )
+
+
+def test_from_sync_config_reads_the_persisted_key_not_the_printed_one(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """The audit must find a real list. Reading ``excludedFolders`` out of the
+    FILE yields nothing, which would pass an audit of a broken list."""
+    xdg = tmp_path / "xdg"
+    _write_live_config(xdg, vault)
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
     assert result.returncode == REFUSED, result.stdout + result.stderr
     report = json.loads(result.stdout)
     assert report["vault_name"] == "personal-kept-test"
     assert report["source"] == "sync-config"
+    assert report["entries_total"] == 2, "persisted ignoreFolders was not read"
     assert report["entries_unmatchable"] == 1
+    assert report["file_types"] == list(preflight.DEFAULT_FILE_TYPES)
+
+
+def test_absent_allow_types_means_the_default_set(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """ob DELETES allowTypes when the selection is default, so absence must resolve
+    to the default — the production config measured 2026-09-14 had no such key."""
+    xdg = tmp_path / "xdg"
+    _write_live_config(xdg, vault, ignoreFolders=["20-projects/_dashboard"])
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["entries_total"] == 1, "persisted ignoreFolders was not read"
+    assert report["file_types"] == list(preflight.DEFAULT_FILE_TYPES)
+    assert "jsonl" not in report["predicted_upload"]["by_ext"]
+
+
+def test_nondefault_allow_types_is_honoured(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard"],
+        allowTypes=["image", "audio", "pdf", "video", "unsupported"],
+    )
+    report = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
+    assert "unsupported" in report["file_types"]
+    assert report["predicted_upload"]["by_ext"]["jsonl"]["bytes"] == 4242
+
+
+def test_empty_live_exclusion_list_is_refused_not_a_clean_pass(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """An audit finding no list must not read as a clean bill of health."""
+    xdg = tmp_path / "xdg"
+    _write_live_config(xdg, vault, ignoreFolders=[])
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == REFUSED
+    assert "configures NO exclusions" in result.stderr
+
+
+def test_unrecognized_config_schema_is_an_error(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """If the required ob keys are gone the schema moved; refuse rather than
+    silently report 'no exclusions'."""
+    xdg = tmp_path / "xdg"
+    state = xdg / "obsidian-headless" / "sync" / "vault-id-1"
+    state.mkdir(parents=True)
+    (state / "config.json").write_text(
+        json.dumps({"vaultPath": str(vault), "somethingElse": 1}), encoding="utf-8"
+    )
+    result = _run_env(vault, xdg, "--from-sync-config")
+    assert result.returncode == ERROR
+    assert "does not look like an ob sync config" in result.stderr
+
+
+@pytest.mark.parametrize("entry", ["20-projects/../20-projects", "20-projects/.", "./20-projects"])
+def test_internal_dot_components_are_refused(vault: pathlib.Path, entry: str) -> None:
+    """The filesystem resolves dot segments, so an existence check alone passes
+    them — but ob matches raw relative paths, which never contain dot segments,
+    so such an entry silently excludes nothing."""
+    result = _run(str(vault), "--excluded-folders", entry, "--json")
+    assert result.returncode == REFUSED, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["findings"][0]["verdict"] == "malformed"
+    assert report["entries_effective"] == 0
+
+
+def test_symlink_out_of_vault_is_followed_and_reported(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """ob follows symlinked directories, so the prediction must too — measured
+    2026-09-14, one vault symlink to a source repo put 678 files / 11.8 MiB into
+    the remote that no accounting included."""
+    outside = tmp_path / "outside-repo"
+    outside.mkdir()
+    (outside / "external.md").write_bytes(b"e" * 321)
+    (vault / "20-projects" / "linked").symlink_to(outside, target_is_directory=True)
+
+    result = _run(str(vault), "--excluded-folders", "20-projects/_dashboard", "--json")
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    paths = {item["path"] for item in report["largest_included_files"]}
+    assert "20-projects/linked/external.md" in paths, "symlinked tree was not followed"
+    links = report["symlinks_escaping_vault"]
+    assert [link["path"] for link in links] == ["20-projects/linked"]
+    assert links[0]["target"] == str(outside.resolve())
+    # keep.md 100 + keep.md 50 + sibling.md 11 + p1.png 900 (ocr/pages is not
+    # excluded here) + the 321-byte file behind the symlink.
+    assert report["predicted_upload"]["bytes"] == 1382
+
+
+def test_internal_symlink_is_not_flagged_as_escaping(vault: pathlib.Path) -> None:
+    (vault / "20-projects" / "inside").symlink_to(
+        vault / "30-areas" / "hapax", target_is_directory=True
+    )
+    report = json.loads(
+        _run(str(vault), "--excluded-folders", "20-projects/_dashboard", "--json").stdout
+    )
+    assert report["symlinks_escaping_vault"] == []
+
+
+def test_symlink_loop_terminates(vault: pathlib.Path) -> None:
+    """followlinks=True has no loop guard of its own; a self-referential link must
+    not hang the walk."""
+    (vault / "20-projects" / "loop").symlink_to(vault, target_is_directory=True)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            str(vault),
+            "--excluded-folders",
+            "20-projects/_dashboard",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert result.returncode in (OK, REFUSED)
 
 
 def test_no_sync_config_is_an_error_not_a_silent_pass(

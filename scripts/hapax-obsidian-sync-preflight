@@ -119,8 +119,20 @@ def validate_entries(vault: Path, entries: list[str]) -> list[dict]:
             )
             findings.append(finding)
             continue
-        if Path(entry).is_absolute() or entry.split("/")[0] in (".", ".."):
+        if Path(entry).is_absolute():
             finding.update(verdict="malformed", detail="not vault-relative")
+            findings.append(finding)
+            continue
+        if any(part in (".", "..") for part in entry.split("/")):
+            # Checking only the FIRST component is not enough: the filesystem
+            # resolves `a/../a` and `a/.` happily, so such an entry passes an
+            # existence test — but ob compares it against emitted relative paths,
+            # which never contain dot segments, so it can never match.
+            finding.update(
+                verdict="malformed",
+                detail="contains a '.' or '..' component; the filesystem resolves "
+                "it but ob compares raw relative paths, so it can never match",
+            )
             findings.append(finding)
             continue
         target = vault / entry
@@ -163,8 +175,27 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
     by_top: dict[str, list[int]] = {}
     upload_bytes = upload_files = 0
     largest: list[tuple[int, str]] = []
+    escaping_links: list[dict] = []
+    seen_dirs: set[tuple[int, int]] = set()
 
-    for dirpath, dirnames, filenames in os.walk(vault):
+    # followlinks=True because ob FOLLOWS symlinked directories: its adapter
+    # resolves real paths and reconciles symlinks as ordinary entries. Measured
+    # 2026-09-14 — a single vault symlink to a source repo outside the vault put
+    # 678 markdown files / 11.8 MiB into a remote that nobody's accounting
+    # included. A walk that does not follow links under-predicts by exactly that
+    # mass, so matching ob here is not optional. `seen_dirs` is the loop guard
+    # that followlinks otherwise lacks.
+    for dirpath, dirnames, filenames in os.walk(vault, followlinks=True):
+        try:
+            stat = os.stat(dirpath)
+        except OSError:
+            continue
+        key = (stat.st_dev, stat.st_ino)
+        if key in seen_dirs:
+            dirnames[:] = []
+            continue
+        seen_dirs.add(key)
+
         rel_dir = os.path.relpath(dirpath, vault)
         rel_dir = "" if rel_dir == "." else rel_dir
         # Prune in place. Pruning every dotted directory at every level is
@@ -176,6 +207,21 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
             for d in dirnames
             if not d.startswith(".") and not _excluded(f"{rel_dir}/{d}" if rel_dir else d, entries)
         ]
+        # A link that leaves the vault is reported, not pruned: ob uploads what
+        # is behind it, so silently omitting it would recreate the same blind spot.
+        for name in list(dirnames):
+            child = os.path.join(dirpath, name)
+            if not os.path.islink(child):
+                continue
+            target = os.path.realpath(child)
+            if target == str(vault) or target.startswith(str(vault) + os.sep):
+                continue
+            escaping_links.append(
+                {
+                    "path": f"{rel_dir}/{name}" if rel_dir else name,
+                    "target": target,
+                }
+            )
         for name in filenames:
             if name.startswith("."):
                 continue
@@ -221,12 +267,27 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
             "by_class": {k: {"bytes": v[0], "files": v[1]} for k, v in sorted(by_class.items())},
         },
         "largest_included_files": [{"bytes": b, "path": p} for b, p in largest[:20]],
+        "symlinks_escaping_vault": escaping_links,
     }
 
 
 def _sync_config_dir() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(base) / "obsidian-headless" / "sync"
+
+
+# The PERSISTED config.json and the `sync-status --json` OUTPUT use different key
+# names for the same settings. cli.js writes the live object (`ys(t.vaultId, t)`)
+# with `ignoreFolders` / `allowTypes` / `allowSpecialFiles`, and only the printer
+# `_r(t)` renames them: `excludedFolders: s.ignoreFolders||[]`,
+# `fileTypes: s.allowTypes||me`, `configs: s.allowSpecialFiles||[]`. Reading the
+# PRINTED names out of the FILE finds nothing — measured against a real config
+# holding 17 exclusions, which is why this mapping is pinned by tests.
+PERSISTED_EXCLUSIONS_KEY = "ignoreFolders"
+PERSISTED_FILE_TYPES_KEY = "allowTypes"
+# A config written by ob always carries these; used to tell "no exclusions
+# configured" apart from "this file is not an ob sync config / schema moved".
+PERSISTED_REQUIRED_KEYS = ("vaultId", "vaultPath", "conflictStrategy")
 
 
 def load_live_config(vault: Path) -> dict:
@@ -243,6 +304,13 @@ def load_live_config(vault: Path) -> dict:
         except (OSError, ValueError):
             continue
         if Path(data.get("vaultPath", "")).resolve() == vault:
+            missing = [k for k in PERSISTED_REQUIRED_KEYS if k not in data]
+            if missing:
+                raise ValueError(
+                    f"{config} does not look like an ob sync config "
+                    f"(missing {', '.join(missing)}) — refusing to read an "
+                    "exclusion list out of an unrecognized schema"
+                )
             return data
     raise FileNotFoundError(f"no ob sync configuration found for {vault}")
 
@@ -287,17 +355,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.from_sync_config:
         try:
             live = load_live_config(vault)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return ERROR
-        entries = list(live.get("excludedFolders") or [])
+        # Persisted key, not the printed one — see PERSISTED_EXCLUSIONS_KEY.
+        entries = list(live.get(PERSISTED_EXCLUSIONS_KEY) or [])
     else:
         entries = args.excluded_folders.split(",")
 
     if args.file_types is not None:
         file_types = tuple(t.strip().lower() for t in args.file_types.split(",") if t.strip())
-    elif live.get("fileTypes"):
-        file_types = tuple(live["fileTypes"])
+    elif live.get(PERSISTED_FILE_TYPES_KEY):
+        # ob DELETES this key when the selection is the default, so absence means
+        # the default set, exactly as cli.js `s.allowTypes||me` resolves it.
+        file_types = tuple(live[PERSISTED_FILE_TYPES_KEY])
     else:
         file_types = DEFAULT_FILE_TYPES
     invalid = [t for t in file_types if t not in VALID_FILE_TYPES]
@@ -345,6 +416,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         for ext, stats in list(upload["by_ext"].items())[:8]:
             print(f"  .{ext or '(none)'}: {stats['bytes']} B / {stats['files']} files")
+        for link in prediction["symlinks_escaping_vault"]:
+            print(
+                f"  NOTE: {link['path']} is a symlink OUT of the vault -> "
+                f"{link['target']}; ob follows it, so everything admitted beneath "
+                "it uploads. Counted above.",
+            )
+
+    if args.from_sync_config and not findings and not args.allow_missing:
+        # An audit that finds no list must not read as a clean bill of health: the
+        # key is absent precisely when exclusions were cleared or never set, and
+        # every admitted file then uploads.
+        print(
+            f"REFUSED: the live sync config for {vault} configures NO exclusions "
+            f"('{PERSISTED_EXCLUSIONS_KEY}' absent or empty), so nothing is excluded "
+            f"and all {prediction['predicted_upload']['files']} admitted files would "
+            "upload. Pass --allow-missing if an empty exclusion list is intended.",
+            file=sys.stderr,
+        )
+        return REFUSED
 
     if bad and not args.allow_missing:
         print(
