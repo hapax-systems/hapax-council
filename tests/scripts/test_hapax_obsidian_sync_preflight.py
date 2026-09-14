@@ -530,6 +530,89 @@ def test_a_corrupt_other_vault_config_does_not_break_this_audit(
     assert json.loads(result.stdout)["entries_effective"] == 1
 
 
+@pytest.mark.parametrize("space", [" ", " "])
+def test_nonbreaking_space_exclusions_are_refused_and_the_fix_accepted(
+    vault: pathlib.Path, space: str
+) -> None:
+    """cli.js ``Cs(s) = s.replace(/\\u00A0|\\u202F/g, " ")`` runs before NFC, so ob
+    emits an ORDINARY space. An entry carrying the nonbreaking form can never match,
+    and NFC alone does not catch it."""
+    raw = f"private{space}files"
+    target = vault / "30-areas" / raw
+    target.mkdir()
+    (target / "secret.md").write_bytes(b"s" * 77)
+
+    refused = _run(str(vault), "--excluded-folders", f"30-areas/{raw}", "--json")
+    assert refused.returncode == REFUSED, refused.stdout + refused.stderr
+    report = json.loads(refused.stdout)
+    assert report["entries_effective"] == 0
+    paths = {item["path"] for item in report["largest_included_files"]}
+    assert "30-areas/private files/secret.md" in paths
+
+    ordinary = _run(str(vault), "--excluded-folders", "30-areas/private files", "--json")
+    assert ordinary.returncode == OK, ordinary.stdout + ordinary.stderr
+    accepted = json.loads(ordinary.stdout)
+    assert accepted["entries_effective"] == 1
+    # The only difference between the two runs is whether secret.md is excluded.
+    delta = report["predicted_upload"]["bytes"] - accepted["predicted_upload"]["bytes"]
+    assert delta == 77
+    assert not any("secret.md" in item["path"] for item in accepted["largest_included_files"])
+
+
+def test_internal_link_uploads_under_both_paths(vault: pathlib.Path) -> None:
+    """ob emits one relative path per route to a directory, so a vault-internal
+    link means the same file uploads twice under different paths. A global inode
+    dedup dropped whichever route came second, making totals order-dependent."""
+    target = vault / "30-areas" / "target"
+    (target / "private").mkdir(parents=True)
+    (target / "private" / "secret.md").write_bytes(b"s" * 77)
+    (vault / "alias").symlink_to(target, target_is_directory=True)
+
+    # Excluding only the alias route must leave the real route admitted.
+    result = _run(str(vault), "--excluded-folders", "alias/private", "--json")
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    paths = {item["path"] for item in report["largest_included_files"]}
+    assert "30-areas/target/private/secret.md" in paths
+    assert "alias/private/secret.md" not in paths
+
+    # With neither route excluded the file is counted under BOTH, as ob uploads it.
+    both = json.loads(_run(str(vault), "--excluded-folders", "30-areas/hapax", "--json").stdout)
+    counted = {item["path"] for item in both["largest_included_files"]}
+    assert "alias/private/secret.md" in counted
+    assert "30-areas/target/private/secret.md" in counted
+
+    # Excluding BOTH routes removes exactly one 77-byte file per route, and the
+    # result must not depend on which route the walk reached first.
+    neither = json.loads(
+        _run(
+            str(vault),
+            "--excluded-folders",
+            "30-areas/hapax,alias/private,30-areas/target/private",
+            "--json",
+        ).stdout
+    )
+    assert both["predicted_upload"]["bytes"] - neither["predicted_upload"]["bytes"] == 154
+    assert both["predicted_upload"]["files"] - neither["predicted_upload"]["files"] == 2
+
+
+def test_unreadable_config_directory_is_an_error_not_a_traceback(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    xdg = tmp_path / "xdg"
+    root = xdg / "obsidian-headless" / "sync"
+    root.mkdir(parents=True)
+    root.chmod(0o000)
+    try:
+        result = _run_env(vault, xdg, "--from-sync-config")
+        assert result.returncode == ERROR, result.stdout + result.stderr
+        assert "Traceback" not in result.stderr
+        assert "cannot read the ob sync state directory" in result.stderr
+        assert "Next:" in result.stderr
+    finally:
+        root.chmod(0o755)
+
+
 def test_script_ships_executable_with_a_working_shebang() -> None:
     """Every other test supplies the interpreter explicitly, which would hide a
     100644 mode and a documented entry point that cannot be invoked.

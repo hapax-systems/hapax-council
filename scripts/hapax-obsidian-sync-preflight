@@ -104,8 +104,20 @@ class _Parser(argparse.ArgumentParser):
         raise SystemExit(ERROR)
 
 
+# cli.js: `Ne(s) = Cs(_e(s)).normalize("NFC")` where `Cs(s) = s.replace(Xc," ")` and
+# `Xc = / | /g` — so the emitted name has nonbreaking (U+00A0) and narrow
+# nonbreaking (U+202F) spaces rewritten to ORDINARY spaces before NFC runs. Held as
+# codepoints rather than literals because the characters are invisible in source.
+# `_e` only collapses repeated slashes and trims leading/trailing ones, a no-op for
+# the relative paths a directory walk builds, so it is deliberately not replicated:
+# doing so would mask a malformed path we construct ourselves.
+_EMITTED_SPACE_CODEPOINTS = (0x00A0, 0x202F)
+
+
 def _emitted(rel: str) -> str:
-    """The path ob compares against: cli.js ``Ne(s)`` NFC-normalizes it."""
+    """The path ob compares exclusions against — cli.js ``Ne(s)``."""
+    for codepoint in _EMITTED_SPACE_CODEPOINTS:
+        rel = rel.replace(chr(codepoint), " ")
     return unicodedata.normalize("NFC", rel)
 
 
@@ -186,9 +198,9 @@ def resolve_entry(vault: Path, entry: str) -> tuple[bool, str]:
                 return (
                     False,
                     f"component {part!r} exists on disk but not in ob's emitted "
-                    "namespace: ob NFC-normalizes paths and matches exclusions "
-                    "literally, so this entry can never match. Use the NFC form "
-                    f"({_emitted(literal)!r}).",
+                    "namespace: ob rewrites nonbreaking spaces to ordinary ones and "
+                    "NFC-normalizes the path, then matches exclusions literally, so "
+                    f"this entry can never match. Use {_emitted(literal)!r}.",
                 )
             return False, f"no such path in the vault (component {part!r} not found)"
         current = current / match
@@ -233,6 +245,33 @@ def _excluded(rel: str, entries: list[str]) -> bool:
     return any(rel == e or rel.startswith(e + "/") for e in entries)
 
 
+def _is_cycle(dirpath: str, vault: Path, on_error) -> bool:
+    """True when ``dirpath`` resolves to one of its own ancestors.
+
+    That is the only loop ``followlinks=True`` can produce, and the only case a walk
+    must refuse to descend. Anything else — the same directory reached by two
+    different routes — is real content that ob uploads under both paths.
+    """
+    try:
+        real = os.path.realpath(dirpath)
+    except OSError as exc:  # pragma: no cover - realpath rarely raises
+        on_error(exc)
+        return False
+    root = str(vault)
+    parent = os.path.dirname(dirpath)
+    while parent and parent != dirpath and (parent == root or parent.startswith(root + os.sep)):
+        try:
+            if os.path.realpath(parent) == real:
+                return True
+        except OSError as exc:  # pragma: no cover
+            on_error(exc)
+            return False
+        if parent == root:
+            break
+        parent = os.path.dirname(parent)
+    return False
+
+
 def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict:
     by_class: dict[str, list[int]] = {}
     by_ext: dict[str, list[int]] = {}
@@ -240,7 +279,6 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
     upload_bytes = upload_files = 0
     largest: list[tuple[int, str]] = []
     escaping_links: list[dict] = []
-    seen_dirs: set[tuple[int, int]] = set()
     traversal_errors: list[dict] = []
 
     def _on_error(exc: OSError) -> None:
@@ -252,19 +290,18 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
     # 2026-09-14 — a single vault symlink to a source repo outside the vault put
     # 678 markdown files / 11.8 MiB into a remote that nobody's accounting
     # included. A walk that does not follow links under-predicts by exactly that
-    # mass, so matching ob here is not optional. `seen_dirs` is the loop guard
-    # that followlinks otherwise lacks.
+    # mass, so matching ob here is not optional. `_is_cycle` is the loop guard that
+    # followlinks otherwise lacks.
     for dirpath, dirnames, filenames in os.walk(vault, followlinks=True, onerror=_on_error):
-        try:
-            stat = os.stat(dirpath)
-        except OSError as exc:
-            _on_error(exc)
-            continue
-        key = (stat.st_dev, stat.st_ino)
-        if key in seen_dirs:
+        # Prune ONLY a true cycle — a directory that is its own ancestor. A global
+        # "already seen this inode" set would be wrong: ob emits one relative path
+        # per route that reaches a directory, so a vault-internal link makes the
+        # same real directory upload under BOTH paths. Deduplicating globally
+        # dropped whichever route was walked second, which made the prediction
+        # depend on traversal order and could hide an entire unexcluded subtree.
+        if _is_cycle(dirpath, vault, _on_error):
             dirnames[:] = []
             continue
-        seen_dirs.add(key)
 
         rel_dir = os.path.relpath(dirpath, vault)
         rel_dir = "" if rel_dir == "." else _emitted(rel_dir)
@@ -360,9 +397,21 @@ def load_live_config(vault: Path) -> dict:
             "has never been connected."
         )
     unreadable: list[str] = []
-    for entry in sorted(root.iterdir()):
+    try:
+        candidates = sorted(root.iterdir())
+    except OSError as exc:
+        raise ValueError(
+            f"cannot read the ob sync state directory {root}: {exc.strerror}. "
+            "Next: fix the permissions or run as the user ob runs as; pass "
+            "--excluded-folders explicitly to preflight a list meanwhile."
+        ) from exc
+    for entry in candidates:
         config = entry / "config.json"
-        if not config.is_file():
+        try:
+            if not config.is_file():
+                continue
+        except OSError as exc:
+            unreadable.append(f"{config} ({exc.strerror})")
             continue
         try:
             data = json.loads(config.read_text(encoding="utf-8"))
