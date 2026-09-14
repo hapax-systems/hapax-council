@@ -155,3 +155,73 @@ def test_cc_close_without_session_id_still_clears_legacy(tmp_path: Path) -> None
 
     assert result.returncode == 0, result.stderr
     assert not legacy.exists(), f"legacy lease not cleared\nstdout={result.stdout}"
+
+
+def test_cc_close_clears_a_lease_for_this_task_held_by_another_session(
+    tmp_path: Path,
+) -> None:
+    """The stale-marker leak: cc-close swept one session key, not the role.
+
+    cc-claim's lease scan globs ``cc-active-task-<role>-*``; cc-close cleared
+    only ``<role>`` and ``<role>-<closing session's id>``. So a marker written by
+    session A and closed by session B survived until the 6h TTL, and the live
+    marker set drifted away from the vault SSOT with nothing to reconcile it
+    (measured 2026-09-13: cc-active-task-cx-crit naming a CLOSED_DONE task).
+
+    This leak is largely MASKED today by the inherited-session-id defect — sibling
+    lanes share one id, so the closing session usually presents the claiming
+    session's key. Minting fresh ids per launch removes that accident and makes
+    every mid-task lane restart leave a guaranteed orphan, so the two fixes ship
+    together.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, "foo")
+    cache = _cache(home)
+    # Claimed by session A (a lane that has since restarted), closed by session B.
+    stale = cache / "cc-active-task-eta-sessA"
+    stale_sidecar = cache / "cc-claim-epoch-eta-sessA"
+    stale.write_text("foo\n", encoding="utf-8")
+    stale_sidecar.write_text("1780000000 foo\n", encoding="utf-8")
+
+    result = _run_close(home, "foo", role="eta", session_id="sessB")
+
+    assert result.returncode == 0, result.stderr
+    assert not stale.exists(), (
+        "a lease naming the just-closed task survived because it was keyed to a "
+        f"different session — CLOSED_DONE left a live marker\nstdout={result.stdout}"
+    )
+    assert not stale_sidecar.exists(), "the orphaned epoch sidecar leaked too"
+
+
+def test_cc_close_orphan_sweep_spares_other_roles(tmp_path: Path) -> None:
+    """The sweep is keyed to THIS role; another lane's marker is not ours to clear."""
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, "foo")
+    cache = _cache(home)
+    other = cache / "cc-active-task-epsilon-sessX"
+    other.write_text("foo\n", encoding="utf-8")
+
+    result = _run_close(home, "foo", role="eta", session_id="sessB")
+
+    assert result.returncode == 0, result.stderr
+    assert other.exists(), (
+        "cc-close cleared a DIFFERENT role's claim marker — a role may only retire its own leases"
+    )
+
+
+def test_cc_close_orphan_sweep_reports_what_it_cleared(tmp_path: Path) -> None:
+    """A reconciliation that clears silently cannot be audited after the fact."""
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, "foo")
+    cache = _cache(home)
+    (cache / "cc-active-task-eta-sessA").write_text("foo\n", encoding="utf-8")
+
+    result = _run_close(home, "foo", role="eta", session_id="sessB")
+
+    assert result.returncode == 0, result.stderr
+    assert "cc-active-task-eta-sessA" in result.stdout, (
+        f"the orphaned marker was cleared without naming it\nstdout={result.stdout}"
+    )

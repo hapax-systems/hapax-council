@@ -759,8 +759,54 @@ class RouteReceipts(_RouteModel):
         return _coerce_string_list(value)
 
 
+class CapabilityShape(_RouteModel):
+    """Which capability shape held a claim — the condition vector for a measurement.
+
+    Lanes are ephemeral containers and roles are string identifiers (operator
+    ruling accepted 2026-09-12); capability shapes are ephemeral too, with
+    reconstructable context as the durable portion. But claim and dispatch
+    metadata keyed only on role + session identity, so "which capability shape
+    produced this number" was answerable only by transcript archaeology — and a
+    capability number without its condition vector is not comparable to any other
+    (shape-keyed measurement discipline, acceptance receipt 2026-09-12T20:22Z
+    item 8).
+
+    Every field is optional: a row that cannot name its shape must still be
+    valid, because refusing such rows would only push the unknown out of the
+    record and back into the archaeology. An absent field means "not recorded",
+    never "not applicable".
+
+    The estate states capability identity as ``model × harness × config ×
+    credential location``. The first three terms are carried here. **Credential
+    location deliberately is not**: this envelope is written into vault notes
+    that sync, and a field whose legitimate values are pointers into a secret
+    store is one careless writer away from carrying the secret itself. A shape
+    that genuinely differs only by credential location is out of this field's
+    reach and needs a different record.
+    """
+
+    model_family: str | None = None
+    """Model identity as dispatched, e.g. ``claude-opus-5`` — not a marketing tier."""
+
+    harness: str | None = None
+    """Execution interface: claude / codex / vibe / kimi / agy."""
+
+    route: str | None = None
+    """Declared route id, e.g. ``claude.review.opus``."""
+
+    scaffold_revision: str | None = None
+    """Revision of the prompting/scaffold surface — a commit sha or tag.
+
+    Two runs of one model on one route are still different shapes when the
+    scaffold between them changed, which is exactly the drift that makes an
+    unlabelled measurement series incomparable with itself.
+    """
+
+
 class RouteEnvelope(_RouteModel):
     route_envelope_schema: Literal[1] = 1
+    capability_shape: CapabilityShape | None = None
+    """Optional condition vector for whatever this envelope's numbers describe."""
     consumers: list[RouteEnvelopeConsumer] = Field(
         default_factory=lambda: list(RouteEnvelopeConsumer)
     )

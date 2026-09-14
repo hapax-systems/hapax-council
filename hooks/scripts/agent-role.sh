@@ -206,6 +206,72 @@ hapax_session_id() {
   return 1
 }
 
+# --- Launch identity (claims-ontology-correction) -----------------------------
+# hapax_session_id above answers "what id does THIS process carry" — the right
+# question for a reader. A LAUNCHER asks a different question: "what id does the
+# lane I am about to start carry", and the answer is almost never the one in my
+# own environment.
+#
+# The measured defect: six launch paths computed a launch identity as
+# `${HAPAX_SESSION_ID:-<mint>}`, so every lane started from one ancestor shell
+# inherited that shell's id and they all keyed the same claim file. 2026-09-13:
+# cc-active-task-{cx-glmcp,cx-p0,cx-crit}-041482e9-… — three roles, one id. The
+# session suffix disambiguated nothing while implying it did.
+#
+# "Always mint" is the wrong repair, because ONE inheritance is legitimate:
+# scripts/hapax-codex writes a tmux runner that re-execs hapax-codex itself, and
+# the inner process must keep the outer's id or it orphans the outer's
+# session-role marker and any claim the outer already wrote. So the single
+# boolean "is HAPAX_SESSION_ID set?" was standing in for two distinct conditions.
+# They are split here: inheritance requires the sender to ALSO set
+# HAPAX_SESSION_ID_PINNED=1, which makes the precondition a fact checkable at the
+# moment of use instead of an assumption about what an ancestor process was
+# doing. A bare ambient id is now unrepresentable as a launch identity.
+
+# Mint a fresh per-spawn id. uuid4, NEVER pid-derived: pids recycle and do not
+# cross hosts, so a pid-shaped id cannot distinguish two sessions and cc-claim
+# refuses to key on one (shared/session_identity.py::is_claim_keyable_session_id).
+# The last-resort branch is alpha-infixed so it stays keyable even with no uuid
+# source at all.
+hapax_mint_session_id() {
+  local id
+  id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+  [ -n "$id" ] || id="$(uuidgen 2>/dev/null || true)"
+  [ -n "$id" ] || id="$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null || true)"
+  [ -n "$id" ] || id="$(printf 'sid%sx%s%s' "$(date +%s%N)" "${RANDOM}" "${RANDOM}")"
+  printf '%s\n' "$id"
+}
+
+# True when $1 may key a claim. Delegates to the Python SSOT so bash and Python
+# cannot drift into two predicates (tests/test_session_identity.py carries the
+# parity canary). Returns nonzero when the predicate cannot be evaluated at all —
+# the caller then mints, which is the NARROW outcome: minting can never adopt
+# another session's identity, so an unevaluable predicate costs a fresh id and
+# never a collision.
+hapax_session_id_is_claim_keyable() {
+  local candidate="${1:-}" root
+  [ -n "$candidate" ] || return 1
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || return 1
+  python3 -c '
+import sys
+sys.path.insert(0, sys.argv[2])
+from shared.session_identity import is_claim_keyable_session_id
+sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
+' "$candidate" "$root" 2>/dev/null
+}
+
+# The id a launcher must give the lane it is starting. Inherits ONLY an
+# explicitly pinned, claim-keyable id; mints in every other case.
+hapax_launch_session_id() {
+  if [ "${HAPAX_SESSION_ID_PINNED:-}" = "1" ] &&
+    [ -n "${HAPAX_SESSION_ID:-}" ] &&
+    hapax_session_id_is_claim_keyable "$HAPAX_SESSION_ID"; then
+    printf '%s\n' "$HAPAX_SESSION_ID"
+    return 0
+  fi
+  hapax_mint_session_id
+}
+
 # --- Per-session identity marker (reform-identity-coherence, cluster 11) -------
 # A WM-independent identity source keyed by the session id. Spawners write it at
 # launch (so identity resolves even where hapax-whoami's compositor query is dead

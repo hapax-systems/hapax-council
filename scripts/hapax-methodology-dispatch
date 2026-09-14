@@ -1881,6 +1881,12 @@ def launch_codex_headless(
             ]
         )
     env = os.environ.copy()
+    # Never propagate the dispatcher's own session id: each lane mints its own
+    # per-spawn HAPAX_SESSION_ID so two same-role re-dispatched lanes never share a
+    # claim key (reform-identity-coherence cluster 11, AC1). The claude paths did
+    # this from the start; codex and vibe did not, so a codex lane inherited the
+    # dispatcher's id straight through os.environ.copy().
+    env.pop("HAPAX_SESSION_ID", None)
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
     if local_fallback_allowed:
@@ -1920,7 +1926,11 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     ]
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
-    return _sliced_call(args)
+    # Scrub the dispatcher's session id for the same reason as the codex and
+    # claude paths above — hapax-vibe now mints its own.
+    env = os.environ.copy()
+    env.pop("HAPAX_SESSION_ID", None)
+    return _sliced_call(args, env)
 
 
 def advance_task_stage(task_id: str, stage: str) -> int:

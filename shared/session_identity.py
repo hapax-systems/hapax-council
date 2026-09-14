@@ -32,7 +32,7 @@ from __future__ import annotations
 import re
 import socket
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -121,6 +121,32 @@ def claim_paths(role: str, session_id: str | None, *, cache_dir: Path) -> tuple[
     if not is_claim_keyable_session_id(session_id):
         return legacy, None
     return legacy, cache_dir / f"{_CLAIM_PREFIX}{role}-{session_id}"
+
+
+def split_claim_marker_key(key: str, known_roles: Iterable[str]) -> tuple[str, str | None] | None:
+    """Inverse of :func:`claim_paths`: split a marker key into ``(role, sid)``.
+
+    A marker filename is ``cc-active-task-<role>[-<session_id>]`` and **both
+    halves contain hyphens** — roles like ``cx-crit`` and ``vbe-1``, uuids
+    throughout. So ``cc-active-task-cx-crit-15c99664-780f-…`` is not decomposable
+    by splitting on ``-`` at any fixed position, and a reader that takes the
+    whole suffix as a lane id (the pattern found in
+    ``agents/studio_compositor/durf_source.py`` and ``scripts/codex-claim-audit``)
+    reports ``cx-crit-15c99664-780f-…`` as the lane.
+
+    The ambiguity is only resolvable against the set of roles that actually
+    exist, so that set is a required argument rather than a guess. The longest
+    matching role wins, and the remainder must be claim-keyable — otherwise the
+    "role" was a prefix coincidence. Returns ``None`` when no reading works.
+    """
+    candidates = sorted({r for r in known_roles if r}, key=len, reverse=True)
+    for role in candidates:
+        if key == role:
+            return role, None
+        remainder = key[len(role) + 1 :] if key.startswith(f"{role}-") else ""
+        if remainder and is_claim_keyable_session_id(remainder):
+            return role, remainder
+    return None
 
 
 def session_role_marker_path(session_id: str, *, cache_dir: Path) -> Path:

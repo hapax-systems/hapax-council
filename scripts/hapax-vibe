@@ -4,6 +4,22 @@
 set -euo pipefail
 
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+# This script's own tree first; COUNCIL_DIR's default does not exist under every HOME.
+_hv_self="${BASH_SOURCE[0]:-$0}"
+if command -v readlink >/dev/null 2>&1; then
+  _hv_self="$(readlink -f "$_hv_self" 2>/dev/null || printf '%s' "$_hv_self")"
+fi
+ROLE_HELPER="$(cd "$(dirname "$_hv_self")/.." 2>/dev/null && pwd)/hooks/scripts/agent-role.sh"
+[ -f "$ROLE_HELPER" ] || ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
+if [ -f "$ROLE_HELPER" ]; then
+  # shellcheck source=../hooks/scripts/agent-role.sh
+  # shellcheck disable=SC1091
+  . "$ROLE_HELPER"
+fi
+if ! declare -F hapax_launch_session_id >/dev/null 2>&1; then
+  echo "hapax-vibe: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
+  exit 9
+fi
 WORKTREE_ROOT="${HAPAX_VIBE_WORKTREE_ROOT:-$HOME/projects}"
 RELAY_DIR="${HAPAX_VIBE_RELAY_DIR:-$HOME/.cache/hapax/relay}"
 SPAWN_DIR="${HAPAX_VIBE_SPAWN_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hapax/vibe-spawns}"
@@ -271,7 +287,10 @@ PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unkno
 PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
 
 # Per-session id (coordination reform Phase 1): stable uuid for FM-2 lease keying.
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
+# MINTED, never inherited: this launcher's runner execs $VIBE_BIN directly and
+# never re-enters here, so an ambient HAPAX_SESSION_ID has no claim on this
+# lane's identity (claims-ontology-correction).
+SESSION_UUID="$(hapax_launch_session_id)"
 export HAPAX_AGENT_INTERFACE="vibe"
 export HAPAX_AGENT_NAME="$SESSION"
 export HAPAX_AGENT_SLOT="$SESSION"

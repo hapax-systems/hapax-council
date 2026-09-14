@@ -14,12 +14,15 @@ from __future__ import annotations
 import re
 import subprocess
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
+from shared.session_identity import split_claim_marker_key
 
 from .models import HygieneEvent, Role, TaskNote
 
@@ -1015,6 +1018,210 @@ def check_vault_link_integrity(
                         f"{target!r} (target not found on disk)"
                     ),
                     metadata={"field": field, "target": target},
+                )
+            )
+    return events
+
+
+# --- live <-> declared join (claims-ontology-correction) ----------------------
+# Everything above reads the vault and asks whether the DECLARED state is
+# self-consistent. Nothing read the RUNTIME state — the cc-active-task-* markers
+# the gate actually keys on — so the two could disagree indefinitely with no
+# surface reporting it. Measured 2026-09-13: cc-active-task-cx-crit named a task
+# the vault recorded CLOSED_DONE, and had for ~11h.
+#
+# cc-close now retires every lease its role holds for the task it closes, which
+# removes the common producer. This check is the backstop for the case cc-close
+# cannot cover: a lane that dies, is reaped, or has its note closed by hand never
+# runs cc-close at all, and its marker outlives the task.
+
+
+def read_claim_markers(cache_dir: Path) -> dict[str, str]:
+    """Map ``cc-active-task-*`` marker key -> the task id it names.
+
+    Reads only the first line: several consumers treat the whole file as the id,
+    so the id file is single-line by contract. ``cc-claim-epoch-*`` sidecars use
+    a distinct prefix precisely so they cannot be swept up by this glob.
+    """
+    markers: dict[str, str] = {}
+    try:
+        paths = sorted(cache_dir.glob("cc-active-task-*"))
+    except OSError:
+        return markers
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            head = path.read_text(encoding="utf-8").splitlines()[:1]
+        except (OSError, UnicodeDecodeError):
+            continue
+        task_id = head[0].strip() if head else ""
+        if task_id:
+            markers[path.name[len("cc-active-task-") :]] = task_id
+    return markers
+
+
+#: Greek worktree slots, which hold markers whether or not they currently hold a
+#: task. KNOWN_ROLES above is the narrower "permanent Claude slot" list the relay
+#: checks use; marker keys also carry zeta/eta/theta and every cx-*/vbe-* lane,
+#: which are discovered from the vault instead of enumerated here.
+_SLOT_ROLES: frozenset[str] = frozenset(
+    {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
+)
+
+
+def check_stale_claim_marker(
+    markers: Mapping[str, str],
+    notes: Iterable[TaskNote],
+    closed_notes: Iterable[TaskNote] = (),
+    *,
+    known_roles: Iterable[str] | None = None,
+    now: datetime | None = None,
+) -> list[HygieneEvent]:
+    """Flag runtime claim markers that disagree with the vault SSOT.
+
+    Three disagreements, each with a different remedy, so each carries its own
+    ``next_action`` rather than one generic "investigate":
+
+    - ``re-emit-close`` — the task is terminal (closed/ or a terminal status in
+      active/). The marker is simply left over; re-running ``cc-close`` as that
+      role, or deleting the marker pair, resolves it. ``warning``.
+    - ``operator-adjudication`` — the marker names a task that exists **nowhere**
+      in the vault. Nothing here can tell a deleted note from a corrupt marker,
+      and guessing either way destroys evidence. ``violation``.
+    - ``operator-adjudication`` — the task is live but ``assigned_to`` names a
+      **different** role. Two parties believe they hold it; that is a contested
+      claim, not a cleanup. ``violation``.
+
+    A marker for a live task assigned to its own role is the healthy case and
+    emits nothing.
+
+    Pure over its inputs — :func:`read_claim_markers` does the IO — so the
+    disagreement matrix is testable without a runtime cache directory.
+    """
+    now = now or _now()
+    active = {n.task_id: n for n in notes}
+    closed = {n.task_id: n for n in closed_notes}
+    if known_roles is None:
+        # Roles are discovered, never derived from the marker key itself: a key is
+        # `<role>[-<session_id>]` with hyphens on BOTH sides, so
+        # `cx-crit-15c99664-780f-…` splits into a claim-keyable remainder at
+        # several points ("cx", "cx-crit", "cx-crit-15c99664-780f-41c0-9c3e" …)
+        # and picking one without an external role set is a coin flip. Every role
+        # that has ever held a task appears in some note's assigned_to.
+        discovered = {
+            n.assigned_to
+            for n in (*active.values(), *closed.values())
+            if n.assigned_to and n.assigned_to != "unassigned"
+        }
+        known_roles = discovered | _SLOT_ROLES
+
+    events: list[HygieneEvent] = []
+    for key, task_id in sorted(markers.items()):
+        split = split_claim_marker_key(key, known_roles)
+        # An unresolvable key is reported AS unresolvable rather than guessed at:
+        # a wrong role in a contested-claim event would send the operator to the
+        # wrong lane, which is worse than saying the marker cannot be attributed.
+        role = split[0] if split else None
+        role_label = role if role is not None else f"<unattributable:{key}>"
+
+        note = active.get(task_id)
+        if note is None:
+            note = closed.get(task_id)
+            if note is None:
+                events.append(
+                    HygieneEvent(
+                        timestamp=now,
+                        check_id="stale_claim_marker",
+                        severity="violation",
+                        task_id=task_id,
+                        session=role,
+                        message=(
+                            f"claim marker 'cc-active-task-{key}' names task "
+                            f"'{task_id}', which exists nowhere in the vault"
+                        ),
+                        metadata={
+                            "marker": f"cc-active-task-{key}",
+                            "role": role_label,
+                            "next_action": "operator-adjudication",
+                            "reason": "task_not_in_vault",
+                        },
+                    )
+                )
+                continue
+
+        terminal = note.task_id in closed or (note.status or "").strip() in TASK_TERMINAL_STATUSES
+        if terminal:
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="warning",
+                    task_id=task_id,
+                    session=role,
+                    message=(
+                        f"claim marker 'cc-active-task-{key}' still holds "
+                        f"'{task_id}', which the vault records as "
+                        f"{note.status!r} — the lane never ran cc-close"
+                    ),
+                    metadata={
+                        "marker": f"cc-active-task-{key}",
+                        "role": role_label,
+                        "vault_status": str(note.status),
+                        "next_action": "re-emit-close",
+                        "remediation": f"cc-close {task_id} (as role {role_label})",
+                    },
+                )
+            )
+            continue
+
+        if role is None:
+            # The task is live, so there is nothing stale here — but the marker
+            # cannot be attributed to any role the vault or the slot vocabulary
+            # knows, which is itself a disagreement worth a person's attention.
+            # Reporting it as "contested" would name a role we just admitted we
+            # cannot determine.
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="violation",
+                    task_id=task_id,
+                    session=None,
+                    message=(
+                        f"claim marker 'cc-active-task-{key}' holds live task "
+                        f"'{task_id}' but names no role the vault knows"
+                    ),
+                    metadata={
+                        "marker": f"cc-active-task-{key}",
+                        "role": role_label,
+                        "next_action": "operator-adjudication",
+                        "reason": "role_unattributable",
+                    },
+                )
+            )
+            continue
+
+        assigned = (note.assigned_to or "").strip()
+        if assigned and assigned != "unassigned" and assigned != role:
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="violation",
+                    task_id=task_id,
+                    session=role,
+                    message=(
+                        f"claim marker 'cc-active-task-{key}' holds '{task_id}' "
+                        f"but the vault assigns it to {assigned!r} — contested claim"
+                    ),
+                    metadata={
+                        "marker": f"cc-active-task-{key}",
+                        "role": role,
+                        "vault_assigned_to": assigned,
+                        "next_action": "operator-adjudication",
+                        "reason": "assignee_disagreement",
+                    },
                 )
             )
     return events

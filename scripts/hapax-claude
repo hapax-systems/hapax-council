@@ -21,6 +21,30 @@
 set -euo pipefail
 
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+# Resolve the identity helper from THIS script's own tree first, and only then
+# from COUNCIL_DIR. A launcher in a worktree must use that worktree's helper, and
+# COUNCIL_DIR's default ($HOME/projects/hapax-council) does not exist under every
+# HOME — anchoring on it alone makes the launcher unlaunchable wherever the
+# primary clone is absent or renamed. Symlinks resolved because the installed
+# entrypoint is ~/.local/bin/hapax-claude -> the repo.
+_hc_self="${BASH_SOURCE[0]:-$0}"
+if command -v readlink >/dev/null 2>&1; then
+  _hc_self="$(readlink -f "$_hc_self" 2>/dev/null || printf '%s' "$_hc_self")"
+fi
+ROLE_HELPER="$(cd "$(dirname "$_hc_self")/.." 2>/dev/null && pwd)/hooks/scripts/agent-role.sh"
+[ -f "$ROLE_HELPER" ] || ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
+if [ -f "$ROLE_HELPER" ]; then
+  # shellcheck source=../hooks/scripts/agent-role.sh
+  # shellcheck disable=SC1091
+  . "$ROLE_HELPER"
+fi
+# Refuse loudly rather than limp: session identity is what keys this lane's claim,
+# and a launcher that quietly re-implements the mint is how the five divergent
+# copies happened in the first place.
+if ! declare -F hapax_launch_session_id >/dev/null 2>&1; then
+  echo "hapax-claude: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
+  exit 9
+fi
 
 usage() {
   cat <<'EOF'
@@ -289,7 +313,12 @@ fi
 # can read either CLAUDE_ROLE or HAPAX_AGENT_NAME).
 # Per-session id (coordination reform Phase 1): a stable uuid so the gate keys a
 # claim lease to THIS session — two same-role sessions never collide (FM-2).
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$ROLE" "$$")}"
+# MINTED, never inherited from the ambient environment: this launcher's runner
+# execs the Claude binary directly (see below), so nothing re-enters here needing
+# to preserve an outer id. Launching several lanes from one shell that had
+# HAPAX_SESSION_ID exported used to give them all ONE claim key
+# (claims-ontology-correction; hooks/scripts/agent-role.sh::hapax_launch_session_id).
+SESSION_UUID="$(hapax_launch_session_id)"
 export HAPAX_AGENT_INTERFACE="claude"
 export HAPAX_AGENT_NAME="$ROLE"
 export CLAUDE_ROLE="$ROLE"
@@ -353,9 +382,12 @@ if [ "$TERMINAL" = "none" ]; then
   exec "$CLAUDE_BIN" "${CLAUDE_DEFAULT_ARGS[@]}" "${CLAUDE_EXTRA[@]}"
 fi
 
-# tmux/foot path: build a runner script that re-execs hapax-claude with
-# --terminal none so the inner process inherits identity. Mirrors the
-# codex idiom.
+# tmux/foot path: build a runner script that execs the Claude binary directly
+# with this launch's identity pinned into its environment. (It does NOT re-exec
+# hapax-claude — an earlier comment here said it did, and that stale claim is the
+# likeliest reason the session id was inherited rather than minted above. The
+# codex idiom, which really does re-enter its own launcher, is the one that
+# propagates an id, and it says so explicitly with HAPAX_SESSION_ID_PINNED.)
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/claude-spawns"
 mkdir -p "$SPAWN_DIR"
 RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"

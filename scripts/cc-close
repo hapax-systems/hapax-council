@@ -275,25 +275,41 @@ PYEOF
 # (reform finding #12/#13). Clear this session's lease forms, each only when its
 # head still names the closed task (never clobber a lease for other work).
 if [[ -n "$role" ]]; then
-  session_id=""
-  if declare -F hapax_session_id >/dev/null 2>&1; then
-    session_id="$(hapax_session_id 2>/dev/null || true)"
-  fi
   cleared_claim=0
-  for claim_key in \
-    "$role" \
-    ${session_id:+"$role-$session_id"}; do
-    claim_file="$HOME/.cache/hapax/cc-active-task-$claim_key"
-    if [[ -f "$claim_file" ]] &&
-       [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
-      # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
-      # clear it with its claim file so a stale epoch can never mis-age a
-      # future claim. Explicit path construction — substring substitution on
-      # the full path would rewrite a parent-directory occurrence instead.
-      rm -f "$claim_file" "$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
-      echo "cc-close: cleared claim file '$claim_file' (role '$role')"
-      cleared_claim=1
-    fi
+  # Sweep the ROLE's lease forms, not just the closing session's: the legacy
+  # shared file plus EVERY session-keyed lease this role holds. The writer
+  # already globs the role (cc-claim:99 scans cc-active-task-<role>-* for its
+  # multi-claim check); the closer swept only "$role" and the id the CLOSING
+  # session happens to carry. So a lease written by session A and closed by
+  # session B survived to its 6h TTL, and the live marker set drifted away from
+  # the vault with nothing to reconcile it — measured 2026-09-13 as
+  # cc-active-task-cx-crit naming a task the vault recorded CLOSED_DONE.
+  #
+  # A lane that restarts mid-task is the ordinary way A != B. That was rare only
+  # because sibling lanes used to INHERIT one session id; now that every launch
+  # mints its own (claims-ontology-correction), it is the common case — which is
+  # why the two changes ship together.
+  shopt -s nullglob
+  claim_files=(
+    "$HOME/.cache/hapax/cc-active-task-$role"
+    "$HOME/.cache/hapax/cc-active-task-$role-"*
+  )
+  shopt -u nullglob
+  for claim_file in "${claim_files[@]}"; do
+    [[ -f "$claim_file" ]] || continue
+    # Only leases naming THIS task. A lease for other work is another session's
+    # live claim and is never ours to retire.
+    [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]] || continue
+    # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
+    # clear it with its claim file so a stale epoch can never mis-age a future
+    # claim. The key comes from the BASENAME with a non-greedy prefix strip —
+    # `${path##*/cc-active-task-}` over the full path would strip through a
+    # parent directory that happened to contain the same substring.
+    claim_base="$(basename "$claim_file")"
+    claim_key="${claim_base#cc-active-task-}"
+    rm -f "$claim_file" "$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
+    echo "cc-close: cleared claim file '$claim_file' (role '$role')"
+    cleared_claim=1
   done
   if [[ "$cleared_claim" == 1 ]]; then
     systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true

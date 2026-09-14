@@ -53,10 +53,12 @@ from cc_hygiene.checks import (
     check_refusal_pipeline_dormancy,
     check_relay_yaml_staleness,
     check_spec_staleness,
+    check_stale_claim_marker,
     check_stale_in_progress,
     check_vault_link_integrity,
     check_wip_limit,
     parse_task_note,
+    read_claim_markers,
 )
 from cc_hygiene.dashboard import (
     DEFAULT_DASHBOARD_PATH,
@@ -350,11 +352,18 @@ def run_sweep(
     vault_root: Path = DEFAULT_VAULT_ROOT,
     relay_root: Path = DEFAULT_RELAY_ROOT,
     repo_root: Path = DEFAULT_REPO_ROOT,
+    claim_marker_dir: Path | None = None,
     now: datetime | None = None,
 ) -> HygieneState:
     """Perform one sweep and return the snapshot. Does NOT write to disk."""
     now = now or datetime.now(UTC)
     started = time.monotonic()
+    # Derived from relay_root, not from $HOME: cc-claim writes the markers beside
+    # the relay dir, and every other root here is configurable. A marker source
+    # anchored on the real home would make a sweep of some OTHER vault report on
+    # THIS host's live lanes — which is both wrong in production and untestable.
+    if claim_marker_dir is None:
+        claim_marker_dir = relay_root.parent
 
     reaped = reap_dead_lanes(relay_root)
     if reaped:
@@ -379,6 +388,17 @@ def run_sweep(
     # so its grandparent is the Obsidian vault root the links resolve against.
     events.extend(
         check_vault_link_integrity(notes, vault_root.parent.parent, repo_root=repo_root, now=now)
+    )
+    # The live<->declared join: every other check reads the vault and asks whether
+    # the DECLARED state is self-consistent. This one reads the runtime markers the
+    # gate actually keys on and asks whether they still agree with it.
+    events.extend(
+        check_stale_claim_marker(
+            read_claim_markers(claim_marker_dir),
+            notes,
+            closed_notes,
+            now=now,
+        )
     )
 
     sessions = _build_session_states(relay_payloads, notes)
