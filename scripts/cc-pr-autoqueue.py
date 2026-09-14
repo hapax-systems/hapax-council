@@ -92,6 +92,7 @@ from shared.release_gate import (  # noqa: E402
 )
 from shared.sdlc_lifecycle import (  # noqa: E402
     FRONTMATTER_ABSENT,
+    FRONTMATTER_INVALID_OPENING_FENCE,
     FRONTMATTER_NOT_A_MAPPING,
     FRONTMATTER_PARSE_ERROR,
     FRONTMATTER_UNTERMINATED,
@@ -1723,17 +1724,16 @@ def _frontmatter(path: Path) -> tuple[dict[str, Any] | None, str | None]:
         # as unlinked — the same "reason code names the wrong failure" defect
         # this check exists to prevent, pointed the other way.
         return None, "ANSI escape sequences in frontmatter"
+    if state == FRONTMATTER_INVALID_OPENING_FENCE:
+        # The first line attempted a marker and is not one (e.g. "---extra: [").
+        # Must NOT read as valid-empty: the loader would drop the note and
+        # admission would report a missing task link with no repair diagnostic —
+        # the 2026-06-10 "reason code names the wrong failure" shape again.
+        # The shared parser now classifies this, so both surfaces agree.
+        return None, "invalid opening frontmatter fence"
     if state == FRONTMATTER_ABSENT:
-        first_line = text.split("\n", 1)[0]
-        if is_frontmatter_fence(first_line):
-            return parsed, None  # a real fence enclosing nothing: empty frontmatter
-        if text.startswith("---"):
-            # Looks like an attempted fence but is not one (e.g. "---extra: [").
-            # Must NOT read as valid-empty: the loader would drop the note and
-            # admission would report a missing task link with no repair
-            # diagnostic — the 2026-06-10 "reason code names the wrong failure"
-            # shape again.
-            return None, "invalid opening frontmatter fence"
+        if is_frontmatter_fence(text.split("\n", 1)[0]):
+            return parsed, None  # a real marker enclosing nothing: empty frontmatter
         return None, "no frontmatter fence"
     if state == FRONTMATTER_UNTERMINATED:
         return None, "unterminated frontmatter fence"

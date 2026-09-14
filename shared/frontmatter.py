@@ -83,7 +83,10 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
     # half. Importing the predicate rather than restating it is deliberate: this
     # parser and the SDLC one disagreeing about what a fence is was itself a
     # defect.
-    lines = text.split("\n")
+    # ``rstrip("\r")`` per line so a CRLF document parses identically to an LF
+    # one: consumers that decode raw bytes (sdlc_task_store._snapshot) would
+    # otherwise disagree with those reading through newline-normalizing APIs.
+    lines = [line.rstrip("\r") for line in text.split("\n")]
     if not is_frontmatter_fence(lines[0]):
         return FrontmatterParseResult(
             frontmatter=None,
@@ -105,7 +108,11 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
             error_message="frontmatter closing marker is missing",
         )
 
-    yaml_text = "\n".join(lines[1:close_index]).strip()
+    # The remainder of the opening line is YAML CONTENT, not decoration:
+    # ``--- {a: 1}`` is a valid document with its mapping on the marker line.
+    # Taking only the lines after it silently discarded whole declarations while
+    # still reporting a clean parse.
+    yaml_text = "\n".join([lines[0][3:], *lines[1:close_index]]).strip()
     body = "\n".join(lines[close_index + 1 :]).lstrip("\n")
     if not yaml_text:
         return FrontmatterParseResult(frontmatter={}, body=body)

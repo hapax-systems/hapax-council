@@ -354,6 +354,44 @@ def test_the_close_path_snapshot_sees_the_review_demand(tmp_path: Path) -> None:
     )
 
 
+def test_the_close_path_snapshot_accepts_a_crlf_note(tmp_path: Path) -> None:
+    """CRLF notes must parse on the raw-bytes path too.
+
+    ``sdlc_task_store._snapshot`` decodes bytes itself, so — unlike every caller
+    reading through ``Path.read_text``, which performs universal-newline
+    translation — a carriage return survives to reach the fence predicate. A
+    predicate that rejects ``---\\r`` makes terminal close raise
+    ``task_note_frontmatter_malformed`` on a note the standalone gate accepts:
+    the two closure surfaces disagreeing about the same file.
+
+    This is the ONLY caller that pins the predicate's CR tolerance. An earlier
+    attempt to pin it through autoqueue was vacuous for exactly the reason above,
+    and the mutation survived until it was moved here.
+    """
+    from shared.sdlc_lifecycle import acceptance_receipt_blockers
+    from shared.sdlc_task_store import _snapshot
+
+    note = tmp_path / "crlf.md"
+    note.write_bytes(
+        b"---\r\n"
+        b"type: cc-task\r\n"
+        b"task_id: crlf\r\n"
+        b"status: in_progress\r\n"
+        b"quality_floor: verification_receipt\r\n"
+        b"review_requirement:\r\n"
+        b"  independent_review_required: true\r\n"
+        b"---\r\n\r\nbody\r\n"
+    )
+
+    snapshot = _snapshot(note, expected_task_id="crlf", state="active")
+
+    assert snapshot.frontmatter.get("task_id") == "crlf"
+    assert "review_requirement" in snapshot.frontmatter
+    assert acceptance_receipt_blockers(snapshot.frontmatter, note) == (
+        "missing_acceptance_receipt",
+    )
+
+
 def test_every_surface_parses_a_note_the_same_way(tmp_path: Path) -> None:
     """Sharing the PREDICATE is not enough if the surfaces parse differently.
 

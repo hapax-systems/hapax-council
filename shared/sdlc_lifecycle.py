@@ -195,11 +195,20 @@ FRONTMATTER_ABSENT = "absent"
 FRONTMATTER_UNTERMINATED = "unterminated"
 FRONTMATTER_PARSE_ERROR = "parse_error"
 FRONTMATTER_NOT_A_MAPPING = "not_a_mapping"
+#: The first line tried to be a fence and is not one (``---extra: [``, ``----``).
+#: Distinct from ABSENT: the note visibly attempted to declare frontmatter, so
+#: reading it as "declares nothing" disarms enforcement on a broken note.
+FRONTMATTER_INVALID_OPENING_FENCE = "invalid_opening_fence"
 
 #: States where the returned mapping is empty because the document could not be
 #: read, so its emptiness carries no information about what the note declares.
 FRONTMATTER_UNREADABLE_STATES: Final[frozenset[str]] = frozenset(
-    {FRONTMATTER_UNTERMINATED, FRONTMATTER_PARSE_ERROR, FRONTMATTER_NOT_A_MAPPING}
+    {
+        FRONTMATTER_UNTERMINATED,
+        FRONTMATTER_PARSE_ERROR,
+        FRONTMATTER_NOT_A_MAPPING,
+        FRONTMATTER_INVALID_OPENING_FENCE,
+    }
 )
 
 
@@ -225,6 +234,11 @@ def is_frontmatter_fence(line: str) -> bool:
     a task's declarations.
     """
 
+    # A trailing CR is stripped so the helper is correct for callers that split
+    # raw text on "\n" themselves. Both in-tree parsers normalize per line before
+    # calling, so this is the helper's own standalone contract rather than the
+    # load-bearing CRLF fix — pinned directly in the fence-grammar table.
+    line = line.rstrip("\r")
     if not line.startswith("---"):
         return False
     rest = line[3:]
@@ -255,12 +269,25 @@ def frontmatter_state_from_text(text: str) -> tuple[dict[str, Any], str]:
     # success. Line-based matching also makes ``---\n---`` and ``---\n\n---``
     # agree: both are empty frontmatter, where the offset scan called the first
     # unterminated and the second absent.
-    lines = text.split("\n")
+    # ``rstrip("\r")`` per line, so a CRLF note parses identically to an LF one.
+    # The close gate reads via ``read_text`` (which normalizes) while the
+    # terminal-close snapshot decodes raw bytes (which does not) — without this
+    # the two surfaces disagree about the same file.
+    lines = [line.rstrip("\r") for line in text.split("\n")]
     if not is_frontmatter_fence(lines[0]):
+        if lines[0].startswith("---"):
+            # Tried to open frontmatter and failed. Not ABSENT: a note that
+            # visibly attempted a declaration must not read as declaring
+            # nothing, or a broken note disarms the gate.
+            return {}, FRONTMATTER_INVALID_OPENING_FENCE
         return {}, FRONTMATTER_ABSENT
     for index in range(1, len(lines)):
         if is_frontmatter_fence(lines[index]):
-            raw = "\n".join(lines[1:index]).strip()
+            # The remainder of the opening line is YAML CONTENT, not decoration:
+            # ``--- {task_id: x, quality_floor: frontier_review_required}`` is a
+            # valid document with its mapping on the marker line. Dropping it
+            # discarded whole declarations while reporting a clean parse.
+            raw = "\n".join([lines[0][3:], *lines[1:index]]).strip()
             break
     else:
         return {}, FRONTMATTER_UNTERMINATED

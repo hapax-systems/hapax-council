@@ -29,7 +29,24 @@ class TestFenceGrammar:
     ``rstrip() == "---"`` rejected the comment. One grammar, stated once.
     """
 
-    @pytest.mark.parametrize("line", ["---", "--- ", "---\t", "--- # task metadata", "---\t# note"])
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "---",
+            "--- ",
+            "---\t",
+            "--- # task metadata",
+            "---\t# note",
+            # A trailing CR is the helper's own standalone contract, for callers
+            # that split raw text on "\n" without normalizing. Both in-tree
+            # parsers strip per line before calling, so nothing else would catch
+            # a regression here — this table is the only pin, and a mutation
+            # proved it (the guard survived removal until these rows existed).
+            "---\r",
+            "--- \r",
+            "--- # task metadata\r",
+        ],
+    )
     def test_recognized(self, line: str) -> None:
         assert is_frontmatter_fence(line) is True
 
@@ -96,6 +113,29 @@ class TestCanonicalParserBoundaries:
         assert result.error_kind is None
         assert result.body.startswith("body line")
 
+    def test_opening_line_yaml_content_is_preserved(self) -> None:
+        """``--- {a: 1}`` puts the mapping on the marker line. It is content."""
+        result = parse_frontmatter_with_diagnostics(
+            "--- {task_id: inline, quality_floor: frontier_review_required}\n\n---\nbody\n"
+        )
+
+        assert result.error_kind is None
+        assert result.frontmatter == {
+            "task_id": "inline",
+            "quality_floor": "frontier_review_required",
+        }
+
+    def test_crlf_document_parses_identically_to_lf(self) -> None:
+        """Consumers decoding raw bytes must agree with newline-normalizing reads."""
+        crlf = "---\r\ntask_id: x\r\nquality_floor: verification_receipt\r\n---\r\nbody\r\n"
+        lf = crlf.replace("\r\n", "\n")
+
+        crlf_result = parse_frontmatter_with_diagnostics(crlf)
+        lf_result = parse_frontmatter_with_diagnostics(lf)
+
+        assert crlf_result.error_kind is None
+        assert crlf_result.frontmatter == lf_result.frontmatter
+
     def test_missing_closing_fence_is_diagnosed(self) -> None:
         result = parse_frontmatter_with_diagnostics("---\ntask_id: x\nbody with no close\n")
 
@@ -126,6 +166,10 @@ class TestParserAgreement:
             "---\n\n---\nbody\n",
             "---\ntask_id: x\n--- \nbody\n",
             "plain body\n",
+            "--- {task_id: inline, quality_floor: frontier_review_required}\n\n---\nbody\n",
+            "---\r\ntask_id: x\r\nquality_floor: verification_receipt\r\n---\r\nbody\r\n",
+            "---extra: [\ntask_id: x\n---\nbody\n",
+            "----\ntask_id: x\n---\nbody\n",
         ],
     )
     def test_both_parsers_extract_the_same_mapping(self, text: str) -> None:

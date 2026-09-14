@@ -9789,6 +9789,28 @@ def test_ansi_in_the_body_does_not_invalidate_the_metadata(tmp_path: Path) -> No
     assert parsed is not None and parsed["task_id"] == "body-ansi-task"
 
 
+def test_ansi_inside_crlf_frontmatter_is_still_rejected(tmp_path: Path) -> None:
+    """A CRLF note with escapes in its frontmatter is still rejected.
+
+    Note for anyone extending this: it does NOT pin the fence predicate's CR
+    tolerance. ``Path.read_text`` performs universal-newline translation, so no
+    CR survives to reach the predicate on this path. The caller where CR does
+    survive is ``sdlc_task_store._snapshot``, which decodes raw bytes — pinned in
+    ``tests/test_sdlc_closed_loop_e2e.py``.
+    """
+    vault = _make_vault(tmp_path)
+    note = vault / "active" / "crlf-ansi.md"
+    note.write_bytes(
+        b"---\r\ntype: cc-task\r\ntask_id: crlf-ansi\r\n"
+        b"status: \x1b[32mready\x1b[0m\r\n---\r\n\r\nbody\r\n"
+    )
+
+    parsed, error = autoqueue._frontmatter(note)
+
+    assert parsed is None
+    assert error == "ANSI escape sequences in frontmatter"
+
+
 def test_ansi_inside_the_frontmatter_is_still_rejected(tmp_path: Path) -> None:
     """The original incident shape stays caught (2026-06-10)."""
     vault = _make_vault(tmp_path)

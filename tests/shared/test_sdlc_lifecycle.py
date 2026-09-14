@@ -22,6 +22,7 @@ import pytest
 from shared.blocked_witness import evaluate_blocked_witness
 from shared.sdlc_lifecycle import (
     FRONTMATTER_ABSENT,
+    FRONTMATTER_INVALID_OPENING_FENCE,
     FRONTMATTER_NOT_A_MAPPING,
     FRONTMATTER_OK,
     FRONTMATTER_PARSE_ERROR,
@@ -1238,9 +1239,63 @@ class TestFrontmatterParseState:
         assert state == FRONTMATTER_OK
         assert loaded == {"task_id": "x"}
 
-    def test_opening_line_that_only_starts_with_dashes_is_not_frontmatter(self) -> None:
-        _, state = frontmatter_state_from_text("---nope: 1\ntask_id: x\n---\nbody\n")
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "---nope: 1\ntask_id: x\n---\nbody\n",
+            "---extra: [\ntask_id: x\n---\nbody\n",
+            "----\ntask_id: x\n---\nbody\n",
+        ],
+    )
+    def test_an_attempted_but_invalid_opening_marker_is_unreadable(self, text: str) -> None:
+        """Not ABSENT: the note visibly tried to declare frontmatter.
+
+        Classing it absent let the close gate report "no receipt-arming
+        declaration" and pass, while admission — which was given this
+        distinction first — blocked. The two surfaces disagreed on the same
+        input, which is the split this PR exists to remove.
+        """
+        _, state = frontmatter_state_from_text(text)
+
+        assert state == FRONTMATTER_INVALID_OPENING_FENCE
+        assert state in FRONTMATTER_UNREADABLE_STATES
+
+    def test_a_document_with_no_marker_at_all_is_still_absent(self) -> None:
+        """The control: absent and invalid must stay distinguishable."""
+        _, state = frontmatter_state_from_text("plain body\n")
         assert state == FRONTMATTER_ABSENT
+        assert state not in FRONTMATTER_UNREADABLE_STATES
+
+    def test_opening_line_yaml_content_is_preserved(self) -> None:
+        """``--- {a: 1}`` is a document whose mapping sits on the marker line.
+
+        The fence predicate accepted the line and extraction then took only the
+        lines *after* it, so the declarations on it vanished while the parse
+        reported success — a clean-looking result that had dropped half the
+        document.
+        """
+        text = "--- {task_id: inline, quality_floor: frontier_review_required}\n\n---\nbody\n"
+
+        loaded, state = frontmatter_state_from_text(text)
+
+        assert state == FRONTMATTER_OK
+        assert loaded["task_id"] == "inline"
+        assert acceptance_receipt_triggers(loaded) == (RECEIPT_TRIGGER_REVIEW_FLOOR,)
+
+    def test_crlf_notes_parse_identically_to_lf(self) -> None:
+        """The snapshot path decodes raw bytes; the gate uses newline-normalizing reads.
+
+        Without CR tolerance those two surfaces disagree about the same file:
+        terminal close raised task_note_frontmatter_malformed on a CRLF note the
+        standalone checker accepted.
+        """
+        crlf = "---\r\ntask_id: x\r\nquality_floor: frontier_review_required\r\n---\r\nbody\r\n"
+        lf = crlf.replace("\r\n", "\n")
+
+        assert frontmatter_state_from_text(crlf) == frontmatter_state_from_text(lf)
+        loaded, state = frontmatter_state_from_text(crlf)
+        assert state == FRONTMATTER_OK
+        assert acceptance_receipt_triggers(loaded) == (RECEIPT_TRIGGER_REVIEW_FLOOR,)
 
     @pytest.mark.parametrize(
         ("text", "expected"),
