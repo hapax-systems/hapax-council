@@ -2843,13 +2843,21 @@ def _route_quota_surface_expiry(
     return observed_at + min(quota_ttl, outer_ttl)
 
 
+#: The future-dating window receipt_is_fresh applies (shared/platform_capability_receipts.py:
+#: a receipt observed further ahead than this is rejected as evidence). The scan
+#: reuses the window for fallback admissibility and for the instant a selected
+#: receipt becomes routable; a consistency pin against receipt_is_fresh itself
+#: lives in tests/scripts/test_hapax_quota_telemetry_writer.py.
+FUTURE_DATING_TOLERANCE = timedelta(minutes=1)
+
+
 def _scan_receipt_surface(
     receipt_dir: Path,
     route_pools: dict[str, tuple[CapacityPool, QuotaSource]] | None = None,
     *,
     now: datetime | None = None,
 ) -> tuple[dict[str, tuple[datetime, datetime, datetime]], list[str]]:
-    """Per-platform (observed_at, effective expiry, publication instant) scan
+    """Per-platform (observed_at, effective expiry, routable-from instant) scan
     plus the platforms whose receipt names no registry route.
 
     When one platform has several receipt files in the directory, the SELECTED
@@ -2872,13 +2880,21 @@ def _scan_receipt_surface(
     kept those receipts out of the ELIGIBLE pool but the historical fallback
     still restored the future-dated one whenever nothing was eligible).
 
-    The publication instant is the receipt FILE's own mtime: the refresh
-    writes each platform's receipt separately, so each file's mtime is that
+    The routable-from instant is the later of the receipt FILE's own mtime and
+    observed_at minus the future-dating tolerance: the refresh writes each
+    platform's receipt separately, so a refresh-written file's mtime is that
     platform's actual replacement landing instant (codex-1 major, #4665 round
     11, M1: the refresh's single completion instant charged every platform
     for the whole refresh's tail — a platform replaced 40s into a 260s
     refresh, well inside its predecessor's lifetime, read as a 60s hole and
-    flapped rc=4 on uninterrupted coverage).
+    flapped rc=4 on uninterrupted coverage). A pre-existing file that an
+    eligibility transition just SELECTED cannot credit its old mtime either:
+    routing rejects the receipt as future-dated until observed_at minus the
+    tolerance, so before that instant the file vouches for nothing, and the
+    gap witness must charge the coverage start there (codex-1 critical C1,
+    #4665 round 16: an untouched backup observed at T+200 with mtime T-60 won
+    the post-refresh scan once it stopped being future-dated, and its old
+    mtime fabricated gap=-140 rc=0 across a real T+80..T+140 hole).
 
     The second element names platforms whose receipt binds NO registry route
     (empty routes, or every named route absent from the registry): their
@@ -2924,7 +2940,7 @@ def _scan_receipt_surface(
         admissible_fallback = [
             candidate
             for candidate in platform_candidates
-            if candidate[0] <= checked_now + timedelta(minutes=1)
+            if candidate[0] <= checked_now + FUTURE_DATING_TOLERANCE
         ]
         pool = eligible or admissible_fallback
         if not pool:
@@ -2945,11 +2961,17 @@ def _scan_receipt_surface(
         # sibling's routes.
         if not any(route_id in route_pools for route_id in receipt.routes):
             no_named_route.add(platform)
-        published_at = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        landing = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        # The selected receipt starts vouching for the platform only once it is
+        # both on disk and not future-dated: observed_at minus the tolerance is
+        # the earliest clock that admits it, so an eligibility transition onto a
+        # pre-existing file cannot credit that file's old mtime as coverage
+        # across the hole before the transition (see the docstring above).
+        routable_from = max(landing, observed_at - FUTURE_DATING_TOLERANCE)
         states[platform] = (
             observed_at,
             receipt_surface_effective_expiry(receipt, route_pools),
-            published_at,
+            routable_from,
         )
     return states, sorted(no_named_route)
 
@@ -2967,10 +2989,11 @@ def quota_receipt_surface_expiries(
     (receipt_surface_effective_expiry), never the raw outer receipt TTL: a
     900s admission inside a 24h outer envelope dies at 900s no matter what the
     envelope says. The publication predicate below compares, per platform the
-    refresh REPLACED, that platform's OWN replacement landing instant (its
-    receipt file's mtime, see _scan_receipt_surface) against its OWN
-    predecessor effective expiry (critical finding on #4665, rounds 8, 10 and
-    11, C1/M1). Replacement is detected by observed_at change: the refresh
+    refresh REPLACED, that platform's OWN routable-from instant (the later of
+    its receipt file's mtime and the clock its evidence stops being
+    future-dated, see _scan_receipt_surface) against its OWN
+    predecessor effective expiry (critical finding on #4665, rounds 8, 10,
+    11 and 16, C1/M1). Replacement is detected by observed_at change: the refresh
     restamps every receipt it covers, so an unchanged observed_at means the
     refresh did not republish that platform — a lingering dead receipt it
     never touches is a MAINTENANCE defect (measured live 2026-09-12: retired
@@ -3283,13 +3306,15 @@ def main(argv: list[str] | None = None) -> int:
             # moved for them. Receipts the refresh never touches (retired
             # platforms' lingering dead receipts) are a maintenance defect,
             # not a replacement hole — see the helper's docstring. Each
-            # platform carries its OWN publication instant — its receipt
-            # file's mtime, the instant that platform's replacement actually
-            # landed — never the refresh's single completion instant, which
-            # charges every platform for the whole refresh's tail (codex-1
-            # major, #4665 round 11, M1: a platform replaced 40s into a 260s
-            # refresh, well inside its predecessor's lifetime, read as a 60s
-            # hole and flapped rc=4 on uninterrupted coverage).
+            # platform carries its OWN routable-from instant — the later of
+            # its receipt file's mtime and the clock its selected evidence
+            # stops being future-dated — never the refresh's single
+            # completion instant, which charges every platform for the whole
+            # refresh's tail (codex-1 major, #4665 round 11, M1: a platform
+            # replaced 40s into a 260s refresh, well inside its predecessor's
+            # lifetime, read as a 60s hole and flapped rc=4 on uninterrupted
+            # coverage; codex-1 critical, round 16: a file only an eligibility
+            # transition selected must not credit its old mtime either).
             # Sampled AFTER the refresh — see the predecessor scan above: the
             # successor is judged with the clock routing samples once the
             # refresh has landed, not the pre-refresh one (codex-1 critical

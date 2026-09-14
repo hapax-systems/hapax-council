@@ -112,7 +112,10 @@ MemoryMax=768M
 # grep -E 'DEGRADED|rc=4'` and `scripts/hapax-quota-telemetry-writer --json`
 # (summary keys admission_freshness_at_publication_s vs freshness_horizon_s,
 # admission_continuity_gap_s, receipt_continuity_gap_s,
-# pre_mint_scan_elapsed_s vs pre_mint_scan_bound_s).
+# pre_mint_scan_elapsed_s vs pre_mint_scan_bound_s,
+# receipt_surface_no_named_route_platforms and registry_pools_loaded — the
+# fail-closed legs: an empty no-named-route list with registry_pools_loaded
+# false is a registry-scan failure, not a genuinely tight surface).
 # TimeoutStartSec=900 bounds the kill so a wedged tick cannot linger past one
 # deferred cycle.
 TimeoutStartSec=900
