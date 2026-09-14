@@ -22,39 +22,42 @@ import yaml
 
 from shared.blocked_witness import evaluate_blocked_witness
 from shared.sdlc_lifecycle import (
-    FRONTMATTER_ABSENT,
-    FRONTMATTER_INVALID_OPENING_FENCE,
-    FRONTMATTER_NOT_A_MAPPING,
-    FRONTMATTER_OK,
-    FRONTMATTER_PARSE_ERROR,
-    FRONTMATTER_UNREADABLE_STATES,
-    FRONTMATTER_UNTERMINATED,
     PR_ACTIONS,
-    RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
-    RECEIPT_TRIGGER_MALFORMED_CONTAINER,
-    RECEIPT_TRIGGER_MALFORMED_REVIEW,
-    RECEIPT_TRIGGER_REVIEW_FLOOR,
     SDLC_STAGE_METADATA,
     SDLC_STAGE_METADATA_PATH,
     STAGE_RE,
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
     StageMetadataError,
-    acceptance_receipt_blockers,
-    acceptance_receipt_path,
-    acceptance_receipt_triggers,
     active_blocked_task_blockers,
-    frontmatter_block_text,
-    frontmatter_from_text,
-    frontmatter_state_from_text,
     is_active_blocked_with_evidence,
     is_dependency_blocked_reason,
     is_legal_stage_edge,
     load_sdlc_stage_metadata,
-    requires_acceptance_receipt,
     stage_edges,
     stage_token,
     task_closure_validity,
+)
+from shared.sdlc_note_contract import (  # the note contract moved to a leaf module
+    FRONTMATTER_ABSENT,
+    FRONTMATTER_EMPTY_BLOCK,
+    FRONTMATTER_INVALID_OPENING_FENCE,
+    FRONTMATTER_NOT_A_MAPPING,
+    FRONTMATTER_OK,
+    FRONTMATTER_PARSE_ERROR,
+    FRONTMATTER_UNREADABLE_STATES,
+    FRONTMATTER_UNTERMINATED,
+    RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+    RECEIPT_TRIGGER_MALFORMED_CONTAINER,
+    RECEIPT_TRIGGER_MALFORMED_REVIEW,
+    RECEIPT_TRIGGER_REVIEW_FLOOR,
+    acceptance_receipt_blockers,
+    acceptance_receipt_path,
+    acceptance_receipt_triggers,
+    frontmatter_block_text,
+    frontmatter_from_text,
+    frontmatter_state_from_text,
+    requires_acceptance_receipt,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1140,9 +1143,18 @@ class TestFrontmatterParseState:
         assert state == FRONTMATTER_ABSENT
         assert state not in FRONTMATTER_UNREADABLE_STATES
 
-    def test_empty_frontmatter_is_absent(self) -> None:
+    def test_an_empty_fence_pair_is_its_own_state_not_absent(self) -> None:
+        """A declared-but-empty block is distinguishable from no block at all.
+
+        Both are readable and both declare nothing, so neither arms the gate.
+        They are separate states because a caller that must tell them apart —
+        the autoqueue, which reports "no frontmatter fence" for one and accepts
+        the other — was re-reading line 0 to recover the difference, a second
+        reading of a fact this walk already had.
+        """
         _, state = frontmatter_state_from_text("---\n\n---\nbody\n")
-        assert state == FRONTMATTER_ABSENT
+        assert state == FRONTMATTER_EMPTY_BLOCK
+        assert state != FRONTMATTER_ABSENT
         assert state not in FRONTMATTER_UNREADABLE_STATES
 
     def test_unterminated_frontmatter_is_unreadable(self) -> None:
@@ -1184,7 +1196,7 @@ class TestFrontmatterParseState:
         adjacent = frontmatter_state_from_text("---\n---\nbody\n")
         blank_separated = frontmatter_state_from_text("---\n\n---\nbody\n")
 
-        assert adjacent == blank_separated == ({}, FRONTMATTER_ABSENT)
+        assert adjacent == blank_separated == ({}, FRONTMATTER_EMPTY_BLOCK)
 
     def test_a_commented_opening_fence_still_arms_the_gate(self) -> None:
         """``--- # task metadata`` is a supported header and a legal YAML marker.

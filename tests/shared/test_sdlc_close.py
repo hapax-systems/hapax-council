@@ -38,7 +38,7 @@ from shared.sdlc_claim import (
     inspect_claim_publications,
 )
 from shared.sdlc_close import CloseGateEvidence, TerminalCloseError, close_task
-from shared.sdlc_lifecycle import FRONTMATTER_OK, frontmatter_state_from_text
+from shared.sdlc_note_contract import FRONTMATTER_OK, frontmatter_state_from_text
 from shared.sdlc_task_store import (
     ClaimDispatchBinding,
     resolve_task_note,

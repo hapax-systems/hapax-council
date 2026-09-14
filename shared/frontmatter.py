@@ -17,7 +17,14 @@ import yaml
 
 from shared.governance.consent_label import ConsentLabel
 from shared.governance.labeled import Labeled
-from shared.sdlc_lifecycle import is_frontmatter_fence
+
+# The fence grammar lives in a leaf module (stdlib + PyYAML) precisely so this
+# module can depend on it: shared/frontmatter.py reaches
+# shared.governance.consent_label and therefore AGENTGOV, while the close gate
+# runs under a bare python3. The dependency points canonical-parser → leaf, never
+# the other way, and that direction is pinned by
+# tests/shared/test_sdlc_note_contract.py.
+from shared.sdlc_note_contract import is_frontmatter_fence
 
 FrontmatterErrorKind = Literal[
     "read_error",

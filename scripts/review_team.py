@@ -81,9 +81,9 @@ from shared.quota_spend_ledger import (  # noqa: E402
     load_quota_spend_ledger_resolved,
     subscription_quota_state_for_route,
 )
-from shared.sdlc_lifecycle import (  # noqa: E402
+from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES  # noqa: E402
+from shared.sdlc_note_contract import (  # noqa: E402
     FRONTMATTER_OK,
-    TASK_TERMINAL_STATUSES,
     frontmatter_state_from_text,
 )
 

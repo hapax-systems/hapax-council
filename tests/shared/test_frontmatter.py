@@ -17,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 from shared.frontmatter import parse_frontmatter_with_diagnostics
-from shared.sdlc_lifecycle import frontmatter_state_from_text, is_frontmatter_fence
+from shared.sdlc_note_contract import frontmatter_state_from_text, is_frontmatter_fence
 
 
 class TestFenceGrammar:

@@ -41,18 +41,20 @@ from shared.sdlc_claim import (
     resolve_applied_claim_publication,
 )
 from shared.sdlc_lifecycle import (
+    acceptance_criteria_state,
+    stage_token,
+)
+from shared.sdlc_note_contract import (
     FRONTMATTER_OK,
     WRITE_COLLATERAL,
     WRITE_INEFFECTIVE,
     WRITE_POSTIMAGE_UNREADABLE,
     WRITE_PREIMAGE_UNREADABLE,
     WRITE_VALUE_UNREPRESENTABLE,
-    acceptance_criteria_state,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     frontmatter_set_exactly,
     requires_acceptance_receipt,
-    stage_token,
 )
 from shared.sdlc_task_store import (
     TaskNoteSnapshot,

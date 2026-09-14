@@ -91,24 +91,26 @@ from shared.release_gate import (  # noqa: E402
     evaluate_avsdlc_release_gate,
 )
 from shared.sdlc_lifecycle import (  # noqa: E402
-    FRONTMATTER_ABSENT,
-    FRONTMATTER_INVALID_OPENING_FENCE,
-    FRONTMATTER_NOT_A_MAPPING,
-    FRONTMATTER_PARSE_ERROR,
-    FRONTMATTER_UNTERMINATED,
     RELEASE_MITIGATION_CHECKS,
     REVIEW_TEAM_QUORUM_EVIDENCE,
     TASK_MERGE_READY_STATUSES,
     ReleaseAutoArmAssessment,
+    assess_release_auto_arm,
+    release_auto_arm_waivers,
+    task_closure_validity,
+)
+from shared.sdlc_note_contract import (  # noqa: E402
+    FRONTMATTER_ABSENT,
+    FRONTMATTER_EMPTY_BLOCK,
+    FRONTMATTER_INVALID_OPENING_FENCE,
+    FRONTMATTER_NOT_A_MAPPING,
+    FRONTMATTER_PARSE_ERROR,
+    FRONTMATTER_UNTERMINATED,
     acceptance_receipt_blockers,
     apply_release_auto_arm,
-    assess_release_auto_arm,
     frontmatter_block_text,
     frontmatter_from_text,
     frontmatter_state_from_text,
-    is_frontmatter_fence,
-    release_auto_arm_waivers,
-    task_closure_validity,
 )
 
 LOG = logging.getLogger("cc-pr-autoqueue")
@@ -1719,9 +1721,13 @@ def _frontmatter(path: Path) -> tuple[dict[str, Any] | None, str | None]:
         # the 2026-06-10 "reason code names the wrong failure" shape again.
         # The shared parser now classifies this, so both surfaces agree.
         return None, "invalid opening frontmatter fence"
+    if state == FRONTMATTER_EMPTY_BLOCK:
+        # A real marker pair enclosing nothing. The walk reports this as its own
+        # state, so the distinction from "no fence at all" is structural — this
+        # branch used to re-read line 0 with is_frontmatter_fence, a second
+        # reading of a fact the parser already had.
+        return parsed, None
     if state == FRONTMATTER_ABSENT:
-        if is_frontmatter_fence(text.split("\n", 1)[0]):
-            return parsed, None  # a real marker enclosing nothing: empty frontmatter
         return None, "no frontmatter fence"
     if state == FRONTMATTER_UNTERMINATED:
         return None, "unterminated frontmatter fence"
@@ -2868,13 +2874,18 @@ def arm_release_for_task(
             return True, "note_unchanged"
         reasons = ",".join(pre_arm_assessment.blockers or ("not_eligible",))
         return False, f"release_auto_arm_ineligible:{reasons}"
-    armed = apply_release_auto_arm(
+    armed, refusal = apply_release_auto_arm(
         text,
         now_iso=now_iso,
         role=role,
         head_sha=expected_head_sha,
         head_ref=head_ref,
     )
+    if refusal:
+        # Named separately from "note_unchanged", which this function also
+        # returns for an already-armed note: an eligible task whose note cannot
+        # be written exactly is a refusal with a repair, not a no-op success.
+        return False, f"release_auto_arm_write_refused:{refusal}"
     if armed == text:
         return False, "note_unchanged"
     try:

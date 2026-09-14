@@ -67,7 +67,7 @@ from github_pr_status import (  # noqa: E402
 
 from shared import public_gate_receipts  # noqa: E402
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
-from shared.sdlc_lifecycle import (  # noqa: E402
+from shared.sdlc_note_contract import (  # noqa: E402
     acceptance_receipt_path,
     acceptance_receipt_triggers,
     requires_acceptance_receipt,

@@ -23,13 +23,15 @@ from shared.release_gate import (
     assess_release_auto_arm_estate,
 )
 from shared.sdlc_lifecycle import (
-    FRONTMATTER_OK,
     RELEASE_MITIGATION_CHECKS,
     REVIEW_TEAM_QUORUM_EVIDENCE,
-    apply_release_auto_arm,
     assess_release_auto_arm,
-    frontmatter_state_from_text,
     release_auto_arm_waivers,
+)
+from shared.sdlc_note_contract import (
+    FRONTMATTER_OK,
+    apply_release_auto_arm,
+    frontmatter_state_from_text,
 )
 
 
@@ -478,25 +480,25 @@ authority_case: CASE-CAPACITY-ROUTING-001
 
 
 def test_apply_release_auto_arm_sets_release_authorized_true() -> None:
-    out = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
+    out, _ = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
     assert "release_authorized: true" in out
     assert "release_authorized: false" not in out
 
 
 def test_apply_release_auto_arm_advances_stage_to_s7() -> None:
-    out = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
+    out, _ = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
     assert "stage: S7_RELEASE" in out
     assert "stage: S6_IMPLEMENTATION" not in out
 
 
 def test_apply_release_auto_arm_keeps_existing_s7_stage() -> None:
     note = _NOTE.replace("stage: S6_IMPLEMENTATION", "stage: S7_RELEASE")
-    out = apply_release_auto_arm(note, now_iso="2026-06-01T03:00:00Z")
+    out, _ = apply_release_auto_arm(note, now_iso="2026-06-01T03:00:00Z")
     assert out.count("stage: S7_RELEASE") == 1
 
 
 def test_apply_release_auto_arm_updates_timestamp_and_logs() -> None:
-    out = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
+    out, _ = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
     assert "updated_at: 2026-06-01T03:00:00Z" in out
     assert "- prior line" in out  # body preserved
     assert "release auto-arm" in out.lower()  # audit line appended to body
@@ -531,7 +533,7 @@ def test_apply_release_auto_arm_postimage_parses_as_armed(label: str, note: str)
     assert before_state == FRONTMATTER_OK, label
     assert before["release_authorized"] is False, label
 
-    out = apply_release_auto_arm(note, now_iso="2026-06-01T03:00:00Z")
+    out, _ = apply_release_auto_arm(note, now_iso="2026-06-01T03:00:00Z")
 
     after, state = frontmatter_state_from_text(out)
     assert state == FRONTMATTER_OK, label
@@ -553,8 +555,8 @@ def test_apply_release_auto_arm_repeated_runs_stay_armed(label: str, note: str) 
     authorization. Assert the state each run leaves behind, not the log.
     """
 
-    first = apply_release_auto_arm(note, now_iso="2026-06-01T03:00:00Z")
-    second = apply_release_auto_arm(first, now_iso="2026-06-01T04:00:00Z")
+    first, _ = apply_release_auto_arm(note, now_iso="2026-06-01T03:00:00Z")
+    second, _ = apply_release_auto_arm(first, now_iso="2026-06-01T04:00:00Z")
 
     for run, text, stamp in (
         (1, first, "2026-06-01T03:00:00Z"),
@@ -582,7 +584,7 @@ def test_apply_release_auto_arm_records_the_authorized_head(
     head_sha: str,
     head_ref: str,
 ) -> None:
-    out = apply_release_auto_arm(
+    out, _ = apply_release_auto_arm(
         _NOTE,
         now_iso="2026-06-01T03:00:00Z",
         head_sha=head_sha,
@@ -595,20 +597,32 @@ def test_apply_release_auto_arm_records_the_authorized_head(
     assert parsed["release_authorized_head_ref"] == head_ref, label
 
 
-def test_apply_release_auto_arm_logs_nothing_when_it_cannot_arm_exactly() -> None:
-    """A refusal returns the input unchanged — and records no progress.
+def test_apply_release_auto_arm_refuses_with_a_reason_and_records_no_progress() -> None:
+    """A refusal returns the input unchanged AND says why.
 
-    ``arm_release_for_task`` already reads an unchanged return as a refusal. The
-    property that matters is that the audit trail never gains a line for arming
-    that did not happen, which is what the previous writer did on every retry.
+    The audit trail must never gain a line for arming that did not happen —
+    which is what the previous writer did on every retry. And the refusal has to
+    be nameable: ``arm_release_for_task`` reads an unchanged return as
+    ``note_unchanged``, which it also returns for an already-armed note, so a
+    reason-less refusal is indistinguishable from a no-op success.
     """
 
     unwritable = _NOTE.replace("stage: S6_IMPLEMENTATION", "stage:\n  name: S6_IMPLEMENTATION")
 
-    out = apply_release_auto_arm(unwritable, now_iso="2026-06-01T03:00:00Z")
+    out, refusal = apply_release_auto_arm(unwritable, now_iso="2026-06-01T03:00:00Z")
 
     assert out == unwritable
     assert "release auto-arm" not in out.lower()
+    assert refusal.startswith("stage:postimage_unreadable:"), refusal
+
+
+def test_apply_release_auto_arm_reports_no_refusal_on_success() -> None:
+    """The reason channel is empty exactly when the arming was applied."""
+
+    out, refusal = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
+
+    assert refusal == ""
+    assert out != _NOTE
 
 
 # ── evidence-gated auto-arm (no manual arming; operator directive 2026-06-22) ──
