@@ -5169,3 +5169,20 @@ _ = (_capability_shape_from_env, _format_capability_shape)
 from shared.session_identity import is_minted_session_id as _is_minted_session_id  # noqa: E402
 
 _ = (_is_minted_session_id,)
+
+# cc-task mutation lock (same row, round 13). DETECTOR BLIND SPOT, the same one the
+# capability-shape producer has: the production caller is inside scripts/cc-claim's
+# bash-hosted Python heredoc, which vulture cannot parse — cc-claim is extensionless,
+# and the call sits in quoted heredoc text rather than importable module source.
+# cc-close takes the SAME lock from bash instead (`exec 9>` plus flock(1)), so it
+# imports only `lock_path` to resolve the path, which leaves this entry point with no
+# statically visible caller at all.
+#
+# Live-call evidence, not assertion: tests/test_cc_task_lock.py holds a lock with
+# plain fcntl and requires cc-claim to block on it
+# (test_cc_claim_waits_for_a_held_lock_and_then_succeeds), then to refuse without
+# touching the note or any lease when it never clears. Removing cc-claim's
+# acquisition reds exactly those two, and nothing else — which is why they exist.
+from shared.cc_task_lock import hold_task_note_lock as _hold_task_note_lock  # noqa: E402
+
+_ = (_hold_task_note_lock,)
