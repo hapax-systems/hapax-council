@@ -43,6 +43,18 @@ Exit: 0 list valid (prediction printed); 2 refused — an entry cannot match, so
 list would fail open; 3 usage error, IO error, no sync config, or an incomplete
 traversal (a partial total must never read as successful verification).
 
+Recheck every claim in this docstring — the exit statuses and each replayed rule:
+
+    uv run pytest tests/scripts/test_hapax_obsidian_sync_preflight.py -q
+
+Recheck the rules against the CLIENT (they are read off a minified bundle, so they
+can drift with any upgrade; `npm ls -g obsidian-headless` gives the pinned version):
+
+    node -e 'const s=require("fs").readFileSync(process.env.OB_CLI,"utf8");
+      for (const k of ["function Ne(","function Cs(","function Is(",
+      "_allowSyncFile(","reconcileSymbolicLinkCreation(","Xc=","me=["])
+      console.log(k, s.slice(s.indexOf(k), s.indexOf(k)+160), "\n")'
+
 Rules replayed from obsidian-headless 0.0.14 ``cli.js``:
   * emitted namespace — ``Ne(s) = Cs(_e(s)).normalize("NFC")``, where ``Cs``
     rewrites U+00A0 and U+202F to ordinary spaces. ``ignoreFolders`` entries are
@@ -478,7 +490,13 @@ class _LinkPolicy:
         if any(_overlaps(target, seen) for seen in self.accepted):
             self.skipped.append({"path": relpath, "target": target})
             return False
-        self.accepted.append(target)
+        # Only a DIRECTORY link becomes watched: cli.js installs the watcher in the
+        # `a.isDirectory()` branch (`Yi && startWatchPath(t)`), while the isFile branch
+        # goes straight to reconcileFileCreation. So a file link is admitted without
+        # reserving its target — reserving it would make one file link suppress a
+        # later, legitimate upload of the same or an overlapping path.
+        if os.path.isdir(target):
+            self.accepted.append(target)
         self.escaping.append({"path": relpath, "target": target})
         return True
 

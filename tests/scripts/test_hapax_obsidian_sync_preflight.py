@@ -673,6 +673,93 @@ def test_escaping_file_link_is_followed(vault: pathlib.Path, tmp_path: pathlib.P
     assert [link["path"] for link in report["symlinks_escaping_vault"]] == ["alias.md"]
 
 
+def test_file_link_does_not_reserve_its_target(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """cli.js installs a watcher only in the isDirectory branch, so a FILE link is
+    admitted without reserving its target. Reserving it would make one file link
+    suppress a later legitimate upload of the same path."""
+    outside = tmp_path / "shared.md"
+    outside.write_bytes(b"s" * 21)
+    (vault / "a-alias.md").symlink_to(outside)
+    (vault / "b-alias.md").symlink_to(outside)
+    report = json.loads(
+        _run(
+            str(vault),
+            "--excluded-folders",
+            "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+            "--json",
+        ).stdout
+    )
+    paths = {i["path"] for i in report["largest_included_files"]}
+    assert {"a-alias.md", "b-alias.md"} <= paths, "a file link reserved its target"
+    assert report["predicted_upload"]["bytes"] == 161 + 21 + 21
+    assert report["symlinks_skipped_overlapping"] == []
+
+
+def test_directory_link_does_reserve_its_target(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """The other half: a directory link IS watched, so a second link to the same
+    directory is skipped rather than counted twice."""
+    outside = tmp_path / "shared"
+    outside.mkdir()
+    (outside / "note.md").write_bytes(b"n" * 31)
+    (vault / "a-link").symlink_to(outside, target_is_directory=True)
+    (vault / "b-link").symlink_to(outside, target_is_directory=True)
+    report = json.loads(
+        _run(
+            str(vault),
+            "--excluded-folders",
+            "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+            "--json",
+        ).stdout
+    )
+    assert report["predicted_upload"]["bytes"] == 161 + 31, "counted the same dir twice"
+    assert [link["path"] for link in report["symlinks_escaping_vault"]] == ["a-link"]
+    assert [link["path"] for link in report["symlinks_skipped_overlapping"]] == ["b-link"]
+
+
+@pytest.mark.parametrize("config_dir", [".obsidian", ".obsidian-custom", "visible-config"])
+def test_config_dir_setting_is_honoured(
+    vault: pathlib.Path, tmp_path: pathlib.Path, config_dir: str
+) -> None:
+    """The configDir fallback was untested; a non-default (or non-hidden) config dir
+    must still be scanned, and a wrong fallback would silently predict zero."""
+    target = vault / config_dir
+    target.mkdir()
+    (target / "app.json").write_bytes(b"a" * 55)
+    xdg = tmp_path / "xdg"
+    overrides: dict = {
+        "ignoreFolders": ["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        "allowSpecialFiles": ["app"],
+    }
+    if config_dir != ".obsidian":
+        overrides["configDir"] = config_dir
+    _write_live_config(xdg, vault, **overrides)
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["config_uploads"]["config_dir"] == config_dir
+    assert report["config_uploads"]["bytes"] == 55
+
+
+def test_absent_config_dir_setting_falls_back_to_dot_obsidian(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    obsidian = vault / ".obsidian"
+    obsidian.mkdir()
+    (obsidian / "app.json").write_bytes(b"a" * 12)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["app"],
+    )
+    report = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
+    assert report["config_uploads"]["config_dir"] == ".obsidian"
+    assert report["config_uploads"]["bytes"] == 12
+
+
 def test_hidden_link_does_not_suppress_a_visible_one(
     vault: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
