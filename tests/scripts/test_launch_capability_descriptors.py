@@ -512,9 +512,14 @@ class TestWhatTheChildReceives:
         assert shape["route"] is None, (
             f"{name} would record route={shape['route']} for a launch that never ran on it"
         )
-        assert shape["model_family"] is None, (
-            f"{name} would record model_family={shape['model_family']} for a launch "
-            "that never ran on it"
+        # NOT "absent" — "not the inherited one". A launcher that publishes the model
+        # it actually selected (hapax-codex-headless does, and hapax-claude-headless
+        # does when handed one) is doing the right thing; the defect is recording a
+        # value that arrived from somewhere else. Asserting absence here conflated
+        # the two and would have to be relaxed every time a launcher learned to
+        # report itself, which is the wrong direction for this suite to move.
+        assert shape["model_family"] != "gpt-5.3-codex", (
+            f"{name} recorded the model of the launch it was started FROM: {shape['model_family']}"
         )
 
     def test_the_codex_lane_records_the_model_it_launches_with(self, tmp_path: Path) -> None:
@@ -525,12 +530,14 @@ class TestWhatTheChildReceives:
         the grant and published nothing. Asserted against the harness's own argv, so
         "what we recorded" is checked against "what we passed" rather than against
         another copy of the default.
+
+        **UNPINNED**, deliberately. My first version passed
+        HAPAX_CAPABILITY_PINNED and so only covered the dispatched path — while the
+        publish sat BEFORE the consume, which clears the model for exactly the
+        launches that are not pinned. The test therefore agreed with a build where
+        every direct headless launch recorded no model at all.
         """
-        observed = self._run(
-            "hapax-codex-headless",
-            tmp_path,
-            {"HAPAX_CAPABILITY_PINNED": "hapax-codex-headless"},
-        )
+        observed = self._run("hapax-codex-headless", tmp_path, {})
         assert observed["capmodel"], (
             f"the codex lane published no model, so its claims record none: {observed}"
         )
@@ -539,12 +546,19 @@ class TestWhatTheChildReceives:
             f"recorded={observed['capmodel']!r} passed={observed.get('argmodel')!r}"
         )
 
-    def test_a_codex_model_override_is_recorded_not_the_default(self, tmp_path: Path) -> None:
-        """`-c model="..."` after `--` wins at codex, so it must win in the record."""
+    @pytest.mark.parametrize("pinned", [False, True], ids=["unpinned", "dispatched"])
+    def test_a_codex_model_override_is_recorded_not_the_default(
+        self, pinned: bool, tmp_path: Path
+    ) -> None:
+        """`-c model="..."` after `--` wins at codex, so it must win in the record.
+
+        Both launch shapes: a direct headless run and a dispatched one. The publish
+        must survive the consume either way, and it did not for the unpinned half.
+        """
         observed = self._run(
             "hapax-codex-headless",
             tmp_path,
-            {"HAPAX_CAPABILITY_PINNED": "hapax-codex-headless"},
+            {"HAPAX_CAPABILITY_PINNED": "hapax-codex-headless"} if pinned else {},
             extra_args=["--", "-c", 'model="gpt-6-mini"'],
         )
         assert observed["capmodel"] == "gpt-6-mini", (

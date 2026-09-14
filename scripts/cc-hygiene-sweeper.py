@@ -90,6 +90,13 @@ KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
 #: not a mute: the check whose job is noticing that live state disagrees with
 #: declared state is the last one that should be individually silenceable, and
 #: "the derivation is wrong here" is answered by naming the right directory.
+#:
+#: **There is no per-check bypass, and this is not one.** The only way to silence
+#: `stale_claim_marker` is ``HAPAX_CC_HYGIENE_OFF=1``, which stops every other check
+#: with it. Stated here as well as in the runbook because an operator reading the
+#: check's own source should not have to go looking to learn that the escape hatch
+#: is global — see "When it misfires" and "Silencing it" in
+#: docs/runbooks/gate0b-claim-publication-fallback.md.
 CLAIM_MARKER_DIR_ENV = "HAPAX_CC_HYGIENE_CLAIM_MARKER_DIR"
 
 

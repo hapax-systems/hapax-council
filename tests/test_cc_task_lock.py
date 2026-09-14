@@ -92,6 +92,34 @@ def _write_note(vault: Path, task_id: str, status: str) -> Path:
     return path
 
 
+def _artifact_ledger_with_open_debt(home: Path, task_id: str) -> Path:
+    """An artifact ledger the disposition gate will actually WRITE to.
+
+    Without this the gate returns 0 at its first check (`no ledger` / `no entries
+    for this task`) and never reaches its mutation — so a contention test around it
+    passes whether the gate runs before or after the lock, which is exactly what my
+    first version of these tests did.
+
+    A `gate`-ceiling entry with a non-terminal disposition is the combination that
+    makes `--debt` rewrite both the ledger and the task note.
+    """
+    ledger = home / ".cache" / "hapax" / "document-pipeline" / "artifact-ledger.yaml"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(
+        textwrap.dedent(
+            f"""\
+            - task_id: {task_id}
+              artifact_id: doc-1
+              class: publication
+              authority_ceiling: gate
+              disposition: produced
+            """
+        ),
+        encoding="utf-8",
+    )
+    return ledger
+
+
 def _lane_env(home: Path, **extra: str) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
     env["HOME"] = str(home)
@@ -714,6 +742,219 @@ class TestTheLockNamespaceFollowsTheResourceNamespace:
             f"XDG_CACHE_HOME values differed — no exclusion\n{stdout}\n{stderr}"
         )
         assert proc.returncode == 0, f"{stdout}\n{stderr}"
+
+
+class TestEveryMutationIsUnderTheLock:
+    """Not just the writer — every step of cc-close that changes state.
+
+    The artifact-disposition gate rewrites the task note and the artifact ledger
+    when `--debt` is given, and it ran BEFORE either lock: an unprotected
+    read/write that could overwrite a concurrent cc-claim update, and a later lock
+    refusal that said "Nothing was modified" over a note that had been. Every
+    contention test in this file used `withdrawn`, which skips that checker
+    entirely — review round 20 said so, and was right.
+    """
+
+    def test_a_done_debt_close_mutates_nothing_before_the_lock(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        note = _write_note(vault, "t1", "in_progress")
+        cache = home / ".cache" / "hapax"
+        cache.mkdir(parents=True, exist_ok=True)
+        before = note.read_text(encoding="utf-8")
+        ledger = _artifact_ledger_with_open_debt(home, "t1")
+        ledger_before = ledger.read_text(encoding="utf-8")
+        env = _lane_env(home, HAPAX_PR_MERGE_GATE_OFF="1")
+
+        held = lock_path("t1", cache / "cc-task-locks")
+        handle = os.open(held, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            proc = subprocess.Popen(
+                [
+                    "bash",
+                    str(CC_CLOSE),
+                    "t1",
+                    "--status",
+                    "done",
+                    "--debt",
+                    "deferred artifact capture",
+                ],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            settle = time.monotonic() + 3.0
+            while proc.poll() is None and time.monotonic() < settle:
+                time.sleep(0.05)
+            blocked = proc.poll() is None
+            note_during = note.read_text(encoding="utf-8")
+            ledger_during = ledger.read_text(encoding="utf-8") if ledger.exists() else None
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
+        stdout, stderr = proc.communicate(timeout=180)
+
+        assert blocked, (
+            f"a --debt close ran its mutating gate while the task lock was held\n{stdout}\n{stderr}"
+        )
+        assert note_during == before, (
+            "the artifact-disposition gate rewrote the task note before taking the "
+            "lock — a concurrent cc-claim update would have been lost"
+        )
+        assert ledger_during == ledger_before, (
+            "the artifact ledger was rewritten before the lock was taken"
+        )
+
+    def test_a_lock_refusal_does_not_claim_nothing_changed_after_changing_things(
+        self, tmp_path: Path
+    ) -> None:
+        """The message has to be true. It was not, for exactly this path."""
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        note = _write_note(vault, "t1", "in_progress")
+        cache = home / ".cache" / "hapax"
+        cache.mkdir(parents=True, exist_ok=True)
+        before = note.read_text(encoding="utf-8")
+        _artifact_ledger_with_open_debt(home, "t1")
+        env = _lane_env(home, HAPAX_PR_MERGE_GATE_OFF="1", HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS="0.4")
+
+        held = lock_path("t1", cache / "cc-task-locks")
+        handle = os.open(held, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(CC_CLOSE),
+                    "t1",
+                    "--status",
+                    "done",
+                    "--debt",
+                    "deferred artifact capture",
+                ],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=180,
+            )
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
+
+        assert result.returncode != 0, result.stdout
+        if "Nothing was modified" in result.stderr:
+            assert note.read_text(encoding="utf-8") == before, (
+                "cc-close reported 'Nothing was modified' over a note it had already "
+                f"rewritten\n{result.stderr}"
+            )
+
+
+class TestTheOrderingInvariant:
+    """Task then role, in both writers — pinned, not merely commented.
+
+    glm-1: "the invariant lives in prose in two languages and no test pins the
+    ordering itself." Correct, and a deadlock from a future edit to one writer
+    would surface as a hang under load rather than as a red.
+
+    The order is observable: while a writer is blocked on the TASK lock it must not
+    yet hold the ROLE lock. If it took role-first, the role lock would be
+    unavailable while it waits — and two writers taking opposite orders is exactly
+    the deadlock.
+    """
+
+    def _role_lock_free(self, home: Path) -> bool:
+        path = role_lock_path("eta", home / ".cache" / "hapax" / "cc-task-locks")
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return False
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return True
+        finally:
+            os.close(fd)
+
+    def _blocked_on_task_lock(self, home: Path, argv: list[str], env: dict[str, str]):
+        held = lock_path("t1", home / ".cache" / "hapax" / "cc-task-locks")
+        handle = os.open(held, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            proc = subprocess.Popen(
+                argv, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            settle = time.monotonic() + 3.0
+            while proc.poll() is None and time.monotonic() < settle:
+                time.sleep(0.05)
+            still_running = proc.poll() is None
+            role_free = self._role_lock_free(home)
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
+        stdout, stderr = proc.communicate(timeout=180)
+        return still_running, role_free, stdout, stderr
+
+    def test_cc_close_takes_the_task_lock_first(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        _write_note(vault, "t1", "withdrawn")
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        running, role_free, stdout, stderr = self._blocked_on_task_lock(
+            home,
+            ["bash", str(CC_CLOSE), "t1", "--status", "withdrawn"],
+            _lane_env(home),
+        )
+        assert running, f"cc-close did not block on the task lock\n{stdout}\n{stderr}"
+        assert role_free, (
+            "cc-close held the ROLE lock while waiting for the TASK lock — it takes "
+            "them in the opposite order from cc-claim, which is a deadlock under load"
+        )
+
+    def test_cc_claim_takes_the_task_lock_first(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        _write_note(vault, "t1", "offered")
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        running, role_free, stdout, stderr = self._blocked_on_task_lock(
+            home, ["bash", str(CC_CLAIM), "t1"], _lane_env(home)
+        )
+        assert running, f"cc-claim did not block on the task lock\n{stdout}\n{stderr}"
+        assert role_free, (
+            "cc-claim held the ROLE lock while waiting for the TASK lock — opposite "
+            "order from cc-close, which is a deadlock under load"
+        )
+
+    def test_neither_production_caller_overrides_the_lock_directory(self) -> None:
+        """An absolute override is honoured, so it could still split the namespace.
+
+        claude-1's residual note: nothing pinned that the two production callers
+        pass none. They must resolve through `lock_dir()` with no argument, or the
+        namespace is a function of the caller again rather than of the resource.
+        """
+        for script in (CC_CLAIM, CC_CLOSE):
+            code = "\n".join(
+                line
+                for line in script.read_text(encoding="utf-8").splitlines()
+                if not line.strip().startswith("#")
+            )
+            for call in (
+                "lock_path(",
+                "role_lock_path(",
+                "hold_task_note_lock(",
+                "hold_role_lease_lock(",
+            ):
+                for line in code.splitlines():
+                    if call not in line:
+                        continue
+                    args = line.split(call, 1)[1]
+                    assert "cache_dir" not in args, (
+                        f"{script.name} passes a cache_dir override to {call}: "
+                        f"{line.strip()!r} — the lock namespace must follow the "
+                        "resource namespace, not the caller"
+                    )
 
 
 class TestBothWritersParticipate:

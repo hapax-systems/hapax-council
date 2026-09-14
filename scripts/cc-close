@@ -280,29 +280,13 @@ if [[ "$final_status" == "done" ]]; then
     fi
   fi
 
-  # Artifact disposition gate
-  DISP_CHECKER="$SCRIPT_DIR/cc-task-artifact-disposition-check.py"
-  if [[ -f "$DISP_CHECKER" ]]; then
-    set +e
-    if [[ -n "${debt_reason:-}" ]]; then
-      python3 "$DISP_CHECKER" "$note_path" "$task_id" --debt "$debt_reason"
-    else
-      python3 "$DISP_CHECKER" "$note_path" "$task_id"
-    fi
-    disp_rc=$?
-    set -e
-    if [[ "$disp_rc" -ne 0 ]]; then
-      exit "$disp_rc"
-    fi
-  fi
-
-  # Sibling-task advisory check — warns about stalled siblings under the same
-  # parent request. Advisory only (exit 0), prevents the remediation execution
-  # gap found by CCTV disconfirmation (PR #3659).
-  SIBLING_CHECKER="$SCRIPT_DIR/cc-close-sibling-check.py"
-  if [[ -f "$SIBLING_CHECKER" ]]; then
-    python3 "$SIBLING_CHECKER" "$note_path" || true
-  fi
+  # The artifact-disposition gate and the sibling advisory USED TO RUN HERE, and
+  # they no longer do. The first of them MUTATES: with `--debt` it rewrites the task
+  # note and the artifact ledger. Running that before the locks meant an unprotected
+  # read/write that could overwrite a concurrent cc-claim update, and it made every
+  # later lock refusal say "Nothing was modified" when something already had been
+  # (review round 20, reproduced). They now run under both locks, below.
+  :
 fi
 
 # --- Serialize the mutating tail ----------------------------------------------
@@ -416,6 +400,43 @@ if [[ -n "$role" ]]; then
   elif [[ "$role_flock_rc" -ne 0 ]]; then
     echo "cc-close: refusing — could not acquire the role lease lock for '$role' ($role_lock_path): flock exited $role_flock_rc, which is not contention. Next action: check that $role_lock_path is writable. Nothing was modified." >&2
     exit 2
+  fi
+fi
+
+# --- Mutating gates, now UNDER both locks -------------------------------------
+#
+# The artifact-disposition gate rewrites the task note and the artifact ledger when
+# `--debt` is given. It ran before either lock, so it could overwrite a concurrent
+# cc-claim update — and a lock refusal afterwards reported "Nothing was modified"
+# over a note that had been. Both statements are true again now that it runs here.
+#
+# It is HERE and not with the other gates because the ones above call `gh`: a lock
+# held across a network round trip stalls every other writer for as long as GitHub
+# takes. Read-only and slow stays outside; mutating stays inside. That is the whole
+# rule, and it is why this block is split off rather than the locks moved up.
+if [[ "$final_status" == "done" ]]; then
+  DISP_CHECKER="$SCRIPT_DIR/cc-task-artifact-disposition-check.py"
+  if [[ -f "$DISP_CHECKER" ]]; then
+    set +e
+    if [[ -n "${debt_reason:-}" ]]; then
+      python3 "$DISP_CHECKER" "$note_path" "$task_id" --debt "$debt_reason"
+    else
+      python3 "$DISP_CHECKER" "$note_path" "$task_id"
+    fi
+    disp_rc=$?
+    set -e
+    if [[ "$disp_rc" -ne 0 ]]; then
+      exit "$disp_rc"
+    fi
+  fi
+
+  # Sibling-task advisory check — warns about stalled siblings under the same
+  # parent request. Advisory only (exit 0), prevents the remediation execution
+  # gap found by CCTV disconfirmation (PR #3659). Under the lock too: it reads the
+  # note, and a read outside is a fact about a file another writer may replace.
+  SIBLING_CHECKER="$SCRIPT_DIR/cc-close-sibling-check.py"
+  if [[ -f "$SIBLING_CHECKER" ]]; then
+    python3 "$SIBLING_CHECKER" "$note_path" || true
   fi
 fi
 

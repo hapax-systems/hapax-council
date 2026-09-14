@@ -818,7 +818,12 @@ for _extra in ${CODEX_EXTRA+"${CODEX_EXTRA[@]}"}; do
     model=*) CODEX_MODEL="${_extra#model=}" ;;
   esac
 done
-export HAPAX_CAPABILITY_MODEL="$CODEX_MODEL"
+# NOT exported here — see the publish beside the consume call further down. Exporting
+# at this point put the value in the environment BEFORE
+# hapax_consume_launch_capability_descriptors ran, and that call clears
+# HAPAX_CAPABILITY_MODEL for any launch the dispatcher did not pin. So a direct
+# headless launch executed a known model and recorded none: the publish was erased
+# by the very cleanup that exists to make publishing meaningful (review round 20).
 
 if [[ -e "$DISABLE_FILE" ]]; then
   echo "hapax-codex-headless: disabled by $DISABLE_FILE" >&2
@@ -883,6 +888,13 @@ SESSION_UUID="$(normalize_session_uuid "$HAPAX_LAUNCH_SESSION_ID")"
 # process is inherited and is cleared — the session id and the condition vector
 # now answer "which launch is this?" the same way.
 hapax_consume_launch_capability_descriptors hapax-codex-headless
+# The model this launch runs, published AFTER the consume — the consume clears
+# HAPAX_CAPABILITY_MODEL for anything the dispatcher did not pin, so publishing
+# before it meant a direct headless launch executed a known model and recorded
+# none. Published unconditionally: the value is this launcher's own resolution
+# (CODEX_MODEL, which also builds `-c model=` below), never something inherited,
+# so it is exactly what "publish what you executed with" means — pinned or not.
+export HAPAX_CAPABILITY_MODEL="$CODEX_MODEL"
 # Session succession is NOT done here. A launcher-side helper lived here across
 # review rounds 2-6 and was removed: it cannot be made correct in a launcher (see
 # the REMOVED block in hooks/scripts/agent-role.sh for the proof) and is rowed

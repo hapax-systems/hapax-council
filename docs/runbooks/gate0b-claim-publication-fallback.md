@@ -384,7 +384,9 @@ the task being closed:
 
 ```bash
 role=cx-blue
-fuser -v "${XDG_CACHE_HOME:-$HOME/.cache}"/hapax/cc-task-locks/roles/"$role".lock
+# $HOME, NOT XDG_CACHE_HOME: the locks are keyed on the root the leases live under,
+# so with an XDG override this command would inspect a path nothing holds.
+fuser -v "$HOME/.cache/hapax/cc-task-locks/roles/$role.lock"
 ```
 
 Expected: no output when nothing holds it. Any pid listed is the holder to let
