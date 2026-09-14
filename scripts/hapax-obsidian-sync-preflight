@@ -4,15 +4,15 @@ predict the upload set BEFORE a seed sync runs.
 
 Why this exists (measured, 2026-09-14, task obsidian-sync-freshvault-headless-20260914):
 ``ob sync-config --excluded-folders`` accepts any string. The client matches each
-entry as a **vault-relative path prefix** — in ``obsidian-headless`` 0.0.14,
+entry as a literal prefix of the path it EMITS — in ``obsidian-headless`` 0.0.14,
 ``_allowSyncFile(e, t)`` begins::
 
     for (let r of this.ignoreFolders)
         if (t && e === r || e.startsWith(r + "/")) return !1;
 
-so an entry that is not a real vault-relative prefix matches nothing, reports no
-error, and the data uploads. The failure mode is **silent admission**, and the
-only witness is a size readback taken after the upload already happened.
+so an entry that is not a real prefix in that emitted namespace matches nothing,
+reports no error, and the data uploads. The failure mode is **silent admission**,
+and the only witness is a size readback taken after the upload already happened.
 
 Three separate hand-transcriptions of one 14/15/17-entry exclusion list each
 introduced at least one unmatchable path: ``terrain1-chunks-lex`` and
@@ -22,25 +22,40 @@ would have leaked 196 PNGs / 379.5 MiB past an exclusion the operator had
 explicitly accepted. A path list carried by hand is a transcription channel with
 no checksum; this is the checksum.
 
-It also predicts the upload set by replaying the client's own admission rules, so
-a seed has an expected byte/file count to be verified against instead of a
-figure derived by subtracting estimates.
+The single predicate is: **does this entry name a directory in the namespace ob
+will compare against?** That subsumes every failure shape — a missing path, a
+wrong prefix, a file instead of a folder, a trailing slash (ob compares raw, so
+``x/`` probes ``x//``), a ``.``/``..`` component the filesystem resolves but ob
+never emits, and a Unicode form that exists on disk but not after ob's NFC
+normalization. Filesystem paths are kept separately from emitted paths precisely
+because those two namespaces are not the same.
+
+It also predicts the upload set by replaying the client's admission rules, so a
+seed has an expected byte/file count to verify against rather than one derived by
+subtracting estimates.
 
 Usage:
     hapax-obsidian-sync-preflight VAULT --excluded-folders a,b,c [--file-types ...]
     hapax-obsidian-sync-preflight VAULT --from-sync-config          # audit the LIVE list
     hapax-obsidian-sync-preflight VAULT --from-sync-config --json
 
-Exit: 0 list valid (prediction printed), 2 refused (an entry cannot match
-anything, so the list would fail open), 3 usage / IO / no sync config.
+Exit: 0 list valid (prediction printed); 2 refused — an entry cannot match, so the
+list would fail open; 3 usage error, IO error, no sync config, or an incomplete
+traversal (a partial total must never read as successful verification).
 
 Rules replayed from obsidian-headless 0.0.14 ``cli.js``:
+  * emitted namespace — ``Ne(s)`` returns ``normalize("NFC")`` of the relative
+    path, while ``ignoreFolders`` entries are compared literally.
   * hidden pruning — ``Is(s)`` walks every path component and rejects the path if
-    ANY component starts with ``.``; the sync adapter treats such paths as absent.
-  * exclusion — vault-relative prefix match, quoted above.
+    ANY component starts with ``.``; the adapter treats such paths as absent.
+  * symlinks — the adapter resolves real paths and reconciles links as ordinary
+    entries, so a directory symlink is FOLLOWED, including out of the vault.
   * attachment classes — ``md``/``canvas``/``base`` always sync; the rest gate on
-    ``--file-types``, and anything in no class is ``unsupported`` (OFF by default).
+    the selection, and anything in no class is ``unsupported`` (off by default).
     ``webm`` counts as audio OR video.
+  * the empty selection — ``--file-types ""`` DELETES the stored key and so
+    restores the defaults, whereas a persisted ``allowTypes: []`` is honoured as
+    "no attachments" (``[] || me`` keeps ``[]``: an empty array is truthy in JS).
 """
 
 from __future__ import annotations
@@ -49,6 +64,7 @@ import argparse
 import json
 import os
 import sys
+import unicodedata
 from pathlib import Path
 
 OK = 0
@@ -60,9 +76,37 @@ IMAGE = frozenset({"bmp", "png", "jpg", "jpeg", "gif", "svg", "webp", "avif"})
 AUDIO = frozenset({"mp3", "wav", "m4a", "3gp", "flac", "ogg", "oga", "opus"})
 VIDEO = frozenset({"mp4", "webm", "ogv", "mov", "mkv"})
 PDF = frozenset({"pdf"})
-ALWAYS = frozenset({"md", "canvas", "base"})  # native: never gated on --file-types
+ALWAYS = frozenset({"md", "canvas", "base"})  # native: never gated on the selection
 VALID_FILE_TYPES = ("image", "audio", "video", "pdf", "unsupported")
 DEFAULT_FILE_TYPES = ("image", "audio", "pdf", "video")  # cli.js `me`
+
+# The PERSISTED config.json and the `sync-status --json` OUTPUT use different key
+# names for the same settings. cli.js writes the live object (`ys(t.vaultId, t)`)
+# with `ignoreFolders` / `allowTypes` / `allowSpecialFiles`, and only the printer
+# `_r(t)` renames them: `excludedFolders: s.ignoreFolders||[]`,
+# `fileTypes: s.allowTypes||me`, `configs: s.allowSpecialFiles||[]`. Reading the
+# PRINTED names out of the FILE finds nothing — measured against a real config
+# holding 17 exclusions, which is why this mapping is pinned by tests.
+PERSISTED_EXCLUSIONS_KEY = "ignoreFolders"
+PERSISTED_FILE_TYPES_KEY = "allowTypes"
+# A config written by ob always carries these; used to tell "no exclusions
+# configured" apart from "this file is not an ob sync config / schema moved".
+PERSISTED_REQUIRED_KEYS = ("vaultId", "vaultPath", "conflictStrategy")
+
+
+class _Parser(argparse.ArgumentParser):
+    """argparse exits 2 on a usage error, which would collide with REFUSED — and
+    REFUSED is the load-bearing status for scripting. Usage errors exit 3."""
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        self.print_usage(sys.stderr)
+        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        raise SystemExit(ERROR)
+
+
+def _emitted(rel: str) -> str:
+    """The path ob compares against: cli.js ``Ne(s)`` NFC-normalizes it."""
+    return unicodedata.normalize("NFC", rel)
 
 
 def _extension(name: str) -> str:
@@ -97,6 +141,66 @@ def _admitted(klass: str, file_types: frozenset[str]) -> bool:
     return klass in file_types
 
 
+def resolve_entry(vault: Path, entry: str) -> tuple[bool, str]:
+    """Can ``entry`` match anything ob emits? Returns (effective, detail).
+
+    Descends component by component, comparing each against the NFC form of the
+    real directory names, because that is the only namespace ob's literal prefix
+    test ever sees. Cheap: one listdir per component, never a full walk.
+    """
+    if not entry:
+        return False, "empty entry"
+    if entry.startswith("/") or Path(entry).is_absolute():
+        return False, "not vault-relative; ob emits relative paths only"
+    if entry.endswith("/") or "//" in entry:
+        return (
+            False,
+            "trailing or doubled slash — ob compares the raw string, so this "
+            "probes a path with an empty component and can never match",
+        )
+    parts = entry.split("/")
+    if any(part in (".", "..") for part in parts):
+        return (
+            False,
+            "contains a '.' or '..' component; the filesystem resolves it but ob "
+            "emits normalized relative paths that never contain dot segments",
+        )
+    if any(part.startswith(".") for part in parts):
+        return (
+            False,
+            "dotted component — ob prunes hidden paths before the exclusion test, "
+            "so this entry is unreachable (the data is already never synced)",
+        )
+
+    current = vault
+    for depth, part in enumerate(parts):
+        try:
+            children = os.listdir(current)
+        except OSError as exc:
+            return False, f"cannot read {'/'.join(parts[:depth]) or '.'}: {exc.strerror}"
+        # ob would compare against the NFC form of the on-disk name.
+        match = next((c for c in children if _emitted(c) == part), None)
+        if match is None:
+            literal = next((c for c in children if c == part), None)
+            if literal is not None:
+                return (
+                    False,
+                    f"component {part!r} exists on disk but not in ob's emitted "
+                    "namespace: ob NFC-normalizes paths and matches exclusions "
+                    "literally, so this entry can never match. Use the NFC form "
+                    f"({_emitted(literal)!r}).",
+                )
+            return False, f"no such path in the vault (component {part!r} not found)"
+        current = current / match
+        if not os.path.isdir(current):
+            return (
+                False,
+                "names a file; ob's exclusion is a folder-prefix test, so this "
+                "entry excludes nothing",
+            )
+    return True, ""
+
+
 def validate_entries(vault: Path, entries: list[str]) -> list[dict]:
     """Classify each exclusion entry. Anything not ``ok`` cannot match and so
     fails OPEN — the data it names would upload."""
@@ -104,51 +208,11 @@ def validate_entries(vault: Path, entries: list[str]) -> list[dict]:
     for raw in entries:
         entry = raw.strip()
         finding: dict = {"entry": raw, "normalized": entry}
-        if not entry:
-            finding.update(verdict="malformed", detail="empty entry")
-            findings.append(finding)
-            continue
-        if entry.startswith("/") or entry.endswith("/") or "//" in entry:
-            # ob uses the string raw: a trailing slash makes the probe
-            # `startswith("foo//")`, which never matches; a leading slash never
-            # matches a vault-relative path.
-            finding.update(
-                verdict="malformed",
-                detail="leading, trailing or doubled slash — ob compares the raw "
-                "string, so this can never match a vault-relative path",
-            )
-            findings.append(finding)
-            continue
-        if Path(entry).is_absolute():
-            finding.update(verdict="malformed", detail="not vault-relative")
-            findings.append(finding)
-            continue
-        if any(part in (".", "..") for part in entry.split("/")):
-            # Checking only the FIRST component is not enough: the filesystem
-            # resolves `a/../a` and `a/.` happily, so such an entry passes an
-            # existence test — but ob compares it against emitted relative paths,
-            # which never contain dot segments, so it can never match.
-            finding.update(
-                verdict="malformed",
-                detail="contains a '.' or '..' component; the filesystem resolves "
-                "it but ob compares raw relative paths, so it can never match",
-            )
-            findings.append(finding)
-            continue
-        target = vault / entry
-        if not target.exists():
-            finding.update(
-                verdict="missing",
-                detail="no such path in the vault — this entry excludes nothing",
-            )
-        elif target.is_file():
-            finding.update(
-                verdict="file_not_folder",
-                detail="names a file; ob's exclusion is a folder-prefix test, so "
-                "this entry excludes nothing",
-            )
+        effective, detail = resolve_entry(vault, entry)
+        if effective:
+            finding["verdict"] = "ok"
         else:
-            finding.update(verdict="ok")
+            finding.update(verdict="unmatchable", detail=detail)
         findings.append(finding)
 
     # Redundancy is not a refusal, but it hides intent — report it.
@@ -177,6 +241,11 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
     largest: list[tuple[int, str]] = []
     escaping_links: list[dict] = []
     seen_dirs: set[tuple[int, int]] = set()
+    traversal_errors: list[dict] = []
+
+    def _on_error(exc: OSError) -> None:
+        # A skipped subtree makes every total below a floor, not a measurement.
+        traversal_errors.append({"path": str(exc.filename), "error": exc.strerror})
 
     # followlinks=True because ob FOLLOWS symlinked directories: its adapter
     # resolves real paths and reconciles symlinks as ordinary entries. Measured
@@ -185,10 +254,11 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
     # included. A walk that does not follow links under-predicts by exactly that
     # mass, so matching ob here is not optional. `seen_dirs` is the loop guard
     # that followlinks otherwise lacks.
-    for dirpath, dirnames, filenames in os.walk(vault, followlinks=True):
+    for dirpath, dirnames, filenames in os.walk(vault, followlinks=True, onerror=_on_error):
         try:
             stat = os.stat(dirpath)
-        except OSError:
+        except OSError as exc:
+            _on_error(exc)
             continue
         key = (stat.st_dev, stat.st_ino)
         if key in seen_dirs:
@@ -197,7 +267,7 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
         seen_dirs.add(key)
 
         rel_dir = os.path.relpath(dirpath, vault)
-        rel_dir = "" if rel_dir == "." else rel_dir
+        rel_dir = "" if rel_dir == "." else _emitted(rel_dir)
         # Prune in place. Pruning every dotted directory at every level is
         # equivalent to cli.js ``Is(s)`` ("hidden if ANY path component is
         # dotted"), because no descendant of a pruned directory is ever visited;
@@ -205,7 +275,8 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
         dirnames[:] = [
             d
             for d in dirnames
-            if not d.startswith(".") and not _excluded(f"{rel_dir}/{d}" if rel_dir else d, entries)
+            if not d.startswith(".")
+            and not _excluded(f"{rel_dir}/{_emitted(d)}" if rel_dir else _emitted(d), entries)
         ]
         # A link that leaves the vault is reported, not pruned: ob uploads what
         # is behind it, so silently omitting it would recreate the same blind spot.
@@ -218,19 +289,21 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
                 continue
             escaping_links.append(
                 {
-                    "path": f"{rel_dir}/{name}" if rel_dir else name,
+                    "path": f"{rel_dir}/{_emitted(name)}" if rel_dir else _emitted(name),
                     "target": target,
                 }
             )
+
         for name in filenames:
             if name.startswith("."):
                 continue
-            rel = f"{rel_dir}/{name}" if rel_dir else name
+            rel = f"{rel_dir}/{_emitted(name)}" if rel_dir else _emitted(name)
             if _excluded(rel, entries):
                 continue
             try:
                 size = os.stat(os.path.join(dirpath, name)).st_size
-            except OSError:
+            except OSError as exc:
+                _on_error(exc)
                 continue
             klass = _classify(_extension(name))
             bucket = by_class.setdefault(klass, [0, 0])
@@ -268,6 +341,7 @@ def predict(vault: Path, entries: list[str], file_types: frozenset[str]) -> dict
         },
         "largest_included_files": [{"bytes": b, "path": p} for b, p in largest[:20]],
         "symlinks_escaping_vault": escaping_links,
+        "traversal_errors": traversal_errors,
     }
 
 
@@ -276,25 +350,15 @@ def _sync_config_dir() -> Path:
     return Path(base) / "obsidian-headless" / "sync"
 
 
-# The PERSISTED config.json and the `sync-status --json` OUTPUT use different key
-# names for the same settings. cli.js writes the live object (`ys(t.vaultId, t)`)
-# with `ignoreFolders` / `allowTypes` / `allowSpecialFiles`, and only the printer
-# `_r(t)` renames them: `excludedFolders: s.ignoreFolders||[]`,
-# `fileTypes: s.allowTypes||me`, `configs: s.allowSpecialFiles||[]`. Reading the
-# PRINTED names out of the FILE finds nothing — measured against a real config
-# holding 17 exclusions, which is why this mapping is pinned by tests.
-PERSISTED_EXCLUSIONS_KEY = "ignoreFolders"
-PERSISTED_FILE_TYPES_KEY = "allowTypes"
-# A config written by ob always carries these; used to tell "no exclusions
-# configured" apart from "this file is not an ob sync config / schema moved".
-PERSISTED_REQUIRED_KEYS = ("vaultId", "vaultPath", "conflictStrategy")
-
-
 def load_live_config(vault: Path) -> dict:
     """Find the ob sync config whose vaultPath is this vault (mirrors cli.js ``He``)."""
     root = _sync_config_dir()
     if not root.is_dir():
-        raise FileNotFoundError(f"no ob sync state directory at {root}")
+        raise FileNotFoundError(
+            f"no ob sync state directory at {root}. Next: confirm XDG_CONFIG_HOME "
+            "points at the host that runs ob, and run 'ob sync-setup' if this vault "
+            "has never been connected."
+        )
     for entry in sorted(root.iterdir()):
         config = entry / "config.json"
         if not config.is_file():
@@ -308,15 +372,37 @@ def load_live_config(vault: Path) -> dict:
             if missing:
                 raise ValueError(
                     f"{config} does not look like an ob sync config "
-                    f"(missing {', '.join(missing)}) — refusing to read an "
-                    "exclusion list out of an unrecognized schema"
+                    f"(missing {', '.join(missing)}) — refusing to read an exclusion "
+                    "list out of an unrecognized schema. Next: check the "
+                    "obsidian-headless version, compare the file against the keys "
+                    f"ob persists ({', '.join(PERSISTED_REQUIRED_KEYS)}), and pass "
+                    "--excluded-folders explicitly to preflight a list meanwhile."
                 )
             return data
-    raise FileNotFoundError(f"no ob sync configuration found for {vault}")
+    raise FileNotFoundError(
+        f"no ob sync configuration found for {vault}. Next: verify the vault path "
+        f"matches the 'vaultPath' in a config under {root}, and run 'ob sync-setup' "
+        "if this vault is not connected yet."
+    )
+
+
+def _resolve_file_types(args: argparse.Namespace, live: dict) -> tuple[str, ...] | None:
+    """Resolve the attachment selection, honouring ob's three distinct cases."""
+    if args.file_types is not None:
+        if args.file_types.strip() == "":
+            # cli.js: `s.fileTypes===""? delete t.allowTypes : ...` — clearing the
+            # option RESTORES the defaults rather than selecting nothing.
+            return DEFAULT_FILE_TYPES
+        return tuple(t.strip().lower() for t in args.file_types.split(",") if t.strip())
+    if PERSISTED_FILE_TYPES_KEY in live:
+        # An empty persisted array is honoured as "no attachments": JS `[] || me`
+        # keeps `[]`. Absence is the default set. These are NOT the same state.
+        return tuple(live[PERSISTED_FILE_TYPES_KEY])
+    return DEFAULT_FILE_TYPES
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="hapax-obsidian-sync-preflight",
         description="Validate an Obsidian Sync exclusion list and predict the upload set.",
     )
@@ -335,7 +421,7 @@ def main(argv: list[str] | None = None) -> int:
         "--file-types",
         default=None,
         help=f"comma-separated subset of {','.join(VALID_FILE_TYPES)} "
-        f"(default from sync config, else {','.join(DEFAULT_FILE_TYPES)})",
+        f"(empty string restores ob's defaults: {','.join(DEFAULT_FILE_TYPES)})",
     )
     parser.add_argument(
         "--allow-missing",
@@ -347,7 +433,11 @@ def main(argv: list[str] | None = None) -> int:
 
     vault = Path(args.vault).expanduser()
     if not vault.is_dir():
-        print(f"not a directory: {vault}", file=sys.stderr)
+        print(
+            f"not a directory: {vault}. Next: pass the local vault root "
+            "(the folder ob syncs), not a note or a remote vault name.",
+            file=sys.stderr,
+        )
         return ERROR
     vault = vault.resolve()
 
@@ -363,18 +453,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         entries = args.excluded_folders.split(",")
 
-    if args.file_types is not None:
-        file_types = tuple(t.strip().lower() for t in args.file_types.split(",") if t.strip())
-    elif live.get(PERSISTED_FILE_TYPES_KEY):
-        # ob DELETES this key when the selection is the default, so absence means
-        # the default set, exactly as cli.js `s.allowTypes||me` resolves it.
-        file_types = tuple(live[PERSISTED_FILE_TYPES_KEY])
-    else:
-        file_types = DEFAULT_FILE_TYPES
+    file_types = _resolve_file_types(args, live)
     invalid = [t for t in file_types if t not in VALID_FILE_TYPES]
     if invalid:
         print(
-            f"invalid file type(s): {','.join(invalid)}; valid: {','.join(VALID_FILE_TYPES)}",
+            f"invalid file type(s): {','.join(invalid)}; valid: {','.join(VALID_FILE_TYPES)}. "
+            "Next: pass a comma-separated subset of those, or an empty string for "
+            "ob's defaults.",
             file=sys.stderr,
         )
         return ERROR
@@ -400,13 +485,13 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=2))
     else:
         print(f"vault: {vault}" + (f"  ({live['vaultName']})" if live.get("vaultName") else ""))
-        print(f"file types: {','.join(file_types)}")
+        print(f"file types: {','.join(file_types) or '(none — attachments will not sync)'}")
         print(f"exclusion entries: {len(findings)} total, {len(effective)} effective")
         for finding in findings:
             mark = "ok  " if finding["verdict"] == "ok" else "FAIL"
             line = f"  [{mark}] {finding['normalized']}"
             if finding["verdict"] != "ok":
-                line += f"  <- {finding['verdict']}: {finding['detail']}"
+                line += f"  <- {finding['detail']}"
             elif finding.get("redundant_under"):
                 line += f"  (redundant under {', '.join(finding['redundant_under'])})"
             print(line)
@@ -420,8 +505,19 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  NOTE: {link['path']} is a symlink OUT of the vault -> "
                 f"{link['target']}; ob follows it, so everything admitted beneath "
-                "it uploads. Counted above.",
+                "it uploads. Counted above."
             )
+
+    if prediction["traversal_errors"]:
+        first = prediction["traversal_errors"][0]
+        print(
+            f"REFUSED: {len(prediction['traversal_errors'])} path(s) could not be "
+            f"read (e.g. {first['path']}: {first['error']}), so every total above is "
+            "a FLOOR, not a measurement, and must not be used as verification "
+            "evidence. Next: fix the permissions or run as the user ob runs as.",
+            file=sys.stderr,
+        )
+        return ERROR
 
     if args.from_sync_config and not findings and not args.allow_missing:
         # An audit that finds no list must not read as a clean bill of health: the
@@ -431,7 +527,8 @@ def main(argv: list[str] | None = None) -> int:
             f"REFUSED: the live sync config for {vault} configures NO exclusions "
             f"('{PERSISTED_EXCLUSIONS_KEY}' absent or empty), so nothing is excluded "
             f"and all {prediction['predicted_upload']['files']} admitted files would "
-            "upload. Pass --allow-missing if an empty exclusion list is intended.",
+            "upload. Next: set them with 'ob sync-config --excluded-folders', or pass "
+            "--allow-missing if an empty exclusion list is intended.",
             file=sys.stderr,
         )
         return REFUSED
@@ -440,7 +537,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"REFUSED: {len(bad)} exclusion entr{'y' if len(bad) == 1 else 'ies'} "
             "cannot match anything. ob accepts them silently and the data they name "
-            "WOULD UPLOAD. Fix the paths, or pass --allow-missing if that is intended.",
+            "WOULD UPLOAD. Next: fix the paths shown above, or pass --allow-missing "
+            "if that is intended.",
             file=sys.stderr,
         )
         return REFUSED

@@ -84,7 +84,7 @@ def test_missing_entry_is_refused_and_excludes_nothing(vault: pathlib.Path) -> N
     assert report["entries_unmatchable"] == 1
     assert report["entries_effective"] == 1
     verdicts = {f["normalized"]: f["verdict"] for f in report["findings"]}
-    assert verdicts["30-areas/hapax/ocr/pages-nope"] == "missing"
+    assert verdicts["30-areas/hapax/ocr/pages-nope"] == "unmatchable"
     assert verdicts["20-projects/_dashboard"] == "ok"
     # The png is NOT excluded, because the entry naming it cannot match.
     assert report["predicted_upload"]["by_ext"]["png"]["files"] == 1
@@ -96,7 +96,7 @@ def test_wrong_prefix_is_the_real_world_shape(vault: pathlib.Path) -> None:
     result = _run(str(vault), "--excluded-folders", "ocr/pages", "--json")
     assert result.returncode == REFUSED
     report = json.loads(result.stdout)
-    assert report["findings"][0]["verdict"] == "missing"
+    assert report["findings"][0]["verdict"] == "unmatchable"
     assert report["predicted_upload"]["by_ext"]["png"]["files"] == 1
 
 
@@ -123,7 +123,7 @@ def test_trailing_slash_can_never_match(vault: pathlib.Path) -> None:
     result = _run(str(vault), "--excluded-folders", "20-projects/_dashboard/", "--json")
     assert result.returncode == REFUSED
     report = json.loads(result.stdout)
-    assert report["findings"][0]["verdict"] == "malformed"
+    assert report["findings"][0]["verdict"] == "unmatchable"
     assert report["entries_effective"] == 0
     # Proof it truly failed open: the 5000-byte dashboard file is in the upload,
     # alongside the keep.md files (150), sibling.md (11) and the 900-byte png.
@@ -145,7 +145,9 @@ def test_exclusion_respects_the_path_boundary(vault: pathlib.Path) -> None:
 def test_file_entry_excludes_nothing(vault: pathlib.Path) -> None:
     result = _run(str(vault), "--excluded-folders", "20-projects/_dashboard/huge.md", "--json")
     assert result.returncode == REFUSED
-    assert json.loads(result.stdout)["findings"][0]["verdict"] == "file_not_folder"
+    finding = json.loads(result.stdout)["findings"][0]
+    assert finding["verdict"] == "unmatchable"
+    assert "names a file" in finding["detail"]
 
 
 def test_hidden_components_pruned_at_any_depth(vault: pathlib.Path) -> None:
@@ -310,8 +312,122 @@ def test_internal_dot_components_are_refused(vault: pathlib.Path, entry: str) ->
     result = _run(str(vault), "--excluded-folders", entry, "--json")
     assert result.returncode == REFUSED, result.stdout + result.stderr
     report = json.loads(result.stdout)
-    assert report["findings"][0]["verdict"] == "malformed"
+    assert report["findings"][0]["verdict"] == "unmatchable"
     assert report["entries_effective"] == 0
+
+
+def test_nfc_normalization_mismatch_is_refused(vault: pathlib.Path) -> None:
+    """ob emits NFC paths (``Ne``) but matches ignoreFolders literally, so a
+    decomposed on-disk name that an existence check accepts can never match. The
+    entry must be refused and the data must show as still uploading."""
+    nfd = "café"  # e + combining acute — what an existence check would find
+    nfc = "café"
+    target = vault / "30-areas" / nfd
+    target.mkdir()
+    (target / "private.md").write_bytes(b"p" * 77)
+
+    refused = _run(str(vault), "--excluded-folders", f"30-areas/{nfd}", "--json")
+    assert refused.returncode == REFUSED, refused.stdout + refused.stderr
+    report = json.loads(refused.stdout)
+    assert report["findings"][0]["verdict"] == "unmatchable"
+    assert "NFC" in report["findings"][0]["detail"]
+    paths = {item["path"] for item in report["largest_included_files"]}
+    assert f"30-areas/{nfc}/private.md" in paths, "the file ob would upload is not shown"
+
+    # The NFC form — the one ob actually compares — is accepted and excludes it.
+    accepted = _run(str(vault), "--excluded-folders", f"30-areas/{nfc}", "--json")
+    assert accepted.returncode == OK, accepted.stdout + accepted.stderr
+    kept = {item["path"] for item in json.loads(accepted.stdout)["largest_included_files"]}
+    assert not any("private.md" in p for p in kept)
+
+
+def test_dotted_component_entry_is_refused_as_unreachable(vault: pathlib.Path) -> None:
+    """Hidden pruning happens before the exclusion test, so a dotted entry is
+    unreachable — reporting it 'ok' would credit an exclusion that never runs."""
+    result = _run(str(vault), "--excluded-folders", "30-areas/.venv", "--json")
+    assert result.returncode == REFUSED
+    assert "hidden" in json.loads(result.stdout)["findings"][0]["detail"]
+
+
+def test_empty_cli_file_types_restores_defaults(vault: pathlib.Path) -> None:
+    """cli.js deletes allowTypes on an empty --file-types, restoring defaults; an
+    empty SET here would under-predict every attachment that will upload."""
+    result = _run(
+        str(vault), "--excluded-folders", "20-projects/_dashboard", "--file-types", "", "--json"
+    )
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["file_types"] == list(preflight.DEFAULT_FILE_TYPES)
+    assert report["predicted_upload"]["by_ext"]["png"]["files"] == 1
+
+
+def test_persisted_empty_allow_types_means_no_attachments(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """An empty persisted array is NOT absence: JS `[] || me` keeps `[]`, so ob
+    syncs no attachments. Python's falsy `[]` would silently restore defaults."""
+    xdg = tmp_path / "xdg"
+    _write_live_config(xdg, vault, ignoreFolders=["20-projects/_dashboard"], allowTypes=[])
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["file_types"] == []
+    assert "png" not in report["predicted_upload"]["by_ext"], "attachments must be excluded"
+    assert report["predicted_upload"]["by_ext"]["md"]["files"] == 3  # native still syncs
+
+
+def test_unreadable_subtree_refuses_instead_of_reporting_a_floor(
+    vault: pathlib.Path,
+) -> None:
+    """A skipped subtree makes every total a floor. Exiting 0 with a partial count
+    would let an incomplete number serve as verification evidence."""
+    locked = vault / "30-areas" / "locked"
+    locked.mkdir()
+    (locked / "secret.md").write_bytes(b"s" * 999)
+    locked.chmod(0o000)
+    try:
+        result = _run(str(vault), "--excluded-folders", "20-projects/_dashboard", "--json")
+        assert result.returncode == ERROR, result.stdout + result.stderr
+        assert "FLOOR" in result.stderr
+        assert json.loads(result.stdout)["traversal_errors"]
+    finally:
+        locked.chmod(0o755)
+
+
+def test_usage_error_does_not_collide_with_refused(vault: pathlib.Path) -> None:
+    """argparse exits 2 by default, which would be indistinguishable from 'the list
+    would fail open' — the one status a caller must be able to branch on."""
+    missing_source = _run(str(vault))
+    assert missing_source.returncode == ERROR
+    assert "error:" in missing_source.stderr
+
+
+def test_config_errors_name_a_next_action(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """executive_function: errors include next actions."""
+    result = _run_env(vault, tmp_path / "empty-xdg", "--from-sync-config")
+    assert result.returncode == ERROR
+    assert "Next:" in result.stderr
+
+
+def test_script_ships_executable_with_a_working_shebang() -> None:
+    """Every other test supplies the interpreter explicitly, which would hide a
+    100644 mode and a documented entry point that cannot be invoked.
+
+    The pin is the COMMITTED mode, not the local worktree bit: the committed mode
+    is what a fresh checkout gets, and it is the property the docstring's usage
+    lines promise. A local bit can drift per-checkout without changing what ships.
+    """
+    mode = subprocess.run(
+        ["git", "ls-files", "-s", "--", "scripts/hapax-obsidian-sync-preflight"],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=REPO_ROOT,
+    ).stdout.split()[0]
+    assert mode == "100755", f"committed mode is {mode}; direct invocation would fail"
+
+    shebang = SCRIPT.read_text(encoding="utf-8").splitlines()[0]
+    assert shebang == "#!/usr/bin/env python3", shebang
 
 
 def test_symlink_out_of_vault_is_followed_and_reported(
