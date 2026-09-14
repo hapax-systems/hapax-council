@@ -100,6 +100,10 @@ PERSISTED_FILE_TYPES_KEY = "allowTypes"
 # A config written by ob always carries these; used to tell "no exclusions
 # configured" apart from "this file is not an ob sync config / schema moved".
 PERSISTED_REQUIRED_KEYS = ("vaultId", "vaultPath", "conflictStrategy")
+# Populated below once the category list exists. Maps every persisted list field the
+# tool READS to its allowed values (None = any strings). Validation is driven by this
+# table so a newly-read field cannot silently bypass the shape check.
+PERSISTED_LIST_FIELDS: dict[str, tuple[str, ...] | None] = {}
 
 
 class _Parser(argparse.ArgumentParser):
@@ -279,6 +283,24 @@ def _excluded(rel: str, entries: list[str]) -> bool:
 
 PERSISTED_CONFIGS_KEY = "allowSpecialFiles"
 _PLUGIN_FILES = frozenset({"manifest.json", "main.js", "styles.css", "data.json"})
+# cli.js `us` / `hs`: the categories `configs` may name.
+VALID_CONFIG_CATEGORIES = (
+    "app",
+    "appearance",
+    "appearance-data",
+    "hotkey",
+    "core-plugin",
+    "core-plugin-data",
+    "community-plugin",
+    "community-plugin-data",
+)
+PERSISTED_LIST_FIELDS.update(
+    {
+        PERSISTED_EXCLUSIONS_KEY: None,  # any string is a candidate path
+        PERSISTED_FILE_TYPES_KEY: VALID_FILE_TYPES,
+        PERSISTED_CONFIGS_KEY: VALID_CONFIG_CATEGORIES,
+    }
+)
 
 
 def _config_category(rel_in_config_dir: str) -> str | None:
@@ -325,9 +347,23 @@ def predict_config_uploads(vault: Path, config_dir: str, configs: frozenset[str]
     root = vault / config_dir
     total_bytes = files = 0
     by_category: dict[str, list[int]] = {}
+    # Errors flow to the SAME exit-3 guard the main walk uses. A second walk with its
+    # own silent skips would reintroduce exactly the "confident partial total" the
+    # main walk already refuses.
+    errors: list[dict] = []
+
+    def _on_error(exc: OSError) -> None:
+        errors.append({"path": str(exc.filename), "error": exc.strerror})
+
     if not configs or not root.is_dir():
-        return {"bytes": 0, "files": 0, "by_category": {}, "config_dir": config_dir}
-    for dirpath, dirnames, filenames in os.walk(root):
+        return {
+            "bytes": 0,
+            "files": 0,
+            "by_category": {},
+            "config_dir": config_dir,
+            "traversal_errors": errors,
+        }
+    for dirpath, dirnames, filenames in os.walk(root, onerror=_on_error):
         dirnames[:] = [d for d in dirnames if d != "node_modules" and not d.startswith(".")]
         for name in filenames:
             rel = os.path.relpath(os.path.join(dirpath, name), root)
@@ -336,7 +372,8 @@ def predict_config_uploads(vault: Path, config_dir: str, configs: frozenset[str]
                 continue
             try:
                 size = os.stat(os.path.join(dirpath, name)).st_size
-            except OSError:
+            except OSError as exc:
+                _on_error(exc)
                 continue
             total_bytes += size
             files += 1
@@ -348,6 +385,7 @@ def predict_config_uploads(vault: Path, config_dir: str, configs: frozenset[str]
         "files": files,
         "by_category": {k: {"bytes": v[0], "files": v[1]} for k, v in sorted(by_category.items())},
         "config_dir": config_dir,
+        "traversal_errors": errors,
     }
 
 
@@ -553,13 +591,19 @@ def load_live_config(vault: Path) -> dict:
 
 
 def _validate_config_types(config: Path, data: dict) -> None:
-    """Refuse a config whose fields are the wrong SHAPE.
+    """Refuse a config whose fields are the wrong SHAPE or name unknown values.
 
-    Without this a ``null`` or string where a list belongs escapes as a TypeError
-    traceback and exit 1 — an undocumented status with no next action, which is
-    the failure mode this tool is supposed to make impossible.
+    Without this a ``null``, a string or a nested list where a list-of-strings
+    belongs escapes as a TypeError traceback and exit 1 — an undocumented status
+    with no next action, which is the failure mode this tool exists to prevent.
+    A bare string is worse than a crash: ``frozenset("app")`` is ``{'a','p'}``,
+    which matches nothing and reports a confident zero.
+
+    Driven by PERSISTED_LIST_FIELDS rather than an inline list of keys, so a field
+    added to the reader cannot bypass validation. A test asserts the table covers
+    every persisted key the tool reads.
     """
-    for key in (PERSISTED_EXCLUSIONS_KEY, PERSISTED_FILE_TYPES_KEY):
+    for key, allowed in PERSISTED_LIST_FIELDS.items():
         if key not in data:
             continue
         value = data[key]
@@ -569,6 +613,16 @@ def _validate_config_types(config: Path, data: dict) -> None:
                 "there. Refusing to guess. Next: inspect the file, re-apply the "
                 "setting with 'ob sync-config', or pass --excluded-folders and "
                 "--file-types explicitly to preflight a list meanwhile."
+            )
+        if allowed is None:
+            continue
+        unknown = [v for v in value if v not in allowed]
+        if unknown:
+            raise ValueError(
+                f"{config}: '{key}' names unknown value(s) {', '.join(unknown)}; ob "
+                f"recognizes {', '.join(allowed)}. An unrecognized value silently "
+                "matches nothing, so refusing rather than under-predicting. Next: "
+                "re-apply the setting with 'ob sync-config' using a recognized value."
             )
 
 
@@ -660,6 +714,7 @@ def main(argv: list[str] | None = None) -> int:
         vault, str(live.get("configDir") or ".obsidian"), configs
     )
     prediction["config_uploads"] = config_uploads
+    prediction["traversal_errors"].extend(config_uploads["traversal_errors"])
     prediction["predicted_upload"]["bytes"] += config_uploads["bytes"]
     prediction["predicted_upload"]["files"] += config_uploads["files"]
     prediction["predicted_upload"]["gib"] = round(

@@ -709,6 +709,91 @@ def test_human_readable_output_names_the_failing_entry(vault: pathlib.Path) -> N
     assert "REFUSED: 1 exclusion entry cannot match" in result.stderr
 
 
+def test_validation_table_covers_every_persisted_field_read() -> None:
+    """The omission class itself: round 5 added a field the reader used and the
+    shape check did not cover. Adding a persisted field must require adding it here."""
+    read_keys = {
+        preflight.PERSISTED_EXCLUSIONS_KEY,
+        preflight.PERSISTED_FILE_TYPES_KEY,
+        preflight.PERSISTED_CONFIGS_KEY,
+    }
+    assert read_keys <= set(preflight.PERSISTED_LIST_FIELDS)
+
+
+@pytest.mark.parametrize("value", [None, "app", [["app"]], [1]])
+def test_malformed_allow_special_files_is_refused(
+    vault: pathlib.Path, tmp_path: pathlib.Path, value: object
+) -> None:
+    """A bare string is the dangerous one: frozenset("app") is {'a','p'}, which
+    matches no category and reports a confident zero."""
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg, vault, ignoreFolders=["20-projects/_dashboard"], allowSpecialFiles=value
+    )
+    result = _run_env(vault, xdg, "--from-sync-config")
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    assert "allowSpecialFiles" in result.stderr
+    assert "Next:" in result.stderr
+
+
+def test_unknown_config_category_is_refused(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard"],
+        allowSpecialFiles=["app", "not-a-category"],
+    )
+    result = _run_env(vault, xdg, "--from-sync-config")
+    assert result.returncode == ERROR
+    assert "not-a-category" in result.stderr
+    assert "Next:" in result.stderr
+
+
+def test_unreadable_config_dir_refuses_like_the_main_walk(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """The config walk is a SECOND traversal; its failures must reach the same
+    exit-3 guard, or an unreadable config dir certifies a partial total."""
+    obsidian = vault / ".obsidian"
+    obsidian.mkdir()
+    (obsidian / "app.json").write_bytes(b"a" * 77)
+    locked = obsidian / "snippets"
+    locked.mkdir()
+    (locked / "x.css").write_bytes(b"c" * 10)
+    locked.chmod(0o000)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard"],
+        allowSpecialFiles=["app", "appearance-data"],
+    )
+    try:
+        result = _run_env(vault, xdg, "--from-sync-config", "--json")
+        assert result.returncode == ERROR, result.stdout + result.stderr
+        assert "FLOOR" in result.stderr
+        errors = json.loads(result.stdout)["traversal_errors"]
+        assert any("snippets" in e["path"] for e in errors)
+    finally:
+        locked.chmod(0o755)
+
+
+def test_unreadable_config_file_refuses(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """A per-file stat failure inside the config dir, distinct from the dir case."""
+    obsidian = vault / ".obsidian"
+    obsidian.mkdir()
+    (obsidian / "app.json").symlink_to(obsidian / "gone.json")
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg, vault, ignoreFolders=["20-projects/_dashboard"], allowSpecialFiles=["app"]
+    )
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert any("app.json" in e["path"] for e in json.loads(result.stdout)["traversal_errors"])
+
+
 def test_script_ships_executable_with_a_working_shebang() -> None:
     """Every other test supplies the interpreter explicitly, which would hide a
     100644 mode and a documented entry point that cannot be invoked.
