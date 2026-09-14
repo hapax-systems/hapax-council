@@ -405,6 +405,43 @@ claim_epoch = int(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else 0
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+from shared.cc_task_lock import (  # noqa: E402
+    TaskLockTimeout,
+    hold_task_note_lock,
+)
+
+# Serialize this whole heredoc against cc-close, which takes the SAME lock
+# (shared/cc_task_lock.py) around its mutating tail. Taken here, before the note
+# is read, because everything below — the eligibility read, the rewrite, the lease
+# files — is one decision made from one view of the note, and cc-close's
+# destructive step is an unlink of that note. Held until this process exits;
+# there is no scope to close around top-level statements, and process exit is the
+# one release that cannot be skipped.
+#
+# No cache_dir argument, deliberately. cc-close resolves the path by calling
+# lock_path(task_id) with no override either, so both go through lock_dir() and
+# cannot disagree. Passing cc-claim's own cache_dir here would have derived
+# $HOME/.cache/hapax while cc-close derived $XDG_CACHE_HOME/hapax — two lock files,
+# no exclusion, and nothing to notice it.
+try:
+    hold_task_note_lock(task_id)
+except TaskLockTimeout as exc:
+    print(
+        f"cc-claim: BLOCKED — {exc}. Another cc-claim or cc-close is mid-mutation on "
+        "this task. Next action: let it finish and re-run; if nothing is running, "
+        "check for a wedged process holding the lock. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+except OSError as exc:
+    print(
+        f"cc-claim: BLOCKED — could not take the cc-task lock for '{task_id}': {exc}. "
+        "Refusing rather than racing cc-close. Next action: check permissions on the "
+        "hapax cache directory. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,

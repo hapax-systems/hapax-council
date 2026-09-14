@@ -586,3 +586,75 @@ class TestSweepBinding:
         assert len(stale) == 1, f"expected the sandbox marker, got {stale}"
         assert stale[0].task_id == "not-in-this-vault"
         assert stale[0].metadata["next_action"] == "operator-adjudication"
+
+    def test_a_first_read_that_fails_is_not_erased_by_a_second_that_succeeds(
+        self, tmp_path: Path
+    ) -> None:
+        """The notes and the errors must come from ONE read of the directory.
+
+        The first repair used three scans — a note loader, a rejected-path scan, a
+        closed loader — each enumerating again. A directory that failed on the
+        first read and succeeded on the second then produced a notes snapshot
+        missing the whole directory beside an error list saying nothing went wrong,
+        and the join recommended retiring the marker of a live task it had simply
+        not read. A later successful rescan cannot repair an earlier snapshot,
+        because nothing joins them.
+
+        The failure is injected once, on active/, exactly as review round 13
+        described it.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cc_hygiene_sweeper_onescan", REPO_ROOT / "scripts" / "cc-hygiene-sweeper.py"
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        cache = tmp_path / "cache" / "hapax"
+        relay = cache / "relay"
+        relay.mkdir(parents=True)
+        vault = tmp_path / "vault"
+        (vault / "active").mkdir(parents=True)
+        (vault / "closed").mkdir(parents=True)
+
+        # LIVE work in active/, an older withdrawn record for the same id in
+        # closed/, and a marker naming it. Read whole, this is a duplicate-identity
+        # conflict; read with active/ missing, it looks like a retirable orphan.
+        (vault / "active" / "t1.md").write_text(
+            "---\ntype: cc-task\ntask_id: t1\nstatus: in_progress\nassigned_to: eta\n---\n",
+            encoding="utf-8",
+        )
+        (vault / "closed" / "t1.md").write_text(
+            "---\ntype: cc-task\ntask_id: t1\nstatus: withdrawn\nassigned_to: eta\n---\n",
+            encoding="utf-8",
+        )
+        (cache / "cc-active-task-eta").write_text("t1\n", encoding="utf-8")
+
+        real_listdir = mod.os.listdir
+        failed_once: list[str] = []
+
+        def listdir_failing_first_on_active(target):  # type: ignore[no-untyped-def]
+            if str(target).endswith("/active") and not failed_once:
+                failed_once.append(str(target))
+                raise PermissionError(13, "Permission denied", str(target))
+            return real_listdir(target)
+
+        mod.os.listdir = listdir_failing_first_on_active
+        try:
+            state = mod.run_sweep(vault_root=vault, relay_root=relay, repo_root=tmp_path)
+        finally:
+            mod.os.listdir = real_listdir
+
+        assert failed_once, "the injected failure never fired — the test proves nothing"
+        stale = [e for e in state.events if e.check_id == "stale_claim_marker"]
+        reasons = {e.metadata.get("reason") for e in stale}
+        assert "vault_view_incomplete" in reasons, (
+            f"an enumeration failure left no record; events were {stale}"
+        )
+        actions = {e.metadata.get("next_action") for e in stale}
+        assert "retire-orphan-marker" not in actions, (
+            "a live task's marker was recommended for retirement from a view that "
+            "failed to read active/"
+        )

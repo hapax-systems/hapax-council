@@ -305,6 +305,49 @@ if [[ "$final_status" == "done" ]]; then
   fi
 fi
 
+# --- Serialize the mutating tail ----------------------------------------------
+# Everything from here to the end of lease cleanup runs under ONE exclusive lock,
+# keyed by task id (shared/cc_task_lock.py, which cc-claim takes too).
+#
+# Without it the sequence read -> validate -> write closed/ -> unlink active/ is
+# not atomic, and a concurrent resume landing after the read made cc-close write
+# its stale snapshot into closed/ and delete the resumed note. Review round 13
+# named that critical, and asked for validation "under the shared mutation lock".
+# There was none: cc-claim writes atomically (tmp + os.replace), which makes each
+# write all-or-nothing and says nothing about two writers interleaving.
+#
+# Taken HERE, not at argv parse: the gates above run `gh` and can block on the
+# network, and a lock held across a network call would stall every other writer
+# for as long as GitHub takes. Nothing above this line mutates, so nothing above
+# needs excluding. The validation that must be inside — identity and expected
+# status — is inside, in the writer, below.
+#
+# fd 9 is held by THIS shell, so the writer and the lease sweep both inherit it
+# and the kernel releases it when cc-close exits, however it exits. No staleness
+# rule, and so nothing to reap.
+lock_path="$(python3 -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF' || true
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from shared.cc_task_lock import lock_path
+
+print(lock_path(sys.argv[2]))
+PYEOF
+)"
+if [[ -z "$lock_path" ]]; then
+  echo "cc-close: refusing — could not resolve the cc-task lock path for '$task_id'. Next action: run from a complete council checkout (shared/cc_task_lock.py must be importable). Nothing was modified." >&2
+  exit 2
+fi
+if ! command -v flock >/dev/null 2>&1; then
+  echo "cc-close: refusing — 'flock' not found, so this close cannot be serialized against a concurrent cc-claim. Next action: install util-linux. Nothing was modified." >&2
+  exit 2
+fi
+exec 9>"$lock_path"
+if ! flock -x -w 30 9; then
+  echo "cc-close: refusing — another process has held the cc-task lock for '$task_id' ($lock_path) for more than 30s. Next action: find the holder with 'fuser -v $lock_path' and let it finish, then re-run. Nothing was modified." >&2
+  exit 2
+fi
+
 python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" "${expect_status:-}" <<'PYEOF'
 import re
 import sys
@@ -315,15 +358,35 @@ path, task_id, final_status, pr, role = (Path(sys.argv[1]), *sys.argv[2:6])
 expect_status = sys.argv[6] if len(sys.argv) > 6 else ""
 text = path.read_text(encoding="utf-8")
 
-# Revalidate the precondition HERE, against the text this writer is about to
-# rewrite — not in the earlier subprocess. The earlier check reads the note, exits,
-# and only then does this process re-read and move it; a task that resumes in that
-# window was still withdrawn, because `withdrawn` skips the completion gates.
-# Checking against `text` closes the interleaving: this is the same bytes that get
-# mutated, in the same process, with no gap to race.
+
+def _frontmatter_scalar(note_text: str, key: str) -> str:
+    match = re.search(rf"^{re.escape(key)}:\s*(.*)$", note_text, flags=re.MULTILINE)
+    return match.group(1).strip().strip("\"'") if match else ""
+
+
+# Both preconditions are revalidated HERE: this process holds fd 9's exclusive
+# lock (taken by the shell above), and `text` is the same bytes this writer
+# rewrites and unlinks. Anything checked before the lock was taken is a statement
+# about a file another writer was free to change.
+#
+# Identity FIRST. The earlier bash guard resolved which note this id names; under
+# the lock we re-read what the note itself declares, because the destructive step
+# is `path.unlink()` and unlinking the wrong note is unrecoverable.
+_declared = _frontmatter_scalar(text, "task_id")
+if _declared != task_id:
+    print(
+        f"cc-close: refusing — '{path}' declares task_id '{_declared}' at write time, "
+        f"not '{task_id}'. The note changed after it was selected. Next action: re-run "
+        "cc-close; nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+# The expected-state precondition, for a command a sweep generated and a person
+# runs later. `withdrawn` skips the completion gates, so a task that resumed
+# between generation and execution was withdrawn anyway.
 if expect_status:
-    _m = re.search(r"^status:\s*(.*)$", text, flags=re.MULTILINE)
-    _observed = _m.group(1).strip().strip("\"'") if _m else ""
+    _observed = _frontmatter_scalar(text, "status")
     if _observed != expect_status:
         print(
             f"cc-close: refusing — '{path}' is status '{_observed}' at write time, but "

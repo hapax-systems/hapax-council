@@ -506,6 +506,15 @@ for name in (
     "HAPAX_CODEX_BIN_PATH",
     "NPM_CONFIG_PREFIX",
     "PASSWORD_STORE_DIR",
+    # The condition vector travels with the launch it describes. Remote exec starts
+    # `codex` directly, so no launcher runs on the exec host to re-derive these, and
+    # without them a remote lane's claims record no capability shape at all — the
+    # sibling claude-headless path forwards them for the same reason. Safe to send
+    # precisely because these are this launcher's POST-CONSUME values: anything
+    # inherited was cleared by hapax_consume_launch_capability_descriptors, so what
+    # is left is either addressed to this launcher or absent.
+    "HAPAX_CAPABILITY_ROUTE",
+    "HAPAX_CAPABILITY_MODEL",
 ):
     value = os.environ.get(name)
     if value is not None:

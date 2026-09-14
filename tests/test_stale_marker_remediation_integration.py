@@ -279,20 +279,20 @@ def test_a_saved_command_refuses_after_the_task_resumes(tmp_path: Path) -> None:
 def test_the_precondition_holds_against_the_bytes_actually_rewritten(
     tmp_path: Path,
 ) -> None:
-    """The check must be in the WRITER, not an earlier subprocess.
+    """The refusal must be the EXPECTED-STATUS refusal, named exactly.
 
-    The first `--expect-status` ran as its own `python3 -I -`, exited, and only
-    then did the writer re-read and move the note. A task resuming in that window
-    was still withdrawn. This drives the writer directly with a mismatched
-    expectation, which is the interleaving the earlier test could not reach: it
-    changed status before invocation, so the outer check caught it and the writer
-    was never exercised.
+    An earlier version of this test asserted only "nonzero exit, note unchanged".
+    Review round 13 pointed out that a cc-close with no `--expect-status` at all
+    satisfies both — it rejects the unknown argument before touching the task — so
+    the test passed against a build without the feature. Asserting the specific
+    message is what makes it a test of the precondition rather than of argument
+    parsing.
     """
     home = tmp_path / "home"
     vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
     note = _write_note(vault, "t1.md", "t1", "in_progress")
 
-    # Ask the writer to act as though it had observed `withdrawn`.
+    # Ask cc-close to act as though it had observed `withdrawn`.
     env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
     env["HOME"] = str(home)
     env["HAPAX_AGENT_NAME"] = "eta"
@@ -312,8 +312,91 @@ def test_the_precondition_holds_against_the_bytes_actually_rewritten(
         check=False,
     )
 
-    assert result.returncode != 0, f"the writer accepted a stale precondition\n{result.stdout}"
+    assert result.returncode == 2, f"expected the precondition refusal\n{result.stderr}"
+    assert "is status 'in_progress' at write time" in result.stderr, (
+        "cc-close exited nonzero for some other reason — an unrecognised argument "
+        f"would also do that, and would prove nothing\n{result.stderr}"
+    )
+    assert "--expect-status 'withdrawn' was required" in result.stderr, result.stderr
     assert note.exists(), "a task that had resumed was moved to closed/"
+    assert "status: in_progress" in note.read_text(encoding="utf-8")
+
+
+def test_the_precondition_is_evaluated_after_the_lock_is_taken(tmp_path: Path) -> None:
+    """Placement, proved by a controlled interleaving rather than by reading.
+
+    The previous test cannot tell an early guard from a late one: it sets the
+    status before cc-close starts, so any guard anywhere catches it. This one
+    starts cc-close while the task still matches its expectation, holds the
+    per-task lock so cc-close cannot proceed, changes the status underneath it, and
+    only then releases. A guard that ran before the lock was taken saw `withdrawn`
+    and would close a task that is now `in_progress`; the shipped one re-reads
+    under the lock and refuses.
+
+    The competing writer here takes the lock with plain `fcntl.flock` on the path
+    `shared.cc_task_lock` names, not through the helper — so the test proves the
+    lock FILE is the rendezvous, rather than trusting our own helper on both sides.
+    """
+    import fcntl
+    import time
+
+    from shared.cc_task_lock import lock_path
+
+    home = tmp_path / "home"
+    vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    note = _write_note(vault, "t1.md", "t1", "withdrawn")
+
+    env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+    env["HOME"] = str(home)
+    env["XDG_CACHE_HOME"] = str(home / ".cache")
+    env["HAPAX_AGENT_NAME"] = "eta"
+
+    held = lock_path("t1", Path(env["XDG_CACHE_HOME"]) / "hapax" / "cc-task-locks")
+    handle = os.open(held, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(handle, fcntl.LOCK_EX)
+    try:
+        proc = subprocess.Popen(
+            [
+                "bash",
+                str(CC_CLOSE),
+                "t1",
+                "--status",
+                "withdrawn",
+                "--expect-status",
+                "withdrawn",
+            ],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        # Give cc-close time to run its read-only gates and reach the lock. If it
+        # does NOT block there, it finishes here and the assertion catches it —
+        # which is precisely the unserialized build this test exists to reject.
+        settle = time.monotonic() + 3.0
+        while proc.poll() is None and time.monotonic() < settle:
+            time.sleep(0.05)
+        assert proc.poll() is None, (
+            "cc-close ran to completion while another process held the task lock — "
+            "the mutating tail is not serialized"
+        )
+        # The world moves on while cc-close waits.
+        note.write_text(
+            note.read_text(encoding="utf-8").replace("status: withdrawn", "status: in_progress"),
+            encoding="utf-8",
+        )
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        os.close(handle)
+
+    stdout, stderr = proc.communicate(timeout=60)
+
+    assert proc.returncode == 2, f"expected the precondition refusal\n{stdout}\n{stderr}"
+    assert "is status 'in_progress' at write time" in stderr, (
+        "cc-close validated before acquiring the lock, so it decided on a view of "
+        f"the note that was already stale\n{stderr}"
+    )
+    assert note.exists(), "the resumed note was moved to closed/"
     assert "status: in_progress" in note.read_text(encoding="utf-8")
 
 

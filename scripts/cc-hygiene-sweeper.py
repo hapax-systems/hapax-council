@@ -37,7 +37,7 @@ import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 # When invoked as a CLI script, the package sits next to us under cc_hygiene/.
 _HERE = Path(__file__).resolve().parent
@@ -240,79 +240,71 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
     return reaped
 
 
-def _list_markdown(directory: Path) -> tuple[list[Path], str | None]:
-    """Enumerate `*.md`, PROPAGATING a directory failure instead of hiding it.
+class VaultScan(NamedTuple):
+    """One read of one task directory: what parsed, what did not, what failed.
 
-    `Path.glob` swallows a directory-level PermissionError inside its own scandir
-    walk and returns an empty iterator — so an unreadable active/ made both the
-    note loader and the rejected-note scan return empty, and the checker then
-    recommended retiring a live claim's marker from a view it could not read. The
-    same defect was fixed once in read_claim_markers and left here: fixing the
-    instance rather than the class is what let it reappear.
+    ONE scan, not three. The first repair kept three functions — a note loader, a
+    rejected-path scan, a closed loader — each enumerating the directory again. That
+    is not a view of the vault; it is three views, and a directory that failed on
+    the first read and succeeded on the second produced a notes snapshot missing
+    that directory beside an error list saying nothing went wrong. Measured in
+    review round 13: an injected PermissionError on the first active/ enumeration,
+    followed by a successful rescan, recorded no errors and produced
+    retire-orphan-marker advice for a live in_progress task.
+
+    A later successful rescan cannot repair an earlier snapshot, because nothing
+    joins them. So the notes, the rejects and the errors are produced together, by
+    the same read, and travel together to the decision.
+
+    A NamedTuple rather than a dataclass: this module is extensionless and is loaded
+    in tests through `spec_from_file_location`, where `@dataclass` raises
+    `AttributeError: 'NoneType' object has no attribute '__dict__'` unless the
+    loader registers the module in `sys.modules` before executing it. Requiring a
+    loader to do that is a trap for the next loader; NamedTuple needs nothing.
     """
+
+    notes: list[TaskNote]
+    rejected: list[str]
+    errors: list[str]
+
+
+def _scan_task_notes(directory: Path) -> VaultScan:
+    """Read one task directory once.
+
+    `os.listdir`, not `Path.glob`: glob swallows a directory-level PermissionError
+    inside its own scandir walk and returns an empty iterator, which is
+    indistinguishable from an empty directory. An unreadable active/ therefore read
+    as "no live tasks", and the live↔declared join recommended retiring a live
+    claim's marker from a view it could not read.
+
+    An ABSENT directory is not an error: a vault with no closed/ yet is normal. An
+    unreadable one is.
+    """
+    if not directory.is_dir():
+        return VaultScan(notes=[], rejected=[], errors=[])
     try:
         names = sorted(os.listdir(directory))
     except OSError as exc:
-        return [], f"{type(exc).__name__}: {exc}"
-    return [directory / n for n in names if n.endswith(".md")], None
-
-
-def _load_active_notes(vault_root: Path) -> list[TaskNote]:
-    """Parse all `active/*.md` cc-task notes."""
-    active = vault_root / "active"
-    if not active.is_dir():
-        return []
+        return VaultScan(
+            notes=[], rejected=[], errors=[f"{directory}: {type(exc).__name__}: {exc}"]
+        )
     notes: list[TaskNote] = []
-    paths, _err = _list_markdown(active)
-    for path in paths:
-        note = parse_task_note(path)
-        if note is not None:
-            notes.append(note)
-    return notes
-
-
-def _unparsed_note_paths(vault_root: Path) -> tuple[list[str], list[str]]:
-    """(rejected note paths, directory-enumeration errors).
-
-    `parse_task_note` returns None for anything without `type: cc-task` or a
-    readable task_id/status, and every caller silently drops those. That silence is
-    fine for a check that only reports, and unsafe for one that recommends deleting
-    runtime state: a rejected active note is precisely a task the sweep cannot see,
-    and it may be the live owner of the marker being retired.
-
-    Enumeration failures are returned too. An unreadable active/ previously made
-    this return an empty list — indistinguishable from "nothing rejected" — and the
-    checker then advised retiring a live claim's marker from a view it could not
-    read.
-    """
     rejected: list[str] = []
-    errors: list[str] = []
-    for sub in ("active", "closed"):
-        directory = vault_root / sub
-        if not directory.is_dir():
+    for name in names:
+        if not name.endswith(".md"):
             continue
-        paths, err = _list_markdown(directory)
-        if err is not None:
-            errors.append(f"{directory}: {err}")
-            continue
-        for path in paths:
-            if parse_task_note(path) is None:
-                rejected.append(str(path))
-    return rejected, errors
-
-
-def _load_closed_notes(vault_root: Path) -> list[TaskNote]:
-    """Parse closed/*.md notes for refusal-dormancy check (best-effort)."""
-    closed = vault_root / "closed"
-    if not closed.is_dir():
-        return []
-    notes: list[TaskNote] = []
-    paths, _err = _list_markdown(closed)
-    for path in paths:
+        path = directory / name
         note = parse_task_note(path)
-        if note is not None:
+        if note is None:
+            # `parse_task_note` returns None for anything without `type: cc-task` or
+            # a readable task_id/status, and callers used to drop those silently.
+            # That is fine for a check that only reports and unsafe for one that
+            # recommends deleting runtime state: a rejected active note is precisely
+            # a task the sweep cannot see, and it may own the marker being retired.
+            rejected.append(str(path))
+        else:
             notes.append(note)
-    return notes
+    return VaultScan(notes=notes, rejected=rejected, errors=[])
 
 
 def _load_relay_payloads(relay_root: Path) -> dict[str, dict[str, Any]]:
@@ -445,8 +437,15 @@ def run_sweep(
     if reaped:
         LOG.info("Reaped %d dead lane(s): %s", len(reaped), ", ".join(reaped))
 
-    notes = _load_active_notes(vault_root)
-    closed_notes = _load_closed_notes(vault_root)
+    # ONE read of each directory, here, for the whole sweep. Every consumer below
+    # — including the live↔declared join, which recommends deleting runtime state —
+    # gets notes, rejected paths and enumeration errors that describe the SAME read.
+    active_scan = _scan_task_notes(vault_root / "active")
+    closed_scan = _scan_task_notes(vault_root / "closed")
+    notes = active_scan.notes
+    closed_notes = closed_scan.notes
+    vault_rejected = [*active_scan.rejected, *closed_scan.rejected]
+    vault_errors = [*active_scan.errors, *closed_scan.errors]
     relay_payloads = _load_relay_payloads(relay_root)
 
     events: list[HygieneEvent] = []
@@ -498,7 +497,6 @@ def run_sweep(
         )
     else:
         scan = read_claim_markers(claim_marker_dir)
-        _unparsed, _enum_errors = _unparsed_note_paths(vault_root)
         # A DERIVED marker dir that exists but holds nothing is the relocation
         # hazard the comment above names: the absent-dir branch catches a missing
         # directory, not a relocated-and-empty one, so without this the join
@@ -545,8 +543,8 @@ def run_sweep(
                 notes,
                 closed_notes,
                 cache_dir=claim_marker_dir,
-                unparsed_notes=_unparsed,
-                enumeration_errors=_enum_errors,
+                unparsed_notes=vault_rejected,
+                enumeration_errors=vault_errors,
                 marker_dir_provenance=marker_dir_provenance,
                 now=now,
             )
@@ -656,7 +654,7 @@ def main(argv: list[str] | None = None) -> int:
             if ghost_events:
                 from cc_hygiene.actions import apply_actions
 
-                notes = _load_active_notes(args.vault_root)
+                notes = _scan_task_notes(args.vault_root / "active").notes
                 for result in apply_actions(
                     ghost_events,
                     notes,

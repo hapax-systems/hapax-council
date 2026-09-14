@@ -481,3 +481,143 @@ class TestWhatTheChildReceives:
         assert observed["pinned"] == "", (
             f"{name} passed the grant on to its own child — it authorises one hop"
         )
+
+
+def _extract_bash_function(source: Path, name: str) -> str:
+    """The shipped text of one top-level bash function, by name.
+
+    Both headless launchers build their SSH payload in a `python3` heredoc inside a
+    top-level function. Running that function is the only way to see what actually
+    crosses the boundary; asserting on the source would be asserting on a list of
+    strings, which is what let the claude path's allowlist and the codex path's
+    diverge in the first place.
+    """
+    import re
+
+    lines = source.read_text(encoding="utf-8").splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if line.startswith(f"{name}() {{"))
+    except StopIteration:  # pragma: no cover - a rename should fail loudly
+        raise AssertionError(f"{source.name} has no top-level function {name}()") from None
+
+    # Skip heredoc bodies when looking for the closing brace. The payload builders
+    # embed a Python dict literal whose own `}` sits at column 0, so a naive scan
+    # for the first unindented `}` truncates the function mid-heredoc and the
+    # extracted text will not parse.
+    end = None
+    heredoc: str | None = None
+    for i in range(start + 1, len(lines)):
+        line = lines[i]
+        if heredoc is not None:
+            if line.strip() == heredoc:
+                heredoc = None
+            continue
+        opener = re.search(r"<<-?'?([A-Za-z_][A-Za-z0-9_]*)'?", line)
+        if opener:
+            heredoc = opener.group(1)
+            continue
+        if line == "}":
+            end = i
+            break
+    assert end is not None, f"no closing brace found for {name}() in {source.name}"
+    return "\n".join(lines[start : end + 1])
+
+
+class TestWhatCrossesTheSshBoundary:
+    """Remote execution starts the harness directly — no launcher runs over there.
+
+    So whatever the payload omits is simply not recorded by the remote lane's
+    claims. The claude path forwarded the descriptors; the codex path did not, and
+    round 13 measured that neither reached its payload. These run both builders.
+    """
+
+    def _payload_env(self, script: str, preamble: str, call: str, env: dict[str, str]) -> dict:
+        import base64
+        import json
+
+        full = "\n".join(["set -euo pipefail", preamble, script, call])
+        merged = _clean_env()
+        merged.update(env)
+        result = subprocess.run(
+            ["bash", "-c", full],
+            env=merged,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"payload builder failed: {result.stderr}"
+        payload = json.loads(base64.b64decode(result.stdout.strip()))
+        return payload.get("env", {})
+
+    def test_codex_remote_exec_carries_the_condition_vector(self) -> None:
+        script = _extract_bash_function(SCRIPTS / "hapax-codex-headless", "remote_exec_payload_b64")
+        env = self._payload_env(
+            script,
+            preamble="\n".join(
+                [
+                    'WORKDIR="/tmp/wt"',
+                    'DISPATCH_HOST_REQUESTED="appendix"',
+                    'LOGOS_BASE_URL="http://localhost:8051"',
+                    'COCKPIT_BASE_URL="http://localhost:8050"',
+                    'SESSION="cx-green"',
+                    'CODEX_TASK="task-a"',
+                ]
+            ),
+            call='remote_exec_payload_b64 "/tmp/proof" codex exec',
+            env={
+                "HAPAX_CAPABILITY_ROUTE": "codex.headless.full",
+                "HAPAX_CAPABILITY_MODEL": "gpt-5.3-codex",
+                "HAPAX_SESSION_ID": "ef3687f5-601c-4a82-9c6e-d97de6dce2c2",
+            },
+        )
+        assert env.get("HAPAX_CAPABILITY_ROUTE") == "codex.headless.full", (
+            "the remote codex lane records no route, so every claim it writes has "
+            f"no condition vector: {sorted(env)}"
+        )
+        assert env.get("HAPAX_CAPABILITY_MODEL") == "gpt-5.3-codex"
+
+    def test_claude_remote_exec_carries_the_condition_vector(self) -> None:
+        script = _extract_bash_function(SCRIPTS / "hapax-claude-headless", "remote_payload_b64")
+        env = self._payload_env(
+            script,
+            preamble="",
+            call=(
+                'remote_payload_b64 exec "/tmp/wt" "http://localhost:8051" '
+                '"appendix" "/tmp/proof" claude'
+            ),
+            env={
+                "HAPAX_CAPABILITY_ROUTE": "claude.headless.opus",
+                "HAPAX_CAPABILITY_MODEL": "opus",
+                "HAPAX_SESSION_ID": "ef3687f5-601c-4a82-9c6e-d97de6dce2c2",
+            },
+        )
+        assert env.get("HAPAX_CAPABILITY_ROUTE") == "claude.headless.opus", (
+            f"the remote claude lane records no route: {sorted(env)}"
+        )
+        assert env.get("HAPAX_CAPABILITY_MODEL") == "opus"
+
+    def test_an_absent_descriptor_is_omitted_rather_than_sent_empty(self) -> None:
+        """An empty string would render as `route=` — a recorded emptiness.
+
+        Both builders filter falsey values, and both must keep doing so: the whole
+        contract of this field is that an unanswerable one stays unrecorded.
+        """
+        script = _extract_bash_function(SCRIPTS / "hapax-codex-headless", "remote_exec_payload_b64")
+        env = self._payload_env(
+            script,
+            preamble="\n".join(
+                [
+                    'WORKDIR="/tmp/wt"',
+                    'DISPATCH_HOST_REQUESTED=""',
+                    'LOGOS_BASE_URL="http://localhost:8051"',
+                    'COCKPIT_BASE_URL="http://localhost:8050"',
+                    'SESSION="cx-green"',
+                    'CODEX_TASK="task-a"',
+                ]
+            ),
+            call='remote_exec_payload_b64 "/tmp/proof" codex exec',
+            env={"HAPAX_CAPABILITY_ROUTE": "", "HAPAX_CAPABILITY_MODEL": ""},
+        )
+        assert not env.get("HAPAX_CAPABILITY_ROUTE")
+        assert not env.get("HAPAX_CAPABILITY_MODEL")

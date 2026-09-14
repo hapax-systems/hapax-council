@@ -218,11 +218,26 @@ sessions.** Two different operations, easily confused:
 
 - **Role-wide closure** — `cc-close <task-id>` retires *every* lease **this role**
   holds that names **the task being closed**, including leases keyed to the role's
-  other sessions. It sweeps `cc-active-task-<role>-*`, retiring a globbed key only
-  when the remainder is an id this system minted, so a role whose name extends
-  this one (`cx-blue` vs `cx-blue-shadow`) is never touched. This is closure
-  cleanup: it exists so a lane that restarted mid-task cannot leave the marker set
-  disagreeing with the vault.
+  other sessions. It sweeps `cc-active-task-<role>-*` and retires a globbed key
+  only when the remainder is a **minted-shape session id**
+  (`shared/session_identity.py::is_minted_session_id`).
+
+  State that guarantee precisely, because it is narrower than "an extending role
+  name is never touched". `is_minted_session_id` is deliberately narrower than
+  `is_claim_keyable_session_id`, and ids reach this system from several spawners:
+  - a `cx-blue-shadow` lease whose remainder is keyable but **not** minted-shape is
+    skipped — safe, and the reason the common case is safe;
+  - a `cx-blue-shadow` lease whose remainder happens to be minted-shape **would**
+    be retired by `cc-close` running as `cx-blue`, because the glob cannot separate
+    the extending role name from a session suffix.
+
+  The second case has not been observed and is not hypothetical-only: it needs a
+  role name that extends another role's name AND a minted-shape remainder. If you
+  name a role as an extension of an existing one, that is the hazard you are
+  taking on.
+
+  This is closure cleanup: it exists so a lane that restarted mid-task cannot leave
+  the marker set disagreeing with the vault.
 - **Exact-file stale-lease release** — the procedure above. Use it for a lease
   naming a *different* task, a lease belonging to a *different role*, or any lease
   you must retire without closing the task. `cc-close` will not touch those, by
@@ -256,9 +271,49 @@ cc-close <task-id> --status withdrawn --expect-status withdrawn
 ```
 
 `--expect-status` is checked **inside the writer**, against the same bytes it is
-about to rewrite, immediately before rewriting them. Not in an earlier process: a
-check that re-reads the note, exits, and only then hands off to a writer that
-re-reads it leaves exactly the window the flag exists to close.
+about to rewrite, immediately before rewriting them, and **under an exclusive
+per-task lock**. Not in an earlier process: a check that re-reads the note, exits,
+and only then hands off to a writer that re-reads it leaves exactly the window the
+flag exists to close.
+
+### The per-task mutation lock
+
+`cc-close` and `cc-claim` now take one exclusive lock per task id
+(`shared/cc_task_lock.py`; the files live in
+`~/.cache/hapax/cc-task-locks/<task-id>.lock`). Before it existed, cc-close's
+sequence — read the note, validate it, write it into `closed/`, unlink the
+original — was not atomic against a concurrent resume: a `cc-claim` landing after
+the read made cc-close write its stale snapshot to `closed/` and delete the
+resumed note. Atomic replacement (`tmp` + `os.replace`, which cc-claim already
+did) makes each write all-or-nothing; it is not mutual exclusion.
+
+Two refusals you may see:
+
+```
+cc-close: refusing — another process has held the cc-task lock for '<id>'
+(<path>) for more than 30s. Next action: find the holder with
+'fuser -v <path>' and let it finish, then re-run. Nothing was modified.
+```
+
+```
+cc-claim: BLOCKED — another process has held the cc-task lock for '<id>' …
+Another cc-claim or cc-close is mid-mutation on this task.
+```
+
+Both mean *wait, then re-run*. Neither leaves state behind: the lock is an
+advisory `flock`, so the kernel drops it when the holder exits by any path,
+including a crash — **there is no stale lock to clear and no reaper to run**. If a
+refusal persists, something is genuinely wedged; find it with `fuser -v` rather
+than deleting the lock file.
+
+The lock is taken **after** cc-close's read-only gates, not before, because those
+gates call `gh` and can block on the network; a lock held across a network call
+would stall every other writer for as long as GitHub takes. Nothing above that
+point mutates.
+
+Limits, stated rather than patched: the lock is advisory and covers the writers
+that take it. A hand edit of a note in a text editor takes nothing and is excluded
+by nothing.
 
 If it does not hold, cc-close exits 2 and **nothing is modified**:
 
@@ -280,9 +335,14 @@ Recheck:
 uv run pytest tests/test_stale_marker_remediation_integration.py -q
 ```
 
-Expected: all pass. `test_a_saved_command_refuses_after_the_task_resumes` and
-`test_the_precondition_holds_against_the_bytes_actually_rewritten` carry the
-refusal and its placement respectively.
+Expected: all pass. Three carry this behaviour by name:
+`test_a_saved_command_refuses_after_the_task_resumes` (the stored command refuses),
+`test_the_precondition_holds_against_the_bytes_actually_rewritten` (it refuses with
+the **expected-status** message, not merely nonzero — a cc-close without the flag
+exits nonzero too, by rejecting an unknown argument), and
+`test_the_precondition_is_evaluated_after_the_lock_is_taken`, which holds the lock,
+changes the status underneath a waiting cc-close, and releases — the only shape
+that can tell an early guard from one inside the protected section.
 
 ## Paged By `stale_claim_marker`
 
