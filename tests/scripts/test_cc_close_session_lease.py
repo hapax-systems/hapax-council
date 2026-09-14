@@ -250,6 +250,48 @@ def test_cc_close_orphan_sweep_spares_a_role_sharing_its_prefix(
     )
 
 
+def test_cc_close_prefers_the_exact_task_over_a_prefix_neighbour(tmp_path: Path) -> None:
+    """`cc-close t1` must not select `t1-next.md`.
+
+    The descriptor glob ran before the exact filename, so with both notes present
+    cc-close withdrew a DIFFERENT, live task — and cc-hygiene's remediation emits
+    exactly this command shape, so following the runbook verbatim could close
+    unrelated work.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, "t1")
+    _write_task(vault, "t1-next")
+
+    result = _run_close(home, "t1", role="eta", session_id=None)
+
+    assert result.returncode == 0, result.stderr
+    assert not (vault / "active" / "t1.md").exists(), "the exact task was not closed"
+    assert (vault / "active" / "t1-next.md").exists(), (
+        f"cc-close closed the prefix neighbour instead\nstdout={result.stdout}"
+    )
+
+
+def test_cc_close_refuses_a_note_whose_task_id_disagrees(tmp_path: Path) -> None:
+    """Filename conventions are not identity; the note's own task_id is.
+
+    The glob can only ever match a prefix, so a descriptor-suffixed neighbour is
+    reachable for a shorter id. Comparing the selected note's declared task_id
+    closes that without relying on naming discipline.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, "t1-next")  # declares task_id: t1-next
+
+    result = _run_close(home, "t1", role="eta", session_id=None)
+
+    assert result.returncode == 2, (
+        f"cc-close accepted a note declaring a different task\nstdout={result.stdout}"
+    )
+    assert "declares task_id" in result.stderr, result.stderr
+    assert (vault / "active" / "t1-next.md").exists(), "the wrong note was mutated"
+
+
 def test_cc_close_guard_failure_spares_the_lease_rather_than_deleting_it(
     tmp_path: Path,
 ) -> None:
@@ -305,6 +347,13 @@ def test_cc_close_guard_failure_spares_the_lease_rather_than_deleting_it(
         f"stdout={result.stdout}\nstderr={result.stderr}"
     )
     assert not (vault / "active" / "foo.md").exists(), "task was not closed"
+    # An unevaluable guard must be REPORTED, not silently folded into "no match".
+    # The note has already moved to closed/, so a rerun cannot reach this cleanup
+    # again — a silent skip leaves the lease with no record and no second chance.
+    assert "cleanup incomplete" in result.stderr, (
+        f"unevaluable guard was silent; closure reported clean\nstderr={result.stderr}"
+    )
+    assert str(foreign) in result.stderr, "the preserved lease was not named"
     assert foreign.exists(), (
         "the foreign-lease guard failed open and deleted a lease it could not "
         f"adjudicate\nstdout={result.stdout}\nstderr={result.stderr}"

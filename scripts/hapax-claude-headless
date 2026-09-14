@@ -118,12 +118,11 @@ fi
 # behaviour exactly, including when dispatched from inside a pinned codex pane.
 hapax_consume_launch_session_id
 SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
-# A re-dispatch for a task this role ALREADY holds is a resume, not a new lane:
-# the admitted claim is bound to the previous session, and minting a new id makes
-# resolve_applied_claim_publication refuse with claim_binding_vector_mismatch
-# before resumption is even reached. The condition is the live state itself (this
-# role holds exactly one minted-session claim naming THIS task), not a flag — so
-# a launch for any other task, or for a role holding nothing, still mints.
+# Session succession is NOT done here. A launcher-side helper lived here across
+# review rounds 2-6 and was removed: it cannot be made correct in a launcher (see
+# the REMOVED block in hooks/scripts/agent-role.sh for the proof) and is rowed
+# against cc-claim, which owns the lease lock. This launcher mints, which is what
+# origin/main does today, so nothing regressed.
 export HAPAX_SESSION_ID="$SESSION_UUID"
 # Per-session identity marker (WM-independent): record THIS session's role keyed by
 # the session id so agent-role.sh / hapax-whoami resolve identity without a

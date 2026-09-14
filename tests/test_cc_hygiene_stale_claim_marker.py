@@ -258,6 +258,28 @@ class TestDisagreementMatrix:
             "a close command was constructed for an owner that could not be named"
         )
 
+    def test_a_closed_duplicate_does_not_make_a_live_claim_disposable(self) -> None:
+        """A task id in BOTH collections is an inconsistency, not terminality.
+
+        `note` came from active/ while `already_closed` went true from the closed/
+        duplicate, so a LIVE in_progress claim reported vault_location=closed and
+        its marker was recommended for deletion. Which record is real is not
+        inferable from here.
+        """
+        events = check_stale_claim_marker(
+            {"eta": "t1"},
+            [_note("t1", status="in_progress")],
+            [_note("t1", status="withdrawn")],
+            now=_now(),
+        )
+        assert len(events) == 1
+        assert events[0].severity == "violation"
+        assert events[0].metadata["reason"] == "duplicate_note_active_and_closed"
+        assert events[0].metadata["next_action"] == "operator-adjudication"
+        assert "remediation" not in events[0].metadata, (
+            "a deletion was recommended for a claim that may be live"
+        )
+
     def test_event_reports_the_disagreement_not_an_inferred_cause(self) -> None:
         """ "the lane never ran cc-close" was an unobserved cause, and wrong.
 

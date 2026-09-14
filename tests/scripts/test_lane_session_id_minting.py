@@ -453,6 +453,113 @@ class TestLauncherBehaviour:
             f"{name} failed without naming the cause or a remedy\n{combined}"
         )
 
+    def test_two_launches_export_different_identities(self, tmp_path: Path) -> None:
+        """The EXPORTED id must differ per launch — asserted by running it twice.
+
+        The source conformance pins verify the launcher calls the helper. They
+        cannot see what it exports: an in-memory mutation replacing five
+        launchers' HAPAX_SESSION_ID exports with one constant left all 20 of them
+        green. The helper can mint perfectly while every child still shares an
+        identity, which is the original defect.
+
+        The `session-role-<sid>` marker is written from the exported value, so two
+        launches producing one marker means one identity was exported twice.
+        """
+        sids = []
+        for _ in range(2):
+            home = tmp_path / f"h{len(sids)}"
+            env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+            for k in (
+                "CLAUDE_ROLE",
+                "HAPAX_AGENT_NAME",
+                "HAPAX_AGENT_ROLE",
+                "HAPAX_WORKTREE_ROLE",
+            ):
+                env.pop(k, None)
+            env["HOME"] = str(home)
+            env["HAPAX_CLAUDE_HEADLESS_ALLOW"] = "1"
+            env["HAPAX_SDLC_SLICE_ATTACH"] = "0"
+            subprocess.run(
+                [str(SCRIPTS / "hapax-claude-headless"), "--task", "task-a", "zeta", "msg"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            markers = sorted((home / ".cache" / "hapax").glob("session-role-*"))
+            assert len(markers) == 1, f"expected one marker, got {markers}"
+            sids.append(markers[0].name.removeprefix("session-role-"))
+
+        assert sids[0] != sids[1], (
+            f"two launches minted the SAME identity ({sids[0]}) — every lane "
+            "started this way keys one claim file"
+        )
+        assert all(is_claim_keyable_session_id(s) for s in sids)
+
+    def test_the_identity_the_child_actually_receives_differs_per_launch(
+        self, tmp_path: Path
+    ) -> None:
+        """Assert the EXPORTED value, via a stub harness — not the marker.
+
+        The marker above is written from SESSION_UUID, so it cannot see a launcher
+        that mints correctly and then exports something else: the reviewers'
+        mutation (replace the HAPAX_SESSION_ID export with one constant) left both
+        the source pins and the marker test green. `hapax-claude` resolves its
+        harness with `command -v claude`, so a stub on PATH observes exactly what
+        the child receives.
+        """
+        stub_dir = tmp_path / "bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "claude"
+        stub.write_text(
+            '#!/bin/sh\nprintf "%s" "$HAPAX_SESSION_ID" > "$STUB_OUT"\n', encoding="utf-8"
+        )
+        stub.chmod(0o755)
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+
+        seen = []
+        for i in range(2):
+            out = tmp_path / f"out{i}"
+            env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+            for k in ("CLAUDE_ROLE", "HAPAX_AGENT_NAME", "HAPAX_AGENT_ROLE"):
+                env.pop(k, None)
+            env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
+            env["HOME"] = str(tmp_path / "home")
+            env["STUB_OUT"] = str(out)
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(SCRIPTS / "hapax-claude"),
+                    "--role",
+                    "zeta",
+                    "--terminal",
+                    "none",
+                    "--cd",
+                    str(worktree),
+                    "--readonly",
+                ],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            if not out.exists():
+                pytest.skip(
+                    "hapax-claude did not reach its harness in this sandbox: "
+                    f"{result.stderr.strip()[-160:]}"
+                )
+            seen.append(out.read_text().strip())
+
+        assert seen[0] and seen[1], f"no identity reached the child: {seen}"
+        assert seen[0] != seen[1], (
+            f"both launches handed the child the SAME identity ({seen[0]}) — a "
+            "launcher can mint correctly and still export a constant"
+        )
+        assert all(is_claim_keyable_session_id(s) for s in seen)
+
     def test_headless_launcher_ignores_an_inherited_pin(self, tmp_path: Path) -> None:
         """hapax-claude-headless minted unconditionally before this change (#3875).
 

@@ -60,18 +60,33 @@ fi
 cc_task_root_resolve || exit $?
 vault_root="$CC_TASK_ROOT"
 note_path=""
-# Match `<task_id>-<descriptor>.md` (most tasks).
-for candidate in "$vault_root/active/$task_id-"*.md; do
-  if [[ -f "$candidate" ]]; then
-    note_path="$candidate"
-    break
-  fi
-done
-# Fallback: exact-match `<task_id>.md` for tasks without a descriptor
-# suffix. Mirrors the cc-claim glob; same root-cause (the literal `-`
-# in the original glob misses descriptor-less filenames).
-if [[ -z "$note_path" ]] && [[ -f "$vault_root/active/$task_id.md" ]]; then
+# EXACT filename first. The descriptor glob below used to run first, so with both
+# `t1.md` and `t1-next.md` present, `cc-close t1` selected t1-next.md and withdrew
+# a DIFFERENT, live task — and cc-hygiene's remediation emits exactly that command
+# shape, so following the runbook verbatim could close unrelated work. An exact
+# name is never ambiguous; a prefix always can be.
+if [[ -f "$vault_root/active/$task_id.md" ]]; then
   note_path="$vault_root/active/$task_id.md"
+fi
+# Then `<task_id>-<descriptor>.md` (most tasks carry a descriptor suffix).
+if [[ -z "$note_path" ]]; then
+  for candidate in "$vault_root/active/$task_id-"*.md; do
+    if [[ -f "$candidate" ]]; then
+      note_path="$candidate"
+      break
+    fi
+  done
+fi
+# Whatever was selected must actually BE the task asked for. The glob can only
+# ever match a prefix, so a descriptor-suffixed neighbour of a longer id
+# (`t1-next` when asked for `t1`) is reachable; comparing the note's own
+# `task_id:` closes that without depending on filename conventions.
+if [[ -n "$note_path" ]]; then
+  selected_task_id="$(sed -n 's/^task_id:[[:space:]]*//p' "$note_path" | head -n1 | tr -d '"'\''[:space:]')"
+  if [[ -n "$selected_task_id" && "$selected_task_id" != "$task_id" ]]; then
+    echo "cc-close: refusing — '$note_path' declares task_id '$selected_task_id', not '$task_id'. Next action: pass the exact task id, or repair the note's filename/frontmatter so they agree. Nothing was modified." >&2
+    exit 2
+  fi
 fi
 if [[ -z "$note_path" ]]; then
   echo "cc-close: task '$task_id' not in $vault_root/active/ (already closed?)" >&2
@@ -328,7 +343,15 @@ if [[ -n "$role" ]]; then
       # Bare python3 is correct here: shared/session_identity.py is stdlib-only by
       # contract precisely so it imports under the system interpreter on every
       # dispatch host (appendix has no PyYAML outside the uv venv).
-      python3 -I - "$SCRIPT_DIR/.." "$claim_key" "$role" <<'PYEOF' || continue
+      # Three outcomes, not two. The predicate exits 0 (retire), 1 (not this
+      # role's — leave it), or something else entirely when it could not be
+      # EVALUATED (no python3, import failure). The first cut folded every
+      # non-zero into `continue`, so an unevaluable guard left a same-role lease
+      # behind while cc-close still reported success — and the note has already
+      # moved to closed/, so a rerun cannot reach cleanup again. Uncertainty still
+      # preserves the lease, but it is now reported rather than silent.
+      guard_rc=0
+      python3 -I - "$SCRIPT_DIR/.." "$claim_key" "$role" <<'PYEOF' || guard_rc=$?
 import sys
 
 sys.path.insert(0, sys.argv[1])
@@ -344,6 +367,17 @@ key, role = sys.argv[2], sys.argv[3]
 remainder = key[len(role) + 1 :] if key.startswith(f"{role}-") else ""
 sys.exit(0 if is_minted_session_id(remainder) else 1)
 PYEOF
+      if [[ "$guard_rc" -gt 1 ]]; then
+        # Could not EVALUATE. Preserve the lease (uncertainty never deletes) and
+        # say so with an exact remedy, because the note is about to move to
+        # closed/ and a rerun of cc-close can no longer reach this cleanup.
+        echo "cc-close: WARNING — cleanup incomplete: could not evaluate the foreign-lease guard for '$claim_file' (python3 exited $guard_rc). The lease was PRESERVED. Next action: repair python3/PYTHONPATH for this checkout, then retire it by hand once you have confirmed the closure: rm -f '$claim_file' '$HOME/.cache/hapax/cc-claim-epoch-$claim_key'" >&2
+        cleanup_incomplete=1
+        continue
+      fi
+      if [[ "$guard_rc" -eq 1 ]]; then
+        continue
+      fi
     fi
     # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
     # clear it with its claim file so a stale epoch can never mis-age a future

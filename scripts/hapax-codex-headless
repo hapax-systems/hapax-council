@@ -836,12 +836,11 @@ PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
 # so it always mints — including inside a pane whose pin is addressed to hapax-codex.
 hapax_consume_launch_session_id
 SESSION_UUID="$(normalize_session_uuid "$HAPAX_LAUNCH_SESSION_ID")"
-# A re-dispatch for a task this role ALREADY holds is a resume, not a new lane:
-# the admitted claim is bound to the previous session, and minting a new id makes
-# resolve_applied_claim_publication refuse with claim_binding_vector_mismatch
-# before resumption is even reached. The condition is the live state itself (this
-# role holds exactly one minted-session claim naming THIS task), not a flag — so
-# a launch for any other task, or for a role holding nothing, still mints.
+# Session succession is NOT done here. A launcher-side helper lived here across
+# review rounds 2-6 and was removed: it cannot be made correct in a launcher (see
+# the REMOVED block in hooks/scripts/agent-role.sh for the proof) and is rowed
+# against cc-claim, which owns the lease lock. This launcher mints, which is what
+# origin/main does today, so nothing regressed.
 export HAPAX_PARENT_AGENT_INTERFACE="$PARENT_INTERFACE"
 export HAPAX_PARENT_AGENT_NAME="$PARENT_NAME"
 export HAPAX_AGENT_INTERFACE="codex"

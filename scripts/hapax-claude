@@ -324,18 +324,11 @@ fi
 # addressed to it and it always mints. Passing nothing is the way to say that.
 hapax_consume_launch_session_id
 SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
-# --continue is a RESUME: the same lane carrying on, so it succeeds its own live
-# claim session rather than minting. Without this, a resumed lane cannot resolve
-# the admitted claim bound to its previous session and HOLDs on
-# claim_binding_vector_mismatch. Succession requires exactly one live
-# session-keyed claim for the role — zero or several, and we mint rather than guess.
-#
-# Keyed on the TASK, not on --continue. A launch for a task this role already
-# holds is a resume however it was spelled, and the task match is self-limiting,
-# so a launch for other work still mints. Every launcher now follows this one rule;
-# `--continue` needs no special case, and neither does the next resume spelling
-# someone adds. The task is resolved BEFORE the session is chosen, because the
-# claim file is what names it.
+# Session succession is NOT done here. A launcher-side helper lived here across
+# review rounds 2-6 and was removed: it cannot be made correct in a launcher (see
+# the REMOVED block in hooks/scripts/agent-role.sh for the proof) and is rowed
+# against cc-claim, which owns the lease lock. This launcher mints, which is what
+# origin/main does today, so nothing regressed.
 export HAPAX_AGENT_INTERFACE="claude"
 export HAPAX_AGENT_NAME="$ROLE"
 export CLAUDE_ROLE="$ROLE"

@@ -309,10 +309,39 @@ exclusive from a launcher (see the REMOVED block in
 `hooks/scripts/agent-role.sh`). Governed rebinding belongs in cc-claim, which
 holds the lease lock, and is rowed separately.
 
-Until that lands, the operator paths are: finish the work in the original
-session; or release the claim through the exact-file stale-lease procedure above
-and re-claim; or use `HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1` for an
-operator-authorized emergency fallback. Do not hand-edit the binding sidecars.
+Until that lands there are three operator paths, and only the first is simple:
+
+1. **Finish the work in the original session.** Always preferred.
+2. **Release and re-claim — NOT just the sidecar removal above.** The exact-file
+   stale-lease procedure removes the sidecars but leaves the note at `claimed` or
+   `in_progress`, and cc-claim's eligibility branch refuses **both** (exit 4):
+   neither is in `TASK_CLAIMABLE_STATUSES` (`offered` only) nor resumable once the
+   sidecars are gone. The complete transition is:
+
+   ```bash
+   # after the stale-lease release above
+   uv run python scripts/cc-task-repair <task-id>            # only if the note is malformed
+   # return the note to an offered, unassigned state, then:
+   cc-claim <task-id>
+   ```
+
+   Returning `status:`/`assigned_to:` to `offered`/`unassigned` is an operator
+   edit — `cc-task-repair` only backfills ABSENT scaffolding and will not
+   overwrite a live value. Verify the reclaim actually succeeded (`cc-claim`
+   exits 0 and prints the written claim paths) rather than assuming the release
+   was sufficient; that assumption is what made this procedure incomplete.
+3. **`HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1`** for an operator-authorized
+   emergency fallback. Do not hand-edit the binding sidecars.
+
+### A second, independent collision path — deferred, not fixed
+
+`scripts/hapax-claude` exports `HAPAX_SESSION_ID` into the **tmux pane**, so the
+minted suffix identifies the PANE, not the harness session that claims. Every
+Claude session that pane hosts over its lifetime keys the same claim file. That is
+a distinct route to the same key collision this work repairs and it is **not**
+addressed here; it needs the same cc-claim-side ownership the succession row does.
+Ask the coordinator for its row before relying on per-session claim isolation in a
+long-lived pane.
 
 ## Blocked By `exit 9` — "identity helper not found"
 

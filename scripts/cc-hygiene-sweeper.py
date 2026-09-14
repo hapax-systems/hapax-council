@@ -363,6 +363,15 @@ def run_sweep(
     # the relay dir, and every other root here is configurable. A marker source
     # anchored on the real home would make a sweep of some OTHER vault report on
     # THIS host's live lanes — which is both wrong in production and untestable.
+    #
+    # The coupling is IMPLICIT and worth stating: cc-claim writes to
+    # $HOME/.cache/hapax while the default relay root is $HOME/.cache/hapax/relay,
+    # so `relay_root.parent` coincides with the marker dir only because of that
+    # layout. Relocate relay_root without relocating the cache and this join
+    # silently points at a directory holding no markers — the absent-dir branch
+    # catches a MISSING one, but a relocated-and-existing one reports clean while
+    # checking nothing. Pass claim_marker_dir explicitly rather than relying on the
+    # coincidence whenever the two are not siblings.
     if claim_marker_dir is None:
         claim_marker_dir = relay_root.parent
 

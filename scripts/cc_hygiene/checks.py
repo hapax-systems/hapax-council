@@ -1245,6 +1245,37 @@ def check_stale_claim_marker(
                 )
                 continue
 
+        # A task id present in BOTH collections is a vault inconsistency, not a
+        # terminality signal. `note` comes from active/ while `already_closed`
+        # went true from the closed/ duplicate, so a LIVE in_progress claim was
+        # reported as vault_location=closed and its marker recommended for
+        # deletion. Report the conflict; do not infer which record is real.
+        if task_id in active and task_id in closed:
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="violation",
+                    task_id=task_id,
+                    session=role,
+                    message=(
+                        f"task '{task_id}' exists in BOTH active/ and closed/ "
+                        f"(active={active[task_id].status!r}, closed="
+                        f"{closed[task_id].status!r}) — terminality cannot be "
+                        "inferred, and marker 'cc-active-task-{key}' may be live"
+                    ).replace("{key}", key),
+                    metadata={
+                        "marker": str(marker_dir / f"cc-active-task-{key}"),
+                        "role": role_label,
+                        "active_status": str(active[task_id].status),
+                        "closed_status": str(closed[task_id].status),
+                        "next_action": "operator-adjudication",
+                        "reason": "duplicate_note_active_and_closed",
+                    },
+                )
+            )
+            continue
+
         already_closed = note.task_id in closed
         terminal = already_closed or (note.status or "").strip() in TASK_TERMINAL_STATUSES
         if terminal:
