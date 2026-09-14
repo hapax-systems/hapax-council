@@ -3856,6 +3856,18 @@ def _retire_scratch(
         freed = True
     except OSError:
         freed = False
+    if not freed:
+        # Could not abandon it either, so the scratch name stays occupied and every later
+        # attempt on this operand will refuse at the vacancy check. That is the safe
+        # direction, but it is a stuck state and must not read like routine tidying.
+        _logger.warning(
+            "%s: %s name=%s COULD NOT BE ABANDONED — the scratch name stays occupied, so "
+            "retries on this operand will refuse with transition_projection_scratch_exists "
+            "until it is reconciled by hand",
+            _SCRATCH_ABANDONED,
+            subject,
+            name,
+        )
     _logger.warning(
         "%s: %s name=%s expected_inode=%s found_inode=%s outcome=%s — this entry is another "
         "writer's; inspect it before removing anything, then rerun "
@@ -3941,7 +3953,22 @@ def _fallback_exchange(
     the contract: ``dst`` holds the replacement and ``src`` holds the displaced
     entry, which is what this rebuilds.
 
-    **Move-or-fail throughout: no step can destroy an entry it has not identified.**
+    **Move-or-fail wherever the primitives allow it — which is not everywhere.**
+
+    An earlier version of this docstring said "no step can destroy an entry it has not
+    identified". That overstated what these primitives provide and a reviewer was right to
+    call it. Two windows remain, both named rather than argued away, and both closing under
+    ``projection-lock-coverage-projected-path-writers-20260913``:
+
+    * an arrival at a **scratch** name between the vacancy check and the rename that targets
+      it — ``rename`` cannot refuse an occupied destination, and the primitive that can
+      (``link``) is forbidden here by the single-link invariant, see
+      :func:`_relocate_to_scratch`;
+    * a replacement of a **scratch** between cleanup's identity check and its ``unlink`` —
+      removing a directory entry is name-based and has no compare-and-unlink form.
+
+    What the shape below does buy is that the *live* names are never blindly replaced, which
+    is where every reproduced loss actually occurred.
     Three reviewer families rejected the earlier check-then-replace shape, and correctly:
     reproducing the syscall's post-state does not inherit the syscall's atomicity, and the
     callers depended on that atomicity to *surface* a concurrent writer rather than only to

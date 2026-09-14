@@ -54,7 +54,11 @@ _ENV_DIR = "HAPAX_NFS_INTEGRATION_DIR"
 #: from the waiver. Flagged to the coordinator, because it constrains every future CI
 #: reference to that row, not just this one.
 _ENV_WAIVER = "HAPAX_NFS_INTEGRATION_WAIVED"
-_WAIVER_EXPIRY_ROW = "nfs-fallback-live-witness"
+#: TWO anchors, not one prefix. A single ``in`` test against the prefix was satisfied by any
+#: string containing it — a reviewer pointed out that made the expiry check decorative. Both
+#: the row family and its dated suffix must appear, which pins the specific row while still
+#: tolerating the elided middle that the `self-hosted` ban forces on `ci.yml`.
+_WAIVER_EXPIRY_ANCHORS = ("nfs-fallback-live-witness", "ci-20260913")
 _RENAME_NOREPLACE = 1
 _RENAME_EXCHANGE = 2
 
@@ -114,17 +118,18 @@ def unsupporting_mount() -> Path:
     if not configured:
         waiver = os.environ.get(_ENV_WAIVER, "").strip()
         if waiver:
-            if _WAIVER_EXPIRY_ROW not in waiver:
+            missing = [anchor for anchor in _WAIVER_EXPIRY_ANCHORS if anchor not in waiver]
+            if missing:
                 pytest.fail(
-                    f"{_ENV_WAIVER} is set but names no expiry row. A waiver without an "
-                    f"owner is a permanent skip wearing a different name — include "
-                    f"{_WAIVER_EXPIRY_ROW}, which owns standing up a lane that can mount "
-                    "the vault export."
+                    f"{_ENV_WAIVER} is set but does not name its expiry row (missing "
+                    f"{', '.join(missing)}). A waiver without an owner is a permanent skip "
+                    "wearing a different name — name the row that owns standing up a lane "
+                    "which can mount the vault export."
                 )
             pytest.skip(
                 f"{_ENV_DIR} unset; live verification EXPLICITLY WAIVED by "
-                f"{_ENV_WAIVER}={waiver}. Visible, greppable, and expiring with "
-                f"{_WAIVER_EXPIRY_ROW} — not a silent skip."
+                f"{_ENV_WAIVER}={waiver}. Visible, greppable, and expiring with the row it "
+                "names — not a silent skip."
             )
         pytest.fail(
             f"FAIL-CLOSED: {_ENV_DIR} is unset and no waiver is declared.\n"
