@@ -740,21 +740,30 @@ def test_frontmatter_set_refuses_a_value_that_is_not_exactly_one_entry(
     assert excinfo.value.reason_code == "terminal_close_frontmatter_value_unrepresentable", label
 
 
-def test_frontmatter_set_blames_a_note_that_was_already_unparseable() -> None:
-    """A note broken before the edit is reported as broken, not as our damage.
+def test_frontmatter_set_separates_a_broken_note_from_a_broken_write() -> None:
+    """Same reason code, same detail — only the REPAIR tells them apart.
 
-    Both checks raise ``terminal_close_frontmatter_malformed``, so only the
-    repair differs — and it differs in where it sends the operator. Without the
-    preimage check the refusal reads "setting stage left the frontmatter
-    parse_error", which points at the close rather than at the note.
+    Both a note that was already unparseable and a note our own edit made
+    unparseable raise ``terminal_close_frontmatter_malformed`` with detail
+    ``parse_error``. What must differ is where the refusal sends the operator:
+    at the note, or at the value being written. Asserted as a contrast, because
+    either sentence alone looks correct.
     """
 
-    note = '---\ntask_id: "t\nstage: S10\n---\n\nbody\n'
+    already_broken = '---\ntask_id: "t\nstage: S10\n---\n\nbody\n'
+    broken_by_the_write = "---\ntask_id: t\nstage:\n  name: S10\n---\n\nbody\n"
 
-    with pytest.raises(TerminalCloseError) as excinfo:
-        sdlc_close._frontmatter_set(note, "stage", "S11")
-    assert excinfo.value.reason_code == "terminal_close_frontmatter_malformed"
-    assert excinfo.value.detail == "frontmatter_parse_error"
+    with pytest.raises(TerminalCloseError) as preimage:
+        sdlc_close._frontmatter_set(already_broken, "stage", "S11")
+    with pytest.raises(TerminalCloseError) as postimage:
+        sdlc_close._frontmatter_set(broken_by_the_write, "stage", "S11")
+
+    assert preimage.value.reason_code == postimage.value.reason_code
+    assert preimage.value.detail == postimage.value.detail == "parse_error"
+    assert preimage.value.repair_action == "restore one closed frontmatter mapping before close"
+    assert postimage.value.repair_action == (
+        "give stage a single-line value in the note frontmatter before close"
+    )
 
 
 def test_frontmatter_set_writes_a_value_containing_regex_backreferences() -> None:

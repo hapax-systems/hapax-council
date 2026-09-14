@@ -3217,6 +3217,25 @@ public_gate_authority:
         assert receipt["acceptor"].startswith("review-team:")
         assert receipt["arming_triggers"] == ["review_requirement.independent_review_required"]
 
+    def test_receipt_records_the_floor_as_the_arming_trigger(self, tmp_path: Path) -> None:
+        """The other arming declaration is recorded the same way.
+
+        Two independent triggers arm a receipt, so a receipt that named only one
+        of them would leave the floor-armed case unreconstructable — and the
+        review-requirement case asserted alone cannot show that the floor still
+        reaches the field at all.
+        """
+        _, _, _, note = _review(
+            tmp_path,
+            task_kwargs={"quality_floor": "frontier_review_required"},
+        )
+
+        receipt = yaml.safe_load(
+            (note.parent / "task-a.acceptance.yaml").read_text(encoding="utf-8")
+        )
+        assert receipt["verdict"] == "accepted"
+        assert receipt["arming_triggers"] == ["quality_floor:frontier_review_required"]
+
     def test_receipt_records_a_malformed_arming_declaration(self, tmp_path: Path) -> None:
         """A typo'd flag arms the gate; the receipt must say so.
 

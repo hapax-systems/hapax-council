@@ -47,17 +47,34 @@ reliable legibility (ideally all three).*
    no review, so it is refused rather than admitted.
 
    Recheck — the close gate alone does not pin all of the above. The boolean
-   spellings are pinned by the schema-parity suite and the admission/minting
-   behaviour by the autoqueue and dispatch suites, so a reader re-running only
-   the first command could see green while parity had drifted:
+   spellings are pinned by the schema-parity suite, the admission/minting
+   behaviour by the autoqueue and dispatch suites, the anti-drift and
+   close-path-snapshot properties by the closed-loop e2e suite, and the two
+   note WRITERS by the close and release-arm suites. A reader re-running only
+   the first command could see green while any of those had drifted:
 
    ```
    uv run pytest tests/scripts/test_cc_close_acceptance_receipt_check.py \
                  tests/shared/test_sdlc_lifecycle.py \
                  tests/shared/test_frontmatter.py \
                  tests/shared/test_sdlc_close.py \
+                 tests/test_sdlc_closed_loop_e2e.py \
+                 tests/test_release_auto_arm.py \
                  tests/test_cc_pr_autoqueue.py \
                  tests/test_cc_pr_review_dispatch.py -q
+   ```
+
+   `tests/test_sdlc_closed_loop_e2e.py` is not optional here: it holds
+   `test_both_close_gates_share_one_receipt_predicate` and
+   `test_the_close_path_snapshot_sees_the_review_demand`, the two tests pinning
+   the derivation and snapshot claims this section's prose makes.
+
+   And the canon suite, which no targeted selection reaches — see
+   [the Gate 0A section](#sharedsdlc_lifecyclepy-is-a-gate-0a-canon-hashed-source)
+   below:
+
+   ```
+   uv run pytest tests/shared/test_session_context_canon.py packages/hapax-context-canon/tests -q
    ```
 
    The boolean spellings above are a **reimplementation** of the route schema's
@@ -128,37 +145,49 @@ reliable legibility (ideally all three).*
    below it, including the review declarations above.
 4. Reason codes must name the true failure: an unparseable note is reported as
    such by `cc-pr-autoqueue`, never as a generic missing link.
-5. **The same grammar governs writing.** Terminal close rewrites the note's
-   `stage`, `status`, `completed_at`, `updated_at` and `pr` in place — it edits
+5. **The same grammar governs writing, and there is one writer.** Two surfaces
+   rewrite a note's frontmatter in place — terminal close (`stage`, `status`,
+   `completed_at`, `updated_at`, `pr`) and release auto-arm
+   (`release_authorized`, the authorized head, `stage`, `updated_at`). Both edit
    lines rather than re-serialising the mapping, so hand-written notes keep
-   their comments, key order and quoting. `shared.sdlc_close._frontmatter_set`
-   therefore takes its boundaries from the same fence grammar the readers use
-   (`shared.sdlc_lifecycle.frontmatter_write_partition`) and states its
-   post-condition over the parsed mapping:
+   their comments, key order and quoting. Both now go through
+   **`shared.sdlc_lifecycle.frontmatter_set_exactly`**, which takes its
+   boundaries from the same fence grammar the readers use
+   (`frontmatter_write_partition`) and states its post-condition over the
+   parsed mapping:
 
    > after the write, the frontmatter parses equal to the frontmatter before
    > it with that one key set to the intended value — exactly.
 
    Stating it as one equality is what makes it cover shapes nobody enumerated.
-   It has to be enforced rather than assumed because close is destructive: it
-   projects the postimage into `closed/` **and** deletes the active note and
-   every claim lease in the same transaction, so a note that parses back wrong
-   is unrecoverable — the task reads as unclosed and the lease that would let
-   anyone close it is gone.
+   It has to be enforced rather than assumed because both callers act on the
+   result: close projects the postimage into `closed/` **and** deletes the
+   active note and every claim lease in the same transaction, so a note that
+   parses back wrong is unrecoverable — the task reads as unclosed while the
+   lease that would let anyone close it is gone. Release auto-arm writes the
+   note and appends an audit line, so a postimage that parses back unarmed
+   records work that did not happen, once per retry.
 
-   | Reason in the refusal | What is wrong | Repair |
+   The primitive is policy-free: it returns `(text, state, detail)` and hands
+   back its INPUT unchanged on any state but `ok`. Each caller supplies the
+   policy — close raises a typed refusal, release auto-arm returns the note
+   unchanged, which `arm_release_for_task` already reads as a refusal.
+
+   | Reason in close's refusal | What is wrong | Repair |
    |---|---|---|
    | `terminal_close_frontmatter_malformed` | the note has no closed frontmatter mapping, or setting the key would leave it unparseable (e.g. the key's value is a nested block). The detail says which, and whether the note was already broken | close the frontmatter, or give that key a single-line value |
    | `terminal_close_frontmatter_value_unrepresentable` | the value does not render as exactly one mapping entry — a newline in it declares a second field, and `--pr` reaches this as an unvalidated string | pass a single-line value |
    | `terminal_close_frontmatter_write_ineffective` | the key was rewritten but the note still parses as the old value, because another spelling of the same key (`"stage":`, `? stage`) occurs later and wins | remove the conflicting entry |
    | `terminal_close_frontmatter_write_collateral` | setting the key also changed a different field — the key occurs at column 0 inside a multi-line flow collection | move the key out of the nested structure |
 
-   Four defects were measured on the previous writer, all one cause — it
-   reasoned about character offsets instead of about the document:
+   Four defects were measured on the previous writers — **both of them, the
+   same four** — all one cause: they reasoned about character offsets instead
+   of about the document. That is why the contract is written once here rather
+   than mirrored per caller.
 
-   | Shape | What the old writer did |
+   | Shape | What the old writers did |
    |---|---|
-   | `---extra: abc` (a legal mapping key) | read as the closing fence; the update was inserted **above** it and the originals below won the parse, so a close recorded S11 onto a note that still said S10 |
+   | `---extra: abc` (a legal mapping key) | read as the closing fence; the update was inserted **above** it and the originals below won the parse. Close recorded S11 onto a note that still said S10; release auto-arm logged "release_authorized -> true" onto a note that still said `false`, once per retry |
    | a duplicated key | `count=1` rewrote the first; YAML resolves to the last, so the note parsed exactly as before |
    | an empty-valued key (`pr:`) | `^key:\s*.*$` — `\s*` crosses the newline — ate the line beneath it; closing with `--pr` dropped `implementation_authorized` |
    | a value containing `\1` | substituted as a regex replacement, so `re.sub` raised `error: invalid group reference` out of a governed path |

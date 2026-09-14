@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -43,11 +42,15 @@ from shared.sdlc_claim import (
 )
 from shared.sdlc_lifecycle import (
     FRONTMATTER_OK,
+    WRITE_COLLATERAL,
+    WRITE_INEFFECTIVE,
+    WRITE_POSTIMAGE_UNREADABLE,
+    WRITE_PREIMAGE_UNREADABLE,
+    WRITE_VALUE_UNREPRESENTABLE,
     acceptance_criteria_state,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
-    frontmatter_state_from_text,
-    frontmatter_write_partition,
+    frontmatter_set_exactly,
     requires_acceptance_receipt,
     stage_token,
 )
@@ -92,116 +95,44 @@ def _mode(path: Path) -> int:
     return path.stat().st_mode & 0o777
 
 
-_ABSENT = object()
-
-
-def _require_exact_frontmatter_write(
-    preimage: str,
-    postimage: str,
-    key: str,
-    line: str,
-) -> None:
-    """Refuse unless the edit set ``key`` and changed nothing else.
-
-    Setting a key by rewriting its line is an *approximation* of a semantic
-    edit, chosen deliberately: task notes are hand-written and hand-read, and
-    re-serialising the mapping would discard their comments, key order and
-    quoting. An approximation has to be checked against the meaning it stands
-    for. Close projects this text into ``closed/`` and then deletes the active
-    note and every claim lease, so a postimage that parses back wrong is
-    unrecoverable — the task reads as unclosed while the lease that would let
-    anyone close it is gone.
-
-    So the post-condition is stated over the parsed mapping, not over the text:
-    after the write the frontmatter must equal the frontmatter before it with
-    ``key`` set to the intended value, exactly. That is the oracle for the line
-    edit rather than a second guard on the fence boundary, and stating it as
-    one equality is what makes it cover textual edge cases nobody enumerated.
-    Three were measured on the previous writer: a legal ``---extra:`` key read
-    as the closing fence, a duplicated key whose LAST occurrence won the parse,
-    and an empty-valued key whose pattern ate the line beneath it (closing with
-    ``--pr`` dropped ``implementation_authorized`` from the note).
-    """
-
-    try:
-        intent = yaml.safe_load(line)
-    except yaml.YAMLError as exc:
-        raise TerminalCloseError(
-            "terminal_close_frontmatter_value_unrepresentable",
-            f"give {key} a value that renders as one YAML line before close",
-            str(exc).replace("\n", " "),
-        ) from exc
-    if not isinstance(intent, dict) or set(intent) != {key}:
-        # Exactly one entry, for this key. A value carrying a newline renders as
-        # a second declaration, and one that merely restates a key already in
-        # the note passes a value comparison while leaving a contradicting line
-        # in the text — `--pr $'4669\\nrelease_authorized: true'` did exactly
-        # that.
-        raise TerminalCloseError(
-            "terminal_close_frontmatter_value_unrepresentable",
-            f"give {key} a value that renders as one YAML line before close",
-            f"{line!r} does not render as exactly one mapping entry",
-        )
-    before, before_state = frontmatter_state_from_text(preimage)
-    if before_state != FRONTMATTER_OK:
-        raise TerminalCloseError(
-            "terminal_close_frontmatter_malformed",
-            "restore one closed frontmatter mapping before close",
-            f"frontmatter_{before_state}",
-        )
-    after, after_state = frontmatter_state_from_text(postimage)
-    if after_state != FRONTMATTER_OK:
-        raise TerminalCloseError(
-            "terminal_close_frontmatter_malformed",
-            f"give {key} a single-line value in the note frontmatter before close",
-            f"setting {key} left the frontmatter {after_state}",
-        )
-    if after.get(key, _ABSENT) != intent[key]:
-        raise TerminalCloseError(
-            "terminal_close_frontmatter_write_ineffective",
-            f"remove the conflicting {key} entry from the note frontmatter before close",
-            f"{key} still parses as {after.get(key, _ABSENT)!r} after the write",
-        )
-    collateral = sorted(
-        str(name)
-        for name in set(before) | set(after)
-        if name != key and before.get(name, _ABSENT) != after.get(name, _ABSENT)
-    )
-    if collateral:
-        raise TerminalCloseError(
-            "terminal_close_frontmatter_write_collateral",
-            f"move {key} out of the frontmatter's nested structures before close",
-            f"setting {key} also changed {', '.join(collateral)}",
-        )
+#: Close's policy over :func:`frontmatter_set_exactly`: every way the exact
+#: write can fail, mapped to the refusal a lane can act on. Close is the
+#: destructive writer — it projects the postimage into ``closed/`` and deletes
+#: the active note and every claim lease in the same transaction — so an
+#: unapplied edit must stop it rather than reach the filesystem.
+_CLOSE_WRITE_REFUSALS: dict[str, tuple[str, str]] = {
+    WRITE_PREIMAGE_UNREADABLE: (
+        "terminal_close_frontmatter_malformed",
+        "restore one closed frontmatter mapping before close",
+    ),
+    WRITE_POSTIMAGE_UNREADABLE: (
+        "terminal_close_frontmatter_malformed",
+        "give {key} a single-line value in the note frontmatter before close",
+    ),
+    WRITE_VALUE_UNREPRESENTABLE: (
+        "terminal_close_frontmatter_value_unrepresentable",
+        "give {key} a value that renders as one YAML line before close",
+    ),
+    WRITE_INEFFECTIVE: (
+        "terminal_close_frontmatter_write_ineffective",
+        "remove the conflicting {key} entry from the note frontmatter before close",
+    ),
+    WRITE_COLLATERAL: (
+        "terminal_close_frontmatter_write_collateral",
+        "move {key} out of the frontmatter's nested structures before close",
+    ),
+}
 
 
 def _frontmatter_set(text: str, key: str, rendered_value: str) -> str:
-    head, tail, state = frontmatter_write_partition(text)
-    if state != FRONTMATTER_OK:
-        raise TerminalCloseError(
-            "terminal_close_frontmatter_malformed",
-            "restore one closed frontmatter mapping before close",
-            f"frontmatter_{state}",
-        )
-    line = f"{key}: {rendered_value}"
-    # Excluding CR from the match is what keeps a CRLF note CRLF on the rewrite
-    # path: the line's own ending is never part of the replaced span. It is also
-    # why the old `\s*.*$` was destructive — `\s*` crosses newlines, so an
-    # empty-valued key consumed the line beneath it.
-    pattern = rf"(?m)^{re.escape(key)}:[^\r\n]*"
-    if re.search(pattern, head):
-        # Rewrite EVERY occurrence, and substitute through a function so the
-        # value is never read as a backreference. YAML resolves a duplicated
-        # key to the LAST one, so rewriting only the first left the note
-        # parsing exactly as it did before the close.
-        head = re.sub(pattern, lambda _match: line, head)
-    else:
-        # The append path has to carry the ending itself; head ends with CR
-        # exactly when the last frontmatter line did.
-        head += "\n" + line + ("\r" if head.endswith("\r") else "")
-    postimage = head + tail
-    _require_exact_frontmatter_write(text, postimage, key, line)
-    return postimage
+    postimage, state, detail = frontmatter_set_exactly(text, key, rendered_value)
+    if state == FRONTMATTER_OK:
+        return postimage
+    reason_code, repair = _CLOSE_WRITE_REFUSALS.get(
+        state,
+        ("terminal_close_frontmatter_malformed", "restore one closed frontmatter mapping"),
+    )
+    raise TerminalCloseError(reason_code, repair.format(key=key), detail or state)
 
 
 @dataclass(frozen=True)

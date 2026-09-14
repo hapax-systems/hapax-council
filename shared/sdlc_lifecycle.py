@@ -375,6 +375,127 @@ def frontmatter_from_text(text: str) -> dict[str, Any]:
     return frontmatter_state_from_text(text)[0]
 
 
+#: Outcomes of WRITING one frontmatter key. ``FRONTMATTER_OK`` means the note
+#: now parses with that key set and nothing else moved; every other value means
+#: the postimage was rejected and the caller was handed its input back.
+WRITE_PREIMAGE_UNREADABLE = "preimage_unreadable"
+WRITE_POSTIMAGE_UNREADABLE = "postimage_unreadable"
+WRITE_VALUE_UNREPRESENTABLE = "value_unrepresentable"
+WRITE_INEFFECTIVE = "write_ineffective"
+WRITE_COLLATERAL = "write_collateral"
+
+_ABSENT = object()
+
+
+def frontmatter_render_value(value: object) -> str:
+    """Render ``value`` as the value half of one ``key: value`` frontmatter line.
+
+    Through the YAML emitter, so a value that needs quoting gets it. Dumped as a
+    mapping and split rather than dumped bare, because the emitter terminates a
+    bare scalar document with ``\\n...`` — which would render a second line and
+    be refused by :func:`frontmatter_set_exactly` as not one mapping entry.
+    """
+
+    return yaml.safe_dump({"value": value}, sort_keys=False).strip().split(":", 1)[1].strip()
+
+
+def frontmatter_set_exactly(
+    text: str,
+    key: str,
+    rendered_value: str,
+) -> tuple[str, str, str]:
+    """Set one frontmatter key by line edit. Returns ``(text, state, detail)``.
+
+    On any state other than :data:`FRONTMATTER_OK` the returned text is the
+    INPUT, unchanged — the edit is all-or-nothing, and the caller decides
+    whether an unapplied edit is a refusal, a retry, or an error.
+
+    Line-editing rather than re-serialising the mapping is deliberate: task
+    notes are hand-written and hand-read, and a round trip through the YAML
+    emitter would discard their comments, key order and quoting. But a line
+    edit is an *approximation* of a semantic edit, so it is checked against the
+    meaning it stands for:
+
+        after the write the frontmatter parses equal to the frontmatter before
+        it with ``key`` set to the intended value — exactly.
+
+    One equality, stated over the parsed mapping rather than over the text. That
+    is what makes it cover shapes nobody enumerated, and it is why this lives
+    here rather than in each writer: the estate had two of them, and both were
+    wrong in four of the same ways. Measured on their predecessors —
+
+    * a legal ``---extra: abc`` mapping key read as the closing fence, so the
+      update landed ABOVE the real fields and YAML's last-key-wins returned the
+      OLD values. Terminal close projected such a note into ``closed/`` and
+      deleted its claim leases; release auto-arm reported success and appended
+      an audit line on every retry while nothing advanced;
+    * a duplicated key rewritten with ``count=1``, which YAML then resolves to
+      the untouched last occurrence;
+    * ``^key:\\s*.*$``, whose ``\\s*`` crosses the newline, so an empty-valued
+      key consumed the line beneath it (closing with ``--pr`` dropped
+      ``implementation_authorized``);
+    * the value substituted as a regex REPLACEMENT, so a backreference in it
+      raised out of a governed path.
+
+    A capability added to one side of a read/write pair is a defect until the
+    other side has it.
+    """
+
+    line = f"{key}: {rendered_value}"
+    try:
+        intent = yaml.safe_load(line)
+    except yaml.YAMLError as exc:
+        return text, WRITE_VALUE_UNREPRESENTABLE, str(exc).replace("\n", " ")
+    if not isinstance(intent, dict) or set(intent) != {key}:
+        # Exactly one entry, for this key. A value carrying a newline renders a
+        # second declaration; one that restates a key already in the note passes
+        # a value comparison while leaving a contradicting line in the text.
+        return (
+            text,
+            WRITE_VALUE_UNREPRESENTABLE,
+            f"{line!r} does not render as exactly one mapping entry",
+        )
+
+    before, before_state = frontmatter_state_from_text(text)
+    if before_state != FRONTMATTER_OK:
+        return text, WRITE_PREIMAGE_UNREADABLE, before_state
+
+    head, tail, partition_state = frontmatter_write_partition(text)
+    if partition_state != FRONTMATTER_OK:  # pragma: no cover - implied by before_state
+        return text, WRITE_PREIMAGE_UNREADABLE, partition_state
+
+    # Excluding CR from the match is what keeps a CRLF note CRLF on the rewrite
+    # path: the line's own ending is never part of the replaced span.
+    pattern = rf"(?m)^{re.escape(key)}:[^\r\n]*"
+    if re.search(pattern, head):
+        # EVERY occurrence, and through a function so the value is never read as
+        # a backreference.
+        head = re.sub(pattern, lambda _match: line, head)
+    else:
+        # The append path carries the ending itself; head ends with CR exactly
+        # when the last frontmatter line did.
+        head += "\n" + line + ("\r" if head.endswith("\r") else "")
+
+    postimage = head + tail
+    after, after_state = frontmatter_state_from_text(postimage)
+    if after_state != FRONTMATTER_OK:
+        return text, WRITE_POSTIMAGE_UNREADABLE, after_state
+    if after.get(key, _ABSENT) != intent[key]:
+        return (
+            text,
+            WRITE_INEFFECTIVE,
+            f"{key} still parses as {after.get(key, _ABSENT)!r} after the write",
+        )
+    collateral = sorted(
+        str(name)
+        for name in set(before) | set(after)
+        if name != key and before.get(name, _ABSENT) != after.get(name, _ABSENT)
+    )
+    if collateral:
+        return text, WRITE_COLLATERAL, ", ".join(collateral)
+    return postimage, FRONTMATTER_OK, ""
+
+
 def _frontmatter_scalar(value: object) -> str:
     if value is None:
         return ""
@@ -1944,49 +2065,44 @@ def apply_release_auto_arm(
     refreshes ``updated_at``, and appends a single audit line to the body. Pure
     text transform — file IO and the authority-case ledger append are the
     caller's responsibility.
+
+    **Returning ``note_text`` unchanged is a refusal**, and the caller already
+    reads it as one. Every field goes through :func:`frontmatter_set_exactly`,
+    so the arming is applied only if the note comes back parsing with it; the
+    audit line is appended only once all of them did. Before that, this writer
+    found its boundary with its own ``find("\\n---", 4)`` prefix scan — so a
+    note carrying a legal ``---extra: abc`` key had the arming inserted ABOVE
+    its real fields, parsed back as ``release_authorized: false`` at the
+    original stage, and every retry appended another success audit line while
+    nothing advanced. An audit trail that records work that did not happen is
+    worse than a refusal.
     """
 
-    if not note_text.startswith("---"):
-        return note_text
-    end = note_text.find("\n---", 4)
-    if end < 0:
-        return note_text
-    front, body = note_text[: end + 1], note_text[end + 1 :]
-
-    if re.search(r"(?m)^release_authorized:", front):
-        front = re.sub(
-            r"(?m)^release_authorized:\s*.*$", "release_authorized: true", front, count=1
-        )
-    else:
-        front = front.rstrip("\n") + "\nrelease_authorized: true\n"
-
+    updates: list[tuple[str, str]] = [("release_authorized", "true")]
     for key, value in (
         ("release_authorized_head_sha", head_sha),
         ("release_authorized_head_ref", head_ref),
     ):
-        if not value:
-            continue
-        line = yaml.safe_dump({key: value}, sort_keys=False).strip()
-        if re.search(rf"(?m)^{re.escape(key)}:", front):
-            front = re.sub(rf"(?m)^{re.escape(key)}:\s*.*$", line, front, count=1)
-        else:
-            front = front.rstrip("\n") + f"\n{line}\n"
+        if value:
+            updates.append((key, frontmatter_render_value(value)))
 
-    stage_match = re.search(r"(?m)^stage:\s*(.*)$", front)
-    if stage_match:
-        if _stage_below_s7(stage_match.group(1)):
-            front = re.sub(r"(?m)^stage:\s*.*$", "stage: S7_RELEASE", front, count=1)
-    else:
-        front = front.rstrip("\n") + "\nstage: S7_RELEASE\n"
+    frontmatter, state = frontmatter_state_from_text(note_text)
+    if state != FRONTMATTER_OK:
+        return note_text
+    declared_stage = frontmatter.get("stage")
+    if declared_stage is None or _stage_below_s7(_frontmatter_scalar(declared_stage)):
+        updates.append(("stage", "S7_RELEASE"))
+    updates.append(("updated_at", now_iso))
 
-    if re.search(r"(?m)^updated_at:", front):
-        front = re.sub(r"(?m)^updated_at:\s*.*$", f"updated_at: {now_iso}", front, count=1)
-    else:
-        front = front.rstrip("\n") + f"\nupdated_at: {now_iso}\n"
+    armed = note_text
+    for key, rendered in updates:
+        armed, write_state, _detail = frontmatter_set_exactly(armed, key, rendered)
+        if write_state != FRONTMATTER_OK:
+            return note_text
 
     log_line = (
         f"- {now_iso} {role}: release auto-arm (system) — "
         "release_authorized -> true, stage -> S7_RELEASE."
     )
-    body = body.rstrip("\n") + "\n" + log_line + "\n"
-    return front + body
+    ending = "\r\n" if armed.endswith("\r\n") else "\n"
+    return armed.rstrip("\r\n") + ending + log_line + ending
