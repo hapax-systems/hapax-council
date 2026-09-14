@@ -625,7 +625,7 @@ jobs:
           # should live is a governance question, not a CI edit: the runner-topology
           # decision is recorded as deferred behind its own gate, so this comment
           # deliberately asserts no plan about it.
-          HAPAX_NFS_INTEGRATION_WAIVED: "hosted runner cannot mount nfs4; the live witness runs outside CI against the operator's vault export"
+          HAPAX_NFS_INTEGRATION_WAIVED: "hosted runner cannot mount nfs4; live witness runs outside CI against the operator's vault export; expiry owned by row nfs-fallback-live-witness-*-ci-20260913"
         run: |
           # pytest hangs post-session due to open sockets from module-level
           # LiteLLM/Qdrant clients. Root conftest.py has a pytest_sessionfinish

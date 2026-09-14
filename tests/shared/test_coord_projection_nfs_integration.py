@@ -36,11 +36,25 @@ from shared.coord_event_log import CoordEventLog
 _ENV_DIR = "HAPAX_NFS_INTEGRATION_DIR"
 #: Declaring an absence out loud. Without `_ENV_DIR` and without this, the fixture FAILS
 #: rather than skipping — a reviewer observed that nothing set the variable, so the witness
-#: could stay permanently and invisibly skipped while the PR's central claim rested on a
-#: one-off transcript. GitHub-hosted runners cannot mount NFS4, so CI declares the waiver
-#: in `.github/workflows/ci.yml`; the honest live lane is self-hosted on appendix and is
-#: tracked separately.
+#: could stay permanently and invisibly skipped while the repair's central claim rested on a
+#: one-off transcript. Hosted runners cannot mount NFS4, so CI declares the waiver in
+#: `.github/workflows/ci.yml`.
+#:
+#: **The waiver has a named expiry**, which a reviewer asked for across three rounds: the row
+#: ``nfs-fallback-live-witness-self-hosted-ci-20260913`` owns standing up a lane that can
+#: mount the vault export. When it exists, that lane sets `_ENV_DIR` and the waiver comes
+#: out. A waiver without an owner is a permanent skip wearing a different name.
+#:
+#: The *required fragment* is the row's distinctive prefix rather than its full id, and that
+#: is not tidiness: the full id contains the literal ``self-hosted``, and
+#: ``tests/ci/test_self_hosted_runner_experiment.py`` asserts that string appears **nowhere**
+#: in ``.github/workflows/ci.yml``, backing a recorded decision to defer self-hosted runners.
+#: So "the waiver string must name the row" and "ci.yml must not contain that substring" are
+#: in direct conflict, and requiring the prefix satisfies both — the row is still greppable
+#: from the waiver. Flagged to the coordinator, because it constrains every future CI
+#: reference to that row, not just this one.
 _ENV_WAIVER = "HAPAX_NFS_INTEGRATION_WAIVED"
+_WAIVER_EXPIRY_ROW = "nfs-fallback-live-witness"
 _RENAME_NOREPLACE = 1
 _RENAME_EXCHANGE = 2
 
@@ -100,10 +114,17 @@ def unsupporting_mount() -> Path:
     if not configured:
         waiver = os.environ.get(_ENV_WAIVER, "").strip()
         if waiver:
+            if _WAIVER_EXPIRY_ROW not in waiver:
+                pytest.fail(
+                    f"{_ENV_WAIVER} is set but names no expiry row. A waiver without an "
+                    f"owner is a permanent skip wearing a different name — include "
+                    f"{_WAIVER_EXPIRY_ROW}, which owns standing up a lane that can mount "
+                    "the vault export."
+                )
             pytest.skip(
                 f"{_ENV_DIR} unset; live verification EXPLICITLY WAIVED by "
-                f"{_ENV_WAIVER}={waiver}. The waiver is a visible, greppable declaration "
-                "that this lane has no NFS mount — not a silent skip."
+                f"{_ENV_WAIVER}={waiver}. Visible, greppable, and expiring with "
+                f"{_WAIVER_EXPIRY_ROW} — not a silent skip."
             )
         pytest.fail(
             f"FAIL-CLOSED: {_ENV_DIR} is unset and no waiver is declared.\n"

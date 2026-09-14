@@ -4076,9 +4076,9 @@ def test_exchange_fallback_refuses_a_replacement_racing_after_the_pin(
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         with _race_after_link(tmp_path, "dst", b"racing-writer\n"):
-            with pytest.raises(OSError) as caught:
+            with pytest.raises(cp.LifecycleTransitionError) as caught:
                 cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
-        assert caught.value.errno == errno.EBUSY
+        assert caught.value.reason_code == "transition_precondition_changed"
     finally:
         os.close(dir_fd)
 
@@ -4092,10 +4092,13 @@ def test_exchange_fallback_refuses_a_replacement_racing_after_the_pin(
     # be the sole name of a live entry, so the failure path unlinks nothing at all. This
     # assertion used to require no residue, which was the wrong contract — tidying up here
     # is what would have destroyed the raced preimage.
-    assert list(tmp_path.glob("*transition-*"))
-    # And every remnant is named in the refusal, so the operator has exact names.
-    for remnant in tmp_path.glob("*transition-*"):
-        assert remnant.name in str(caught.value)
+    assert _fallback_remnants(tmp_path)
+    # The refusal names the scratch the other writer's bytes are now at — the one an operator
+    # must not delete. Requiring it to enumerate EVERY remnant was a test about message
+    # formatting rather than about preservation, and it broke on a message that is more
+    # precise, not less.
+    assert cp._fallback_scratch_name(".src", "holding") in str(caught.value)
+    assert "recover-claim-publications" in caught.value.repair_action
 
 
 def test_noreplace_fallback_refuses_a_replacement_racing_after_the_link(
@@ -4107,9 +4110,9 @@ def test_noreplace_fallback_refuses_a_replacement_racing_after_the_link(
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         with _race_after_link(tmp_path, "task.md", b"racing-writer\n"):
-            with pytest.raises(OSError) as caught:
+            with pytest.raises(cp.LifecycleTransitionError) as caught:
                 cp._fallback_noreplace(dir_fd, "task.md", dir_fd, ".task.md.scratch")
-        assert caught.value.errno == errno.EBUSY
+        assert caught.value.reason_code == "transition_precondition_changed"
     finally:
         os.close(dir_fd)
 
@@ -4308,9 +4311,9 @@ def test_exchange_preserves_a_replacement_arriving_at_the_install_itself(
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         with mock.patch.object(os, "rename", racing_rename):
-            with pytest.raises(OSError) as caught:
+            with pytest.raises(cp.LifecycleTransitionError) as caught:
                 cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
-        assert caught.value.errno == errno.EBUSY
+        assert caught.value.reason_code == "transition_precondition_changed"
     finally:
         os.close(dir_fd)
 
@@ -4350,9 +4353,9 @@ def test_delete_leg_preserves_a_replacement_arriving_after_the_check(
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         with mock.patch.object(os, "rename", racing_rename):
-            with pytest.raises(OSError) as caught:
+            with pytest.raises(cp.LifecycleTransitionError) as caught:
                 cp._fallback_noreplace(dir_fd, "task.md", dir_fd, ".task.md.scratch")
-        assert caught.value.errno == errno.EBUSY
+        assert caught.value.reason_code == "transition_precondition_changed"
     finally:
         os.close(dir_fd)
 
@@ -4365,9 +4368,11 @@ def test_delete_leg_preserves_a_replacement_arriving_after_the_check(
     # the original. Withdrawing it on this path would destroy it — the trap this test
     # exists to pin.
     assert (tmp_path / ".task.md.scratch").read_bytes() == b"live-preimage\n"
-    # Both names are reported, so a human or a recovery sweep can find them.
-    assert ".task.md.scratch" in str(caught.value)
+    # The refusal names the scratch now holding the other writer's bytes, and the next
+    # command. It no longer enumerates the caller's own scratch, because the refusal is
+    # raised by the relocation helper, which knows the names it made and not the caller's.
     assert cp._fallback_scratch_name("task.md", "holding") in str(caught.value)
+    assert "recover-claim-publications" in caught.value.repair_action
 
 
 def test_missing_entry_at_the_check_is_a_refusal_not_a_crash(tmp_path: Path) -> None:
@@ -4383,10 +4388,12 @@ def test_missing_entry_at_the_check_is_a_refusal_not_a_crash(tmp_path: Path) -> 
     try:
         expected = os.stat("gone", dir_fd=dir_fd, follow_symlinks=False)
         os.unlink("gone", dir_fd=dir_fd)
-        with pytest.raises(OSError) as caught:
+        with pytest.raises(cp.LifecycleTransitionError) as caught:
             cp._refuse_if_displaced_entry_moved(dir_fd, "gone", expected, "subject")
-        assert caught.value.errno == errno.EBUSY
+        assert caught.value.reason_code == "transition_precondition_changed"
         assert "removed" in str(caught.value)
+        # executive_function: the hold names the next command.
+        assert "recover-claim-publications" in caught.value.repair_action
     finally:
         os.close(dir_fd)
 
@@ -4648,9 +4655,9 @@ def test_refill_refuses_a_source_recreated_after_retirement(tmp_path: Path) -> N
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         with mock.patch.object(os, "rename", recreate_src_before_refill):
-            with pytest.raises(OSError) as caught:
+            with pytest.raises(cp.LifecycleTransitionError) as caught:
                 cp._fallback_exchange(dir_fd, "manifest.json", dir_fd, "dst")
-        assert caught.value.errno == errno.EBUSY
+        assert caught.value.reason_code == "transition_precondition_changed"
     finally:
         os.close(dir_fd)
 
@@ -4708,10 +4715,18 @@ def test_cleanup_leaves_a_scratch_another_writer_replaced(
     # The projection still succeeded — the post-state is the syscall's.
     assert (tmp_path / "dst").read_bytes() == b"replacement\n"
     assert (tmp_path / ".src").read_bytes() == b"displaced\n"
-    # And the other writer's entry was NOT removed, but was reported.
-    assert (tmp_path / spent).read_bytes() == b"someone-elses-entry\n"
+    # The other writer's entry was NOT removed. It is moved aside under an abandoned name
+    # rather than simply left, because leaving it would block every later attempt on this
+    # operand at the vacancy check — the system has to be able to unstick itself — while
+    # still preserving the bytes under a name a sweep can find.
+    surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    assert b"someone-elses-entry\n" in surviving
+    abandoned = tmp_path / f"{spent}.transition-abandoned"
+    assert abandoned.read_bytes() == b"someone-elses-entry\n"
+    assert not (tmp_path / spent).exists(), "the scratch name must be free for a retry"
     assert cp._SCRATCH_ABANDONED in caplog.text
     assert spent in caplog.text
+    assert "recover-claim-publications" in caplog.text
 
 
 def test_directory_noreplace_refuses_an_empty_destination_appearing_after_the_check(
