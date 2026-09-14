@@ -359,6 +359,7 @@ def load_live_config(vault: Path) -> dict:
             "points at the host that runs ob, and run 'ob sync-setup' if this vault "
             "has never been connected."
         )
+    unreadable: list[str] = []
     for entry in sorted(root.iterdir()):
         config = entry / "config.json"
         if not config.is_file():
@@ -366,8 +367,14 @@ def load_live_config(vault: Path) -> dict:
         try:
             data = json.loads(config.read_text(encoding="utf-8"))
         except (OSError, ValueError):
+            unreadable.append(str(config))
             continue
-        if Path(data.get("vaultPath", "")).resolve() == vault:
+        # Valid JSON is not necessarily an object. A corrupt config belonging to
+        # some OTHER vault must not break this vault's audit, so note and skip.
+        if not isinstance(data, dict):
+            unreadable.append(f"{config} (JSON is {type(data).__name__}, not an object)")
+            continue
+        if Path(str(data.get("vaultPath", ""))).resolve() == vault:
             missing = [k for k in PERSISTED_REQUIRED_KEYS if k not in data]
             if missing:
                 raise ValueError(
@@ -378,12 +385,36 @@ def load_live_config(vault: Path) -> dict:
                     f"ob persists ({', '.join(PERSISTED_REQUIRED_KEYS)}), and pass "
                     "--excluded-folders explicitly to preflight a list meanwhile."
                 )
+            _validate_config_types(config, data)
             return data
+    detail = ""
+    if unreadable:
+        detail = f" Unreadable config(s) skipped: {'; '.join(unreadable)}."
     raise FileNotFoundError(
-        f"no ob sync configuration found for {vault}. Next: verify the vault path "
-        f"matches the 'vaultPath' in a config under {root}, and run 'ob sync-setup' "
-        "if this vault is not connected yet."
+        f"no ob sync configuration found for {vault}.{detail} Next: verify the vault "
+        f"path matches the 'vaultPath' in a config under {root}, and run "
+        "'ob sync-setup' if this vault is not connected yet."
     )
+
+
+def _validate_config_types(config: Path, data: dict) -> None:
+    """Refuse a config whose fields are the wrong SHAPE.
+
+    Without this a ``null`` or string where a list belongs escapes as a TypeError
+    traceback and exit 1 — an undocumented status with no next action, which is
+    the failure mode this tool is supposed to make impossible.
+    """
+    for key in (PERSISTED_EXCLUSIONS_KEY, PERSISTED_FILE_TYPES_KEY):
+        if key not in data:
+            continue
+        value = data[key]
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ValueError(
+                f"{config}: '{key}' is {value!r}, but ob persists a list of strings "
+                "there. Refusing to guess. Next: inspect the file, re-apply the "
+                "setting with 'ob sync-config', or pass --excluded-folders and "
+                "--file-types explicitly to preflight a list meanwhile."
+            )
 
 
 def _resolve_file_types(args: argparse.Namespace, live: dict) -> tuple[str, ...] | None:

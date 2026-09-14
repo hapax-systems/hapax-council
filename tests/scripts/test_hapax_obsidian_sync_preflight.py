@@ -409,6 +409,127 @@ def test_config_errors_name_a_next_action(vault: pathlib.Path, tmp_path: pathlib
     assert "Next:" in result.stderr
 
 
+@pytest.mark.parametrize(
+    ("entry", "needle"),
+    [
+        ("/20-projects", "not vault-relative"),
+        ("20-projects//_dashboard", "doubled slash"),
+        ("", "empty entry"),
+    ],
+)
+def test_structurally_unmatchable_entries_are_refused(
+    vault: pathlib.Path, entry: str, needle: str
+) -> None:
+    result = _run(str(vault), "--excluded-folders", entry, "--json")
+    assert result.returncode == REFUSED, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["entries_effective"] == 0
+    assert needle in report["findings"][0]["detail"]
+
+
+def test_per_file_stat_failure_refuses(vault: pathlib.Path) -> None:
+    """A dangling symlink makes os.stat fail for ONE file (the directory case is
+    covered separately). A partial total must still not exit 0."""
+    (vault / "30-areas" / "dangling.md").symlink_to(vault / "30-areas" / "gone.md")
+    result = _run(str(vault), "--excluded-folders", "20-projects/_dashboard", "--json")
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    errors = json.loads(result.stdout)["traversal_errors"]
+    assert any("dangling.md" in e["path"] for e in errors)
+
+
+@pytest.mark.parametrize(
+    ("name", "selection", "expected_files"),
+    [
+        ("track.mp3", "audio", 1),
+        ("track.mp3", "video", 0),
+        ("clip.mp4", "video", 1),
+        ("clip.mp4", "audio", 0),
+        ("doc.pdf", "pdf", 1),
+        ("doc.pdf", "image", 0),
+    ],
+)
+def test_ordinary_attachment_classes_gate_on_the_selection(
+    vault: pathlib.Path, name: str, selection: str, expected_files: int
+) -> None:
+    """The webm dual-class and native cases are pinned elsewhere; these are the
+    plain audio/video/pdf branches."""
+    (vault / "90-attachments").mkdir(exist_ok=True)
+    (vault / "90-attachments" / name).write_bytes(b"a" * 64)
+    report = json.loads(
+        _run(
+            str(vault),
+            "--excluded-folders",
+            "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+            "--file-types",
+            selection,
+            "--json",
+        ).stdout
+    )
+    ext = name.rsplit(".", 1)[1]
+    got = report["predicted_upload"]["by_ext"].get(ext, {"files": 0})["files"]
+    assert got == expected_files
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "[]",  # valid JSON, not an object
+        '"a string"',
+    ],
+)
+def test_non_object_config_is_skipped_with_a_named_reason(
+    vault: pathlib.Path, tmp_path: pathlib.Path, payload: str
+) -> None:
+    """Must not raise AttributeError at data.get: that escapes as exit 1 and a
+    traceback instead of the documented exit 3 with a next action."""
+    xdg = tmp_path / "xdg"
+    state = xdg / "obsidian-headless" / "sync" / "broken"
+    state.mkdir(parents=True)
+    (state / "config.json").write_text(payload, encoding="utf-8")
+    result = _run_env(vault, xdg, "--from-sync-config")
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    assert "Unreadable config(s) skipped" in result.stderr
+    assert "Next:" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("allowTypes", None),
+        ("allowTypes", "image"),
+        ("ignoreFolders", None),
+        ("ignoreFolders", "20-projects/_dashboard"),
+        ("ignoreFolders", [1, 2]),
+    ],
+)
+def test_wrong_typed_config_fields_are_refused_with_an_action(
+    vault: pathlib.Path, tmp_path: pathlib.Path, key: str, value: object
+) -> None:
+    """allowTypes: null previously raised TypeError inside file-type resolution."""
+    xdg = tmp_path / "xdg"
+    _write_live_config(xdg, vault, **{key: value})
+    result = _run_env(vault, xdg, "--from-sync-config")
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    assert f"'{key}'" in result.stderr
+    assert "Next:" in result.stderr
+
+
+def test_a_corrupt_other_vault_config_does_not_break_this_audit(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """A broken config belonging to a different vault must be skipped, not fatal."""
+    xdg = tmp_path / "xdg"
+    _write_live_config(xdg, vault, ignoreFolders=["20-projects/_dashboard"])
+    other = xdg / "obsidian-headless" / "sync" / "aaa-other"
+    other.mkdir(parents=True)
+    (other / "config.json").write_text("{not json", encoding="utf-8")
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == OK, result.stdout + result.stderr
+    assert json.loads(result.stdout)["entries_effective"] == 1
+
+
 def test_script_ships_executable_with_a_working_shebang() -> None:
     """Every other test supplies the interpreter explicitly, which would hide a
     100644 mode and a documented entry point that cannot be invoked.
