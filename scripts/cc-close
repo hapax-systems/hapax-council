@@ -34,6 +34,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr) pr="$2"; shift 2 ;;
     --status) final_status="$2"; shift 2 ;;
+    # Expected CURRENT status, revalidated below immediately before mutation. A
+    # generated remediation is written from a sweep's observation and executed
+    # later by a person; without a precondition, a task that has since RESUMED is
+    # still withdrawn by the saved command (`withdrawn` skips the completion
+    # gates). This is the caller saying "only if the world still looks as I found
+    # it", which is the only thing that makes a stored command safe to run verbatim.
+    --expect-status) expect_status="$2"; shift 2 ;;
     --debt) debt_reason="$2"; shift 2 ;;
     --retroactive) retroactive=1; shift ;;
     *) echo "cc-close: unknown arg '$1'" >&2; exit 1 ;;
@@ -140,6 +147,27 @@ PYEOF
   if [[ "$selected_task_id" != "$task_id" ]]; then
     echo "cc-close: refusing — '$note_path' declares task_id '$selected_task_id', not '$task_id'. Next action: pass the exact task id, or repair the note's filename/frontmatter so they agree. Nothing was modified." >&2
     exit 2
+  fi
+  # Expected-state precondition, checked HERE — after the note is resolved and
+  # before anything is written.
+  if [[ -n "${expect_status:-}" ]]; then
+    observed_status="$(python3 -I - "$SCRIPT_DIR/.." "$note_path" <<'PYEOF' || true
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+
+from shared.frontmatter import parse_frontmatter
+
+fm, _body = parse_frontmatter(Path(sys.argv[2]))
+value = (fm or {}).get("status")
+print(str(value).strip() if value is not None else "")
+PYEOF
+    )"
+    if [[ "$observed_status" != "$expect_status" ]]; then
+      echo "cc-close: refusing — '$note_path' is now status '$observed_status', but --expect-status '$expect_status' was required. The task changed since the command was generated. Next action: re-run the sweep and use its current recommendation. Nothing was modified." >&2
+      exit 2
+    fi
   fi
 fi
 if [[ -z "$note_path" ]]; then

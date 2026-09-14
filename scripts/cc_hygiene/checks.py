@@ -1116,6 +1116,7 @@ def check_stale_claim_marker(
     *,
     known_roles: Iterable[str] | None = None,
     cache_dir: Path | None = None,
+    unparsed_notes: Iterable[str] = (),
     now: datetime | None = None,
 ) -> list[HygieneEvent]:
     """Flag runtime claim markers that disagree with the vault SSOT.
@@ -1265,6 +1266,44 @@ def check_stale_claim_marker(
         # inconsistency as the cross-directory case below, and more dangerous:
         # cc-close resolves by filename, so it can select a different note than the
         # one whose status shaped the remediation. Refuse to construct a command.
+        # A note the PARSER rejected is invisible to every judgement below, and the
+        # destructive one — retire-orphan-marker, a manual `rm` no cc-close guard
+        # can intercept — is the one that must not be made blind. Measured: with
+        # active/t1-a.md declaring t1/in_progress but lacking `type`, and a valid
+        # closed/t1-z.md declaring t1 withdrawn, the checker saw only the closed
+        # record and recommended deleting a LIVE lane's marker.
+        #
+        # Filename prefix, because the content could not be parsed: exactly the set
+        # cc-close itself would consider for this id.
+        blind_to = sorted(
+            p
+            for p in unparsed_notes
+            if Path(p).name == f"{task_id}.md" or Path(p).name.startswith(f"{task_id}-")
+        )
+        if blind_to:
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="violation",
+                    task_id=task_id,
+                    session=role,
+                    message=(
+                        f"note(s) that could name task '{task_id}' could not be parsed "
+                        f"({', '.join(blind_to)}) — this sweep cannot see whether the "
+                        "task is live, so no retirement or closure is recommended"
+                    ),
+                    metadata={
+                        "marker": str(marker_dir / f"cc-active-task-{key}"),
+                        "role": role_label,
+                        "unparsed_notes": ", ".join(blind_to),
+                        "next_action": "operator-adjudication",
+                        "reason": "vault_view_incomplete",
+                    },
+                )
+            )
+            continue
+
         dupe_in = [
             name
             for name, counts in (("active", _active_counts), ("closed", _closed_counts))
@@ -1431,7 +1470,14 @@ def check_stale_claim_marker(
                     f"HAPAX_AGENT_NAME={shlex.quote(role)} "
                     f"HAPAX_CC_TASKS_ROOT={shlex.quote(str(vault_root))} "
                     f"HOME={shlex.quote(str(home_for_cache))} "
-                    f"cc-close {shlex.quote(task_id)} --status {shlex.quote(status_text)}"
+                    f"cc-close {shlex.quote(task_id)} --status {shlex.quote(status_text)} "
+                    # The state this sweep OBSERVED, revalidated by cc-close under
+                    # the mutation lock. A generated command is executed later by a
+                    # person; without this, a task that resumed between the sweep
+                    # and the run is still withdrawn, because `withdrawn` skips the
+                    # completion gates. The runbook says to run these verbatim, so
+                    # the command has to carry its own precondition.
+                    f"--expect-status {shlex.quote(status_text)}"
                 )
             events.append(
                 HygieneEvent(

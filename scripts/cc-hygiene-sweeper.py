@@ -253,6 +253,26 @@ def _load_active_notes(vault_root: Path) -> list[TaskNote]:
     return notes
 
 
+def _unparsed_note_paths(vault_root: Path) -> list[str]:
+    """Notes the parser REJECTED, across active/ and closed/.
+
+    `parse_task_note` returns None for anything without `type: cc-task` or a
+    readable task_id/status, and every caller silently drops those. That silence is
+    fine for a check that only reports, and unsafe for one that recommends
+    deleting runtime state: a rejected active note is precisely a task the sweep
+    cannot see, and it may be the live owner of the marker being retired.
+    """
+    rejected: list[str] = []
+    for sub in ("active", "closed"):
+        directory = vault_root / sub
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.md")):
+            if parse_task_note(path) is None:
+                rejected.append(str(path))
+    return rejected
+
+
 def _load_closed_notes(vault_root: Path) -> list[TaskNote]:
     """Parse closed/*.md notes for refusal-dormancy check (best-effort)."""
     closed = vault_root / "closed"
@@ -483,6 +503,7 @@ def run_sweep(
                 notes,
                 closed_notes,
                 cache_dir=claim_marker_dir,
+                unparsed_notes=_unparsed_note_paths(vault_root),
                 now=now,
             )
         )
