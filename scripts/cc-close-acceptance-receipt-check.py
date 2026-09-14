@@ -48,13 +48,13 @@ semantics under an unrelated row, during known mount instability, is how
 incidents are made. The narrowing (fail-open only for MISSING, fail-closed for
 unreadable) wants its own row and its own witness.
 
-STATUS OF THAT DEFERRAL, stated exactly rather than implied: **no follow-up row
-has been minted.** One was requested from the coordinator on 2026-09-14; the
-task store was searched at 06:4xZ and contains no row for it. This docstring is
-therefore the ONLY place the deferral is recorded, which is weaker than it
-should be — a comment is not a tracked obligation. Earlier revisions of this
-note said the deferral was "tracked", which overstated it. If you are reading
-this and the narrowing still has no row, that is the finding.
+STATUS OF THAT DEFERRAL: tracked as
+``cc-close-gate-unreadable-note-fail-open-20260914`` (filed 2026-09-14T06:45Z).
+
+Recorded honestly because the bookkeeping was the part that went wrong: earlier
+revisions of this docstring called the deferral "tracked" while no row existed,
+and two reviewers had to raise it three times before one was filed. A request is
+not a disposition, and a comment is not a tracked obligation.
 """
 
 from __future__ import annotations
