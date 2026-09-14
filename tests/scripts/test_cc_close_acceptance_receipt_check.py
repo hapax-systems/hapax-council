@@ -23,6 +23,8 @@ import textwrap
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CC_CLOSE = REPO_ROOT / "scripts" / "cc-close"
 CHECKER = REPO_ROOT / "scripts" / "cc-close-acceptance-receipt-check.py"
@@ -319,6 +321,58 @@ class TestIndependentReviewRequirement:
         assert "malformed" in message
         assert "not a recognized" in message
 
+    @pytest.mark.parametrize(
+        ("label", "body"),
+        [
+            (
+                "parse_error",
+                "---\ntask_id: task-p\nverification_surface: [\n"
+                "review_requirement:\n  independent_review_required: true\n---\n\n# task-p\n",
+            ),
+            (
+                "unterminated",
+                "---\ntask_id: task-p\nreview_requirement:\n"
+                "  independent_review_required: true\n\n# task-p no closing fence\n",
+            ),
+            (
+                "not_a_mapping",
+                "---\n- task_id: task-p\n- review_requirement:\n"
+                "    independent_review_required: true\n---\n\n# task-p\n",
+            ),
+        ],
+    )
+    def test_unparseable_frontmatter_blocks_rather_than_reading_as_no_requirement(
+        self, tmp_path: Path, label: str, body: str
+    ) -> None:
+        """A parse failure was being reported as an absent requirement.
+
+        Each of these notes DECLARES independent review. Before the fix the YAML
+        collapsed to ``{}`` and the gate returned 0 with "no receipt-arming
+        declaration" — admitting a row precisely because it was too broken to
+        read. The file reads fine; only its content is malformed, so this is
+        fail-closed on content and carries none of the unreadable-FILE
+        availability risk.
+        """
+        checker = _load_checker()
+        note = tmp_path / "task-p.md"
+        note.write_text(body, encoding="utf-8")
+
+        code, message = checker.gate(note)
+
+        assert code == 2, f"{label} was admitted"
+        assert "frontmatter_unreadable" in message
+        assert "no receipt-arming declaration" not in message
+
+    def test_absent_frontmatter_is_not_treated_as_unparseable(self, tmp_path: Path) -> None:
+        """A plain markdown file declares nothing — that is not a parse failure."""
+        checker = _load_checker()
+        note = tmp_path / "plain.md"
+        note.write_text("# just a body\n\nno frontmatter here\n", encoding="utf-8")
+
+        code, _ = checker.gate(note)
+
+        assert code == 0
+
     def test_malformed_container_refusal_does_not_blame_the_flag(self, tmp_path: Path) -> None:
         """The flag may be valid; the enclosing shape is the failure.
 
@@ -470,6 +524,30 @@ class TestCcCloseEndToEnd:
         assert "independent_review_required" in result.stderr
         assert (vault / "active" / "task-v.md").exists()
         assert not (vault / "closed" / "task-v.md").exists()
+
+    def test_cc_close_blocks_a_note_whose_frontmatter_does_not_parse(self, tmp_path: Path) -> None:
+        """End to end: a review-demanding note too broken to read is not admitted."""
+        home = tmp_path / "home"
+        vault = _vault(home)
+        (vault / "active" / "task-p.md").write_text(
+            "---\n"
+            "type: cc-task\n"
+            "task_id: task-p\n"
+            "status: in_progress\n"
+            "quality_floor: verification_receipt\n"
+            "verification_surface: [\n"
+            "review_requirement:\n"
+            "  independent_review_required: true\n"
+            "---\n\n# task-p\n",
+            encoding="utf-8",
+        )
+
+        result = _run_close(home, "task-p")
+
+        assert result.returncode != 0
+        assert "frontmatter_unreadable" in result.stderr
+        assert (vault / "active" / "task-p.md").exists()
+        assert not (vault / "closed" / "task-p.md").exists()
 
     def test_cc_close_closes_review_floor_task_with_receipt_and_moves_it(
         self, tmp_path: Path

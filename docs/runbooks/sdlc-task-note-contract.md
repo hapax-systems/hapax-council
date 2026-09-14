@@ -29,10 +29,22 @@ reliable legibility (ideally all three).*
    A row may demand independent review under **any** quality floor, and a
    `verification_receipt` row that did exactly that closed unreviewed on
    2026-09-13 before this was enforced. A demand in either location arms
-   (fail-closed on disagreement). A `review_requirement` that is present but
-   unreadable — not a mapping, or a flag value the route schema rejects — also
-   arms, reported as `…:malformed`: an unknown review requirement may not read
-   as no requirement. Only an explicit, schema-valid `false` declines.
+   (fail-closed on disagreement). Only an explicit, schema-valid `false`
+   declines.
+
+   **Present but unreadable also arms, and the reason names which level failed**
+   — an unknown review requirement may not read as no requirement. Match the
+   refusal to the repair:
+
+   | Reason in the refusal | What is wrong | Repair |
+   |---|---|---|
+   | `review_requirement.independent_review_required:malformed` | the flag value is not a boolean the route schema accepts | set it to `true` or `false` |
+   | `review_requirement:malformed_container` | `review_requirement` — or the `route_metadata` holding it — is a list or scalar where a mapping is required | fix the **shape**; the flag value may already be correct, do not change it |
+   | `frontmatter_unreadable:<state>` | the note's own YAML does not parse (`unterminated`, `parse_error`, `not_a_mapping`) | repair the frontmatter block |
+
+   The last one is fail-closed on *content*, not on I/O: the file read fine and
+   its YAML is malformed. A note too broken to read cannot be shown to require
+   no review, so it is refused rather than admitted.
 
    Recheck — the close gate alone does not pin all of the above. The boolean
    spellings are pinned by the schema-parity suite and the admission/minting

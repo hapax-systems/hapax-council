@@ -187,24 +187,65 @@ def acceptance_criteria_state(text: str) -> AcceptanceCriteriaState:
     )
 
 
-def frontmatter_from_text(text: str) -> dict[str, Any]:
-    """Return YAML frontmatter from a markdown note, or an empty mapping."""
+#: Outcomes of reading a note's frontmatter. ``ok`` and ``absent`` both yield an
+#: empty-or-populated mapping that can be trusted; the rest mean the mapping is
+#: empty because parsing FAILED, not because nothing was declared.
+FRONTMATTER_OK = "ok"
+FRONTMATTER_ABSENT = "absent"
+FRONTMATTER_UNTERMINATED = "unterminated"
+FRONTMATTER_PARSE_ERROR = "parse_error"
+FRONTMATTER_NOT_A_MAPPING = "not_a_mapping"
+
+#: States where the returned mapping is empty because the document could not be
+#: read, so its emptiness carries no information about what the note declares.
+FRONTMATTER_UNREADABLE_STATES: Final[frozenset[str]] = frozenset(
+    {FRONTMATTER_UNTERMINATED, FRONTMATTER_PARSE_ERROR, FRONTMATTER_NOT_A_MAPPING}
+)
+
+
+def frontmatter_state_from_text(text: str) -> tuple[dict[str, Any], str]:
+    """Frontmatter plus WHY it is what it is.
+
+    ``frontmatter_from_text`` collapses every failure to ``{}``, which makes a
+    note whose YAML does not parse indistinguishable from a note that declares
+    nothing. For a gate that arms on declarations, those are opposite meanings:
+    the first is "I cannot tell what this note requires", the second is "it
+    requires nothing". Callers that must not treat the former as the latter use
+    this and check :data:`FRONTMATTER_UNREADABLE_STATES`.
+
+    This is the outermost instance of the rule the receipt triggers already
+    apply at every inner level — a present-but-unreadable container may not read
+    as absent. The document itself is just the outermost container.
+    """
 
     if not text.startswith("---"):
-        return {}
+        return {}, FRONTMATTER_ABSENT
     end = text.find("\n---", 4)
     if end < 0:
-        return {}
+        return {}, FRONTMATTER_UNTERMINATED
     raw = text[4:end].strip()
     if not raw:
-        return {}
+        return {}, FRONTMATTER_ABSENT
     try:
         loaded = yaml.safe_load(raw)
     except yaml.YAMLError:
-        return {}
+        return {}, FRONTMATTER_PARSE_ERROR
     if isinstance(loaded, dict):
-        return loaded
-    return {}
+        return loaded, FRONTMATTER_OK
+    if loaded is None:
+        return {}, FRONTMATTER_ABSENT
+    return {}, FRONTMATTER_NOT_A_MAPPING
+
+
+def frontmatter_from_text(text: str) -> dict[str, Any]:
+    """Return YAML frontmatter from a markdown note, or an empty mapping.
+
+    Lossy by design and kept that way for its many callers: every failure mode
+    collapses to ``{}``. Callers that must distinguish "declares nothing" from
+    "could not be parsed" use :func:`frontmatter_state_from_text`.
+    """
+
+    return frontmatter_state_from_text(text)[0]
 
 
 def _frontmatter_scalar(value: object) -> str:

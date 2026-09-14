@@ -21,6 +21,12 @@ import pytest
 
 from shared.blocked_witness import evaluate_blocked_witness
 from shared.sdlc_lifecycle import (
+    FRONTMATTER_ABSENT,
+    FRONTMATTER_NOT_A_MAPPING,
+    FRONTMATTER_OK,
+    FRONTMATTER_PARSE_ERROR,
+    FRONTMATTER_UNREADABLE_STATES,
+    FRONTMATTER_UNTERMINATED,
     PR_ACTIONS,
     RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
     RECEIPT_TRIGGER_MALFORMED_CONTAINER,
@@ -37,6 +43,7 @@ from shared.sdlc_lifecycle import (
     acceptance_receipt_triggers,
     active_blocked_task_blockers,
     frontmatter_from_text,
+    frontmatter_state_from_text,
     is_active_blocked_with_evidence,
     is_dependency_blocked_reason,
     is_legal_stage_edge,
@@ -1108,6 +1115,58 @@ class TestMalformedBlockShape:
     def test_missing_block_is_still_absent(self) -> None:
         """The distinction that matters: absent is not malformed."""
         assert acceptance_receipt_triggers({"quality_floor": "verification_receipt"}) == ()
+
+
+class TestFrontmatterParseState:
+    """The document is the outermost container, and it gets the same rule.
+
+    ``frontmatter_from_text`` collapses every failure to ``{}``, so a note whose
+    YAML does not parse is indistinguishable from one that declares nothing. For
+    a gate that arms on declarations those are opposite meanings, and the gate
+    was reporting the first as the second.
+    """
+
+    def test_well_formed_frontmatter_is_ok(self) -> None:
+        loaded, state = frontmatter_state_from_text("---\ntask_id: x\n---\nbody\n")
+        assert state == FRONTMATTER_OK
+        assert loaded == {"task_id": "x"}
+
+    def test_no_frontmatter_is_absent_not_unreadable(self) -> None:
+        """A plain markdown file declares nothing; that is not a failure."""
+        _, state = frontmatter_state_from_text("just a body\n")
+        assert state == FRONTMATTER_ABSENT
+        assert state not in FRONTMATTER_UNREADABLE_STATES
+
+    def test_empty_frontmatter_is_absent(self) -> None:
+        _, state = frontmatter_state_from_text("---\n\n---\nbody\n")
+        assert state == FRONTMATTER_ABSENT
+        assert state not in FRONTMATTER_UNREADABLE_STATES
+
+    def test_unterminated_frontmatter_is_unreadable(self) -> None:
+        _, state = frontmatter_state_from_text("---\ntask_id: x\nbody without close\n")
+        assert state == FRONTMATTER_UNTERMINATED
+        assert state in FRONTMATTER_UNREADABLE_STATES
+
+    def test_invalid_yaml_is_unreadable(self) -> None:
+        text = "---\nverification_surface: [\nreview_requirement:\n  a: b\n---\nbody\n"
+        _, state = frontmatter_state_from_text(text)
+        assert state == FRONTMATTER_PARSE_ERROR
+        assert state in FRONTMATTER_UNREADABLE_STATES
+
+    def test_sequence_document_is_unreadable(self) -> None:
+        _, state = frontmatter_state_from_text("---\n- a\n- b\n---\nbody\n")
+        assert state == FRONTMATTER_NOT_A_MAPPING
+        assert state in FRONTMATTER_UNREADABLE_STATES
+
+    def test_lossy_helper_still_returns_the_same_mapping(self) -> None:
+        """`frontmatter_from_text` keeps its contract for its many callers."""
+        for text in (
+            "---\ntask_id: x\n---\nbody\n",
+            "---\nverification_surface: [\n---\nbody\n",
+            "---\n- a\n---\nbody\n",
+            "no frontmatter\n",
+        ):
+            assert frontmatter_from_text(text) == frontmatter_state_from_text(text)[0]
 
 
 class TestMalformedContainerAtEveryLevel:

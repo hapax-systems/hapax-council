@@ -61,6 +61,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.sdlc_lifecycle import (  # noqa: E402
     ACCEPTANCE_RECEIPT_REQUIRED_FIELDS,
+    FRONTMATTER_UNREADABLE_STATES,
     RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
     RECEIPT_TRIGGER_MALFORMED_CONTAINER,
     RECEIPT_TRIGGER_MALFORMED_REVIEW,
@@ -68,7 +69,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_blockers,
     acceptance_receipt_path,
     acceptance_receipt_triggers,
-    frontmatter_from_text,
+    frontmatter_state_from_text,
 )
 
 
@@ -86,7 +87,38 @@ def gate(path: Path) -> tuple[int, str]:
     except OSError as exc:
         return 0, f"fail-OPEN: source unreadable ({exc})"
 
-    frontmatter = frontmatter_from_text(text)
+    frontmatter, parse_state = frontmatter_state_from_text(text)
+    if parse_state in FRONTMATTER_UNREADABLE_STATES:
+        # The file READ fine; its content does not parse. That is content, not
+        # infrastructure, so it is fail-CLOSED — distinct from the unreadable-file
+        # exception above, and carrying none of its availability risk: this is
+        # deterministic in the note's own bytes, not in the mount.
+        #
+        # Without this, a YAML error collapses the frontmatter to {} and the gate
+        # reports "no receipt-arming declaration" — a parse failure reported as an
+        # absent requirement, which is the outermost instance of the rule every
+        # inner container already follows.
+        return 2, "\n".join(
+            [
+                f"cc-close BLOCKED: task note frontmatter could not be parsed ({parse_state}).",
+                "",
+                f"  - frontmatter_unreadable:{parse_state}",
+                "",
+                "A note whose frontmatter does not parse cannot be shown to require no review,",
+                "so it is refused rather than admitted. This is NOT the missing/unreadable-file",
+                "exception: the file was read successfully and its YAML is malformed.",
+                "",
+                "Repair the frontmatter, then re-run. Common causes:",
+                "  unterminated   — the opening '---' has no closing '---' line",
+                "  parse_error    — invalid YAML (an unclosed '[' or '{' is the usual cause)",
+                "  not_a_mapping  — the document is a sequence or scalar, not a block of fields",
+                "",
+                f"  File: {path}",
+                "",
+                "Bypass for incident response: HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1",
+            ]
+        )
+
     triggers = acceptance_receipt_triggers(frontmatter)
     if not triggers:
         return 0, "no receipt-arming declaration — acceptance-receipt gate does not apply"
