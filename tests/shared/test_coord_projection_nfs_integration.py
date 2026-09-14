@@ -163,11 +163,20 @@ def unsupporting_mount() -> Path:
             f'  {_ENV_WAIVER}="hosted runner cannot mount nfs4; expiry owned by row '
             f'{_WAIVER_EXPIRY_ANCHORS[0]}-*-{_WAIVER_EXPIRY_ANCHORS[1]}"'
         )
+    # Past this point the operator has EXPLICITLY configured a mount, and every remaining
+    # outcome is FAIL rather than skip.
+    #
+    # These were skips, and a reviewer was right that it reopened the hole the fail-closed
+    # design exists to close: point the variable at the wrong directory — an ext4 path, a
+    # typo, an unwritable one — and the witness skipped silently, with no waiver and nothing
+    # declaring the absence. A skip is only ever legitimate when NO mount was offered and a
+    # governed waiver names the row that owns closing the gap. A configuration that does not
+    # do what it claims is a broken configuration, and it should be red.
     root = Path(configured).expanduser()
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        pytest.skip(f"{_ENV_DIR}={root} is not writable: {exc}")
+        pytest.fail(f"{_ENV_DIR}={root} is configured but not writable: {exc}")
 
     directory = root / f"lifecycle-{uuid.uuid4().hex[:8]}"
     directory.mkdir()
@@ -177,15 +186,18 @@ def unsupporting_mount() -> Path:
     exchange = _flag_errno(directory, _RENAME_EXCHANGE, occupy_destination=True)
     noreplace = _flag_errno(directory, _RENAME_NOREPLACE, occupy_destination=False)
     if exchange == 0 or noreplace == 0:
-        pytest.skip(
-            f"{directory} supports renameat2 flags "
-            f"(EXCHANGE errno={exchange}, NOREPLACE errno={noreplace}) — "
-            "the fallback would not be reached, so this proves nothing"
+        pytest.fail(
+            f"{_ENV_DIR}={directory} SUPPORTS renameat2 flags "
+            f"(EXCHANGE errno={exchange}, NOREPLACE errno={noreplace}), so the fallback "
+            "would never be reached and a green run here would prove nothing. Point it at a "
+            "filesystem that refuses the flags — an NFS4 mount — or unset it and declare a "
+            f"governed {_ENV_WAIVER} instead."
         )
     if exchange not in cp._RENAME_FLAG_UNSUPPORTED_ERRNOS:
-        pytest.skip(
-            f"{directory} fails EXCHANGE with errno={exchange}, "
-            "which is not an unsupported-flag errno"
+        pytest.fail(
+            f"{_ENV_DIR}={directory} fails EXCHANGE with errno={exchange}, which is not an "
+            "unsupported-flag errno. That is a broken mount rather than one lacking the "
+            "flag, and this witness cannot distinguish the repair from the breakage on it."
         )
     return directory
 
