@@ -203,6 +203,34 @@ FRONTMATTER_UNREADABLE_STATES: Final[frozenset[str]] = frozenset(
 )
 
 
+def is_frontmatter_fence(line: str) -> bool:
+    """True when ``line`` is a YAML document marker usable as a frontmatter fence.
+
+    The grammar, stated once rather than approximated: ``---`` at **column 0**,
+    followed by end-of-line or whitespace. Everything else is content.
+
+        ---                     fence
+        ---␣                    fence (trailing whitespace)
+        --- # task metadata     fence (a comment after the marker is legal YAML)
+        ---extra: abc           NOT a fence — a legal mapping key
+        ␣␣---                   NOT a fence — indented, so it is scalar content
+        ----                    NOT a fence
+
+    Three successive review rounds each corrected one of those rows by adjusting
+    a predicate — ``startswith`` admitted the key, ``strip()`` admitted the
+    indented line, ``rstrip() == "---"`` rejected the comment — and each
+    correction reopened or broke a different row. They are not four rules; they
+    are one rule the approximations kept missing. The gate reads frontmatter to
+    decide whether review is required, so a mis-detected fence silently truncates
+    a task's declarations.
+    """
+
+    if not line.startswith("---"):
+        return False
+    rest = line[3:]
+    return rest == "" or rest[0] in " \t"
+
+
 def frontmatter_state_from_text(text: str) -> tuple[dict[str, Any], str]:
     """Frontmatter plus WHY it is what it is.
 
@@ -227,17 +255,11 @@ def frontmatter_state_from_text(text: str) -> tuple[dict[str, Any], str]:
     # success. Line-based matching also makes ``---\n---`` and ``---\n\n---``
     # agree: both are empty frontmatter, where the offset scan called the first
     # unterminated and the second absent.
-    # ``rstrip``, never ``strip``: a fence sits at column 0. An INDENTED ``---``
-    # is content — inside a literal or folded scalar (``description: |``) it is
-    # part of the value, and treating it as the closing fence truncates the
-    # block and drops every field below, including a review demand or the
-    # quality floor itself. Trailing whitespace on a real fence is tolerated;
-    # leading whitespace disqualifies it.
     lines = text.split("\n")
-    if lines[0].rstrip() != "---":
+    if not is_frontmatter_fence(lines[0]):
         return {}, FRONTMATTER_ABSENT
     for index in range(1, len(lines)):
-        if lines[index].rstrip() == "---":
+        if is_frontmatter_fence(lines[index]):
             raw = "\n".join(lines[1:index]).strip()
             break
     else:

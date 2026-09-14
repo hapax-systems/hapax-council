@@ -47,6 +47,14 @@ error would wedge every closure during a blip. Changing a gate's availability
 semantics under an unrelated row, during known mount instability, is how
 incidents are made. The narrowing (fail-open only for MISSING, fail-closed for
 unreadable) wants its own row and its own witness.
+
+STATUS OF THAT DEFERRAL, stated exactly rather than implied: **no follow-up row
+has been minted.** One was requested from the coordinator on 2026-09-14; the
+task store was searched at 06:4xZ and contains no row for it. This docstring is
+therefore the ONLY place the deferral is recorded, which is weaker than it
+should be — a comment is not a tracked obligation. Earlier revisions of this
+note said the deferral was "tracked", which overstated it. If you are reading
+this and the narrowing still has no row, that is the finding.
 """
 
 from __future__ import annotations

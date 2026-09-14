@@ -1183,6 +1183,28 @@ class TestFrontmatterParseState:
 
         assert adjacent == blank_separated == ({}, FRONTMATTER_ABSENT)
 
+    def test_a_commented_opening_fence_still_arms_the_gate(self) -> None:
+        """``--- # task metadata`` is a supported header and a legal YAML marker.
+
+        Tightening the opening-fence check to an exact ``---`` rejected it, so a
+        note carrying BOTH the frontier floor and an independent-review demand
+        reported ``absent`` and the gate returned 0 — a previously enforced note
+        silently disarmed. Base blocked it; that head did not.
+        """
+        text = (
+            "--- # task metadata\n"
+            "quality_floor: frontier_review_required\n"
+            "review_requirement:\n  independent_review_required: true\n---\nbody\n"
+        )
+
+        loaded, state = frontmatter_state_from_text(text)
+
+        assert state == FRONTMATTER_OK
+        assert acceptance_receipt_triggers(loaded) == (
+            RECEIPT_TRIGGER_REVIEW_FLOOR,
+            RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+        )
+
     def test_indented_dashes_inside_a_literal_scalar_are_not_a_fence(self) -> None:
         """A fence sits at column 0; an indented ``---`` is scalar content.
 

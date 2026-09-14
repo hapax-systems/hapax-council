@@ -104,6 +104,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     assess_release_auto_arm,
     frontmatter_from_text,
     frontmatter_state_from_text,
+    is_frontmatter_fence,
     release_auto_arm_waivers,
     task_closure_validity,
 )
@@ -1689,10 +1690,10 @@ def _frontmatter_block_text(text: str) -> str:
     """
 
     lines = text.split("\n")
-    if not lines or lines[0].rstrip() != "---":
+    if not lines or not is_frontmatter_fence(lines[0]):
         return ""
     for index in range(1, len(lines)):
-        if lines[index].rstrip() == "---":
+        if is_frontmatter_fence(lines[index]):
             return "\n".join(lines[1:index])
     return ""
 
@@ -1722,7 +1723,17 @@ def _frontmatter(path: Path) -> tuple[dict[str, Any] | None, str | None]:
         # as unlinked — the same "reason code names the wrong failure" defect
         # this check exists to prevent, pointed the other way.
         return None, "ANSI escape sequences in frontmatter"
-    if state == FRONTMATTER_ABSENT and not text.startswith("---"):
+    if state == FRONTMATTER_ABSENT:
+        first_line = text.split("\n", 1)[0]
+        if is_frontmatter_fence(first_line):
+            return parsed, None  # a real fence enclosing nothing: empty frontmatter
+        if text.startswith("---"):
+            # Looks like an attempted fence but is not one (e.g. "---extra: [").
+            # Must NOT read as valid-empty: the loader would drop the note and
+            # admission would report a missing task link with no repair
+            # diagnostic — the 2026-06-10 "reason code names the wrong failure"
+            # shape again.
+            return None, "invalid opening frontmatter fence"
         return None, "no frontmatter fence"
     if state == FRONTMATTER_UNTERMINATED:
         return None, "unterminated frontmatter fence"

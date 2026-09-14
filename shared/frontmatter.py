@@ -17,6 +17,7 @@ import yaml
 
 from shared.governance.consent_label import ConsentLabel
 from shared.governance.labeled import Labeled
+from shared.sdlc_lifecycle import is_frontmatter_fence
 
 FrontmatterErrorKind = Literal[
     "read_error",
@@ -73,15 +74,17 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
     else:
         text = path_or_text
 
-    # Fences are COMPLETE lines at column 0. A substring scan for "\n---" also
-    # matched `---extra: abc` (a legal YAML key) and an indented `---` inside a
-    # literal or folded scalar, truncating the block there and silently dropping
-    # every field below — including, on the SDLC path, a task's declared review
-    # requirement, so a row closed unreviewed because its metadata had been cut
-    # in half. ``rstrip`` tolerates trailing whitespace on a real fence;
-    # leading whitespace disqualifies it, because indentation means content.
+    # Fence detection is the SHARED grammar (``is_frontmatter_fence``): ``---``
+    # at column 0, followed by end-of-line or whitespace. A substring scan for
+    # "\n---" also matched `---extra: abc` (a legal mapping key) and an indented
+    # `---` inside a literal scalar, truncating the block there and silently
+    # dropping every field below — on the SDLC path, a task's declared review
+    # requirement, so a row closed unreviewed because its metadata was cut in
+    # half. Importing the predicate rather than restating it is deliberate: this
+    # parser and the SDLC one disagreeing about what a fence is was itself a
+    # defect.
     lines = text.split("\n")
-    if lines[0].rstrip() != "---":
+    if not is_frontmatter_fence(lines[0]):
         return FrontmatterParseResult(
             frontmatter=None,
             body=text,
@@ -91,7 +94,7 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
 
     close_index = None
     for index in range(1, len(lines)):
-        if lines[index].rstrip() == "---":
+        if is_frontmatter_fence(lines[index]):
             close_index = index
             break
     if close_index is None:

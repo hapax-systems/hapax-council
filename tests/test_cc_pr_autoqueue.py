@@ -9737,6 +9737,36 @@ def test_admission_sees_a_demand_below_a_dash_prefixed_yaml_key(tmp_path: Path) 
     assert "missing_acceptance_receipt" in report["decisions"][0]["reasons"]
 
 
+def test_invalid_opening_fence_is_diagnosed_not_silently_empty(tmp_path: Path) -> None:
+    """An attempted-but-invalid fence must not read as valid empty frontmatter.
+
+    For a note beginning ``---extra: [`` the loader would otherwise drop the
+    note with TASK_NOTE_PARSE_FAILURES empty, so admission reports a missing
+    task link with no repair diagnostic — the 2026-06-10 "reason code names the
+    wrong failure" shape.
+    """
+    vault = _make_vault(tmp_path)
+    note = vault / "active" / "bad-fence.md"
+    note.write_text("---extra: [\ntask_id: bad-fence\n---\nbody\n", encoding="utf-8")
+
+    parsed, error = autoqueue._frontmatter(note)
+
+    assert parsed is None
+    assert error == "invalid opening frontmatter fence"
+
+
+def test_empty_frontmatter_between_real_fences_is_not_an_error(tmp_path: Path) -> None:
+    """The distinction the diagnostic above depends on: a real fence enclosing nothing."""
+    vault = _make_vault(tmp_path)
+    note = vault / "active" / "empty-fm.md"
+    note.write_text("---\n---\nbody\n", encoding="utf-8")
+
+    parsed, error = autoqueue._frontmatter(note)
+
+    assert error is None
+    assert parsed == {}
+
+
 def test_ansi_in_the_body_does_not_invalidate_the_metadata(tmp_path: Path) -> None:
     """The ANSI check is scoped to the frontmatter block, not the whole file.
 

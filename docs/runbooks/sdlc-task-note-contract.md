@@ -54,9 +54,29 @@ reliable legibility (ideally all three).*
    ```
    uv run pytest tests/scripts/test_cc_close_acceptance_receipt_check.py \
                  tests/shared/test_sdlc_lifecycle.py \
+                 tests/shared/test_frontmatter.py \
                  tests/test_cc_pr_autoqueue.py \
                  tests/test_cc_pr_review_dispatch.py -q
    ```
+
+   The boolean spellings above are a **reimplementation** of the route schema's
+   coercion (the close gate runs under a bare `python3` and must not import
+   pydantic). Their agreement with the real model is pinned by test, not by
+   inspection — recheck it directly after any pydantic upgrade:
+
+   ```
+   uv run pytest tests/shared/test_sdlc_lifecycle.py::TestSchemaParity -q
+   ```
+
+   Residual risk, stated: a pydantic upgrade merged without rerunning that suite
+   could briefly reopen the parser-boundary gap the parity test exists to close.
+
+   **Frontmatter fence grammar** (one rule, `shared.sdlc_lifecycle.is_frontmatter_fence`):
+   `---` at column 0, followed by end-of-line or whitespace. So `---`,
+   `--- `, and `--- # task metadata` are fences; `---extra: abc` (a legal
+   mapping key), an indented `  ---` inside a literal scalar, and `----` are
+   not. A mis-detected fence truncates the block and silently drops every field
+   below it, including the review declarations above.
 4. Reason codes must name the true failure: an unparseable note is reported as
    such by `cc-pr-autoqueue`, never as a generic missing link.
 
