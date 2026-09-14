@@ -3835,22 +3835,53 @@ def _retire_scratch(
     operand at the vacancy check, so the system cannot unstick itself. Moving it preserves
     the bytes *and* clears the name.
 
-    Never raises. By the time cleanup runs the projection has succeeded, so raising would
-    discard a verified post-state over a remnant. Leaving or abandoning is recoverable;
-    destroying an entry is not.
+    **Never raises, on every branch** — by the time cleanup runs the projection has
+    succeeded, so raising would discard a verified post-state over a remnant. That was a
+    promise before it was true: the initial ``lstat`` and the identity-matched ``unlink``
+    caught only ``FileNotFoundError``, so an ``EIO`` from either escaped and failed a
+    completed projection. Every OS error is now absorbed and reported; the return value says
+    whether the name is free. Leaving or abandoning is recoverable; destroying an entry is
+    not, and neither is failing a transition that already succeeded.
 
     Returns True when the scratch name is free afterwards, False when it was left in place.
     """
 
+    # "Never raises" has to be true of EVERY branch, not just the interesting ones. It was
+    # not: the initial `lstat` and the identity-matched `unlink` caught only
+    # `FileNotFoundError`, so an `EIO` from either escaped the helper and failed a
+    # projection that had already succeeded — the exact outcome the docstring promises this
+    # function will not cause. A reviewer found it by replay.
     try:
         current = os.lstat(name, dir_fd=dir_fd)
     except FileNotFoundError:
         return True
+    except OSError as exc:
+        _logger.warning(
+            "%s: %s name=%s could not be examined (%s) — left in place; retries on this "
+            "operand will refuse with transition_projection_scratch_exists until it is "
+            "reconciled by hand",
+            _SCRATCH_ABANDONED,
+            subject,
+            name,
+            exc,
+        )
+        return False
     if _same_entry(current, expected):
         try:
             os.unlink(name, dir_fd=dir_fd)
         except FileNotFoundError:
             return True
+        except OSError as exc:
+            _logger.warning(
+                "%s: %s name=%s is ours but could not be removed (%s) — left in place; it "
+                "is redundant, so nothing is lost, but retries will refuse until it is "
+                "cleared",
+                _SCRATCH_ABANDONED,
+                subject,
+                name,
+                exc,
+            )
+            return False
         return True
 
     abandoned = f"{name}.transition-abandoned"
@@ -4066,9 +4097,12 @@ def _fallback_exchange(
         ) from exc
     os.fsync(dir_fd)
 
-    # 2-3. Move dst aside and identify what was actually there. The relocation refuses an
-    #      occupied scratch (`link` is create-or-EEXIST) and refuses a replaced source,
-    #      so neither a remnant nor a racer is overwritten — see `_relocate_to_scratch`.
+    # 2-3. Move dst aside and identify what was actually there. The relocation identifies a
+    #      replaced source and refuses, so a racer at `dst` is preserved and named. It does
+    #      NOT refuse an occupied scratch — that claim was left behind when the leg went
+    #      back to `rename`, and `rename` cannot fail on an occupied destination. The
+    #      vacancy check above is what bounds that, and the residual window is open; see
+    #      `_relocate_to_scratch`.
     _relocate_to_scratch(
         dir_fd, dst_name, holding, displaced, subject=f"{src_name}->{dst_name}", recover=recover
     )
@@ -4210,8 +4244,12 @@ def _fallback_noreplace(
     #
     # Note this leg derives `holding` from the LIVE filename, because on deletion `src_name`
     # IS the live projection path. So the name is shared by every transaction on that note,
-    # and the vacancy check alone was never enough: `_relocate_to_scratch` refuses an
-    # occupied destination atomically, which is what actually makes it safe.
+    # and the vacancy check alone was never enough. It is still not enough: this comment
+    # used to claim `_relocate_to_scratch` refuses an occupied destination atomically, and
+    # that claim did not survive the leg going back to `rename` — which cannot fail on an
+    # occupied destination. What the relocation does provide is identification of a replaced
+    # SOURCE. The occupied-destination window is bounded by the check below and otherwise
+    # open; see `_relocate_to_scratch`.
     holding = _fallback_scratch_name(src_name, "holding")
     _refuse_if_scratch_occupied(src_dir_fd, (holding,), src_name)
     _relocate_to_scratch(

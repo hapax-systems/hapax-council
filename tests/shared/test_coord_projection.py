@@ -4950,3 +4950,69 @@ def test_retire_scratch_leaves_the_entry_when_abandonment_itself_fails(
     assert cp._SCRATCH_ABANDONED in caplog.text
     assert "COULD NOT BE ABANDONED" in caplog.text
     assert "transition_projection_scratch_exists" in caplog.text
+
+
+@pytest.mark.parametrize("failing", ["lstat", "unlink"])
+def test_retire_scratch_absorbs_io_errors_on_every_branch(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, failing: str
+) -> None:
+    """ "Never raises" has to hold on every branch, and it did not.
+
+    The initial `lstat` and the identity-matched `unlink` caught only `FileNotFoundError`,
+    so an `EIO` from either escaped the helper — failing a projection that had already
+    succeeded, which is the single outcome this function's contract exists to prevent. A
+    reviewer found it by replay; this pins both branches.
+    """
+
+    target = tmp_path / "scratch"
+    target.write_bytes(b"ours\n")
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        expected = os.lstat("scratch", dir_fd=dir_fd)
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise OSError(errno.EIO, os.strerror(errno.EIO), failing)
+
+        with caplog.at_level("WARNING"):
+            with mock.patch.object(os, failing, boom):
+                # Must not raise. Before the fix, both parametrisations did.
+                freed = cp._retire_scratch(dir_fd, "scratch", expected, subject="probe")
+    finally:
+        os.close(dir_fd)
+
+    assert freed is False
+    assert target.read_bytes() == b"ours\n", "an unreadable or unremovable scratch is left"
+    assert cp._SCRATCH_ABANDONED in caplog.text
+
+
+def test_noreplace_holding_relocation_refuses_a_replaced_source(tmp_path: Path) -> None:
+    """The delete leg's relocation boundary, which had no regression of its own.
+
+    Coverage lived on the exchange leg only. This is the same property on the leg where
+    `src` is the LIVE projection path, so a replacement there is the case that matters.
+    """
+
+    (tmp_path / "task.md").write_bytes(b"live-preimage\n")
+    real_rename = os.rename
+    fired = False
+
+    def replace_src_before_the_relocation(*args: object, **kwargs: object) -> None:
+        nonlocal fired
+        if not fired:
+            fired = True
+            _replace_atomically(tmp_path, "task.md", b"racing-writer\n")
+        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with mock.patch.object(os, "rename", replace_src_before_the_relocation):
+            with pytest.raises(cp.LifecycleTransitionError) as caught:
+                cp._fallback_noreplace(dir_fd, "task.md", dir_fd, ".task.md.scratch")
+        assert caught.value.reason_code == "transition_precondition_changed"
+    finally:
+        os.close(dir_fd)
+
+    assert fired
+    surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    assert b"racing-writer\n" in surviving
+    assert b"live-preimage\n" in surviving
