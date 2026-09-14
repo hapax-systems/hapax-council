@@ -83,10 +83,12 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
     # half. Importing the predicate rather than restating it is deliberate: this
     # parser and the SDLC one disagreeing about what a fence is was itself a
     # defect.
-    # ``rstrip("\r")`` per line so a CRLF document parses identically to an LF
-    # one: consumers that decode raw bytes (sdlc_task_store._snapshot) would
-    # otherwise disagree with those reading through newline-normalizing APIs.
-    lines = [line.rstrip("\r") for line in text.split("\n")]
+    # Lines are NOT CR-normalized here. ``is_frontmatter_fence`` tolerates a
+    # trailing CR and PyYAML accepts CRLF, so doing it here was a redundant
+    # second guard — and it silently rewrote a CRLF ``body`` to LF on success
+    # while returning the original text, CRLF intact, on failure. Same document,
+    # different line endings depending on whether parsing worked.
+    lines = text.split("\n")
     if not is_frontmatter_fence(lines[0]):
         return FrontmatterParseResult(
             frontmatter=None,

@@ -40,7 +40,7 @@ reliable legibility (ideally all three).*
    |---|---|---|
    | `review_requirement.independent_review_required:malformed` | the flag value is not a boolean the route schema accepts | set it to `true` or `false` |
    | `review_requirement:malformed_container` | `review_requirement` — or the `route_metadata` holding it — is a list or scalar where a mapping is required | fix the **shape**; the flag value may already be correct, do not change it |
-   | `frontmatter_unreadable:<state>` | the note's own YAML does not parse (`unterminated`, `parse_error`, `not_a_mapping`) | repair the frontmatter block |
+   | `frontmatter_unreadable:<state>` | the note's own YAML does not parse — `invalid_opening_fence` (the first line starts with dashes but is not a document marker), `unterminated`, `parse_error`, `not_a_mapping` | repair the frontmatter block |
 
    The last one is fail-closed on *content*, not on I/O: the file read fine and
    its YAML is malformed. A note too broken to read cannot be shown to require
@@ -77,15 +77,25 @@ reliable legibility (ideally all three).*
    failure, so the evidence is reproducible rather than a transcript claim.
    Apply the mutation, run the command, confirm the named test reds, revert.
 
+   Every row below was applied and measured; the counts are what the run
+   actually reported, not estimates.
+
    | Mutate in `shared/sdlc_lifecycle.py` | Expect red |
    |---|---|
-   | `is_frontmatter_fence`: return `line.rstrip() == "---"` | `TestFenceGrammar::test_recognized[--- # task metadata]` |
-   | `is_frontmatter_fence`: drop the `rstrip("\r")` | `TestFenceGrammar::test_recognized[---\r]` |
-   | `frontmatter_block_text`: drop `lines[0][3:]` from the join | `test_opening_line_yaml_content_is_preserved` |
-   | `frontmatter_block_text`: drop the per-line `rstrip("\r")` | `test_crlf_notes_parse_identically_to_lf` |
-   | `frontmatter_block_text`: return `FRONTMATTER_ABSENT` for a bad opener | `test_an_attempted_but_invalid_opening_marker_is_unreadable` |
-   | `_independent_review_state`: test `raw is True` instead of `_schema_bool` | `TestSchemaParity` (15 cases) |
-   | `acceptance_receipt_triggers`: `elif` the malformed branch | `test_demand_plus_malformed_reports_both` |
+   | `is_frontmatter_fence`: return `line.rstrip() == "---"` | 8, incl. `TestFenceGrammar::test_recognized[--- # task metadata]` and `test_a_commented_opening_fence_still_arms_the_gate` |
+   | `is_frontmatter_fence`: drop the `rstrip("\r")` | 3, incl. `test_crlf_notes_parse_identically_to_lf` and `TestFenceGrammar::test_recognized[---\r]` |
+   | `frontmatter_block_text`: drop `lines[0][3:]` from the join | 2, incl. `test_opening_line_yaml_content_is_preserved` |
+   | `frontmatter_block_text`: return `FRONTMATTER_ABSENT` for a bad opener | 5, incl. `test_an_attempted_but_invalid_opening_marker_is_unreadable` and autoqueue's `test_invalid_opening_fence_is_diagnosed_not_silently_empty` |
+   | `_independent_review_state`: test `raw is True` instead of `_schema_bool` | 33 in `TestSchemaParity` |
+   | `acceptance_receipt_triggers`: `elif` the malformed branch | 2, incl. `test_demand_plus_malformed_reports_both` |
+
+   An earlier version of this table carried a seventh row — dropping a per-line
+   `rstrip("\r")` inside `frontmatter_block_text` — and claimed it reddened the
+   CRLF test. **It did not: that mutation reddened nothing**, because the fence
+   helper already tolerates CR and PyYAML accepts CRLF. The row was a second
+   guard for one hazard, so neither guard had an oracle. It was deleted rather
+   than given a test, and the CR guard that remains is now genuinely
+   load-bearing — which is why row 2 above reds where it previously would not.
 
    **Frontmatter fence grammar** (one rule, `shared.sdlc_lifecycle.is_frontmatter_fence`):
    `---` at column 0, followed by end-of-line or whitespace. So `---`,

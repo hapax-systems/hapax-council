@@ -265,7 +265,14 @@ def frontmatter_block_text(text: str) -> tuple[str, str]:
     whole declarations while still reporting a clean parse.
     """
 
-    lines = [line.rstrip("\r") for line in text.split("\n")]
+    # No per-line CR normalization here: ``is_frontmatter_fence`` tolerates a
+    # trailing CR and PyYAML accepts CRLF, so stripping here was a SECOND guard
+    # for one hazard — and being redundant, nothing could fail when it was
+    # removed. Deleted rather than given a test, because the guard that remains
+    # is the one with an oracle (the fence-grammar table's CR rows). Keeping the
+    # raw lines also stops the canonical parser silently rewriting a CRLF body
+    # to LF on success while preserving it on failure.
+    lines = text.split("\n")
     if not is_frontmatter_fence(lines[0]):
         if lines[0].startswith("---"):
             # Tried to open frontmatter and failed. Not ABSENT: a note that
