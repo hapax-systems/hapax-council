@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 from shared.blocked_witness import evaluate_blocked_witness
 from shared.sdlc_lifecycle import (
@@ -43,6 +44,7 @@ from shared.sdlc_lifecycle import (
     acceptance_receipt_path,
     acceptance_receipt_triggers,
     active_blocked_task_blockers,
+    frontmatter_block_text,
     frontmatter_from_text,
     frontmatter_state_from_text,
     is_active_blocked_with_evidence,
@@ -1327,6 +1329,54 @@ class TestFrontmatterParseState:
         it established nothing about the preserved parser contract.
         """
         assert frontmatter_from_text(text) == expected
+
+
+class TestFrontmatterRegionIsShared:
+    """The region a caller inspects is the region the parser loads.
+
+    ``cc-pr-autoqueue`` scans the frontmatter block for ANSI escapes and must not
+    see the markdown body. It used to re-implement the fence walk to find that
+    region; both copies agreed only because both called the same predicate. This
+    PR's own lesson is that restating a rule is how the parsers came to disagree,
+    so the region now comes from the shared module and the equality is structural.
+    """
+
+    def test_block_text_is_exactly_what_the_parser_loads(self) -> None:
+        text = (
+            "---\ntask_id: x\nquality_floor: verification_receipt\n---\n\n"
+            "## Session log\n\nbody text that must not be in the block\n"
+        )
+
+        raw, state = frontmatter_block_text(text)
+        loaded, parse_state = frontmatter_state_from_text(text)
+
+        assert state == parse_state == FRONTMATTER_OK
+        assert yaml.safe_load(raw) == loaded
+        assert "body text" not in raw
+
+    def test_block_text_includes_opening_line_content(self) -> None:
+        raw, state = frontmatter_block_text("--- {a: 1}\n\n---\nbody\n")
+
+        assert state == FRONTMATTER_OK
+        assert yaml.safe_load(raw) == {"a": 1}
+
+    @pytest.mark.parametrize(
+        ("text", "expected_state"),
+        [
+            ("plain body\n", FRONTMATTER_ABSENT),
+            ("---extra: [\ntask_id: x\n---\n", FRONTMATTER_INVALID_OPENING_FENCE),
+            ("---\ntask_id: x\nno closing marker\n", FRONTMATTER_UNTERMINATED),
+        ],
+    )
+    def test_block_text_reports_the_same_failure_as_the_parser(
+        self, text: str, expected_state: str
+    ) -> None:
+        raw, state = frontmatter_block_text(text)
+        _, parse_state = frontmatter_state_from_text(text)
+
+        assert state == expected_state
+        assert state == parse_state
+        assert raw == ""
 
 
 class TestMalformedContainerAtEveryLevel:

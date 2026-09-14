@@ -245,6 +245,40 @@ def is_frontmatter_fence(line: str) -> bool:
     return rest == "" or rest[0] in " \t"
 
 
+def frontmatter_block_text(text: str) -> tuple[str, str]:
+    """The raw YAML region of a note's frontmatter, and why it is what it is.
+
+    Returns ``(raw, state)``. ``raw`` is meaningful only when ``state`` is
+    ``FRONTMATTER_OK``; otherwise it is empty and the state says what went wrong.
+
+    Exposed so callers that must inspect the frontmatter region *without*
+    parsing it — the ANSI-escape check in ``cc-pr-autoqueue``, which has to scan
+    the block and not the markdown body — consume the same walk the parser uses
+    instead of restating it. The region checked is then the region parsed *by
+    construction*: two copies of this walk agreeing only because both happened to
+    call the same predicate is how the estate's parsers came to disagree in the
+    first place.
+
+    The remainder of the opening line is part of the region:
+    ``--- {task_id: x, quality_floor: frontier_review_required}`` is a valid
+    document whose mapping sits on the marker line, and dropping it discarded
+    whole declarations while still reporting a clean parse.
+    """
+
+    lines = [line.rstrip("\r") for line in text.split("\n")]
+    if not is_frontmatter_fence(lines[0]):
+        if lines[0].startswith("---"):
+            # Tried to open frontmatter and failed. Not ABSENT: a note that
+            # visibly attempted a declaration must not read as declaring
+            # nothing, or a broken note disarms the gate.
+            return "", FRONTMATTER_INVALID_OPENING_FENCE
+        return "", FRONTMATTER_ABSENT
+    for index in range(1, len(lines)):
+        if is_frontmatter_fence(lines[index]):
+            return "\n".join([lines[0][3:], *lines[1:index]]).strip(), FRONTMATTER_OK
+    return "", FRONTMATTER_UNTERMINATED
+
+
 def frontmatter_state_from_text(text: str) -> tuple[dict[str, Any], str]:
     """Frontmatter plus WHY it is what it is.
 
@@ -273,24 +307,9 @@ def frontmatter_state_from_text(text: str) -> tuple[dict[str, Any], str]:
     # The close gate reads via ``read_text`` (which normalizes) while the
     # terminal-close snapshot decodes raw bytes (which does not) — without this
     # the two surfaces disagree about the same file.
-    lines = [line.rstrip("\r") for line in text.split("\n")]
-    if not is_frontmatter_fence(lines[0]):
-        if lines[0].startswith("---"):
-            # Tried to open frontmatter and failed. Not ABSENT: a note that
-            # visibly attempted a declaration must not read as declaring
-            # nothing, or a broken note disarms the gate.
-            return {}, FRONTMATTER_INVALID_OPENING_FENCE
-        return {}, FRONTMATTER_ABSENT
-    for index in range(1, len(lines)):
-        if is_frontmatter_fence(lines[index]):
-            # The remainder of the opening line is YAML CONTENT, not decoration:
-            # ``--- {task_id: x, quality_floor: frontier_review_required}`` is a
-            # valid document with its mapping on the marker line. Dropping it
-            # discarded whole declarations while reporting a clean parse.
-            raw = "\n".join([lines[0][3:], *lines[1:index]]).strip()
-            break
-    else:
-        return {}, FRONTMATTER_UNTERMINATED
+    raw, region_state = frontmatter_block_text(text)
+    if region_state != FRONTMATTER_OK:
+        return {}, region_state
     if not raw:
         return {}, FRONTMATTER_ABSENT
     try:

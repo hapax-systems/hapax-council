@@ -71,6 +71,22 @@ reliable legibility (ideally all three).*
    Residual risk, stated: a pydantic upgrade merged without rerunning that suite
    could briefly reopen the parser-boundary gap the parity test exists to close.
 
+   **Reproducing the mutation evidence.** The claims above are pinned by tests,
+   but a passing suite only proves the tests run — not that they would catch a
+   regression. Each guard below has a one-line mutation and a named expected
+   failure, so the evidence is reproducible rather than a transcript claim.
+   Apply the mutation, run the command, confirm the named test reds, revert.
+
+   | Mutate in `shared/sdlc_lifecycle.py` | Expect red |
+   |---|---|
+   | `is_frontmatter_fence`: return `line.rstrip() == "---"` | `TestFenceGrammar::test_recognized[--- # task metadata]` |
+   | `is_frontmatter_fence`: drop the `rstrip("\r")` | `TestFenceGrammar::test_recognized[---\r]` |
+   | `frontmatter_block_text`: drop `lines[0][3:]` from the join | `test_opening_line_yaml_content_is_preserved` |
+   | `frontmatter_block_text`: drop the per-line `rstrip("\r")` | `test_crlf_notes_parse_identically_to_lf` |
+   | `frontmatter_block_text`: return `FRONTMATTER_ABSENT` for a bad opener | `test_an_attempted_but_invalid_opening_marker_is_unreadable` |
+   | `_independent_review_state`: test `raw is True` instead of `_schema_bool` | `TestSchemaParity` (15 cases) |
+   | `acceptance_receipt_triggers`: `elif` the malformed branch | `test_demand_plus_malformed_reports_both` |
+
    **Frontmatter fence grammar** (one rule, `shared.sdlc_lifecycle.is_frontmatter_fence`):
    `---` at column 0, followed by end-of-line or whitespace. So `---`,
    `--- `, and `--- # task metadata` are fences; `---extra: abc` (a legal

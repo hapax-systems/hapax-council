@@ -103,6 +103,7 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_blockers,
     apply_release_auto_arm,
     assess_release_auto_arm,
+    frontmatter_block_text,
     frontmatter_from_text,
     frontmatter_state_from_text,
     is_frontmatter_fence,
@@ -1683,22 +1684,6 @@ def _merge_queue_ref_pr_numbers(
     return queued
 
 
-def _frontmatter_block_text(text: str) -> str:
-    """The raw frontmatter block only, for checks that must not see the body.
-
-    Uses the same complete-line fence rule as the shared parser, so the region
-    this returns is exactly the region the shared parser loads as YAML.
-    """
-
-    lines = text.split("\n")
-    if not lines or not is_frontmatter_fence(lines[0]):
-        return ""
-    for index in range(1, len(lines)):
-        if is_frontmatter_fence(lines[index]):
-            return "\n".join(lines[1:index])
-    return ""
-
-
 def _frontmatter(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -1715,7 +1700,10 @@ def _frontmatter(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     # caller's legibility contract (operator directive 2026-06-10 — a reason code
     # must name the true failure), not parsing.
     parsed, state = frontmatter_state_from_text(text)
-    if "\x1b[" in _frontmatter_block_text(text):
+    # The region scanned comes from the shared parser, so "region checked equals
+    # region parsed" is structural rather than two walks that happen to agree.
+    block_text, _ = frontmatter_block_text(text)
+    if "\x1b[" in block_text:
         # ANSI escapes silently break YAML and made a task invisible on
         # 2026-06-10 (admission reported missing_cc_task_link — a lie).
         # Scoped to the FRONTMATTER BLOCK, never the whole file: colored command
