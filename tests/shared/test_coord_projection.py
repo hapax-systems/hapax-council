@@ -10,6 +10,7 @@ import os
 import stat
 import subprocess
 import sys
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
@@ -3709,7 +3710,15 @@ def test_rebuilt_directory_noreplace_refuses_an_occupied_destination(
 
     The branch is still load-bearing: with the destination absent the syscall
     EINVALs, the rebuild does run, and `rename(2)` on directories would let an
-    empty one through where every other shape is refused unconditionally.
+    empty one through.
+
+    `reached_rename` is what makes this a test of the GUARD rather than of the
+    host's `rename`. Without it the populated case is host-dependent theatre: xfs
+    answers EEXIST for a rename onto a non-empty directory, so an errno-only
+    assertion stays green with the guard narrowed to empty directories — measured,
+    that mutation passed here and failed on the sibling window test. tmpfs and
+    nfs4 answer ENOTEMPTY for the same call, so the same mutation would have been
+    caught on those. Pin the mechanism and the host stops mattering.
     """
 
     staging = tmp_path / "staging"
@@ -3722,16 +3731,26 @@ def test_rebuilt_directory_noreplace_refuses_an_occupied_destination(
     for name, payload in occupant.items():
         (final / "txn-1" / name).write_bytes(payload)
 
+    reached_rename = False
+    real_rename = os.rename
+
+    def note_rename(*args: object, **kwargs: object) -> None:
+        nonlocal reached_rename
+        reached_rename = True
+        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
     src_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     dst_fd = os.open(final, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
-        with pytest.raises(OSError) as raised:
-            cp._fallback_noreplace(src_fd, "txn-1", dst_fd, "txn-1")
+        with mock.patch.object(os, "rename", note_rename):
+            with pytest.raises(OSError) as raised:
+                cp._fallback_noreplace(src_fd, "txn-1", dst_fd, "txn-1")
     finally:
         os.close(src_fd)
         os.close(dst_fd)
 
     assert raised.value.errno == errno.EEXIST, label
+    assert not reached_rename, f"{label}: refused by rename, not by the leg's own guard"
     assert (staging / "txn-1" / "manifest.json").read_bytes() == b'{"staged": true}\n'
     assert sorted(path.name for path in (final / "txn-1").iterdir()) == sorted(occupant)
 
@@ -3770,14 +3789,56 @@ def test_rebuilt_directory_noreplace_leaves_the_staged_journal_promotable(
     assert (staging / "txn-1" / "manifest.json").read_bytes() == b"{}\n"
 
 
+def _errno_plain_rename_gives(root: Path, occupy: Callable[[Path], object]) -> int:
+    """What a plain `rename(2)` of a directory onto this occupant answers, HERE.
+
+    rename(2) documents "EEXIST or ENOTEMPTY" for a non-empty destination directory and
+    leaves the choice to the filesystem — measured 2026-09-14: ENOTEMPTY on tmpfs and on
+    the nfs4 export the fallback exists for, EEXIST on the xfs that backs this worktree's
+    tmp_path. Hardcoding either would pin the host, not the behaviour, so the expectation
+    is taken from the same filesystem the test then exercises.
+    """
+
+    bench = root / f"errno-probe-{uuid.uuid4().hex[:8]}"
+    bench.mkdir()
+    source = bench / "src"
+    source.mkdir()
+    destination = bench / "dst"
+    occupy(destination)
+    try:
+        os.rename(source, destination)
+    except OSError as refusal:
+        return int(refusal.errno or 0)
+    raise AssertionError(f"rename onto {destination} succeeded; this occupant does not refuse")
+
+
+@pytest.mark.parametrize(
+    ("occupy", "label"),
+    [
+        (
+            lambda path: [path.mkdir(), (path / "manifest.json").write_bytes(b'{"final": true}\n')],
+            "a populated journal",
+        ),
+        (lambda path: path.write_bytes(b'{"final": true}\n'), "a regular file"),
+    ],
+    ids=["populated-journal", "regular-file"],
+)
 def test_rebuilt_directory_noreplace_cannot_lose_a_journal_it_did_not_see(
     tmp_path: Path,
+    occupy: Callable[[Path], object],
+    label: str,
 ) -> None:
     """The residual window between the check and the rename, stated as a property.
 
-    A populated journal appearing at the destination after the check is refused by
-    the rename itself, with the staged copy intact — so no interleaving of this
-    sequence can lose bytes, which is what NOREPLACE guards here.
+    This is the ONLY interleaving in which `rename`'s own refusals are load-bearing: when
+    the destination is occupied before the call, the leg's lstat guard answers EEXIST and
+    the rename never runs. Here the destination is empty at check time and the occupant
+    lands afterwards, so the refusal can only come from `rename(2)` — and the errno is
+    asserted against what a plain rename answers on this same filesystem, not against a set.
+
+    An earlier version accepted any OSError. That is the pattern that let a sibling test
+    claim to have measured ENOTEMPTY and ENOTDIR while only ever reaching the guard, so the
+    mechanism is pinned here explicitly: `reached_rename` fails if the guard answers instead.
     """
 
     staging = tmp_path / "staging"
@@ -3786,11 +3847,14 @@ def test_rebuilt_directory_noreplace_cannot_lose_a_journal_it_did_not_see(
     final.mkdir()
     (staging / "txn-1").mkdir()
     (staging / "txn-1" / "manifest.json").write_bytes(b'{"staged": true}\n')
+    expected_errno = _errno_plain_rename_gives(tmp_path, occupy)
     real_rename = os.rename
+    reached_rename = False
 
     def race_then_rename(*args: object, **kwargs: object) -> None:
-        (final / "txn-1").mkdir()
-        (final / "txn-1" / "manifest.json").write_bytes(b'{"final": true}\n')
+        nonlocal reached_rename
+        reached_rename = True
+        occupy(final / "txn-1")
         return real_rename(*args, **kwargs)  # type: ignore[arg-type]
 
     src_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -3800,14 +3864,20 @@ def test_rebuilt_directory_noreplace_cannot_lose_a_journal_it_did_not_see(
             mock.patch.object(cp, "_renameat2_primitive", side_effect=_unsupported_flag_mount()),
             mock.patch.object(os, "rename", race_then_rename),
         ):
-            with pytest.raises(OSError):
+            with pytest.raises(OSError) as raised:
                 cp._renameat2(src_fd, "txn-1", dst_fd, "txn-1", cp._RENAME_NOREPLACE)
     finally:
         os.close(src_fd)
         os.close(dst_fd)
 
-    assert (final / "txn-1" / "manifest.json").read_bytes() == b'{"final": true}\n'
+    assert reached_rename, f"{label}: the guard answered, so this never reached the window"
+    assert raised.value.errno == expected_errno, (label, raised.value.errno, expected_errno)
     assert (staging / "txn-1" / "manifest.json").read_bytes() == b'{"staged": true}\n'
+    arrived = final / "txn-1"
+    if arrived.is_dir():
+        assert (arrived / "manifest.json").read_bytes() == b'{"final": true}\n'
+    else:
+        assert arrived.read_bytes() == b'{"final": true}\n'
 
 
 def test_supported_mount_never_reaches_the_fallback(tmp_path: Path) -> None:
@@ -4769,8 +4839,8 @@ def test_directory_noreplace_refuses_an_empty_destination_appearing_after_the_ch
     `_fallback_noreplace_directory` lstats the destination and then renames, arguing that
     every post-check arrival except an *empty* directory is refused by `rename` itself. Only
     the straight-line refusal was pinned. This injects the one case the argument excuses —
-    an empty directory appearing after the check — and the two pass-throughs the argument
-    depends on.
+    an empty directory appearing after the check — and then pins which mechanism answers a
+    destination that was occupied all along: the guard, with EEXIST, never the rename.
     """
 
     staging = tmp_path / "staging"
@@ -4802,26 +4872,52 @@ def test_directory_noreplace_refuses_an_empty_destination_appearing_after_the_ch
         assert (final / "txn-1" / "manifest.json").read_bytes() == b"{}\n"
         assert not (staging / "txn-1").exists()
 
-        # Pass-throughs the argument depends on: a POPULATED destination and a FILE
-        # destination are refused by rename itself, so neither can be silently clobbered.
-        second = staging / "txn-2"
-        second.mkdir()
-        (second / "manifest.json").write_bytes(b"{}\n")
-        populated = final / "txn-2"
-        populated.mkdir()
-        (populated / "keep-me").write_bytes(b"occupied\n")
-        with pytest.raises(OSError) as caught:
-            cp._fallback_noreplace(src_fd, "txn-2", dst_fd, "txn-2")
-        assert caught.value.errno in {errno.ENOTEMPTY, errno.EEXIST, errno.EBUSY}
-        assert (populated / "keep-me").read_bytes() == b"occupied\n"
+        # An occupied destination — populated directory OR file — is refused by the leg's
+        # own lstat guard with EEXIST, before `os.rename` is reached at all.
+        #
+        # This asserted a SET of errnos including ENOTEMPTY and ENOTDIR, on the docstring's
+        # claim that plain `rename` supplies those for directories. The set is what let it
+        # pass: the guard's EEXIST satisfied it, `os.rename` never ran, and the behaviour the
+        # comment named was never measured. Chasing that found the larger thing — the guard
+        # refuses EVERY existing destination, so the rename is only ever reached with an
+        # absent one and those errnos are unreachable through this function. The code is
+        # stricter than the design it was documented against, and `reached_rename` below
+        # fails if that ever stops being true.
+        for name, make_occupant, survivor in (
+            (
+                "txn-2",
+                lambda p: [p.mkdir(), (p / "keep-me").write_bytes(b"occupied\n")],
+                "keep-me",
+            ),
+            ("txn-3", lambda p: p.write_bytes(b"a file, not a directory\n"), None),
+        ):
+            source = staging / name
+            source.mkdir()
+            (source / "manifest.json").write_bytes(b"{}\n")
+            destination = final / name
+            make_occupant(destination)
 
-        third = staging / "txn-3"
-        third.mkdir()
-        (final / "txn-3").write_bytes(b"a file, not a directory\n")
-        with pytest.raises(OSError) as caught:
-            cp._fallback_noreplace(src_fd, "txn-3", dst_fd, "txn-3")
-        assert caught.value.errno in {errno.ENOTDIR, errno.EEXIST, errno.EBUSY}
-        assert (final / "txn-3").read_bytes() == b"a file, not a directory\n"
+            reached_rename = False
+            real_rename = os.rename
+
+            def note_rename(*args: object, **kwargs: object) -> None:
+                nonlocal reached_rename
+                reached_rename = True
+                return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+            with mock.patch.object(os, "rename", note_rename):
+                with pytest.raises(OSError) as caught:
+                    cp._fallback_noreplace(src_fd, name, dst_fd, name)
+            assert caught.value.errno == errno.EEXIST, (name, caught.value.errno)
+            assert not reached_rename, (
+                f"{name}: the rename ran, so the guard no longer refuses every occupied "
+                "destination — update this test and the leg's docstring together"
+            )
+            assert (source / "manifest.json").read_bytes() == b"{}\n"
+            if survivor:
+                assert (destination / survivor).read_bytes() == b"occupied\n"
+            else:
+                assert destination.read_bytes() == b"a file, not a directory\n"
     finally:
         os.close(src_fd)
         os.close(dst_fd)

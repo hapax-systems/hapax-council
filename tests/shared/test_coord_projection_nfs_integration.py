@@ -41,6 +41,7 @@ import errno
 import os
 import uuid
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -400,9 +401,18 @@ def test_directory_promotion_on_a_mount_that_refuses_the_flags(
     under NOREPLACE, across two directories, and `link(2)` refuses directories, so that leg
     takes an entirely different rebuild. It was verified only against a simulated mount.
 
-    That matters here more than elsewhere: the directory rebuild's safety argument rests on
-    what plain `rename(2)` does to a populated destination on THIS filesystem, and NFS is
-    exactly where a reasonable assumption about rename semantics could fail to hold.
+    That matters here more than elsewhere: the leg's *residual window* — an occupant arriving
+    between its existence check and its rename — is survivable only because plain `rename(2)`
+    refuses a populated destination, and NFS is exactly where a reasonable assumption about
+    rename semantics could fail to hold. So this measures that refusal on the real export
+    rather than inferring it from a local filesystem.
+
+    It also pins which of the two mechanisms answers each case, because that is where the
+    previous version of this test was wrong. It created its occupants BEFORE the call and
+    accepted any OSError, then claimed to have "measured the ENOTEMPTY and ENOTDIR refusals".
+    It had measured neither: an occupied destination is refused by the leg's own lstat guard
+    with EEXIST and `os.rename` is never reached, so those errnos are unreachable on that
+    path. They are reachable only in the window, which is where they are now measured.
     """
 
     staging = unsupporting_mount / "staging"
@@ -413,6 +423,35 @@ def test_directory_promotion_on_a_mount_that_refuses_the_flags(
     journal.mkdir()
     (journal / "manifest.json").write_bytes(b'{"live": true}\n')
 
+    def populate_directory(path: Path) -> None:
+        path.mkdir()
+        (path / "keep-me").write_bytes(b"occupied\n")
+
+    def write_file(path: Path) -> None:
+        path.write_bytes(b"a file, not a directory\n")
+
+    # (shape, what the occupant must still read back as, after a refusal touched nothing)
+    OCCUPANTS = (
+        (populate_directory, b"occupied\n"),
+        (write_file, b"a file, not a directory\n"),
+    )
+
+    def survives(path: Path) -> bytes:
+        return (path / "keep-me").read_bytes() if path.is_dir() else path.read_bytes()
+
+    def plain_rename_errno_here(occupy) -> int:  # noqa: ANN001
+        """What `rename(2)` answers for a directory onto this occupant, on THIS export."""
+
+        bench = unsupporting_mount / f"errno-probe-{uuid.uuid4().hex[:8]}"
+        bench.mkdir()
+        (bench / "src").mkdir()
+        occupy(bench / "dst")
+        try:
+            os.rename(bench / "src", bench / "dst")
+        except OSError as refusal:
+            return int(refusal.errno or 0)
+        raise AssertionError("rename onto an occupied destination succeeded on the export")
+
     src_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY)
     dst_fd = os.open(final, os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -420,24 +459,61 @@ def test_directory_promotion_on_a_mount_that_refuses_the_flags(
         assert (final / "txn-live" / "manifest.json").read_bytes() == b'{"live": true}\n'
         assert not (staging / "txn-live").exists()
 
-        # And the refusals the argument depends on, measured here rather than assumed from
-        # the simulated mount: a POPULATED destination and a FILE destination.
-        populated_src = staging / "txn-occupied"
-        populated_src.mkdir()
-        (populated_src / "manifest.json").write_bytes(b"{}\n")
-        occupied = final / "txn-occupied"
-        occupied.mkdir()
-        (occupied / "keep-me").write_bytes(b"occupied\n")
-        with pytest.raises((OSError, cp.LifecycleTransitionError)):
-            cp._fallback_noreplace(src_fd, "txn-occupied", dst_fd, "txn-occupied")
-        assert (occupied / "keep-me").read_bytes() == b"occupied\n"
+        # (a) Occupied before the call: the GUARD answers, EEXIST, rename never runs.
+        for suffix, (occupy, intact) in zip(("dir", "file"), OCCUPANTS, strict=True):
+            name = f"txn-occupied-{suffix}"
+            source = staging / name
+            source.mkdir()
+            (source / "manifest.json").write_bytes(b"{}\n")
+            occupy(final / name)
+            reached_rename = False
+            real_rename = os.rename
 
-        file_src = staging / "txn-file"
-        file_src.mkdir()
-        (final / "txn-file").write_bytes(b"a file, not a directory\n")
-        with pytest.raises((OSError, cp.LifecycleTransitionError)):
-            cp._fallback_noreplace(src_fd, "txn-file", dst_fd, "txn-file")
-        assert (final / "txn-file").read_bytes() == b"a file, not a directory\n"
+            def note_rename(*args: object, **kwargs: object) -> None:
+                nonlocal reached_rename
+                reached_rename = True
+                return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+            with mock.patch.object(os, "rename", note_rename):
+                with pytest.raises(OSError) as caught:
+                    cp._fallback_noreplace(src_fd, name, dst_fd, name)
+            assert caught.value.errno == errno.EEXIST, (name, caught.value.errno)
+            assert not reached_rename, f"{name}: rename ran; the guard no longer refuses first"
+            assert survives(final / name) == intact, name
+            assert (source / "manifest.json").read_bytes() == b"{}\n"
+
+        # (b) The residual window, on the export: occupant arrives after the check, so only
+        # `rename(2)` can refuse it. Nothing is lost on either side — that is the property.
+        # The errno is compared against a plain rename measured on this same mount, because
+        # rename(2) permits either EEXIST or ENOTEMPTY for a non-empty destination directory
+        # and the choice is the filesystem's (measured 2026-09-14: ENOTEMPTY on this export
+        # and on tmpfs, EEXIST on xfs). Hardcoding one would pin a host, not the behaviour.
+        for suffix, (occupy, intact) in zip(("dir", "file"), OCCUPANTS, strict=True):
+            name = f"txn-raced-{suffix}"
+            source = staging / name
+            source.mkdir()
+            (source / "manifest.json").write_bytes(b'{"staged": true}\n')
+            expected_errno = plain_rename_errno_here(occupy)
+            reached_rename = False
+            real_rename = os.rename
+
+            def occupy_then_rename(*args: object, **kwargs: object) -> None:
+                nonlocal reached_rename
+                reached_rename = True
+                occupy(final / name)  # noqa: B023 — consumed within this iteration
+                return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+            with mock.patch.object(os, "rename", occupy_then_rename):
+                with pytest.raises(OSError) as caught:
+                    cp._fallback_noreplace(src_fd, name, dst_fd, name)
+            assert reached_rename, f"{name}: never reached the window this case exists to test"
+            assert caught.value.errno == expected_errno, (
+                name,
+                caught.value.errno,
+                expected_errno,
+            )
+            assert survives(final / name) == intact, name
+            assert (source / "manifest.json").read_bytes() == b'{"staged": true}\n'
     finally:
         os.close(src_fd)
         os.close(dst_fd)

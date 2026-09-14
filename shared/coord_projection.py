@@ -4351,21 +4351,38 @@ def _fallback_noreplace_directory(
     design's inventory read the projection legs, all of which rename files within
     one directory, so it did not cover this leg — the regression suite did.
 
-    Plain ``rename(2)`` already carries most of the property for directories, and
-    carries it unconditionally: onto a non-empty directory it fails ``ENOTEMPTY``,
-    onto a non-directory ``ENOTDIR``. The one case it would allow is a destination
-    that is an *empty* directory, so that is the case this checks for and refuses
-    with the errno every call site already discriminates on.
+    The guard below refuses *any* destination that already exists, with ``EEXIST``
+    — the answer ``renameat2(RENAME_NOREPLACE)`` gives for an occupied name
+    whatever its type, and the errno every call site discriminates on. Read that
+    literally: when the destination is present as the call starts, ``os.rename``
+    is never reached, so ``ENOTEMPTY`` and ``ENOTDIR`` are unreachable through
+    this function. An earlier version of this docstring argued the opposite — that
+    the guard covered only the empty-directory case and rename refused the rest —
+    and the tests that claimed to have measured those two errnos were measuring
+    the guard. That narrow guard was never implemented; this broad one is what
+    ships, and it is the stronger of the two.
 
     The check and the rename are not one atomic step, and they do not need to be.
-    Everything that can appear at the destination after the check is refused by
-    the rename itself, except an empty directory — and taking over the name of an
-    empty directory destroys nothing, because an empty directory holds nothing.
-    So no interleaving of this sequence can lose a journal, which is the property
-    NOREPLACE is guarding here; the earlier draft's ``mkdir`` reservation bought
-    an atomic name claim at the price of a wedge state, and the wedge could not
-    even be cleared on the mount it was written for: NFS answers ``EEXIST`` from
-    the VFS before the flag is consulted, so a retry never reaches this rebuild.
+    That is the one place rename's own refusals carry weight: of everything that
+    can *arrive* at the destination between the check and the rename, a non-empty
+    directory and a non-directory are both refused, and the only arrival taken
+    over silently is an empty directory — which destroys nothing, because an empty
+    directory holds nothing. So no interleaving of this sequence can lose a
+    journal, which is the property NOREPLACE is guarding here.
+
+    Which errno the raced case carries is the filesystem's to choose, and callers
+    must not discriminate on it. ``rename(2)`` documents "EEXIST or ENOTEMPTY" for
+    a non-empty destination directory; measured 2026-09-14, tmpfs and the nfs4
+    export this fallback exists for answer ``ENOTEMPTY`` while xfs answers
+    ``EEXIST``. A non-directory is ``ENOTDIR`` on all three. Only the refusal is
+    guaranteed — a caller reading any refusal as "destination occupied" is right
+    everywhere, and one matching ``EEXIST`` alone gets a rarer, noisier failure in
+    the raced case on some filesystems, never a wrong success on any.
+
+    The earlier draft's ``mkdir`` reservation bought an atomic name claim at the
+    price of a wedge state, and the wedge could not even be cleared on the mount
+    it was written for: NFS answers ``EEXIST`` from the VFS before the flag is
+    consulted, so a retry never reaches this rebuild.
     """
 
     try:
