@@ -836,6 +836,20 @@ PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
 # so it always mints — including inside a pane whose pin is addressed to hapax-codex.
 hapax_consume_launch_session_id
 SESSION_UUID="$(normalize_session_uuid "$HAPAX_LAUNCH_SESSION_ID")"
+# A re-dispatch for a task this role ALREADY holds is a resume, not a new lane:
+# the admitted claim is bound to the previous session, and minting a new id makes
+# resolve_applied_claim_publication refuse with claim_binding_vector_mismatch
+# before resumption is even reached. The condition is the live state itself (this
+# role holds exactly one minted-session claim naming THIS task), not a flag — so
+# a launch for any other task, or for a role holding nothing, still mints.
+# Placed before SESSION_CLAIM_FILE below, which is keyed on SESSION_UUID.
+if [ -n "${CODEX_TASK:-}" ]; then
+  if _hcxh_succeeded="$(hapax_role_succession_session_id "$SESSION" "$CODEX_TASK" 2>/dev/null)" &&
+    [ -n "$_hcxh_succeeded" ]; then
+    SESSION_UUID="$_hcxh_succeeded"
+    echo "hapax-codex-headless: resuming '$CODEX_TASK' under its live claim session $SESSION_UUID" >&2
+  fi
+fi
 export HAPAX_PARENT_AGENT_INTERFACE="$PARENT_INTERFACE"
 export HAPAX_PARENT_AGENT_NAME="$PARENT_NAME"
 export HAPAX_AGENT_INTERFACE="codex"

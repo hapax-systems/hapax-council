@@ -134,6 +134,39 @@ class TestDisagreementMatrix:
             "cc-close's accepted --status set changed; update CC_CLOSE_ACCEPTED_STATUSES"
         )
 
+    def test_a_former_assignees_marker_is_not_read_as_the_new_owners(self) -> None:
+        """Role discovery uses CURRENT assigned_to, which omits former assignees.
+
+        t1 reassigned from `cx-blue-shadow` to `cx-blue`, with only the old
+        `cx-blue-shadow-<uuid>` marker left: the discovered role set holds
+        `cx-blue`, and a claim-keyable remainder test reads the leftover as
+        cx-blue's own session — so a contested claim reported as healthy. Requiring
+        a MINTED remainder makes that reading unavailable.
+        """
+        events = check_stale_claim_marker(
+            {"cx-blue-shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e": "t1"},
+            [_note("t1", status="in_progress", assigned_to="cx-blue")],
+            now=_now(),
+        )
+        assert len(events) == 1, "a former assignee's marker was silently accepted"
+        assert events[0].metadata["reason"] == "role_unattributable"
+
+    def test_remediation_names_the_cache_the_sweep_actually_read(self) -> None:
+        """A sweep of another cache must not instruct deleting LOCAL files."""
+        # `refused` routes to retire-orphan-marker, which is the branch that names
+        # file paths at all — `re-emit-close` names a cc-close command instead.
+        events = check_stale_claim_marker(
+            {"eta": "t1"},
+            [_note("t1", status="refused")],
+            cache_dir=Path("/somewhere/else/hapax"),
+            now=_now(),
+        )
+        assert len(events) == 1
+        assert events[0].metadata["next_action"] == "retire-orphan-marker"
+        remediation = events[0].metadata["remediation"]
+        assert "/somewhere/else/hapax/cc-active-task-eta" in remediation
+        assert ".cache/hapax/cc-active-task-eta" not in remediation
+
     def test_event_reports_the_disagreement_not_an_inferred_cause(self) -> None:
         """ "the lane never ran cc-close" was an unobserved cause, and wrong.
 
@@ -239,14 +272,47 @@ class TestReadClaimMarkers:
         # Distinct prefix by design, so an epoch can never masquerade as a claim.
         (tmp_path / "cc-claim-epoch-eta").write_text("1780000000 t1\n", encoding="utf-8")
 
-        assert read_claim_markers(tmp_path) == {"eta": "t1", "beta-s2": "t2"}
+        assert read_claim_markers(tmp_path).markers == {"eta": "t1", "beta-s2": "t2"}
 
     def test_empty_marker_is_not_a_claim(self, tmp_path: Path) -> None:
         (tmp_path / "cc-active-task-eta").write_text("\n", encoding="utf-8")
-        assert read_claim_markers(tmp_path) == {}
+        assert read_claim_markers(tmp_path).markers == {}
 
     def test_missing_directory_reads_as_no_markers(self, tmp_path: Path) -> None:
-        assert read_claim_markers(tmp_path / "nope") == {}
+        assert read_claim_markers(tmp_path / "nope").markers == {}
+
+    def test_unreadable_marker_is_preserved_not_swallowed(self, tmp_path: Path) -> None:
+        """A read failure must not look like "no drift".
+
+        The first cut caught OSError/UnicodeDecodeError per file and `continue`d,
+        so an injected PermissionError produced an empty mapping and zero events —
+        a reconciliation check reporting clean precisely when it knew least.
+        """
+        good = tmp_path / "cc-active-task-eta"
+        good.write_text("t1\n", encoding="utf-8")
+        bad = tmp_path / "cc-active-task-beta"
+        bad.write_bytes(b"\xff\xfe not utf-8 \xff")
+
+        scan = read_claim_markers(tmp_path)
+
+        assert scan.markers == {"eta": "t1"}, "readable markers must still be scanned"
+        assert len(scan.unreadable) == 1
+        path, reason = scan.unreadable[0]
+        assert path == str(bad)
+        assert "UnicodeDecodeError" in reason
+
+    def test_unreadable_marker_becomes_a_violation_event(self, tmp_path: Path) -> None:
+        bad = tmp_path / "cc-active-task-beta"
+        bad.write_bytes(b"\xff\xfe not utf-8 \xff")
+
+        events = check_stale_claim_marker(
+            read_claim_markers(tmp_path), [], cache_dir=tmp_path, now=_now()
+        )
+
+        assert len(events) == 1
+        assert events[0].severity == "violation"
+        assert events[0].metadata["reason"] == "marker_unreadable"
+        assert str(bad) in events[0].metadata["marker"]
 
 
 class TestSweepBinding:

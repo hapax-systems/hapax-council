@@ -75,6 +75,27 @@ def _launch_session_id(env_overrides: dict[str, str]) -> str:
     return result.stdout.strip()
 
 
+def _enclosing_if_condition(code: str, needle: str) -> str | None:
+    """The condition of the innermost `if` block containing ``needle``.
+
+    Crude but sufficient for these launchers: tracks `if`/`fi` nesting over
+    comment-stripped shell and returns the condition text of the innermost block
+    still open when ``needle`` is reached. Returns None when the call sits at top
+    level. Asserting on this rather than on "the flag appears somewhere earlier"
+    is what makes the guard test survive an `if true` mutation.
+    """
+    stack: list[str] = []
+    for line in code.splitlines():
+        stripped = line.strip()
+        if needle in stripped:
+            return stack[-1] if stack else None
+        if stripped.startswith("if ") or stripped == "if":
+            stack.append(stripped)
+        elif stripped == "fi" and stack:
+            stack.pop()
+    return None
+
+
 def _strip_comments(text: str) -> str:
     """Shell source with comment lines removed.
 
@@ -417,18 +438,24 @@ class TestRoleSessionSuccession:
         self._marker(tmp_path, "cx-blue-shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e")
         assert self._succeed(tmp_path, "cx-blue") == sid
 
-    def test_only_continue_succeeds_in_the_launcher(self) -> None:
-        """A fresh launch must not adopt a live claim — that is how lanes collide."""
-        for name in ("hapax-claude", "hapax-kimi"):
+    def test_interactive_succession_sits_inside_a_resume_conditional(self) -> None:
+        """A fresh interactive launch must not adopt a live claim.
+
+        The first cut searched all preceding text for RESUMING/CONTINUE — which
+        appear in argument parsing — so replacing both guards with `if true` still
+        passed. This resolves the ENCLOSING conditional instead, which `if true`
+        cannot satisfy.
+        """
+        for name, flag in (("hapax-claude", "RESUMING"), ("hapax-kimi", "CONTINUE")):
             code = _strip_comments((SCRIPTS / name).read_text(encoding="utf-8"))
-            assert "hapax_role_succession_session_id" in code, f"{name} cannot resume"
-            call = next(
-                line for line in code.splitlines() if "hapax_role_succession_session_id" in line
-            )
-            guard_window = code[: code.index(call)]
-            assert "RESUMING" in guard_window or "CONTINUE" in guard_window, (
-                f"{name} calls succession without a resume guard — a fresh launch "
+            condition = _enclosing_if_condition(code, "hapax_role_succession_session_id")
+            assert condition is not None, (
+                f"{name} calls succession outside any conditional — a fresh launch "
                 "would adopt a live claim session"
+            )
+            assert flag in condition, (
+                f"{name} guards succession with {condition!r}, which does not test "
+                f"the resume flag {flag}"
             )
 
 
@@ -494,6 +521,71 @@ class TestLauncherBehaviour:
         assert "identity helper not found" in combined, (
             f"{name} failed without naming the cause or a remedy\n{combined}"
         )
+
+    def _headless_marker_sid(self, tmp_path: Path, task: str, **extra: str) -> str:
+        """Run hapax-claude-headless and return the session id it actually adopted."""
+        env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+        for k in ("CLAUDE_ROLE", "HAPAX_AGENT_NAME", "HAPAX_AGENT_ROLE", "HAPAX_WORKTREE_ROLE"):
+            env.pop(k, None)
+        env["HOME"] = str(tmp_path)
+        env["HAPAX_CLAUDE_HEADLESS_ALLOW"] = "1"
+        env["HAPAX_SDLC_SLICE_ATTACH"] = "0"
+        env.update(extra)
+        subprocess.run(
+            [str(SCRIPTS / "hapax-claude-headless"), "--task", task, "zeta", "msg"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        markers = sorted((tmp_path / ".cache" / "hapax").glob("session-role-*"))
+        assert len(markers) == 1, f"expected one session marker, got {markers}"
+        return markers[0].name.removeprefix("session-role-")
+
+    def test_headless_redispatch_succeeds_its_own_live_claim(self, tmp_path: Path) -> None:
+        """The round-3 critical, exercised through the real launcher.
+
+        A Gate-0B claim binds session_id; a re-dispatch that mints a new one makes
+        resolve_applied_claim_publication refuse with claim_binding_vector_mismatch
+        before resumption is reached. So a launch for a task this role already
+        holds must adopt that claim's session.
+        """
+        prior = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+        cache = tmp_path / ".cache" / "hapax"
+        cache.mkdir(parents=True)
+        (cache / f"cc-active-task-zeta-{prior}").write_text("task-a\n", encoding="utf-8")
+
+        assert self._headless_marker_sid(tmp_path, "task-a") == prior, (
+            "a re-dispatched headless lane minted a new id instead of succeeding "
+            "the session its admitted claim is bound to"
+        )
+
+    def test_headless_launch_for_a_different_task_still_mints(self, tmp_path: Path) -> None:
+        """Succession is keyed on the TASK, so new work never adopts a live claim."""
+        prior = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+        cache = tmp_path / ".cache" / "hapax"
+        cache.mkdir(parents=True)
+        (cache / f"cc-active-task-zeta-{prior}").write_text("task-a\n", encoding="utf-8")
+
+        assert self._headless_marker_sid(tmp_path, "task-b") != prior
+
+    def test_headless_launch_with_no_live_claim_mints(self, tmp_path: Path) -> None:
+        (tmp_path / ".cache" / "hapax").mkdir(parents=True)
+        sid = self._headless_marker_sid(tmp_path, "task-a")
+        assert is_claim_keyable_session_id(sid)
+
+    def test_headless_does_not_succeed_a_role_extending_its_name(self, tmp_path: Path) -> None:
+        """`zeta` must not adopt `zeta-shadow`'s claim — that steals it."""
+        cache = tmp_path / ".cache" / "hapax"
+        cache.mkdir(parents=True)
+        (cache / "cc-active-task-zeta-shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e").write_text(
+            "task-a\n", encoding="utf-8"
+        )
+
+        sid = self._headless_marker_sid(tmp_path, "task-a")
+        assert sid != "shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e"
+        assert is_claim_keyable_session_id(sid)
 
     def test_headless_launcher_ignores_an_inherited_pin(self, tmp_path: Path) -> None:
         """hapax-claude-headless minted unconditionally before this change (#3875).

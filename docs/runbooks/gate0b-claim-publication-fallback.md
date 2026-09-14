@@ -231,6 +231,20 @@ sessions.** Two different operations, easily confused:
 So: closing a task no longer requires hand-releasing the closing role's other
 leases for it. Everything else still does.
 
+Recheck both guarantees — the role-wide sweep and the overlapping-role
+protection — before relying on either:
+
+```bash
+uv run pytest tests/scripts/test_cc_close_session_lease.py -q
+```
+
+Expected: all pass. The two that carry these guarantees by name are
+`test_cc_close_clears_a_lease_for_this_task_held_by_another_session` (role-wide
+closure reaches another session's lease for the closed task) and
+`test_cc_close_orphan_sweep_spares_a_role_sharing_its_prefix` (`cx-blue` does not
+sweep `cx-blue-shadow`). The stale-lease commands above verify a *different*
+operation — exact-file release — and say nothing about either.
+
 ## Roll Back To Normal
 
 ```bash

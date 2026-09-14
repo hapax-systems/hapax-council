@@ -421,6 +421,7 @@ def run_sweep(
                 read_claim_markers(claim_marker_dir),
                 notes,
                 closed_notes,
+                cache_dir=claim_marker_dir,
                 now=now,
             )
         )

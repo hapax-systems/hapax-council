@@ -118,6 +118,19 @@ fi
 # behaviour exactly, including when dispatched from inside a pinned codex pane.
 hapax_consume_launch_session_id
 SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
+# A re-dispatch for a task this role ALREADY holds is a resume, not a new lane:
+# the admitted claim is bound to the previous session, and minting a new id makes
+# resolve_applied_claim_publication refuse with claim_binding_vector_mismatch
+# before resumption is even reached. The condition is the live state itself (this
+# role holds exactly one minted-session claim naming THIS task), not a flag — so
+# a launch for any other task, or for a role holding nothing, still mints.
+if [ -n "${CLAUDE_TASK:-}" ]; then
+  if _hch_succeeded="$(hapax_role_succession_session_id "$ROLE" "$CLAUDE_TASK" 2>/dev/null)" &&
+    [ -n "$_hch_succeeded" ]; then
+    SESSION_UUID="$_hch_succeeded"
+    echo "hapax-claude-headless: resuming '$CLAUDE_TASK' under its live claim session $SESSION_UUID" >&2
+  fi
+fi
 export HAPAX_SESSION_ID="$SESSION_UUID"
 # Per-session identity marker (WM-independent): record THIS session's role keyed by
 # the session id so agent-role.sh / hapax-whoami resolve identity without a

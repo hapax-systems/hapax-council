@@ -305,8 +305,16 @@ sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
 # Succeeds ONLY when the role holds exactly one live session-keyed claim. Two
 # means the role's claim state is ambiguous and picking one would be a guess; zero
 # means there is nothing to succeed. Both mint.
+# hapax_role_succession_session_id <role> [task_id]
+#
+# With a task id, the live claim must NAME THAT TASK. That is the precise
+# condition the failure describes — "its existing claim remains bound to session
+# A" for the task now being launched — and it makes succession safe without any
+# --continue flag: a launch for a task this role already holds IS a resume, and a
+# launch for anything else mints. Callers that cannot name a task (an interactive
+# --continue with no --task) fall back to role-only.
 hapax_role_succession_session_id() {
-  local role="${1:-}" dir="${HOME:-/nonexistent}/.cache/hapax" f n=0 found=""
+  local role="${1:-}" task="${2:-}" dir="${HOME:-/nonexistent}/.cache/hapax" f n=0 found=""
   [ -n "$role" ] || return 1
   for f in "$dir/cc-active-task-$role-"*; do
     [ -f "$f" ] || continue
@@ -315,6 +323,11 @@ hapax_role_succession_session_id() {
     # Only ids this system minted: `<role>-shadow-<uuid>` belongs to another lane
     # whose name extends this one's, and succeeding it would steal its claim.
     hapax_session_id_is_minted "$candidate" || continue
+    if [ -n "$task" ]; then
+      local held
+      held="$(head -n1 "$f" 2>/dev/null | tr -d '[:space:]' || true)"
+      [ "$held" = "$task" ] || continue
+    fi
     n=$((n + 1))
     found="$candidate"
   done

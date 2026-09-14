@@ -5158,3 +5158,14 @@ from shared.session_identity import (  # noqa: E402
 )
 
 _ = (_capability_shape_from_env, _format_capability_shape)
+
+# Minted-session-id recognizer (same row, round 2). DETECTOR BLIND SPOT: both
+# production callers are shell — scripts/cc-close's foreign-lease guard and
+# hooks/scripts/agent-role.sh::hapax_session_id_is_minted, each invoking it through
+# `python3 -I -`. It lives in shared/session_identity.py beside the minter on
+# purpose (cc-close previously carried a hand-rolled bash copy of the same
+# knowledge), and tests/test_session_identity.py::TestMintedShapeRecognizer holds
+# it in step with BOTH minters.
+from shared.session_identity import is_minted_session_id as _is_minted_session_id  # noqa: E402
+
+_ = (_is_minted_session_id,)

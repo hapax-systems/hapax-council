@@ -15,6 +15,7 @@ import re
 import subprocess
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1036,29 +1037,51 @@ def check_vault_link_integrity(
 # runs cc-close at all, and its marker outlives the task.
 
 
-def read_claim_markers(cache_dir: Path) -> dict[str, str]:
-    """Map ``cc-active-task-*`` marker key -> the task id it names.
+@dataclass(frozen=True)
+class ClaimMarkerScan:
+    """What a marker sweep saw, INCLUDING what it could not read.
+
+    The first cut returned a bare mapping and swallowed OSError /
+    UnicodeDecodeError per file, plus enumeration failure for the directory. An
+    injected PermissionError therefore produced an empty mapping and zero events —
+    indistinguishable from "no drift". For the one check whose entire job is
+    noticing that live state disagrees with declared state, silence-on-failure is
+    the worst possible default: it reports clean precisely when it knows least.
+    """
+
+    markers: dict[str, str]
+    unreadable: tuple[tuple[str, str], ...] = ()
+    """(path, reason) for each marker the sweep could not read."""
+
+    enumeration_error: str | None = None
+    """Set when the directory itself could not be listed; markers is then empty."""
+
+
+def read_claim_markers(cache_dir: Path) -> ClaimMarkerScan:
+    """Scan ``cc-active-task-*`` markers, preserving read failures.
 
     Reads only the first line: several consumers treat the whole file as the id,
     so the id file is single-line by contract. ``cc-claim-epoch-*`` sidecars use
     a distinct prefix precisely so they cannot be swept up by this glob.
     """
     markers: dict[str, str] = {}
+    unreadable: list[tuple[str, str]] = []
     try:
         paths = sorted(cache_dir.glob("cc-active-task-*"))
-    except OSError:
-        return markers
+    except OSError as exc:
+        return ClaimMarkerScan(markers={}, enumeration_error=f"{type(exc).__name__}: {exc}")
     for path in paths:
-        if not path.is_file():
-            continue
         try:
+            if not path.is_file():
+                continue
             head = path.read_text(encoding="utf-8").splitlines()[:1]
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            unreadable.append((str(path), f"{type(exc).__name__}: {exc}"))
             continue
         task_id = head[0].strip() if head else ""
         if task_id:
             markers[path.name[len("cc-active-task-") :]] = task_id
-    return markers
+    return ClaimMarkerScan(markers=markers, unreadable=tuple(unreadable))
 
 
 #: Greek worktree slots, which hold markers whether or not they currently hold a
@@ -1078,11 +1101,12 @@ CC_CLOSE_ACCEPTED_STATUSES: frozenset[str] = frozenset({"done", "withdrawn", "su
 
 
 def check_stale_claim_marker(
-    markers: Mapping[str, str],
+    scan: ClaimMarkerScan | Mapping[str, str],
     notes: Iterable[TaskNote],
     closed_notes: Iterable[TaskNote] = (),
     *,
     known_roles: Iterable[str] | None = None,
+    cache_dir: Path | None = None,
     now: datetime | None = None,
 ) -> list[HygieneEvent]:
     """Flag runtime claim markers that disagree with the vault SSOT.
@@ -1117,8 +1141,54 @@ def check_stale_claim_marker(
     disagreement matrix is testable without a runtime cache directory.
     """
     now = now or _now()
+    scan = scan if isinstance(scan, ClaimMarkerScan) else ClaimMarkerScan(markers=dict(scan))
+    markers = scan.markers
+    # Remediation must name the files the sweep ACTUALLY looked at. The sweeper
+    # takes a configured marker dir, so hardcoding ~/.cache/hapax told an operator
+    # sweeping another cache to delete their LOCAL claim files instead of the
+    # observed ones — a destructive instruction aimed at the wrong machine's state.
+    marker_dir = cache_dir if cache_dir is not None else Path.home() / ".cache" / "hapax"
     active = {n.task_id: n for n in notes}
     closed = {n.task_id: n for n in closed_notes}
+
+    events: list[HygieneEvent] = []
+    if scan.enumeration_error is not None:
+        events.append(
+            HygieneEvent(
+                timestamp=now,
+                check_id="stale_claim_marker",
+                severity="violation",
+                message=(
+                    f"claim marker directory {marker_dir} could not be listed "
+                    f"({scan.enumeration_error}) — the live↔declared join checked nothing"
+                ),
+                metadata={
+                    "marker_dir": str(marker_dir),
+                    "next_action": "operator-adjudication",
+                    "reason": "marker_dir_unreadable",
+                    "error": scan.enumeration_error,
+                },
+            )
+        )
+    for path, reason in scan.unreadable:
+        events.append(
+            HygieneEvent(
+                timestamp=now,
+                check_id="stale_claim_marker",
+                severity="violation",
+                message=(
+                    f"claim marker {path} could not be read ({reason}) — this sweep "
+                    "is incomplete and its silence is not evidence of agreement"
+                ),
+                metadata={
+                    "marker": path,
+                    "next_action": "operator-adjudication",
+                    "reason": "marker_unreadable",
+                    "error": reason,
+                },
+            )
+        )
+
     if known_roles is None:
         # Roles are discovered, never derived from the marker key itself: a key is
         # `<role>[-<session_id>]` with hyphens on BOTH sides, so
@@ -1133,7 +1203,6 @@ def check_stale_claim_marker(
         }
         known_roles = discovered | _SLOT_ROLES
 
-    events: list[HygieneEvent] = []
     for key, task_id in sorted(markers.items()):
         split = split_claim_marker_key(key, known_roles)
         # An unresolvable key is reported AS unresolvable rather than guessed at:
@@ -1196,8 +1265,8 @@ def check_stale_claim_marker(
                 )
                 remediation = (
                     f"no governed tool retires this marker ({why}); remove "
-                    f"~/.cache/hapax/cc-active-task-{key} and "
-                    f"~/.cache/hapax/cc-claim-epoch-{key} after confirming the closure"
+                    f"{marker_dir / f'cc-active-task-{key}'} and "
+                    f"{marker_dir / f'cc-claim-epoch-{key}'} after confirming the closure"
                 )
             else:
                 next_action = "re-emit-close"

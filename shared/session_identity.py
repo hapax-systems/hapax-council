@@ -171,15 +171,26 @@ def split_claim_marker_key(key: str, known_roles: Iterable[str]) -> tuple[str, s
 
     The ambiguity is only resolvable against the set of roles that actually
     exist, so that set is a required argument rather than a guess. The longest
-    matching role wins, and the remainder must be claim-keyable — otherwise the
-    "role" was a prefix coincidence. Returns ``None`` when no reading works.
+    matching role wins, and the remainder must be a **minted** session id.
+
+    Minted, not merely claim-keyable: ``shadow-<uuid>`` is keyable, so a keyable
+    test reads ``cx-blue-shadow-<uuid>`` as role ``cx-blue`` with session
+    ``shadow-<uuid>`` whenever ``cx-blue-shadow`` is not in the known set — and the
+    known set comes from *current* ``assigned_to`` values, which do not enumerate
+    former assignees. A task reassigned away from ``cx-blue-shadow`` therefore made
+    its leftover marker read as ``cx-blue``'s own, and a contested claim reported
+    as healthy. Requiring a minted remainder makes that unrepresentable: the key
+    resolves to ``None``, and the caller reports it as unattributable rather than
+    inventing an owner.
+
+    Returns ``None`` when no reading works.
     """
     candidates = sorted({r for r in known_roles if r}, key=len, reverse=True)
     for role in candidates:
         if key == role:
             return role, None
         remainder = key[len(role) + 1 :] if key.startswith(f"{role}-") else ""
-        if remainder and is_claim_keyable_session_id(remainder):
+        if remainder and is_minted_session_id(remainder):
             return role, remainder
     return None
 
