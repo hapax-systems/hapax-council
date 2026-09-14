@@ -3750,11 +3750,10 @@ def _relocate_to_scratch(
 
     **That window is OPEN in this code.** It is pinned by
     ``test_open_window_arrival_at_a_scratch_between_the_vacancy_check_and_the_rename``,
-    which asserts the current behaviour and fails if it ever changes. A cross-reference is
-    not a closure, and an earlier version of this docstring cited a design section and a
-    task id as though they were one — a reviewer was right to call that. What would close
-    it is removing the concurrent writer, which is the only move that resolves a conflict
-    between two invariants rather than trading one for the other;
+    which asserts the current behaviour and fails if it ever changes. **A cross-reference is
+    not a closure**, so read the task id below as where the work is tracked and nothing
+    more. What would close it is removing the concurrent writer, which is the only move that
+    resolves a conflict between two invariants rather than trading one for the other;
     ``projection-lock-coverage-projected-path-writers-20260913`` is where that work is
     tracked, and tracking is not doing.
     """
@@ -3977,16 +3976,11 @@ def _refuse_if_displaced_entry_moved(
     So atomicity was supplying race *detection*, not only atomicity. This re-reads the
     destination's identity immediately before the step that retires it.
 
-    **Two corrections, both mine, and the second undoes an overcorrection.**
+    **What is closed:** the *live* names. Retiring an entry by moving it, rather than
+    unlinking or overwriting it, closes the window there — which is where every reproduced
+    loss occurred.
 
-    This first said "the residual window cannot be closed", which was false: what cannot be
-    closed *by a check* is not what cannot be closed *at all*. Retiring an entry by **moving**
-    it rather than unlinking or overwriting it does close the window on the *live* names,
-    which is where every reproduced loss occurred.
-
-    It then said "there is no lossy window left on either", which was false in the other
-    direction and reviewers caught it three rounds running. Two windows remain, on the
-    **scratch** names rather than the live ones:
+    **What is open:** two windows, on the **scratch** names:
 
     * an arrival at a scratch between the vacancy check and the rename that targets it —
       see :func:`_relocate_to_scratch` for why the primitive that would refuse it is
@@ -4045,12 +4039,9 @@ def _fallback_exchange(
     the contract: ``dst`` holds the replacement and ``src`` holds the displaced
     entry, which is what this rebuilds.
 
-    **Move-or-fail wherever the primitives allow it — which is not everywhere.**
-
-    An earlier version of this docstring said "no step can destroy an entry it has not
-    identified". That overstated what these primitives provide and a reviewer was right to
-    call it. Two windows remain, both named rather than argued away, and both closing under
-    ``projection-lock-coverage-projected-path-writers-20260913``:
+    **Move-or-fail wherever the primitives allow it — which is not everywhere.** The live
+    names are never blindly replaced; two windows remain on the **scratch** names, and each
+    is pinned by a ``test_open_window_*`` regression rather than argued away:
 
     * an arrival at a **scratch** name between the vacancy check and the rename that targets
       it — ``rename`` cannot refuse an occupied destination, and the primitive that can
@@ -4210,16 +4201,12 @@ def _fallback_exchange(
     #    the projection has already succeeded by this point, so raising would discard a
     #    verified post-state over a remnant that is merely untidy.
     #
-    #    But a scratch that is OURS and could not be removed is a different matter from a
-    #    foreign one left alone, and ignoring the return value hid that. Our redundant
-    #    scratch is a second link to a live inode, so leaving it means the live entry keeps
-    #    `st_nlink == 2` and the very next `_entry_state_at` raises
-    #    `transition_projection_path_unsafe` — a reviewer confirmed that by replay for
-    #    create, update and delete alike. The transition then fails anyway, after its
-    #    mutations, with a diagnosis pointing at the wrong thing.
-    #
-    #    So an unremovable scratch of ours is reported HERE, where the cause is known,
-    #    rather than as a mystified path-unsafe refusal one readback later.
+    #    A scratch that is OURS and could not be removed is a different matter from a
+    #    foreign one left alone. Ours is a second link to a live inode, so leaving it means
+    #    the live entry keeps `st_nlink == 2` and the very next `_entry_state_at` raises
+    #    `transition_projection_path_unsafe` — for create, update and delete alike. The
+    #    transition fails anyway, after its mutations, with a diagnosis pointing at the
+    #    wrong thing, so it is reported HERE where the cause is known.
     stranded = [
         redundant
         for redundant, expected in ((spent, replacement), (holding, displaced), (pin, displaced))
@@ -4333,12 +4320,10 @@ def _fallback_noreplace(
     # Cleanup preserves on uncertainty: a scratch that no longer holds what we put there is
     # another writer's, so it is moved aside under an abandoned name rather than removed.
     #
-    # And an unremovable scratch of OURS is escalated here exactly as on the exchange leg.
-    # It was not: the previous round fixed that hole on one leg and left this one ignoring
-    # the return value, so an EIO here left `holding` as a second link to the live inode and
-    # the next `_entry_state_at` refused it as path-unsafe — the same defect, the same
-    # misdirected diagnosis, one leg over. Fixing one instance of a shape and not sweeping
-    # for the rest is the error this file keeps repeating; a reviewer caught this one.
+    # And an unremovable scratch of OURS is escalated here exactly as on the exchange leg:
+    # leaving it keeps `holding` as a second link to the live inode, and the next
+    # `_entry_state_at` refuses that as path-unsafe. Both legs, deliberately — this hole was
+    # once fixed on one and left on the other.
     freed = _retire_scratch(src_dir_fd, holding, intended, subject=src_name)
     os.fsync(src_dir_fd)
     if not freed and _scratch_is_a_live_second_link(src_dir_fd, holding, intended):

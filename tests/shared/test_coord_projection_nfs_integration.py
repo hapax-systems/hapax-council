@@ -388,3 +388,56 @@ def test_the_waiver_expiry_row_is_resolvable() -> None:
         "the ci.yml self-hosted ban has been lifted — put the full row id in the waiver "
         "and delete this elision"
     )
+
+
+def test_directory_promotion_on_a_mount_that_refuses_the_flags(
+    unsupporting_mount: Path,
+) -> None:
+    """The leg every transaction runs through, exercised on the real filesystem.
+
+    The live witness covered a note update and a marker create — the file legs. Journal
+    materialization promotes a whole staged transaction *directory* into the canonical root
+    under NOREPLACE, across two directories, and `link(2)` refuses directories, so that leg
+    takes an entirely different rebuild. It was verified only against a simulated mount.
+
+    That matters here more than elsewhere: the directory rebuild's safety argument rests on
+    what plain `rename(2)` does to a populated destination on THIS filesystem, and NFS is
+    exactly where a reasonable assumption about rename semantics could fail to hold.
+    """
+
+    staging = unsupporting_mount / "staging"
+    final = unsupporting_mount / "final"
+    staging.mkdir()
+    final.mkdir()
+    journal = staging / "txn-live"
+    journal.mkdir()
+    (journal / "manifest.json").write_bytes(b'{"live": true}\n')
+
+    src_fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY)
+    dst_fd = os.open(final, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        cp._fallback_noreplace(src_fd, "txn-live", dst_fd, "txn-live")
+        assert (final / "txn-live" / "manifest.json").read_bytes() == b'{"live": true}\n'
+        assert not (staging / "txn-live").exists()
+
+        # And the refusals the argument depends on, measured here rather than assumed from
+        # the simulated mount: a POPULATED destination and a FILE destination.
+        populated_src = staging / "txn-occupied"
+        populated_src.mkdir()
+        (populated_src / "manifest.json").write_bytes(b"{}\n")
+        occupied = final / "txn-occupied"
+        occupied.mkdir()
+        (occupied / "keep-me").write_bytes(b"occupied\n")
+        with pytest.raises((OSError, cp.LifecycleTransitionError)):
+            cp._fallback_noreplace(src_fd, "txn-occupied", dst_fd, "txn-occupied")
+        assert (occupied / "keep-me").read_bytes() == b"occupied\n"
+
+        file_src = staging / "txn-file"
+        file_src.mkdir()
+        (final / "txn-file").write_bytes(b"a file, not a directory\n")
+        with pytest.raises((OSError, cp.LifecycleTransitionError)):
+            cp._fallback_noreplace(src_fd, "txn-file", dst_fd, "txn-file")
+        assert (final / "txn-file").read_bytes() == b"a file, not a directory\n"
+    finally:
+        os.close(src_fd)
+        os.close(dst_fd)
