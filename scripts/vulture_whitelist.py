@@ -5132,3 +5132,29 @@ from agents.deliberative_council.models import (
 
 _PhaseOneResult._populate_dossier_sections
 _CouncilVerdict._populate_dossier_sections
+
+# Capability-shape producer (2026-09-14, row
+# ontology-correction-claims-and-capability-shapes-20260913). DETECTOR BLIND SPOT, not
+# dead code — the second kind described above, and a sharper case of it.
+#
+# The production caller is `_shape_suffix()` inside scripts/cc-claim, which is a bash
+# script whose claim path is a ~1000-line Python HEREDOC. Vulture cannot see it twice
+# over: cc-claim is extensionless (so vulture never parses it even when SOURCE_PATHS
+# includes scripts/), and the call site is inside a quoted heredoc rather than importable
+# module text, so no static analyser could resolve it from the file either.
+#
+# Live-call evidence, not assertion: a cc-claim run stamps the rendering into the vault
+# note's session log — `- <ts> <role> claimed (cc-claim, session=<sid>) shape=(harness=claude,
+# scaffold_revision=<sha>)`. tests/test_capability_shape_producer.py pins the producer's
+# contract and its agreement with shared.route_metadata_schema.CapabilityShape.
+#
+# The import alone satisfies the gate; the `_ = (...)` binding below is there so a reader
+# (and ruff) sees the names are referenced deliberately, matching this file's house style.
+from shared.session_identity import (  # noqa: E402
+    capability_shape_from_env as _capability_shape_from_env,
+)
+from shared.session_identity import (  # noqa: E402
+    format_capability_shape as _format_capability_shape,
+)
+
+_ = (_capability_shape_from_env, _format_capability_shape)
