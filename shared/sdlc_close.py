@@ -131,11 +131,16 @@ def _require_exact_frontmatter_write(
             f"give {key} a value that renders as one YAML line before close",
             str(exc).replace("\n", " "),
         ) from exc
-    if not isinstance(intent, dict) or key not in intent:
+    if not isinstance(intent, dict) or set(intent) != {key}:
+        # Exactly one entry, for this key. A value carrying a newline renders as
+        # a second declaration, and one that merely restates a key already in
+        # the note passes a value comparison while leaving a contradicting line
+        # in the text — `--pr $'4669\\nrelease_authorized: true'` did exactly
+        # that.
         raise TerminalCloseError(
             "terminal_close_frontmatter_value_unrepresentable",
             f"give {key} a value that renders as one YAML line before close",
-            f"{line!r} does not render as a single mapping entry",
+            f"{line!r} does not render as exactly one mapping entry",
         )
     before, before_state = frontmatter_state_from_text(preimage)
     if before_state != FRONTMATTER_OK:
@@ -179,20 +184,20 @@ def _frontmatter_set(text: str, key: str, rendered_value: str) -> str:
             f"frontmatter_{state}",
         )
     line = f"{key}: {rendered_value}"
+    # Excluding CR from the match is what keeps a CRLF note CRLF on the rewrite
+    # path: the line's own ending is never part of the replaced span. It is also
+    # why the old `\s*.*$` was destructive — `\s*` crosses newlines, so an
+    # empty-valued key consumed the line beneath it.
     pattern = rf"(?m)^{re.escape(key)}:[^\r\n]*"
-
-    def _rewrite(match: re.Match[str]) -> str:
-        # Keep the matched line's own ending: a CRLF note must not come back
-        # with one LF line spliced into it.
-        return line + "\r" if match.group(0).endswith("\r") else line
-
     if re.search(pattern, head):
         # Rewrite EVERY occurrence, and substitute through a function so the
         # value is never read as a backreference. YAML resolves a duplicated
         # key to the LAST one, so rewriting only the first left the note
         # parsing exactly as it did before the close.
-        head = re.sub(pattern, _rewrite, head)
+        head = re.sub(pattern, lambda _match: line, head)
     else:
+        # The append path has to carry the ending itself; head ends with CR
+        # exactly when the last frontmatter line did.
         head += "\n" + line + ("\r" if head.endswith("\r") else "")
     postimage = head + tail
     _require_exact_frontmatter_write(text, postimage, key, line)

@@ -664,6 +664,13 @@ def test_setting_a_key_does_not_consume_the_line_beneath_it(
             "---extra: abc\ntask_id: t\nstage: S10\n---\n\nbody\n",
             "terminal_close_frontmatter_malformed",
         ),
+        # Same key, spelled so the line rewrite cannot see it, and LAST — so it
+        # wins the parse no matter what the rewrite did above it.
+        (
+            "quoted_duplicate_wins_the_parse",
+            '---\ntask_id: t\nstage: S10\n"stage": S99\n---\n\nbody\n',
+            "terminal_close_frontmatter_write_ineffective",
+        ),
     ],
 )
 def test_frontmatter_set_refuses_what_it_cannot_edit_exactly(
@@ -682,16 +689,72 @@ def test_frontmatter_set_refuses_what_it_cannot_edit_exactly(
     assert excinfo.value.reason_code == reason, label
 
 
-def test_frontmatter_set_preserves_crlf_line_endings() -> None:
+@pytest.mark.parametrize(
+    ("label", "key"),
+    [("rewrite_existing_key", "stage"), ("append_absent_key", "completed_at")],
+)
+def test_frontmatter_set_keeps_a_crlf_note_wholly_crlf(label: str, key: str) -> None:
+    """Neither write path may splice a lone LF into a CRLF note.
+
+    Both paths are exercised because they carry the ending differently: the
+    rewrite path gets it for free by excluding CR from the matched span, the
+    append path has to add it. A test that only sets an existing key leaves the
+    append path unpinned.
+    """
+
     note = "---\r\ntask_id: t\r\nstage: S10\r\n---\r\n\r\nbody\r\n"
 
-    written = sdlc_close._frontmatter_set(note, "stage", "S11")
+    written = sdlc_close._frontmatter_set(note, key, "X")
 
-    assert "stage: S11\r\n" in written
-    assert written.replace("\r\n", "") == written.replace("\r\n", "").replace("\r", "")
+    assert f"{key}: X\r\n" in written, label
+    stripped = written.replace("\r\n", "")
+    assert "\n" not in stripped, label
+    assert "\r" not in stripped, label
     parsed, state = frontmatter_state_from_text(written)
-    assert state == FRONTMATTER_OK
-    assert parsed["stage"] == "S11"
+    assert state == FRONTMATTER_OK, label
+    assert parsed[key] == "X", label
+
+
+@pytest.mark.parametrize(
+    ("label", "value"),
+    [
+        # `--pr` reaches this as an unvalidated string. A newline in it renders
+        # a SECOND declaration into the frontmatter.
+        ("declares_a_new_key", "4669\naxiom_mutation_authorized: true"),
+        # This one shadows a key already in the note, so the parsed value is
+        # unchanged and a value comparison alone would admit it — while the
+        # note text gains a contradicting line above the real one.
+        ("shadows_an_existing_key", "4669\nrelease_authorized: true"),
+        ("is_not_yaml", "a: b: c"),
+        ("does_not_close_its_flow_sequence", "[1, 2"),
+    ],
+)
+def test_frontmatter_set_refuses_a_value_that_is_not_exactly_one_entry(
+    label: str,
+    value: str,
+) -> None:
+    note = "---\ntask_id: t\npr:\nrelease_authorized: false\n---\n\nbody\n"
+
+    with pytest.raises(TerminalCloseError) as excinfo:
+        sdlc_close._frontmatter_set(note, "pr", value)
+    assert excinfo.value.reason_code == "terminal_close_frontmatter_value_unrepresentable", label
+
+
+def test_frontmatter_set_blames_a_note_that_was_already_unparseable() -> None:
+    """A note broken before the edit is reported as broken, not as our damage.
+
+    Both checks raise ``terminal_close_frontmatter_malformed``, so only the
+    repair differs — and it differs in where it sends the operator. Without the
+    preimage check the refusal reads "setting stage left the frontmatter
+    parse_error", which points at the close rather than at the note.
+    """
+
+    note = '---\ntask_id: "t\nstage: S10\n---\n\nbody\n'
+
+    with pytest.raises(TerminalCloseError) as excinfo:
+        sdlc_close._frontmatter_set(note, "stage", "S11")
+    assert excinfo.value.reason_code == "terminal_close_frontmatter_malformed"
+    assert excinfo.value.detail == "frontmatter_parse_error"
 
 
 def test_frontmatter_set_writes_a_value_containing_regex_backreferences() -> None:
