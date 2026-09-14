@@ -26,9 +26,9 @@ The single predicate is: **does this entry name a directory in the namespace ob
 will compare against?** That subsumes every failure shape — a missing path, a
 wrong prefix, a file instead of a folder, a trailing slash (ob compares raw, so
 ``x/`` probes ``x//``), a ``.``/``..`` component the filesystem resolves but ob
-never emits, and a Unicode form that exists on disk but not after ob's NFC
-normalization. Filesystem paths are kept separately from emitted paths precisely
-because those two namespaces are not the same.
+never emits, and a Unicode form that exists on disk but not after ob's nonbreaking
+space rewrite and NFC normalization. Filesystem paths are kept separately from
+emitted paths precisely because those two namespaces are not the same.
 
 It also predicts the upload set by replaying the client's admission rules, so a
 seed has an expected byte/file count to verify against rather than one derived by
@@ -44,18 +44,26 @@ list would fail open; 3 usage error, IO error, no sync config, or an incomplete
 traversal (a partial total must never read as successful verification).
 
 Rules replayed from obsidian-headless 0.0.14 ``cli.js``:
-  * emitted namespace — ``Ne(s)`` returns ``normalize("NFC")`` of the relative
-    path, while ``ignoreFolders`` entries are compared literally.
+  * emitted namespace — ``Ne(s) = Cs(_e(s)).normalize("NFC")``, where ``Cs``
+    rewrites U+00A0 and U+202F to ordinary spaces. ``ignoreFolders`` entries are
+    then compared to that literally, so both the space rewrite and NFC matter.
+  * entry trimming — ob trims each comma-separated CLI field with JavaScript
+    ``trim()`` semantics, which are NOT Python's ``str.strip()``. A PERSISTED list
+    is not trimmed at all; it is compared byte for byte.
   * hidden pruning — ``Is(s)`` walks every path component and rejects the path if
     ANY component starts with ``.``; the adapter treats such paths as absent.
   * symlinks — the adapter resolves real paths and reconciles links as ordinary
-    entries, so a directory symlink is FOLLOWED, including out of the vault.
+    entries, so a directory symlink is FOLLOWED, including out of the vault, and a
+    directory reachable by two routes is emitted under both.
   * attachment classes — ``md``/``canvas``/``base`` always sync; the rest gate on
     the selection, and anything in no class is ``unsupported`` (off by default).
     ``webm`` counts as audio OR video.
   * the empty selection — ``--file-types ""`` DELETES the stored key and so
     restores the defaults, whereas a persisted ``allowTypes: []`` is honoured as
     "no attachments" (``[] || me`` keeps ``[]``: an empty array is truthy in JS).
+  * config-dir uploads — when ``allowSpecialFiles`` is non-empty ob also uploads
+    matching files from the config dir (default ``.obsidian``) through a separate
+    hidden walk, so they are counted even though the main walk prunes dotted paths.
 """
 
 from __future__ import annotations
@@ -119,6 +127,24 @@ def _emitted(rel: str) -> str:
     for codepoint in _EMITTED_SPACE_CODEPOINTS:
         rel = rel.replace(chr(codepoint), " ")
     return unicodedata.normalize("NFC", rel)
+
+
+# ECMAScript WhiteSpace + LineTerminator, i.e. exactly what String.prototype.trim
+# removes. Python's str.strip() is NOT the same set — measured: it also strips
+# U+001C-U+001F and U+0085 (which JS keeps), and it does NOT strip U+FEFF (which JS
+# removes). Using str.strip() certified entries that ob then failed to match.
+_JS_TRIM_CHARS = "".join(
+    (
+        "\t\n\v\f\r ",
+        "      　﻿",
+        *(chr(c) for c in range(0x2000, 0x200B)),
+    )
+)
+
+
+def _js_trim(value: str) -> str:
+    """Reproduce cli.js's ``.map(n => n.trim())`` on comma-split CLI input."""
+    return value.strip(_JS_TRIM_CHARS)
 
 
 def _extension(name: str) -> str:
@@ -213,12 +239,18 @@ def resolve_entry(vault: Path, entry: str) -> tuple[bool, str]:
     return True, ""
 
 
-def validate_entries(vault: Path, entries: list[str]) -> list[dict]:
+def validate_entries(vault: Path, entries: list[str], *, trim: bool) -> list[dict]:
     """Classify each exclusion entry. Anything not ``ok`` cannot match and so
-    fails OPEN — the data it names would upload."""
+    fails OPEN — the data it names would upload.
+
+    ``trim`` reproduces what the client does to the input it is given, and nothing
+    more. ob trims each comma-separated CLI field, so a CLI list is trimmed with
+    JS semantics; but a PERSISTED list is compared byte for byte, so trimming it
+    here would certify an entry like ``"private "`` that ob can never match.
+    """
     findings: list[dict] = []
     for raw in entries:
-        entry = raw.strip()
+        entry = _js_trim(raw) if trim else raw
         finding: dict = {"entry": raw, "normalized": entry}
         effective, detail = resolve_entry(vault, entry)
         if effective:
@@ -243,6 +275,80 @@ def validate_entries(vault: Path, entries: list[str]) -> list[dict]:
 
 def _excluded(rel: str, entries: list[str]) -> bool:
     return any(rel == e or rel.startswith(e + "/") for e in entries)
+
+
+PERSISTED_CONFIGS_KEY = "allowSpecialFiles"
+_PLUGIN_FILES = frozenset({"manifest.json", "main.js", "styles.css", "data.json"})
+
+
+def _config_category(rel_in_config_dir: str) -> str | None:
+    """Which ``configs`` category a file under the config dir belongs to.
+
+    Mirrors the ``e.startsWith(configDir + "/")`` branch of cli.js
+    ``_allowSyncFile``. Returns None when the file is never synced.
+    """
+    parts = rel_in_config_dir.split("/")
+    if any(p == "node_modules" or p.startswith(".") for p in parts):
+        return None
+    if rel_in_config_dir in ("workspace.json", "workspace-mobile.json"):
+        return None
+    base = parts[-1]
+    ext = _extension(base)
+    if rel_in_config_dir in ("app.json", "types.json"):
+        return "app"
+    if rel_in_config_dir == "appearance.json":
+        return "appearance"
+    if rel_in_config_dir == "hotkeys.json":
+        return "hotkey"
+    if rel_in_config_dir in ("core-plugins.json", "core-plugins-migration.json"):
+        return "core-plugin"
+    if rel_in_config_dir == "community-plugins.json":
+        return "community-plugin"
+    if (parts[0] == "themes" and len(parts) == 3 and base in ("theme.css", "manifest.json")) or (
+        parts[0] == "snippets" and len(parts) == 2 and ext == "css"
+    ):
+        return "appearance-data"
+    if len(parts) == 1 and ext == "json":
+        return "core-plugin-data"
+    if parts[0] == "plugins" and len(parts) == 3 and base in _PLUGIN_FILES:
+        return "community-plugin-data"
+    return None
+
+
+def predict_config_uploads(vault: Path, config_dir: str, configs: frozenset[str]) -> dict:
+    """The config-dir files ob uploads when ``configs`` is non-empty.
+
+    Without this, auditing a vault that HAS config syncing enabled under-predicts
+    by the whole config directory — the main walk prunes every dotted path, and the
+    config dir is dotted by default. ob reaches it through a separate hidden walk.
+    """
+    root = vault / config_dir
+    total_bytes = files = 0
+    by_category: dict[str, list[int]] = {}
+    if not configs or not root.is_dir():
+        return {"bytes": 0, "files": 0, "by_category": {}, "config_dir": config_dir}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != "node_modules" and not d.startswith(".")]
+        for name in filenames:
+            rel = os.path.relpath(os.path.join(dirpath, name), root)
+            category = _config_category(_emitted(rel).replace(os.sep, "/"))
+            if category is None or category not in configs:
+                continue
+            try:
+                size = os.stat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue
+            total_bytes += size
+            files += 1
+            bucket = by_category.setdefault(category, [0, 0])
+            bucket[0] += size
+            bucket[1] += 1
+    return {
+        "bytes": total_bytes,
+        "files": files,
+        "by_category": {k: {"bytes": v[0], "files": v[1]} for k, v in sorted(by_category.items())},
+        "config_dir": config_dir,
+    }
 
 
 def _is_cycle(dirpath: str, vault: Path, on_error) -> bool:
@@ -544,10 +650,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         return ERROR
 
-    findings = validate_entries(vault, entries)
+    findings = validate_entries(vault, entries, trim=not args.from_sync_config)
     bad = [f for f in findings if f["verdict"] != "ok"]
     effective = [f["normalized"] for f in findings if f["verdict"] == "ok"]
     prediction = predict(vault, effective, frozenset(file_types))
+
+    configs = frozenset(live.get(PERSISTED_CONFIGS_KEY) or ())
+    config_uploads = predict_config_uploads(
+        vault, str(live.get("configDir") or ".obsidian"), configs
+    )
+    prediction["config_uploads"] = config_uploads
+    prediction["predicted_upload"]["bytes"] += config_uploads["bytes"]
+    prediction["predicted_upload"]["files"] += config_uploads["files"]
+    prediction["predicted_upload"]["gib"] = round(
+        prediction["predicted_upload"]["bytes"] / 1073741824, 3
+    )
 
     report = {
         "vault": str(vault),
@@ -557,6 +674,7 @@ def main(argv: list[str] | None = None) -> int:
         "entries_total": len(findings),
         "entries_effective": len(effective),
         "entries_unmatchable": len(bad),
+        "configs": sorted(configs),
         "findings": findings,
         **prediction,
     }
@@ -581,6 +699,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         for ext, stats in list(upload["by_ext"].items())[:8]:
             print(f"  .{ext or '(none)'}: {stats['bytes']} B / {stats['files']} files")
+        if config_uploads["files"]:
+            print(
+                f"  config dir {config_uploads['config_dir']}/: "
+                f"{config_uploads['bytes']} B / {config_uploads['files']} files "
+                f"({', '.join(sorted(configs))}) — included above"
+            )
         for link in prediction["symlinks_escaping_vault"]:
             print(
                 f"  NOTE: {link['path']} is a symlink OUT of the vault -> "

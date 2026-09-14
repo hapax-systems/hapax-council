@@ -613,6 +613,102 @@ def test_unreadable_config_directory_is_an_error_not_a_traceback(
         root.chmod(0o755)
 
 
+def test_persisted_entries_are_not_trimmed(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """ob compares a PERSISTED entry byte for byte. Trimming it here certified
+    ``"20-projects/_dashboard "``, which ob can never match."""
+    xdg = tmp_path / "xdg"
+    _write_live_config(xdg, vault, ignoreFolders=["20-projects/_dashboard "])
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == REFUSED, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["entries_effective"] == 0
+    # The dashboard file ob would still upload must be visible in the prediction.
+    assert any("_dashboard/huge.md" in item["path"] for item in report["largest_included_files"])
+
+
+@pytest.mark.parametrize("char", ["\x1c", "\x1d", "\x1e", "\x1f", "\x85"])
+def test_cli_trim_matches_js_not_python(vault: pathlib.Path, char: str) -> None:
+    """Python's str.strip() removes these; JavaScript's trim() does not. Stripping
+    them would certify an entry ob keeps verbatim and therefore cannot match."""
+    result = _run(str(vault), "--excluded-folders", f"20-projects/_dashboard{char}", "--json")
+    assert result.returncode == REFUSED, result.stdout + result.stderr
+    assert json.loads(result.stdout)["entries_effective"] == 0
+
+
+def test_cli_trim_removes_what_js_removes(vault: pathlib.Path) -> None:
+    """The other direction: ob DOES trim these, so refusing them would be a false
+    alarm. U+FEFF is the case Python's strip() misses."""
+    for char in ("﻿", " ", "\t", " "):
+        result = _run(
+            str(vault), "--excluded-folders", f"{char}20-projects/_dashboard{char}", "--json"
+        )
+        assert result.returncode == OK, (char, result.stdout + result.stderr)
+        assert json.loads(result.stdout)["entries_effective"] == 1
+
+
+def test_enabled_config_syncing_is_counted(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """With configs enabled ob uploads matching files from the config dir, which the
+    main walk prunes as hidden. Omitting them under-predicts the whole directory."""
+    obsidian = vault / ".obsidian"
+    (obsidian / "plugins" / "dataview").mkdir(parents=True)
+    (obsidian / "snippets").mkdir()
+    (obsidian / "app.json").write_bytes(b"a" * 10)  # app
+    (obsidian / "appearance.json").write_bytes(b"b" * 20)  # appearance
+    (obsidian / "workspace.json").write_bytes(b"c" * 5000)  # never synced
+    (obsidian / "snippets" / "x.css").write_bytes(b"d" * 30)  # appearance-data
+    (obsidian / "plugins" / "dataview" / "main.js").write_bytes(b"e" * 40)  # community-plugin-data
+
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["app", "appearance-data"],
+    )
+    report = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
+    uploads = report["config_uploads"]
+    assert uploads["files"] == 2
+    assert uploads["bytes"] == 40  # app.json 10 + snippets/x.css 30
+    assert set(uploads["by_category"]) == {"app", "appearance-data"}
+    # and they are folded into the headline total
+    assert report["predicted_upload"]["bytes"] == 161 + 40
+
+
+def test_config_syncing_disabled_counts_nothing(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    (vault / ".obsidian").mkdir()
+    (vault / ".obsidian" / "app.json").write_bytes(b"a" * 10)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg, vault, ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"]
+    )
+    report = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
+    assert report["config_uploads"]["files"] == 0
+    assert report["predicted_upload"]["bytes"] == 161
+
+
+def test_human_readable_output_reports_the_successful_case(vault: pathlib.Path) -> None:
+    """Every other test reads --json, which would hide a broken default report."""
+    result = _run(
+        str(vault), "--excluded-folders", "20-projects/_dashboard,30-areas/hapax/ocr/pages"
+    )
+    assert result.returncode == OK, result.stdout + result.stderr
+    out = result.stdout
+    assert "exclusion entries: 2 total, 2 effective" in out
+    assert "[ok  ] 20-projects/_dashboard" in out
+    assert "predicted upload: 161 B" in out
+    assert ".md: " in out
+
+
+def test_human_readable_output_names_the_failing_entry(vault: pathlib.Path) -> None:
+    result = _run(str(vault), "--excluded-folders", "nope")
+    assert result.returncode == REFUSED
+    assert "[FAIL] nope" in result.stdout
+    assert "no such path in the vault" in result.stdout
+    assert "REFUSED: 1 exclusion entry cannot match" in result.stderr
+
+
 def test_script_ships_executable_with_a_working_shebang() -> None:
     """Every other test supplies the interpreter explicitly, which would hide a
     100644 mode and a documented entry point that cannot be invoked.
