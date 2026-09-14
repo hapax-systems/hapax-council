@@ -8,10 +8,19 @@ is that witness.
     HAPAX_NFS_INTEGRATION_DIR="$HOME/Documents/Personal/.nfs-integration" \\
       uv run pytest tests/shared/test_coord_projection_nfs_integration.py -v
 
-Skipped — never silently passed — when the variable is unset, when the directory is not on
-a filesystem that refuses the flags, or when a precondition cannot be established. Each
-skip names which precondition failed, because a skip that cannot say why is
-indistinguishable from a test that never ran.
+**FAILS — not skips — when neither the directory nor a governed waiver is set.** This
+docstring said "skipped" and a reviewer was right that it no longer described the file: the
+witness went fail-closed precisely so it could not be permanently and invisibly skipped.
+The three outcomes are:
+
+* ``HAPAX_NFS_INTEGRATION_DIR`` points at a mount that refuses the flags → the tests run;
+* it is unset but ``HAPAX_NFS_INTEGRATION_WAIVED`` names the row that owns closing the gap
+  → skipped, with the waiver echoed in the reason;
+* neither → **red**, with a copy-pasteable value for each of the two ways out.
+
+A skip that cannot say why is indistinguishable from a test that never ran, so every skip
+names which precondition failed; and a waiver that names no owner is a permanent skip
+wearing a different name, so an unowned one is rejected too.
 
 The preconditions are asserted **before** the lifecycle runs, so a green result cannot be
 one where the mount quietly supported the flags and the fallback never executed. That is
@@ -147,8 +156,12 @@ def unsupporting_mount() -> Path:
             "purpose: the central claim of this repair — that the rebuilt renameat2 legs "
             "work on the real NFS4.2 vault SSOT — must not rest on a test that can be "
             "permanently and invisibly skipped.\n"
-            f"Either point {_ENV_DIR} at a directory on a mount that refuses the flags, or "
-            f"set {_ENV_WAIVER}=<reason> to declare the absence out loud."
+            f"Either point {_ENV_DIR} at a directory on a mount that refuses the flags:\n"
+            f'  {_ENV_DIR}="$HOME/Documents/Personal/.nfs-integration"\n'
+            "or declare the absence out loud, naming the row that owns closing it — this "
+            "exact value is accepted, and a bare reason is NOT:\n"
+            f'  {_ENV_WAIVER}="hosted runner cannot mount nfs4; expiry owned by row '
+            f'{_WAIVER_EXPIRY_ANCHORS[0]}-*-{_WAIVER_EXPIRY_ANCHORS[1]}"'
         )
     root = Path(configured).expanduser()
     try:
