@@ -276,6 +276,47 @@ def test_a_saved_command_refuses_after_the_task_resumes(tmp_path: Path) -> None:
     assert "status: in_progress" in note.read_text(encoding="utf-8")
 
 
+def test_the_precondition_holds_against_the_bytes_actually_rewritten(
+    tmp_path: Path,
+) -> None:
+    """The check must be in the WRITER, not an earlier subprocess.
+
+    The first `--expect-status` ran as its own `python3 -I -`, exited, and only
+    then did the writer re-read and move the note. A task resuming in that window
+    was still withdrawn. This drives the writer directly with a mismatched
+    expectation, which is the interleaving the earlier test could not reach: it
+    changed status before invocation, so the outer check caught it and the writer
+    was never exercised.
+    """
+    home = tmp_path / "home"
+    vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    note = _write_note(vault, "t1.md", "t1", "in_progress")
+
+    # Ask the writer to act as though it had observed `withdrawn`.
+    env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+    env["HOME"] = str(home)
+    env["HAPAX_AGENT_NAME"] = "eta"
+    result = subprocess.run(
+        [
+            "bash",
+            str(CC_CLOSE),
+            "t1",
+            "--status",
+            "withdrawn",
+            "--expect-status",
+            "withdrawn",
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0, f"the writer accepted a stale precondition\n{result.stdout}"
+    assert note.exists(), "a task that had resumed was moved to closed/"
+    assert "status: in_progress" in note.read_text(encoding="utf-8")
+
+
 def test_a_prefix_neighbour_is_left_alone(tmp_path: Path) -> None:
     """`cc-close t1` must not reach t1-next, which is different, live work."""
     home = tmp_path / "home"

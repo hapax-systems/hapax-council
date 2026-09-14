@@ -796,6 +796,24 @@ def test_operator_coupled_glob_matching_segment_semantics() -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_ambient_dispatch_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dispatch host is a RESOLUTION under test, not an input to inherit.
+
+    ``effective_dispatch_host`` returns "appendix" for headless claude/codex and
+    "local" otherwise — unless HAPAX_DISPATCH_HOST or HAPAX_DEFAULT_DISPATCH_HOST
+    is set, in which case it returns that. Run from a lane that exports either and
+    eleven cases assert against the harness's environment rather than the code, five
+    of them in-process where no subprocess env scrub could reach.
+
+    Autouse and at the environment, so ONE removal covers both the in-process and
+    the subprocess cases; `extra_env` still overrides for the cases that want a
+    specific host.
+    """
+    for leaked in ("HAPAX_DISPATCH_HOST", "HAPAX_DEFAULT_DISPATCH_HOST"):
+        monkeypatch.delenv(leaked, raising=False)
+
+
 def _run(
     tmp_path: Path,
     *args: str,

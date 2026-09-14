@@ -18,9 +18,13 @@ if [ -f "$ROLE_HELPER" ]; then
   # shellcheck disable=SC1091
   . "$ROLE_HELPER"
 fi
-if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1; then
+# Both helpers, and exit 78 (sysexits EX_CONFIG) rather than 9 — see the same
+# guard in scripts/hapax-claude for why: 8 and 9 are already
+# hapax-methodology-dispatch's own launch refusals.
+if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1 ||
+  ! declare -F hapax_consume_launch_capability_descriptors >/dev/null 2>&1; then
   echo "hapax-codex: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
-  exit 9
+  exit 78
 fi
 
 usage() {
@@ -1120,6 +1124,14 @@ PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:
 # never reach a filename.
 hapax_consume_launch_session_id hapax-codex
 SESSION_UUID="$(normalize_session_uuid "$HAPAX_LAUNCH_SESSION_ID")"
+# Capability descriptors: NO addressee, unlike the session id above. The session
+# pin exists because the tmux runner really does re-exec this launcher and the
+# inner process must keep the outer's id; descriptors have no such case, because
+# nothing dispatches an interactive codex lane with a route, so there is never a
+# legitimate one to carry across that re-exec. When a codex interactive route is
+# dispatched, the pin is the mechanism to add then — writing it into the runner
+# now would be an unexercised path authorising values that are always absent.
+hapax_consume_launch_capability_descriptors
 # Session succession is NOT done here. A launcher-side helper lived here across
 # review rounds 2-6; it cannot be made correct in a launcher (see the REMOVED
 # block in hooks/scripts/agent-role.sh for the proof) and is rowed against

@@ -300,6 +300,58 @@ class TestDisagreementMatrix:
         assert events[0].metadata["next_action"] == "operator-adjudication"
         assert events[0].metadata["reason"] == "task_not_in_vault"
 
+    def test_an_unreadable_note_is_not_reported_as_a_nonexistent_task(self) -> None:
+        """ "Exists nowhere in the vault" is a claim about the WHOLE vault.
+
+        A sweep that could not read part of it has not established that, and the
+        rejected note may be this very task. The guard sat below the vault lookup
+        and the not-found branch returned past it, so the case with the least
+        evidence produced the most confident event — and `task_not_in_vault` is
+        what an operator acts on by deleting a marker.
+        """
+        events = check_stale_claim_marker(
+            {"eta-ef3687f5-601c-4a82-9c6e-d97de6dce2c2": "ghost"},
+            [],
+            unparsed_notes=["/vault/active/renamed-work.md"],
+            now=_now(),
+        )
+        assert len(events) == 1
+        assert events[0].metadata["reason"] == "vault_view_incomplete", (
+            "a marker was called nonexistent on the strength of a view that was "
+            "admittedly incomplete"
+        )
+        assert "/vault/active/renamed-work.md" in events[0].metadata["unparsed_notes"]
+        assert events[0].metadata["next_action"] == "operator-adjudication"
+
+    def test_every_event_records_where_the_join_looked(self) -> None:
+        """No result of this check is silent about its own marker directory.
+
+        The directory is derived from relay_root, and a derivation that exists but
+        points somewhere wrong cannot be detected from here — "wrong" is a fact
+        about another process's configuration. What a reader CAN be given is how
+        the location was chosen, so a clean or a confident result is never mistaken
+        for a verified one.
+        """
+        events = check_stale_claim_marker(
+            {"eta-ef3687f5-601c-4a82-9c6e-d97de6dce2c2": "ghost"},
+            [],
+            cache_dir=Path("/somewhere/.cache/hapax"),
+            marker_dir_provenance="derived from relay_root /somewhere/.cache/hapax/relay",
+            now=_now(),
+        )
+        assert events
+        for event in events:
+            assert event.metadata["marker_dir"] == "/somewhere/.cache/hapax"
+            assert "derived from relay_root" in event.metadata["marker_dir_provenance"]
+
+    def test_provenance_is_stated_as_unknown_rather_than_omitted(self) -> None:
+        """A caller that passes none must not produce an event that looks verified."""
+        events = check_stale_claim_marker(
+            {"eta-ef3687f5-601c-4a82-9c6e-d97de6dce2c2": "ghost"}, [], now=_now()
+        )
+        assert events
+        assert all(e.metadata["marker_dir_provenance"] == "unstated" for e in events)
+
     def test_contested_claim_is_a_violation_not_a_cleanup(self) -> None:
         events = check_stale_claim_marker(
             {"eta-ef3687f5-601c-4a82-9c6e-d97de6dce2c2": "t1"},

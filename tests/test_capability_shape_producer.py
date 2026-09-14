@@ -31,7 +31,7 @@ class TestProducer:
     def test_reads_the_dispatched_model_and_harness(self) -> None:
         shape = capability_shape_from_env(
             {
-                "HAPAX_CLAUDE_MODEL": "claude-opus-5",
+                "HAPAX_CAPABILITY_MODEL": "claude-opus-5",
                 "HAPAX_AGENT_INTERFACE": "claude",
                 "HAPAX_CAPABILITY_ROUTE": "claude.review.opus",
             },
@@ -54,11 +54,21 @@ class TestProducer:
             "scaffold_revision": None,
         }
 
-    def test_explicit_capability_model_outranks_the_launcher_pin(self) -> None:
+    def test_a_launcher_input_is_never_read_as_a_record(self) -> None:
+        """HAPAX_CLAUDE_MODEL decides an argument; it does not report an execution.
+
+        The recorder used to read it for a claude harness. That closed the
+        cross-harness hole and left the same-harness one: an operator launching a
+        claude lane from inside a dispatched claude lane inherits the parent's pin,
+        and hapax-claude (interactive) never hands it to anything. Recording it
+        there is a fabricated measurement carrying a real model id, which is the
+        worst kind. Only the launcher that passed `--model` publishes.
+        """
         shape = capability_shape_from_env(
-            {"HAPAX_CAPABILITY_MODEL": "gpt-5.3-codex", "HAPAX_CLAUDE_MODEL": "opus"}
+            {"HAPAX_AGENT_INTERFACE": "claude", "HAPAX_CLAUDE_MODEL": "opus"}
         )
-        assert shape["model_family"] == "gpt-5.3-codex"
+        assert shape["model_family"] is None
+        assert shape["harness"] == "claude"
 
     def test_blank_values_do_not_count_as_recorded(self) -> None:
         shape = capability_shape_from_env({"HAPAX_AGENT_INTERFACE": "   "})
@@ -67,7 +77,7 @@ class TestProducer:
     def test_producer_output_validates_against_the_schema(self) -> None:
         """Producer and schema must not drift into two shapes of the same name."""
         shape = capability_shape_from_env(
-            {"HAPAX_CLAUDE_MODEL": "claude-opus-5", "HAPAX_AGENT_INTERFACE": "claude"}
+            {"HAPAX_CAPABILITY_MODEL": "claude-opus-5", "HAPAX_AGENT_INTERFACE": "claude"}
         )
         model = CapabilityShape.model_validate(shape)
         assert model.model_family == "claude-opus-5"
@@ -87,7 +97,7 @@ class TestCcClaimIntegration:
     the schema-only field was.
     """
 
-    def _claim(self, home: Path, task_id: str, **env_extra: str):
+    def _claim(self, home: Path, task_id: str, cc_claim: Path | None = None, **env_extra: str):
         import os
         import subprocess
 
@@ -147,7 +157,7 @@ class TestCcClaimIntegration:
         env["HAPAX_GATE0B_CLAIM_PUBLICATION_OFF"] = "1"
         env.update(env_extra)
         subprocess.run(
-            ["bash", str(REPO_ROOT / "scripts" / "cc-claim"), task_id],
+            ["bash", str(cc_claim or REPO_ROOT / "scripts" / "cc-claim"), task_id],
             env=env,
             text=True,
             capture_output=True,
@@ -160,7 +170,7 @@ class TestCcClaimIntegration:
             tmp_path / "home",
             "task-shape",
             HAPAX_AGENT_INTERFACE="claude",
-            HAPAX_CLAUDE_MODEL="claude-opus-5",
+            HAPAX_CAPABILITY_MODEL="claude-opus-5",
             HAPAX_CAPABILITY_ROUTE="claude.headless.opus",
         )
         assert "shape=(" in note, f"cc-claim recorded no capability shape\n{note}"
@@ -211,8 +221,11 @@ class TestCcClaimIntegration:
         The remaining branch (OSError — git absent entirely) is not exercised
         directly: PATH lookup skips a dangling or non-executable entry and finds
         the real git, and emptying PATH stops the shell resolving `bash` before
-        cc-claim runs at all. It shares this branch's `return None`, so the
-        behaviour is covered even though the trigger is not.
+        cc-claim runs at all. Shadowing `git` with a file of an unexecutable FORMAT
+        was tried too, on the theory that ENOEXEC would raise rather than return —
+        the real revision still came back, so that is not a trigger either. The
+        branch shares this one's `return None`, so the behaviour is covered even
+        though the trigger is not.
         """
         shadow = tmp_path / "shadowbin"
         shadow.mkdir()
@@ -227,6 +240,48 @@ class TestCcClaimIntegration:
         )
         assert "claimed (cc-claim" in note, f"the claim itself was not written\n{note}"
         assert "scaffold_revision" not in note
+
+    def test_cc_claim_in_a_tree_that_is_not_a_git_repository(self, tmp_path: Path) -> None:
+        """The branch through the REAL git, not a stub that exits non-zero.
+
+        `_scaffold_revision` runs `git -C <repo_root> rev-parse --short HEAD`, and
+        repo_root is the parent of cc-claim's own directory. Pointing a copy of the
+        launcher at a tree outside any repository is the only way to reach git's
+        own "not a git repository" refusal rather than a substitute for it. The
+        session-log line must lose the revision and keep everything else — never
+        `shape=()`, which would read as a measured emptiness.
+        """
+        import shutil
+
+        fake_root = tmp_path / "not-a-repo"
+        (fake_root / "scripts").mkdir(parents=True)
+        (fake_root / "hooks" / "scripts").mkdir(parents=True)
+        shutil.copy2(REPO_ROOT / "scripts" / "cc-claim", fake_root / "scripts" / "cc-claim")
+        shutil.copy2(
+            REPO_ROOT / "hooks" / "scripts" / "agent-role.sh",
+            fake_root / "hooks" / "scripts" / "agent-role.sh",
+        )
+        shutil.copy2(
+            REPO_ROOT / "hooks" / "scripts" / "cc-task-root.sh",
+            fake_root / "hooks" / "scripts" / "cc-task-root.sh",
+        )
+        # Symlinked, not copied: the subject is where git is run, not which copy of
+        # the library is imported.
+        (fake_root / "shared").symlink_to(REPO_ROOT / "shared")
+
+        note = self._claim(
+            tmp_path / "home",
+            "task-nonrepo",
+            cc_claim=fake_root / "scripts" / "cc-claim",
+            HAPAX_AGENT_INTERFACE="claude",
+            HAPAX_CAPABILITY_MODEL="claude-opus-5",
+        )
+        assert "harness=claude" in note, f"the claim was not written at all\n{note}"
+        assert "model_family=claude-opus-5" in note
+        assert "scaffold_revision" not in note, (
+            "a revision was recorded from a tree that is not a git repository"
+        )
+        assert "shape=()" not in note
 
     def test_nothing_recorded_stamps_no_empty_shape(self, tmp_path: Path) -> None:
         """`shape=()` would read as a measured emptiness rather than an absence."""
@@ -244,6 +299,28 @@ class TestCcClaimIntegration:
         assert "harness=codex" in note
         assert "model_family" not in note, (
             "a codex lane recorded the parent claude lane's model pin"
+        )
+
+    def test_a_claude_lane_does_not_record_an_inherited_claude_pin_either(
+        self, tmp_path: Path
+    ) -> None:
+        """The case the harness-keyed map could not see, through real cc-claim.
+
+        Same harness on both sides, so no cross-harness rule fires; the value is
+        still the parent's, and the interactive launcher that inherited it passes
+        no `--model` to anything. Round 12 reported the cross-harness half of this
+        (`harness=claude` beside a codex route); this is the half that survived the
+        first repair.
+        """
+        note = self._claim(
+            tmp_path / "home",
+            "task-samefamily",
+            HAPAX_AGENT_INTERFACE="claude",
+            HAPAX_CLAUDE_MODEL="claude-opus-5",
+        )
+        assert "harness=claude" in note
+        assert "model_family" not in note, (
+            "a claude lane recorded a model pin it inherited and never executed with"
         )
 
 

@@ -357,6 +357,48 @@ hapax_consume_launch_session_id() {
   HAPAX_LAUNCH_SESSION_ID="$(hapax_mint_session_id)"
 }
 
+# --- Capability descriptors: the SAME grant, for the values that say WHICH -----
+# CAPABILITY executed.
+#
+# HAPAX_CAPABILITY_ROUTE and HAPAX_CAPABILITY_MODEL are read by
+# shared.session_identity.capability_shape_from_env and land in a claim's recorded
+# condition vector. Nothing consumes them as input — they exist only to be
+# recorded — so an inherited one is a FALSE MEASUREMENT that reads as an observed
+# one, which is strictly worse than no value at all.
+#
+# They used to be cleared in hapax-methodology-dispatch and nowhere else, which
+# covers the dispatched path and only that path. Review round 12 reproduced the
+# gap: running `hapax-claude` by hand from inside a codex lane produced
+# `harness=claude, model_family=gpt-5.3-codex, route=codex.headless.full` — the
+# launcher set the harness and inherited the rest.
+#
+# Clearing them in each launcher AS WELL would be a second mitigation for one
+# hazard, and would still miss the seventh launcher. So the grant moves to the
+# shape already proven for the session id one function above: whoever sets a
+# descriptor FOR a launch also addresses HAPAX_CAPABILITY_PINNED to that launcher,
+# and a launcher that is not the addressee clears the set. Unpinned is
+# indistinguishable from inherited, so unpinned is dropped — "not recorded", never
+# a guess. Consumed like the session pin, for the same reason: an env var is
+# inherited transitively, so only single-use consumption can express "this launch".
+#
+# HAPAX_CLAUDE_MODEL is deliberately NOT in the set. It is a launcher INPUT that
+# hapax-claude-headless reads to pick `--model`, and `HAPAX_CLAUDE_MODEL=opus
+# hapax-claude-headless <lane> <prompt>` is a documented operator invocation.
+# Clearing an input in order to fix a record would break the documented path;
+# instead hapax-claude-headless publishes what it actually launched with, and the
+# recorder reads only the published value.
+hapax_consume_launch_capability_descriptors() {
+  local me="${1:-}"
+  local pinned="${HAPAX_CAPABILITY_PINNED:-}"
+  # Clear the grant FIRST and unconditionally, in the caller's shell, so it cannot
+  # outlive this call by any path — including the early return below.
+  unset HAPAX_CAPABILITY_PINNED
+  if [ -n "$me" ] && [ "$pinned" = "$me" ]; then
+    return 0
+  fi
+  unset HAPAX_CAPABILITY_ROUTE HAPAX_CAPABILITY_MODEL
+}
+
 # --- Per-session identity marker (reform-identity-coherence, cluster 11) -------
 # A WM-independent identity source keyed by the session id. Spawners write it at
 # launch (so identity resolves even where hapax-whoami's compositor query is dead

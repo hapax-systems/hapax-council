@@ -1117,6 +1117,8 @@ def check_stale_claim_marker(
     known_roles: Iterable[str] | None = None,
     cache_dir: Path | None = None,
     unparsed_notes: Iterable[str] = (),
+    enumeration_errors: Iterable[str] = (),
+    marker_dir_provenance: str | None = None,
     now: datetime | None = None,
 ) -> list[HygieneEvent]:
     """Flag runtime claim markers that disagree with the vault SSOT.
@@ -1224,6 +1226,26 @@ def check_stale_claim_marker(
         }
         known_roles = discovered | _SLOT_ROLES
 
+    # Loop-invariant, and computed once so the guard below can stand FIRST.
+    #
+    # A note the PARSER rejected is invisible to every judgement in the loop, and
+    # the destructive one — retire-orphan-marker, a manual `rm` no cc-close guard
+    # can intercept — is the one that must not be made blind. Measured: with
+    # active/t1-a.md declaring t1/in_progress but lacking `type`, and a valid
+    # closed/t1-z.md declaring t1 withdrawn, the checker saw only the closed record
+    # and recommended deleting a LIVE lane's marker.
+    #
+    # ANY unparsed note, not a filename-narrowed subset. The first cut filtered by
+    # filename prefix, on the reasoning that those are the files cc-close would
+    # consider — but the note's DECLARED id is what matters and is precisely what
+    # could not be read, so `active/renamed-work.md` declaring this task escaped the
+    # filter entirely. A file whose contents are unreadable could name anything;
+    # narrowing by its name is a guess.
+    #
+    # A failed directory enumeration counts the same way: it means the view is
+    # incomplete without even knowing how many notes are missing.
+    blind_to = sorted(unparsed_notes)
+    blind_errors = sorted(enumeration_errors)
     for key, task_id in sorted(markers.items()):
         split = split_claim_marker_key(key, known_roles)
         # An unresolvable key is reported AS unresolvable rather than guessed at:
@@ -1231,6 +1253,43 @@ def check_stale_claim_marker(
         # wrong lane, which is worse than saying the marker cannot be attributed.
         role = split[0] if split else None
         role_label = role if role is not None else f"<unattributable:{key}>"
+
+        # BEFORE the vault lookup, not after. "Exists nowhere in the vault" is a
+        # positive claim about the whole vault, and a sweep that could not read part
+        # of it has not established that: the rejected note may be the task. This
+        # guard sat below the lookup and the not-found branch `continue`d past it,
+        # so the one case with the least evidence produced the most confident event.
+        if blind_to or blind_errors:
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="violation",
+                    task_id=task_id,
+                    session=role,
+                    message=(
+                        "the vault view is incomplete — "
+                        + (f"{len(blind_to)} note(s) could not be parsed" if blind_to else "")
+                        + (" and " if blind_to and blind_errors else "")
+                        + (
+                            f"{len(blind_errors)} directory(ies) could not be listed"
+                            if blind_errors
+                            else ""
+                        )
+                        + f" — so this sweep cannot tell whether '{task_id}' is live, "
+                        "and recommends no retirement or closure"
+                    ),
+                    metadata={
+                        "marker": str(marker_dir / f"cc-active-task-{key}"),
+                        "role": role_label,
+                        "unparsed_notes": ", ".join(blind_to),
+                        "enumeration_errors": ", ".join(blind_errors),
+                        "next_action": "operator-adjudication",
+                        "reason": "vault_view_incomplete",
+                    },
+                )
+            )
+            continue
 
         note = active.get(task_id)
         if note is None:
@@ -1266,44 +1325,6 @@ def check_stale_claim_marker(
         # inconsistency as the cross-directory case below, and more dangerous:
         # cc-close resolves by filename, so it can select a different note than the
         # one whose status shaped the remediation. Refuse to construct a command.
-        # A note the PARSER rejected is invisible to every judgement below, and the
-        # destructive one — retire-orphan-marker, a manual `rm` no cc-close guard
-        # can intercept — is the one that must not be made blind. Measured: with
-        # active/t1-a.md declaring t1/in_progress but lacking `type`, and a valid
-        # closed/t1-z.md declaring t1 withdrawn, the checker saw only the closed
-        # record and recommended deleting a LIVE lane's marker.
-        #
-        # Filename prefix, because the content could not be parsed: exactly the set
-        # cc-close itself would consider for this id.
-        blind_to = sorted(
-            p
-            for p in unparsed_notes
-            if Path(p).name == f"{task_id}.md" or Path(p).name.startswith(f"{task_id}-")
-        )
-        if blind_to:
-            events.append(
-                HygieneEvent(
-                    timestamp=now,
-                    check_id="stale_claim_marker",
-                    severity="violation",
-                    task_id=task_id,
-                    session=role,
-                    message=(
-                        f"note(s) that could name task '{task_id}' could not be parsed "
-                        f"({', '.join(blind_to)}) — this sweep cannot see whether the "
-                        "task is live, so no retirement or closure is recommended"
-                    ),
-                    metadata={
-                        "marker": str(marker_dir / f"cc-active-task-{key}"),
-                        "role": role_label,
-                        "unparsed_notes": ", ".join(blind_to),
-                        "next_action": "operator-adjudication",
-                        "reason": "vault_view_incomplete",
-                    },
-                )
-            )
-            continue
-
         dupe_in = [
             name
             for name, counts in (("active", _active_counts), ("closed", _closed_counts))
@@ -1552,4 +1573,18 @@ def check_stale_claim_marker(
                     },
                 )
             )
+    # Stamp WHERE this join looked and HOW that location was decided onto every
+    # event, at the single return rather than in each branch — a branch added later
+    # cannot forget.
+    #
+    # This is the answer to "an existing but wrong marker directory still fails
+    # open". It cannot be closed by another guard: the absent-dir and empty-dir
+    # events already cover the two states this code can distinguish, and a third
+    # guard for the same hazard would be the design smell, not the repair. What is
+    # actually wrong is that a reader of these events could not tell a verified
+    # location from a coincidence of layout. Now every one of them says.
+    for event in events:
+        if cache_dir is not None:
+            event.metadata.setdefault("marker_dir", str(cache_dir))
+        event.metadata.setdefault("marker_dir_provenance", marker_dir_provenance or "unstated")
     return events

@@ -200,28 +200,29 @@ def session_role_marker_path(session_id: str, *, cache_dir: Path) -> Path:
     return cache_dir / f"{_MARKER_PREFIX}{session_id}"
 
 
-#: Env vars naming the dispatched model, highest precedence first. The dispatcher
-#: pins HAPAX_CLAUDE_MODEL per route (CapabilityExecutionInvariant drift guard), so
-#: it is the value that actually decided execution rather than a config default.
-#: The model variable each harness's dispatcher actually pins, keyed by harness.
-#: Deliberately NOT a flat precedence list. The first cut tried
-#: HAPAX_CAPABILITY_MODEL -> HAPAX_CLAUDE_MODEL -> HAPAX_CODEX_MODEL in order and
-#: recorded whichever was present, so a codex lane dispatched from a claude lane —
-#: dispatchers do `os.environ.copy()` and do not clear the parent's pins — recorded
-#: `model_family=<the claude model>` beside `harness=codex`. Reproduced exactly as
-#: reported in round 2. A cross-harness value is worse than no value: it is a wrong
-#: record that reads as a measured one, and the whole point of this field is that a
-#: capability number carries a TRUE condition vector.
-_MODEL_ENV_BY_HARNESS: dict[str, str] = {
-    "claude": "HAPAX_CLAUDE_MODEL",
-}
+#: The ONE var naming the model, published by whichever launcher actually chose it.
+#:
+#: It reached this shape by removing two earlier readers, each of which recorded a
+#: value some other process had decided:
+#:   * a flat precedence list (HAPAX_CAPABILITY_MODEL -> HAPAX_CLAUDE_MODEL ->
+#:     HAPAX_CODEX_MODEL) recorded `model_family=<a claude model>` beside
+#:     `harness=codex` for a codex lane dispatched from a claude lane, because
+#:     dispatchers do `os.environ.copy()`.
+#:   * a harness-keyed map ({"claude": "HAPAX_CLAUDE_MODEL"}) fixed the cross-harness
+#:     case and left the same-harness one: HAPAX_CLAUDE_MODEL is an INPUT that
+#:     hapax-claude-headless reads to pick `--model`, so a claude lane launched from
+#:     inside another claude lane recorded a model it had inherited and never passed.
+#:
+#: Reading an input is the defect in both. A launcher knows what it executed with;
+#: nothing else does. So hapax-claude-headless exports HAPAX_CAPABILITY_MODEL in the
+#: same branch that appends `--model`, and this records that and nothing else. A
+#: launcher that publishes nothing records nothing — never a guess, and never
+#: another launch's value.
+_MODEL_ENV = "HAPAX_CAPABILITY_MODEL"
 
-#: Explicit override, honoured for any harness — the one var a caller sets when it
-#: knows its own execution descriptor. No harness-specific fallback beyond the map
-#: above: if the harness's own pin is absent, the model is simply not recorded.
-_MODEL_ENV_EXPLICIT = "HAPAX_CAPABILITY_MODEL"
-
-#: Route id, written by hapax-methodology-dispatch at each governed launch.
+#: Route id, written by hapax-methodology-dispatch at each governed launch and kept
+#: only by the launcher its HAPAX_CAPABILITY_PINNED addresses
+#: (hooks/scripts/agent-role.sh::hapax_consume_launch_capability_descriptors).
 _ROUTE_ENV = "HAPAX_CAPABILITY_ROUTE"
 
 
@@ -238,20 +239,19 @@ def capability_shape_from_env(
 
     Credential location is deliberately absent here as it is there: these values
     land in vault notes that sync.
+
+    Every field is read from a var some process PUBLISHED about this launch — never
+    from one it merely inherited. That property is not enforced here: it is enforced
+    where the launch happens, by launchers clearing any descriptor not addressed to
+    them. This function is the recorder, and it can only be as true as its inputs.
     """
 
     def _clean(name: str) -> str | None:
         return (env.get(name) or "").strip() or None
 
-    harness = _clean("HAPAX_AGENT_INTERFACE")
-    model = _clean(_MODEL_ENV_EXPLICIT)
-    if model is None and harness is not None:
-        harness_var = _MODEL_ENV_BY_HARNESS.get(harness)
-        model = _clean(harness_var) if harness_var else None
-
     return {
-        "model_family": model,
-        "harness": harness,
+        "model_family": _clean(_MODEL_ENV),
+        "harness": _clean("HAPAX_AGENT_INTERFACE"),
         "route": _clean(_ROUTE_ENV),
         "scaffold_revision": scaffold_revision,
     }

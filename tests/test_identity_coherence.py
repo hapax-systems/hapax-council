@@ -25,16 +25,30 @@ HEADLESS = REPO_ROOT / "scripts" / "hapax-claude-headless"
 WHOAMI = REPO_ROOT / "scripts" / "hapax-whoami"
 AGENT_ROLE = REPO_ROOT / "hooks" / "scripts" / "agent-role.sh"
 
+#: Identity the harness lane exports, stripped so each case resolves only what it
+#: sets. The list was INCOMPLETE, and the omission cost real time: `CODEX_ROLE` is
+#: one of the variables `hapax_effective_role` consults, so running this suite from
+#: a lane that had it set made three cases resolve the harness lane's role instead
+#: of the asserted one. Those three reds were reported as base-commit failures for
+#: eleven review rounds of PR #4668; they are this fixture inheriting an
+#: environment, and they go green the moment it does not.
+#:
+#: Anything the resolver reads belongs here. Adding a variable to the resolver
+#: without adding it here reintroduces exactly this.
 _IDENTITY_ENV = (
     "CLAUDE_ROLE",
     "HAPAX_AGENT_NAME",
     "HAPAX_AGENT_ROLE",
+    "HAPAX_AGENT_SLOT",
+    "HAPAX_AGENT_INTERFACE",
     "HAPAX_WORKTREE_ROLE",
     "HAPAX_SESSION_ID",
     "CLAUDE_CODE_SESSION_ID",
     "CODEX_SESSION",
     "CODEX_THREAD_ID",
     "CODEX_THREAD_NAME",
+    "CODEX_ROLE",
+    "CODEX_HOME",
 )
 
 

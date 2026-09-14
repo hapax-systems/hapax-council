@@ -148,27 +148,11 @@ PYEOF
     echo "cc-close: refusing — '$note_path' declares task_id '$selected_task_id', not '$task_id'. Next action: pass the exact task id, or repair the note's filename/frontmatter so they agree. Nothing was modified." >&2
     exit 2
   fi
-  # Expected-state precondition, checked HERE — after the note is resolved and
-  # before anything is written.
-  if [[ -n "${expect_status:-}" ]]; then
-    observed_status="$(python3 -I - "$SCRIPT_DIR/.." "$note_path" <<'PYEOF' || true
-import sys
-
-sys.path.insert(0, sys.argv[1])
-from pathlib import Path
-
-from shared.frontmatter import parse_frontmatter
-
-fm, _body = parse_frontmatter(Path(sys.argv[2]))
-value = (fm or {}).get("status")
-print(str(value).strip() if value is not None else "")
-PYEOF
-    )"
-    if [[ "$observed_status" != "$expect_status" ]]; then
-      echo "cc-close: refusing — '$note_path' is now status '$observed_status', but --expect-status '$expect_status' was required. The task changed since the command was generated. Next action: re-run the sweep and use its current recommendation. Nothing was modified." >&2
-      exit 2
-    fi
-  fi
+  # The expected-state precondition is NOT checked here. It lives in the writer
+  # (the heredoc below), against the same bytes it rewrites, in the same process.
+  # A check at this point re-read the note, exited, and left a window before the
+  # writer re-read it — which is the interleaving the precondition exists to close,
+  # and it also made the writer's own check untestable by firing first.
 fi
 if [[ -z "$note_path" ]]; then
   echo "cc-close: task '$task_id' not in $vault_root/active/ (already closed?)" >&2
@@ -321,14 +305,35 @@ if [[ "$final_status" == "done" ]]; then
   fi
 fi
 
-python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" <<'PYEOF'
+python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" "${expect_status:-}" <<'PYEOF'
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-path, task_id, final_status, pr, role = (Path(sys.argv[1]), *sys.argv[2:])
+path, task_id, final_status, pr, role = (Path(sys.argv[1]), *sys.argv[2:6])
+expect_status = sys.argv[6] if len(sys.argv) > 6 else ""
 text = path.read_text(encoding="utf-8")
+
+# Revalidate the precondition HERE, against the text this writer is about to
+# rewrite — not in the earlier subprocess. The earlier check reads the note, exits,
+# and only then does this process re-read and move it; a task that resumes in that
+# window was still withdrawn, because `withdrawn` skips the completion gates.
+# Checking against `text` closes the interleaving: this is the same bytes that get
+# mutated, in the same process, with no gap to race.
+if expect_status:
+    _m = re.search(r"^status:\s*(.*)$", text, flags=re.MULTILINE)
+    _observed = _m.group(1).strip().strip("\"'") if _m else ""
+    if _observed != expect_status:
+        print(
+            f"cc-close: refusing — '{path}' is status '{_observed}' at write time, but "
+            f"--expect-status '{expect_status}' was required. The task changed after the "
+            "command was generated. Next action: re-run the sweep and use its current "
+            "recommendation. Nothing was modified.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 text = re.sub(r"^status:.*$", f"status: {final_status}", text, count=1, flags=re.MULTILINE)

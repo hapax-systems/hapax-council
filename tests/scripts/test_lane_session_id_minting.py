@@ -476,6 +476,15 @@ class TestLauncherBehaviour:
             f"{name} launched without an identity helper — its session id is "
             f"ungoverned\nstdout={result.stdout}\nstderr={result.stderr}"
         )
+        # 78 (sysexits EX_CONFIG), pinned because the code is the only thing a
+        # caller reading a non-zero exit has to go on. hapax-methodology-dispatch
+        # already returns 8 for "launcher not found" and 9 for "no declared model
+        # pin"; these launchers used 9 too, so those three refusals were
+        # indistinguishable by code.
+        assert result.returncode == 78, (
+            f"{name} refused with {result.returncode}, which collides with "
+            "hapax-methodology-dispatch's own launch refusals (8, 9)"
+        )
         combined = result.stdout + result.stderr
         assert "identity helper not found" in combined, (
             f"{name} failed without naming the cause or a remedy\n{combined}"

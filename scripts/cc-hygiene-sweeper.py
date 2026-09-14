@@ -240,37 +240,65 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
     return reaped
 
 
+def _list_markdown(directory: Path) -> tuple[list[Path], str | None]:
+    """Enumerate `*.md`, PROPAGATING a directory failure instead of hiding it.
+
+    `Path.glob` swallows a directory-level PermissionError inside its own scandir
+    walk and returns an empty iterator — so an unreadable active/ made both the
+    note loader and the rejected-note scan return empty, and the checker then
+    recommended retiring a live claim's marker from a view it could not read. The
+    same defect was fixed once in read_claim_markers and left here: fixing the
+    instance rather than the class is what let it reappear.
+    """
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError as exc:
+        return [], f"{type(exc).__name__}: {exc}"
+    return [directory / n for n in names if n.endswith(".md")], None
+
+
 def _load_active_notes(vault_root: Path) -> list[TaskNote]:
     """Parse all `active/*.md` cc-task notes."""
     active = vault_root / "active"
     if not active.is_dir():
         return []
     notes: list[TaskNote] = []
-    for path in sorted(active.glob("*.md")):
+    paths, _err = _list_markdown(active)
+    for path in paths:
         note = parse_task_note(path)
         if note is not None:
             notes.append(note)
     return notes
 
 
-def _unparsed_note_paths(vault_root: Path) -> list[str]:
-    """Notes the parser REJECTED, across active/ and closed/.
+def _unparsed_note_paths(vault_root: Path) -> tuple[list[str], list[str]]:
+    """(rejected note paths, directory-enumeration errors).
 
     `parse_task_note` returns None for anything without `type: cc-task` or a
     readable task_id/status, and every caller silently drops those. That silence is
-    fine for a check that only reports, and unsafe for one that recommends
-    deleting runtime state: a rejected active note is precisely a task the sweep
-    cannot see, and it may be the live owner of the marker being retired.
+    fine for a check that only reports, and unsafe for one that recommends deleting
+    runtime state: a rejected active note is precisely a task the sweep cannot see,
+    and it may be the live owner of the marker being retired.
+
+    Enumeration failures are returned too. An unreadable active/ previously made
+    this return an empty list — indistinguishable from "nothing rejected" — and the
+    checker then advised retiring a live claim's marker from a view it could not
+    read.
     """
     rejected: list[str] = []
+    errors: list[str] = []
     for sub in ("active", "closed"):
         directory = vault_root / sub
         if not directory.is_dir():
             continue
-        for path in sorted(directory.glob("*.md")):
+        paths, err = _list_markdown(directory)
+        if err is not None:
+            errors.append(f"{directory}: {err}")
+            continue
+        for path in paths:
             if parse_task_note(path) is None:
                 rejected.append(str(path))
-    return rejected
+    return rejected, errors
 
 
 def _load_closed_notes(vault_root: Path) -> list[TaskNote]:
@@ -279,7 +307,8 @@ def _load_closed_notes(vault_root: Path) -> list[TaskNote]:
     if not closed.is_dir():
         return []
     notes: list[TaskNote] = []
-    for path in sorted(closed.glob("*.md")):
+    paths, _err = _list_markdown(closed)
+    for path in paths:
         note = parse_task_note(path)
         if note is not None:
             notes.append(note)
@@ -401,6 +430,16 @@ def run_sweep(
     derived_marker_dir = claim_marker_dir is None
     if claim_marker_dir is None:
         claim_marker_dir = relay_root.parent
+    # Carried onto EVERY event this check emits. The remaining hole the derivation
+    # leaves is a directory that exists and is wrong — no guard here can see that,
+    # because "wrong" is a fact about another process's configuration. What a reader
+    # CAN be given is how the location was chosen, so a clean result is never
+    # mistaken for a verified one.
+    marker_dir_provenance = (
+        f"derived from relay_root {relay_root} (cc-claim writes markers beside it)"
+        if derived_marker_dir
+        else "passed explicitly by the caller"
+    )
 
     reaped = reap_dead_lanes(relay_root)
     if reaped:
@@ -451,6 +490,7 @@ def run_sweep(
                 ),
                 metadata={
                     "marker_dir": str(claim_marker_dir),
+                    "marker_dir_provenance": marker_dir_provenance,
                     "next_action": "operator-adjudication",
                     "reason": "marker_dir_absent",
                 },
@@ -458,6 +498,7 @@ def run_sweep(
         )
     else:
         scan = read_claim_markers(claim_marker_dir)
+        _unparsed, _enum_errors = _unparsed_note_paths(vault_root)
         # A DERIVED marker dir that exists but holds nothing is the relocation
         # hazard the comment above names: the absent-dir branch catches a missing
         # directory, not a relocated-and-empty one, so without this the join
@@ -490,6 +531,7 @@ def run_sweep(
                     ),
                     metadata={
                         "marker_dir": str(claim_marker_dir),
+                        "marker_dir_provenance": marker_dir_provenance,
                         "relay_root": str(relay_root),
                         "held_task_count": str(len(held)),
                         "next_action": "operator-adjudication",
@@ -503,7 +545,9 @@ def run_sweep(
                 notes,
                 closed_notes,
                 cache_dir=claim_marker_dir,
-                unparsed_notes=_unparsed_note_paths(vault_root),
+                unparsed_notes=_unparsed,
+                enumeration_errors=_enum_errors,
+                marker_dir_provenance=marker_dir_provenance,
                 now=now,
             )
         )
