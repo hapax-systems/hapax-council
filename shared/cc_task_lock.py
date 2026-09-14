@@ -115,6 +115,26 @@ def lock_path(task_id: str, cache_dir: Path | None = None) -> Path:
     return directory / f"{_safe_name(task_id)}.lock"
 
 
+def role_lock_path(role: str, cache_dir: Path | None = None) -> Path:
+    """The lock file for a ROLE's lease namespace, with its directory created.
+
+    A second lock because there is a second resource, not because one lock proved
+    weak. The note is keyed by task id; the lease files are keyed by
+    ``<role>[-<session>]``, and cc-close's role-wide sweep and cc-claim's
+    publication both write that namespace. Keying their exclusion by task id
+    excludes nothing: review round 16 reproduced cc-close closing task A, reading a
+    marker that named A, and deleting the file after cc-claim had already
+    republished it as task B under B's own — different — task lock.
+
+    **Lock order is task, then role.** Both writers take them in that order and
+    neither takes them in the other, which is what makes two locks safe rather than
+    a deadlock waiting for load. Nothing takes the role lock alone.
+    """
+    directory = lock_dir(cache_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"role-{_safe_name(role)}.lock"
+
+
 class TaskLockTimeout(RuntimeError):
     """The lock could not be taken within the timeout."""
 
@@ -135,8 +155,26 @@ def hold_task_note_lock(
     cannot serialize must refuse rather than proceed, and a refusal has to be able
     to say what it is waiting on.
     """
+    return _hold(lock_path(task_id, cache_dir), f"cc-task lock for '{task_id}'", timeout)
+
+
+def hold_role_lease_lock(
+    role: str,
+    *,
+    cache_dir: Path | None = None,
+    timeout: float | None = None,
+) -> Path:
+    """Take the exclusive lock for ``role``'s lease namespace, held until exit.
+
+    Take it AFTER the task lock, never before and never alone — see
+    :func:`role_lock_path` for why there are two and why the order is what keeps
+    them safe.
+    """
+    return _hold(role_lock_path(role, cache_dir), f"cc-task role lock for '{role}'", timeout)
+
+
+def _hold(path: Path, description: str, timeout: float | None) -> Path:
     timeout = resolved_timeout(timeout)
-    path = lock_path(task_id, cache_dir)
     deadline = time.monotonic() + timeout
     handle = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
     while True:
@@ -150,7 +188,7 @@ def hold_task_note_lock(
             if time.monotonic() >= deadline:
                 os.close(handle)
                 raise TaskLockTimeout(
-                    f"another process has held the cc-task lock for '{task_id}' "
-                    f"({path}) for more than {timeout:g}s"
+                    f"another process has held the {description} ({path}) for more "
+                    f"than {timeout:g}s"
                 ) from exc
             time.sleep(0.05)

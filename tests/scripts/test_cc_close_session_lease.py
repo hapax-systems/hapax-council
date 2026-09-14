@@ -314,11 +314,13 @@ def test_cc_close_guard_failure_spares_the_lease_rather_than_deleting_it(
     # Fail ONLY the foreign-lease guard. A python3 that always exits 70 kills
     # cc-close at its note rewrite, long before the predicate — so the
     # marker-survives assertion stayed green even with the predicate deleted. And
-    # matching on `-I -` alone is now too broad: the frontmatter identity guard
-    # uses that shape too, and failing it refuses the close before cleanup. The
-    # lease guard is the call passing THREE positional args (repo_root, claim_key,
-    # role) — `-I`, `-`, plus three — so discriminate on argv count and delegate
-    # everything else to the real interpreter.
+    # matching on `-I -` alone is too broad: the frontmatter identity guard uses
+    # that shape too, and failing it refuses the close before cleanup.
+    #
+    # Discriminated on the guard's own `lease-guard` first argument. Argument COUNT
+    # stood here for two rounds and broke the moment another `python3 -I -` call
+    # gained a third positional — which is what a count-based heuristic is always
+    # one edit away from. The subprocess now names itself.
     #
     # It exits **1**, not 70, on purpose: exit 1 is what an ImportError or any
     # other uncaught Python exception produces, and that is the failure this
@@ -332,7 +334,7 @@ def test_cc_close_guard_failure_spares_the_lease_rather_than_deleting_it(
     broken = fakebin / "python3"
     broken.write_text(
         "#!/bin/sh\n"
-        'if [ "$1" = "-I" ] && [ "$2" = "-" ] && [ $# -eq 5 ]; then exit 1; fi\n'
+        'if [ "$1" = "-I" ] && [ "$2" = "-" ] && [ "$3" = "lease-guard" ]; then exit 1; fi\n'
         f'exec {real_python} "$@"\n',
         encoding="utf-8",
     )

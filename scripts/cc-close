@@ -333,18 +333,20 @@ fi
 # shared.cc_task_lock falls back to 30 for both. Two parsers for one knob is the
 # same shape as two derivations for one path — the runbook promised a shared
 # default the code did not implement.
-lock_facts="$(python3 -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF' || true
+lock_facts="$(python3 -I - "$SCRIPT_DIR/.." "$task_id" "${role:-}" <<'PYEOF' || true
 import sys
 
 sys.path.insert(0, sys.argv[1])
-from shared.cc_task_lock import lock_path, resolved_timeout
+from shared.cc_task_lock import lock_path, resolved_timeout, role_lock_path
 
 print(lock_path(sys.argv[2]))
 print(f"{resolved_timeout(None):g}")
+print(role_lock_path(sys.argv[3]) if sys.argv[3] else "")
 PYEOF
 )"
 lock_path="$(printf '%s\n' "$lock_facts" | sed -n '1p')"
 lock_timeout="$(printf '%s\n' "$lock_facts" | sed -n '2p')"
+role_lock_path="$(printf '%s\n' "$lock_facts" | sed -n '3p')"
 if [[ -z "$lock_path" || -z "$lock_timeout" ]]; then
   echo "cc-close: refusing — could not resolve the cc-task lock path for '$task_id'. Next action: run from a complete council checkout (shared/cc_task_lock.py must be importable). Nothing was modified." >&2
   exit 2
@@ -454,6 +456,13 @@ class _DuplicateKeyLoader(yaml.SafeLoader):
 
 
 def _construct_mapping_recording_duplicates(loader, node, deep=False):  # type: ignore[no-untyped-def]
+    # flatten_mapping FIRST. It is what SafeConstructor does before building a
+    # mapping, and it resolves `<<:` merge keys. Constructing key nodes without it
+    # hit the merge tag and raised, and the handler below then cleared every
+    # duplicate it had found and carried on — a validator that fails OPEN on valid
+    # input. Measured in review round 16: `<<: {extra: yes}` beside a duplicated
+    # status archived the note instead of refusing.
+    loader.flatten_mapping(node)
     seen: set = set()
     for key_node, _value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
@@ -467,13 +476,26 @@ def _construct_mapping_recording_duplicates(loader, node, deep=False):  # type: 
 
 
 _duplicate_keys: set = set()
+_dup_scan_failed = ""
 _DuplicateKeyLoader.add_constructor(
     yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping_recording_duplicates
 )
 try:
     yaml.load(fm_text, Loader=_DuplicateKeyLoader)  # noqa: S506 - SafeLoader subclass
-except yaml.YAMLError:
-    _duplicate_keys = set()  # the parse failure above already refused
+except yaml.YAMLError as exc:
+    # REFUSE, never clear. "The scan could not complete" is not "there were no
+    # duplicates", and the earlier parse succeeding does not license the difference:
+    # this loader answers a question that one does not.
+    _dup_scan_failed = str(exc)
+if _dup_scan_failed:
+    print(
+        f"cc-close: refusing — '{path}' frontmatter could not be checked for duplicate "
+        f"keys ({_dup_scan_failed}). A close is not made against a validation that did "
+        "not run. Next action: simplify the frontmatter (an unusual YAML construct in "
+        "a governed field is the usual cause) and re-run. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 _dupes = sorted(str(k) for k in _duplicate_keys if k in _GOVERNED_KEYS)
 if _dupes:
     print(
@@ -560,7 +582,11 @@ _after = parse_frontmatter_with_diagnostics(text)
 if not _after.ok or _after.frontmatter is None:
     print(
         f"cc-close: refusing — the rewritten note for '{task_id}' no longer parses "
-        f"({_after.error_kind}: {_after.error_message}). Nothing was modified.",
+        f"({_after.error_kind}: {_after.error_message}). Nothing was modified. Next "
+        "action: this is reachable when a governed field (status, completed_at, "
+        "updated_at, pr) holds a mapping or block value rather than a scalar — the "
+        "rewrite replaces the whole line. Repair that field to a single-line scalar "
+        "and re-run.",
         file=sys.stderr,
     )
     sys.exit(2)
@@ -606,6 +632,38 @@ PYEOF
 # reads the session-keyed file FIRST, so it kept seeing the just-closed task
 # (reform finding #12/#13). Clear this session's lease forms, each only when its
 # head still names the closed task (never clobber a lease for other work).
+if [[ -n "$role" ]]; then
+  # --- The ROLE lease lock, taken here and held to exit -------------------------
+  #
+  # A SECOND lock, because there is a second resource. fd 9 is keyed by task id and
+  # protects the note. These files are keyed by `<role>[-<session>]`, and both
+  # cc-close's sweep and cc-claim's publication write that namespace — so keying
+  # their exclusion by task id excludes nothing. Review round 16 reproduced it:
+  # cc-close closing task A read a marker naming A, and by the time it removed the
+  # file cc-claim had republished it as task B, under B's own different task lock.
+  # The head check cannot save us; it is the read half of the race.
+  #
+  # LOCK ORDER IS TASK THEN ROLE, in both writers, and nothing takes the role lock
+  # alone. That ordering is the whole reason two locks are safe here rather than a
+  # deadlock waiting for load.
+  #
+  # Taken BEFORE the loop, so every head read below happens under it — a read
+  # before acquisition is a fact about a file another writer was still free to
+  # replace.
+  if [[ -z "$role_lock_path" ]]; then
+    echo "cc-close: WARNING — cleanup incomplete: could not resolve the role lease lock path for role '$role'. The leases were PRESERVED. Next action: run from a complete council checkout, then retire them by hand once you have confirmed the closure." >&2
+    cleanup_incomplete=1
+  else
+    exec 8>"$role_lock_path"
+    role_flock_rc=0
+    flock -x -w "$lock_timeout" 8 || role_flock_rc=$?
+    if [[ "$role_flock_rc" -ne 0 ]]; then
+      echo "cc-close: WARNING — cleanup incomplete: could not take the role lease lock for '$role' ($role_lock_path); flock exited $role_flock_rc. The leases were PRESERVED rather than retired against a namespace another writer may be publishing into. Next action: find the holder with 'fuser -v $role_lock_path', let it finish, then re-run cc-close for this task." >&2
+      cleanup_incomplete=1
+      role=""
+    fi
+  fi
+fi
 if [[ -n "$role" ]]; then
   cleared_claim=0
   # Sweep the ROLE's lease forms, not just the closing session's: the legacy
@@ -668,13 +726,18 @@ if [[ -n "$role" ]]; then
       # moved to closed/, so a rerun cannot reach cleanup again. Uncertainty still
       # preserves the lease, but it is now reported rather than silent.
       guard_rc=0
-      python3 -I - "$SCRIPT_DIR/.." "$claim_key" "$role" <<'PYEOF' || guard_rc=$?
+      # `lease-guard` is a self-naming first argument, not decoration: several of
+      # cc-close's subprocesses are `python3 -I -` with a heredoc, so in `ps` — and
+      # in any test that needs to fail ONE of them — they are otherwise
+      # indistinguishable except by argument count, which changes whenever a call
+      # gains an argument. It did, in this round.
+      python3 -I - lease-guard "$SCRIPT_DIR/.." "$claim_key" "$role" <<'PYEOF' || guard_rc=$?
 import sys
 
-sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, sys.argv[2])
 from shared.session_identity import is_minted_session_id
 
-key, role = sys.argv[2], sys.argv[3]
+key, role = sys.argv[3], sys.argv[4]
 # Retire only `<this role>-<an id this system minted>`. The remainder must be a
 # MINTED shape, not merely a claim-keyable one: `cx-blue-shadow-<uuid>` leaves the
 # keyable remainder `shadow-<uuid>`, so a keyable test would delete another role's

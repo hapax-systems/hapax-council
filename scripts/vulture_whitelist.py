@@ -5186,3 +5186,17 @@ _ = (_is_minted_session_id,)
 from shared.cc_task_lock import hold_task_note_lock as _hold_task_note_lock  # noqa: E402
 
 _ = (_hold_task_note_lock,)
+
+# Role lease lock (same row, round 16). Same blind spot, same caller: cc-claim's
+# bash-hosted Python heredoc takes it immediately after the task lock. cc-close
+# takes the same lock from bash (`exec 8>` plus flock(1)) and imports only
+# `role_lock_path` to resolve the path, so this entry point has no statically
+# visible caller either.
+#
+# Live-call evidence: tests/test_cc_task_lock.py::TestTheRoleLeaseNamespace holds
+# the ROLE lock with plain fcntl, publishes a replacement claim for a different
+# task into the same lease filename while cc-close waits, and requires the
+# replacement to survive. Skipping cc-close's acquisition reds it.
+from shared.cc_task_lock import hold_role_lease_lock as _hold_role_lease_lock  # noqa: E402
+
+_ = (_hold_role_lease_lock,)

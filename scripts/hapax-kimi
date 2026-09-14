@@ -98,6 +98,10 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf '%s\n' 'set -euo pipefail'
   printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
   printf 'cd %q\n' "$WORKDIR"
+  # Cleared here as well as in the launcher: the runner is executed by a tmux
+  # server whose environment it inherits instead of this shell's. See the same
+  # block in scripts/hapax-claude for the measured leak.
+  printf 'unset HAPAX_CAPABILITY_ROUTE HAPAX_CAPABILITY_MODEL HAPAX_CAPABILITY_PINNED HAPAX_SESSION_ID_PINNED\n'
   printf 'export HAPAX_AGENT_INTERFACE=kimi\n'
   printf 'export HAPAX_AGENT_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"

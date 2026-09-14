@@ -633,6 +633,95 @@ class TestOnlyTheFrontmatterCounts:
         assert "not 't1'/'withdrawn'" in result.stderr, result.stderr
         assert note.exists(), "the note was unlinked despite the refusal"
 
+    def test_a_merge_key_does_not_disable_duplicate_validation(self, tmp_path: Path) -> None:
+        """A validator that cannot run must REFUSE, not clear its evidence.
+
+        The duplicate loader constructed key nodes before flattening merges, so a
+        valid `<<:` raised YAMLError — and the handler answered by discarding every
+        duplicate it had found and carrying on. The archived status happened to be
+        right, so the output check did not catch it: this is a validation bypass,
+        not a wrong value, and only the validator can see it.
+
+        Merges are now flattened first, so this note reaches the duplicate check and
+        is refused for what is actually wrong with it.
+        """
+        result, note = self._close(
+            tmp_path / "home",
+            textwrap.dedent(
+                """\
+                ---
+                type: cc-task
+                defaults: &d
+                  extra: yes
+                <<: *d
+                task_id: t1
+                title: "t1"
+                status: in_progress
+                "status": withdrawn
+                assigned_to: eta
+                completed_at:
+                updated_at:
+                pr:
+                ---
+
+                # t1
+
+                ## Session log
+                """
+            ),
+            "--status",
+            "withdrawn",
+        )
+        assert result.returncode == 2, (
+            f"a merge key let a duplicated status through validation\n{result.stdout}"
+        )
+        assert "more than once" in result.stderr, result.stderr
+        assert note.exists(), "the note was unlinked despite the refusal"
+
+    def test_a_valid_merge_without_duplicates_still_closes(self, tmp_path: Path) -> None:
+        """Fail-closed must not mean fail-always.
+
+        The refusal above exists so a validator that cannot run stops the close. If
+        merges were merely unhandled, every note using one would be refused — safe
+        and useless. Flattening first means a legitimate merge reaches the duplicate
+        check, finds nothing, and closes.
+        """
+        home = tmp_path / "home"
+        result, _note = self._close(
+            home,
+            textwrap.dedent(
+                """\
+                ---
+                type: cc-task
+                defaults: &d
+                  extra: yes
+                <<: *d
+                task_id: t1
+                title: "t1"
+                status: withdrawn
+                assigned_to: eta
+                completed_at:
+                updated_at:
+                pr:
+                ---
+
+                # t1
+
+                ## Session log
+                """
+            ),
+            "--status",
+            "withdrawn",
+        )
+        assert result.returncode == 0, (
+            f"a valid merge key blocked an otherwise fine close\n{result.stderr}"
+        )
+        closed = (
+            home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "closed" / "t1.md"
+        )
+        parsed, _body = parse_frontmatter(closed)
+        assert parsed.get("status") == "withdrawn"
+
     def test_an_inline_comment_on_task_id_is_not_an_identity_change(self, tmp_path: Path) -> None:
         """`task_id: t1  # note` is valid YAML and was read as the id `t1  # note`.
 

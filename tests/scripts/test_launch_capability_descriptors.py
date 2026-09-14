@@ -483,6 +483,142 @@ class TestWhatTheChildReceives:
         )
 
 
+class TestTheRunnerCleansToo:
+    """The tmux boundary: the runner does NOT inherit the launcher's environment.
+
+    `tmux new-session` hands the runner the SERVER's environment, which can be days
+    old. So a launcher that cleans its own shell has cleaned the wrong one, and the
+    descriptor tests all use `--terminal none`, the path with no runner at all.
+    Review round 16 executed the shipped Claude runner with stale server descriptors
+    and watched `route=codex.headless.full` reach the child.
+
+    These run the generated runner under an environment the launcher never saw.
+    """
+
+    RUNNER_DIRS = {
+        "hapax-claude": "claude-spawns",
+        "hapax-kimi": "kimi-spawns",
+        "hapax-vibe": "vibe-spawns",
+    }
+
+    @pytest.mark.parametrize("name", sorted(RUNNER_DIRS))
+    def test_a_stale_server_environment_does_not_reach_the_harness(
+        self, name: str, tmp_path: Path
+    ) -> None:
+        stub_dir = tmp_path / "bin"
+        stub_dir.mkdir(parents=True, exist_ok=True)
+        stub = (
+            "#!/bin/sh\n"
+            '{ printf "route=%s\\n" "${HAPAX_CAPABILITY_ROUTE:-}"\n'
+            '  printf "capmodel=%s\\n" "${HAPAX_CAPABILITY_MODEL:-}"\n'
+            '  printf "pinned=%s\\n" "${HAPAX_CAPABILITY_PINNED:-}"\n'
+            '  printf "sidpin=%s\\n" "${HAPAX_SESSION_ID_PINNED:-}"\n'
+            '} > "$STUB_OUT"\n'
+        )
+        for harness in ("claude", "kimi", "vibe"):
+            (stub_dir / harness).write_text(stub, encoding="utf-8")
+            (stub_dir / harness).chmod(0o755)
+
+        home = tmp_path / "home"
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        workdir = tmp_path / "wt"
+        workdir.mkdir(parents=True, exist_ok=True)
+        out = tmp_path / "out.txt"
+
+        # A tmux STUB that only records: the runner must be executed separately,
+        # under a DIFFERENT environment, which is the whole point.
+        record = tmp_path / "tmux.txt"
+        (stub_dir / "tmux").write_text(
+            "#!/bin/sh\n"
+            'case "$1" in has-session) exit 1 ;; esac\n'
+            'for a in "$@"; do last="$a"; done\n'
+            'printf "%s\\n" "$last" >> "$TMUX_RECORD"\n'
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        (stub_dir / "tmux").chmod(0o755)
+
+        launch_env = _clean_env()
+        launch_env["PATH"] = f"{stub_dir}:{launch_env.get('PATH', '')}"
+        launch_env["HOME"] = str(home)
+        launch_env["TMUX_RECORD"] = str(record)
+        launch_env["KIMI_BIN"] = str(stub_dir / "kimi")
+        launch_env["MISTRAL_API_KEY"] = "stub"  # pragma: allowlist secret
+        launch_env["HAPAX_KIMI_WORKDIR"] = str(workdir)
+        launch_env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+        launch_env["HAPAX_SDLC_SLICE_ATTACH"] = "0"
+
+        args = {
+            "hapax-claude": [
+                "--role",
+                "zeta",
+                "--terminal",
+                "tmux",
+                "--cd",
+                str(workdir),
+                "--readonly",
+            ],
+            "hapax-kimi": ["zeta"],
+            "hapax-vibe": [
+                "--session",
+                "vbe-9",
+                "--terminal",
+                "tmux",
+                "--cd",
+                str(workdir),
+                "--no-claim",
+            ],
+        }[name]
+        result = subprocess.run(
+            ["bash", str(SCRIPTS / name), *args],
+            env=launch_env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        assert record.is_file(), (
+            f"{name} never reached its tmux spawn, so no runner was written: "
+            f"rc={result.returncode}\n{result.stderr.strip()[-600:]}"
+        )
+        runner = Path(record.read_text(encoding="utf-8").strip().splitlines()[-1])
+        assert runner.is_file(), f"the recorded runner path does not exist: {runner}"
+
+        # The stale server environment. The launcher never saw these — they are what
+        # a long-lived tmux server still carries from whatever started it.
+        server_env = dict(launch_env)
+        server_env["STUB_OUT"] = str(out)
+        server_env["HAPAX_CAPABILITY_ROUTE"] = "codex.headless.full"
+        server_env["HAPAX_CAPABILITY_MODEL"] = "gpt-6-astra"
+        server_env["HAPAX_CAPABILITY_PINNED"] = "hapax-codex-headless"
+        server_env["HAPAX_SESSION_ID_PINNED"] = "hapax-codex"
+        run = subprocess.run(
+            ["bash", str(runner)],
+            env=server_env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        assert out.is_file(), (
+            f"{name}'s runner never reached its harness: rc={run.returncode}\n"
+            f"{run.stderr.strip()[-600:]}"
+        )
+        observed: dict[str, str] = {}
+        for line in out.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            observed[key] = value
+
+        assert observed["route"] == "", (
+            f"{name}'s runner handed the harness a stale server route "
+            f"({observed['route']}) — it would be recorded as this launch's"
+        )
+        assert observed["capmodel"] == "", observed
+        assert observed["pinned"] == "" and observed["sidpin"] == "", (
+            f"{name}'s runner passed a stale grant through to the harness: {observed}"
+        )
+
+
 def _extract_bash_function(source: Path, name: str) -> str:
     """The shipped text of one top-level bash function, by name.
 

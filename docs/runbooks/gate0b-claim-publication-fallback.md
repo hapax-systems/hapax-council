@@ -356,8 +356,21 @@ gates call `gh` and can block on the network; a lock held across a network call
 would stall every other writer for as long as GitHub takes. Nothing above that
 point mutates.
 
-`HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS` bounds the wait for both writers (default
-30s). It bounds the wait only — there is no value that skips acquisition, and a
+**Two locks, in one order.** The note is keyed by task id; the lease files
+(`cc-active-task-<role>[-<session>]`) are keyed by role, and both cc-close's sweep
+and cc-claim's publication write that namespace — so a task-keyed lock cannot
+protect it. cc-close closing task A once deleted a lease that cc-claim had already
+republished as task B, because the two held *different* task locks and never met.
+Both writers therefore take **the task lock, then the role lock**, and neither
+takes them in the other order or takes the role lock alone. That ordering is what
+makes a second lock safe rather than a deadlock waiting for load.
+
+If the role lock cannot be taken, cc-close completes the closure and **preserves
+the leases**, saying so on stderr with the paths — retiring leases against a
+namespace another writer may be publishing into is the failure being avoided.
+
+`HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS` bounds the wait for both locks and both
+writers (default 30s). It bounds the wait only — there is no value that skips acquisition, and a
 zero or malformed value falls back to the default rather than turning every
 contended close into a refusal.
 
@@ -418,6 +431,11 @@ because the four cases have genuinely different remedies.
 | `retire-orphan-marker` | — | Note already in `closed/`, or a terminal status cc-close's `--status` rejects (`refused`, `completed`, `closed_poisoned`, …) | No governed tool retires these. Confirm the closure, then remove the two paths the event names. **Use the paths in the event, not `~/.cache/hapax`** — a sweep of a non-default marker dir names that dir instead. |
 | `operator-adjudication` | `task_not_in_vault` | The marker names a task that exists nowhere | A person decides. Nothing can distinguish a deleted note from a corrupt marker, and guessing either way destroys evidence. |
 | `operator-adjudication` | `assignee_disagreement` / `role_unattributable` | Two parties believe they hold the task, or the marker names no role the vault knows | A person decides. Do not delete: the marker IS the contention evidence. |
+
+**Paged and the directory looks wrong?** Jump to [When it misfires](#when-it-misfires)
+below: `--claim-marker-dir` / `HAPAX_CC_HYGIENE_CLAIM_MARKER_DIR` points the join at
+the real cache, and `HAPAX_CC_HYGIENE_OFF=1` (sweeper-wide, every check) is the only
+mute. There is no per-check bypass.
 
 Two further events report that the sweep itself was incomplete, and mean the
 check's silence is not evidence of agreement:

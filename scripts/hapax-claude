@@ -419,6 +419,15 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf '%s\n' 'set -euo pipefail'
   printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
   printf 'cd %q\n' "$WORKDIR"
+  # The runner re-establishes identity explicitly because it does NOT inherit this
+  # launcher's environment: an already-running tmux server supplies its own, which
+  # can be minutes or days old. That is also why the capability descriptors are
+  # cleared HERE and not only in the launcher — a stale server environment carrying
+  # `HAPAX_CAPABILITY_ROUTE=codex.headless.full` reached the Claude child and was
+  # recorded as this launch's condition vector (review round 16, reproduced).
+  # `unset` rather than a conditional export: this launcher never holds descriptors
+  # addressed to it, so there is nothing to carry and every value here is inherited.
+  printf 'unset HAPAX_CAPABILITY_ROUTE HAPAX_CAPABILITY_MODEL HAPAX_CAPABILITY_PINNED HAPAX_SESSION_ID_PINNED\n'
   printf 'export HAPAX_AGENT_INTERFACE=claude\n'
   printf 'export HAPAX_AGENT_NAME=%q\n' "$ROLE"
   printf 'export CLAUDE_ROLE=%q\n' "$ROLE"

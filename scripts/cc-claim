@@ -407,6 +407,7 @@ if str(repo_root) not in sys.path:
 
 from shared.cc_task_lock import (  # noqa: E402
     TaskLockTimeout,
+    hold_role_lease_lock,
     hold_task_note_lock,
 )
 
@@ -423,24 +424,40 @@ from shared.cc_task_lock import (  # noqa: E402
 # cannot disagree. Passing cc-claim's own cache_dir here would have derived
 # $HOME/.cache/hapax while cc-close derived $XDG_CACHE_HOME/hapax — two lock files,
 # no exclusion, and nothing to notice it.
+#
+# TWO locks, in this order, for two resources: the note (keyed by task) and this
+# role's lease namespace (keyed by role). cc-close takes them in the SAME order and
+# neither takes them in the other, which is what makes a second lock safe rather
+# than a deadlock waiting for load. Without the role lock, cc-close closing task A
+# could delete the `cc-active-task-<role>[-<sid>]` file this claim had just
+# republished as task B — it held B's task lock, cc-close held A's, and the two
+# never met (review round 16, reproduced).
+#
+# Exit codes are distinct because the remedies are: 4 is contention, which is
+# retryable; 5 is an unusable cache directory, which is not, and a caller branching
+# on the code alone could not tell them apart when both were 4.
 try:
     hold_task_note_lock(task_id)
+    if role:
+        hold_role_lease_lock(role)
 except TaskLockTimeout as exc:
     print(
         f"cc-claim: BLOCKED — {exc}. Another cc-claim or cc-close is mid-mutation on "
-        "this task. Next action: let it finish and re-run; if nothing is running, "
-        "check for a wedged process holding the lock. Nothing was modified.",
+        "this task or this role's leases. Next action: let it finish and re-run; if "
+        "nothing is running, check for a wedged process holding the lock. Nothing "
+        "was modified.",
         file=sys.stderr,
     )
     sys.exit(4)
 except OSError as exc:
     print(
         f"cc-claim: BLOCKED — could not take the cc-task lock for '{task_id}': {exc}. "
-        "Refusing rather than racing cc-close. Next action: check permissions on the "
-        "hapax cache directory. Nothing was modified.",
+        "Refusing rather than racing cc-close. This is NOT contention — retrying will "
+        "not help. Next action: check permissions on the hapax cache directory. "
+        "Nothing was modified.",
         file=sys.stderr,
     )
-    sys.exit(4)
+    sys.exit(5)
 
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,

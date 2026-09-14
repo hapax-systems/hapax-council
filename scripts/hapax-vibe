@@ -435,6 +435,10 @@ write_runner() {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
     printf 'cd %q\n' "$WORKDIR"
+    # Cleared here as well as in the launcher: the runner is executed by a tmux
+    # server whose environment it inherits instead of this shell's. See the same
+    # block in scripts/hapax-claude for the measured leak.
+    printf 'unset HAPAX_CAPABILITY_ROUTE HAPAX_CAPABILITY_MODEL HAPAX_CAPABILITY_PINNED HAPAX_SESSION_ID_PINNED\n'
     printf 'export HAPAX_AGENT_INTERFACE=vibe\n'
     printf 'export HAPAX_AGENT_NAME=%q\n' "$SESSION"
     printf 'export HAPAX_AGENT_SLOT=%q\n' "$SESSION"

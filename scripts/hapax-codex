@@ -1598,6 +1598,16 @@ else
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
     printf 'trap '\''%q %q --reason "clean exit (codex)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$SESSION"
+    # Capability descriptors, cleared in the RUNNER as well as in the launcher: an
+    # already-running tmux server hands the runner its own environment, not this
+    # shell's, and a stale one there reached the harness carrying another launch's
+    # route (review round 16). Unset rather than carried, because nothing pins an
+    # interactive codex lane — when a codex interactive route is dispatched, this is
+    # where the pinned values would be re-exported instead.
+    #
+    # HAPAX_CAPABILITY_PINNED only; the SESSION pin below is the one grant that must
+    # survive into the re-exec, and it is written explicitly further down.
+    printf 'unset HAPAX_CAPABILITY_ROUTE HAPAX_CAPABILITY_MODEL HAPAX_CAPABILITY_PINNED\n'
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
     # Propagate the session id so the re-exec'd inner hapax-codex keeps ONE stable

@@ -35,6 +35,7 @@ from shared.cc_task_lock import (  # noqa: E402
     TaskLockTimeout,
     hold_task_note_lock,
     lock_path,
+    role_lock_path,
 )
 
 CC_CLAIM = REPO_ROOT / "scripts" / "cc-claim"
@@ -392,6 +393,73 @@ class TestTheCloseSideFdIsHeldThroughout:
             "the lease sweep did not run — it is the part of cc-close furthest from "
             f"the acquisition, and the part that would run unprotected\n{stdout}"
         )
+
+
+class TestTheRoleLeaseNamespace:
+    """The SECOND resource, and why the task lock could not protect it.
+
+    Lease files are keyed by `<role>[-<session>]`; the note is keyed by task id.
+    cc-close's role-wide sweep and cc-claim's publication both write the lease
+    namespace, so keying their exclusion by task id excludes nothing: review round
+    16 reproduced cc-close closing task A, reading a marker that named A, and
+    removing the file after cc-claim had republished it as task B — held under B's
+    own, different, task lock.
+    """
+
+    def test_a_replacement_claim_for_another_task_survives_a_close(self, tmp_path: Path) -> None:
+        """Two tasks, two task locks, one lease namespace.
+
+        cc-close(A) is started while the ROLE lock is held, so it cannot reach its
+        sweep. The replacement publication for B happens in that window, exactly as
+        a concurrent cc-claim would. When the role lock clears, cc-close must not
+        delete a lease that no longer names the task it is closing.
+        """
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        _write_note(vault, "task-a", "withdrawn")
+        cache = home / ".cache" / "hapax"
+        cache.mkdir(parents=True, exist_ok=True)
+        lease = cache / "cc-active-task-eta-3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+        epoch = cache / "cc-claim-epoch-eta-3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+        lease.write_text("task-a\n", encoding="utf-8")
+        epoch.write_text("1757800000 task-a\n", encoding="utf-8")
+        env = _lane_env(home)
+
+        held = role_lock_path("eta", cache / "cc-task-locks")
+        handle = os.open(held, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            proc = subprocess.Popen(
+                ["bash", str(CC_CLOSE), "task-a", "--status", "withdrawn"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            settle = time.monotonic() + 4.0
+            while proc.poll() is None and time.monotonic() < settle:
+                time.sleep(0.05)
+            blocked_before_sweep = proc.poll() is None
+            # The replacement: this lane has moved on to task B and republished the
+            # SAME filename. A concurrent cc-claim does exactly this.
+            lease.write_text("task-b\n", encoding="utf-8")
+            epoch.write_text("1757800999 task-b\n", encoding="utf-8")
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
+
+        stdout, stderr = proc.communicate(timeout=180)
+
+        assert blocked_before_sweep, (
+            "cc-close reached its lease sweep while the role lock was held — the "
+            f"lease namespace is not serialized\n{stdout}\n{stderr}"
+        )
+        assert proc.returncode == 0, f"{stdout}\n{stderr}"
+        assert lease.exists() and lease.read_text(encoding="utf-8").strip() == "task-b", (
+            "cc-close deleted a live claim for a DIFFERENT task — the replacement "
+            f"published while it waited\n{stdout}\n{stderr}"
+        )
+        assert epoch.exists(), "the replacement's epoch sidecar was deleted with it"
 
 
 class TestBothWritersParticipate:
