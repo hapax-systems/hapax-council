@@ -3710,7 +3710,9 @@ def test_rebuilt_directory_noreplace_refuses_an_occupied_destination(
 
     The branch is still load-bearing: with the destination absent the syscall
     EINVALs, the rebuild does run, and `rename(2)` on directories would let an
-    empty one through.
+    empty one through. Note the shipped guard refuses EVERY existing destination,
+    not only an empty directory — the empty-directory case is merely the one where
+    it is indispensable, since `rename` refuses the others on its own.
 
     `reached_rename` is what makes this a test of the GUARD rather than of the
     host's `rename`. Without it the populated case is host-dependent theatre: xfs
@@ -4066,45 +4068,64 @@ def test_renameat2_never_rebuilds_a_real_fault(tmp_path: Path) -> None:
     assert (tmp_path / "dst").read_bytes() == b"dst\n"
 
 
-@pytest.mark.parametrize(
-    "unsupported", sorted(cp._RENAME_FLAG_UNSUPPORTED_ERRNOS), ids=errno.errorcode.get
-)
-def test_every_declared_unsupported_errno_dispatches_the_rebuild(
-    tmp_path: Path, unsupported: int
-) -> None:
-    """Each member of the declared set, driven through the wrapper.
+#: Enumerated HERE, independently of the production set, because a test parameterized from
+#: `_RENAME_FLAG_UNSUPPORTED_ERRNOS` loses a case exactly when someone deletes the behaviour
+#: the case protects — the mutation and its own oracle vanish together. A reviewer caught
+#: that in the first version of this test. These are the errnos a mount uses to say "this
+#: flag does not exist here", and the fallback must run for every one of them.
+_MUST_DISPATCH_THE_REBUILD = (errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP)
 
-    The mount simulations all inject EINVAL, which is what THIS export answers. The set
-    also declares ENOSYS, ENOTSUP and EOPNOTSUPP for mounts that answer differently, and
-    nothing exercised those — a member could be dropped from the set and every test would
-    stay green. The set is a safety claim (`_RENAME_FLAG_UNSUPPORTED_ERRNOS` is what
-    separates "flag absent" from "write failed"), so each member is asserted to dispatch.
+
+def test_the_declared_unsupported_set_matches_the_errnos_this_suite_requires() -> None:
+    """The independent enumeration and the production set must agree, in both directions.
+
+    Missing member: a mount answering that errno would get a real failure instead of the
+    fallback, and the SSOT stays broken. Extra member: an errno that means something else
+    would start being retried by another route, which is the fallback-discipline hazard.
     """
 
-    (tmp_path / "src").write_bytes(b"src\n")
-    (tmp_path / "dst").write_bytes(b"dst\n")
-    entered: list[int] = []
+    assert set(_MUST_DISPATCH_THE_REBUILD) == set(cp._RENAME_FLAG_UNSUPPORTED_ERRNOS), (
+        sorted(errno.errorcode.get(e, e) for e in _MUST_DISPATCH_THE_REBUILD),
+        sorted(errno.errorcode.get(e, e) for e in cp._RENAME_FLAG_UNSUPPORTED_ERRNOS),
+    )
 
-    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+@pytest.mark.parametrize("unsupported", _MUST_DISPATCH_THE_REBUILD, ids=errno.errorcode.get)
+def test_every_unsupported_errno_dispatches_a_rebuild_that_really_runs(
+    tmp_path: Path, unsupported: int
+) -> None:
+    """Each errno, through the wrapper, asserted on the FILESYSTEM post-state.
+
+    The mount simulations all inject EINVAL, which is what this export answers; ENOSYS,
+    ENOTSUP and EOPNOTSUPP were declared for mounts that answer differently and nothing
+    exercised them. An earlier version of this test replaced both rebuilds with callbacks and
+    asserted only that a callback ran — which cannot tell a rebuild that works from one that
+    corrupts. The real legs run here and the entries are checked afterwards.
+    """
+
+    directory = tmp_path / errno.errorcode.get(unsupported, str(unsupported))
+    directory.mkdir()
+    (directory / "src").write_bytes(b"replacement\n")
+    (directory / "dst").write_bytes(b"displaced\n")
+
+    dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        with (
-            mock.patch.object(cp, "_renameat2_primitive", return_value=unsupported),
-            mock.patch.dict(
-                cp._RENAME_FLAG_FALLBACKS,
-                {
-                    cp._RENAME_EXCHANGE: lambda *_a: entered.append(cp._RENAME_EXCHANGE),
-                    cp._RENAME_NOREPLACE: lambda *_a: entered.append(cp._RENAME_NOREPLACE),
-                },
-            ),
+        with mock.patch.object(
+            cp,
+            "_renameat2_primitive",
+            side_effect=_unsupported_flag_mount(unsupported_errno=unsupported),
         ):
             cp._renameat2(dir_fd, "src", dir_fd, "dst", cp._RENAME_EXCHANGE)
-            cp._renameat2(dir_fd, "src", dir_fd, "dst", cp._RENAME_NOREPLACE)
+            # EXCHANGE swapped them, so the NOREPLACE below promotes onto a free name.
+            assert (directory / "dst").read_bytes() == b"replacement\n"
+            assert (directory / "src").read_bytes() == b"displaced\n"
+            cp._renameat2(dir_fd, "src", dir_fd, "free", cp._RENAME_NOREPLACE)
     finally:
         os.close(dir_fd)
 
-    assert entered == [cp._RENAME_EXCHANGE, cp._RENAME_NOREPLACE], errno.errorcode.get(
-        unsupported, unsupported
-    )
+    assert (directory / "free").read_bytes() == b"displaced\n"
+    assert not (directory / "src").exists()
+    assert not _fallback_remnants(directory), sorted(p.name for p in directory.iterdir())
 
 
 @pytest.mark.parametrize("flags", [0, cp._RENAME_EXCHANGE | cp._RENAME_NOREPLACE, 1 << 20])
@@ -4362,8 +4383,11 @@ def test_scratch_names_are_dotted_and_deterministic(tmp_path: Path) -> None:
             assert name.endswith(f".transition-{role}"), name
             # Same input, same name — every call, not just within one process.
             assert name == cp._fallback_scratch_name(operand, role)
-        # The three roles never collide with each other.
-        assert len({cp._fallback_scratch_name(operand, r) for r in cp._FALLBACK_SCRATCH_ROLES}) == 3
+        # The roles never collide with each other — asserted against the declared set, so
+        # adding a role cannot silently start colliding with an existing one.
+        assert len(
+            {cp._fallback_scratch_name(operand, r) for r in cp._FALLBACK_SCRATCH_ROLES}
+        ) == len(cp._FALLBACK_SCRATCH_ROLES)
 
     # And the names the leg actually creates are the computable ones, for a non-dotted
     # operand — which is the case that used to produce a visible, unfindable pin.
@@ -4548,6 +4572,92 @@ def test_missing_entry_at_the_check_is_a_refusal_not_a_crash(tmp_path: Path) -> 
         assert "recover-claim-publications" in caught.value.repair_action
     finally:
         os.close(dir_fd)
+
+
+def test_rollback_preserves_a_writer_who_replaced_the_live_destination(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The rollback runs on a LIVE name, where no reservation in this module excludes anyone.
+
+    On the create leg `dst_name` is the live projection filename. If the source check fails
+    after publication, the rollback has to withdraw that publication — and an ordinary writer
+    can atomically replace a live projection file at any moment. Such a writer never acquires
+    a scratch name, so the occupancy argument that protects the scratch names does not reach
+    this call site at all; it was applied here anyway and a reviewer reproduced the loss.
+
+    The withdrawal now MOVES rather than unlinks, so the rename carries across whatever
+    occupies the name and the identity check runs afterwards against a private name. Here the
+    replacement arrives in the old gap — after the publication, before the withdrawal — and
+    the assertion is that its bytes still exist and are named in the log.
+    """
+
+    (tmp_path / ".staged").write_bytes(b"the transition's content\n")
+    real_rename = os.rename
+    replaced = False
+
+    def replace_the_live_file_just_before_withdrawal(*args: object, **kwargs: object) -> None:
+        nonlocal replaced
+        # The first rename in the withdrawal path is the one that moves the live name aside.
+        if not replaced and len(args) > 1 and str(args[0]) == "live-note.md":
+            replaced = True
+            _replace_atomically(tmp_path, "live-note.md", b"ANOTHER WRITER'S ONLY COPY\n")
+        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+    def fail_the_source_check(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with caplog.at_level("WARNING"):
+            with (
+                mock.patch.object(cp, "_refuse_if_displaced_entry_moved", fail_the_source_check),
+                mock.patch.object(os, "rename", replace_the_live_file_just_before_withdrawal),
+            ):
+                with pytest.raises(OSError) as raised:
+                    cp._fallback_noreplace(dir_fd, ".staged", dir_fd, "live-note.md")
+        assert raised.value.errno == errno.EIO
+    finally:
+        os.close(dir_fd)
+
+    assert replaced, "the replacement must land in the withdrawal window to mean anything"
+    surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    assert b"ANOTHER WRITER'S ONLY COPY\n" in surviving, (
+        "the rollback destroyed a writer who replaced the live destination — the exact "
+        "loss this path was rebuilt to stop"
+    )
+    # The original error still propagates, the live name is clear, and the preserved entry
+    # is named with a next action rather than silently stranded.
+    assert not (tmp_path / "live-note.md").exists()
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert "recover-claim-publications" in caplog.text
+    assert cp._fallback_scratch_name("live-note.md", "rollback") in caplog.text
+
+
+def test_rollback_drops_its_own_publication_when_nobody_raced_it(tmp_path: Path) -> None:
+    """The ordinary rollback: our own link is withdrawn, leaving no remnant behind.
+
+    The preservation branch must not become a way to litter the projection root with
+    `.transition-rollback` entries on every failed transition.
+    """
+
+    (tmp_path / ".staged").write_bytes(b"the transition's content\n")
+
+    def fail_the_source_check(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with mock.patch.object(cp, "_refuse_if_displaced_entry_moved", fail_the_source_check):
+            with pytest.raises(OSError):
+                cp._fallback_noreplace(dir_fd, ".staged", dir_fd, "live-note.md")
+    finally:
+        os.close(dir_fd)
+
+    assert not (tmp_path / "live-note.md").exists(), "the publication was not withdrawn"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".staged"], (
+        "the withdrawal left a remnant behind for a rollback nobody raced"
+    )
+    assert (tmp_path / ".staged").read_bytes() == b"the transition's content\n"
 
 
 def test_noreplace_interrupted_after_linking_loses_nothing(tmp_path: Path) -> None:
@@ -5089,6 +5199,111 @@ def test_a_participant_is_excluded_from_the_scratch_rather_than_overwritten(
     assert (tmp_path / ".src").read_bytes() == b"displaced\n"
 
 
+@pytest.mark.parametrize(
+    ("branch", "expected_at_the_name"),
+    [("identity", b"ours\n"), ("abandonment", b"someone-elses\n")],
+)
+def test_cleanups_occupancy_argument_is_pinned_not_just_argued(
+    tmp_path: Path, branch: str, expected_at_the_name: bytes
+) -> None:
+    """Both of cleanup's two-step branches, with occupancy mutated AWAY.
+
+    `_retire_scratch` reads identity and then acts, and nothing can fuse those two steps.
+    Safety rests on the name being OCCUPIED for the whole gap, so a writer acquiring names
+    the way this module does is refused and never lands a replacement there. That was an
+    argument in a docstring with one pin behind it, and the abandonment branch — which has
+    the same two-step shape — had none at all.
+
+    This drives both branches directly and, at the instant between the identity read and the
+    action, has a participant try to take the name. The assertion is that it cannot.
+
+    Mutation receipt, measured 2026-09-14 — add an `unlink` to the same injection so the name
+    falls vacant, and the **identity** branch destroys the arrival. (The abandonment branch
+    survives it, because a rename carries an arrival across where an unlink would not.) So
+    occupancy is load-bearing, this test is not vacuous, and it is the only thing standing
+    between the identity branch and the loss the reviewers described.
+    """
+
+    (tmp_path / "scratch").write_bytes(expected_at_the_name)
+    (tmp_path / "other").write_bytes(b"ours\n")
+    competitor: str | None = None
+    real_lstat = os.lstat
+
+    def race_inside_the_gap(*args: object, **kwargs: object) -> os.stat_result:
+        """Between the identity read and the action, a participant tries for the name."""
+        nonlocal competitor
+        result = real_lstat(*args, **kwargs)
+        if competitor is None and args and str(args[0]) == "scratch":
+            competitor = _participant_takes(dir_fd, "scratch", b"COMPETITOR\n")
+        return result
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        # identity branch: `expected` IS what sits at the name. abandonment branch: it is not.
+        expected = os.lstat("scratch" if branch == "identity" else "other", dir_fd=dir_fd)
+        with mock.patch.object(os, "lstat", race_inside_the_gap):
+            cp._retire_scratch(dir_fd, "scratch", expected, subject="probe")
+    finally:
+        os.close(dir_fd)
+
+    assert competitor == "excluded", (
+        f"a participant took the name inside the {branch} branch's gap ({competitor}) — "
+        "cleanup no longer holds it across the gap, so the loss the occupancy argument "
+        "rules out is reachable again"
+    )
+    survivors = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    assert b"COMPETITOR\n" not in survivors
+    # And the entry that was there is handled by its own branch: ours removed, theirs kept.
+    if branch == "identity":
+        assert not (tmp_path / "scratch").exists()
+    else:
+        assert (tmp_path / "scratch.transition-abandoned").read_bytes() == b"someone-elses\n"
+
+
+def test_losing_the_reservation_race_refuses_with_the_typed_hold(tmp_path: Path) -> None:
+    """The branch that runs when THIS attempt is the one that loses.
+
+    The exclusion test above wins the race and watches the competitor refuse, so it only ever
+    runs the competitor's `FileExistsError` path — never this leg's own. A reviewer pointed
+    out that the refusal here therefore had no coverage at all: it could raise the wrong
+    reason code, or destroy the winner's entry on the way out, with nothing to catch it.
+
+    Here the arrival lands after the vacancy check and BEFORE the reservation, so this
+    attempt's `O_CREAT|O_EXCL` is the call that fails.
+    """
+
+    (tmp_path / ".src").write_bytes(b"replacement\n")
+    (tmp_path / "dst").write_bytes(b"displaced\n")
+    holding = cp._fallback_scratch_name(".src", "holding")
+    real_open = os.open
+    arrived = False
+
+    def arrive_just_before_the_reservation(*args: object, **kwargs: object) -> int:
+        nonlocal arrived
+        if not arrived and args and str(args[0]) == holding:
+            arrived = True
+            _replace_atomically(tmp_path, holding, b"WINNER OF THE RACE\n")
+        return real_open(*args, **kwargs)  # type: ignore[arg-type]
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with mock.patch.object(os, "open", arrive_just_before_the_reservation):
+            with pytest.raises(cp.LifecycleTransitionError) as caught:
+                cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
+    finally:
+        os.close(dir_fd)
+
+    assert arrived, "the arrival must land before the reservation for this to mean anything"
+    assert caught.value.reason_code == "transition_precondition_changed"
+    # The winner's bytes are intact, both operands are intact, and the refusal says what to
+    # do next rather than leaving the operator to guess.
+    assert (tmp_path / holding).read_bytes() == b"WINNER OF THE RACE\n"
+    assert (tmp_path / ".src").read_bytes() == b"replacement\n"
+    assert (tmp_path / "dst").read_bytes() == b"displaced\n"
+    assert "recover-claim-publications" in str(caught.value)
+    assert holding in str(caught.value)
+
+
 def test_a_writer_ignoring_the_protocol_is_not_excluded(tmp_path: Path) -> None:
     """The BOUND on the test above, pinned so the guarantee cannot be overclaimed.
 
@@ -5217,13 +5432,61 @@ def test_an_unconsumed_reservation_is_released_so_the_next_attempt_can_retry(
     assert (tmp_path / ".src").read_bytes() == b"replacement\n"
 
 
-def test_a_reservation_is_not_released_when_someone_else_filled_it(tmp_path: Path) -> None:
+def test_a_reservation_that_cannot_be_released_is_reported_as_a_wedge(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A wedge the operator cannot see is the defect this PR fixes elsewhere.
+
+    The release swallowed every error and logged nothing, so its one bad outcome — a
+    placeholder that refuses every later attempt on the operand, permanently — was silent.
+    Every other remnant path here logs `_SCRATCH_ABANDONED` with a remedy; this one now does
+    too, and names the command that clears it.
+    """
+
+    (tmp_path / ".src").write_bytes(b"replacement\n")
+    (tmp_path / "dst").write_bytes(b"displaced\n")
+    holding = cp._fallback_scratch_name(".src", "holding")
+    real_rename = os.rename
+    real_unlink = os.unlink
+
+    def fail_the_relocation(*args: object, **kwargs: object) -> None:
+        if len(args) > 1 and str(args[1]) == holding:
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+    def refuse_to_unlink(*args: object, **kwargs: object) -> None:
+        if args and str(args[0]) == holding:
+            raise OSError(errno.EIO, os.strerror(errno.EIO), "unlink")
+        return real_unlink(*args, **kwargs)  # type: ignore[arg-type]
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with caplog.at_level("WARNING"):
+            with (
+                mock.patch.object(os, "rename", fail_the_relocation),
+                mock.patch.object(os, "unlink", refuse_to_unlink),
+            ):
+                with pytest.raises(OSError):
+                    cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
+    finally:
+        os.close(dir_fd)
+
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert holding in caplog.text
+    assert "transition_projection_scratch_exists" in caplog.text
+    assert "recover-claim-publications" in caplog.text
+
+
+def test_a_reservation_is_not_released_when_someone_else_filled_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     """The release must not become a second way to destroy bytes.
 
     It unlinks only an entry that is still the empty placeholder it created. A writer that
     ignored the protocol and dropped real bytes at the name is left for `_retire_scratch`,
     which preserves what it cannot identify — the release is a rollback of our own action,
-    never a cleanup of somebody else's.
+    never a cleanup of somebody else's. Leaving it does block retries, so it is still
+    reported rather than passed over in silence.
     """
 
     (tmp_path / ".src").write_bytes(b"replacement\n")
@@ -5239,15 +5502,18 @@ def test_a_reservation_is_not_released_when_someone_else_filled_it(tmp_path: Pat
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        with mock.patch.object(os, "rename", fill_the_reservation_then_fail):
-            with pytest.raises(OSError):
-                cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
+        with caplog.at_level("WARNING"):
+            with mock.patch.object(os, "rename", fill_the_reservation_then_fail):
+                with pytest.raises(OSError):
+                    cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
     finally:
         os.close(dir_fd)
 
     assert (tmp_path / holding).read_bytes() == b"not-a-placeholder-any-more\n", (
         "the release deleted an entry it did not create"
     )
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert "did not create" in caplog.text
 
 
 def test_retire_scratch_leaves_the_entry_when_abandonment_itself_fails(
@@ -5266,11 +5532,13 @@ def test_retire_scratch_leaves_the_entry_when_abandonment_itself_fails(
     try:
         expected = os.lstat("other", dir_fd=dir_fd)  # deliberately NOT what `scratch` holds
 
-        def refuse_to_link(*args: object, **kwargs: object) -> None:
-            raise OSError(errno.EIO, os.strerror(errno.EIO), "link")
+        # Abandonment moves the entry with `rename` now, not `link`+`unlink`, so this
+        # refuses the syscall abandonment actually uses.
+        def refuse_to_rename(*args: object, **kwargs: object) -> None:
+            raise OSError(errno.EIO, os.strerror(errno.EIO), "rename")
 
         with caplog.at_level("WARNING"):
-            with mock.patch.object(os, "link", refuse_to_link):
+            with mock.patch.object(os, "rename", refuse_to_rename):
                 freed = cp._retire_scratch(dir_fd, "scratch", expected, subject="probe")
     finally:
         os.close(dir_fd)

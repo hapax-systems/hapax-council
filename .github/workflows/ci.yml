@@ -36,6 +36,13 @@ env:
   # HAPAX_NFS_INTEGRATION_DIR instead and this waiver comes out. Where such a lane should
   # live is a governance question with its own deferred decision; this asserts no plan
   # about it.
+  #
+  # The `*` in the row id below is an ELISION, not a glob: the literal runner-label word it
+  # stands in for is banned in this file by tests/ci/test_self_hosted_runner_experiment.py.
+  # The full id lives in tests/shared/test_coord_projection_nfs_integration.py as
+  # `_WAIVER_EXPIRY_ROW_ID`, and `test_the_waiver_expiry_row_is_resolvable` there fails if
+  # this elided form stops matching it — so the waiver is followable from where it is
+  # declared, which it was not.
   HAPAX_NFS_INTEGRATION_WAIVED: "hosted runner cannot mount nfs4; live witness runs outside CI against the operator's vault export; expiry owned by row nfs-fallback-live-witness-*-ci-20260913"
 
 jobs:

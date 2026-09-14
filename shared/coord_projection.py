@@ -3660,7 +3660,11 @@ def _entry_matches(state: _EntryState | None, payload: bytes | None, mode: int |
 
 #: The scratch roles a rebuilt leg can leave behind. Named here so a reader — or a future
 #: recovery sweep — has one list to work from instead of three string literals.
-_FALLBACK_SCRATCH_ROLES = ("pin", "holding", "spent")
+#: "rollback" is the one role whose base name is a LIVE projection filename rather than a
+#: transaction scratch — it holds an entry moved off the live path when a publication has to
+#: be withdrawn. A recovery sweep that assumes every scratch role derives from a transaction
+#: operand will mis-attribute it.
+_FALLBACK_SCRATCH_ROLES = ("pin", "holding", "spent", "rollback")
 
 
 def _fallback_scratch_name(base_name: str, role: str) -> str:
@@ -3749,7 +3753,21 @@ def _relocate_to_scratch(
     ===========================================  ==============  ===========================
 
     The export was measured to give a real exclusive create, not an emulated one: eight
-    racing processes, one winner. See
+    racing processes, one winner. Both claims are recheckable rather than asserted —
+
+    * the table, on any filesystem::
+
+        uv run --no-sync python \\
+          ~/Documents/Personal/30-areas/hapax/frame/coordination-20260904/\\
+          probe_scratch_reservation_alternative_20260914.py <worktree-root>
+
+    * the exclusive create, on the export itself, as a committed test::
+
+        HAPAX_NFS_INTEGRATION_DIR=... uv run --no-sync pytest \\
+          tests/shared/test_coord_projection_nfs_integration.py \\
+          -k the_scratch_reservation_is_genuinely_exclusive
+
+    Findings and the measurement record are in
     ``30-areas/hapax/frame/coordination-20260904/SCRATCH-RESERVATION-ALTERNATIVE-MEASUREMENT-20260914.md``.
 
     This replaces a plain ``rename(live → scratch)``. That rename relocated whatever occupied
@@ -3827,12 +3845,143 @@ def _release_scratch_reservation(dir_fd: int, name: str) -> None:
 
     try:
         current = os.lstat(name, dir_fd=dir_fd)
-    except OSError:
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        _wedged(name, exc)
         return
     if current.st_size or not stat.S_ISREG(current.st_mode):
+        # Somebody else's bytes are here now. Leaving them is correct; the name stays taken,
+        # which blocks retries, so it is still reported as a stuck state.
+        _wedged(name, "the name now holds an entry this attempt did not create")
         return
-    with suppress(OSError):
+    try:
         os.unlink(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        _wedged(name, exc)
+
+
+def _wedged(name: str, cause: object) -> None:
+    """Report a reservation that could not be released.
+
+    Every other remnant path in this module logs ``_SCRATCH_ABANDONED`` with a remedy; this
+    one swallowed its errors and logged nothing, so the one outcome it can produce — a
+    placeholder that refuses every later attempt on the operand, permanently — was invisible
+    to the operator. A wedge nobody can see is the same defect class as the recovery-hygiene
+    bug this module's own repair fixed elsewhere.
+    """
+
+    _logger.warning(
+        "%s: name=%s could not be released (%s) — this attempt's reservation is STILL THERE, "
+        "so every later attempt on this operand will refuse with "
+        "transition_projection_scratch_exists until it is cleared. It is an empty "
+        "placeholder unless the cause above says otherwise: inspect it, then rerun "
+        "`cc-claim --recover-claim-publications <task_id>`",
+        _SCRATCH_ABANDONED,
+        name,
+        cause,
+    )
+
+
+def _withdraw_publication_by_moving(
+    dir_fd: int,
+    live_name: str,
+    expected: os.stat_result,
+    *,
+    subject: str,
+) -> None:
+    """Undo a publication at a LIVE name without ever unlinking what is there. Never raises.
+
+    The rollback problem in one sentence: we must remove an entry we just published, but
+    between deciding it is still ours and removing it, an ordinary writer can replace it —
+    and unlike the scratch names, live projection files have writers that never acquire
+    anything, so no reservation in this module excludes them.
+
+    A rename is atomic with respect to the name, so it takes whatever is there. Once the
+    entry is at a private scratch name that nobody else can reach, the identity check is
+    finally race-free:
+
+    * **it is the inode we published** — drop it. The source still names that inode, so
+      nothing is lost, and the live name is correctly absent again.
+    * **it is anything else** — a writer replaced us. Keep it, and say so loudly with the
+      name to inspect. It is off the live path, which is what rollback needed, and its bytes
+      are intact, which is what matters more.
+
+    If the entry cannot be moved at all, it is left exactly where it is: a publication that
+    outlives its transaction is visible and repairable, a destroyed entry is neither. This
+    runs while another exception is propagating, so it absorbs everything.
+    """
+
+    aside = _fallback_scratch_name(live_name, "rollback")
+    if not _move_aside_atomically(dir_fd, live_name, aside):
+        _logger.warning(
+            "%s: %s name=%s could not be withdrawn after a failed publication — it is "
+            "LEFT IN PLACE and still live; inspect it and rerun "
+            "`cc-claim --recover-claim-publications <task_id>`",
+            _SCRATCH_ABANDONED,
+            subject,
+            live_name,
+        )
+        return
+    try:
+        moved = os.lstat(aside, dir_fd=dir_fd)
+    except OSError:
+        return
+    if _same_entry(moved, expected):
+        with suppress(OSError):
+            os.unlink(aside, dir_fd=dir_fd)
+        return
+    _logger.warning(
+        "%s: %s name=%s was replaced by another writer before this publication could be "
+        "withdrawn — their entry is PRESERVED at %s and the live name is clear; reconcile "
+        "it by hand, do not delete it, then rerun "
+        "`cc-claim --recover-claim-publications <task_id>`",
+        _SCRATCH_ABANDONED,
+        subject,
+        live_name,
+        aside,
+    )
+
+
+def _move_aside_atomically(dir_fd: int, name: str, target: str) -> bool:
+    """Move ``name`` to ``target`` in one step, refusing if ``target`` is taken. Never raises.
+
+    Two properties, and both matter on the paths that call this:
+
+    * **atomic with respect to the name.** ``rename`` relocates whatever occupies ``name`` at
+      the instant of the call, so an entry that arrived after some earlier check is carried
+      across instead of destroyed. ``link``-then-``unlink`` cannot do this: between the two
+      syscalls the name is unprotected, and the ``unlink`` destroys an arrival while
+      preserving the inode the ``link`` captured — the exact inversion of what it is for.
+    * **refuses an occupied target.** The destination is taken with ``O_CREAT|O_EXCL`` first,
+      so this cannot overwrite an earlier attempt's preserved bytes. The rename then replaces
+      our own placeholder.
+
+    Returns True when ``name`` is free afterwards. Callers are error and cleanup paths, so it
+    absorbs every OSError and reports failure instead — leaving an entry in place is always
+    recoverable, destroying one is not.
+    """
+
+    try:
+        reservation = os.open(
+            target,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC,
+            0o600,
+            dir_fd=dir_fd,
+        )
+    except OSError:
+        return False
+    os.close(reservation)
+    try:
+        os.rename(name, target, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except OSError:
+        _release_scratch_reservation(dir_fd, target)
+        return False
+    with suppress(OSError):
+        os.fsync(dir_fd)
+    return True
 
 
 def _refuse_if_scratch_occupied(
@@ -3992,13 +4141,15 @@ def _retire_scratch(
 
     abandoned = f"{name}.transition-abandoned"
     outcome = "left in place"
-    try:
-        os.link(name, abandoned, src_dir_fd=dir_fd, dst_dir_fd=dir_fd, follow_symlinks=False)
-        os.unlink(name, dir_fd=dir_fd)
+    # `rename`, not `link`-then-`unlink`. The pair left the name unprotected between the two
+    # syscalls: an entry arriving there was destroyed by the `unlink` while the earlier inode
+    # was preserved, which falsified this function's own "never unlink" promise. A rename
+    # relocates whatever occupies the name in one step, so an arrival is carried across
+    # rather than destroyed, and `_move_aside_atomically` reserves the destination first so
+    # it cannot overwrite an earlier abandonment either.
+    freed = _move_aside_atomically(dir_fd, name, abandoned)
+    if freed:
         outcome = f"moved aside to {abandoned}"
-        freed = True
-    except OSError:
-        freed = False
     if not freed:
         # Could not abandon it either, so the scratch name stays occupied and every later
         # attempt on this operand will refuse at the vacancy check. That is the safe
@@ -4190,12 +4341,13 @@ def _fallback_exchange(
         ) from exc
     os.fsync(dir_fd)
 
-    # 2-3. Move dst aside and identify what was actually there. The relocation identifies a
-    #      replaced source and refuses, so a racer at `dst` is preserved and named. It does
-    #      NOT refuse an occupied scratch — that claim was left behind when the leg went
-    #      back to `rename`, and `rename` cannot fail on an occupied destination. The
-    #      vacancy check above is what bounds that, and the residual window is open; see
-    #      `_relocate_to_scratch`.
+    # 2-3. Move dst aside and identify what was actually there. The relocation refuses BOTH
+    #      ways now: a replaced source is identified and refused, so a racer at `dst` is
+    #      preserved and named; and the scratch destination is taken with `O_CREAT|O_EXCL`
+    #      immediately before the rename that consumes it, so a writer acquiring that name
+    #      the way this module does loses the race cleanly instead of losing its bytes. The
+    #      check at step 0 stays because it fails earlier and more legibly, not because it
+    #      closes anything. See `_relocate_to_scratch` for the limit on who is bound.
     _relocate_to_scratch(
         dir_fd, dst_name, holding, displaced, subject=f"{src_name}->{dst_name}", recover=recover
     )
@@ -4331,14 +4483,24 @@ def _fallback_noreplace(
         # check leaves. See :func:`_refuse_if_displaced_entry_moved`.
         _refuse_if_displaced_entry_moved(src_dir_fd, src_name, intended, dst_name)
     except BaseException:
-        # Withdraw the link we just made, so the prior state is restored, nlink included —
-        # but only while it is still OURS. This used to be an unconditional `unlink`, and a
-        # reviewer was right that it therefore deleted a writer who had replaced `dst_name`
-        # after our publication: an error path destroying a third party's entry while
-        # reporting the original error. `_retire_scratch` removes it only if it still holds
-        # the inode we linked, and otherwise preserves it under an abandoned name.
-        with suppress(OSError):
-            _retire_scratch(dst_dir_fd, dst_name, intended, subject=f"{src_name}(rollback)")
+        # Withdraw the link we just made, so the prior state is restored, nlink included.
+        #
+        # `dst_name` here is the LIVE projection filename on the create leg, and that is what
+        # makes this different from every other cleanup in this file. `_retire_scratch` was
+        # used here, and its identity check plus `unlink` are two operations: a writer that
+        # atomically replaced the live file in that gap had its only copy deleted by an error
+        # path that was already reporting a different failure, with no warning. Reproduced.
+        # The scratch reservation does not help — writers of live projection files never
+        # acquire a scratch name, so the occupancy argument that covers the scratch names
+        # does not reach this call site at all.
+        #
+        # So withdraw by MOVING, which is the rule the source retirement below already
+        # follows: a rename carries across whatever occupies the name, and the identity check
+        # then runs against a private name nobody else can reach, where it is finally
+        # race-free. Ours is dropped; anyone else's is preserved and named in the log.
+        _withdraw_publication_by_moving(
+            dst_dir_fd, dst_name, intended, subject=f"{src_name}(rollback)"
+        )
         raise
     # Retire `src` by MOVING it, never by unlinking it. The check above closes the gap
     # the link opened; this closes the gap the check itself leaves, which detection alone

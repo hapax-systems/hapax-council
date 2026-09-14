@@ -44,6 +44,11 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
+from shared import coord_projection as cp
+from shared.coord_event_log import CoordEventLog
+
 
 def _try_exclusive_create(target: str) -> bool:
     """One racing creator. Module-level so it is picklable for ProcessPoolExecutor."""
@@ -55,11 +60,6 @@ def _try_exclusive_create(target: str) -> bool:
     os.close(handle)
     return True
 
-
-import pytest
-
-from shared import coord_projection as cp
-from shared.coord_event_log import CoordEventLog
 
 _ENV_DIR = "HAPAX_NFS_INTEGRATION_DIR"
 #: Declaring an absence out loud. Without `_ENV_DIR` and without this, the fixture FAILS
