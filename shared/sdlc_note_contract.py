@@ -200,10 +200,15 @@ def frontmatter_block_text(text: str) -> tuple[str, str]:
         return "", FRONTMATTER_ABSENT
     for index in range(1, len(lines)):
         if is_frontmatter_fence(lines[index]):
-            raw = "\n".join([lines[0][3:], *lines[1:index]]).strip()
-            # A real fence pair enclosing nothing. Reported as its own state so
-            # no caller has to re-read line 0 to tell it from "no fence at all".
-            return (raw, FRONTMATTER_OK) if raw else ("", FRONTMATTER_EMPTY_BLOCK)
+            # An empty region is a legitimate OK result: the fences were found
+            # and enclose nothing. Classifying THAT as :data:`FRONTMATTER_EMPTY_BLOCK`
+            # belongs to the parser, which reaches the same verdict through
+            # ``yaml.safe_load`` returning ``None`` — and has to, because a
+            # comment-only block has a non-empty region and still declares
+            # nothing. Returning the state from here as well was a second guard
+            # for one hazard: mutating it reddened nothing, because the parser's
+            # branch covered it. The parser's is the one with an oracle.
+            return "\n".join([lines[0][3:], *lines[1:index]]).strip(), FRONTMATTER_OK
     return "", FRONTMATTER_UNTERMINATED
 
 
