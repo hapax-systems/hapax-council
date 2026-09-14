@@ -271,11 +271,17 @@ def is_active_blocked_with_evidence(frontmatter: Mapping[str, Any]) -> bool:
 
 
 # --- Acceptance-receipt enforcement (capacity routing Phase 0.2) -------------
-# ``frontier_review_required`` is only honest if acceptance is enforced: a
-# review-floor task may close (cc-close) or queue (cc-pr-autoqueue) only with a
-# signed review receipt — acceptor identity, verdict, timestamp, artifact ref —
-# stored beside the task note as ``<task_id>.acceptance.yaml``. Non-review-floor
-# tasks are untouched. Spec: REQ-20260609 model-capability-cost-routing report.
+# A declared review requirement is only honest if acceptance is enforced: an
+# ARMED task may close (cc-close) or queue (cc-pr-autoqueue) only with a signed
+# review receipt — acceptor identity, verdict, timestamp, artifact ref — stored
+# beside the task note as ``<task_id>.acceptance.yaml``.
+# "Armed" is ``acceptance_receipt_triggers``: the ``frontier_review_required``
+# floor OR a declared ``review_requirement.independent_review_required`` (each
+# read top-level and in the ``route_metadata`` mirror). The floor alone is NOT
+# the test — a row may demand independent review under any floor, and a
+# ``verification_receipt`` row that did exactly that closed unreviewed
+# (measured 2026-09-13T21:53Z). Only a row with neither declaration is
+# untouched. Spec: REQ-20260609 model-capability-cost-routing report.
 
 #: The quality floor whose closure demands a signed acceptance receipt.
 REVIEW_FLOOR_QUALITY_FLOOR = "frontier_review_required"
@@ -309,37 +315,76 @@ _REVIEW_DECLINED = "declined"
 _REVIEW_MALFORMED = "malformed"
 
 
-def _independent_review_state(block: object) -> str:
-    """Classify one ``review_requirement`` block's independent-review flag.
+def _schema_bool(raw: object) -> bool | None:
+    """``ReviewRequirement``'s boolean coercion; ``None`` when the schema rejects.
 
-    The close gate reads frontmatter as raw text (``frontmatter_from_text``)
-    while the route schema reads it through ``ReviewRequirement``, whose ``bool``
-    field coerces ``"true"``, ``"yes"``, ``"y"``, ``"on"``, ``"t"``, ``"1"`` and
-    ``1``. An identity test against Python ``True`` therefore disagreed with the
-    schema: a row spelling the flag ``"true"`` validated as *requiring*
-    independent review while the gate read it as absent and permitted closure —
-    the same fail-open shape the trigger exists to close, reintroduced by the
-    parser boundary rather than by the floor.
+    Reimplemented rather than imported: this module is consumed by the close
+    gate, which ``scripts/cc-close`` runs under a bare ``python3``, so pulling
+    pydantic onto that path would add a runtime dependency to a gate. The
+    duplication is therefore *pinned by test* — ``TestSchemaParity`` round-trips
+    every case through the real model, so a pydantic upgrade that changed the
+    accepted spellings fails CI instead of silently reopening the parser-boundary
+    fail-open this classifier exists to close.
 
-    Unrecognized-but-present values (``null``, ``maybe``, ``2``, a list) are
-    ``malformed``, never ``declined``. The schema rejects them outright, so the
-    only safe reading here is that the row's intent is unknown — and an unknown
-    review requirement must arm the gate, not silently disable it.
+    Deliberately does **not** strip quotes or whitespace: the schema rejects
+    ``'"false"'`` and ``"  true  "``, so accepting either here would admit a
+    declaration the schema calls invalid — in the ``"false"`` case silently
+    disarming the gate.
     """
 
-    if not isinstance(block, Mapping) or "independent_review_required" not in block:
-        return _REVIEW_ABSENT
-    raw = block["independent_review_required"]
     if isinstance(raw, bool):
-        return _REVIEW_DEMANDED if raw else _REVIEW_DECLINED
-    token = _frontmatter_scalar(raw).strip().lower()
-    if not token:
+        return raw
+    if isinstance(raw, (int, float)):
+        if raw == 1:
+            return True
+        if raw == 0:
+            return False
+        return None
+    if isinstance(raw, (str, bytes)):
+        if isinstance(raw, bytes):
+            try:
+                raw = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+        token = raw.lower()
+        if token in _INDEPENDENT_REVIEW_TRUTHY:
+            return True
+        if token in _INDEPENDENT_REVIEW_FALSY:
+            return False
+    return None
+
+
+def _independent_review_state(container: Mapping[str, Any]) -> str:
+    """Classify one container's ``review_requirement`` independent-review flag.
+
+    Four outcomes, and the distinction between the last two is the whole point:
+
+    - ``absent`` — no ``review_requirement`` key, or a block that simply does not
+      mention ``independent_review_required``. Nothing is being claimed.
+    - ``demanded`` / ``declined`` — the schema reads a boolean.
+    - ``malformed`` — a ``review_requirement`` that is present but **not a
+      mapping** (a list, a string, an empty key), or a flag whose value the
+      schema rejects. The row is saying *something* about review that cannot be
+      read.
+
+    A present-but-unreadable declaration must never collapse into ``absent``:
+    that is how ``review_requirement: [{independent_review_required: true}]``
+    silently disarmed the gate while ``assess_route_metadata`` rejected the very
+    same row. Unknown intent arms; only an explicit, schema-valid ``false``
+    declines.
+    """
+
+    if "review_requirement" not in container:
+        return _REVIEW_ABSENT
+    block = container["review_requirement"]
+    if not isinstance(block, Mapping):
         return _REVIEW_MALFORMED
-    if token in _INDEPENDENT_REVIEW_TRUTHY:
-        return _REVIEW_DEMANDED
-    if token in _INDEPENDENT_REVIEW_FALSY:
-        return _REVIEW_DECLINED
-    return _REVIEW_MALFORMED
+    if "independent_review_required" not in block:
+        return _REVIEW_ABSENT
+    verdict = _schema_bool(block["independent_review_required"])
+    if verdict is None:
+        return _REVIEW_MALFORMED
+    return _REVIEW_DEMANDED if verdict else _REVIEW_DECLINED
 
 
 def _independent_review_states(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
@@ -350,11 +395,11 @@ def _independent_review_states(frontmatter: Mapping[str, Any]) -> tuple[str, ...
     disagreement) exactly as the floor lookup treats its own mirror.
     """
 
-    blocks = [frontmatter.get("review_requirement")]
+    containers: list[Mapping[str, Any]] = [frontmatter]
     route_metadata = frontmatter.get("route_metadata")
     if isinstance(route_metadata, Mapping):
-        blocks.append(route_metadata.get("review_requirement"))
-    return tuple(_independent_review_state(block) for block in blocks)
+        containers.append(route_metadata)
+    return tuple(_independent_review_state(container) for container in containers)
 
 
 def acceptance_receipt_triggers(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:

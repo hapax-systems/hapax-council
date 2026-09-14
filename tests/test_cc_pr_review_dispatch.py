@@ -3191,6 +3191,31 @@ public_gate_authority:
         receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
         assert receipt["verdict"] == "accepted"
         assert receipt["acceptor"].startswith("review-team:")
+        assert receipt["arming_triggers"] == ["review_requirement.independent_review_required"]
+
+    def test_receipt_records_a_malformed_arming_declaration(self, tmp_path: Path) -> None:
+        """A typo'd flag arms the gate; the receipt must say so.
+
+        Fail-closed is right, but minting the same receipt for a malformed
+        declaration as for a proper one makes the decision unreconstructable
+        from the receipt alone.
+        """
+        _, _, _, note = _review(
+            tmp_path,
+            task_kwargs={
+                "quality_floor": "verification_receipt",
+                "extra_frontmatter": (
+                    "review_requirement:\n  independent_review_required: maybe\n"
+                ),
+            },
+        )
+
+        receipt = yaml.safe_load(
+            (note.parent / "task-a.acceptance.yaml").read_text(encoding="utf-8")
+        )
+        assert receipt["arming_triggers"] == [
+            "review_requirement.independent_review_required:malformed"
+        ]
 
     def test_no_receipt_when_non_review_floor_row_declines_independent_review(
         self, tmp_path: Path

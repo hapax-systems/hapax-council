@@ -1822,9 +1822,12 @@ def _task_blockers(
     if require_route_metadata and task.route_metadata_schema != 1:
         blockers.append("task_missing_route_metadata_schema_1")
 
-    # Routing Phase 0.2: review-floor (frontier_review_required) tasks admit
-    # only with a signed acceptance receipt beside the note. Applies to active
-    # and closed task links alike; non-review-floor tasks return no blockers.
+    # Routing Phase 0.2: receipt-ARMED tasks admit only with a signed acceptance
+    # receipt beside the note. Armed = the frontier_review_required floor OR a
+    # declared review_requirement.independent_review_required (see
+    # shared.sdlc_lifecycle.acceptance_receipt_triggers) — not floor-only, since
+    # a row may demand independent review under any floor. Applies to active and
+    # closed task links alike; a row with neither declaration returns no blockers.
     blockers.extend(acceptance_receipt_blockers(task.frontmatter, task.path))
 
     # Review-team quorum gate (CASE-ROUTING-OPERATIONALIZATION-20260609): every

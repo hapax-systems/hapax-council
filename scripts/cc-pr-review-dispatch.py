@@ -69,6 +69,7 @@ from shared import public_gate_receipts  # noqa: E402
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
+    acceptance_receipt_triggers,
     requires_acceptance_receipt,
 )
 
@@ -2576,6 +2577,11 @@ def write_acceptance_receipt_if_due(
             {"id": r.get("id"), "family": r.get("family"), "verdict": r.get("verdict")}
             for r in dossier.get("reviewers") or []
         ],
+        # Which declaration(s) required this receipt. Recorded so the decision is
+        # reconstructable from the receipt alone: a row armed by a MALFORMED
+        # independent-review flag mints the same receipt as one that declared
+        # review properly, and without this the difference is invisible later.
+        "arming_triggers": list(acceptance_receipt_triggers(frontmatter)),
     }
     _apply_public_gate_authority_context(receipt, frontmatter)
     _sign_public_gate_authority_evidence(receipt)

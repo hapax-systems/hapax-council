@@ -984,6 +984,123 @@ class TestIndependentReviewTriggerNormalization:
         assert acceptance_receipt_triggers(frontmatter) == ()
 
 
+class TestSchemaParity:
+    """The classifier must agree with ``ReviewRequirement`` on every value.
+
+    ``shared.sdlc_lifecycle`` reimplements the schema's boolean coercion instead
+    of importing it, because ``scripts/cc-close`` runs the close gate under a
+    bare ``python3`` and pydantic must not become a runtime dependency of a gate.
+    That duplication is only safe while it is *pinned*: this test round-trips
+    each value through the real model, so a pydantic upgrade that changes the
+    accepted spellings fails here rather than silently reopening the
+    parser-boundary fail-open.
+
+    Asserted against the model, never against the local frozensets — restating
+    the table would prove nothing.
+    """
+
+    @staticmethod
+    def _schema_verdict(value: object) -> bool | None:
+        from shared.route_metadata_schema import ReviewRequirement
+
+        try:
+            return bool(
+                ReviewRequirement(independent_review_required=value).independent_review_required
+            )
+        except Exception:  # noqa: BLE001 - any validation failure means "rejected"
+            return None
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            True,
+            False,
+            "true",
+            "True",
+            "TRUE",
+            "TrUe",
+            "yes",
+            "Yes",
+            "y",
+            "on",
+            "t",
+            "1",
+            "false",
+            "False",
+            "no",
+            "n",
+            "off",
+            "OFF",
+            "f",
+            "0",
+            0,
+            1,
+            2,
+            -1,
+            0.0,
+            1.0,
+            2.0,
+            0.5,
+            -1.0,
+            '"true"',
+            '"false"',
+            "'true'",
+            "  true  ",
+            "  ",
+            "",
+            "maybe",
+            "null",
+            "none",
+            None,
+            [],
+            {},
+        ],
+    )
+    def test_classifier_matches_schema_for_every_value(self, value: object) -> None:
+        schema_verdict = self._schema_verdict(value)
+        triggers = acceptance_receipt_triggers(_rr(value))
+
+        if schema_verdict is True:
+            assert triggers == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,), (
+                f"{value!r} is a schema-valid DEMAND but did not arm the gate"
+            )
+        elif schema_verdict is False:
+            assert triggers == (), f"{value!r} is a schema-valid DECLINE but armed the gate"
+        else:
+            assert triggers == (RECEIPT_TRIGGER_MALFORMED_REVIEW,), (
+                f"{value!r} is REJECTED by the schema but was not classified malformed"
+            )
+
+
+class TestMalformedBlockShape:
+    """A ``review_requirement`` that is present but not a mapping is malformed.
+
+    ``review_requirement: [{independent_review_required: true}]`` is rejected by
+    ``assess_route_metadata`` yet was classified *absent*, so the gate permitted
+    closure on a row the schema considered invalid. Present-but-unreadable may
+    never collapse into "nothing was claimed".
+    """
+
+    @pytest.mark.parametrize(
+        "block", [[{"independent_review_required": True}], "true", 1, [], None]
+    )
+    def test_non_mapping_block_is_malformed_top_level(self, block: object) -> None:
+        assert acceptance_receipt_triggers({"review_requirement": block}) == (
+            RECEIPT_TRIGGER_MALFORMED_REVIEW,
+        )
+
+    @pytest.mark.parametrize(
+        "block", [[{"independent_review_required": True}], "true", 1, [], None]
+    )
+    def test_non_mapping_block_is_malformed_in_mirror(self, block: object) -> None:
+        frontmatter = {"route_metadata": {"review_requirement": block}}
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_MALFORMED_REVIEW,)
+
+    def test_missing_block_is_still_absent(self) -> None:
+        """The distinction that matters: absent is not malformed."""
+        assert acceptance_receipt_triggers({"quality_floor": "verification_receipt"}) == ()
+
+
 class TestIndependentReviewMirror:
     """The ``route_metadata`` mirror is consulted, fail-closed on disagreement."""
 

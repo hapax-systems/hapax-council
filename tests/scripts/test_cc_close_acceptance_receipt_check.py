@@ -1,9 +1,13 @@
 """Acceptance-receipt closure gate (routing Phase 0.2).
 
-cc-close must BLOCK closing a frontier_review_required (review-floor) task
-as ``done`` unless a signed acceptance receipt — acceptor, verdict,
-timestamp, artifact — exists beside the note as ``<task_id>.acceptance.yaml``
-with verdict ``accepted``. Non-review-floor closures are untouched.
+cc-close must BLOCK closing a receipt-ARMED task as ``done`` unless a signed
+acceptance receipt — acceptor, verdict, timestamp, artifact — exists beside the
+note as ``<task_id>.acceptance.yaml`` with verdict ``accepted``.
+
+Armed = the ``frontier_review_required`` floor OR a declared
+``review_requirement.independent_review_required`` (each read top-level and in
+the ``route_metadata`` mirror). Not floor-only: a row may demand independent
+review under any floor. Only a row with neither declaration is untouched.
 
 Covers both surfaces:
 - ``scripts/cc-close-acceptance-receipt-check.py`` gate() unit behavior
