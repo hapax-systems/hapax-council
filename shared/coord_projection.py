@@ -3902,13 +3902,27 @@ def _refuse_if_displaced_entry_moved(
     So atomicity was supplying race *detection*, not only atomicity. This re-reads the
     destination's identity immediately before the step that retires it.
 
-    **Correction, and it was mine to make.** This docstring used to say "the residual
-    window cannot be closed", which is false and a reviewer was right to call it: what
-    cannot be closed *by a check* is not what cannot be closed *at all*. Both legs that
-    use this now retire an entry by **moving** it rather than unlinking or overwriting it,
-    so a replacement landing after this check is relocated and identified rather than
-    destroyed — there is no lossy window left on either. The check is still worth keeping:
-    it catches the common case one syscall earlier and gives the clearer diagnosis.
+    **Two corrections, both mine, and the second undoes an overcorrection.**
+
+    This first said "the residual window cannot be closed", which was false: what cannot be
+    closed *by a check* is not what cannot be closed *at all*. Retiring an entry by **moving**
+    it rather than unlinking or overwriting it does close the window on the *live* names,
+    which is where every reproduced loss occurred.
+
+    It then said "there is no lossy window left on either", which was false in the other
+    direction and reviewers caught it three rounds running. Two windows remain, on the
+    **scratch** names rather than the live ones:
+
+    * an arrival at a scratch between the vacancy check and the rename that targets it —
+      see :func:`_relocate_to_scratch` for why the primitive that would refuse it is
+      forbidden here;
+    * a replacement of a scratch between cleanup's identity check and its ``unlink`` —
+      removing a directory entry is name-based and has no compare-and-unlink form.
+
+    Both close by removing the concurrency, under
+    ``projection-lock-coverage-projected-path-writers-20260913``, not by another guard in
+    this file. The check is still worth keeping: it catches the common case one syscall
+    earlier and gives the clearer diagnosis.
 
     **The refusal is the typed hold, not a bare errno.** These legs used to raise
     ``OSError(EBUSY)`` and rely on each call site to map it, which worked but described a

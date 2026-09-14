@@ -4563,10 +4563,38 @@ def test_each_leg_performs_its_durability_barriers(
 
     assert order.count("fsync") >= required_barriers, (leg, order)
     assert order[-1] == "fsync", (leg, order)
-    # No barrier-free stretch: every mutation is followed by a barrier before the next one.
-    mutations = [i for i, kind in enumerate(order) if kind in {"link", "rename", "unlink"}]
-    for first, second in zip(mutations, mutations[1:], strict=False):
-        assert "fsync" in order[first:second] or second == first + 1, (leg, order)
+
+    # Ordering, asserted so that MOVING a barrier fails rather than only DELETING one.
+    #
+    # The previous form was `"fsync" in order[first:second] or second == first + 1`, and a
+    # reviewer showed it cannot fail: consecutive mutations are either adjacent, satisfying
+    # the second clause, or separated by the only other recorded operation — an fsync —
+    # satisfying the first. It accepted every ordering it recorded, including all barriers
+    # moved to the end, which is exactly the trace it was written to reject.
+    #
+    # The property that actually matters is a *prefix* one: at no point may the number of
+    # barriers fall more than one behind the number of NAME-ESTABLISHING mutations. Moving a
+    # barrier later pushes some prefix two behind and fails here; deleting one fails the
+    # count above.
+    #
+    # `unlink` is deliberately excluded, and that exclusion is the invariant rather than a
+    # convenience. My first version counted it and the real trace failed with a deficit of
+    # four — the trailing cleanup batches three unlinks before one barrier. That is correct:
+    # those unlinks remove *redundant* names whose inodes are still reachable elsewhere, so
+    # losing them to a crash costs nothing. Barriers are owed to operations that change
+    # which inode a name resolves to, not to the tidying afterwards. The test was wrong and
+    # the code was right, which is worth recording because the reverse was true four rounds
+    # running.
+    deficit_seen = 0
+    established = 0
+    barriers = 0
+    for kind in order:
+        if kind in {"link", "rename"}:
+            established += 1
+        elif kind == "fsync":
+            barriers += 1
+        deficit_seen = max(deficit_seen, established - barriers)
+    assert deficit_seen <= 1, (leg, deficit_seen, order)
 
 
 # --- round-6: the class of defect, not the two spots -------------------------------
