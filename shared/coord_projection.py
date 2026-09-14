@@ -3746,11 +3746,17 @@ def _relocate_to_scratch(
 
     ``rename`` wins, because the invariant is load-bearing for every readback in the module
     and the occupied-destination case is bounded by the up-front vacancy check. What remains
-    is an arrival at the scratch name **between** that check and this rename. It is named in
-    ``NFS-EXCHANGE-FALLBACK-DESIGN-20260911.md`` §8 and closes under
-    ``projection-lock-coverage-projected-path-writers-20260913`` — by removing the
-    concurrent writer, which is the only move that resolves a conflict between two
-    invariants rather than trading one for the other.
+    is an arrival at the scratch name **between** that check and this rename.
+
+    **That window is OPEN in this code.** It is pinned by
+    ``test_open_window_arrival_at_a_scratch_between_the_vacancy_check_and_the_rename``,
+    which asserts the current behaviour and fails if it ever changes. A cross-reference is
+    not a closure, and an earlier version of this docstring cited a design section and a
+    task id as though they were one — a reviewer was right to call that. What would close
+    it is removing the concurrent writer, which is the only move that resolves a conflict
+    between two invariants rather than trading one for the other;
+    ``projection-lock-coverage-projected-path-writers-20260913`` is where that work is
+    tracked, and tracking is not doing.
     """
 
     os.rename(live_name, scratch_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
@@ -3919,10 +3925,13 @@ def _refuse_if_displaced_entry_moved(
     * a replacement of a scratch between cleanup's identity check and its ``unlink`` —
       removing a directory entry is name-based and has no compare-and-unlink form.
 
-    Both close by removing the concurrency, under
-    ``projection-lock-coverage-projected-path-writers-20260913``, not by another guard in
-    this file. The check is still worth keeping: it catches the common case one syscall
-    earlier and gives the clearer diagnosis.
+    **Both are OPEN in this code**, each pinned by a test named ``test_open_window_*`` that
+    asserts the current behaviour and fails if it changes. Neither is closed by anything in
+    this file, and neither is closed by the task that would close them — removing the
+    concurrency is tracked as
+    ``projection-lock-coverage-projected-path-writers-20260913``, and tracking is not doing.
+    The check is still worth keeping: it catches the common case one syscall earlier and
+    gives the clearer diagnosis.
 
     **The refusal is the typed hold, not a bare errno.** These legs used to raise
     ``OSError(EBUSY)`` and rely on each call site to map it, which worked but described a

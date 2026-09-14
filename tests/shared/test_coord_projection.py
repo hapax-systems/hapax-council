@@ -4825,3 +4825,128 @@ def test_directory_noreplace_refuses_an_empty_destination_appearing_after_the_ch
     finally:
         os.close(src_fd)
         os.close(dst_fd)
+
+
+# --- the two open windows, pinned as documented limits --------------------------------
+#
+# Reviewers are right that these boundaries were untested: the collision tests populate a
+# scratch BEFORE invocation (so they exercise only the vacancy refusal) and the cleanup test
+# injects before the `lstat` (so it exercises only the identity branch). Neither touched the
+# boundary where the loss actually lives.
+#
+# They ask for tests asserting byte PRESERVATION there. That is the closure, and it is not
+# available at this layer — refusing an occupied destination needs `link`, which breaks the
+# single-link invariant `_entry_state_at` enforces, and removing a directory entry has no
+# compare-and-unlink form. See `_relocate_to_scratch`.
+#
+# So these assert what the code ACTUALLY does at those exact interleavings, labelled as the
+# documented windows. Worth having for two reasons: the boundaries stop being unexamined,
+# and when the concurrency is removed and the behaviour becomes preservation, these fail and
+# force the update rather than rotting into false documentation. A failure here is good
+# news — delete them in the change that closes the window.
+
+
+def test_open_window_arrival_at_a_scratch_between_the_vacancy_check_and_the_rename(
+    tmp_path: Path,
+) -> None:
+    """DOCUMENTED LIMIT — not a preservation guarantee. See the block comment above."""
+
+    (tmp_path / ".src").write_bytes(b"replacement\n")
+    (tmp_path / "dst").write_bytes(b"displaced\n")
+    holding = cp._fallback_scratch_name(".src", "holding")
+    real_rename = os.rename
+    fired = False
+
+    def arrive_just_before_the_relocation(*args: object, **kwargs: object) -> None:
+        # The vacancy check has passed; this is the rename it guards.
+        nonlocal fired
+        if not fired and len(args) > 1 and str(args[1]) == holding:
+            fired = True
+            (tmp_path / holding).write_bytes(b"arrived-after-the-check\n")
+        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with mock.patch.object(os, "rename", arrive_just_before_the_relocation):
+            cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
+    finally:
+        os.close(dir_fd)
+
+    assert fired, "the arrival must land in the guarded window for this to mean anything"
+    surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    assert b"arrived-after-the-check\n" not in surviving, (
+        "the window CLOSED — good news. Delete this test, and the caveat in "
+        "NFS-EXCHANGE-FALLBACK-DESIGN-20260911.md, in the same change."
+    )
+    # The projection itself still completes correctly; that is what makes the loss silent.
+    assert (tmp_path / "dst").read_bytes() == b"replacement\n"
+    assert (tmp_path / ".src").read_bytes() == b"displaced\n"
+
+
+def test_open_window_replacement_between_cleanups_identity_check_and_its_unlink(
+    tmp_path: Path,
+) -> None:
+    """DOCUMENTED LIMIT — not a preservation guarantee. See the block comment above."""
+
+    (tmp_path / ".src").write_bytes(b"replacement\n")
+    (tmp_path / "dst").write_bytes(b"displaced\n")
+    spent = cp._fallback_scratch_name(".src", "spent")
+    real_unlink = os.unlink
+    fired = False
+
+    def replace_just_before_the_unlink(*args: object, **kwargs: object) -> None:
+        # `_retire_scratch` has already re-read identity and decided this name is ours.
+        nonlocal fired
+        if not fired and args and str(args[0]) == spent:
+            fired = True
+            _replace_atomically(tmp_path, spent, b"replaced-after-the-check\n")
+        return real_unlink(*args, **kwargs)  # type: ignore[arg-type]
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with mock.patch.object(os, "unlink", replace_just_before_the_unlink):
+            cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
+    finally:
+        os.close(dir_fd)
+
+    assert fired
+    surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    assert b"replaced-after-the-check\n" not in surviving, (
+        "the window CLOSED — good news. Delete this test, and the caveat in "
+        "NFS-EXCHANGE-FALLBACK-DESIGN-20260911.md, in the same change."
+    )
+    assert (tmp_path / "dst").read_bytes() == b"replacement\n"
+
+
+def test_retire_scratch_leaves_the_entry_when_abandonment_itself_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The I/O-error branch of cleanup, which had no direct coverage.
+
+    When the entry is not ours AND it cannot be moved aside either, the only safe action
+    left is to do nothing. That is a stuck state — retries refuse at the vacancy check until
+    it is reconciled — so it must be reported as one rather than as routine tidying.
+    """
+
+    (tmp_path / "scratch").write_bytes(b"someone-elses\n")
+    (tmp_path / "other").write_bytes(b"ours\n")
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        expected = os.lstat("other", dir_fd=dir_fd)  # deliberately NOT what `scratch` holds
+
+        def refuse_to_link(*args: object, **kwargs: object) -> None:
+            raise OSError(errno.EIO, os.strerror(errno.EIO), "link")
+
+        with caplog.at_level("WARNING"):
+            with mock.patch.object(os, "link", refuse_to_link):
+                freed = cp._retire_scratch(dir_fd, "scratch", expected, subject="probe")
+    finally:
+        os.close(dir_fd)
+
+    assert freed is False
+    # Nothing destroyed, nothing moved.
+    assert (tmp_path / "scratch").read_bytes() == b"someone-elses\n"
+    # And it is reported as the stuck state it is.
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert "COULD NOT BE ABANDONED" in caplog.text
+    assert "transition_projection_scratch_exists" in caplog.text
