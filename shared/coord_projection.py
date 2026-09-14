@@ -3728,34 +3728,59 @@ def _relocate_to_scratch(
     occupied *destination*, so a scratch that arrived after the up-front vacancy check was
     silently overwritten. A reviewer reproduced exactly that, three times.
 
-    **The reviewer's remedy — "publication that atomically refuses an occupied destination"
-    — is not available at this layer, and the reason is a measurement, not an opinion.**
-    ``link`` is the only primitive here that atomically refuses an occupied destination, and
-    it works by creating a *second name for one inode*. But :func:`_entry_state_at` refuses
-    any projected entry whose ``st_nlink != 1`` —
+    **``link`` cannot supply the reviewer's remedy here, and that part is measured.** It
+    refuses an occupied destination by creating a *second name for one inode*, so a
+    relocation built on it leaves every refusal path holding a live projected name at
+    ``st_nlink == 2``, which :func:`_entry_state_at` then rejects —
     ``transition_projection_path_unsafe: project only absent paths or euid-owned single-link
-    regular files`` — so a relocation built on ``link`` leaves every refusal path holding a
-    live projected name at nlink 2, which the module's own readback then rejects. Measured:
-    implementing it that way turned one failing test into nine.
+    regular files``. Measured: implementing it that way turned one failing test into nine.
 
-    So the two requirements are in direct conflict:
+    **What this docstring used to conclude from that was wrong, and it stood for eleven
+    review rounds.** It said the two requirements were "in direct conflict" — refusal needs
+    ``link``, ``link`` breaks the invariant, therefore the remedy "is not available at this
+    layer". That generalises from one primitive to the whole class, and the class is bigger.
+    A reviewer named the counter-example (``doc-claims-recheck``, round 20): ``O_CREAT|O_EXCL``
+    is also create-or-EEXIST, and its placeholder is a **separate empty inode** at the scratch
+    name, so the live entry is never linked and never leaves nlink 1.
 
-    * *refuse an occupied destination* → needs ``link`` → violates the single-link invariant;
-    * *satisfy the single-link invariant* → needs ``rename`` → cannot refuse an occupied
-      destination.
+    Measured 2026-09-14, the thing the old text asserted without testing:
 
-    ``rename`` wins, because the invariant is load-bearing for every readback in the module
-    and the occupied-destination case is bounded by the up-front vacancy check. What remains
-    is an arrival at the scratch name **between** that check and this rename.
+    ===========================================  ==============  ===========================
+    after ...                                    live nlink      ``_entry_state_at`` verdict
+    ===========================================  ==============  ===========================
+    nothing                                      1               accepted
+    ``link(live → scratch)``                     2               REFUSED (path_unsafe)
+    ``O_CREAT|O_EXCL`` placeholder at scratch    1               accepted
+    ===========================================  ==============  ===========================
 
-    **That window is OPEN in this code.** It is pinned by
-    ``test_open_window_arrival_at_a_scratch_between_the_vacancy_check_and_the_rename``,
-    which asserts the current behaviour and fails if it ever changes. **A cross-reference is
-    not a closure**, so read the task id below as where the work is tracked and nothing
-    more. What would close it is removing the concurrent writer, which is the only move that
-    resolves a conflict between two invariants rather than trading one for the other;
-    ``projection-lock-coverage-projected-path-writers-20260913`` is where that work is
-    tracked, and tracking is not doing.
+    A prototype that reserves with ``O_CREAT|O_EXCL`` instead of checking with ``lstat``
+    excludes a second writer that acquires the name through this module's own path, where the
+    check-only guard lets it through and then destroys its bytes. Blast radius was **one**
+    test, and that one failed because it used "does the scratch exist yet" as a clock — not
+    nine, as ``link`` did.
+
+    **So the honest statement of the limit is narrower than "unavailable at this layer".**
+    Three things the same measurement showed, which is why the prototype is not simply
+    shipped here:
+
+    * a reservation binds **participants**. A writer that renames onto the name without
+      acquiring it clobbers a placeholder exactly as it clobbers a vacant name — and a lock
+      in this module binds no more than that either;
+    * it does **not** close the cleanup gap. That gap is already shut against a participant,
+      because the name is occupied for the whole of it; against a non-participant neither
+      scheme helps;
+    * it **introduces a wedge**: a mid-sequence failure strands an empty placeholder, and the
+      next attempt then refuses where today it would simply retry. Closing that needs a
+      release path on every refusal, which is a redesign of this leg and not a docstring fix.
+
+    **The window is OPEN in this code**, pinned by
+    ``test_open_window_arrival_at_a_scratch_between_the_vacancy_check_and_the_rename``, which
+    asserts the current behaviour and fails if it ever changes. **A cross-reference is not a
+    closure**, so read the task id below as where the work is tracked and nothing more:
+    ``projection-lock-coverage-projected-path-writers-20260913``. What is corrected here is
+    the claim that nothing at this layer *could* close it. Something can, at a cost that has
+    now been measured rather than assumed, and the choice between the two belongs to whoever
+    sequences this against the lock.
     """
 
     os.rename(live_name, scratch_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)

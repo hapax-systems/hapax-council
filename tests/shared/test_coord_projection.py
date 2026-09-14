@@ -4930,16 +4930,32 @@ def test_directory_noreplace_refuses_an_empty_destination_appearing_after_the_ch
 # injects before the `lstat` (so it exercises only the identity branch). Neither touched the
 # boundary where the loss actually lives.
 #
-# They ask for tests asserting byte PRESERVATION there. That is the closure, and it is not
-# available at this layer — refusing an occupied destination needs `link`, which breaks the
-# single-link invariant `_entry_state_at` enforces, and removing a directory entry has no
-# compare-and-unlink form. See `_relocate_to_scratch`.
+# They ask for tests asserting byte PRESERVATION there.
 #
-# So these assert what the code ACTUALLY does at those exact interleavings, labelled as the
-# documented windows. Worth having for two reasons: the boundaries stop being unexamined,
-# and when the concurrency is removed and the behaviour becomes preservation, these fail and
-# force the update rather than rotting into false documentation. A failure here is good
-# news — delete them in the change that closes the window.
+# CORRECTED, round 20: this comment used to say that closure "is not available at this layer
+# — refusing an occupied destination needs `link`, which breaks the single-link invariant".
+# That is true of `link` and false of the class. `O_CREAT|O_EXCL` is also create-or-EEXIST,
+# and its placeholder is a separate empty inode, so the live entry stays at nlink 1 and the
+# invariant ACCEPTS it (measured; the table is in `_relocate_to_scratch`). A prototype that
+# reserves instead of checking excludes a second writer acquiring the name through this
+# module's own path, with a blast radius of one test rather than `link`'s nine.
+#
+# It is not shipped here because the same measurement priced it: it binds participants only,
+# it does not close the cleanup gap (already shut against participants by occupancy), and it
+# strands an empty placeholder on a mid-sequence failure where today a retry just works.
+# Those are reasons to SEQUENCE the decision, not reasons the window cannot be closed — which
+# is what the old wording claimed, and what a coordinator ruling then relied on.
+#
+# So these still assert what the code ACTUALLY does at those exact interleavings, labelled as
+# the documented windows. Worth having for two reasons: the boundaries stop being unexamined,
+# and when the window is closed — by the lock or by a reservation — these fail and force the
+# update rather than rotting into false documentation. A failure here is good news; delete
+# them in the change that closes the window.
+#
+# One thing they do NOT show, and the old wording let it be misread: both inject their
+# arrival with a plain `write_bytes`/`_replace_atomically`, i.e. a writer that acquires
+# nothing. No reservation and no lock excludes that writer. These measure the unprotectable
+# case; the protectable one is a second writer using this module's own acquisition path.
 
 
 def test_open_window_arrival_at_a_scratch_between_the_vacancy_check_and_the_rename(
