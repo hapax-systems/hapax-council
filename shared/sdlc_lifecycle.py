@@ -218,12 +218,24 @@ def frontmatter_state_from_text(text: str) -> tuple[dict[str, Any], str]:
     as absent. The document itself is just the outermost container.
     """
 
-    if not text.startswith("---"):
+    # Fences are matched as COMPLETE lines, never as a prefix. A substring scan
+    # for "\n---" also matches ``---extra: abc``, which is a legal YAML key: the
+    # block was truncated at that line and the remainder — including a review
+    # demand below it — silently vanished while the state still reported ``ok``.
+    # That is worse than the earlier failures, which at least declared
+    # themselves unreadable; this one hid a declaration behind a confident
+    # success. Line-based matching also makes ``---\n---`` and ``---\n\n---``
+    # agree: both are empty frontmatter, where the offset scan called the first
+    # unterminated and the second absent.
+    lines = text.split("\n")
+    if lines[0].strip() != "---":
         return {}, FRONTMATTER_ABSENT
-    end = text.find("\n---", 4)
-    if end < 0:
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            raw = "\n".join(lines[1:index]).strip()
+            break
+    else:
         return {}, FRONTMATTER_UNTERMINATED
-    raw = text[4:end].strip()
     if not raw:
         return {}, FRONTMATTER_ABSENT
     try:

@@ -1158,15 +1158,70 @@ class TestFrontmatterParseState:
         assert state == FRONTMATTER_NOT_A_MAPPING
         assert state in FRONTMATTER_UNREADABLE_STATES
 
-    def test_lossy_helper_still_returns_the_same_mapping(self) -> None:
-        """`frontmatter_from_text` keeps its contract for its many callers."""
-        for text in (
-            "---\ntask_id: x\n---\nbody\n",
-            "---\nverification_surface: [\n---\nbody\n",
-            "---\n- a\n---\nbody\n",
-            "no frontmatter\n",
-        ):
-            assert frontmatter_from_text(text) == frontmatter_state_from_text(text)[0]
+    def test_a_yaml_key_starting_with_dashes_is_not_a_closing_fence(self) -> None:
+        """``---extra: abc`` is a legal key, not a fence.
+
+        Matching the fence as a prefix truncated the block there and returned
+        the preceding fields with state ``ok`` — hiding whatever followed behind
+        a confident success rather than declaring itself unreadable.
+        """
+        text = (
+            "---\ntask_id: x\n---extra: abc\n"
+            "review_requirement:\n  independent_review_required: true\n---\nbody\n"
+        )
+
+        loaded, state = frontmatter_state_from_text(text)
+
+        assert state == FRONTMATTER_OK
+        assert loaded["---extra"] == "abc"
+        assert acceptance_receipt_triggers(loaded) == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,)
+
+    def test_adjacent_and_blank_separated_empty_fences_agree(self) -> None:
+        """Both are empty frontmatter; the offset scan disagreed about them."""
+        adjacent = frontmatter_state_from_text("---\n---\nbody\n")
+        blank_separated = frontmatter_state_from_text("---\n\n---\nbody\n")
+
+        assert adjacent == blank_separated == ({}, FRONTMATTER_ABSENT)
+
+    def test_fence_with_trailing_whitespace_still_closes(self) -> None:
+        loaded, state = frontmatter_state_from_text("---\ntask_id: x\n--- \nbody\n")
+        assert state == FRONTMATTER_OK
+        assert loaded == {"task_id": "x"}
+
+    def test_opening_line_that_only_starts_with_dashes_is_not_frontmatter(self) -> None:
+        _, state = frontmatter_state_from_text("---nope: 1\ntask_id: x\n---\nbody\n")
+        assert state == FRONTMATTER_ABSENT
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("---\ntask_id: x\n---\nbody\n", {"task_id": "x"}),
+            ("no frontmatter\n", {}),
+            ("---\nverification_surface: [\n---\nbody\n", {}),
+            ("---\n- a\n---\nbody\n", {}),
+            ("---\ntask_id: x\nbody without close\n", {}),
+            ("---\n---\nbody\n", {}),
+            ("---\n\n---\nbody\n", {}),
+            # Fence boundaries: a line that merely STARTS with --- is a YAML key,
+            # not a closing fence, and must not truncate the block.
+            (
+                "---\ntask_id: x\n---extra: abc\nkeep: yes\n---\nbody\n",
+                {"task_id": "x", "---extra": "abc", "keep": True},
+            ),
+            ("---\ntask_id: x\n--- \nbody\n", {"task_id": "x"}),
+        ],
+    )
+    def test_lossy_helper_returns_the_expected_mapping(
+        self, text: str, expected: dict[str, object]
+    ) -> None:
+        """Explicit expectations, not a comparison with the implementation.
+
+        The previous version asserted ``frontmatter_from_text(text) ==
+        frontmatter_state_from_text(text)[0]``, which is how the wrapper is
+        *defined* — it stayed green even when both returned a wrong mapping, so
+        it established nothing about the preserved parser contract.
+        """
+        assert frontmatter_from_text(text) == expected
 
 
 class TestMalformedContainerAtEveryLevel:
