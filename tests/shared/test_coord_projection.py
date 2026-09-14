@@ -4572,29 +4572,33 @@ def test_each_leg_performs_its_durability_barriers(
     # satisfying the first. It accepted every ordering it recorded, including all barriers
     # moved to the end, which is exactly the trace it was written to reject.
     #
-    # The property that actually matters is a *prefix* one: at no point may the number of
-    # barriers fall more than one behind the number of NAME-ESTABLISHING mutations. Moving a
-    # barrier later pushes some prefix two behind and fails here; deleting one fails the
-    # count above.
+    # Every name-establishing mutation must be followed by a barrier BEFORE the next one,
+    # and the last must be followed by one too. Stated as gaps rather than as a running
+    # count, which is the third formulation and the first that is neither vacuous nor wrong:
     #
-    # `unlink` is deliberately excluded, and that exclusion is the invariant rather than a
-    # convenience. My first version counted it and the real trace failed with a deficit of
-    # four — the trailing cleanup batches three unlinks before one barrier. That is correct:
-    # those unlinks remove *redundant* names whose inodes are still reachable elsewhere, so
-    # losing them to a crash costs nothing. Barriers are owed to operations that change
-    # which inode a name resolves to, not to the tidying afterwards. The test was wrong and
-    # the code was right, which is worth recording because the reverse was true four rounds
-    # running.
-    deficit_seen = 0
-    established = 0
-    barriers = 0
-    for kind in order:
-        if kind in {"link", "rename"}:
-            established += 1
-        elif kind == "fsync":
-            barriers += 1
-        deficit_seen = max(deficit_seen, established - barriers)
-    assert deficit_seen <= 1, (leg, deficit_seen, order)
+    #   * the original `"fsync" in order[first:second] or second == first + 1` could not
+    #     fail — the `or` was an escape hatch that adjacency always satisfied;
+    #   * a running prefix deficit caught barriers moved LATER but accepted every barrier
+    #     moved EARLIER, since a barrier before its write only makes the deficit smaller. A
+    #     barrier that precedes the write it is supposed to flush is useless, and a reviewer
+    #     was right that the assertion shrugged at it.
+    #
+    # `unlink` is excluded, and the exclusion is the invariant rather than a convenience: an
+    # earlier version counted it and the real trace failed with four outstanding, because
+    # cleanup batches three unlinks of *redundant* names before one barrier. Those names'
+    # inodes remain reachable elsewhere, so a crash there costs nothing. Barriers are owed
+    # to operations that change which inode a name resolves to, not to the tidying after.
+    established = [i for i, kind in enumerate(order) if kind in {"link", "rename"}]
+    assert established, (leg, order)
+    for first, second in zip(established, established[1:], strict=False):
+        assert "fsync" in order[first + 1 : second], (
+            f"{leg}: no barrier between the mutations at {first} and {second}",
+            order,
+        )
+    assert "fsync" in order[established[-1] + 1 :], (
+        f"{leg}: no barrier after the final name-establishing mutation",
+        order,
+    )
 
 
 # --- round-6: the class of defect, not the two spots -------------------------------

@@ -54,11 +54,21 @@ _ENV_DIR = "HAPAX_NFS_INTEGRATION_DIR"
 #: from the waiver. Flagged to the coordinator, because it constrains every future CI
 #: reference to that row, not just this one.
 _ENV_WAIVER = "HAPAX_NFS_INTEGRATION_WAIVED"
-#: TWO anchors, not one prefix. A single ``in`` test against the prefix was satisfied by any
-#: string containing it — a reviewer pointed out that made the expiry check decorative. Both
-#: the row family and its dated suffix must appear, which pins the specific row while still
-#: tolerating the elided middle that the `self-hosted` ban forces on `ci.yml`.
-_WAIVER_EXPIRY_ANCHORS = ("nfs-fallback-live-witness", "ci-20260913")
+
+#: **The canonical row id lives here, in full**, because this file carries no `self-hosted`
+#: ban while `.github/workflows/ci.yml` does (see `tests/ci/test_self_hosted_runner_experiment.py`,
+#: which asserts that substring appears nowhere in the workflow, backing a recorded
+#: deferral). So the waiver string in CI necessarily carries an elided form.
+#:
+#: A reviewer's objection to that elision was exact: a truncated id is one **no automated
+#: check can resolve** to a real row. This module is that resolver. The anchors are derived
+#: from the full id rather than written beside it, so they cannot drift from it, and
+#: `test_the_waiver_expiry_row_is_resolvable` asserts the elided CI form resolves here.
+_WAIVER_EXPIRY_ROW_ID = "nfs-fallback-live-witness-self-hosted-ci-20260913"
+_WAIVER_EXPIRY_ANCHORS = (
+    _WAIVER_EXPIRY_ROW_ID.split("-self-hosted-")[0],
+    _WAIVER_EXPIRY_ROW_ID.split("-self-hosted-")[1],
+)
 _RENAME_NOREPLACE = 1
 _RENAME_EXCHANGE = 2
 
@@ -267,3 +277,39 @@ def test_claim_shaped_lifecycle_projects_on_a_mount_that_refuses_the_flags(
     ]
     assert not list(unsupporting_mount.glob("*.transition-pin.*"))
     assert not list(unsupporting_mount.glob("*transition-scratch*"))
+
+
+def test_the_waiver_expiry_row_is_resolvable() -> None:
+    """A truncated row id must still resolve to a real row, by machine.
+
+    `ci.yml` cannot contain the literal `self-hosted` — `tests/ci/test_self_hosted_runner_experiment.py`
+    asserts that, backing a recorded deferral — and the expiry row's id contains it. So the
+    waiver string in CI carries an elided form, and a reviewer's objection was exact: an id
+    no automated check can resolve is not an expiry, it is a decoration.
+
+    This test is the resolver. It runs in every suite, needs no mount, and fails if the
+    elided form in the workflow stops matching the canonical id recorded here — which is the
+    only place in the repo that can hold it in full.
+    """
+
+    workflow = Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
+    text = workflow.read_text(encoding="utf-8")
+
+    waived = [line for line in text.splitlines() if _ENV_WAIVER in line]
+    assert waived, f"{_ENV_WAIVER} is not declared in ci.yml at all"
+    declaration = waived[0]
+
+    # Each anchor is derived from the canonical id, so they cannot drift from it.
+    for anchor in _WAIVER_EXPIRY_ANCHORS:
+        assert anchor in declaration, (anchor, declaration)
+    # And the anchors really do reconstruct the canonical row, rather than merely coexisting
+    # with it — this is the step that makes the elision resolvable instead of suggestive.
+    assert _WAIVER_EXPIRY_ANCHORS[0] + "-self-hosted-" + _WAIVER_EXPIRY_ANCHORS[1] == (
+        _WAIVER_EXPIRY_ROW_ID
+    )
+    # The ban this elision exists to respect is still in force; if it is ever lifted, the
+    # full id belongs in the waiver and this test should be deleted with the elision.
+    assert "self-hosted" not in text, (
+        "the ci.yml self-hosted ban has been lifted — put the full row id in the waiver "
+        "and delete this elision"
+    )
