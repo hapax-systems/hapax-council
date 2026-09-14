@@ -222,19 +222,61 @@ sessions.** Two different operations, easily confused:
   only when the remainder is a **minted-shape session id**
   (`shared/session_identity.py::is_minted_session_id`).
 
-  State that guarantee precisely, because it is narrower than "an extending role
-  name is never touched". `is_minted_session_id` is deliberately narrower than
-  `is_claim_keyable_session_id`, and ids reach this system from several spawners:
-  - a `cx-blue-shadow` lease whose remainder is keyable but **not** minted-shape is
-    skipped — safe, and the reason the common case is safe;
-  - a `cx-blue-shadow` lease whose remainder happens to be minted-shape **would**
-    be retired by `cc-close` running as `cx-blue`, because the glob cannot separate
-    the extending role name from a session suffix.
+  State that guarantee precisely, because it is narrower than
+  "`is_claim_keyable_session_id`" and because an earlier revision of this runbook
+  overstated the residual hazard. **Correction, measured 2026-09-14:** an earlier
+  version said a `cx-blue-shadow` lease "whose remainder happens to be minted-shape
+  WOULD be retired by `cx-blue`". It would not, and cannot be. The test is a
+  **fullmatch** against the minted-id shapes — a uuid, or the bash mirror's
+  last-resort `sid<nanos>x<rand>` — so an extending role's name segment cannot be
+  absorbed into the remainder:
 
-  The second case has not been observed and is not hypothetical-only: it needs a
-  role name that extends another role's name AND a minted-shape remainder. If you
-  name a role as an extension of an existing one, that is the hazard you are
-  taking on.
+  ```bash
+  uv run python -c "
+  from shared.session_identity import is_minted_session_id, split_claim_marker_key
+  uid = '041482e9-0535-4502-a3f2-100149a03a8c'
+  print(is_minted_session_id(f'shadow-{uid}'))            # False -> lease preserved
+  print(is_minted_session_id(uid))                        # True  -> ours, retired
+  print(split_claim_marker_key(f'cx-blue-shadow-{uid}', {'cx-blue'}))  # None
+  "
+  ```
+
+  Expected: `False`, `True`, `None`. The `None` is the point — given only
+  `cx-blue`, the key does not resolve to `cx-blue` at all, so the closing lane
+  never claims an extending role's lease as its own.
+
+  What IS true, and is the whole guarantee: a globbed key is retired only when the
+  remainder fullmatches a minted-id shape. A `cx-blue-shadow` lease is preserved —
+  as is any lease whose remainder came from a spawner this system did not mint for.
+  Uncertainty preserves.
+
+  Recheck the live behaviour before relying on either half:
+
+  ```bash
+  uv run pytest tests/scripts/test_cc_close_session_lease.py \
+                tests/test_session_identity.py -q
+  ```
+
+  Expected: all pass. `test_cc_close_orphan_sweep_spares_a_role_sharing_its_prefix`
+  runs real cc-close as `cx-blue` against a live `cc-active-task-cx-blue-shadow-<uuid>`
+  lease **naming the same task** and asserts it survives, while this role's own
+  foreign-session lease is swept;
+  `test_cc_close_clears_a_lease_for_this_task_held_by_another_session` carries the
+  role-wide half.
+
+  To see what a close WOULD sweep before running it, enumerate the same glob and
+  its heads:
+
+  ```bash
+  role=cx-blue; task=<task-id>
+  for f in ~/.cache/hapax/cc-active-task-"$role" ~/.cache/hapax/cc-active-task-"$role"-*; do
+    [ -f "$f" ] || continue
+    printf '%s\t%s\n' "$(head -n1 "$f")" "$f"
+  done
+  ```
+
+  Only lines whose head equals `$task` are candidates, and of those only the ones
+  whose key remainder is minted-shape are retired. Anything else is left alone.
 
   This is closure cleanup: it exists so a lane that restarted mid-task cannot leave
   the marker set disagreeing with the vault.
@@ -311,9 +353,26 @@ gates call `gh` and can block on the network; a lock held across a network call
 would stall every other writer for as long as GitHub takes. Nothing above that
 point mutates.
 
+`HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS` bounds the wait for both writers (default
+30s). It bounds the wait only — there is no value that skips acquisition, and a
+zero or malformed value falls back to the default rather than turning every
+contended close into a refusal.
+
 Limits, stated rather than patched: the lock is advisory and covers the writers
 that take it. A hand edit of a note in a text editor takes nothing and is excluded
 by nothing.
+
+Recheck both writers participate — the claim side is the one that matters, since
+a close-side test passes whether or not cc-claim takes the lock:
+
+```bash
+uv run pytest tests/test_cc_task_lock.py -q
+```
+
+Expected: all pass. `test_cc_claim_waits_for_a_held_lock_and_then_succeeds` holds
+the lock, starts cc-claim, and requires it to be still running;
+`test_cc_claim_refuses_and_changes_nothing_when_the_lock_never_clears` pins the
+refusal and that neither the note nor any lease was written.
 
 If it does not hold, cc-close exits 2 and **nothing is modified**:
 
@@ -407,6 +466,26 @@ cc-close selects a note by filename and then checks that the note's own
 This guard exists because the filename glob can only ever match a prefix: without
 it, `cc-close t1` selected `t1-next.md` and withdrew different, live work.
 
+### When it misfires
+
+The reported misfire is a host whose cache layout differs from the derivation, so
+the join reconciles the wrong directory. **Correct it rather than silence it:**
+
+```bash
+# either, and both reach the same place
+uv run python scripts/cc-hygiene-sweeper.py --claim-marker-dir ~/.cache/hapax
+HAPAX_CC_HYGIENE_CLAIM_MARKER_DIR=~/.cache/hapax uv run python scripts/cc-hygiene-sweeper.py
+```
+
+Expected: the `marker_dir_provenance` on every `stale_claim_marker` event changes
+from "derived from relay_root …" to "passed explicitly by the caller", and the
+events describe the directory you named. Recheck:
+
+```bash
+uv run pytest tests/test_cc_hygiene_stale_claim_marker.py -q \
+  -k "marker_dir_can_be_corrected or every_event_records_where"
+```
+
 ### Silencing it
 
 `stale_claim_marker` has no killswitch of its own. It is covered by the sweeper's,
@@ -416,9 +495,12 @@ which stops every check:
 HAPAX_CC_HYGIENE_OFF=1     # sweeper-wide: silences all checks, not just this one
 ```
 
-Deliberately not per-check. A reconciliation whose job is noticing that live state
+Deliberately not per-check, and the correction above is why that is defensible
+rather than merely strict. A reconciliation whose job is noticing that live state
 disagrees with declared state is the last check that should be individually
 muteable — silencing it leaves the drift and removes the only thing reporting it.
+A per-check mute would be reached for exactly the misfire the explicit marker dir
+fixes properly, and would leave the join dark afterwards.
 If it is firing repeatedly, the `next_action` is the thing to act on; if the events
 are wrong, that is a defect to file, not a check to mute.
 

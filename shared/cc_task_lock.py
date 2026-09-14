@@ -50,6 +50,27 @@ from pathlib import Path
 #: wedged rather than busy, and a refusal that names its cause beats a hang.
 DEFAULT_TIMEOUT_SECONDS = 30.0
 
+#: Operator override for the wait, in seconds. Bounds the wait; it cannot disable
+#: the lock, because a knob that skipped acquisition would be a documented way to
+#: reintroduce the interleaving this module exists to exclude. A malformed or
+#: non-positive value is ignored rather than honoured — "wait zero seconds" is a
+#: plausible typo and would turn every contended close into a refusal.
+TIMEOUT_ENV = "HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS"
+
+
+def _resolved_timeout(timeout: float | None) -> float:
+    if timeout is not None:
+        return timeout
+    raw = (os.environ.get(TIMEOUT_ENV) or "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            return DEFAULT_TIMEOUT_SECONDS
+        if value > 0:
+            return value
+    return DEFAULT_TIMEOUT_SECONDS
+
 
 def lock_dir(cache_dir: Path | None = None) -> Path:
     """Where the per-task lock files live.
@@ -90,7 +111,7 @@ def hold_task_note_lock(
     task_id: str,
     *,
     cache_dir: Path | None = None,
-    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    timeout: float | None = None,
 ) -> Path:
     """Take the exclusive lock for ``task_id`` and hold it until this process exits.
 
@@ -102,6 +123,7 @@ def hold_task_note_lock(
     cannot serialize must refuse rather than proceed, and a refusal has to be able
     to say what it is waiting on.
     """
+    timeout = _resolved_timeout(timeout)
     path = lock_path(task_id, cache_dir)
     deadline = time.monotonic() + timeout
     handle = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)

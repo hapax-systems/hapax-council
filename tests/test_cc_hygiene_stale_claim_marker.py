@@ -587,6 +587,82 @@ class TestSweepBinding:
         assert stale[0].task_id == "not-in-this-vault"
         assert stale[0].metadata["next_action"] == "operator-adjudication"
 
+    def test_the_marker_dir_can_be_corrected_without_silencing_the_check(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A host whose cache layout differs gets a CORRECTION, not a mute.
+
+        Review round 14 asked for an emergency bypass for this check, naming that
+        misfire. A per-check mute is the wrong answer to it: it leaves the drift in
+        place and removes the only thing reporting it. Both controls are pinned
+        here — the flag and the env var must reach run_sweep, so the join can be
+        pointed at the real directory.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cc_hygiene_sweeper_markerdir", REPO_ROOT / "scripts" / "cc-hygiene-sweeper.py"
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        relay = tmp_path / "relay-elsewhere" / "relay"
+        relay.mkdir(parents=True)
+        real_cache = tmp_path / "somewhere-else"
+        real_cache.mkdir()
+        (real_cache / "cc-active-task-eta").write_text("not-in-this-vault\n", encoding="utf-8")
+        vault = tmp_path / "vault"
+        (vault / "active").mkdir(parents=True)
+        (vault / "closed").mkdir(parents=True)
+
+        seen: dict[str, object] = {}
+        real_run_sweep = mod.run_sweep
+
+        def capture(**kwargs):  # type: ignore[no-untyped-def]
+            seen.update(kwargs)
+            return real_run_sweep(**kwargs)
+
+        monkeypatch.setattr(mod, "run_sweep", capture)
+        monkeypatch.setenv(mod.CLAIM_MARKER_DIR_ENV, str(real_cache))
+        rc = mod.main(
+            [
+                "--vault-root",
+                str(vault),
+                "--relay-root",
+                str(relay),
+                "--repo-root",
+                str(tmp_path),
+                "--no-write",
+                "--no-actions",
+            ]
+        )
+        assert rc == 0
+        assert seen.get("claim_marker_dir") == real_cache, (
+            f"the env override never reached run_sweep: {seen.get('claim_marker_dir')}"
+        )
+
+        seen.clear()
+        monkeypatch.delenv(mod.CLAIM_MARKER_DIR_ENV)
+        explicit = tmp_path / "by-flag"
+        explicit.mkdir()
+        rc = mod.main(
+            [
+                "--vault-root",
+                str(vault),
+                "--relay-root",
+                str(relay),
+                "--repo-root",
+                str(tmp_path),
+                "--claim-marker-dir",
+                str(explicit),
+                "--no-write",
+                "--no-actions",
+            ]
+        )
+        assert rc == 0
+        assert seen.get("claim_marker_dir") == explicit
+
     def test_a_first_read_that_fails_is_not_erased_by_a_second_that_succeeds(
         self, tmp_path: Path
     ) -> None:

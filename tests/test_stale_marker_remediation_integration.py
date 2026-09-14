@@ -400,6 +400,201 @@ def test_the_precondition_is_evaluated_after_the_lock_is_taken(tmp_path: Path) -
     assert "status: in_progress" in note.read_text(encoding="utf-8")
 
 
+class TestOnlyTheFrontmatterCounts:
+    """A note's BODY must not decide, or receive, a governed field mutation.
+
+    The writer validated and rewrote with regexes over the whole note for one
+    round. Review round 13->14 reproduced three consequences, and all three are
+    pinned here. Selection had used the canonical parser the whole time; the split
+    between the two is where the defect lived.
+    """
+
+    def _close(self, home: Path, note_text: str, *args: str):
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        (vault / "active").mkdir(parents=True, exist_ok=True)
+        (vault / "closed").mkdir(parents=True, exist_ok=True)
+        note = vault / "active" / "t1.md"
+        note.write_text(note_text, encoding="utf-8")
+        env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+        env["HOME"] = str(home)
+        env["XDG_CACHE_HOME"] = str(home / ".cache")
+        env["HAPAX_AGENT_NAME"] = "eta"
+        result = subprocess.run(
+            ["bash", str(CC_CLOSE), "t1", *args],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        return result, note
+
+    def test_a_body_line_cannot_satisfy_expect_status(self, tmp_path: Path) -> None:
+        """The reported reproduction: live task, body example, stale precondition.
+
+        Frontmatter says in_progress; a body line says `status: withdrawn`. The
+        whole-note regex found the body line, so `--expect-status withdrawn`
+        passed, the live note was unlinked, and the archived copy still read
+        in_progress.
+
+        The frontmatter key is QUOTED, as reported, and that detail is the whole
+        reproduction: `^status:` does not match `"status":`, so the regex skipped
+        the real field and matched the body. With an unquoted key the regex finds
+        the frontmatter line first and refuses correctly — which is why a test
+        written with one passes against the defect and proves nothing. YAML treats
+        both spellings as the same key; the regex does not.
+        """
+        result, note = self._close(
+            tmp_path / "home",
+            textwrap.dedent(
+                """\
+                ---
+                type: cc-task
+                task_id: t1
+                title: "t1"
+                "status": in_progress
+                assigned_to: eta
+                completed_at:
+                updated_at:
+                pr:
+                ---
+
+                # t1
+
+                An example of what a withdrawn note looks like:
+
+                status: withdrawn
+
+                ## Session log
+                """
+            ),
+            "--status",
+            "withdrawn",
+            "--expect-status",
+            "withdrawn",
+        )
+        assert result.returncode == 2, f"a body line satisfied the precondition\n{result.stdout}"
+        assert "is status 'in_progress' at write time" in result.stderr, result.stderr
+        assert note.exists(), "the live note was unlinked"
+
+    def test_duplicate_governed_keys_are_refused_not_guessed(self, tmp_path: Path) -> None:
+        """YAML takes the last silently; `re.sub(count=1)` rewrites the first.
+
+        So the field validated and the field rewritten could be different lines.
+        There is no safe pick, and picking is what produces a closure that reports
+        one status and archives another.
+        """
+        result, note = self._close(
+            tmp_path / "home",
+            textwrap.dedent(
+                """\
+                ---
+                type: cc-task
+                task_id: t1
+                title: "t1"
+                status: withdrawn
+                status: in_progress
+                assigned_to: eta
+                completed_at:
+                updated_at:
+                pr:
+                ---
+
+                # t1
+
+                ## Session log
+                """
+            ),
+            "--status",
+            "withdrawn",
+        )
+        assert result.returncode == 2, f"a duplicated key was silently resolved\n{result.stdout}"
+        assert "more than once" in result.stderr, result.stderr
+        assert note.exists()
+
+    def test_an_inline_comment_on_task_id_is_not_an_identity_change(self, tmp_path: Path) -> None:
+        """`task_id: t1  # note` is valid YAML and was read as the id `t1  # note`.
+
+        The regex took everything after the colon, so a legitimate close refused
+        with "declares task_id ... not ...". The canonical parser reads `t1`.
+        """
+        result, note = self._close(
+            tmp_path / "home",
+            textwrap.dedent(
+                """\
+                ---
+                type: cc-task
+                task_id: t1  # the ontology row
+                title: "t1"
+                status: withdrawn
+                assigned_to: eta
+                completed_at:
+                updated_at:
+                pr:
+                ---
+
+                # t1
+
+                ## Session log
+                """
+            ),
+            "--status",
+            "withdrawn",
+        )
+        assert result.returncode == 0, (
+            f"a valid inline comment was read as an identity change\n{result.stderr}"
+        )
+        assert not note.exists(), "the note was not closed"
+
+    def test_a_body_line_is_not_rewritten_by_the_status_mutation(self, tmp_path: Path) -> None:
+        """The write-side half, with a note whose frontmatter LACKS the key.
+
+        `re.sub(count=1)` over the whole note rewrites the first match. When the
+        frontmatter carries the field that is the frontmatter line, which is why a
+        naive version of this test passes against the defect. When it does not —
+        `completed_at` is optional scaffolding and plenty of notes omit it — the
+        first match is in the body, and the close silently edits prose. Confining
+        the substitution to the frontmatter block makes that unrepresentable: with
+        no key to rewrite, nothing is rewritten.
+        """
+        home = tmp_path / "home"
+        result, _note = self._close(
+            home,
+            textwrap.dedent(
+                """\
+                ---
+                type: cc-task
+                task_id: t1
+                title: "t1"
+                status: withdrawn
+                assigned_to: eta
+                updated_at:
+                pr:
+                ---
+
+                # t1
+
+                Prior art quoted verbatim from the superseded row:
+
+                completed_at: 2020-01-01T00:00:00Z
+
+                ## Session log
+                """
+            ),
+            "--status",
+            "withdrawn",
+        )
+        assert result.returncode == 0, result.stderr
+        closed = (
+            home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "closed" / "t1.md"
+        )
+        assert closed.is_file(), "the note was not archived"
+        archived = closed.read_text(encoding="utf-8")
+        assert "completed_at: 2020-01-01T00:00:00Z" in archived, (
+            f"the quoted body line was rewritten by a frontmatter field mutation:\n{archived}"
+        )
+
+
 def test_a_prefix_neighbour_is_left_alone(tmp_path: Path) -> None:
     """`cc-close t1` must not reach t1-next, which is different, live work."""
     home = tmp_path / "home"

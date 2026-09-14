@@ -334,18 +334,14 @@ def test_launcher_calls_the_helper_outside_a_command_substitution(name: str) -> 
 
 
 def test_codex_runner_pins_a_VARIABLE_not_a_literal_identity() -> None:
-    """The Codex re-entry path, pinned precisely because it is not reachable.
+    """The Codex re-entry path, as a source pin beside its behavioural test.
 
-    Replacing hapax-codex's HAPAX_SESSION_ID export with a constant left every
-    earlier assertion passing. The right answer would be a stub-harness test like
-    the Claude one, and it is NOT here: hapax-codex refuses before writing its
-    runner unless a real codex-native worktree exists, and stubbing far enough to
-    reach it produced a test faithful to nothing. A skip would have been worse than
-    this — it reads as coverage while never running.
-
-    So the chain is: the helper mints a fresh id per call (proved behaviourally in
-    TestLaunchSessionId), and the runner interpolates that VARIABLE rather than a
-    literal (proved here). A constant export cannot satisfy both.
+    An earlier revision of this docstring said the behavioural version was
+    unreachable — that hapax-codex refuses before writing its runner without a real
+    codex-native worktree. That was wrong, and review round 14 said so: passing
+    `--cd` makes the worktree explicit, and a tmux stub that records the runner
+    path is enough to reach it. TestCodexRunnerReentry below executes the generated
+    runner; this stays as the cheap source pin, no longer as a substitute.
     """
     code = _strip_comments((SCRIPTS / "hapax-codex").read_text(encoding="utf-8"))
     pin_lines = [
@@ -636,3 +632,151 @@ class TestLauncherBehaviour:
             "dispatched from one pinned pane would share a claim key"
         )
         assert is_claim_keyable_session_id(sid)
+
+
+class TestCodexRunnerReentry:
+    """The one legitimate inheritance, executed rather than read.
+
+    hapax-codex writes a tmux runner that re-execs hapax-codex, and the pin exists
+    so the inner process keeps the outer's id. Every other launcher mints. That
+    makes this the central exception, and until round 14 it was covered only by
+    source pins: the child-environment tests all use `--terminal none`, which is
+    precisely the path that skips the runner.
+
+    A stub `tmux` records the runner path instead of spawning it; the test then
+    runs the runner itself with a stub `codex`, and reads what the grandchild got.
+    """
+
+    STUB_CODEX = (
+        "#!/bin/sh\n"
+        'if [ -n "${STUB_OUT:-}" ]; then\n'
+        '  { printf "sid=%s\\n" "${HAPAX_SESSION_ID:-}"\n'
+        '    printf "pinned=%s\\n" "${HAPAX_SESSION_ID_PINNED:-}"\n'
+        '    printf "role=%s\\n" "${HAPAX_AGENT_ROLE:-}"\n'
+        '  } > "$STUB_OUT"\n'
+        "fi\n"
+        # The saved-auth probe re-runs this binary with a narrow env and demands the
+        # sentinel back as a JSON event; without it hapax-codex refuses first.
+        "printf '%s\\n' "
+        '\'{"type":"item.completed","item":{"type":"agent_message",'
+        '"text":"HAPAX_CODEX_EXEC_AUTH_OK"}}\'\n'
+    )
+
+    STUB_TMUX = (
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        "  has-session) exit 1 ;;\n"
+        "esac\n"
+        'for a in "$@"; do last="$a"; done\n'
+        'printf "%s\\n" "$last" >> "$TMUX_RECORD"\n'
+        "exit 0\n"
+    )
+
+    def _launch(self, tmp_path: Path, tag: str) -> tuple[Path, Path, dict[str, str]]:
+        """Run hapax-codex through the tmux path; return (runner, out, env)."""
+        stub_dir = tmp_path / f"bin-{tag}"
+        stub_dir.mkdir(parents=True, exist_ok=True)
+        (stub_dir / "codex").write_text(self.STUB_CODEX, encoding="utf-8")
+        (stub_dir / "codex").chmod(0o755)
+        (stub_dir / "tmux").write_text(self.STUB_TMUX, encoding="utf-8")
+        (stub_dir / "tmux").chmod(0o755)
+
+        home = tmp_path / f"home-{tag}"
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        workdir = tmp_path / f"wt-{tag}"
+        workdir.mkdir(parents=True, exist_ok=True)
+        record = tmp_path / f"tmux-{tag}.txt"
+        out = tmp_path / f"out-{tag}.txt"
+
+        env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+        for k in ("CLAUDE_ROLE", "HAPAX_AGENT_NAME", "HAPAX_AGENT_ROLE", "CODEX_ROLE"):
+            env.pop(k, None)
+        env["PATH"] = f"{stub_dir}:{env.get('PATH', '')}"
+        env["HOME"] = str(home)
+        env["TMUX_RECORD"] = str(record)
+        env["STUB_OUT"] = str(out)
+        env["HAPAX_SDLC_SLICE_ATTACH"] = "0"
+        # The council dir supplies the codex hook adapter; the stub HOME has none.
+        env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+
+        result = subprocess.run(
+            [
+                "bash",
+                str(SCRIPTS / "hapax-codex"),
+                "--session",
+                "cx-green",
+                "--slot",
+                "alpha",
+                "--cd",
+                str(workdir),
+                "--terminal",
+                "tmux",
+                "--no-claim",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        assert record.is_file(), (
+            "hapax-codex never reached its tmux spawn, so no runner was written: "
+            f"rc={result.returncode}\n{result.stderr.strip()[-600:]}"
+        )
+        runner = Path(record.read_text(encoding="utf-8").strip().splitlines()[-1])
+        assert runner.is_file(), f"the recorded runner path does not exist: {runner}"
+        return runner, out, env
+
+    def _run_runner(self, runner: Path, out: Path, env: dict[str, str]) -> dict[str, str]:
+        result = subprocess.run(
+            ["bash", str(runner)],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+        assert out.is_file(), (
+            "the re-exec never reached the codex harness, so nothing was observed: "
+            f"rc={result.returncode}\n{result.stderr.strip()[-600:]}"
+        )
+        observed: dict[str, str] = {}
+        for line in out.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            observed[key] = value
+        return observed
+
+    def test_the_reexec_keeps_the_outer_identity_and_consumes_the_pin(self, tmp_path: Path) -> None:
+        runner, out, env = self._launch(tmp_path, "a")
+        runner_text = runner.read_text(encoding="utf-8")
+        pinned = [
+            line.split("=", 1)[1]
+            for line in runner_text.splitlines()
+            if line.startswith("export HAPAX_SESSION_ID=")
+        ]
+        assert pinned, f"the runner exports no session id:\n{runner_text}"
+        outer = pinned[0].strip().strip("'\"")
+
+        observed = self._run_runner(runner, out, env)
+
+        assert observed["sid"] == outer, (
+            "the inner hapax-codex minted a fresh id instead of keeping the outer's "
+            f"({observed['sid']} != {outer}) — the outer's marker and any claim it "
+            "already wrote are orphaned"
+        )
+        assert is_claim_keyable_session_id(observed["sid"])
+        assert observed["pinned"] == "", (
+            "the pin survived into the harness, so it is a standing grant over the "
+            "whole lane subtree rather than one hop — the round-1 defect"
+        )
+
+    def test_a_second_launch_still_mints_a_different_identity(self, tmp_path: Path) -> None:
+        """Preserving one re-exec must not make the launcher stop minting."""
+        runner_a, out_a, env_a = self._launch(tmp_path, "a")
+        runner_b, out_b, env_b = self._launch(tmp_path, "b")
+        first = self._run_runner(runner_a, out_a, env_a)["sid"]
+        second = self._run_runner(runner_b, out_b, env_b)["sid"]
+        assert first and second and first != second, (
+            f"two hapax-codex launches produced one identity ({first}) — every lane "
+            "started this way keys the same claim file"
+        )

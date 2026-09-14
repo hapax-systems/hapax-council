@@ -343,25 +343,101 @@ if ! command -v flock >/dev/null 2>&1; then
   exit 2
 fi
 exec 9>"$lock_path"
-if ! flock -x -w 30 9; then
-  echo "cc-close: refusing — another process has held the cc-task lock for '$task_id' ($lock_path) for more than 30s. Next action: find the holder with 'fuser -v $lock_path' and let it finish, then re-run. Nothing was modified." >&2
+# Same knob and same default as the Python side (shared/cc_task_lock.py), so the
+# two writers cannot disagree about how long to wait. It bounds the wait only —
+# there is no value that skips acquisition, because a documented way to skip it is
+# a documented way back into the interleaving.
+lock_timeout="${HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS:-30}"
+case "$lock_timeout" in
+  ''|*[!0-9.]*|.|0|0.0) lock_timeout=30 ;;
+esac
+if ! flock -x -w "$lock_timeout" 9; then
+  echo "cc-close: refusing — another process has held the cc-task lock for '$task_id' ($lock_path) for more than ${lock_timeout}s. Next action: find the holder with 'fuser -v $lock_path' and let it finish, then re-run. Nothing was modified." >&2
   exit 2
 fi
 
-python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" "${expect_status:-}" <<'PYEOF'
+python3 - "$SCRIPT_DIR/.." "$note_path" "$task_id" "$final_status" "$pr" "$role" \
+  "${expect_status:-}" <<'PYEOF'
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-path, task_id, final_status, pr, role = (Path(sys.argv[1]), *sys.argv[2:6])
-expect_status = sys.argv[6] if len(sys.argv) > 6 else ""
+sys.path.insert(0, sys.argv[1])
+from shared.frontmatter import parse_frontmatter_with_diagnostics
+
+path, task_id, final_status, pr, role = (Path(sys.argv[2]), *sys.argv[3:7])
+expect_status = sys.argv[7] if len(sys.argv) > 7 else ""
 text = path.read_text(encoding="utf-8")
 
+# --- The frontmatter BLOCK, separated once ------------------------------------
+# Every read and every write below is confined to it.
+#
+# A regex over the whole note stood here for one round and was a critical: a body
+# example line `status: withdrawn` satisfied `--expect-status withdrawn` while the
+# frontmatter said `in_progress`, so cc-close unlinked a live note and archived it
+# still reading in_progress. The same regex on the WRITE side could have rewritten
+# a body line instead of the field. And `task_id: x  # note` read as a different
+# id, refusing a legitimate close.
+#
+# Selection already used the canonical parser; the writer did not. One parser, one
+# answer — the split between them is what the defect lived in.
+if not text.startswith("---"):
+    print(
+        f"cc-close: refusing — '{path}' does not start with YAML frontmatter, so there "
+        "is no field to validate or rewrite. Next action: repair the note. Nothing was "
+        "modified.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+_end = text.find("\n---", 3)
+if _end == -1:
+    print(
+        f"cc-close: refusing — '{path}' has no frontmatter closing marker. Next action: "
+        "repair the note. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+fm_text = text[3:_end]
+rest = text[_end:]
 
-def _frontmatter_scalar(note_text: str, key: str) -> str:
-    match = re.search(rf"^{re.escape(key)}:\s*(.*)$", note_text, flags=re.MULTILINE)
-    return match.group(1).strip().strip("\"'") if match else ""
+_parsed = parse_frontmatter_with_diagnostics(text)
+if not _parsed.ok or _parsed.frontmatter is None:
+    print(
+        f"cc-close: refusing — '{path}' frontmatter did not parse "
+        f"({_parsed.error_kind}: {_parsed.error_message}). Next action: repair the note, "
+        "or run cc-task-repair. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+frontmatter = _parsed.frontmatter
+
+# Duplicate top-level keys: YAML takes the last silently, so `status:` twice makes
+# the field the writer validates and the field a reader sees potentially different
+# lines, and `re.sub(count=1)` would then rewrite the FIRST. Refuse rather than
+# pick. Only the keys this writer reads or rewrites are checked — a duplicate
+# elsewhere is the vault's business, not this close's.
+_GOVERNED_KEYS = ("task_id", "status", "completed_at", "updated_at", "pr")
+_key_line = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):")
+_counts: dict[str, int] = {}
+for _line in fm_text.splitlines():
+    _m = _key_line.match(_line)
+    if _m:
+        _counts[_m.group(1)] = _counts.get(_m.group(1), 0) + 1
+_dupes = sorted(k for k in _GOVERNED_KEYS if _counts.get(k, 0) > 1)
+if _dupes:
+    print(
+        f"cc-close: refusing — '{path}' frontmatter declares {', '.join(_dupes)} more "
+        "than once, so which line is authoritative is undecidable. Next action: remove "
+        "the duplicate key(s). Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
+def _scalar(key: str) -> str:
+    value = frontmatter.get(key)
+    return "" if value is None else str(value).strip()
 
 
 # Both preconditions are revalidated HERE: this process holds fd 9's exclusive
@@ -372,7 +448,7 @@ def _frontmatter_scalar(note_text: str, key: str) -> str:
 # Identity FIRST. The earlier bash guard resolved which note this id names; under
 # the lock we re-read what the note itself declares, because the destructive step
 # is `path.unlink()` and unlinking the wrong note is unrecoverable.
-_declared = _frontmatter_scalar(text, "task_id")
+_declared = _scalar("task_id")
 if _declared != task_id:
     print(
         f"cc-close: refusing — '{path}' declares task_id '{_declared}' at write time, "
@@ -386,7 +462,7 @@ if _declared != task_id:
 # runs later. `withdrawn` skips the completion gates, so a task that resumed
 # between generation and execution was withdrawn anyway.
 if expect_status:
-    _observed = _frontmatter_scalar(text, "status")
+    _observed = _scalar("status")
     if _observed != expect_status:
         print(
             f"cc-close: refusing — '{path}' is status '{_observed}' at write time, but "
@@ -399,15 +475,20 @@ if expect_status:
 
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-text = re.sub(r"^status:.*$", f"status: {final_status}", text, count=1, flags=re.MULTILINE)
-text = re.sub(
-    r"^completed_at:.*$", f"completed_at: {now}", text, count=1, flags=re.MULTILINE
+# Rewrites apply to `fm_text` — the frontmatter block alone — and the note is
+# reassembled from it. A substitution over the whole note could edit a body line
+# that happens to start with a governed key, which is the write-side half of the
+# same defect.
+fm_text = re.sub(r"^status:.*$", f"status: {final_status}", fm_text, count=1, flags=re.MULTILINE)
+fm_text = re.sub(
+    r"^completed_at:.*$", f"completed_at: {now}", fm_text, count=1, flags=re.MULTILINE
 )
-text = re.sub(
-    r"^updated_at:.*$", f"updated_at: {now}", text, count=1, flags=re.MULTILINE
+fm_text = re.sub(
+    r"^updated_at:.*$", f"updated_at: {now}", fm_text, count=1, flags=re.MULTILINE
 )
 if pr:
-    text = re.sub(r"^pr:.*$", f"pr: {pr}", text, count=1, flags=re.MULTILINE)
+    fm_text = re.sub(r"^pr:.*$", f"pr: {pr}", fm_text, count=1, flags=re.MULTILINE)
+text = "---" + fm_text + rest
 log_line = f"- {now} {role or 'session'} closed as {final_status}"
 if pr:
     log_line += f" (PR #{pr})"

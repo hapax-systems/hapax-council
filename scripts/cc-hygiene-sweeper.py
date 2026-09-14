@@ -85,6 +85,13 @@ DEFAULT_REPO_ROOT = Path.home() / "projects" / "hapax-council"
 
 KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
 
+#: Point the live<->declared join at the real marker directory on a host whose
+#: cache layout differs from the default derivation. Deliberately a CORRECTION and
+#: not a mute: the check whose job is noticing that live state disagrees with
+#: declared state is the last one that should be individually silenceable, and
+#: "the derivation is wrong here" is answered by naming the right directory.
+CLAIM_MARKER_DIR_ENV = "HAPAX_CC_HYGIENE_CLAIM_MARKER_DIR"
+
 
 def _relay_payload_is_retired(payload: dict[str, Any]) -> bool:
     """Return true for relays that explicitly mark a retired/superseded lane."""
@@ -607,6 +614,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the ghost-claimed self-heal auto-action (observational mode).",
     )
+    parser.add_argument(
+        "--claim-marker-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Where cc-claim writes cc-active-task-* markers. Defaults to the parent "
+            "of --relay-root, which coincides with cc-claim's cache by layout. Pass "
+            "it (or set HAPAX_CC_HYGIENE_CLAIM_MARKER_DIR) on a host whose cache "
+            "layout differs, so the live<->declared join is CORRECTED rather than "
+            "silenced."
+        ),
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -628,10 +647,23 @@ def main(argv: list[str] | None = None) -> int:
             write_state(state, path=args.state_path)
         return 0
 
+    # An explicit marker dir CORRECTS a wrong derivation rather than muting the
+    # check. Review round 14 asked for an emergency bypass for stale_claim_marker,
+    # naming "a host whose cache layout differs" as the misfire — and a per-check
+    # mute is the wrong answer to that: it leaves the drift in place and removes
+    # the only thing reporting it. The sweeper-wide killswitch above still exists
+    # for a genuinely misbehaving sweeper. This is the narrower control, and it is
+    # the one that fits the named cause.
+    claim_marker_dir = args.claim_marker_dir
+    if claim_marker_dir is None:
+        env_dir = (os.environ.get(CLAIM_MARKER_DIR_ENV) or "").strip()
+        if env_dir:
+            claim_marker_dir = Path(env_dir)
     state = run_sweep(
         vault_root=args.vault_root,
         relay_root=args.relay_root,
         repo_root=args.repo_root,
+        claim_marker_dir=claim_marker_dir,
     )
     LOG.info(
         "sweep complete: %d events in %d ms",
