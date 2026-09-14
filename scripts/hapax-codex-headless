@@ -842,27 +842,6 @@ SESSION_UUID="$(normalize_session_uuid "$HAPAX_LAUNCH_SESSION_ID")"
 # before resumption is even reached. The condition is the live state itself (this
 # role holds exactly one minted-session claim naming THIS task), not a flag — so
 # a launch for any other task, or for a role holding nothing, still mints.
-# Placed before SESSION_CLAIM_FILE below, which is keyed on SESSION_UUID.
-#
-# The task must be RESOLVED BEFORE the session is chosen. A supported launch omits
-# --task and recovers the task from the role's existing claim further down; when
-# that recovery ran after this block, the lane skipped succession (CODEX_TASK was
-# still empty), then adopted the recovered task while keeping a freshly minted id
-# — so the worker's next cc-claim failed against the original session binding.
-# Resolving the task here makes the decision order match the dependency order.
-if [ -z "${CODEX_TASK:-}" ]; then
-  _hcxh_legacy_claim="$HOME/.cache/hapax/cc-active-task-$SESSION"
-  if [ -s "$_hcxh_legacy_claim" ]; then
-    CODEX_TASK="$(head -n1 "$_hcxh_legacy_claim" | tr -d '[:space:]')"
-  fi
-fi
-if [ -n "${CODEX_TASK:-}" ]; then
-  if _hcxh_succeeded="$(hapax_role_succession_session_id "$SESSION" "$CODEX_TASK" 2>/dev/null)" &&
-    [ -n "$_hcxh_succeeded" ]; then
-    SESSION_UUID="$_hcxh_succeeded"
-    echo "hapax-codex-headless: resuming '$CODEX_TASK' under its live claim session $SESSION_UUID" >&2
-  fi
-fi
 export HAPAX_PARENT_AGENT_INTERFACE="$PARENT_INTERFACE"
 export HAPAX_PARENT_AGENT_NAME="$PARENT_NAME"
 export HAPAX_AGENT_INTERFACE="codex"

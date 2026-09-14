@@ -336,19 +336,6 @@ SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
 # `--continue` needs no special case, and neither does the next resume spelling
 # someone adds. The task is resolved BEFORE the session is chosen, because the
 # claim file is what names it.
-if [ -z "${CLAUDE_TASK:-}" ]; then
-  _hc_legacy_claim="$HOME/.cache/hapax/cc-active-task-$ROLE"
-  if [ -s "$_hc_legacy_claim" ]; then
-    CLAUDE_TASK="$(head -n1 "$_hc_legacy_claim" | tr -d '[:space:]')"
-  fi
-fi
-if [ -n "${CLAUDE_TASK:-}" ]; then
-  if _hc_succeeded="$(hapax_role_succession_session_id "$ROLE" "$CLAUDE_TASK" 2>/dev/null)" &&
-    [ -n "$_hc_succeeded" ]; then
-    SESSION_UUID="$_hc_succeeded"
-    echo "hapax-claude: resuming '$CLAUDE_TASK' under its live claim session $SESSION_UUID" >&2
-  fi
-fi
 export HAPAX_AGENT_INTERFACE="claude"
 export HAPAX_AGENT_NAME="$ROLE"
 export CLAUDE_ROLE="$ROLE"

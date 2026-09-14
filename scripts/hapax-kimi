@@ -54,24 +54,11 @@ fi
 # this keeps its pre-existing unconditional mint.
 hapax_consume_launch_session_id
 SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
-# A launch for a task this role ALREADY holds is a resume (see hapax-claude for
-# the full reasoning). This CLI carries no --task, but the role's own claim file
-# names the task it holds — so the task is recovered from there and passed, rather
-# than falling back to a role-only lookup that could adopt a claim for DIFFERENT
-# work. That keeps every launcher on one rule instead of granting this one an
-# exemption.
-KIMI_HELD_TASK=""
-_hk_legacy_claim="$HOME/.cache/hapax/cc-active-task-$ROLE"
-if [ -s "$_hk_legacy_claim" ]; then
-  KIMI_HELD_TASK="$(head -n1 "$_hk_legacy_claim" | tr -d '[:space:]')"
-fi
-if [ -n "$KIMI_HELD_TASK" ]; then
-  if _hk_succeeded="$(hapax_role_succession_session_id "$ROLE" "$KIMI_HELD_TASK" 2>/dev/null)" &&
-    [ -n "$_hk_succeeded" ]; then
-    SESSION_UUID="$_hk_succeeded"
-    echo "hapax-kimi: resuming '$KIMI_HELD_TASK' under its live claim session $SESSION_UUID" >&2
-  fi
-fi
+# Session succession is NOT done here. A launcher-side helper lived here across
+# review rounds 2-6; it cannot be made correct in a launcher (see the REMOVED
+# block in hooks/scripts/agent-role.sh for the proof) and is rowed against
+# cc-claim, which owns the lease lock. This launcher mints, which is exactly what
+# origin/main does today — so nothing regresses while the real fix is built.
 WORKDIR="${HAPAX_KIMI_WORKDIR:-$HOME}"
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then

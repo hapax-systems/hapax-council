@@ -124,24 +124,6 @@ SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
 # before resumption is even reached. The condition is the live state itself (this
 # role holds exactly one minted-session claim naming THIS task), not a flag — so
 # a launch for any other task, or for a role holding nothing, still mints.
-#
-# The task is RESOLVED BEFORE the session is chosen. A supported launch omits
-# --task and recovers the task from the role's existing claim further down; doing
-# that after this block would skip succession while still adopting the recovered
-# task, leaving a freshly minted id against the original session binding.
-if [ -z "${CLAUDE_TASK:-}" ]; then
-  _hch_legacy_claim="$HOME/.cache/hapax/cc-active-task-$ROLE"
-  if [ -s "$_hch_legacy_claim" ]; then
-    CLAUDE_TASK="$(head -n1 "$_hch_legacy_claim" | tr -d '[:space:]')"
-  fi
-fi
-if [ -n "${CLAUDE_TASK:-}" ]; then
-  if _hch_succeeded="$(hapax_role_succession_session_id "$ROLE" "$CLAUDE_TASK" 2>/dev/null)" &&
-    [ -n "$_hch_succeeded" ]; then
-    SESSION_UUID="$_hch_succeeded"
-    echo "hapax-claude-headless: resuming '$CLAUDE_TASK' under its live claim session $SESSION_UUID" >&2
-  fi
-fi
 export HAPAX_SESSION_ID="$SESSION_UUID"
 # Per-session identity marker (WM-independent): record THIS session's role keyed by
 # the session id so agent-role.sh / hapax-whoami resolve identity without a

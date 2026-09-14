@@ -401,7 +401,12 @@ def run_sweep(
             HygieneEvent(
                 timestamp=now,
                 check_id="stale_claim_marker",
-                severity="warning",
+                # VIOLATION, not warning. ntfy alerts gate on `violation`
+                # (cc_hygiene/models.py), so a warning lands in the dashboard and
+                # pages nobody — practically the same outcome as the silence this
+                # event exists to replace, just with a record. A reconciliation that
+                # checked nothing is exactly the case someone has to notice.
+                severity="violation",
                 task_id=None,
                 session=None,
                 message=(

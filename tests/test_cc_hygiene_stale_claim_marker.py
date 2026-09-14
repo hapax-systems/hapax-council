@@ -191,6 +191,7 @@ class TestDisagreementMatrix:
         # whatever lane the operator's shell already names and leaves the reported
         # markers untouched.
         assert "HAPAX_AGENT_NAME=eta" in remediation, "closing identity not selected"
+        assert "HAPAX_CC_TASKS_ROOT=" in remediation, "swept vault not pinned"
         assert "HAPAX_AGENT_ROLE=" not in remediation, (
             "HAPAX_AGENT_ROLE is outranked by HAPAX_AGENT_NAME; setting it does not "
             "establish the closing identity"
@@ -479,7 +480,7 @@ class TestSweepBinding:
         # person because nothing here can tell a wrong --relay-root from a cache
         # that genuinely has not been created yet.
         assert stale[0].metadata["reason"] == "marker_dir_absent"
-        assert stale[0].severity == "warning"
+        assert stale[0].severity == "violation"
         assert stale[0].metadata["next_action"] == "operator-adjudication"
         assert str(tmp_path / "definitely-absent") in stale[0].metadata["marker_dir"]
         assert stale[0].task_id is None and stale[0].session is None

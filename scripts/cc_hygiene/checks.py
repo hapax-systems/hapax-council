@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
@@ -1253,6 +1254,14 @@ def check_stale_claim_marker(
             # cannot work. And for a terminal note still in active/, cc-close
             # defaults to `done`, which would overwrite the outcome it already has.
             status_text = (note.status or "").strip()
+            # cc-close finds markers at $HOME/.cache/hapax and nowhere else — it
+            # takes no cache override. So a close command can only be prescribed
+            # when the swept cache IS some home's .cache/hapax; otherwise cc-close
+            # cannot address the observed markers at all, and the honest remedy is
+            # the exact paths rather than a command that would act elsewhere.
+            home_for_cache = (
+                marker_dir.parent.parent if marker_dir.parts[-2:] == (".cache", "hapax") else None
+            )
             # An owner we could not name cannot be handed a close command: the
             # label is `<unattributable:...>`, and bash reads the angle brackets as
             # redirections. It even passes `bash -n`, so a parse check does not
@@ -1282,7 +1291,11 @@ def check_stale_claim_marker(
                     )
                 )
                 continue
-            if already_closed or status_text not in CC_CLOSE_ACCEPTED_STATUSES:
+            if (
+                already_closed
+                or status_text not in CC_CLOSE_ACCEPTED_STATUSES
+                or home_for_cache is None
+            ):
                 # cc-close cannot reach this note. Either it is already in closed/,
                 # or its status is one cc-close's own --status validator rejects:
                 # that validator accepts {done, withdrawn, superseded}, while
@@ -1292,14 +1305,18 @@ def check_stale_claim_marker(
                 # 1 before cleaning anything — a next_action that cannot run is
                 # worse than none, because it looks handled.
                 next_action = "retire-orphan-marker"
-                why = (
-                    "note already in closed/"
-                    if already_closed
-                    else (
+                if already_closed:
+                    why = "note already in closed/"
+                elif home_for_cache is None:
+                    why = (
+                        f"cc-close reads markers from $HOME/.cache/hapax and takes no "
+                        f"cache override, so it cannot address {marker_dir}"
+                    )
+                else:
+                    why = (
                         f"status {status_text!r} is not one cc-close accepts "
                         f"({', '.join(sorted(CC_CLOSE_ACCEPTED_STATUSES))})"
                     )
-                )
                 remediation = (
                     f"no governed tool retires this marker ({why}); remove "
                     f"{marker_dir / f'cc-active-task-{key}'} and "
@@ -1322,9 +1339,20 @@ def check_stale_claim_marker(
                 #    another vault or cache recommended a close that would act on
                 #    LOCAL state while leaving the observed orphan intact. The
                 #    observed roots are pinned into the command.
+                # Pin the ACTUAL swept roots, shell-quoted, using the variables
+                # each tool documents — never an inferred HOME. The first cut used
+                # `HOME=marker_dir.parent.parent`, which for a cache at
+                # /review/cache yields `HOME=/`, so cc-close resolved a different
+                # vault and /.cache/hapax entirely: following the runbook verbatim
+                # could leave the reported marker and close a same-named task
+                # somewhere else. HAPAX_CC_TASKS_ROOT is cc-task-root.sh's
+                # documented override for the vault.
+                vault_root = Path(note.path).parent.parent
                 remediation = (
-                    f"HAPAX_AGENT_NAME={role} HOME={marker_dir.parent.parent} "
-                    f"cc-close {task_id} --status {status_text}"
+                    f"HAPAX_AGENT_NAME={shlex.quote(role)} "
+                    f"HAPAX_CC_TASKS_ROOT={shlex.quote(str(vault_root))} "
+                    f"HOME={shlex.quote(str(home_for_cache))} "
+                    f"cc-close {shlex.quote(task_id)} --status {shlex.quote(status_text)}"
                 )
             events.append(
                 HygieneEvent(

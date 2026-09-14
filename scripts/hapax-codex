@@ -1120,25 +1120,11 @@ PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:
 # never reach a filename.
 hapax_consume_launch_session_id hapax-codex
 SESSION_UUID="$(normalize_session_uuid "$HAPAX_LAUNCH_SESSION_ID")"
-# A launch for a task this role ALREADY holds is a resume, however it was spelled
-# — `--continue`, `--resume`, a forwarded `resume` subcommand, or nothing at all.
-# Keying on the live claim rather than on a resume flag is what makes this
-# complete: three rounds of review found a different launcher each time whose
-# resume spelling I had not enumerated. The task match is self-limiting, so a
-# launch for other work still mints.
-if [ -z "${TASK_ID:-}" ]; then
-  _hcx_legacy_claim="$HOME/.cache/hapax/cc-active-task-$SESSION"
-  if [ -s "$_hcx_legacy_claim" ]; then
-    TASK_ID="$(head -n1 "$_hcx_legacy_claim" | tr -d '[:space:]')"
-  fi
-fi
-if [ -n "${TASK_ID:-}" ]; then
-  if _hcx_succeeded="$(hapax_role_succession_session_id "$SESSION" "$TASK_ID" 2>/dev/null)" &&
-    [ -n "$_hcx_succeeded" ]; then
-    SESSION_UUID="$_hcx_succeeded"
-    echo "hapax-codex: resuming '$TASK_ID' under its live claim session $SESSION_UUID" >&2
-  fi
-fi
+# Session succession is NOT done here. A launcher-side helper lived here across
+# review rounds 2-6; it cannot be made correct in a launcher (see the REMOVED
+# block in hooks/scripts/agent-role.sh for the proof) and is rowed against
+# cc-claim, which owns the lease lock. This launcher mints, which is exactly what
+# origin/main does today — so nothing regresses while the real fix is built.
 TMUX_NAME="hapax-codex-$SESSION"
 DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
 DISPATCH_HOST=""

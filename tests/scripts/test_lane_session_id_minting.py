@@ -15,8 +15,8 @@ inner process must keep the outer's id or it orphans the ``session-role-<sid>``
 marker and any claim the outer already wrote. A single boolean ("is
 HAPAX_SESSION_ID set?") was standing in for two distinct conditions — *an
 ancestor exported one* (ignore) and *my own outer invocation pinned one*
-(honour). ``hapax_launch_session_id`` splits them: an inherited id is honoured
-only alongside ``HAPAX_SESSION_ID_PINNED=1``, which makes the safety
+(honour). ``hapax_consume_launch_session_id`` splits them: an inherited id is honoured
+only alongside a ``HAPAX_SESSION_ID_PINNED`` that NAMES it, which makes the safety
 precondition checkable at the moment of use rather than an assertion about what
 some other process must have been doing.
 """
@@ -27,7 +27,6 @@ import os
 import re
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -74,27 +73,6 @@ def _launch_session_id(env_overrides: dict[str, str]) -> str:
     )
     assert result.returncode == 0, f"helper failed: {result.stderr}"
     return result.stdout.strip()
-
-
-def _enclosing_if_condition(code: str, needle: str) -> str | None:
-    """The condition of the innermost `if` block containing ``needle``.
-
-    Crude but sufficient for these launchers: tracks `if`/`fi` nesting over
-    comment-stripped shell and returns the condition text of the innermost block
-    still open when ``needle`` is reached. Returns None when the call sits at top
-    level. Asserting on this rather than on "the flag appears somewhere earlier"
-    is what makes the guard test survive an `if true` mutation.
-    """
-    stack: list[str] = []
-    for line in code.splitlines():
-        stripped = line.strip()
-        if needle in stripped:
-            return stack[-1] if stack else None
-        if stripped.startswith("if ") or stripped == "if":
-            stack.append(stripped)
-        elif stripped == "fi" and stack:
-            stack.pop()
-    return None
 
 
 def _strip_comments(text: str) -> str:
@@ -298,14 +276,10 @@ MINTING_LAUNCHERS = (
     "hapax-kimi",
 )
 
-#: Launchers exempt from passing a task to succession. EMPTY, and that is the
-#: point: hapax-kimi's CLI carries no --task, and the first instinct was to exempt
-#: it and do role-only succession. A role-only lookup can adopt a claim for
-#: DIFFERENT work, so the exemption would have been a real hole. The role's own
-#: claim file names the task it holds, so kimi recovers it from there and passes
-#: it like everyone else. Kept as a declared (empty) set rather than deleted, so
-#: the next launcher that "cannot" pass a task has to be argued for here.
-_TASKLESS_LAUNCHERS: frozenset[str] = frozenset()
+#: No launcher-side succession is asserted here, deliberately. A helper for it
+#: lived across review rounds 2-6 and was removed: it cannot be made correct in a
+#: launcher (see the REMOVED block in hooks/scripts/agent-role.sh). Every launcher
+#: mints, which is what origin/main does today, so nothing here regressed.
 
 #: The bare inheriting form the defect consisted of: `${HAPAX_SESSION_ID:-...}`
 #: (parameter expansion with a default) anywhere a launch identity is computed.
@@ -416,254 +390,6 @@ def test_dispatch_launcher_scrubs_inherited_session_id(func: str) -> None:
     )
 
 
-class TestRoleSessionSuccession:
-    """A resume keeps the identity its admitted claim is bound to; a fresh launch does not.
-
-    A Gate-0B claim binds `session_id`, and resolve_applied_claim_publication
-    refuses with `claim_binding_vector_mismatch` when the resolving session
-    differs — so a lane relaunched under a new id cannot resume its own claim. That
-    is already true on main for any relaunch from a clean shell (the base
-    `${HAPAX_SESSION_ID:-<mint>}` form mints whenever the var is unset); the
-    accidental inheritance this task removes was doing succession's job by luck.
-    `--continue` makes it deliberate.
-    """
-
-    def _succeed(self, home: Path, role: str) -> str:
-        result = _bash(
-            f'hapax_role_succession_session_id {role} || printf "MINT\\n"',
-            {"HOME": str(home)},
-        )
-        return result.stdout.strip()
-
-    def _marker(self, home: Path, key: str, task: str = "t1") -> None:
-        cache = home / ".cache" / "hapax"
-        cache.mkdir(parents=True, exist_ok=True)
-        (cache / f"cc-active-task-{key}").write_text(f"{task}\n", encoding="utf-8")
-
-    def test_one_live_claim_is_succeeded(self, tmp_path: Path) -> None:
-        sid = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
-        self._marker(tmp_path, f"eta-{sid}")
-        assert self._succeed(tmp_path, "eta") == sid
-
-    def test_a_live_incumbent_is_not_succeeded(self, tmp_path: Path) -> None:
-        """Succession is a handoff from a lane that is GONE, not a shared identity.
-
-        Without a liveness precondition the helper handed a second concurrent
-        process the incumbent's identity purely from its marker file — two live
-        lanes, one claim key, which is the collision this whole row exists to
-        remove, re-created from the opposite direction.
-        """
-        sid = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
-        self._marker(tmp_path, f"eta-{sid}")
-
-        # A real live process carrying that id, outside this shell's ancestry.
-        env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
-        env["HAPAX_SESSION_ID"] = sid
-        incumbent = subprocess.Popen(["sleep", "30"], env=env)
-        try:
-            # Wait for the kernel to publish its environ before asking.
-            for _ in range(100):
-                try:
-                    if sid.encode() in Path(f"/proc/{incumbent.pid}/environ").read_bytes():
-                        break
-                except OSError:
-                    pass
-            assert self._succeed(tmp_path, "eta") == "MINT", (
-                "a second live process adopted the incumbent's claim identity"
-            )
-        finally:
-            incumbent.kill()
-            incumbent.wait()
-
-        # With the incumbent gone, the same marker IS succeeded.
-        assert self._succeed(tmp_path, "eta") == sid
-
-    def test_only_one_of_two_concurrent_successors_adopts(self, tmp_path: Path) -> None:
-        """A liveness snapshot is not a reservation.
-
-        Two concurrent relaunches could both observe the incumbent absent and both
-        adopt its id before either exported it — check-then-act, with a window a
-        synchronized probe reproduced. `mkdir` is the atomic step that closes it:
-        exactly one caller wins, the loser mints.
-        """
-        sid = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
-        self._marker(tmp_path, f"eta-{sid}")
-
-        env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
-        env["HOME"] = str(tmp_path)
-        script = f'. "{AGENT_ROLE}"\nhapax_role_succession_session_id eta || printf "MINT\\n"'
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            results = [
-                f.result().stdout.strip()
-                for f in [
-                    pool.submit(
-                        subprocess.run,
-                        ["bash", "-c", script],
-                        env=env,
-                        text=True,
-                        capture_output=True,
-                        check=False,
-                    )
-                    for _ in range(8)
-                ]
-            ]
-
-        adopters = [r for r in results if r == sid]
-        assert len(adopters) == 1, (
-            f"{len(adopters)} concurrent successors adopted one identity: {results}"
-        )
-        assert all(r == sid or r == "MINT" for r in results), results
-
-    def test_inconclusive_liveness_does_not_establish_absence(self, tmp_path: Path) -> None:
-        """Unreadable process state must not read as "the incumbent stopped".
-
-        A process we own whose environ cannot be read (namespace, hardening, or a
-        race with exit) is INCONCLUSIVE. The first cut treated that as absence, so
-        an unreadable incumbent was succeeded. Reported live instead — the narrow
-        answer, costing a fresh mint rather than a shared identity.
-        """
-        result = _bash(
-            'if hapax_session_id_has_live_process "$TARGET"; then printf "LIVE\\n"; '
-            'else printf "ABSENT\\n"; fi',
-            {"HOME": str(tmp_path), "TARGET": "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"},
-        )
-        assert result.returncode == 0, result.stderr
-        # Nothing carries that id, and every readable environ is checked — so the
-        # honest answer here is ABSENT. The discriminating case is the unreadable
-        # one, which the launcher-level test below drives.
-        assert result.stdout.strip() == "ABSENT"
-
-    def test_reservation_is_not_reusable(self, tmp_path: Path) -> None:
-        """One handoff per identity. A second successor means it outlived two."""
-        sid = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
-        self._marker(tmp_path, f"eta-{sid}")
-        assert self._succeed(tmp_path, "eta") == sid
-        assert self._succeed(tmp_path, "eta") == "MINT", "the same identity was handed on twice"
-
-    def test_no_live_claim_mints(self, tmp_path: Path) -> None:
-        (tmp_path / ".cache" / "hapax").mkdir(parents=True)
-        assert self._succeed(tmp_path, "eta") == "MINT"
-
-    def test_two_live_claims_refuse_rather_than_guess(self, tmp_path: Path) -> None:
-        """Ambiguous claim state must not be resolved by picking one."""
-        self._marker(tmp_path, "eta-3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01")
-        self._marker(tmp_path, "eta-b8e2d7c4-1a55-4f93-8c60-77ad3e9b0125")
-        assert self._succeed(tmp_path, "eta") == "MINT"
-
-    def test_a_role_extending_this_name_is_not_succeeded(self, tmp_path: Path) -> None:
-        """`cx-blue` must not adopt `cx-blue-shadow`'s session — that steals a claim."""
-        self._marker(tmp_path, "cx-blue-shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e")
-        assert self._succeed(tmp_path, "cx-blue") == "MINT"
-
-    def test_a_foreign_marker_does_not_make_a_real_one_ambiguous(self, tmp_path: Path) -> None:
-        sid = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
-        self._marker(tmp_path, f"cx-blue-{sid}")
-        self._marker(tmp_path, "cx-blue-shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e")
-        assert self._succeed(tmp_path, "cx-blue") == sid
-
-    @pytest.mark.parametrize("name", MINTING_LAUNCHERS)
-    def test_every_launcher_implements_succession(self, name: str) -> None:
-        """The whole set, enumerated — because hand-enumeration is what kept failing.
-
-        Three review rounds each found a DIFFERENT launcher with an unhandled
-        resume spelling: round 2 the headless pair, round 3 hapax-codex's forwarded
-        `resume` subcommand and hapax-vibe's --resume/--continue. Each time the
-        design was accepted and the application incomplete. Asserting over the full
-        launcher list makes "I forgot one" a test failure rather than a review
-        round.
-        """
-        code = _strip_comments((SCRIPTS / name).read_text(encoding="utf-8"))
-        assert "hapax_role_succession_session_id" in code, (
-            f"{name} never succeeds a live claim — a relaunch for a task it already "
-            "holds will mint a new id and the admitted claim cannot resolve"
-        )
-
-    @pytest.mark.parametrize("name", MINTING_LAUNCHERS)
-    def test_succession_is_keyed_on_the_task_where_one_is_known(self, name: str) -> None:
-        """A task-keyed call needs no resume flag, which is why it is complete.
-
-        `--continue`, `--resume`, a forwarded `resume` subcommand and a bare
-        relaunch are all the same thing when the task is already held. Launchers
-        that know a task must pass it; only a resume that names no task may fall
-        back to role-only.
-        """
-        code = _strip_comments((SCRIPTS / name).read_text(encoding="utf-8"))
-        calls = [
-            line.strip()
-            for line in code.splitlines()
-            if "hapax_role_succession_session_id" in line and "()" not in line
-        ]
-        assert calls, f"{name} has no succession call"
-        if name in _TASKLESS_LAUNCHERS:
-            # Declared exemption, not a silent pass: this launcher's CLI has no
-            # task concept, so it can only do role-only succession, guarded by an
-            # explicit resume flag. Asserted against the CLI rather than skipped —
-            # if a task flag is ever added, the exemption must go with it.
-            assert "--task" not in code, (
-                f"{name} now accepts a task but is still listed as task-less — "
-                "thread the task into succession and drop the exemption"
-            )
-            return
-        two_arg = [
-            c for c in calls if re.search(r'hapax_role_succession_session_id\s+"?\$\S+"?\s+"?\$', c)
-        ]
-        assert two_arg, (
-            f"{name} calls succession without a task id: {calls} — a role-only "
-            "lookup can adopt a claim for DIFFERENT work"
-        )
-
-    @pytest.mark.parametrize("name", MINTING_LAUNCHERS)
-    def test_succession_uses_the_same_key_space_cc_claim_writes(self, name: str) -> None:
-        """Succession must look up markers under the key cc-claim writes them by.
-
-        cc-claim keys markers on the resolved ROLE (HAPAX_AGENT_NAME/ROLE). The
-        launchers use different local variable names for it — `$ROLE` in the claude
-        and kimi paths, `$SESSION` in the codex and vibe ones — so a succession
-        lookup passing the wrong variable would silently never fire, which looks
-        exactly like the resume regression rather than like a bug. This pins the
-        variable each launcher EXPORTS as its role against the one it passes to the
-        lookup, so the two key spaces cannot drift apart unnoticed.
-        """
-        code = _strip_comments((SCRIPTS / name).read_text(encoding="utf-8"))
-        # Match the ASSIGNMENT, not the `export` keyword position: kimi sets the
-        # role inside a multi-variable export and again via a printf into its
-        # runner script, so anchoring on `export HAPAX_AGENT_ROLE` misses it.
-        exported = re.search(r'HAPAX_AGENT_ROLE=(?:%q\\n\'\s*)?"?\$\{?([A-Za-z_]+)', code)
-        assert exported, f"{name} sets no HAPAX_AGENT_ROLE — cannot check key space"
-        role_var = exported.group(1)
-        call = next(
-            line
-            for line in code.splitlines()
-            if "hapax_role_succession_session_id" in line and "()" not in line
-        )
-        assert f'"${role_var}"' in call, (
-            f"{name} exports HAPAX_AGENT_ROLE=${role_var} but looks succession up "
-            f"with {call.strip()!r} — cc-claim writes markers under the exported "
-            "role, so this lookup would never fire"
-        )
-
-    @pytest.mark.parametrize("name", MINTING_LAUNCHERS)
-    def test_succession_is_guarded_by_the_task_not_by_a_resume_flag(self, name: str) -> None:
-        """One rule for all six: succeed iff this role already holds THIS task.
-
-        Earlier cuts guarded succession behind each launcher's own resume spelling
-        — `--continue`, `--resume`, a forwarded `resume` subcommand — and three
-        review rounds each found a launcher whose spelling had been missed. The
-        task match needs no flag and is self-limiting, so there is no spelling left
-        to miss; the enclosing conditional must test the task, not a resume flag.
-        """
-        code = _strip_comments((SCRIPTS / name).read_text(encoding="utf-8"))
-        condition = _enclosing_if_condition(code, "hapax_role_succession_session_id")
-        assert condition is not None, (
-            f"{name} calls succession unconditionally — a launch that knows no task "
-            "would adopt whatever claim the role happens to hold"
-        )
-        assert "TASK" in condition.upper(), (
-            f"{name} guards succession with {condition!r}, which does not test a "
-            "task id — a resume-flag guard misses every spelling it does not name"
-        )
-
-
 #: Argv that reaches each launcher's identity block. These differ — hapax-kimi
 #: parses its own args before resolving the helper and rejects a trailing prompt,
 #: so handing every launcher the same argv tests the arg parser in one of them and
@@ -726,109 +452,6 @@ class TestLauncherBehaviour:
         assert "identity helper not found" in combined, (
             f"{name} failed without naming the cause or a remedy\n{combined}"
         )
-
-    def _headless_marker_sid(self, tmp_path: Path, task: str, **extra: str) -> str:
-        """Run hapax-claude-headless and return the session id it actually adopted."""
-        env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
-        for k in ("CLAUDE_ROLE", "HAPAX_AGENT_NAME", "HAPAX_AGENT_ROLE", "HAPAX_WORKTREE_ROLE"):
-            env.pop(k, None)
-        env["HOME"] = str(tmp_path)
-        env["HAPAX_CLAUDE_HEADLESS_ALLOW"] = "1"
-        env["HAPAX_SDLC_SLICE_ATTACH"] = "0"
-        env.update(extra)
-        subprocess.run(
-            [str(SCRIPTS / "hapax-claude-headless"), "--task", task, "zeta", "msg"],
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=30,
-        )
-        markers = sorted((tmp_path / ".cache" / "hapax").glob("session-role-*"))
-        assert len(markers) == 1, f"expected one session marker, got {markers}"
-        return markers[0].name.removeprefix("session-role-")
-
-    def test_headless_redispatch_succeeds_its_own_live_claim(self, tmp_path: Path) -> None:
-        """The round-3 critical, exercised through the real launcher.
-
-        A Gate-0B claim binds session_id; a re-dispatch that mints a new one makes
-        resolve_applied_claim_publication refuse with claim_binding_vector_mismatch
-        before resumption is reached. So a launch for a task this role already
-        holds must adopt that claim's session.
-        """
-        prior = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
-        cache = tmp_path / ".cache" / "hapax"
-        cache.mkdir(parents=True)
-        (cache / f"cc-active-task-zeta-{prior}").write_text("task-a\n", encoding="utf-8")
-
-        assert self._headless_marker_sid(tmp_path, "task-a") == prior, (
-            "a re-dispatched headless lane minted a new id instead of succeeding "
-            "the session its admitted claim is bound to"
-        )
-
-    def test_headless_relaunch_without_task_flag_still_succeeds(self, tmp_path: Path) -> None:
-        """The supported `--task`-less relaunch must succeed too.
-
-        Round 3 put the succession branch behind `-n "$CLAUDE_TASK"` but left the
-        legacy-claim task recovery further down, so this invocation skipped
-        succession entirely, then adopted the recovered task while keeping a freshly
-        minted id — and the worker's next cc-claim failed against the original
-        session binding. The task is now resolved BEFORE the session is chosen.
-        """
-        prior = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
-        cache = tmp_path / ".cache" / "hapax"
-        cache.mkdir(parents=True)
-        (cache / f"cc-active-task-zeta-{prior}").write_text("task-a\n", encoding="utf-8")
-        # The legacy role-keyed file is what a --task-less relaunch recovers from.
-        (cache / "cc-active-task-zeta").write_text("task-a\n", encoding="utf-8")
-
-        env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
-        for k in ("CLAUDE_ROLE", "HAPAX_AGENT_NAME", "HAPAX_AGENT_ROLE", "HAPAX_WORKTREE_ROLE"):
-            env.pop(k, None)
-        env["HOME"] = str(tmp_path)
-        env["HAPAX_CLAUDE_HEADLESS_ALLOW"] = "1"
-        env["HAPAX_SDLC_SLICE_ATTACH"] = "0"
-        subprocess.run(
-            [str(SCRIPTS / "hapax-claude-headless"), "zeta", "msg"],
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=30,
-        )
-
-        markers = sorted((tmp_path / ".cache" / "hapax").glob("session-role-*"))
-        assert len(markers) == 1, f"expected one session marker, got {markers}"
-        assert markers[0].name.removeprefix("session-role-") == prior, (
-            "a --task-less relaunch minted a new id even though the role's claim "
-            "named the task it was about to adopt"
-        )
-
-    def test_headless_launch_for_a_different_task_still_mints(self, tmp_path: Path) -> None:
-        """Succession is keyed on the TASK, so new work never adopts a live claim."""
-        prior = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
-        cache = tmp_path / ".cache" / "hapax"
-        cache.mkdir(parents=True)
-        (cache / f"cc-active-task-zeta-{prior}").write_text("task-a\n", encoding="utf-8")
-
-        assert self._headless_marker_sid(tmp_path, "task-b") != prior
-
-    def test_headless_launch_with_no_live_claim_mints(self, tmp_path: Path) -> None:
-        (tmp_path / ".cache" / "hapax").mkdir(parents=True)
-        sid = self._headless_marker_sid(tmp_path, "task-a")
-        assert is_claim_keyable_session_id(sid)
-
-    def test_headless_does_not_succeed_a_role_extending_its_name(self, tmp_path: Path) -> None:
-        """`zeta` must not adopt `zeta-shadow`'s claim — that steals it."""
-        cache = tmp_path / ".cache" / "hapax"
-        cache.mkdir(parents=True)
-        (cache / "cc-active-task-zeta-shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e").write_text(
-            "task-a\n", encoding="utf-8"
-        )
-
-        sid = self._headless_marker_sid(tmp_path, "task-a")
-        assert sid != "shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e"
-        assert is_claim_keyable_session_id(sid)
 
     def test_headless_launcher_ignores_an_inherited_pin(self, tmp_path: Path) -> None:
         """hapax-claude-headless minted unconditionally before this change (#3875).

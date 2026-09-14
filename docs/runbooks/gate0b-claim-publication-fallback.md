@@ -296,6 +296,24 @@ non-default marker dir from being told to delete local files.
 `test_unreadable_marker_becomes_a_violation_event` cover the two incomplete-sweep
 events above.
 
+## Resuming A Lane Whose Claim Is Bound To An Older Session
+
+**There is no supported resume.** A Gate-0B claim binds `session_id`, every
+launcher mints a fresh one per launch, and `resolve_applied_claim_publication`
+refuses a mismatch with `claim_binding_vector_mismatch`. So relaunching a lane
+that holds an unfinished admitted claim will HOLD.
+
+This is pre-existing, not new: `origin/main` mints on every clean relaunch too.
+A launcher-side succession helper was attempted and removed — it cannot be made
+exclusive from a launcher (see the REMOVED block in
+`hooks/scripts/agent-role.sh`). Governed rebinding belongs in cc-claim, which
+holds the lease lock, and is rowed separately.
+
+Until that lands, the operator paths are: finish the work in the original
+session; or release the claim through the exact-file stale-lease procedure above
+and re-claim; or use `HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1` for an
+operator-authorized emergency fallback. Do not hand-edit the binding sidecars.
+
 ## Blocked By `exit 9` — "identity helper not found"
 
 All six launchers (`hapax-claude`, `hapax-claude-headless`, `hapax-codex`,

@@ -301,144 +301,30 @@ sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
 # Usage in a launcher — never inside a command substitution:
 #     hapax_consume_launch_session_id hapax-codex
 #     SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
-# --- Session succession (claims-ontology-correction, row item 1) --------------
-# A RESUME is the same lane continuing, so it must keep the session identity its
-# admitted claim is bound to. A fresh launch is a new lane and must not.
+# --- Session succession: REMOVED, deliberately ---------------------------------
+# A launcher-side succession helper lived here across review rounds 2-6 and is
+# gone. It cannot be made correct in a launcher, and the review team's own
+# prescriptions arrived at the same place: "governed claim rebinding", "tested
+# through claim admission", "a verifiable lifecycle mechanism".
 #
-# Why this is required rather than nice: a claim published through the Gate-0B
-# path binds `session_id`, and resolve_applied_claim_publication refuses with
-# `claim_binding_vector_mismatch` when the resolving session differs. So a lane
-# that relaunches under a new id cannot resume its own admitted claim — it HOLDs.
-# That is true on main today for every relaunch from a clean shell (measured: the
-# base `${HAPAX_SESSION_ID:-<mint>}` form mints whenever the var is unset), and
-# minting per launch would make it the only outcome. The accidental inheritance
-# this task removes was, for resumes, doing succession's job by luck.
+# The proof is that its last two pairs of requirements are mutually exclusive
+# under any /proc-scan-plus-lockfile design:
+#   * a PERMANENT reservation blocks a legitimate second resume and a retry after
+#     a failed startup; a RELEASABLE one does not survive the crash it exists for.
+#   * EXCLUDING ancestors from the liveness scan misses an incumbent that is our
+#     own parent; NOT excluding them makes a launcher carrying an inherited id
+#     report itself live and never succeed.
+# Each guard added to close one hole opened the next, four rounds running.
 #
-# Succeeds ONLY when the role holds exactly one live session-keyed claim. Two
-# means the role's claim state is ambiguous and picking one would be a guess; zero
-# means there is nothing to succeed. Both mint.
-# hapax_role_succession_session_id <role> [task_id]
+# The root cause is structural: a launcher reasons about shared claim state it
+# does not own. The exclusivity primitive lives in cc-claim, which holds the lease
+# lock and the publication transaction — that is where succession belongs, and it
+# is rowed separately rather than approximated here.
 #
-# With a task id, the live claim must NAME THAT TASK. That is the precise
-# condition the failure describes — "its existing claim remains bound to session
-# A" for the task now being launched — and it makes succession safe without any
-# --continue flag: a launch for a task this role already holds IS a resume, and a
-# launch for anything else mints. Callers that cannot name a task (an interactive
-# --continue with no --task) fall back to role-only.
-# True when some OTHER live process carries this session id.
-#
-# Succession is a handoff from a lane that is GONE. Without this the helper
-# handed a second concurrent process the incumbent's identity purely from its
-# marker file: two live lanes, one claim key — the exact collision this whole row
-# exists to remove, re-created from the opposite direction.
-#
-# Reads /proc/<pid>/environ, which is the only place a session id is actually
-# observable; `pgrep` cannot see environment. Our own process and its ancestors
-# are excluded: a launcher that INHERITED the id is not evidence the incumbent
-# lane still runs. Unreadable environ (another user's process, a race with exit)
-# is skipped, which is correct for a liveness question — it is not evidence of
-# life.
-hapax_session_id_has_live_process() {
-  local sid="${1:-}" d pid chain p uid owner
-  [ -n "$sid" ] || return 1
-  uid="$(id -u)"
-  chain=" $$ "
-  p="${PPID:-0}"
-  while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ]; do
-    chain="$chain$p "
-    p="$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null || printf '0')"
-  done
-  for d in /proc/[0-9]*; do
-    pid="${d#/proc/}"
-    case "$chain" in
-      *" $pid "*) continue ;;
-    esac
-    # Only processes WE own can be one of our lanes, so a pid belonging to
-    # another user is not evidence either way and is skipped. That scoping is
-    # what makes the conservative branch below usable: without it, every
-    # unreadable root daemon would read as "inconclusive" and succession could
-    # never fire.
-    owner="$(stat -c %u "$d" 2>/dev/null || printf '')"
-    [ "$owner" = "$uid" ] || continue
-    if grep -qz "^HAPAX_SESSION_ID=$sid$" "$d/environ" 2>/dev/null; then
-      return 0
-    fi
-    # OUR process, environ unreadable (hardening, a namespace, or a race with
-    # exit): INCONCLUSIVE, and inconclusive must not establish that the incumbent
-    # stopped. But only for a process that could BE a lane — measured on this
-    # host, six of our own processes have unreadable environ and none of them is
-    # one: (sd-pam), sshd-session, gpg-agent, scdaemon, ssh-agent. Treating those
-    # as inconclusive reports "live" unconditionally and succession never fires at
-    # all, which is how the first cut of this branch broke every resume.
-    #
-    # `comm` stays readable when `environ` does not, so the harness name is the
-    # available discriminator. Over-inclusive on purpose: a shell or interpreter
-    # could be a launcher mid-exec, and the cost of a false "live" is one fresh
-    # mint, while the cost of a false "absent" is two lanes sharing an identity.
-    if [ ! -r "$d/environ" ]; then
-      case "$(cat "$d/comm" 2>/dev/null || printf '')" in
-        claude | codex | vibe | kimi | node | python3 | bash | sh)
-          return 0
-          ;;
-      esac
-    fi
-  done
-  return 1
-}
+# Removing it is NOT a regression: origin/main has no succession mechanism at all
+# and already mints on every clean relaunch (measured), so this restores exactly
+# the pre-existing behaviour while the real fix is built where it can be correct.
 
-# Atomically reserve a session id for succession. mkdir is the reservation: it
-# succeeds for exactly one caller and fails for every other, which is the property
-# a liveness SNAPSHOT cannot provide. Two concurrent relaunches could both observe
-# the incumbent absent and both adopt its id — check-then-act, with the window
-# between them wide enough that a synchronized probe reproduced it.
-#
-# The reservation is deliberately PERMANENT. Releasing it on exit is unreliable
-# (a crash leaves it held anyway), and "this id has already been handed on once"
-# is the right durable fact: a second successor to the same id means the identity
-# has now outlived two processes, and minting is the safe answer. Reservations are
-# append-only alongside the spent markers the row requires preserving.
-hapax_reserve_session_succession() {
-  local sid="${1:-}" dir="${HOME:-/nonexistent}/.cache/hapax/succession-reservations"
-  [ -n "$sid" ] || return 1
-  mkdir -p "$dir" 2>/dev/null || return 1
-  mkdir "$dir/$sid" 2>/dev/null || return 1
-  printf '%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" >"$dir/$sid/claimed-by" 2>/dev/null || true
-  return 0
-}
-
-hapax_role_succession_session_id() {
-  local role="${1:-}" task="${2:-}" dir="${HOME:-/nonexistent}/.cache/hapax" f n=0 found=""
-  [ -n "$role" ] || return 1
-  for f in "$dir/cc-active-task-$role-"*; do
-    [ -f "$f" ] || continue
-    local base="${f##*/}"
-    local candidate="${base#cc-active-task-"$role"-}"
-    # Only ids this system minted: `<role>-shadow-<uuid>` belongs to another lane
-    # whose name extends this one's, and succeeding it would steal its claim.
-    hapax_session_id_is_minted "$candidate" || continue
-    if [ -n "$task" ]; then
-      local held
-      held="$(head -n1 "$f" 2>/dev/null | tr -d '[:space:]' || true)"
-      [ "$held" = "$task" ] || continue
-    fi
-    # The incumbent must be GONE. A live process holding this id means this is a
-    # concurrent launch, not a handoff, and adopting would give two lanes one
-    # claim key. Minting instead is the narrow outcome: the second lane gets its
-    # own identity and cc-claim's multi-claim guard adjudicates from there.
-    if hapax_session_id_has_live_process "$candidate"; then
-      continue
-    fi
-    n=$((n + 1))
-    found="$candidate"
-  done
-  [ "$n" = 1 ] || return 1
-  # Snapshot -> reservation. Everything above is check-then-act; this is the
-  # atomic step that makes the handoff exclusive, and it must be the LAST thing
-  # before returning the id. Losing the race means another successor took it:
-  # mint instead.
-  hapax_reserve_session_succession "$found" || return 1
-  printf '%s\n' "$found"
-}
 
 # True when $1 has a shape this system's minter produces. Delegates to the Python
 # SSOT (shared/session_identity.is_minted_session_id) so the recognizer and the
