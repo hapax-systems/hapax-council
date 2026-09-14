@@ -795,11 +795,21 @@ class CapabilityShape(_RouteModel):
     """Declared route id, e.g. ``claude.review.opus``."""
 
     scaffold_revision: str | None = None
-    """Revision of the prompting/scaffold surface — a commit sha or tag.
+    """The tree the claim was made from — a commit sha or tag.
 
     Two runs of one model on one route are still different shapes when the
     scaffold between them changed, which is exactly the drift that makes an
     unlabelled measurement series incomparable with itself.
+
+    **Read it as provenance, not as a dispatch descriptor.** cc-claim fills it from
+    the claiming worktree's HEAD, and in a worktree-per-lane estate that is the
+    lane's own feature branch — not the revision the capability was dispatched
+    under. So two lanes running one route on one model legitimately record
+    different values here, and comparing a series on this field alone will
+    over-partition it. Recording the dispatch origin instead would need a writer at
+    the dispatcher, which this field does not yet have; until then the honest
+    reading is "the tree this claim was made from", and a consumer that needs the
+    dispatched scaffold must not infer it from this.
     """
 
 

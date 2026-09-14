@@ -293,6 +293,23 @@ PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
 # No addressee: the runner execs $VIBE_BIN directly and never re-enters here.
 hapax_consume_launch_session_id
 SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
+# A launch for a task this session ALREADY holds is a resume, however it was
+# spelled (--resume, --continue, or a bare relaunch). Keying on the live claim
+# rather than a resume flag is what makes this complete; the task match is
+# self-limiting, so a launch for other work still mints.
+if [ -z "${TASK_ID:-}" ]; then
+  _hv_legacy_claim="$HOME/.cache/hapax/cc-active-task-$SESSION"
+  if [ -s "$_hv_legacy_claim" ]; then
+    TASK_ID="$(head -n1 "$_hv_legacy_claim" | tr -d '[:space:]')"
+  fi
+fi
+if [ -n "${TASK_ID:-}" ]; then
+  if _hv_succeeded="$(hapax_role_succession_session_id "$SESSION" "$TASK_ID" 2>/dev/null)" &&
+    [ -n "$_hv_succeeded" ]; then
+    SESSION_UUID="$_hv_succeeded"
+    echo "hapax-vibe: resuming '$TASK_ID' under its live claim session $SESSION_UUID" >&2
+  fi
+fi
 export HAPAX_AGENT_INTERFACE="vibe"
 export HAPAX_AGENT_NAME="$SESSION"
 export HAPAX_AGENT_SLOT="$SESSION"

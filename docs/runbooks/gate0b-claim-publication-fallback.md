@@ -245,6 +245,48 @@ closure reaches another session's lease for the closed task) and
 sweep `cx-blue-shadow`). The stale-lease commands above verify a *different*
 operation — exact-file release — and say nothing about either.
 
+## Paged By `stale_claim_marker`
+
+cc-hygiene's live↔declared join compares runtime `cc-active-task-*` markers with
+the vault. Every event carries a `next_action` in its metadata; do what it says,
+because the four cases have genuinely different remedies.
+
+| `next_action` | `reason` | What it means | Do |
+|---|---|---|---|
+| `re-emit-close` | — | Terminal task, note still in `active/`, status one cc-close accepts | Run the `remediation` command verbatim. It carries `--status` so the existing outcome is preserved — do not drop it, cc-close defaults to `done`. |
+| `retire-orphan-marker` | — | Note already in `closed/`, or a terminal status cc-close's `--status` rejects (`refused`, `completed`, `closed_poisoned`, …) | No governed tool retires these. Confirm the closure, then remove the two paths the event names. **Use the paths in the event, not `~/.cache/hapax`** — a sweep of a non-default marker dir names that dir instead. |
+| `operator-adjudication` | `task_not_in_vault` | The marker names a task that exists nowhere | A person decides. Nothing can distinguish a deleted note from a corrupt marker, and guessing either way destroys evidence. |
+| `operator-adjudication` | `assignee_disagreement` / `role_unattributable` | Two parties believe they hold the task, or the marker names no role the vault knows | A person decides. Do not delete: the marker IS the contention evidence. |
+
+Two further events report that the sweep itself was incomplete, and mean the
+check's silence is not evidence of agreement:
+
+- `marker_dir_absent` (warning) — the marker directory does not exist, so the
+  join checked nothing. Usually a misconfigured `--relay-root`, since the marker
+  dir is derived from its parent.
+- `marker_dir_unreadable` / `marker_unreadable` (violation) — enumeration or a
+  specific file could not be read. Repair the permission, then re-sweep.
+
+## Blocked By `exit 9` — "identity helper not found"
+
+All six launchers (`hapax-claude`, `hapax-claude-headless`, `hapax-codex`,
+`hapax-codex-headless`, `hapax-vibe`, `hapax-kimi`) resolve
+`hooks/scripts/agent-role.sh` before minting a session identity, and refuse with
+exit 9 rather than launch ungoverned. The message names the path it looked for.
+
+They look in the launcher's **own tree** first (resolving symlinks, so the
+`~/.local/bin` entrypoints find their real checkout), then `$HAPAX_COUNCIL_DIR`.
+So exit 9 means both lookups failed:
+
+```bash
+ls -l "$(readlink -f "$(command -v hapax-claude)")"        # which tree am I actually running?
+ls "$(dirname "$(readlink -f "$(command -v hapax-claude)")")/../hooks/scripts/agent-role.sh"
+```
+
+Fix by running from a complete council checkout, or point `HAPAX_COUNCIL_DIR` at
+one. The refusal is deliberate: a launcher that quietly re-implemented the mint is
+how five divergent copies of it came to exist.
+
 ## Roll Back To Normal
 
 ```bash

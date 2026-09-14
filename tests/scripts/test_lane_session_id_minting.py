@@ -243,6 +243,24 @@ class TestPinIsConsumedOnce:
             f"a pin addressed to hapax-codex was honoured by {addressee or '<no addressee>'}"
         )
 
+    def test_a_truthy_pin_value_is_ignored_not_honoured(self) -> None:
+        """The pin is an ADDRESSEE, not a boolean — `=1` addresses a launcher named "1".
+
+        Documented explicitly because the retired form really was `=1`, so a reader
+        (or a stray ancestor export) could reasonably expect truthiness to work.
+        Ignored rather than refused: refusing would let any ancestor break a launch
+        by exporting a stray variable, and minting is always the safe outcome.
+        """
+        pinned = "041482e9-0535-4502-a3f2-100149a03a8c"
+        for value in ("1", "true", "yes"):
+            result = _bash(
+                "hapax_consume_launch_session_id hapax-codex\n"
+                'printf "%s\\n" "$HAPAX_LAUNCH_SESSION_ID"',
+                {"HAPAX_SESSION_ID": pinned, "HAPAX_SESSION_ID_PINNED": value},
+            )
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() != pinned, f"truthy pin {value!r} was honoured"
+
     def test_pin_is_cleared_even_when_it_was_not_honoured(self) -> None:
         """An unusable pin must not linger for the next launcher to pick up."""
         result = _bash(
@@ -278,6 +296,15 @@ MINTING_LAUNCHERS = (
     "hapax-vibe",
     "hapax-kimi",
 )
+
+#: Launchers exempt from passing a task to succession. EMPTY, and that is the
+#: point: hapax-kimi's CLI carries no --task, and the first instinct was to exempt
+#: it and do role-only succession. A role-only lookup can adopt a claim for
+#: DIFFERENT work, so the exemption would have been a real hole. The role's own
+#: claim file names the task it holds, so kimi recovers it from there and passes
+#: it like everyone else. Kept as a declared (empty) set rather than deleted, so
+#: the next launcher that "cannot" pass a task has to be argued for here.
+_TASKLESS_LAUNCHERS: frozenset[str] = frozenset()
 
 #: The bare inheriting form the defect consisted of: `${HAPAX_SESSION_ID:-...}`
 #: (parameter expansion with a default) anywhere a launch identity is computed.
@@ -438,25 +465,77 @@ class TestRoleSessionSuccession:
         self._marker(tmp_path, "cx-blue-shadow-9d4e1f77-2a3b-4c58-b0e6-1f2a3b4c5d6e")
         assert self._succeed(tmp_path, "cx-blue") == sid
 
-    def test_interactive_succession_sits_inside_a_resume_conditional(self) -> None:
-        """A fresh interactive launch must not adopt a live claim.
+    @pytest.mark.parametrize("name", MINTING_LAUNCHERS)
+    def test_every_launcher_implements_succession(self, name: str) -> None:
+        """The whole set, enumerated — because hand-enumeration is what kept failing.
 
-        The first cut searched all preceding text for RESUMING/CONTINUE — which
-        appear in argument parsing — so replacing both guards with `if true` still
-        passed. This resolves the ENCLOSING conditional instead, which `if true`
-        cannot satisfy.
+        Three review rounds each found a DIFFERENT launcher with an unhandled
+        resume spelling: round 2 the headless pair, round 3 hapax-codex's forwarded
+        `resume` subcommand and hapax-vibe's --resume/--continue. Each time the
+        design was accepted and the application incomplete. Asserting over the full
+        launcher list makes "I forgot one" a test failure rather than a review
+        round.
         """
-        for name, flag in (("hapax-claude", "RESUMING"), ("hapax-kimi", "CONTINUE")):
-            code = _strip_comments((SCRIPTS / name).read_text(encoding="utf-8"))
-            condition = _enclosing_if_condition(code, "hapax_role_succession_session_id")
-            assert condition is not None, (
-                f"{name} calls succession outside any conditional — a fresh launch "
-                "would adopt a live claim session"
+        code = _strip_comments((SCRIPTS / name).read_text(encoding="utf-8"))
+        assert "hapax_role_succession_session_id" in code, (
+            f"{name} never succeeds a live claim — a relaunch for a task it already "
+            "holds will mint a new id and the admitted claim cannot resolve"
+        )
+
+    @pytest.mark.parametrize("name", MINTING_LAUNCHERS)
+    def test_succession_is_keyed_on_the_task_where_one_is_known(self, name: str) -> None:
+        """A task-keyed call needs no resume flag, which is why it is complete.
+
+        `--continue`, `--resume`, a forwarded `resume` subcommand and a bare
+        relaunch are all the same thing when the task is already held. Launchers
+        that know a task must pass it; only a resume that names no task may fall
+        back to role-only.
+        """
+        code = _strip_comments((SCRIPTS / name).read_text(encoding="utf-8"))
+        calls = [
+            line.strip()
+            for line in code.splitlines()
+            if "hapax_role_succession_session_id" in line and "()" not in line
+        ]
+        assert calls, f"{name} has no succession call"
+        if name in _TASKLESS_LAUNCHERS:
+            # Declared exemption, not a silent pass: this launcher's CLI has no
+            # task concept, so it can only do role-only succession, guarded by an
+            # explicit resume flag. Asserted against the CLI rather than skipped —
+            # if a task flag is ever added, the exemption must go with it.
+            assert "--task" not in code, (
+                f"{name} now accepts a task but is still listed as task-less — "
+                "thread the task into succession and drop the exemption"
             )
-            assert flag in condition, (
-                f"{name} guards succession with {condition!r}, which does not test "
-                f"the resume flag {flag}"
-            )
+            return
+        two_arg = [
+            c for c in calls if re.search(r'hapax_role_succession_session_id\s+"?\$\S+"?\s+"?\$', c)
+        ]
+        assert two_arg, (
+            f"{name} calls succession without a task id: {calls} — a role-only "
+            "lookup can adopt a claim for DIFFERENT work"
+        )
+
+    @pytest.mark.parametrize("name", MINTING_LAUNCHERS)
+    def test_succession_is_guarded_by_the_task_not_by_a_resume_flag(self, name: str) -> None:
+        """One rule for all six: succeed iff this role already holds THIS task.
+
+        Earlier cuts guarded succession behind each launcher's own resume spelling
+        — `--continue`, `--resume`, a forwarded `resume` subcommand — and three
+        review rounds each found a launcher whose spelling had been missed. The
+        task match needs no flag and is self-limiting, so there is no spelling left
+        to miss; the enclosing conditional must test the task, not a resume flag.
+        """
+        code = _strip_comments((SCRIPTS / name).read_text(encoding="utf-8"))
+        condition = _enclosing_if_condition(code, "hapax_role_succession_session_id")
+        assert condition is not None, (
+            f"{name} calls succession unconditionally — a launch that knows no task "
+            "would adopt whatever claim the role happens to hold"
+        )
+        assert "TASK" in condition.upper(), (
+            f"{name} guards succession with {condition!r}, which does not test a "
+            "task id — a resume-flag guard misses every spelling it does not name"
+        )
 
 
 #: Argv that reaches each launcher's identity block. These differ — hapax-kimi
@@ -559,6 +638,44 @@ class TestLauncherBehaviour:
         assert self._headless_marker_sid(tmp_path, "task-a") == prior, (
             "a re-dispatched headless lane minted a new id instead of succeeding "
             "the session its admitted claim is bound to"
+        )
+
+    def test_headless_relaunch_without_task_flag_still_succeeds(self, tmp_path: Path) -> None:
+        """The supported `--task`-less relaunch must succeed too.
+
+        Round 3 put the succession branch behind `-n "$CLAUDE_TASK"` but left the
+        legacy-claim task recovery further down, so this invocation skipped
+        succession entirely, then adopted the recovered task while keeping a freshly
+        minted id — and the worker's next cc-claim failed against the original
+        session binding. The task is now resolved BEFORE the session is chosen.
+        """
+        prior = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+        cache = tmp_path / ".cache" / "hapax"
+        cache.mkdir(parents=True)
+        (cache / f"cc-active-task-zeta-{prior}").write_text("task-a\n", encoding="utf-8")
+        # The legacy role-keyed file is what a --task-less relaunch recovers from.
+        (cache / "cc-active-task-zeta").write_text("task-a\n", encoding="utf-8")
+
+        env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+        for k in ("CLAUDE_ROLE", "HAPAX_AGENT_NAME", "HAPAX_AGENT_ROLE", "HAPAX_WORKTREE_ROLE"):
+            env.pop(k, None)
+        env["HOME"] = str(tmp_path)
+        env["HAPAX_CLAUDE_HEADLESS_ALLOW"] = "1"
+        env["HAPAX_SDLC_SLICE_ATTACH"] = "0"
+        subprocess.run(
+            [str(SCRIPTS / "hapax-claude-headless"), "zeta", "msg"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+
+        markers = sorted((tmp_path / ".cache" / "hapax").glob("session-role-*"))
+        assert len(markers) == 1, f"expected one session marker, got {markers}"
+        assert markers[0].name.removeprefix("session-role-") == prior, (
+            "a --task-less relaunch minted a new id even though the role's claim "
+            "named the task it was about to adopt"
         )
 
     def test_headless_launch_for_a_different_task_still_mints(self, tmp_path: Path) -> None:

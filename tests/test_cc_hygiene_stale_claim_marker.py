@@ -301,6 +301,31 @@ class TestReadClaimMarkers:
         assert path == str(bad)
         assert "UnicodeDecodeError" in reason
 
+    def test_unlistable_directory_is_reported_not_read_as_empty(self, tmp_path: Path) -> None:
+        """A denied directory must not read as "no markers".
+
+        The first cut wrapped ``Path.glob`` in ``except OSError``. On 3.12 glob
+        swallows a directory-level PermissionError inside its own scandir walk and
+        returns an empty iterator, so that except never fired and an unreadable
+        cache reported a clean reconciliation. Verified against the pinned
+        interpreter; the scan now enumerates with os.listdir, which propagates.
+        """
+        import unittest.mock as mock
+
+        def denied(*_args: object, **_kwargs: object) -> list[str]:
+            raise PermissionError(13, "Permission denied", str(tmp_path))
+
+        with mock.patch("os.listdir", denied):
+            scan = read_claim_markers(tmp_path)
+
+        assert scan.enumeration_error is not None
+        assert "PermissionError" in scan.enumeration_error
+
+        events = check_stale_claim_marker(scan, [], cache_dir=tmp_path, now=_now())
+        assert len(events) == 1
+        assert events[0].metadata["reason"] == "marker_dir_unreadable"
+        assert events[0].severity == "violation"
+
     def test_unreadable_marker_becomes_a_violation_event(self, tmp_path: Path) -> None:
         bad = tmp_path / "cc-active-task-beta"
         bad.write_bytes(b"\xff\xfe not utf-8 \xff")

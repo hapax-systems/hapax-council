@@ -224,9 +224,21 @@ hapax_session_id() {
 # session-role marker and any claim the outer already wrote. So the single
 # boolean "is HAPAX_SESSION_ID set?" was standing in for two distinct conditions.
 # They are split here: inheritance requires the sender to ALSO set
-# HAPAX_SESSION_ID_PINNED=1, which makes the precondition a fact checkable at the
+# HAPAX_SESSION_ID_PINNED, which makes the precondition a fact checkable at the
 # moment of use instead of an assumption about what an ancestor process was
 # doing. A bare ambient id is now unrepresentable as a launch identity.
+#
+# The pin's VALUE is the addressee — the launcher entitled to honour it, e.g.
+# `HAPAX_SESSION_ID_PINNED=hapax-codex`. It is not a boolean, and there is no
+# truthy form: `=1` addresses a launcher named "1", so nothing honours it. The
+# three dispositions, stated because only one of them is obvious:
+#   * value == the consuming launcher's own name  -> honoured, once
+#   * value is anything else, including 1/true/yes -> IGNORED, and the launcher mints
+#   * value absent                                 -> mints
+# An unaddressed pin is never refused, only ignored: refusing would let any
+# ancestor process break a launch by exporting a stray variable, and minting is
+# always the safe outcome. The pin is consumed either way (see below), so a value
+# nothing honours cannot linger and be honoured by something downstream.
 
 # Mint a fresh per-spawn id. uuid4, NEVER pid-derived: pids recycle and do not
 # cross hosts, so a pid-shaped id cannot distinguish two sessions and cc-claim

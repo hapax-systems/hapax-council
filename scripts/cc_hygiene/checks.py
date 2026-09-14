@@ -11,6 +11,7 @@ operator can patch via env or future config without rewriting code.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from collections import Counter, defaultdict
@@ -1066,10 +1067,17 @@ def read_claim_markers(cache_dir: Path) -> ClaimMarkerScan:
     """
     markers: dict[str, str] = {}
     unreadable: list[tuple[str, str]] = []
+    # os.listdir, NOT Path.glob: on 3.12 Path.glob swallows a directory-level
+    # PermissionError inside its own scandir walk and returns an empty iterator, so
+    # the `except OSError` around it never fired and an unreadable cache read as
+    # "no markers". Verified against the pinned interpreter — glob returned [], and
+    # listdir raises. A reconciliation check must never mistake "I was denied" for
+    # "nothing to report".
     try:
-        paths = sorted(cache_dir.glob("cc-active-task-*"))
+        names = sorted(os.listdir(cache_dir))
     except OSError as exc:
         return ClaimMarkerScan(markers={}, enumeration_error=f"{type(exc).__name__}: {exc}")
+    paths = [cache_dir / name for name in names if name.startswith("cc-active-task-")]
     for path in paths:
         try:
             if not path.is_file():
