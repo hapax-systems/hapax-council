@@ -305,6 +305,12 @@ RECEIPT_TRIGGER_MALFORMED_REVIEW = "review_requirement.independent_review_requir
 #: ``ReviewRequirement.independent_review_required``. Enumerated from the model
 #: itself rather than assumed, so frontmatter read as raw text is judged by the
 #: same semantics as frontmatter read through the schema.
+#:
+#: These tables are a REIMPLEMENTATION, not the source of truth — the model is.
+#: Their agreement is pinned by test, not by inspection; if pydantic's accepted
+#: spellings change on upgrade, that test fails rather than this gate silently
+#: reopening. Recheck:
+#:   uv run pytest tests/shared/test_sdlc_lifecycle.py::TestSchemaParity -q
 _INDEPENDENT_REVIEW_TRUTHY = frozenset({"true", "yes", "y", "on", "t", "1"})
 _INDEPENDENT_REVIEW_FALSY = frozenset({"false", "no", "n", "off", "f", "0"})
 
@@ -441,9 +447,14 @@ def acceptance_receipt_triggers(frontmatter: Mapping[str, Any]) -> tuple[str, ..
     if REVIEW_FLOOR_QUALITY_FLOOR in floors:
         triggers.append(RECEIPT_TRIGGER_REVIEW_FLOOR)
     states = _independent_review_states(frontmatter)
+    # Both states are reported when both occur. A demand in one metadata location
+    # does not excuse an unreadable declaration in the other: the gate would arm
+    # either way, but suppressing the malformed state loses the very
+    # reconstructability the malformed trigger exists to provide, and hides mirror
+    # drift that assess_route_metadata would reject.
     if _REVIEW_DEMANDED in states:
         triggers.append(RECEIPT_TRIGGER_INDEPENDENT_REVIEW)
-    elif _REVIEW_MALFORMED in states:
+    if _REVIEW_MALFORMED in states:
         triggers.append(RECEIPT_TRIGGER_MALFORMED_REVIEW)
     return tuple(triggers)
 

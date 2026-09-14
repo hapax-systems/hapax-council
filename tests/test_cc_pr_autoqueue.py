@@ -9691,6 +9691,63 @@ def test_blocks_review_floor_pr_without_acceptance_receipt(tmp_path: Path) -> No
     assert "missing_acceptance_receipt" in report["decisions"][0]["reasons"]
 
 
+def test_blocks_non_frontier_pr_declaring_independent_review_without_receipt(
+    tmp_path: Path,
+) -> None:
+    """Admission arms on the declaration, not only the floor.
+
+    A `verification_receipt` row demanding independent review must be held the
+    same way a frontier-floor row is; before PR #4669 it admitted freely.
+    """
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="independent-review-task",
+        pr=90,
+        quality_floor="verification_receipt",
+        authority_level="support_non_authoritative",
+        extra_frontmatter={"review_requirement": {"independent_review_required": True}},
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(90)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert "missing_acceptance_receipt" in report["decisions"][0]["reasons"]
+
+
+def test_admits_non_frontier_pr_declining_independent_review(tmp_path: Path) -> None:
+    """The widening is scoped: an explicit decline is not held."""
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="declining-task",
+        pr=91,
+        quality_floor="verification_receipt",
+        authority_level="support_non_authoritative",
+        extra_frontmatter={"review_requirement": {"independent_review_required": False}},
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(91)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    reasons = report["decisions"][0].get("reasons", []) if report["decisions"] else []
+    assert "missing_acceptance_receipt" not in reasons
+    assert report["counts"]["blocked"] == 0
+
+
 def test_queues_review_floor_pr_with_acceptance_receipt(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(

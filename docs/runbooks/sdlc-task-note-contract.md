@@ -15,8 +15,26 @@ reliable legibility (ideally all three).*
 3. Required fields for `type: cc-task`: `task_id`, `status`, `authority_case`,
    `parent_spec`. PR-linked tasks additionally need a current
    `<task_id>.review-dossier.yaml` with review-team quorum before merge
-   admission. Review-floor closes additionally need `<task_id>.acceptance.yaml`
+   admission. **Receipt-armed** closes additionally need `<task_id>.acceptance.yaml`
    (see PR #4049) and AVSDLC axes/witness fields where media surfaces are touched.
+
+   **A row is receipt-armed by either of two declarations** — the floor alone is
+   not the test (PR #4669):
+
+   | Declaration | Where it is read |
+   |---|---|
+   | `quality_floor: frontier_review_required` | top-level, and the `route_metadata` mirror |
+   | `review_requirement.independent_review_required` | top-level, and the `route_metadata` mirror |
+
+   A row may demand independent review under **any** quality floor, and a
+   `verification_receipt` row that did exactly that closed unreviewed on
+   2026-09-13 before this was enforced. A demand in either location arms
+   (fail-closed on disagreement). A `review_requirement` that is present but
+   unreadable — not a mapping, or a flag value the route schema rejects — also
+   arms, reported as `…:malformed`: an unknown review requirement may not read
+   as no requirement. Only an explicit, schema-valid `false` declines.
+
+   Recheck: `uv run pytest tests/scripts/test_cc_close_acceptance_receipt_check.py -q`
 4. Reason codes must name the true failure: an unparseable note is reported as
    such by `cc-pr-autoqueue`, never as a generic missing link.
 

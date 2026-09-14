@@ -1054,6 +1054,14 @@ class TestSchemaParity:
             None,
             [],
             {},
+            # bytes: the model accepts them, so the classifier's decode branch —
+            # including its UnicodeDecodeError path (b"\xff") — must agree rather
+            # than be incidentally correct.
+            b"true",
+            b"false",
+            b"maybe",
+            b"\xff",
+            b"",
         ],
     )
     def test_classifier_matches_schema_for_every_value(self, value: object) -> None:
@@ -1142,6 +1150,33 @@ class TestIndependentReviewMirror:
             "route_metadata": {"review_requirement": {"independent_review_required": "maybe"}},
         }
         assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_MALFORMED_REVIEW,)
+
+    def test_demand_plus_malformed_reports_both(self) -> None:
+        """A demand elsewhere must not suppress an unreadable declaration.
+
+        The gate arms either way, so this is not a fail-open — but reporting only
+        the demand loses which location is unreadable, which is precisely the
+        reconstructability the malformed trigger exists to provide, and hides
+        mirror drift ``assess_route_metadata`` would reject.
+        """
+        frontmatter = {
+            "review_requirement": {"independent_review_required": True},
+            "route_metadata": {"review_requirement": {"independent_review_required": "maybe"}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (
+            RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+            RECEIPT_TRIGGER_MALFORMED_REVIEW,
+        )
+
+    def test_malformed_plus_demand_reports_both_in_the_reverse_arrangement(self) -> None:
+        frontmatter = {
+            "review_requirement": {"independent_review_required": "maybe"},
+            "route_metadata": {"review_requirement": {"independent_review_required": True}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (
+            RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+            RECEIPT_TRIGGER_MALFORMED_REVIEW,
+        )
 
 
 class TestBothTriggersTogether:
