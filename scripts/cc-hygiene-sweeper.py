@@ -758,7 +758,18 @@ def main(argv: list[str] | None = None) -> int:
                 LOG.exception("dashboard render raised; continuing")
     if args.verbose:
         for event in state.events:
-            LOG.debug("%s: %s", event.check_id, event.message)
+            # Metadata too, not just check_id and message. The runbook tells an
+            # operator to verify `marker_dir` and `marker_dir_provenance` from a
+            # `--no-write --no-actions -v` run — and verbose printed neither, while
+            # --no-write meant nothing was recorded to read them from afterwards. A
+            # documented verification that cannot display the field it verifies is
+            # not a recheck (review round 19).
+            detail = (
+                " ".join(f"{k}={v}" for k, v in sorted(event.metadata.items()))
+                if event.metadata
+                else ""
+            )
+            LOG.debug("%s: %s%s", event.check_id, event.message, f" [{detail}]" if detail else "")
     return 0
 
 

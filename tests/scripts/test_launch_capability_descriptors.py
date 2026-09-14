@@ -383,6 +383,11 @@ class TestWhatTheChildReceives:
         '    printf "capmodel=%s\\n" "${HAPAX_CAPABILITY_MODEL:-}"\n'
         '    printf "harness=%s\\n" "${HAPAX_AGENT_INTERFACE:-}"\n'
         '    printf "pinned=%s\\n" "${HAPAX_CAPABILITY_PINNED:-}"\n'
+        # The model as PASSED, scanned out of the harness's own argv. Comparing the
+        # record against the argv is what makes "recorded == launched" a measurement
+        # rather than two copies of the same default.
+        '    for a in "$@"; do case "$a" in model=*) m="$a" ;; esac; done\n'
+        '    printf "argmodel=%s\\n" "$(printf "%s" "${m:-}" | sed \'s/^model=//; s/^"//; s/"$//\')"\n'
         '  } > "$STUB_OUT"\n'
         "fi\n"
         "printf '%s\\n' "
@@ -399,7 +404,13 @@ class TestWhatTheChildReceives:
             stub.chmod(0o755)
         return stub_dir
 
-    def _run(self, name: str, tmp_path: Path, extra_env: dict[str, str]) -> dict[str, str]:
+    def _run(
+        self,
+        name: str,
+        tmp_path: Path,
+        extra_env: dict[str, str],
+        extra_args: list[str] | None = None,
+    ) -> dict[str, str]:
         """Drive one launcher to its harness; return the child's observed env."""
         stub_dir = self._stub_dir(tmp_path)
         home = tmp_path / "home"
@@ -439,7 +450,7 @@ class TestWhatTheChildReceives:
         env.update(extra_env)
 
         result = subprocess.run(
-            ["bash", str(SCRIPTS / name), *_DRIVE_ARGS[name](workdir)],
+            ["bash", str(SCRIPTS / name), *_DRIVE_ARGS[name](workdir), *(extra_args or [])],
             env=env,
             text=True,
             capture_output=True,
@@ -505,6 +516,41 @@ class TestWhatTheChildReceives:
             f"{name} would record model_family={shape['model_family']} for a launch "
             "that never ran on it"
         )
+
+    def test_the_codex_lane_records_the_model_it_launches_with(self, tmp_path: Path) -> None:
+        """A codex claim recorded harness and route with a hole where the model goes.
+
+        The dispatcher clears HAPAX_CAPABILITY_MODEL so the launcher can publish what
+        it actually used — the claude headless path does — and this launcher consumed
+        the grant and published nothing. Asserted against the harness's own argv, so
+        "what we recorded" is checked against "what we passed" rather than against
+        another copy of the default.
+        """
+        observed = self._run(
+            "hapax-codex-headless",
+            tmp_path,
+            {"HAPAX_CAPABILITY_PINNED": "hapax-codex-headless"},
+        )
+        assert observed["capmodel"], (
+            f"the codex lane published no model, so its claims record none: {observed}"
+        )
+        assert observed["capmodel"] == observed.get("argmodel"), (
+            "the recorded model and the one passed to codex disagree: "
+            f"recorded={observed['capmodel']!r} passed={observed.get('argmodel')!r}"
+        )
+
+    def test_a_codex_model_override_is_recorded_not_the_default(self, tmp_path: Path) -> None:
+        """`-c model="..."` after `--` wins at codex, so it must win in the record."""
+        observed = self._run(
+            "hapax-codex-headless",
+            tmp_path,
+            {"HAPAX_CAPABILITY_PINNED": "hapax-codex-headless"},
+            extra_args=["--", "-c", 'model="gpt-6-mini"'],
+        )
+        assert observed["capmodel"] == "gpt-6-mini", (
+            f"an operator override was passed to codex but not recorded: {observed}"
+        )
+        assert observed.get("argmodel") == "gpt-6-mini", observed
 
     @pytest.mark.parametrize("name", sorted(set(PINNED_LAUNCHERS) & _DRIVABLE))
     def test_an_addressed_route_does_reach_the_child(self, name: str, tmp_path: Path) -> None:

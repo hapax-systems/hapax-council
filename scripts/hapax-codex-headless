@@ -792,6 +792,34 @@ if [[ -z "$INITIAL_MSG" ]]; then
   exit 5
 fi
 
+# --- The model this launch actually runs, resolved once ------------------------
+#
+# Codex claims recorded no model at all: the dispatcher clears
+# HAPAX_CAPABILITY_MODEL so the launcher can publish what it really used (the
+# claude headless path does exactly that), and this launcher consumed the grant and
+# then published nothing. So `shape=(...)` on every codex claim carried harness and
+# route with a hole where the model belongs — a known component of the requested
+# capability, missing from the record of it.
+#
+# Resolved HERE, before cc-claim runs, because the claim is written at the gate
+# below and an export after that is an export nobody reads.
+#
+# `-c` options apply in order and the LAST `model="..."` wins, including one an
+# operator passes after `--`. So the override is honoured rather than ignored, and
+# CODEX_ARGS is built from this same variable further down — one source, so what is
+# recorded and what is passed cannot drift.
+CODEX_MODEL="gpt-6-astra"
+for _extra in ${CODEX_EXTRA+"${CODEX_EXTRA[@]}"}; do
+  case "$_extra" in
+    model=\"*\")
+      _override="${_extra#model=\"}"
+      CODEX_MODEL="${_override%\"}"
+      ;;
+    model=*) CODEX_MODEL="${_extra#model=}" ;;
+  esac
+done
+export HAPAX_CAPABILITY_MODEL="$CODEX_MODEL"
+
 if [[ -e "$DISABLE_FILE" ]]; then
   echo "hapax-codex-headless: disabled by $DISABLE_FILE" >&2
   exit 77
@@ -1150,7 +1178,7 @@ CODEX_ARGS=(
   --skip-git-repo-check
   --json
   --cd "$WORKDIR"
-  -c 'model="gpt-6-astra"'
+  -c "model=\"$CODEX_MODEL\""
   -c 'model_reasoning_effort="xhigh"'
   -c 'approval_policy="never"'
   -c 'sandbox_mode="danger-full-access"'

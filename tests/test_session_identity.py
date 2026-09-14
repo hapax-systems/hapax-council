@@ -131,22 +131,60 @@ class TestMintedShapeRecognizer:
         assert is_minted_session_id(out), f"bash mint not recognized: {out!r}"
 
     def test_bash_last_resort_shape_is_recognized(self) -> None:
-        """`sid<nanos>x<rand><rand>` — the branch taken with no uuid source."""
+        """`sid<nanos>x<rand><rand>` — the branch taken with no uuid source.
+
+        Runs the REAL `hapax_mint_session_id` with every uuid source denied, rather
+        than a copy of its printf. The copy version passed no matter what the
+        production fallback did — review round 19 named it exactly: "breaking the
+        production fallback therefore leaves this test passing", and the ordinary
+        mint tests all take the uuid branch, so nothing covered this one.
+
+        The three sources are denied the way the helper reaches them: `cat` (for the
+        kernel uuid file), `uuidgen` and `python3` are shadowed on PATH by stubs
+        that exit 1. `date` is left real, because the last-resort branch needs it.
+        """
+        import os
         import subprocess
+        import tempfile
+        from pathlib import Path as _Path
 
-        from shared.session_identity import is_minted_session_id
+        from shared.session_identity import is_claim_keyable_session_id, is_minted_session_id
 
-        out = subprocess.run(
-            [
-                "bash",
-                "-c",
-                'printf "sid%sx%s%s" "$(date +%s%N)" "$RANDOM" "$RANDOM"',
-            ],
-            text=True,
-            capture_output=True,
-            check=True,
-        ).stdout.strip()
-        assert is_minted_session_id(out), f"last-resort mint not recognized: {out!r}"
+        repo_root = _Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as tmp:
+            stubs = _Path(tmp)
+            for denied in ("cat", "uuidgen", "python3"):
+                stub = stubs / denied
+                stub.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+                stub.chmod(0o755)
+            out = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    f'. "{repo_root}/hooks/scripts/agent-role.sh"\n'
+                    "hapax_mint_session_id\nhapax_mint_session_id\n",
+                ],
+                text=True,
+                capture_output=True,
+                check=True,
+                env={**os.environ, "PATH": f"{stubs}:{os.environ.get('PATH', '')}"},
+            ).stdout.split()
+
+        assert len(out) == 2, f"the real helper did not mint twice: {out}"
+        assert out[0] != out[1], (
+            f"the last-resort branch minted one id twice, so it cannot distinguish "
+            f"two sessions: {out}"
+        )
+        for candidate in out:
+            assert candidate.startswith("sid"), (
+                f"a uuid source still answered, so the fallback was never reached: {candidate!r}"
+            )
+            assert is_minted_session_id(candidate), (
+                f"last-resort mint not recognized: {candidate!r}"
+            )
+            assert is_claim_keyable_session_id(candidate), (
+                f"the fallback minted an id cc-claim refuses to key on: {candidate!r}"
+            )
 
     def test_is_narrower_than_claim_keyable(self) -> None:
         """The distinction is the point: a foreign role suffix is keyable, not minted.

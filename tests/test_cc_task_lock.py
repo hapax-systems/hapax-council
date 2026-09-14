@@ -634,6 +634,88 @@ class TestTheRoleLockIsTakenBeforeTheClosure:
         assert not note.exists() and not lease.exists()
 
 
+class TestTheLockNamespaceFollowsTheResourceNamespace:
+    """The lock must be a function of what it protects, not of an unrelated knob.
+
+    `lock_dir` read `XDG_CACHE_HOME or ~/.cache` while cc-claim writes and cc-close
+    globs `$HOME/.cache/hapax/cc-active-task-*` with `$HOME` hardcoded. Two writers
+    sharing a HOME and exporting different XDG_CACHE_HOME values therefore took
+    different locks over the same lease files — no exclusion at all. Every fixture
+    in this file had aligned the two, which is exactly why the suite could not see
+    it; all four reviewer families reported it independently.
+    """
+
+    def test_the_lock_path_ignores_xdg_cache_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        (home / ".cache").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "somewhere-else"))
+        first = lock_path("t1")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "different-again"))
+        second = lock_path("t1")
+        monkeypatch.delenv("XDG_CACHE_HOME")
+        third = lock_path("t1")
+
+        assert first == second == third, (
+            "the lock path moved with XDG_CACHE_HOME while the leases it protects "
+            f"did not: {first} / {second} / {third}"
+        )
+        assert first == home / ".cache" / "hapax" / "cc-task-locks" / "tasks" / "t1.lock"
+
+    def test_a_relative_override_is_refused_rather_than_resolved(self, tmp_path: Path) -> None:
+        """cwd-dependent means two processes in one tree disagree, neither wrongly."""
+        with pytest.raises(ValueError, match="absolute"):
+            lock_path("t1", Path("relative/locks"))
+        with pytest.raises(ValueError, match="absolute"):
+            role_lock_path("eta", Path("relative/locks"))
+
+    def test_two_writers_with_different_xdg_still_exclude_each_other(self, tmp_path: Path) -> None:
+        """The contention case the aligned fixtures could not reach.
+
+        cc-claim runs with one XDG_CACHE_HOME, cc-close with another — a normal
+        lane-versus-dispatcher divergence — and they must still meet on one lock.
+        """
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        _write_note(vault, "t1", "withdrawn")
+        cache = home / ".cache" / "hapax"
+        cache.mkdir(parents=True, exist_ok=True)
+
+        close_env = _lane_env(home)
+        close_env["XDG_CACHE_HOME"] = str(tmp_path / "close-cache")
+
+        # The competitor holds the lock the way cc-claim would, resolving it with a
+        # THIRD XDG value — and from HOME, which is what makes them meet.
+        holder_home_lock = home / ".cache" / "hapax" / "cc-task-locks" / "tasks" / "t1.lock"
+        holder_home_lock.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.open(holder_home_lock, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            proc = subprocess.Popen(
+                ["bash", str(CC_CLOSE), "t1", "--status", "withdrawn"],
+                env=close_env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            settle = time.monotonic() + 3.0
+            while proc.poll() is None and time.monotonic() < settle:
+                time.sleep(0.05)
+            blocked = proc.poll() is None
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
+        stdout, stderr = proc.communicate(timeout=120)
+
+        assert blocked, (
+            "cc-close and a concurrent holder took DIFFERENT locks because their "
+            f"XDG_CACHE_HOME values differed — no exclusion\n{stdout}\n{stderr}"
+        )
+        assert proc.returncode == 0, f"{stdout}\n{stderr}"
+
+
 class TestBothWritersParticipate:
     """The load-bearing pair: each tool must block on the lock the other holds."""
 

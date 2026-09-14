@@ -85,17 +85,37 @@ def resolved_timeout(timeout: float | None) -> float:
 
 
 def lock_dir(cache_dir: Path | None = None) -> Path:
-    """Where the per-task lock files live.
+    """Where the lock files live: under the SAME root as the resources they protect.
 
     Runtime state, so the runtime cache — never the vault. A lock file in the vault
     would sync to Obsidian, show up in git status, and be enumerated by every check
     that walks the task directories.
+
+    **Keyed on ``$HOME``, deliberately NOT on ``XDG_CACHE_HOME``.** This read
+    ``XDG_CACHE_HOME or ~/.cache`` for two rounds, and all four reviewer families
+    independently reported the same consequence: the protected resources do not
+    follow that variable. ``cc-claim`` writes and ``cc-close`` globs
+    ``$HOME/.cache/hapax/cc-active-task-*`` with ``$HOME`` hardcoded, so two writers
+    sharing a ``$HOME`` but exporting different ``XDG_CACHE_HOME`` values took
+    DIFFERENT locks over the SAME lease files — no mutual exclusion at all, which is
+    the entire thing this module exists to provide. A relative value made it worse
+    still: the lock path became cwd-dependent within one process tree.
+
+    A lock namespace must be a function of the resource namespace. Honouring an
+    environment variable the resource ignores is not configurability; it is a second
+    namespace pretending to be the first.
+
+    If the lease location ever becomes XDG-aware, this moves with it — together, in
+    one edit, because they are one decision.
     """
     if cache_dir is not None:
-        return Path(cache_dir)
-    xdg = os.environ.get("XDG_CACHE_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".cache"
-    return base / "hapax" / "cc-task-locks"
+        directory = Path(cache_dir)
+        if not directory.is_absolute():
+            # A relative override is cwd-dependent, so two processes in one tree
+            # resolve it differently and neither is wrong. Refuse rather than pick.
+            raise ValueError(f"cc-task lock directory must be an absolute path, got {directory!r}")
+        return directory
+    return Path.home() / ".cache" / "hapax" / "cc-task-locks"
 
 
 def _safe_name(task_id: str) -> str:

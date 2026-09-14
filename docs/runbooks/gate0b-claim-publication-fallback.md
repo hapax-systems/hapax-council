@@ -570,8 +570,13 @@ HAPAX_CC_HYGIENE_CLAIM_MARKER_DIR=~/.cache/hapax \
   grep -iE 'marker|Reaping skipped'
 ```
 
-Expected: any `stale_claim_marker` event names `~/.cache/hapax` as its
-`marker_dir`, plus the line `Reaping skipped (observational mode)`.
+Expected: the line `Reaping skipped (observational mode)` always, and — **if the
+join has anything to report** — a `stale_claim_marker` line ending in
+`[… marker_dir=/home/…/.cache/hapax marker_dir_provenance=passed explicitly by the
+caller …]`. `-v` prints each event's metadata, not only its message; it did not
+until round 19, so a `--no-write` run could not display the fields this section
+tells you to check. On a host with no marker drift there are no such lines, and
+that is the healthy result rather than a failed check.
 
 > **A sweep is not read-only by default.** `run_sweep` retires the relay of every
 > lane with no live process before it computes a single event, so a plain sweep

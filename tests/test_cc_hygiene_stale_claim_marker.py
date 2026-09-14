@@ -736,6 +736,57 @@ class TestSweepBinding:
             assert mod.main([*base, *flags]) == 0
             assert seen == [False], f"{flags} did not withhold reaping: reap={seen}"
 
+    def test_verbose_output_shows_the_fields_the_runbook_says_to_verify(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """A documented verification must be able to display what it verifies.
+
+        The runbook told an operator to confirm `marker_dir` and
+        `marker_dir_provenance` from a `--no-write --no-actions -v` run. Verbose
+        printed only check_id and message, and `--no-write` meant nothing was
+        recorded to read them from afterwards — so the recheck could not perform
+        its own check.
+        """
+        import importlib.util
+        import logging
+
+        spec = importlib.util.spec_from_file_location(
+            "cc_hygiene_sweeper_verbose", REPO_ROOT / "scripts" / "cc-hygiene-sweeper.py"
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        cache = tmp_path / "cache" / "hapax"
+        relay = cache / "relay"
+        relay.mkdir(parents=True)
+        (cache / "cc-active-task-eta").write_text("not-in-this-vault\n", encoding="utf-8")
+        vault = tmp_path / "vault"
+        (vault / "active").mkdir(parents=True)
+        (vault / "closed").mkdir(parents=True)
+
+        with caplog.at_level(logging.DEBUG):
+            rc = mod.main(
+                [
+                    "--vault-root",
+                    str(vault),
+                    "--relay-root",
+                    str(relay),
+                    "--repo-root",
+                    str(tmp_path),
+                    "--no-write",
+                    "--no-actions",
+                    "-v",
+                ]
+            )
+        assert rc == 0
+        rendered = "\n".join(r.getMessage() for r in caplog.records)
+        assert "stale_claim_marker" in rendered, rendered
+        assert "marker_dir_provenance=" in rendered, (
+            f"verbose output cannot show the field the runbook verifies:\n{rendered}"
+        )
+        assert "marker_dir=" in rendered, rendered
+
     def test_a_first_read_that_fails_is_not_erased_by_a_second_that_succeeds(
         self, tmp_path: Path
     ) -> None:
