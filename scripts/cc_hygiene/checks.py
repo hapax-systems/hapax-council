@@ -1278,7 +1278,17 @@ def check_stale_claim_marker(
                 )
             else:
                 next_action = "re-emit-close"
-                remediation = f"cc-close {task_id} --status {status_text} (as role {role_label})"
+                # A RUNNABLE command, with the closing role selected explicitly and
+                # no prose inside it. The first cut emitted
+                # `cc-close t1 --status withdrawn (as role eta)`, which the runbook
+                # told operators to run verbatim and which `bash -n` rejects at the
+                # parenthesis — and merely stripping the annotation would have left
+                # the closing role unset, so cc-close would resolve whatever role the
+                # operator's shell happened to carry. The role goes in as an env
+                # assignment: executable and explicit.
+                remediation = (
+                    f"HAPAX_AGENT_ROLE={role_label} cc-close {task_id} --status {status_text}"
+                )
             events.append(
                 HygieneEvent(
                     timestamp=now,

@@ -1104,7 +1104,8 @@ PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:
 # Per-session id (coordination reform Phase 1): stable uuid so the gate keys a
 # claim lease to THIS session — two same-role sessions never collide (FM-2).
 # hapax_consume_launch_session_id honours an inherited id ONLY when the sender also
-# set HAPAX_SESSION_ID_PINNED=1 — which the tmux runner below does, because it really
+# set HAPAX_SESSION_ID_PINNED to THIS launcher's name — which the tmux runner below
+# does (`=hapax-codex`), because it really
 # does re-exec THIS launcher and the inner process must keep the outer's id. An
 # ambient id from whatever shell the operator happened to be in is ignored
 # (claims-ontology-correction).

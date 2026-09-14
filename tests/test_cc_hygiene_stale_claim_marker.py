@@ -167,6 +167,35 @@ class TestDisagreementMatrix:
         assert "/somewhere/else/hapax/cc-active-task-eta" in remediation
         assert ".cache/hapax/cc-active-task-eta" not in remediation
 
+    def test_emitted_remediation_is_a_runnable_command(self) -> None:
+        """The runbook says run it verbatim, so it has to parse.
+
+        `cc-close t1 --status withdrawn (as role eta)` is rejected by `bash -n` at
+        the parenthesis — and stripping the annotation would leave the closing role
+        unset, so cc-close would resolve whatever role the operator's shell carried.
+        """
+        import shutil
+        import subprocess
+
+        events = check_stale_claim_marker(
+            {"eta": "t1"}, [_note("t1", status="withdrawn")], now=_now()
+        )
+        assert len(events) == 1
+        remediation = events[0].metadata["remediation"]
+
+        assert "(" not in remediation and ")" not in remediation, (
+            f"prose inside the command: {remediation!r}"
+        )
+        assert "HAPAX_AGENT_ROLE=eta" in remediation, "closing role not selected"
+        bash = shutil.which("bash")
+        assert bash is not None
+        parsed = subprocess.run(
+            [bash, "-n", "-c", remediation], capture_output=True, text=True, check=False
+        )
+        assert parsed.returncode == 0, (
+            f"remediation does not parse: {remediation!r}\n{parsed.stderr}"
+        )
+
     def test_event_reports_the_disagreement_not_an_inferred_cause(self) -> None:
         """ "the lane never ran cc-close" was an unobserved cause, and wrong.
 
@@ -384,8 +413,15 @@ class TestSweepBinding:
 
         stale = [e for e in state.events if e.check_id == "stale_claim_marker"]
         assert len(stale) == 1
+        # Severity and next_action pinned explicitly: an inert reconciliation is a
+        # warning (the sweep is misconfigured, not the claim state), and it needs a
+        # person because nothing here can tell a wrong --relay-root from a cache
+        # that genuinely has not been created yet.
         assert stale[0].metadata["reason"] == "marker_dir_absent"
         assert stale[0].severity == "warning"
+        assert stale[0].metadata["next_action"] == "operator-adjudication"
+        assert str(tmp_path / "definitely-absent") in stale[0].metadata["marker_dir"]
+        assert stale[0].task_id is None and stale[0].session is None
 
     def test_marker_dir_defaults_to_the_relay_root_parent(self, tmp_path: Path) -> None:
         import importlib.util

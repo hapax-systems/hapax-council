@@ -444,6 +444,39 @@ class TestRoleSessionSuccession:
         self._marker(tmp_path, f"eta-{sid}")
         assert self._succeed(tmp_path, "eta") == sid
 
+    def test_a_live_incumbent_is_not_succeeded(self, tmp_path: Path) -> None:
+        """Succession is a handoff from a lane that is GONE, not a shared identity.
+
+        Without a liveness precondition the helper handed a second concurrent
+        process the incumbent's identity purely from its marker file — two live
+        lanes, one claim key, which is the collision this whole row exists to
+        remove, re-created from the opposite direction.
+        """
+        sid = "3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+        self._marker(tmp_path, f"eta-{sid}")
+
+        # A real live process carrying that id, outside this shell's ancestry.
+        env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+        env["HAPAX_SESSION_ID"] = sid
+        incumbent = subprocess.Popen(["sleep", "30"], env=env)
+        try:
+            # Wait for the kernel to publish its environ before asking.
+            for _ in range(100):
+                try:
+                    if sid.encode() in Path(f"/proc/{incumbent.pid}/environ").read_bytes():
+                        break
+                except OSError:
+                    pass
+            assert self._succeed(tmp_path, "eta") == "MINT", (
+                "a second live process adopted the incumbent's claim identity"
+            )
+        finally:
+            incumbent.kill()
+            incumbent.wait()
+
+        # With the incumbent gone, the same marker IS succeeded.
+        assert self._succeed(tmp_path, "eta") == sid
+
     def test_no_live_claim_mints(self, tmp_path: Path) -> None:
         (tmp_path / ".cache" / "hapax").mkdir(parents=True)
         assert self._succeed(tmp_path, "eta") == "MINT"
@@ -514,6 +547,36 @@ class TestRoleSessionSuccession:
         assert two_arg, (
             f"{name} calls succession without a task id: {calls} — a role-only "
             "lookup can adopt a claim for DIFFERENT work"
+        )
+
+    @pytest.mark.parametrize("name", MINTING_LAUNCHERS)
+    def test_succession_uses_the_same_key_space_cc_claim_writes(self, name: str) -> None:
+        """Succession must look up markers under the key cc-claim writes them by.
+
+        cc-claim keys markers on the resolved ROLE (HAPAX_AGENT_NAME/ROLE). The
+        launchers use different local variable names for it — `$ROLE` in the claude
+        and kimi paths, `$SESSION` in the codex and vibe ones — so a succession
+        lookup passing the wrong variable would silently never fire, which looks
+        exactly like the resume regression rather than like a bug. This pins the
+        variable each launcher EXPORTS as its role against the one it passes to the
+        lookup, so the two key spaces cannot drift apart unnoticed.
+        """
+        code = _strip_comments((SCRIPTS / name).read_text(encoding="utf-8"))
+        # Match the ASSIGNMENT, not the `export` keyword position: kimi sets the
+        # role inside a multi-variable export and again via a printf into its
+        # runner script, so anchoring on `export HAPAX_AGENT_ROLE` misses it.
+        exported = re.search(r'HAPAX_AGENT_ROLE=(?:%q\\n\'\s*)?"?\$\{?([A-Za-z_]+)', code)
+        assert exported, f"{name} sets no HAPAX_AGENT_ROLE — cannot check key space"
+        role_var = exported.group(1)
+        call = next(
+            line
+            for line in code.splitlines()
+            if "hapax_role_succession_session_id" in line and "()" not in line
+        )
+        assert f'"${role_var}"' in call, (
+            f"{name} exports HAPAX_AGENT_ROLE=${role_var} but looks succession up "
+            f"with {call.strip()!r} — cc-claim writes markers under the exported "
+            "role, so this lookup would never fire"
         )
 
     @pytest.mark.parametrize("name", MINTING_LAUNCHERS)

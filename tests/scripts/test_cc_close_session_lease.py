@@ -249,6 +249,49 @@ def test_cc_close_orphan_sweep_spares_a_role_sharing_its_prefix(
     )
 
 
+def test_cc_close_guard_failure_spares_the_lease_rather_than_deleting_it(
+    tmp_path: Path,
+) -> None:
+    """If the foreign-lease guard cannot run, the lease survives.
+
+    The guard delegates to shared.session_identity through `python3 -I -`. Its
+    failure disposition is the whole safety question: a fail-OPEN branch would
+    delete another role's live lease, which is exactly the contested-claim evidence
+    the hygiene check routes to operator-adjudication rather than deleting. This
+    forces the subprocess to fail by putting a python3 on PATH that always exits
+    non-zero, and asserts the foreign lease is still there.
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, "foo")
+    cache = _cache(home)
+    foreign = cache / "cc-active-task-eta-3f1c9a20-77b4-4d0e-9a11-2c8e5b6d4f01"
+    foreign.write_text("foo\n", encoding="utf-8")
+
+    fakebin = tmp_path / "fakebin"
+    fakebin.mkdir()
+    broken = fakebin / "python3"
+    broken.write_text("#!/bin/sh\nexit 70\n", encoding="utf-8")
+    broken.chmod(0o755)
+
+    env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
+    env["HOME"] = str(home)
+    env["HAPAX_AGENT_ROLE"] = "eta"
+    env["PATH"] = f"{fakebin}:{env.get('PATH', '')}"
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "foo", "--status", "withdrawn"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert foreign.exists(), (
+        "the foreign-lease guard failed open and deleted a lease it could not "
+        f"adjudicate\nstdout={result.stdout}\nstderr={result.stderr}"
+    )
+
+
 def test_cc_close_sweeps_a_last_resort_minted_session_id(tmp_path: Path) -> None:
     """The alpha-infixed fallback mint is a real session id and must be swept.
 

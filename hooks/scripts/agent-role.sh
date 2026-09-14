@@ -278,7 +278,7 @@ sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
 # Sets `HAPAX_LAUNCH_SESSION_ID` in the CALLER's shell rather than printing, which
 # is the whole point: `$(...)` is a subshell, so a helper that printed could not
 # clear the pin where it matters. Review round 1 on PR #4668 found all four families
-# converging on this — the first cut exported HAPAX_SESSION_ID_PINNED=1 into the
+# converging on this — the first cut exported a bare truthy pin into the
 # codex runner and never cleared it, so the pin was inherited by every process in
 # the lane's subtree. A grandchild launcher then saw pin=1 plus the outer id and
 # adopted it, reconstructing the exact
@@ -325,6 +325,40 @@ sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
 # --continue flag: a launch for a task this role already holds IS a resume, and a
 # launch for anything else mints. Callers that cannot name a task (an interactive
 # --continue with no --task) fall back to role-only.
+# True when some OTHER live process carries this session id.
+#
+# Succession is a handoff from a lane that is GONE. Without this the helper
+# handed a second concurrent process the incumbent's identity purely from its
+# marker file: two live lanes, one claim key — the exact collision this whole row
+# exists to remove, re-created from the opposite direction.
+#
+# Reads /proc/<pid>/environ, which is the only place a session id is actually
+# observable; `pgrep` cannot see environment. Our own process and its ancestors
+# are excluded: a launcher that INHERITED the id is not evidence the incumbent
+# lane still runs. Unreadable environ (another user's process, a race with exit)
+# is skipped, which is correct for a liveness question — it is not evidence of
+# life.
+hapax_session_id_has_live_process() {
+  local sid="${1:-}" d pid chain p
+  [ -n "$sid" ] || return 1
+  chain=" $$ "
+  p="${PPID:-0}"
+  while [ -n "$p" ] && [ "$p" != "0" ] && [ "$p" != "1" ]; do
+    chain="$chain$p "
+    p="$(awk '{print $4}' "/proc/$p/stat" 2>/dev/null || printf '0')"
+  done
+  for d in /proc/[0-9]*; do
+    pid="${d#/proc/}"
+    case "$chain" in
+      *" $pid "*) continue ;;
+    esac
+    if grep -qz "^HAPAX_SESSION_ID=$sid$" "$d/environ" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 hapax_role_succession_session_id() {
   local role="${1:-}" task="${2:-}" dir="${HOME:-/nonexistent}/.cache/hapax" f n=0 found=""
   [ -n "$role" ] || return 1
@@ -339,6 +373,13 @@ hapax_role_succession_session_id() {
       local held
       held="$(head -n1 "$f" 2>/dev/null | tr -d '[:space:]' || true)"
       [ "$held" = "$task" ] || continue
+    fi
+    # The incumbent must be GONE. A live process holding this id means this is a
+    # concurrent launch, not a handoff, and adopting would give two lanes one
+    # claim key. Minting instead is the narrow outcome: the second lane gets its
+    # own identity and cc-claim's multi-claim guard adjudicates from there.
+    if hapax_session_id_has_live_process "$candidate"; then
+      continue
     fi
     n=$((n + 1))
     found="$candidate"

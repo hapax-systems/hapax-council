@@ -267,6 +267,20 @@ check's silence is not evidence of agreement:
 - `marker_dir_unreadable` / `marker_unreadable` (violation) — enumeration or a
   specific file could not be read. Repair the permission, then re-sweep.
 
+Recheck the remediation matrix and the two incomplete-sweep behaviours:
+
+```bash
+uv run pytest tests/test_cc_hygiene_stale_claim_marker.py -q
+```
+
+Expected: all pass. `test_emitted_remediation_is_a_runnable_command` is the one
+that keeps the `re-emit-close` command executable (it is fed to `bash -n`), and
+`test_remediation_names_the_cache_the_sweep_actually_read` is the one that keeps a
+non-default marker dir from being told to delete local files.
+`test_unlistable_directory_is_reported_not_read_as_empty` and
+`test_unreadable_marker_becomes_a_violation_event` cover the two incomplete-sweep
+events above.
+
 ## Blocked By `exit 9` — "identity helper not found"
 
 All six launchers (`hapax-claude`, `hapax-claude-headless`, `hapax-codex`,
