@@ -157,10 +157,16 @@ class TestTheHelper:
         import shared.cc_task_lock as mod
 
         monkeypatch.setenv(TIMEOUT_ENV, "0.25")
-        assert mod._resolved_timeout(None) == pytest.approx(0.25)
-        for bad in ("0", "-1", "", "soon"):
+        assert mod.resolved_timeout(None) == pytest.approx(0.25)
+        # Spellings a shell `case` pattern accepted and this rejects — the
+        # disagreement review round 15 measured. `0.00` refuses instantly; `1.5.0`
+        # made flock reject the timeout while the message still blamed a holder.
+        for bad in ("0", "0.0", "0.00", "-1", "1.5.0", "", "soon", " ", "inf", "nan"):
             monkeypatch.setenv(TIMEOUT_ENV, bad)
-            assert mod._resolved_timeout(None) == DEFAULT_TIMEOUT_SECONDS, bad
+            assert mod.resolved_timeout(None) == DEFAULT_TIMEOUT_SECONDS, bad
+        # An unusual but finite positive value IS the operator's call to make.
+        monkeypatch.setenv(TIMEOUT_ENV, "1e3")
+        assert mod.resolved_timeout(None) == pytest.approx(1000.0)
 
     def test_cc_close_resolves_the_same_lock_path_the_helper_does(self, tmp_path: Path) -> None:
         """Two derivations of one path is two lock files and no exclusion.
@@ -190,6 +196,202 @@ class TestTheHelper:
         assert result.returncode == 0, result.stderr
         expected = home / ".cache" / "hapax" / "cc-task-locks" / "t1.lock"
         assert Path(result.stdout.strip()) == expected
+
+
+class TestOneTimeoutParser:
+    """cc-close must resolve the knob the way the Python side does, not beside it.
+
+    A shell `case` pattern stood in for it and disagreed: it accepted `1.5.0`,
+    which flock then rejected while the refusal still told the operator to go find
+    a lock holder, and `0.00`, which turns every contended close into an instant
+    refusal. Both now route through `shared.cc_task_lock.resolved_timeout`.
+    """
+
+    def _closable(self, home: Path) -> Path:
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        note = _write_note(vault, "t1", "withdrawn")
+        return note
+
+    def test_a_malformed_timeout_does_not_become_a_phantom_lock_holder(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        note = self._closable(home)
+        env = _lane_env(home, HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS="1.5.0")
+        result = subprocess.run(
+            ["bash", str(CC_CLOSE), "t1", "--status", "withdrawn"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        assert "held the cc-task lock" not in result.stderr, (
+            "a malformed timeout was reported as contention, sending the operator "
+            f"to find a holder that does not exist\n{result.stderr}"
+        )
+        assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+        assert not note.exists(), "the close did not happen"
+
+    def test_a_zero_spelling_does_not_silently_become_no_wait(self, tmp_path: Path) -> None:
+        """`0.00` falls back to the default rather than refusing on contact."""
+        home = tmp_path / "home"
+        self._closable(home)
+        env = _lane_env(home, HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS="0.00")
+
+        held = lock_path("t1", home / ".cache" / "hapax" / "cc-task-locks")
+        handle = os.open(held, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            proc = subprocess.Popen(
+                ["bash", str(CC_CLOSE), "t1", "--status", "withdrawn"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            settle = time.monotonic() + 3.0
+            while proc.poll() is None and time.monotonic() < settle:
+                time.sleep(0.05)
+            blocked = proc.poll() is None
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
+        stdout, stderr = proc.communicate(timeout=120)
+
+        assert blocked, (
+            "cc-close refused immediately — `0.00` was honoured as a zero wait, so a "
+            f"momentarily contended close fails instead of waiting\n{stdout}\n{stderr}"
+        )
+        assert proc.returncode == 0, f"{stdout}\n{stderr}"
+
+
+class TestTheCloseSideFdIsHeldThroughout:
+    """cc-close takes the lock in BASH (`exec 9>` + flock) and the writer heredoc
+    plus the lease sweep inherit it. That is an assumption about fd inheritance and
+    shell scoping, not a fact any Python-side test establishes — review round 15
+    asked for it directly: if fd 9 were closed early, or the sweep ran somewhere
+    that did not inherit it, marker retirement would run unprotected.
+    """
+
+    def test_the_lock_is_never_acquirable_while_cc_close_runs(self, tmp_path: Path) -> None:
+        """Held from acquisition to exit — polled, not assumed.
+
+        The sibling test below proves cc-close BLOCKS on a held lock. It cannot see
+        an early release: by the time the writer runs, the competitor has let go.
+        So this one runs cc-close uncontended and polls for the lock in a tight
+        non-blocking loop. If fd 9 were closed before the writer, or the lease sweep
+        ran somewhere that did not inherit it, the poll acquires while cc-close is
+        still working — and the sweep, which is the part furthest from the
+        acquisition, would be running unprotected.
+        """
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        note = _write_note(vault, "t1", "withdrawn")
+        cache = home / ".cache" / "hapax"
+        cache.mkdir(parents=True, exist_ok=True)
+        lease = cache / "cc-active-task-eta"
+        lease.write_text("t1\n", encoding="utf-8")
+        env = _lane_env(home)
+
+        held = lock_path("t1", cache / "cc-task-locks")
+        proc = subprocess.Popen(
+            ["bash", str(CC_CLOSE), "t1", "--status", "withdrawn"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        def _acquirable(fd: int) -> bool:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return False
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return True
+
+        # TWO PHASES, and the first is not optional: polling from the moment Popen
+        # returns proves nothing, because cc-close runs its read-only gates before
+        # taking the lock and the very first poll succeeds against a lock nobody
+        # holds yet. That version of this test reported the shipped code as broken.
+        observed_held = False
+        stole_it = False
+        handle = os.open(held, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            while proc.poll() is None and not observed_held:
+                observed_held = not _acquirable(handle)
+                if not observed_held:
+                    time.sleep(0.005)
+            while observed_held and proc.poll() is None:
+                if _acquirable(handle):
+                    stole_it = True
+                    break
+                time.sleep(0.005)
+        finally:
+            os.close(handle)
+        stdout, stderr = proc.communicate(timeout=120)
+
+        assert observed_held, (
+            "the lock was never observed held while cc-close ran — either it does "
+            f"not take one, or it released it faster than a 5ms poll\n{stdout}\n{stderr}"
+        )
+        assert not stole_it, (
+            "the cc-task lock became acquirable while cc-close was still running, so "
+            "part of its mutating tail — the lease sweep is the furthest — runs "
+            f"unprotected\n{stdout}\n{stderr}"
+        )
+        assert proc.returncode == 0, f"{stdout}\n{stderr}"
+        assert not note.exists() and not lease.exists(), (
+            f"the close did not complete\n{stdout}\n{stderr}"
+        )
+
+    def test_a_competing_holder_blocks_cc_close_through_marker_retirement(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        note = _write_note(vault, "t1", "withdrawn")
+        cache = home / ".cache" / "hapax"
+        cache.mkdir(parents=True, exist_ok=True)
+        lease = cache / "cc-active-task-eta"
+        lease.write_text("t1\n", encoding="utf-8")
+        env = _lane_env(home)
+
+        held = lock_path("t1", cache / "cc-task-locks")
+        handle = os.open(held, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            proc = subprocess.Popen(
+                ["bash", str(CC_CLOSE), "t1", "--status", "withdrawn"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            settle = time.monotonic() + 3.0
+            while proc.poll() is None and time.monotonic() < settle:
+                time.sleep(0.05)
+            blocked = proc.poll() is None
+            # Nothing may have happened yet — note untouched AND lease untouched.
+            note_present = note.exists()
+            lease_present = lease.exists()
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
+
+        stdout, stderr = proc.communicate(timeout=120)
+
+        assert blocked, f"cc-close proceeded while the lock was held\n{stdout}\n{stderr}"
+        assert note_present and lease_present, "cc-close mutated state before acquiring the lock"
+        assert proc.returncode == 0, f"{stdout}\n{stderr}"
+        assert not note.exists(), "the note was not closed once the lock cleared"
+        # The sweep is AFTER the writer heredoc. Its having run is the evidence that
+        # fd 9 was still held there rather than released with the heredoc.
+        assert not lease.exists(), (
+            "the lease sweep did not run — it is the part of cc-close furthest from "
+            f"the acquisition, and the part that would run unprotected\n{stdout}"
+        )
 
 
 class TestBothWritersParticipate:

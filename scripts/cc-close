@@ -325,16 +325,27 @@ fi
 # fd 9 is held by THIS shell, so the writer and the lease sweep both inherit it
 # and the kernel releases it when cc-close exits, however it exits. No staleness
 # rule, and so nothing to reap.
-lock_path="$(python3 -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF' || true
+# BOTH the path and the timeout come from the Python SSOT, in one call.
+#
+# A shell `case` pattern stood in for the timeout parser for one round and
+# disagreed with it: it accepted `0.00` (immediate refusal) and `1.5.0` (which
+# flock itself then rejected, while the message still blamed a lock holder), where
+# shared.cc_task_lock falls back to 30 for both. Two parsers for one knob is the
+# same shape as two derivations for one path — the runbook promised a shared
+# default the code did not implement.
+lock_facts="$(python3 -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF' || true
 import sys
 
 sys.path.insert(0, sys.argv[1])
-from shared.cc_task_lock import lock_path
+from shared.cc_task_lock import lock_path, resolved_timeout
 
 print(lock_path(sys.argv[2]))
+print(f"{resolved_timeout(None):g}")
 PYEOF
 )"
-if [[ -z "$lock_path" ]]; then
+lock_path="$(printf '%s\n' "$lock_facts" | sed -n '1p')"
+lock_timeout="$(printf '%s\n' "$lock_facts" | sed -n '2p')"
+if [[ -z "$lock_path" || -z "$lock_timeout" ]]; then
   echo "cc-close: refusing — could not resolve the cc-task lock path for '$task_id'. Next action: run from a complete council checkout (shared/cc_task_lock.py must be importable). Nothing was modified." >&2
   exit 2
 fi
@@ -343,16 +354,18 @@ if ! command -v flock >/dev/null 2>&1; then
   exit 2
 fi
 exec 9>"$lock_path"
-# Same knob and same default as the Python side (shared/cc_task_lock.py), so the
-# two writers cannot disagree about how long to wait. It bounds the wait only —
-# there is no value that skips acquisition, because a documented way to skip it is
-# a documented way back into the interleaving.
-lock_timeout="${HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS:-30}"
-case "$lock_timeout" in
-  ''|*[!0-9.]*|.|0|0.0) lock_timeout=30 ;;
-esac
-if ! flock -x -w "$lock_timeout" 9; then
+flock_rc=0
+flock -x -w "$lock_timeout" 9 || flock_rc=$?
+if [[ "$flock_rc" -eq 1 ]]; then
   echo "cc-close: refusing — another process has held the cc-task lock for '$task_id' ($lock_path) for more than ${lock_timeout}s. Next action: find the holder with 'fuser -v $lock_path' and let it finish, then re-run. Nothing was modified." >&2
+  exit 2
+elif [[ "$flock_rc" -ne 0 ]]; then
+  # NOT contention. flock exits 1 when it cannot acquire and something else when
+  # it could not even try — 64 for an invalid argument, for instance. Reporting
+  # those as a held lock sent the operator to `fuser` after a holder that never
+  # existed, which is a worse failure than the refusal itself: it describes a
+  # state of the system rather than a fault in the invocation.
+  echo "cc-close: refusing — could not acquire the cc-task lock for '$task_id' ($lock_path): flock exited $flock_rc, which is not contention. Next action: check HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS ('$lock_timeout') and that $lock_path is writable. Nothing was modified." >&2
   exit 2
 fi
 
@@ -364,6 +377,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
+import yaml
+
 from shared.frontmatter import parse_frontmatter_with_diagnostics
 
 path, task_id, final_status, pr, role = (Path(sys.argv[2]), *sys.argv[3:7])
@@ -414,17 +429,52 @@ frontmatter = _parsed.frontmatter
 
 # Duplicate top-level keys: YAML takes the last silently, so `status:` twice makes
 # the field the writer validates and the field a reader sees potentially different
-# lines, and `re.sub(count=1)` would then rewrite the FIRST. Refuse rather than
+# lines, and a line rewrite would then edit only one of them. Refuse rather than
 # pick. Only the keys this writer reads or rewrites are checked — a duplicate
 # elsewhere is the vault's business, not this close's.
+#
+# Detected THROUGH YAML, not by matching key lines. The first cut matched
+# `^([A-Za-z_][...]*):`, which sees `status:` and not `"status":` — so
+# `status: withdrawn` followed by `"status": in_progress` read as no duplicate at
+# all, and the rewrite then edited the unquoted line while the parsed value came
+# from the quoted one. YAML resolves both spellings to one key; only a YAML-level
+# check sees what a YAML reader will see.
 _GOVERNED_KEYS = ("task_id", "status", "completed_at", "updated_at", "pr")
-_key_line = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):")
-_counts: dict[str, int] = {}
-for _line in fm_text.splitlines():
-    _m = _key_line.match(_line)
-    if _m:
-        _counts[_m.group(1)] = _counts.get(_m.group(1), 0) + 1
-_dupes = sorted(k for k in _GOVERNED_KEYS if _counts.get(k, 0) > 1)
+
+
+class _DuplicateKeyLoader(yaml.SafeLoader):
+    """SafeLoader that records duplicate mapping keys instead of last-wins.
+
+    A SUBCLASS of SafeLoader, so `!!python/object` and every other arbitrary-type
+    tag stays unresolvable — `yaml.load(..., Loader=<a SafeLoader subclass>)` has
+    SafeLoader's tag set, not the unsafe one. The subclass exists only to hook
+    mapping construction, and the hook constructs nothing SafeLoader would not:
+    it counts keys and then delegates to `yaml.SafeLoader.construct_mapping`.
+    """
+
+
+def _construct_mapping_recording_duplicates(loader, node, deep=False):  # type: ignore[no-untyped-def]
+    seen: set = set()
+    for key_node, _value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            if key in seen:
+                _duplicate_keys.add(key)
+            seen.add(key)
+        except TypeError:  # unhashable key: not a governed field, not our business
+            continue
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
+
+
+_duplicate_keys: set = set()
+_DuplicateKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping_recording_duplicates
+)
+try:
+    yaml.load(fm_text, Loader=_DuplicateKeyLoader)  # noqa: S506 - SafeLoader subclass
+except yaml.YAMLError:
+    _duplicate_keys = set()  # the parse failure above already refused
+_dupes = sorted(str(k) for k in _duplicate_keys if k in _GOVERNED_KEYS)
 if _dupes:
     print(
         f"cc-close: refusing — '{path}' frontmatter declares {', '.join(_dupes)} more "
@@ -479,16 +529,52 @@ now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 # reassembled from it. A substitution over the whole note could edit a body line
 # that happens to start with a governed key, which is the write-side half of the
 # same defect.
-fm_text = re.sub(r"^status:.*$", f"status: {final_status}", fm_text, count=1, flags=re.MULTILINE)
-fm_text = re.sub(
-    r"^completed_at:.*$", f"completed_at: {now}", fm_text, count=1, flags=re.MULTILINE
-)
-fm_text = re.sub(
-    r"^updated_at:.*$", f"updated_at: {now}", fm_text, count=1, flags=re.MULTILINE
-)
+#
+# The key may be written `k:`, `"k":` or `'k':`; YAML calls all three the same
+# field and a reader sees whichever the parser resolves. Matching only the bare
+# spelling rewrote `status:` while leaving `"status":` untouched, so a note could
+# be archived reporting `withdrawn` while its YAML still parsed as `in_progress`.
+# Line surgery keeps comments, ordering and quoting style that a full YAML
+# round-trip would destroy; it just has to recognise the same key YAML does.
+def _fm_set(block: str, key: str, value: str) -> str:
+    pattern = rf"^(?:{re.escape(key)}|\"{re.escape(key)}\"|'{re.escape(key)}')\s*:.*$"
+    return re.sub(pattern, f"{key}: {value}", block, count=1, flags=re.MULTILINE)
+
+
+fm_text = _fm_set(fm_text, "status", final_status)
+fm_text = _fm_set(fm_text, "completed_at", now)
+fm_text = _fm_set(fm_text, "updated_at", now)
 if pr:
-    fm_text = re.sub(r"^pr:.*$", f"pr: {pr}", fm_text, count=1, flags=re.MULTILINE)
+    fm_text = _fm_set(fm_text, "pr", pr)
 text = "---" + fm_text + rest
+
+# Verify the RESULT, before anything is written or unlinked.
+#
+# Every guard above is about the input; this is the only one about the output, and
+# it is what makes the class of defect unrepresentable rather than patched. Two
+# rounds running, a key spelling the rewrite did not recognise produced a note
+# archived as `withdrawn` whose YAML still parsed as `in_progress` — a false record
+# that reads as a governed one. Whatever the substitutions did or did not match,
+# the bytes about to replace the note must parse to the closure being reported.
+_after = parse_frontmatter_with_diagnostics(text)
+if not _after.ok or _after.frontmatter is None:
+    print(
+        f"cc-close: refusing — the rewritten note for '{task_id}' no longer parses "
+        f"({_after.error_kind}: {_after.error_message}). Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+_after_status = str(_after.frontmatter.get("status", "")).strip()
+_after_task = str(_after.frontmatter.get("task_id", "")).strip()
+if _after_status != final_status or _after_task != task_id:
+    print(
+        f"cc-close: refusing — after rewriting, '{path}' parses as task_id "
+        f"'{_after_task}' status '{_after_status}', not '{task_id}'/'{final_status}'. "
+        "The note was NOT closed and nothing was modified. Next action: inspect the "
+        "frontmatter for an unusual spelling of those keys, repair it, and re-run.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 log_line = f"- {now} {role or 'session'} closed as {final_status}"
 if pr:
     log_line += f" (PR #{pr})"

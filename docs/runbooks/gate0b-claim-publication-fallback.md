@@ -279,7 +279,10 @@ sessions.** Two different operations, easily confused:
   whose key remainder is minted-shape are retired. Anything else is left alone.
 
   This is closure cleanup: it exists so a lane that restarted mid-task cannot leave
-  the marker set disagreeing with the vault.
+  the marker set disagreeing with the vault. Recheck that specific behaviour —
+  every lease this role holds naming this task, including other sessions' — with
+  `uv run pytest tests/scripts/test_cc_close_session_lease.py -q`; the case is
+  `test_cc_close_clears_a_lease_for_this_task_held_by_another_session`.
 - **Exact-file stale-lease release** — the procedure above. Use it for a lease
   naming a *different* task, a lease belonging to a *different role*, or any lease
   you must retire without closing the task. `cc-close` will not touch those, by
@@ -462,6 +465,15 @@ cc-close selects a note by filename and then checks that the note's own
   so they agree.
 - **`declares no readable task_id`** — the note's frontmatter has no parseable
   `task_id` scalar. Repair it (`task_id: <id>`, single-line) and re-run.
+- **`declares <key> more than once`** — the frontmatter carries two of a field
+  cc-close reads or rewrites. Detected through YAML, so `status:` and `"status":`
+  count as the same key. Which line is authoritative is undecidable; remove one.
+- **`after rewriting, … parses as … not …`** — cc-close re-parsed the note it was
+  about to write and it did not carry the closure being reported, so nothing was
+  written. This is the output check rather than another input pattern: it fires
+  whatever spelling of a governed key the rewrite failed to recognise. Inspect the
+  frontmatter for an unusual spelling of `status` or `task_id` (an explicit `? key`
+  mapping, say), repair it, re-run.
 
 This guard exists because the filename glob can only ever match a prefix: without
 it, `cc-close t1` selected `t1-next.md` and withdrew different, live work.
@@ -494,6 +506,12 @@ which stops every check:
 ```bash
 HAPAX_CC_HYGIENE_OFF=1     # sweeper-wide: silences all checks, not just this one
 ```
+
+**`HAPAX_CC_HYGIENE_OFF=1` is the ONLY escape hatch for this check**, and it stops
+every other check with it. There is no `--skip-check`, no per-check env var, and
+`HAPAX_CC_HYGIENE_CLAIM_MARKER_DIR` is a correction rather than a mute — if you are
+paged at 3am and looking for a way to silence `stale_claim_marker` specifically,
+that is the whole answer: correct the marker dir, or take the sweeper down.
 
 Deliberately not per-check, and the correction above is why that is defensible
 rather than merely strict. A reconciliation whose job is noticing that live state

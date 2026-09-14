@@ -27,6 +27,8 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 from cc_hygiene.checks import check_stale_claim_marker, parse_task_note  # noqa: E402
 
+from shared.frontmatter import parse_frontmatter  # noqa: E402
+
 CC_CLOSE = REPO_ROOT / "scripts" / "cc-close"
 
 _IDENTITY_ENV = (
@@ -511,6 +513,125 @@ class TestOnlyTheFrontmatterCounts:
         assert result.returncode == 2, f"a duplicated key was silently resolved\n{result.stdout}"
         assert "more than once" in result.stderr, result.stderr
         assert note.exists()
+
+    def test_a_quoted_key_is_the_same_field_and_is_rewritten(self, tmp_path: Path) -> None:
+        """`"status":` is the same field as `status:` — to YAML, and now to us.
+
+        Matching only the bare spelling rewrote nothing here, so the note was
+        archived reporting `withdrawn` while its YAML still parsed as
+        `in_progress`: a false record that reads as a governed one.
+        """
+        home = tmp_path / "home"
+        result, _note = self._close(
+            home,
+            textwrap.dedent(
+                """\
+                ---
+                type: cc-task
+                task_id: t1
+                title: "t1"
+                "status": in_progress
+                assigned_to: eta
+                completed_at:
+                updated_at:
+                pr:
+                ---
+
+                # t1
+
+                ## Session log
+                """
+            ),
+            "--status",
+            "withdrawn",
+        )
+        assert result.returncode == 0, result.stderr
+        closed = (
+            home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "closed" / "t1.md"
+        )
+        assert closed.is_file(), "the note was not archived"
+        parsed, _body = parse_frontmatter(closed)
+        assert parsed.get("status") == "withdrawn", (
+            f"the archived note reports a closure its YAML does not carry: {parsed.get('status')!r}"
+        )
+
+    def test_mixed_quoted_and_unquoted_duplicates_are_refused(self, tmp_path: Path) -> None:
+        """The reported reproduction, and the one a line-matching check cannot see.
+
+        `status: withdrawn` followed by `"status": in_progress` is ONE key to YAML
+        and two lines to a regex. A key-line counter saw no duplicate, the rewrite
+        edited the unquoted line, and the parsed value came from the quoted one.
+        Detecting duplicates through YAML is what makes the two agree.
+        """
+        result, note = self._close(
+            tmp_path / "home",
+            textwrap.dedent(
+                """\
+                ---
+                type: cc-task
+                task_id: t1
+                title: "t1"
+                status: withdrawn
+                "status": in_progress
+                assigned_to: eta
+                completed_at:
+                updated_at:
+                pr:
+                ---
+
+                # t1
+
+                ## Session log
+                """
+            ),
+            "--status",
+            "withdrawn",
+        )
+        assert result.returncode == 2, (
+            f"a mixed-spelling duplicate was silently resolved\n{result.stdout}"
+        )
+        assert "more than once" in result.stderr, result.stderr
+        assert note.exists(), "the note was unlinked despite the refusal"
+
+    def test_the_archived_note_must_parse_as_the_closure_reported(self, tmp_path: Path) -> None:
+        """The output check, not another input pattern.
+
+        Whatever the substitutions matched, the bytes replacing the note must parse
+        to the status being reported. A key spelling neither the rewrite nor a
+        duplicate check anticipated is caught here — this is what makes the class
+        unrepresentable rather than patched twice.
+        """
+        home = tmp_path / "home"
+        result, note = self._close(
+            home,
+            textwrap.dedent(
+                """\
+                ---
+                type: cc-task
+                task_id: t1
+                title: "t1"
+                ? status
+                : in_progress
+                assigned_to: eta
+                completed_at:
+                updated_at:
+                pr:
+                ---
+
+                # t1
+
+                ## Session log
+                """
+            ),
+            "--status",
+            "withdrawn",
+        )
+        assert result.returncode == 2, (
+            "an explicit-key spelling was archived without the status being rewritten"
+            f"\n{result.stdout}"
+        )
+        assert "not 't1'/'withdrawn'" in result.stderr, result.stderr
+        assert note.exists(), "the note was unlinked despite the refusal"
 
     def test_an_inline_comment_on_task_id_is_not_an_identity_change(self, tmp_path: Path) -> None:
         """`task_id: t1  # note` is valid YAML and was read as the id `t1  # note`.

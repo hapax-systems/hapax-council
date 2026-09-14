@@ -780,3 +780,60 @@ class TestCodexRunnerReentry:
             f"two hapax-codex launches produced one identity ({first}) — every lane "
             "started this way keys the same claim file"
         )
+
+    def test_a_grandchild_launcher_inside_the_lane_mints_its_own(self, tmp_path: Path) -> None:
+        """TWO HOPS, through real launchers — the shape the round-1 defect had.
+
+        The helper-level grandchild test resolves twice in one shell. Review round
+        15 asked for confirmation that a launcher-level two-hop case exists, and it
+        did not. This is it: hapax-codex -> its runner -> hapax-codex (the one
+        legitimate inheritance) -> hapax-kimi started from inside that lane, which
+        must mint. The shipped defect was a pin that survived hop one and let the
+        grandchild adopt the lane's id, reconstructing the three-lane collision.
+        """
+        runner, out, env = self._launch(tmp_path, "gc")
+        grandchild_out = tmp_path / "grandchild.txt"
+        kimi_stub = tmp_path / "bin-gc" / "kimi-harness"
+        kimi_stub.write_text(
+            "#!/bin/sh\n"
+            'printf "sid=%s\\npinned=%s\\n" "${HAPAX_SESSION_ID:-}" '
+            '"${HAPAX_SESSION_ID_PINNED:-}" > "$GRANDCHILD_OUT"\n',
+            encoding="utf-8",
+        )
+        kimi_stub.chmod(0o755)
+
+        # The codex harness stub launches the SECOND launcher from inside the lane,
+        # with exactly the environment that lane exports.
+        codex_stub = tmp_path / "bin-gc" / "codex"
+        codex_stub.write_text(
+            self.STUB_CODEX.replace(
+                "fi\n",
+                'fi\nif [ -n "${GRANDCHILD_LAUNCHER:-}" ]; then\n'
+                '  "$GRANDCHILD_LAUNCHER" zeta --terminal none >/dev/null 2>&1 || true\n'
+                "fi\n",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        codex_stub.chmod(0o755)
+
+        env = dict(env)
+        env["GRANDCHILD_LAUNCHER"] = str(SCRIPTS / "hapax-kimi")
+        env["GRANDCHILD_OUT"] = str(grandchild_out)
+        env["KIMI_BIN"] = str(kimi_stub)
+
+        lane = self._run_runner(runner, out, env)
+        assert grandchild_out.is_file(), (
+            "the grandchild launcher never reached its harness, so nothing was observed"
+        )
+        observed: dict[str, str] = {}
+        for line in grandchild_out.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            observed[key] = value
+
+        assert observed["sid"] != lane["sid"], (
+            "a grandchild launcher adopted the lane's session id — the pin outlived "
+            "the single re-exec it was written for, and three lanes key one claim file"
+        )
+        assert is_claim_keyable_session_id(observed["sid"])
+        assert observed["pinned"] == "", "the pin reached the grandchild's harness"

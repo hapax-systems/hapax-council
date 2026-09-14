@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import math
 import os
 import time
 from pathlib import Path
@@ -58,7 +59,14 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 TIMEOUT_ENV = "HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS"
 
 
-def _resolved_timeout(timeout: float | None) -> float:
+def resolved_timeout(timeout: float | None) -> float:
+    """The wait, from an explicit argument or the environment, with the default.
+
+    Public because cc-close resolves the same knob from bash and must not
+    re-implement it: a shell `case` pattern accepted `0.00` and `1.5.0` where this
+    falls back to the default, so the two writers disagreed about a value the
+    runbook described as shared.
+    """
     if timeout is not None:
         return timeout
     raw = (os.environ.get(TIMEOUT_ENV) or "").strip()
@@ -67,7 +75,11 @@ def _resolved_timeout(timeout: float | None) -> float:
             value = float(raw)
         except ValueError:
             return DEFAULT_TIMEOUT_SECONDS
-        if value > 0:
+        # Finite AND positive. `inf` parses, is greater than zero, and would make
+        # the wait unbounded — which is the hang this function's whole shape exists
+        # to avoid. `nan` fails the comparison and falls through anyway; saying so
+        # explicitly keeps the predicate readable.
+        if math.isfinite(value) and value > 0:
             return value
     return DEFAULT_TIMEOUT_SECONDS
 
@@ -123,7 +135,7 @@ def hold_task_note_lock(
     cannot serialize must refuse rather than proceed, and a refusal has to be able
     to say what it is waiting on.
     """
-    timeout = _resolved_timeout(timeout)
+    timeout = resolved_timeout(timeout)
     path = lock_path(task_id, cache_dir)
     deadline = time.monotonic() + timeout
     handle = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
