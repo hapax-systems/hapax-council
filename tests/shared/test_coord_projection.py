@@ -4664,6 +4664,68 @@ def test_rollback_preserves_a_writer_who_replaced_the_live_destination(
     ), "the writer's entry was neither left live nor reported as preserved"
 
 
+def test_rollback_carries_a_pre_rename_arrival_into_the_scratch_and_reports_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The withdrawal's OTHER branch: a foreign inode moved into the rollback scratch.
+
+    Its sibling above injects after the withdrawal's rename returns, so the writer recreates
+    a name that is already vacant and the withdrawal only ever examines its own inode. That
+    leaves the preservation branch — the one where the rename carries somebody ELSE's entry
+    across — unexercised, which a reviewer demonstrated by forcing the identity condition
+    true and watching the test still pass.
+
+    Here the replacement lands BEFORE the rename, so the entry moved aside is the writer's.
+    The assertions are the ones that branch exists for: their inode, their bytes, the scratch
+    location, and a report that names it.
+    """
+
+    (tmp_path / ".staged").write_bytes(b"the transition's content\n")
+    aside = cp._fallback_scratch_name("live-note.md", "rollback")
+    withdrawing = False
+    replaced_inode: int | None = None
+    real_rename = os.rename
+
+    def fail_the_source_check(*_args: object, **_kwargs: object) -> None:
+        nonlocal withdrawing
+        withdrawing = True
+        raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    def replace_before_the_withdrawals_rename(*args: object, **kwargs: object) -> None:
+        nonlocal replaced_inode
+        if withdrawing and replaced_inode is None and args and str(args[0]) == "live-note.md":
+            _replace_atomically(tmp_path, "live-note.md", b"ANOTHER WRITER'S ONLY COPY\n")
+            replaced_inode = (tmp_path / "live-note.md").stat().st_ino
+        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with caplog.at_level("WARNING"):
+            with (
+                mock.patch.object(cp, "_refuse_if_displaced_entry_moved", fail_the_source_check),
+                mock.patch.object(os, "rename", replace_before_the_withdrawals_rename),
+            ):
+                with pytest.raises(OSError) as raised:
+                    cp._fallback_noreplace(dir_fd, ".staged", dir_fd, "live-note.md")
+        assert raised.value.errno == errno.EIO
+    finally:
+        os.close(dir_fd)
+
+    assert replaced_inode is not None, "the arrival must land before the rename to mean anything"
+    preserved = tmp_path / aside
+    assert preserved.exists(), "the writer's entry was not carried into the rollback scratch"
+    assert preserved.read_bytes() == b"ANOTHER WRITER'S ONLY COPY\n"
+    assert preserved.stat().st_ino == replaced_inode, (
+        "something is at the scratch name, but it is not the writer's inode"
+    )
+    # Off the live path, which is what the withdrawal needed, and reported rather than
+    # stranded — nothing sweeps these names.
+    assert not (tmp_path / "live-note.md").exists()
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert aside in caplog.text
+    assert "do not delete" in caplog.text or "before removing" in caplog.text
+
+
 @pytest.mark.parametrize("failing", ["lstat", "unlink"])
 def test_a_stranded_rollback_entry_is_never_silent(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, failing: str
@@ -5555,6 +5617,108 @@ def test_an_unconsumed_reservation_is_released_so_the_next_attempt_can_retry(
 
     # ... and the operand is untouched, so the retry has something to retry.
     assert (tmp_path / ".src").read_bytes() == b"replacement\n"
+
+
+def test_a_reservation_whose_identity_cannot_be_established_is_refused_not_stranded(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`fstat` on our own new descriptor can fail, and it used to escape uncaught.
+
+    The identification runs outside any handler, so an EIO there propagated straight out of
+    the leg: the placeholder stayed, nothing was logged, and every later attempt on the
+    operand refused at the vacancy check with no explanation anywhere. The name is held and
+    unprovable, so it must NOT be removed — but it must be reported, and the refusal must
+    say so rather than surfacing as a bare OSError from a syscall the caller never made.
+    """
+
+    (tmp_path / ".src").write_bytes(b"replacement\n")
+    (tmp_path / "dst").write_bytes(b"displaced\n")
+    holding = cp._fallback_scratch_name(".src", "holding")
+    real_fstat = os.fstat
+    real_open = os.open
+    ours: set[int] = set()
+
+    def note_our_reservation(*args: object, **kwargs: object) -> int:
+        handle = real_open(*args, **kwargs)  # type: ignore[arg-type]
+        if args and str(args[0]) == holding:
+            ours.add(handle)
+        return handle
+
+    def fail_identifying_our_reservation(handle: int) -> os.stat_result:
+        if handle in ours:
+            raise OSError(errno.EIO, os.strerror(errno.EIO), "fstat")
+        return real_fstat(handle)
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with caplog.at_level("WARNING"):
+            with (
+                mock.patch.object(os, "open", note_our_reservation),
+                mock.patch.object(os, "fstat", fail_identifying_our_reservation),
+            ):
+                with pytest.raises(cp.LifecycleTransitionError) as caught:
+                    cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
+    finally:
+        os.close(dir_fd)
+
+    assert caught.value.reason_code == "transition_projection_scratch_exists"
+    # Preserve-on-uncertainty: the name is held and unprovable, so it stays.
+    assert (tmp_path / holding).exists()
+    # Both operands untouched — nothing moved before the identification.
+    assert (tmp_path / ".src").read_bytes() == b"replacement\n"
+    assert (tmp_path / "dst").read_bytes() == b"displaced\n"
+    # And it is reported, with a remedy that acts on the thing it names.
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert holding in caplog.text
+    assert "clear it by hand" in str(caught.value)
+    assert "will not clear this name" in str(caught.value)
+
+
+def test_move_aside_reports_and_returns_false_when_identity_cannot_be_established(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The same failure on the never-raises path must stay never-raising.
+
+    `_move_aside_atomically` is called from cleanup and from a rollback that is already
+    propagating another exception. An `fstat` error escaping there would mask the failure
+    actually being reported, so it returns False and says what it left behind.
+    """
+
+    (tmp_path / "scratch").write_bytes(b"someone-elses\n")
+    (tmp_path / "other").write_bytes(b"ours\n")
+    abandoned = "scratch.transition-abandoned"
+    real_fstat = os.fstat
+    real_open = os.open
+    ours: set[int] = set()
+
+    def note_our_reservation(*args: object, **kwargs: object) -> int:
+        handle = real_open(*args, **kwargs)  # type: ignore[arg-type]
+        if args and str(args[0]) == abandoned:
+            ours.add(handle)
+        return handle
+
+    def fail_identifying_our_reservation(handle: int) -> os.stat_result:
+        if handle in ours:
+            raise OSError(errno.EIO, os.strerror(errno.EIO), "fstat")
+        return real_fstat(handle)
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        expected = os.lstat("other", dir_fd=dir_fd)  # deliberately NOT what `scratch` holds
+        with caplog.at_level("WARNING"):
+            with (
+                mock.patch.object(os, "open", note_our_reservation),
+                mock.patch.object(os, "fstat", fail_identifying_our_reservation),
+            ):
+                freed = cp._retire_scratch(dir_fd, "scratch", expected, subject="probe")
+    finally:
+        os.close(dir_fd)
+
+    assert freed is False
+    # Nothing destroyed on either name.
+    assert (tmp_path / "scratch").read_bytes() == b"someone-elses\n"
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert abandoned in caplog.text
 
 
 def test_the_release_does_not_delete_an_EMPTY_entry_it_did_not_create(

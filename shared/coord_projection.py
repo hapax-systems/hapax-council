@@ -3713,6 +3713,23 @@ def _same_entry(left: os.stat_result, right: os.stat_result) -> bool:
 #: remnants has a term to search even though nothing in this module sweeps for them.
 _SCRATCH_ABANDONED = "transition_scratch_abandoned_not_ours"
 
+#: The remedy every stranded-scratch report must name, and it is NOT the recovery command.
+#:
+#: These reports used to end with "rerun `cc-claim --recover-claim-publications <task_id>`".
+#: That command reconciles claim-publication JOURNALS; it does not enumerate or clear these
+#: dotted fallback names — nothing does, as :data:`_SCRATCH_ABANDONED` says two lines up. So
+#: the instruction was an error naming a next action that does not act on the thing it
+#: names, which is the executive_function defect this module's own recovery-hygiene repair
+#: exists to remove. A remnant left at a scratch name blocks every later attempt on that
+#: operand at the vacancy check, so the clearance has to happen first and by hand.
+_SCRATCH_REMEDY = (
+    "clear it by hand before retrying, and nothing sweeps these names for you: read the "
+    "entry, and if it is not this transition's, move it somewhere durable before removing "
+    "the scratch name — a retry on this operand refuses until the name is free. Rerunning "
+    "`cc-claim --recover-claim-publications <task_id>` reconciles the JOURNAL and will not "
+    "clear this name"
+)
+
 _logger = logging.getLogger(__name__)
 
 
@@ -3781,9 +3798,12 @@ def _relocate_to_scratch(
 
     The residual, stated exactly: a hard crash between taking the reservation and the rename
     strands an empty placeholder, and the next attempt on that operand then refuses at the
-    vacancy check rather than retrying. That is two adjacent statements wide, it is the same
-    class of remnant the recovery sweep already owns, and it fails toward refusal rather than
-    toward loss.
+    vacancy check rather than retrying. That is two adjacent statements wide and it fails
+    toward refusal rather than toward loss — but **clearing it is manual**. Nothing sweeps
+    these dotted names; see :data:`_SCRATCH_REMEDY`. This paragraph used to say the remnant
+    was "the same class the recovery sweep already owns", which contradicted this module's
+    own disclosure two hundred lines up and would have left an operator waiting for a sweep
+    that does not exist.
     """
 
     # Take the destination atomically, immediately before the rename that consumes it.
@@ -3811,10 +3831,26 @@ def _relocate_to_scratch(
     # Identify the placeholder by INODE, while we still hold the descriptor that created it.
     # Emptiness is not identity: a writer can put an empty file at the name too, and the
     # release below would then have deleted their entry believing it was ours.
+    #
+    # If that identification fails we hold the name and cannot prove it is ours, so we must
+    # not remove it — preserve-on-uncertainty, the same rule as everywhere else here. Letting
+    # the error propagate from outside a handler (which it did) stranded the placeholder with
+    # no report at all, so the refusal is typed and names the obstruction.
     try:
         placeholder = os.fstat(reservation)
+    except OSError as exc:
+        _wedged(scratch_name, f"its identity could not be established ({exc})")
+        raise LifecycleTransitionError(
+            "transition_projection_scratch_exists",
+            f"this attempt reserved {scratch_name} and then could not identify it ({exc}), "
+            f"so it is left in place and nothing moved. {_SCRATCH_REMEDY}",
+            f"{subject}:{live_name}->{scratch_name}",
+        ) from exc
     finally:
-        os.close(reservation)
+        # A close failure cannot invalidate an fstat that already succeeded, and there is
+        # nothing useful to do about it, but it must not escape and mask the real outcome.
+        with suppress(OSError):
+            os.close(reservation)
 
     try:
         os.rename(live_name, scratch_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
@@ -3853,8 +3889,8 @@ def _release_scratch_reservation(
 
     An unreleased reservation is worse than the window it closed: it survives the process and
     refuses every later attempt on that operand. The window between taking it and consuming
-    it is two adjacent statements, so only a hard crash can strand one — the same class of
-    remnant the recovery sweep already owns, not a new state machine.
+    it is two adjacent statements, so only a hard crash can strand one — and clearing that
+    one is **manual**, because nothing sweeps these dotted names. See :data:`_SCRATCH_REMEDY`.
     """
 
     try:
@@ -3891,11 +3927,11 @@ def _wedged(name: str, cause: object) -> None:
         "%s: name=%s could not be released (%s) — this attempt's reservation is STILL THERE, "
         "so every later attempt on this operand will refuse with "
         "transition_projection_scratch_exists until it is cleared. It is an empty "
-        "placeholder unless the cause above says otherwise: inspect it, then rerun "
-        "`cc-claim --recover-claim-publications <task_id>`",
+        "placeholder unless the cause above says otherwise. %s",
         _SCRATCH_ABANDONED,
         name,
         cause,
+        _SCRATCH_REMEDY,
     )
 
 
@@ -4023,8 +4059,15 @@ def _move_aside_atomically(dir_fd: int, name: str, target: str) -> bool:
         return False
     try:
         placeholder = os.fstat(reservation)
+    except OSError as exc:
+        # This function is documented never to raise, and its callers are error and cleanup
+        # paths where an escaping exception would mask the failure being reported. We hold
+        # the target name and cannot prove it is ours, so it stays — reported, not removed.
+        _wedged(target, f"its identity could not be established ({exc})")
+        return False
     finally:
-        os.close(reservation)
+        with suppress(OSError):
+            os.close(reservation)
     try:
         os.rename(name, target, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
     except OSError:
