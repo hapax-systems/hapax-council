@@ -5057,3 +5057,36 @@ def test_a_scratch_of_ours_that_cannot_be_removed_is_reported_where_it_happens(
     assert any(name in str(caught.value) for name in _fallback_remnants(tmp_path))
     # The projection's own post-state still landed; this is about the leftover, not a loss.
     assert (tmp_path / "dst").read_bytes() == b"replacement\n"
+
+
+def test_the_delete_leg_reports_an_unremovable_scratch_too(tmp_path: Path) -> None:
+    """The same escalation on the NOREPLACE leg, which was left behind.
+
+    The exchange leg got this in the previous round and this one did not, so an EIO here left
+    `holding` as a second link to the live inode and the next readback refused it as
+    path-unsafe — the same defect and the same misdirected diagnosis, one leg over. Fixing
+    one instance of a shape without sweeping for the rest is the error this file keeps
+    repeating, so both legs are now pinned rather than just the one that was reported.
+    """
+
+    (tmp_path / "task.md").write_bytes(b"live-preimage\n")
+    real_unlink = os.unlink
+
+    def refuse_to_unlink_scratches(*args: object, **kwargs: object) -> None:
+        if args and ".transition-" in str(args[0]):
+            raise OSError(errno.EIO, os.strerror(errno.EIO), "unlink")
+        return real_unlink(*args, **kwargs)  # type: ignore[arg-type]
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with mock.patch.object(os, "unlink", refuse_to_unlink_scratches):
+            with pytest.raises(cp.LifecycleTransitionError) as caught:
+                cp._fallback_noreplace(dir_fd, "task.md", dir_fd, ".task.md.scratch")
+    finally:
+        os.close(dir_fd)
+
+    assert caught.value.reason_code == "transition_projection_recovery_required"
+    assert "path-unsafe" in str(caught.value)
+    assert "recover-claim-publications" in caught.value.repair_action
+    # Nothing lost: the displaced preimage is still reachable under the caller's scratch.
+    assert (tmp_path / ".task.md.scratch").read_bytes() == b"live-preimage\n"

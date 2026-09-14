@@ -4068,7 +4068,10 @@ def _fallback_exchange(
     4. ``link(src → dst)``       — publish into a vacant name; a racing create is REFUSED
     5. ``rename(src → spent)``   — retire src by moving it
     6. verify ``spent`` and ``dst`` — two writers could have intervened, at either name
-    7. ``rename(pin → src)``     — refill src, giving the syscall's exact post-state
+    7. ``link(pin → src)``       — refill src by CREATE-OR-FAIL, so a writer that recreated
+                                   ``src`` after its retirement is refused rather than
+                                   overwritten; this step was a ``rename`` and this list
+                                   still said so after it changed
     8. cleanup, success path only
 
     Crash windows, all recoverable, none lossy: before step 2 the pin and the original
@@ -4320,8 +4323,25 @@ def _fallback_noreplace(
     #
     # Cleanup preserves on uncertainty: a scratch that no longer holds what we put there is
     # another writer's, so it is moved aside under an abandoned name rather than removed.
-    _retire_scratch(src_dir_fd, holding, intended, subject=src_name)
+    #
+    # And an unremovable scratch of OURS is escalated here exactly as on the exchange leg.
+    # It was not: the previous round fixed that hole on one leg and left this one ignoring
+    # the return value, so an EIO here left `holding` as a second link to the live inode and
+    # the next `_entry_state_at` refused it as path-unsafe — the same defect, the same
+    # misdirected diagnosis, one leg over. Fixing one instance of a shape and not sweeping
+    # for the rest is the error this file keeps repeating; a reviewer caught this one.
+    freed = _retire_scratch(src_dir_fd, holding, intended, subject=src_name)
     os.fsync(src_dir_fd)
+    if not freed and _scratch_is_a_live_second_link(src_dir_fd, holding, intended):
+        raise LifecycleTransitionError(
+            "transition_projection_recovery_required",
+            "preserve both entries and reconcile by hand: the displacement landed but "
+            f"{holding} could not be removed, so a live entry still carries a second link "
+            "and every later readback will refuse it as path-unsafe. Next: remove that "
+            "scratch once you have confirmed it is redundant, then rerun "
+            "`cc-claim --recover-claim-publications <task_id>`",
+            f"{src_name} holding={holding}",
+        )
 
 
 def _fallback_noreplace_directory(
