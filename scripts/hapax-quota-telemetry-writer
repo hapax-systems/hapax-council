@@ -2858,14 +2858,19 @@ def _scan_receipt_surface(
     (receipt_is_fresh: future-dated beyond one minute is rejected, and so is
     anything past its own stale_after), with exact ties keeping the first file
     in name order. When NO receipt for a platform is eligible, the scan falls
-    back to the newest observed among all readable ones: routing then holds
-    nothing for the platform — exactly the dead-surface condition the
-    continuity witness must measure, so the expired predecessor's evidence is
-    retained rather than dropped (codex-1 critical C1, #4665 rounds 13-14:
-    round 13's plain newest-observed selection let a future-dated backup that
-    routing REJECTS win both scans and mask a real 60s gap, and let an
+    back to the newest observed among the readable ones that are not
+    future-dated: routing then holds nothing for the platform — exactly the
+    dead-surface condition the continuity witness must measure, so the expired
+    predecessor's evidence is retained rather than dropped, while receipts
+    routing rejects as future-dated are excluded from that fallback too — they
+    are not predecessor evidence at any clock, and letting one win fabricated
+    coverage past a hole it could not see (codex-1 criticals C1, #4665 rounds
+    13-15: round 13's plain newest-observed selection let a future-dated backup
+    that routing REJECTS win both scans and mask a real 60s gap, and let an
     already-expired newer backup that routing RETAINS nothing from win and
-    fabricate a 50s gap across a surface the consumer still accepted).
+    fabricate a 50s gap across a surface the consumer still accepted; round 14
+    kept those receipts out of the ELIGIBLE pool but the historical fallback
+    still restored the future-dated one whenever nothing was eligible).
 
     The publication instant is the receipt FILE's own mtime: the refresh
     writes each platform's receipt separately, so each file's mtime is that
@@ -2897,6 +2902,9 @@ def _scan_receipt_surface(
         candidates.setdefault(receipt.platform, []).append(
             (ensure_utc(receipt.observed_at), path, receipt)
         )
+    # The future-dating window mirrors receipt_is_fresh's own rejection clause
+    # (observed more than one minute ahead of the clock is not evidence).
+    checked_now = ensure_utc(now or datetime.now(UTC))
     for platform, platform_candidates in candidates.items():
         # Routing's temporal eligibility first; the expired fallback below
         # exists ONLY to keep predecessor evidence measurable when routing
@@ -2906,7 +2914,25 @@ def _scan_receipt_surface(
             for candidate in platform_candidates
             if receipt_is_fresh(candidate[2], now=now)
         ]
-        pool = eligible or platform_candidates
+        # The fallback keeps EXPIRED evidence — routing vouched for it once —
+        # but never future-dated receipts: routing rejects those at any clock,
+        # so they are not predecessor evidence, and letting one win fabricated
+        # coverage past a hole it could not see (codex-1 critical C1, #4665
+        # round 15: at a 00:00 tick whose canonical expired at 23:59, a 00:10
+        # backup credited a 00:25 expiry and the replacement read gap=-1500
+        # rc=0 across a real 60s hole).
+        admissible_fallback = [
+            candidate
+            for candidate in platform_candidates
+            if candidate[0] <= checked_now + timedelta(minutes=1)
+        ]
+        pool = eligible or admissible_fallback
+        if not pool:
+            # Every candidate is future-dated: routing holds nothing AND no
+            # expired predecessor exists — there is no honest evidence for
+            # this platform, so the scan reports none rather than letting a
+            # clock-skewed stamp fabricate a coverage window.
+            continue
         # Greatest observed_at wins; exact ties keep the first file in name
         # order — the same strict-> comparison over a sorted walk that
         # load_platform_capability_receipts uses.
@@ -3213,8 +3239,20 @@ def main(argv: list[str] | None = None) -> int:
     receipt_surface_no_named_route: list[str] | None = None
     predecessor_surface_states: dict[str, tuple[datetime, datetime, datetime]] = {}
     if not args.skip_receipts:
+        # Each receipt scan judges eligibility with the clock routing itself
+        # would sample AT THAT STAGE, never the post-pull instant shared `now`
+        # still carries: the ledger pass before this scan and the refresh
+        # between the scans each run for real seconds, and a successor
+        # observed mid-refresh is future-dated only against a clock that
+        # stopped before it landed (codex-1 critical C2, #4665 round 15: a
+        # 65s ledger pass plus a 75s refresh made the successor scan judge a
+        # T+65 successor against T, reject it as future-dated, and keep a
+        # stale backup selected, so the platform read as unreplaced and the
+        # tick exited rc=0 across a real 60s hole). --now keeps the synthetic
+        # clock fixed and the tests deterministic.
+        predecessor_scan_now = now if args.now else datetime.now(UTC).replace(microsecond=0)
         predecessor_surface_states, receipt_surface_no_named_route = _scan_receipt_surface(
-            args.platform_capability_receipt_dir, now=now
+            args.platform_capability_receipt_dir, now=predecessor_scan_now
         )
     receipt_surface_predecessors = {
         platform: (observed, expiry)
@@ -3252,8 +3290,13 @@ def main(argv: list[str] | None = None) -> int:
             # major, #4665 round 11, M1: a platform replaced 40s into a 260s
             # refresh, well inside its predecessor's lifetime, read as a 60s
             # hole and flapped rc=4 on uninterrupted coverage).
+            # Sampled AFTER the refresh — see the predecessor scan above: the
+            # successor is judged with the clock routing samples once the
+            # refresh has landed, not the pre-refresh one (codex-1 critical
+            # C2, #4665 round 15).
+            successor_scan_now = now if args.now else datetime.now(UTC).replace(microsecond=0)
             successors, receipt_surface_no_named_route = _scan_receipt_surface(
-                args.platform_capability_receipt_dir, now=now
+                args.platform_capability_receipt_dir, now=successor_scan_now
             )
             receipt_surface_replacements = {
                 platform: (*receipt_surface_predecessors[platform], published_at)
