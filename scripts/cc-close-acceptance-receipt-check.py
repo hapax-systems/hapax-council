@@ -38,10 +38,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.sdlc_lifecycle import (  # noqa: E402
     ACCEPTANCE_RECEIPT_REQUIRED_FIELDS,
+    RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
+    acceptance_receipt_triggers,
     frontmatter_from_text,
-    requires_acceptance_receipt,
 )
 
 
@@ -60,8 +61,9 @@ def gate(path: Path) -> tuple[int, str]:
         return 0, f"fail-OPEN: source unreadable ({exc})"
 
     frontmatter = frontmatter_from_text(text)
-    if not requires_acceptance_receipt(frontmatter):
-        return 0, "not a review-floor task — acceptance-receipt gate does not apply"
+    triggers = acceptance_receipt_triggers(frontmatter)
+    if not triggers:
+        return 0, "no receipt-arming declaration — acceptance-receipt gate does not apply"
 
     blockers = acceptance_receipt_blockers(frontmatter, path)
     if not blockers:
@@ -69,12 +71,22 @@ def gate(path: Path) -> tuple[int, str]:
 
     task_id = str(frontmatter.get("task_id") or path.stem)
     receipt = acceptance_receipt_path(path, task_id)
+    # Name what armed the gate. A lane reading a generic receipt error on a
+    # non-review floor cannot tell a misfire from its own row's demand.
+    if RECEIPT_TRIGGER_INDEPENDENT_REVIEW in triggers:
+        demand = (
+            "This row declares review_requirement.independent_review_required: true, so it"
+            " closes only after an independent review — whatever its quality_floor. Have the"
+        )
+    else:
+        demand = "frontier_review_required work closes only after a signed review. Have the"
     lines = [
-        f"cc-close BLOCKED: review-floor task '{task_id}' lacks a valid acceptance receipt:",
+        f"cc-close BLOCKED: task '{task_id}' lacks a valid acceptance receipt.",
+        f"Armed by: {', '.join(triggers)}",
         "",
         *(f"  - {blocker}" for blocker in blockers),
         "",
-        "frontier_review_required work closes only after a signed review. Have the",
+        demand,
         "acceptor (frontier reviewer or operator) record the verdict at:",
         f"  {receipt}",
         "with the minimal schema (all fields required):",

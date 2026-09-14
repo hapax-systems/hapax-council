@@ -325,9 +325,31 @@ def test_both_close_gates_share_one_receipt_predicate() -> None:
     gate_module = _load_receipt_gate()
 
     assert gate_module.acceptance_receipt_blockers is sdlc_lifecycle.acceptance_receipt_blockers
-    assert gate_module.requires_acceptance_receipt is sdlc_lifecycle.requires_acceptance_receipt
     assert sdlc_close.acceptance_receipt_blockers is sdlc_lifecycle.acceptance_receipt_blockers
     assert sdlc_close.requires_acceptance_receipt is sdlc_lifecycle.requires_acceptance_receipt
+
+    # The close-gate checker consumes the trigger list rather than the boolean,
+    # because its refusal must name WHICH declaration armed the gate. That is
+    # only safe while the boolean is a derivation of the same list — otherwise
+    # the two surfaces could drift into the livelock this test exists to
+    # prevent. Pin the leaf identity AND the derivation.
+    assert gate_module.acceptance_receipt_triggers is sdlc_lifecycle.acceptance_receipt_triggers
+    for frontmatter in (
+        {"quality_floor": "frontier_review_required"},
+        {"quality_floor": "verification_receipt"},
+        {
+            "quality_floor": "verification_receipt",
+            "review_requirement": {"independent_review_required": True},
+        },
+        {
+            "quality_floor": "verification_receipt",
+            "review_requirement": {"independent_review_required": False},
+        },
+        {},
+    ):
+        assert sdlc_lifecycle.requires_acceptance_receipt(frontmatter) is bool(
+            sdlc_lifecycle.acceptance_receipt_triggers(frontmatter)
+        )
 
 
 def test_the_acceptance_receipt_is_an_external_artifact(tmp_path: Path) -> None:

@@ -290,20 +290,74 @@ ACCEPTANCE_RECEIPT_REQUIRED_FIELDS = ("acceptor", "verdict", "timestamp", "artif
 ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
 
 
-def requires_acceptance_receipt(frontmatter: Mapping[str, Any]) -> bool:
-    """True when the task declares the review floor (top-level or nested).
+#: Declaration names reported when the acceptance-receipt gate arms.
+RECEIPT_TRIGGER_REVIEW_FLOOR = f"quality_floor:{REVIEW_FLOOR_QUALITY_FLOOR}"
+RECEIPT_TRIGGER_INDEPENDENT_REVIEW = "review_requirement.independent_review_required"
 
-    Checks both the top-level ``quality_floor`` and the mirrored
-    ``route_metadata.quality_floor`` — if either declares
-    ``frontier_review_required`` the receipt gate applies (fail-closed on
-    disagreement).
+
+def _independent_review_required(frontmatter: Mapping[str, Any]) -> bool:
+    """True when either ``review_requirement`` block demands independent review.
+
+    Mirrors the floor lookup: the top-level block and the
+    ``route_metadata.review_requirement`` mirror are both consulted and a
+    demand in either arms the gate (fail-closed on disagreement).
     """
 
+    blocks = [frontmatter.get("review_requirement")]
+    route_metadata = frontmatter.get("route_metadata")
+    if isinstance(route_metadata, Mapping):
+        blocks.append(route_metadata.get("review_requirement"))
+    for block in blocks:
+        if isinstance(block, Mapping) and block.get("independent_review_required") is True:
+            return True
+    return False
+
+
+def acceptance_receipt_triggers(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
+    """Which declarations arm the acceptance-receipt gate; empty = not armed.
+
+    Two independent triggers, either sufficient:
+
+    - ``quality_floor: frontier_review_required`` (top-level or the
+      ``route_metadata`` mirror), and
+    - ``review_requirement.independent_review_required: true`` (likewise
+      mirrored).
+
+    The second exists because the floor alone was not enough. Measured
+    2026-09-13T21:53Z: a row carrying ``quality_floor: verification_receipt``
+    *and* ``independent_review_required: true`` closed on the first plain
+    ``cc-close`` with no receipt and no review — the block read as protective
+    and was not load-bearing. A row may declare independent review mandatory
+    under any floor, so the gate keys on the declaration, not only the floor.
+
+    Returned as an ordered tuple rather than a bool so refusals can name the
+    declaration that armed them (``executive_function``: a lane must be able to
+    tell a misfire from its own row's demand). ``requires_acceptance_receipt``
+    derives from this, so there is exactly one definition of "armed".
+    """
+
+    triggers: list[str] = []
     floors = {_frontmatter_scalar(frontmatter.get("quality_floor")).lower()}
     route_metadata = frontmatter.get("route_metadata")
     if isinstance(route_metadata, Mapping):
         floors.add(_frontmatter_scalar(route_metadata.get("quality_floor")).lower())
-    return REVIEW_FLOOR_QUALITY_FLOOR in floors
+    if REVIEW_FLOOR_QUALITY_FLOOR in floors:
+        triggers.append(RECEIPT_TRIGGER_REVIEW_FLOOR)
+    if _independent_review_required(frontmatter):
+        triggers.append(RECEIPT_TRIGGER_INDEPENDENT_REVIEW)
+    return tuple(triggers)
+
+
+def requires_acceptance_receipt(frontmatter: Mapping[str, Any]) -> bool:
+    """True when the task's declarations demand a signed acceptance receipt.
+
+    Thin derivation of :func:`acceptance_receipt_triggers` — see there for the
+    triggers and why the review-floor test alone was insufficient. Kept as the
+    boolean predicate because every close/dispatch caller asks only "armed?";
+    callers that must *explain* the refusal use the trigger list directly.
+    """
+
+    return bool(acceptance_receipt_triggers(frontmatter))
 
 
 def acceptance_receipt_path(note_path: Path, task_id: str) -> Path:

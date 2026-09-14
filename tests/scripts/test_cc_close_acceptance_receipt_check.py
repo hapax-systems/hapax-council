@@ -47,9 +47,20 @@ def _write_note(
     *,
     quality_floor: str = "frontier_review_required",
     status: str = "in_progress",
+    independent_review_required: bool | None = None,
 ) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{task_id}.md"
+    review_block = ""
+    if independent_review_required is not None:
+        review_block = textwrap.dedent(
+            f"""\
+            review_requirement:
+              support_artifact_allowed: true
+              independent_review_required: {str(independent_review_required).lower()}
+              authoritative_acceptor_profile: frontier_full
+            """
+        )
     path.write_text(
         textwrap.dedent(
             f"""\
@@ -62,6 +73,11 @@ def _write_note(
             completed_at:
             updated_at:
             pr:
+            """
+        )
+        + review_block
+        + textwrap.dedent(
+            f"""\
             ---
 
             # {task_id}
@@ -134,6 +150,127 @@ class TestCheckerGate:
         assert "fail-OPEN" in message
 
 
+class TestIndependentReviewRequirement:
+    """``review_requirement.independent_review_required`` must be load-bearing.
+
+    Measured defect 2026-09-13T21:53Z: ``openchamber-bounded-pilot-20260913``
+    carried ``quality_floor: verification_receipt`` together with
+    ``review_requirement.independent_review_required: true`` and closed on the
+    first plain ``cc-close`` with no acceptance receipt and no review. The
+    receipt gate keyed solely on the ``frontier_review_required`` floor, so a
+    row could declare independent review mandatory and close without it — a
+    control that reads as protective and is not load-bearing.
+    """
+
+    def test_blocks_verification_receipt_floor_when_independent_review_required(
+        self, tmp_path: Path
+    ) -> None:
+        """The epsilon case: non-review floor + independent review demanded."""
+        checker = _load_checker()
+        note = _write_note(
+            tmp_path,
+            "task-v",
+            quality_floor="verification_receipt",
+            independent_review_required=True,
+        )
+
+        code, message = checker.gate(note)
+
+        assert code == 2
+        assert "missing_acceptance_receipt" in message
+
+    def test_refusal_names_the_review_requirement_not_just_the_receipt(
+        self, tmp_path: Path
+    ) -> None:
+        """executive_function: the refusal must say WHY the gate applies.
+
+        A lane reading a generic receipt error on a ``verification_receipt``
+        row cannot tell whether the gate misfired or its own row demands
+        review, so the message has to name the requirement that triggered it.
+        """
+        checker = _load_checker()
+        note = _write_note(
+            tmp_path,
+            "task-v",
+            quality_floor="verification_receipt",
+            independent_review_required=True,
+        )
+
+        _, message = checker.gate(note)
+
+        assert "independent_review_required" in message
+
+    def test_passes_when_independent_review_required_and_receipt_present(
+        self, tmp_path: Path
+    ) -> None:
+        checker = _load_checker()
+        note = _write_note(
+            tmp_path,
+            "task-v",
+            quality_floor="verification_receipt",
+            independent_review_required=True,
+        )
+        (tmp_path / "task-v.acceptance.yaml").write_text(VALID_RECEIPT, encoding="utf-8")
+
+        code, _ = checker.gate(note)
+
+        assert code == 0
+
+    def test_independent_review_false_does_not_arm_the_gate(self, tmp_path: Path) -> None:
+        """Explicit ``false`` must stay a pass — this widens enforcement, not scope."""
+        checker = _load_checker()
+        note = _write_note(
+            tmp_path,
+            "task-n",
+            quality_floor="verification_receipt",
+            independent_review_required=False,
+        )
+
+        code, _ = checker.gate(note)
+
+        assert code == 0
+
+    def test_absent_review_requirement_block_does_not_arm_the_gate(self, tmp_path: Path) -> None:
+        """Regression: rows with no review_requirement at all close as before."""
+        checker = _load_checker()
+        note = _write_note(tmp_path, "task-n", quality_floor="verification_receipt")
+
+        code, _ = checker.gate(note)
+
+        assert code == 0
+
+    def test_frontier_floor_refusal_still_names_the_floor(self, tmp_path: Path) -> None:
+        """Requirement 4: frontier_review_required behaviour is unchanged.
+
+        Both triggers share one receipt path, so this pins that widening the
+        trigger did not rewrite the original refusal's wording.
+        """
+        checker = _load_checker()
+        note = _write_note(tmp_path, "task-r")
+
+        code, message = checker.gate(note)
+
+        assert code == 2
+        assert "missing_acceptance_receipt" in message
+        assert "frontier_review_required" in message
+
+    def test_both_triggers_share_the_receipt_path(self, tmp_path: Path) -> None:
+        """The shared-path test: one receipt satisfies either trigger."""
+        checker = _load_checker()
+        floor_note = _write_note(tmp_path / "a", "task-r")
+        (tmp_path / "a" / "task-r.acceptance.yaml").write_text(VALID_RECEIPT, encoding="utf-8")
+        review_note = _write_note(
+            tmp_path / "b",
+            "task-v",
+            quality_floor="verification_receipt",
+            independent_review_required=True,
+        )
+        (tmp_path / "b" / "task-v.acceptance.yaml").write_text(VALID_RECEIPT, encoding="utf-8")
+
+        assert checker.gate(floor_note)[0] == 0
+        assert checker.gate(review_note)[0] == 0
+
+
 def _vault(home: Path) -> Path:
     root = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
     (root / "active").mkdir(parents=True, exist_ok=True)
@@ -176,6 +313,33 @@ class TestCcCloseEndToEnd:
         assert "missing_acceptance_receipt" in result.stderr
         assert (vault / "active" / "task-r.md").exists()
         assert not (vault / "closed" / "task-r.md").exists()
+
+    def test_cc_close_blocks_independent_review_row_under_non_review_floor(
+        self, tmp_path: Path
+    ) -> None:
+        """The demonstrated acceptance criterion, end to end.
+
+        Reproduces ``openchamber-bounded-pilot-20260913`` exactly: a
+        ``verification_receipt`` row demanding independent review, closed with
+        a plain ``cc-close`` and no bypass. Before the fix this returned 0 and
+        moved the note to closed/ with no receipt and no review.
+        """
+        home = tmp_path / "home"
+        vault = _vault(home)
+        _write_note(
+            vault / "active",
+            "task-v",
+            quality_floor="verification_receipt",
+            independent_review_required=True,
+        )
+
+        result = _run_close(home, "task-v")
+
+        assert result.returncode != 0
+        assert "missing_acceptance_receipt" in result.stderr
+        assert "independent_review_required" in result.stderr
+        assert (vault / "active" / "task-v.md").exists()
+        assert not (vault / "closed" / "task-v.md").exists()
 
     def test_cc_close_closes_review_floor_task_with_receipt_and_moves_it(
         self, tmp_path: Path
