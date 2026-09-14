@@ -3723,27 +3723,22 @@ def _relocate_to_scratch(
 ) -> None:
     """Move `live_name` aside to `scratch_name`, refusing rather than overwriting either.
 
-    This replaces a plain ``rename(live → scratch)``. The rename relocated whatever occupied
-    the live name — which is what preserves a racing writer — but it could not refuse an
-    occupied *destination*, so a scratch that arrived after the up-front vacancy check was
-    silently overwritten. A reviewer reproduced exactly that, three times.
+    The destination is taken with ``O_CREAT|O_EXCL`` immediately before the rename that
+    consumes it, so the name cannot be acquired by another writer between the two. The
+    source is not reserved — it is verified afterwards, and a replacement there is reported
+    as ``transition_precondition_changed`` with the racing writer's bytes preserved.
 
-    **``link`` cannot supply the reviewer's remedy here, and that part is measured.** It
-    refuses an occupied destination by creating a *second name for one inode*, so a
-    relocation built on it leaves every refusal path holding a live projected name at
-    ``st_nlink == 2``, which :func:`_entry_state_at` then rejects —
-    ``transition_projection_path_unsafe: project only absent paths or euid-owned single-link
-    regular files``. Measured: implementing it that way turned one failing test into nine.
+    **The exclusion binds writers that acquire these names the way this module does**, which
+    is every writer of them in this module. It does not bind a writer that renames or
+    create-truncates straight onto the name; neither would a lock, and
+    ``test_a_writer_ignoring_the_protocol_is_not_excluded`` pins that boundary so the
+    guarantee is not read as wider than it is.
 
-    **What this docstring used to conclude from that was wrong, and it stood for eleven
-    review rounds.** It said the two requirements were "in direct conflict" — refusal needs
-    ``link``, ``link`` breaks the invariant, therefore the remedy "is not available at this
-    layer". That generalises from one primitive to the whole class, and the class is bigger.
-    A reviewer named the counter-example (``doc-claims-recheck``, round 20): ``O_CREAT|O_EXCL``
-    is also create-or-EEXIST, and its placeholder is a **separate empty inode** at the scratch
-    name, so the live entry is never linked and never leaves nlink 1.
-
-    Measured 2026-09-14, the thing the old text asserted without testing:
+    Why ``O_CREAT|O_EXCL`` and not ``link``, which also refuses an occupied destination:
+    ``link`` refuses by making a second name for the *live* inode, which puts the live
+    projected entry at ``st_nlink == 2``, and :func:`_entry_state_at` rejects that as
+    ``transition_projection_path_unsafe``. A placeholder is a separate empty inode, so the
+    live entry is never touched. Measured 2026-09-14 on tmpfs, xfs and the nfs4 export:
 
     ===========================================  ==============  ===========================
     after ...                                    live nlink      ``_entry_state_at`` verdict
@@ -3753,37 +3748,58 @@ def _relocate_to_scratch(
     ``O_CREAT|O_EXCL`` placeholder at scratch    1               accepted
     ===========================================  ==============  ===========================
 
-    A prototype that reserves with ``O_CREAT|O_EXCL`` instead of checking with ``lstat``
-    excludes a second writer that acquires the name through this module's own path, where the
-    check-only guard lets it through and then destroys its bytes. Blast radius was **one**
-    test, and that one failed because it used "does the scratch exist yet" as a clock — not
-    nine, as ``link`` did.
+    The export was measured to give a real exclusive create, not an emulated one: eight
+    racing processes, one winner. See
+    ``30-areas/hapax/frame/coordination-20260904/SCRATCH-RESERVATION-ALTERNATIVE-MEASUREMENT-20260914.md``.
 
-    **So the honest statement of the limit is narrower than "unavailable at this layer".**
-    Three things the same measurement showed, which is why the prototype is not simply
-    shipped here:
+    This replaces a plain ``rename(live → scratch)``. That rename relocated whatever occupied
+    the live name — which is what preserves a racing writer — but could not refuse an occupied
+    *destination*, so a scratch arriving after the up-front vacancy check was silently
+    overwritten and the call still reported success. Reviewers reproduced it three times
+    across eleven rounds; the reservation above is what closes it.
 
-    * a reservation binds **participants**. A writer that renames onto the name without
-      acquiring it clobbers a placeholder exactly as it clobbers a vacant name — and a lock
-      in this module binds no more than that either;
-    * it does **not** close the cleanup gap. That gap is already shut against a participant,
-      because the name is occupied for the whole of it; against a non-participant neither
-      scheme helps;
-    * it **introduces a wedge**: a mid-sequence failure strands an empty placeholder, and the
-      next attempt then refuses where today it would simply retry. Closing that needs a
-      release path on every refusal, which is a redesign of this leg and not a docstring fix.
+    The up-front :func:`_refuse_if_scratch_occupied` is still worth running. It is a check,
+    not a reservation, so it does not close anything on its own — it fails the transition
+    early, before any entry has moved, with a message naming the remnant to inspect.
 
-    **The window is OPEN in this code**, pinned by
-    ``test_open_window_arrival_at_a_scratch_between_the_vacancy_check_and_the_rename``, which
-    asserts the current behaviour and fails if it ever changes. **A cross-reference is not a
-    closure**, so read the task id below as where the work is tracked and nothing more:
-    ``projection-lock-coverage-projected-path-writers-20260913``. What is corrected here is
-    the claim that nothing at this layer *could* close it. Something can, at a cost that has
-    now been measured rather than assumed, and the choice between the two belongs to whoever
-    sequences this against the lock.
+    The residual, stated exactly: a hard crash between taking the reservation and the rename
+    strands an empty placeholder, and the next attempt on that operand then refuses at the
+    vacancy check rather than retrying. That is two adjacent statements wide, it is the same
+    class of remnant the recovery sweep already owns, and it fails toward refusal rather than
+    toward loss.
     """
 
-    os.rename(live_name, scratch_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    # Take the destination atomically, immediately before the rename that consumes it.
+    # `O_CREAT|O_EXCL` is create-or-EEXIST, so this call both answers "is it vacant" and
+    # makes it ours; an `lstat` answers only the first and leaves the name takeable. The
+    # rename below then replaces our own placeholder.
+    try:
+        reservation = os.open(
+            scratch_name,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC,
+            0o600,
+            dir_fd=dir_fd,
+        )
+    except FileExistsError as exc:
+        # Someone took the name after the up-front vacancy check. Before this reservation
+        # existed, the rename below destroyed whatever they had put there and reported
+        # success. Refusing is the whole point: their bytes are still theirs.
+        raise LifecycleTransitionError(
+            "transition_precondition_changed",
+            "preserve the racing writer's entry and prepare a new transition: "
+            f"{scratch_name} was taken while this transition was running — inspect it, "
+            f"delete it only after reconciling, {recover}",
+            f"{subject}:{live_name}->{scratch_name}",
+        ) from exc
+    os.close(reservation)
+
+    try:
+        os.rename(live_name, scratch_name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        # The reservation is ours and unconsumed, so releasing it is safe and required:
+        # an abandoned placeholder refuses every later attempt on this operand.
+        _release_scratch_reservation(dir_fd, scratch_name)
+        raise
     os.fsync(dir_fd)
     if not _same_entry(os.lstat(scratch_name, dir_fd=dir_fd), expected):
         raise LifecycleTransitionError(
@@ -3795,6 +3811,30 @@ def _relocate_to_scratch(
         )
 
 
+def _release_scratch_reservation(dir_fd: int, name: str) -> None:
+    """Drop a placeholder this attempt took and could not use. Never raises.
+
+    Only ever called on a name this attempt reserved and has not yet renamed onto, and it
+    re-checks that the entry is still the empty placeholder before unlinking — so a writer
+    that ignored the protocol and dropped real bytes there is left alone for
+    :func:`_retire_scratch`, which knows how to preserve what it cannot identify.
+
+    An unreleased reservation is worse than the window it closed: it survives the process and
+    refuses every later attempt on that operand. The window between taking it and consuming
+    it is two adjacent statements, so only a hard crash can strand one — the same class of
+    remnant the recovery sweep already owns, not a new state machine.
+    """
+
+    try:
+        current = os.lstat(name, dir_fd=dir_fd)
+    except OSError:
+        return
+    if current.st_size or not stat.S_ISREG(current.st_mode):
+        return
+    with suppress(OSError):
+        os.unlink(name, dir_fd=dir_fd)
+
+
 def _refuse_if_scratch_occupied(
     dir_fd: int,
     names: Sequence[str],
@@ -3802,23 +3842,23 @@ def _refuse_if_scratch_occupied(
 ) -> None:
     """Refuse before moving anything if any scratch destination is already taken.
 
-    Every leg below relocates entries into these names, and a rename onto an occupied name
-    destroys what is there — most likely a previous attempt's remnant, and a previous attempt
-    may have deliberately preserved another writer's only copy in it. Renaming over that
-    would destroy exactly what the earlier attempt saved.
+    A remnant at one of these names is most likely a previous attempt's, and a previous
+    attempt may have deliberately preserved another writer's only copy in it. So this fails
+    the transition early — before any entry has moved — with a message naming what to
+    inspect.
 
-    **Namespace isolation is NOT uniform across the legs, and this docstring used to claim it
-    was.** On the exchange leg the names derive from the transaction's own scratch operand,
-    so they are transaction-unique. On the **delete** leg they derive from the live filename,
-    because there ``src_name`` *is* the live projection path — so every transaction touching
-    that note computes the same ``holding``. A reviewer caught the contradiction between this
-    paragraph and the comment at the delete leg's own call site, and it matters beyond tidy
-    prose: future recovery and concurrency work must not assume an isolation that only one
-    leg has.
+    **This is a check, not a reservation, and it closes no window by itself.** It reserves
+    nothing, so a writer can still take one of these names between here and the rename that
+    targets it. What excludes that writer is :func:`_relocate_to_scratch`, which takes its
+    destination with ``O_CREAT|O_EXCL`` immediately before the rename that consumes it. Keep
+    both: this one gives the early, legible refusal; that one gives the exclusion.
 
-    This is the guard that was missing: the earlier shape reserved only the pin (via
-    ``link``'s EEXIST) and used plain renames for the rest, so a second attempt on the same
-    operand silently ate the first attempt's preserved bytes **and reported success**.
+    **Namespace isolation is not uniform across the legs.** On the exchange leg the names
+    derive from the transaction's own scratch operand, so they are transaction-unique. On the
+    **delete** leg they derive from the live filename, because there ``src_name`` *is* the
+    live projection path — so every transaction touching that note computes the same
+    ``holding``. Recovery and concurrency work must not assume an isolation that only one leg
+    has; the delete leg is precisely where two live transactions can collide.
     """
 
     for name in names:
@@ -3873,14 +3913,18 @@ def _retire_scratch(
     version still did, because ``lstat`` and ``unlink`` are two operations and a replacement
     landing between them is removed by a call that has already decided it may.
 
-    **That second window is STILL OPEN, and this docstring used to narrate it as history.**
-    It is not fixed: there is no compare-and-unlink, so nothing here can make the check and
-    the removal one step. It is pinned by
-    ``test_open_window_replacement_between_cleanups_identity_check_and_its_unlink``, which
-    asserts the current behaviour and fails if it ever changes, and it closes by removing
-    the concurrency rather than by anything in this function. What the identity check does
-    buy is that the *common* case — a foreign entry sitting at the name when cleanup starts
-    — is preserved instead of deleted.
+    **That second gap is still two operations, and nothing here can fuse them** — there is no
+    compare-and-unlink. What makes it safe is not a further check but the name being
+    OCCUPIED for the whole of it: a writer acquiring these names the way this module does
+    (``O_CREAT|O_EXCL``, see :func:`_relocate_to_scratch`) is refused and never lands a
+    replacement in the gap. Pinned by
+    ``test_a_participant_cannot_replace_a_scratch_cleanup_is_about_to_unlink``.
+
+    That exclusion does not reach a writer which ignores the protocol and renames straight
+    onto the name; neither would a lock in this module.
+    ``test_a_writer_ignoring_the_protocol_is_not_excluded`` records that boundary. What the
+    identity check buys against *that* writer is the common case — a foreign entry already
+    sitting at the name when cleanup starts is preserved instead of deleted.
 
     So certainty, not the check, decides the verb:
 
@@ -4005,21 +4049,19 @@ def _refuse_if_displaced_entry_moved(
     unlinking or overwriting it, closes the window there — which is where every reproduced
     loss occurred.
 
-    **What is open:** two windows, on the **scratch** names:
+    **What is closed on the scratch names, and against whom.** Both remaining boundaries —
+    an arrival between the vacancy check and the rename that targets a scratch, and a
+    replacement between cleanup's identity check and its ``unlink`` — are shut against any
+    writer that acquires these names the way this module does. The first by the
+    ``O_CREAT|O_EXCL`` reservation in :func:`_relocate_to_scratch`; the second because the
+    name is occupied for the whole of that gap.
 
-    * an arrival at a scratch between the vacancy check and the rename that targets it —
-      see :func:`_relocate_to_scratch` for why the primitive that would refuse it is
-      forbidden here;
-    * a replacement of a scratch between cleanup's identity check and its ``unlink`` —
-      removing a directory entry is name-based and has no compare-and-unlink form.
-
-    **Both are OPEN in this code**, each pinned by a test named ``test_open_window_*`` that
-    asserts the current behaviour and fails if it changes. Neither is closed by anything in
-    this file, and neither is closed by the task that would close them — removing the
-    concurrency is tracked as
-    ``projection-lock-coverage-projected-path-writers-20260913``, and tracking is not doing.
-    The check is still worth keeping: it catches the common case one syscall earlier and
-    gives the clearer diagnosis.
+    **What is open:** a writer that ignores the protocol — renaming or create-truncating
+    straight onto a scratch name — is excluded by neither, and would not be excluded by a
+    lock in this module either. That boundary is pinned by
+    ``test_a_writer_ignoring_the_protocol_is_not_excluded`` so it cannot be quietly read as
+    closed. Removing the concurrency outright is tracked as
+    ``projection-lock-coverage-projected-path-writers-20260913``.
 
     **The refusal is the typed hold, not a bare errno.** These legs used to raise
     ``OSError(EBUSY)`` and rely on each call site to map it, which worked but described a
@@ -4064,19 +4106,13 @@ def _fallback_exchange(
     the contract: ``dst`` holds the replacement and ``src`` holds the displaced
     entry, which is what this rebuilds.
 
-    **Move-or-fail wherever the primitives allow it — which is not everywhere.** The live
-    names are never blindly replaced; two windows remain on the **scratch** names, and each
-    is pinned by a ``test_open_window_*`` regression rather than argued away:
-
-    * an arrival at a **scratch** name between the vacancy check and the rename that targets
-      it — ``rename`` cannot refuse an occupied destination, and the primitive that can
-      (``link``) is forbidden here by the single-link invariant, see
-      :func:`_relocate_to_scratch`;
-    * a replacement of a **scratch** between cleanup's identity check and its ``unlink`` —
-      removing a directory entry is name-based and has no compare-and-unlink form.
-
-    What the shape below does buy is that the *live* names are never blindly replaced, which
-    is where every reproduced loss actually occurred.
+    **Move-or-fail throughout.** The live names are never blindly replaced — that is where
+    every reproduced loss occurred — and the scratch names are taken with ``O_CREAT|O_EXCL``
+    immediately before the rename that consumes each one, so a second writer using the same
+    acquisition path loses the race cleanly instead of losing its bytes. See
+    :func:`_relocate_to_scratch` for the measurement that rules ``link`` out and lets a
+    placeholder in, and for the one residual: the exclusion binds writers that acquire these
+    names the way this module does, which is every writer of them here.
     Three reviewer families rejected the earlier check-then-replace shape, and correctly:
     reproducing the syscall's post-state does not inherit the syscall's atomicity, and the
     callers depended on that atomicity to *surface* a concurrent writer rather than only to
@@ -4322,12 +4358,13 @@ def _fallback_noreplace(
     #
     # Note this leg derives `holding` from the LIVE filename, because on deletion `src_name`
     # IS the live projection path. So the name is shared by every transaction on that note,
-    # and the vacancy check alone was never enough. It is still not enough: this comment
-    # used to claim `_relocate_to_scratch` refuses an occupied destination atomically, and
-    # that claim did not survive the leg going back to `rename` — which cannot fail on an
-    # occupied destination. What the relocation does provide is identification of a replaced
-    # SOURCE. The occupied-destination window is bounded by the check below and otherwise
-    # open; see `_relocate_to_scratch`.
+    # and the vacancy check alone was never enough — it reserves nothing, so a writer could
+    # take the name between it and the rename. `_relocate_to_scratch` now takes the
+    # destination with `O_CREAT|O_EXCL` immediately before the rename that consumes it, which
+    # is what makes this leg safe against a concurrent transaction on the SAME note rather
+    # than merely unlikely to collide. The check below is kept because it fails early, with a
+    # message naming the remnant, before anything has moved. Limit: the exclusion binds
+    # writers that acquire the name the way this module does; see `_relocate_to_scratch`.
     holding = _fallback_scratch_name(src_name, "holding")
     _refuse_if_scratch_occupied(src_dir_fd, (holding,), src_name)
     _relocate_to_scratch(

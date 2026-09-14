@@ -40,8 +40,21 @@ import ctypes.util
 import errno
 import os
 import uuid
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from unittest import mock
+
+
+def _try_exclusive_create(target: str) -> bool:
+    """One racing creator. Module-level so it is picklable for ProcessPoolExecutor."""
+
+    try:
+        handle = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return False
+    os.close(handle)
+    return True
+
 
 import pytest
 
@@ -517,3 +530,50 @@ def test_directory_promotion_on_a_mount_that_refuses_the_flags(
     finally:
         os.close(src_fd)
         os.close(dst_fd)
+
+
+def test_the_scratch_reservation_is_genuinely_exclusive_on_this_mount(
+    unsupporting_mount: Path,
+) -> None:
+    """The primitive the relocation's exclusion rests on, measured on the real export.
+
+    `_relocate_to_scratch` takes its destination with `O_CREAT|O_EXCL` immediately before the
+    rename that consumes it. That is only an exclusion if the filesystem implements a real
+    exclusive create. NFSv3 famously did not — it emulated EXCL with a setattr guard — and
+    this repair exists *because* this mount answers differently from a local filesystem, so
+    the primitive is measured here rather than assumed from tmpfs behaviour.
+
+    Three properties, all on the export:
+      1. a second exclusive create on the same name refuses with EEXIST;
+      2. under real concurrency exactly ONE of eight processes wins;
+      3. the placeholder leaves a live entry's link count alone, which is what makes it
+         usable where `link` is not (`_entry_state_at` refuses `st_nlink != 1`).
+    """
+
+    bench = unsupporting_mount / "reservation"
+    bench.mkdir()
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+
+    # 1. sequential
+    reserved = bench / "reserved"
+    os.close(os.open(reserved, flags, 0o600))
+    with pytest.raises(FileExistsError):
+        os.open(reserved, flags, 0o600)
+
+    # 2. concurrent — the property that actually matters
+    contended = str(bench / "contended")
+    with ProcessPoolExecutor(max_workers=8) as pool:
+        winners = sum(pool.map(_try_exclusive_create, [contended] * 8))
+    assert winners == 1, (
+        f"{winners} of 8 racing processes created the same name — this mount does not give "
+        "an exclusive create, so the relocation's exclusion is not real here"
+    )
+
+    # 3. the invariant that rules `link` out and lets a placeholder in
+    live = bench / "note.md"
+    live.write_bytes(b"live projection\n")
+    assert live.stat().st_nlink == 1
+    os.close(os.open(bench / "note.md.transition-holding", flags, 0o600))
+    assert live.stat().st_nlink == 1, "the placeholder changed the live entry's link count"
+    os.link(live, bench / "second-name")
+    assert live.stat().st_nlink == 2, "link(2) no longer adds a name — recheck the premise"
