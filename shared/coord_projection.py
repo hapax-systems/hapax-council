@@ -3847,13 +3847,22 @@ def _retire_scratch(
     Cleanup is the last place a repair like this loses data, and it lost it twice. First an
     unconditional ``unlink`` destroyed whatever occupied the name. Then the identity-checked
     version still did, because ``lstat`` and ``unlink`` are two operations and a replacement
-    landing between them is removed by a call that has already decided it may — a reviewer
-    reproduced that, and it returned success with no warning.
+    landing between them is removed by a call that has already decided it may.
+
+    **That second window is STILL OPEN, and this docstring used to narrate it as history.**
+    It is not fixed: there is no compare-and-unlink, so nothing here can make the check and
+    the removal one step. It is pinned by
+    ``test_open_window_replacement_between_cleanups_identity_check_and_its_unlink``, which
+    asserts the current behaviour and fails if it ever changes, and it closes by removing
+    the concurrency rather than by anything in this function. What the identity check does
+    buy is that the *common* case — a foreign entry sitting at the name when cleanup starts
+    — is preserved instead of deleted.
 
     So certainty, not the check, decides the verb:
 
     * **the name still holds our inode** — remove it; it is a second name for an entry that
-      lives elsewhere, and removing it loses nothing;
+      lives elsewhere, so removing it loses nothing *unless a replacement lands in the gap
+      described above*;
     * **anything else** — never ``unlink``. The entry is moved aside under a
       ``.transition-abandoned`` name via ``link`` (create-or-EEXIST, so it cannot overwrite
       either), leaving the scratch name free for the next attempt while the bytes survive

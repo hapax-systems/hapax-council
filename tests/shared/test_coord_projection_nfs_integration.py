@@ -5,8 +5,13 @@ mount at the primitive boundary, and the live run recorded in
 ``NFS-FALLBACK-LIVE-VERIFICATION-20260913.md`` had no committed, re-runnable witness. This
 is that witness.
 
-    HAPAX_NFS_INTEGRATION_DIR="$HOME/Documents/Personal/.nfs-integration" \\
+    HAPAX_NFS_INTEGRATION_DIR=<a writable dir on a mount that refuses the renameat2 flags> \\
       uv run pytest tests/shared/test_coord_projection_nfs_integration.py -v
+
+The variable names a *property* of the filesystem, not one operator's layout — any NFS4
+export will do, and the fixture measures the property rather than trusting the path. An
+earlier version of this line gave a concrete personal path, which reads as the required
+location rather than as an example of one.
 
 **FAILS — not skips — when neither the directory nor a governed waiver is set.** This
 docstring said "skipped" and a reviewer was right that it no longer described the file: the
@@ -142,8 +147,10 @@ def unsupporting_mount() -> Path:
                 pytest.fail(
                     f"{_ENV_WAIVER} is set but does not name its expiry row (missing "
                     f"{', '.join(missing)}). A waiver without an owner is a permanent skip "
-                    "wearing a different name — name the row that owns standing up a lane "
-                    "which can mount the vault export."
+                    "wearing a different name. "
+                    "Next: name the row that owns standing up a lane which can mount the "
+                    f"vault export — the accepted form is shown by unsetting {_ENV_WAIVER} "
+                    "and rerunning, which prints a copy-pasteable value."
                 )
             pytest.skip(
                 f"{_ENV_DIR} unset; live verification EXPLICITLY WAIVED by "
@@ -156,8 +163,9 @@ def unsupporting_mount() -> Path:
             "purpose: the central claim of this repair — that the rebuilt renameat2 legs "
             "work on the real NFS4.2 vault SSOT — must not rest on a test that can be "
             "permanently and invisibly skipped.\n"
-            f"Either point {_ENV_DIR} at a directory on a mount that refuses the flags:\n"
-            f'  {_ENV_DIR}="$HOME/Documents/Personal/.nfs-integration"\n'
+            f"Next: either point {_ENV_DIR} at a writable directory on a mount that refuses "
+            "the flags:\n"
+            f"  {_ENV_DIR}=<a writable dir on such a mount>\n"
             "or declare the absence out loud, naming the row that owns closing it — this "
             "exact value is accepted, and a bare reason is NOT:\n"
             f'  {_ENV_WAIVER}="hosted runner cannot mount nfs4; expiry owned by row '
@@ -176,7 +184,13 @@ def unsupporting_mount() -> Path:
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        pytest.fail(f"{_ENV_DIR}={root} is configured but not writable: {exc}")
+        pytest.fail(
+            f"{_ENV_DIR}={root} is configured but not writable: {exc}. "
+            "Next: fix the permissions or point it at a writable directory on a mount that "
+            f"refuses the renameat2 flags, or unset it and declare a governed {_ENV_WAIVER} "
+            "instead — an unwritable configured path is a broken configuration, not an "
+            "absent mount, so it is not waivable as one."
+        )
 
     directory = root / f"lifecycle-{uuid.uuid4().hex[:8]}"
     directory.mkdir()
@@ -189,15 +203,18 @@ def unsupporting_mount() -> Path:
         pytest.fail(
             f"{_ENV_DIR}={directory} SUPPORTS renameat2 flags "
             f"(EXCHANGE errno={exchange}, NOREPLACE errno={noreplace}), so the fallback "
-            "would never be reached and a green run here would prove nothing. Point it at a "
-            "filesystem that refuses the flags — an NFS4 mount — or unset it and declare a "
-            f"governed {_ENV_WAIVER} instead."
+            "would never be reached and a green run here would prove nothing. "
+            "Next: point it at a filesystem that refuses the flags — an NFS4 mount — or "
+            f"unset it and declare a governed {_ENV_WAIVER} instead."
         )
     if exchange not in cp._RENAME_FLAG_UNSUPPORTED_ERRNOS:
         pytest.fail(
             f"{_ENV_DIR}={directory} fails EXCHANGE with errno={exchange}, which is not an "
             "unsupported-flag errno. That is a broken mount rather than one lacking the "
-            "flag, and this witness cannot distinguish the repair from the breakage on it."
+            "flag, and this witness cannot distinguish the repair from the breakage on it. "
+            f"Next: check the export's health (errno {exchange} is a fault, not a missing "
+            "feature), then either point this at a healthy mount that refuses the flags or "
+            f"unset it and declare a governed {_ENV_WAIVER}."
         )
     return directory
 
@@ -302,6 +319,39 @@ def test_claim_shaped_lifecycle_projects_on_a_mount_that_refuses_the_flags(
     ]
     assert not list(unsupporting_mount.glob("*.transition-pin.*"))
     assert not list(unsupporting_mount.glob("*transition-scratch*"))
+
+
+def test_every_refusal_in_this_module_names_a_next_action() -> None:
+    """executive_function: an error that does not say what to do next is half an error.
+
+    Reviewers have twice found refusals here missing one — and separately found one whose
+    suggested command its own validation rejected, which is worse than silence because it
+    sends a stuck reader round again. This scans the module's own source so the requirement
+    is enforced rather than remembered, which is the only form that survives the next edit.
+    """
+
+    lines = Path(__file__).read_text(encoding="utf-8").splitlines()
+    # A refusal is a LINE that opens the call, not any occurrence of the text — the first
+    # version matched this scanner's own search string and reported itself, which is the
+    # completeness-filter trap in miniature.
+    refusals: list[str] = []
+    for index, line in enumerate(lines):
+        if not line.strip().startswith("pytest.fail("):
+            continue
+        depth, collected = 0, []
+        for candidate in lines[index:]:
+            collected.append(candidate)
+            depth += candidate.count("(") - candidate.count(")")
+            if depth <= 0:
+                break
+        refusals.append("\n".join(collected))
+
+    assert refusals, "no refusals found — the scanner is broken, not the module"
+    missing = [r for r in refusals if "Next:" not in r]
+    assert not missing, (
+        f"{len(missing)} of {len(refusals)} refusals do not name a next action:\n"
+        + "\n---\n".join(r[:200] for r in missing)
+    )
 
 
 def test_the_waiver_expiry_row_is_resolvable() -> None:
