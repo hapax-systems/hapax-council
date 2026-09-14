@@ -8,7 +8,7 @@ import runpy
 import stat
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2096,6 +2096,182 @@ def test_receipt_surface_expired_newer_backup_cannot_fabricate_a_gap(
     assert summary["receipt_continuity_gap_s"] == -85440.0
     assert summary["receipt_surface_predecessor_expiry"] == "2026-06-10T23:44:00Z"
     assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+
+
+def test_receipt_surface_future_backup_cannot_mask_a_gap_when_nothing_is_eligible(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """C1 (#4665, round 15), end-to-end: the fallback combination the round-14
+    regressions never combined. The canonical receipt's OWN envelope has lapsed
+    (23:44 + 15m expired at 23:59) and a backup is stamped 10 minutes into the
+    future, so at the 00:00 tick NOTHING is eligible and the historical
+    fallback runs. The fallback must keep the expired predecessor's evidence
+    while excluding the future-dated backup routing rejects outright: letting
+    the backup win credited its 00:25 quota expiry as the predecessor, so the
+    00:00 replacement read gap=-1500 and rc=0 across a real 60s hole."""
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW)
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:44:00Z",
+        outer_stale_after="15m",
+        quota_stale_after="900s",
+    )
+    _backup_codex_receipt(platform_receipts, observed_at="2026-06-10T00:10:00Z")
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def publishing_refresh(*, timeout, receipt_dir):
+        _codex_platform_receipt(platform_receipts)
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:00:00Z")
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", publishing_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 4
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_continuity_degraded"] is True
+    assert summary["receipt_continuity_gap_s"] == 60.0
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-09T23:59:00Z"
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+    assert summary["receipt_surface_publication_instants"] == {"codex": "2026-06-10T00:00:00Z"}
+
+
+def test_receipt_surface_scan_clock_advances_with_publication_work(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """C2 (#4665, round 15), end-to-end WITHOUT --now: each receipt scan must
+    sample the wall clock where it runs, because routing judges the receipts
+    it consumes with its own clock at that stage. A successor landing 65s into
+    a refresh that completes at T+140 is future-dated only against the
+    post-pull clock the round-14 scans kept reusing: judged against T, the
+    successor scan rejects the replacement and selects the stale backup copy,
+    the platform reads as unreplaced, and the tick exits rc=0 across a real
+    60s hole. A scripted datetime drives the advancing-clock leg the frozen
+    --now regressions cannot reach; routing selection, predecessor expiry,
+    the 60s gap, and rc=4 all follow once the successor scan's clock moves
+    past the successor's landing."""
+    t0 = datetime(2026, 6, 10, 0, 0, 0, tzinfo=UTC)
+
+    class _ScriptedClock(datetime):
+        current = t0
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current if tz is not None else cls.current.replace(tzinfo=None)
+
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    monkeypatch.setitem(main_globals, "datetime", _ScriptedClock)
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW)
+    # Predecessor canonical: observed a minute before T, quota envelope
+    # expiring at T+80 — the 60s hole the refresh's T+140 landing opens.
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:59:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="140s",
+    )
+    # A stale same-observed_at copy under a later filename: eligible at every
+    # clock here, so only the successor's landing — not the backup — can move
+    # the selection once the scan clock advances past it.
+    _backup_codex_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:59:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="140s",
+    )
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def slow_refresh(*, timeout, receipt_dir):
+        _ScriptedClock.current = t0 + timedelta(seconds=65)
+        _codex_platform_receipt(
+            platform_receipts,
+            observed_at="2026-06-10T00:01:05Z",
+            outer_stale_after="24h",
+            quota_stale_after="15m",
+        )
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:02:20Z")
+        _ScriptedClock.current = t0 + timedelta(seconds=140)
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", slow_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 4
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_continuity_degraded"] is True
+    assert summary["receipt_continuity_gap_s"] == 60.0
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-10T00:01:20Z"
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+    assert summary["receipt_surface_publication_instants"] == {"codex": "2026-06-10T00:02:20Z"}
 
 
 @pytest.mark.parametrize(
