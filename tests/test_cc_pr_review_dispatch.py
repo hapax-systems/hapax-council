@@ -3044,6 +3044,30 @@ public_gate_authority:
         assert result["dossier"]["review_team_verdict"] == "blocked"
         assert not (note.parent / "task-a.acceptance.yaml").exists()
 
+    def test_armed_non_frontier_row_without_quorum_mints_no_receipt(self, tmp_path: Path) -> None:
+        """The no-trap guarantee on the FAILURE path, not just the success path.
+
+        Minting is pinned for quorum-accept. This pins the other side: a
+        non-frontier row demanding independent review that does not reach quorum
+        mints nothing, so the close gate keeps refusing it. That is correct —
+        but it means the new class of rows inherits the same quorum dependency
+        as the frontier path, and the only escape while quorum is unreachable is
+        the bypass env var. Pinned so that dependency is visible rather than
+        discovered during an outage.
+        """
+        reviewers = RecordingReviewers(replies={"glm": BLOCK_REPLY})
+        result, _, _, note = _review(
+            tmp_path,
+            task_kwargs={
+                "quality_floor": "verification_receipt",
+                "extra_frontmatter": ("review_requirement:\n  independent_review_required: true\n"),
+            },
+            reviewers=reviewers,
+        )
+
+        assert result["dossier"]["review_team_verdict"] == "blocked"
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+
     def test_receipt_minting_ignores_gate_killswitch(self, tmp_path: Path, monkeypatch) -> None:
         vault = _make_vault(tmp_path)
         note = _write_task(vault, quality_floor="frontier_review_required")

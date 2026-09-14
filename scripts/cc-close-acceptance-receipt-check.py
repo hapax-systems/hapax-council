@@ -30,6 +30,23 @@ Failure mode: fail-OPEN on infrastructure errors reading the NOTE (missing /
 unreadable file — a broken gate must not brick closures), but fail-CLOSED on
 receipt problems (an absent or invalid receipt is exactly what this gate
 exists to catch).
+
+KNOWN TENSION, recorded rather than silently carried (raised in review of
+PR #4669). Widening the gate to arm on independent-review declarations grew the
+blast radius of that fail-OPEN: an unreadable note on a review-demanding row now
+closes unreviewed where previously only review-floor rows were exposed. It also
+sits awkwardly beside this module's own rule that a present-but-unreadable
+DECLARATION must never read as absent — the same principle would make an
+existing-but-unreadable NOTE fail closed, distinguishing it from a genuinely
+missing one.
+
+It was deliberately NOT changed here. The behaviour is pre-existing, outside this
+row's scope, and the availability tradeoff is real: this estate runs its task
+SSOT on an NFS mount that has flapped, and failing closed on a transient read
+error would wedge every closure during a blip. Changing a gate's availability
+semantics under an unrelated row, during known mount instability, is how
+incidents are made. The narrowing (fail-open only for MISSING, fail-closed for
+unreadable) wants its own row and its own witness.
 """
 
 from __future__ import annotations
@@ -45,6 +62,7 @@ if str(REPO_ROOT) not in sys.path:
 from shared.sdlc_lifecycle import (  # noqa: E402
     ACCEPTANCE_RECEIPT_REQUIRED_FIELDS,
     RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+    RECEIPT_TRIGGER_MALFORMED_CONTAINER,
     RECEIPT_TRIGGER_MALFORMED_REVIEW,
     RECEIPT_TRIGGER_REVIEW_FLOOR,
     acceptance_receipt_blockers,
@@ -97,6 +115,15 @@ def gate(path: Path) -> tuple[int, str]:
             "review_requirement.independent_review_required is present but not a recognized"
             " boolean, so its intent cannot be read. An unreadable review requirement arms the"
             " gate rather than disabling it. Fix the declaration (true/false) to resolve this."
+        )
+    if RECEIPT_TRIGGER_MALFORMED_CONTAINER in triggers:
+        demands.append(
+            "review_requirement (or the route_metadata holding it) is present but is not a"
+            " mapping — a list or scalar where a block is required. The flag inside it may be"
+            " perfectly valid; the enclosing shape is the failure, so do not change the"
+            " true/false value. Make review_requirement a mapping of fields, and route_metadata"
+            " a mapping, then re-run. An unreadable container arms the gate rather than"
+            " disabling it, because whatever it declares cannot be seen."
         )
     lines = [
         f"cc-close BLOCKED: task '{task_id}' lacks a valid acceptance receipt.",

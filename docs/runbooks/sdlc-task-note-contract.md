@@ -34,7 +34,17 @@ reliable legibility (ideally all three).*
    arms, reported as `…:malformed`: an unknown review requirement may not read
    as no requirement. Only an explicit, schema-valid `false` declines.
 
-   Recheck: `uv run pytest tests/scripts/test_cc_close_acceptance_receipt_check.py -q`
+   Recheck — the close gate alone does not pin all of the above. The boolean
+   spellings are pinned by the schema-parity suite and the admission/minting
+   behaviour by the autoqueue and dispatch suites, so a reader re-running only
+   the first command could see green while parity had drifted:
+
+   ```
+   uv run pytest tests/scripts/test_cc_close_acceptance_receipt_check.py \
+                 tests/shared/test_sdlc_lifecycle.py \
+                 tests/test_cc_pr_autoqueue.py \
+                 tests/test_cc_pr_review_dispatch.py -q
+   ```
 4. Reason codes must name the true failure: an unparseable note is reported as
    such by `cc-pr-autoqueue`, never as a generic missing link.
 

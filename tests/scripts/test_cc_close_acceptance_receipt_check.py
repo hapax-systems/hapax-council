@@ -319,6 +319,42 @@ class TestIndependentReviewRequirement:
         assert "malformed" in message
         assert "not a recognized" in message
 
+    def test_malformed_container_refusal_does_not_blame_the_flag(self, tmp_path: Path) -> None:
+        """The flag may be valid; the enclosing shape is the failure.
+
+        For ``review_requirement: [{independent_review_required: true}]`` the
+        value is already ``true``. Telling the operator to fix it sends them to
+        change something correct.
+        """
+        checker = _load_checker()
+        note = tmp_path / "task-c.md"
+        note.write_text(
+            textwrap.dedent(
+                """\
+                ---
+                type: cc-task
+                task_id: task-c
+                status: in_progress
+                quality_floor: verification_receipt
+                review_requirement:
+                  - independent_review_required: true
+                ---
+
+                # task-c
+                """
+            ),
+            encoding="utf-8",
+        )
+
+        code, message = checker.gate(note)
+
+        assert code == 2
+        assert "malformed_container" in message
+        assert "is not a" in message and "mapping" in message
+        assert "do not change the" in message
+        # The flag-value diagnosis must NOT appear: it would misdirect the fix.
+        assert "not a recognized boolean" not in message
+
     def test_combined_triggers_emit_both_sentences(self, tmp_path: Path) -> None:
         """Legibility: a row armed twice is told both reasons."""
         checker = _load_checker()

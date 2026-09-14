@@ -23,6 +23,7 @@ from shared.blocked_witness import evaluate_blocked_witness
 from shared.sdlc_lifecycle import (
     PR_ACTIONS,
     RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+    RECEIPT_TRIGGER_MALFORMED_CONTAINER,
     RECEIPT_TRIGGER_MALFORMED_REVIEW,
     RECEIPT_TRIGGER_REVIEW_FLOOR,
     SDLC_STAGE_METADATA,
@@ -1094,7 +1095,7 @@ class TestMalformedBlockShape:
     )
     def test_non_mapping_block_is_malformed_top_level(self, block: object) -> None:
         assert acceptance_receipt_triggers({"review_requirement": block}) == (
-            RECEIPT_TRIGGER_MALFORMED_REVIEW,
+            RECEIPT_TRIGGER_MALFORMED_CONTAINER,
         )
 
     @pytest.mark.parametrize(
@@ -1102,11 +1103,71 @@ class TestMalformedBlockShape:
     )
     def test_non_mapping_block_is_malformed_in_mirror(self, block: object) -> None:
         frontmatter = {"route_metadata": {"review_requirement": block}}
-        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_MALFORMED_REVIEW,)
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_MALFORMED_CONTAINER,)
 
     def test_missing_block_is_still_absent(self) -> None:
         """The distinction that matters: absent is not malformed."""
         assert acceptance_receipt_triggers({"quality_floor": "verification_receipt"}) == ()
+
+
+class TestMalformedContainerAtEveryLevel:
+    """Shape is checked at every level of the lookup chain, not just the innermost.
+
+    Skipping a present-but-wrong-shaped container discards whatever it holds.
+    That bit twice: a non-mapping ``review_requirement`` classified as absent,
+    then a non-mapping ``route_metadata`` skipped outright — which silently
+    discarded a review demand nested inside it while ``assess_route_metadata``
+    rejected the same note. Same error, different depth.
+    """
+
+    @pytest.mark.parametrize(
+        "route_metadata",
+        [
+            [{"review_requirement": {"independent_review_required": True}}],
+            "oops",
+            1,
+            [],
+        ],
+    )
+    def test_non_mapping_route_metadata_arms(self, route_metadata: object) -> None:
+        frontmatter = {
+            "quality_floor": "verification_receipt",
+            "route_metadata": route_metadata,
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_MALFORMED_CONTAINER,)
+
+    def test_demand_nested_in_a_malformed_route_metadata_is_not_discarded(self) -> None:
+        """The reported critical: the demand is invisible, so the gate must arm anyway."""
+        frontmatter = {
+            "quality_floor": "verification_receipt",
+            "route_metadata": [{"review_requirement": {"independent_review_required": True}}],
+        }
+        assert acceptance_receipt_triggers(frontmatter) != ()
+
+    def test_top_level_decline_does_not_excuse_a_malformed_route_metadata(self) -> None:
+        """An explicit false cannot vouch for a mirror nobody can read."""
+        frontmatter = {
+            "review_requirement": {"independent_review_required": False},
+            "route_metadata": [{"review_requirement": {"independent_review_required": True}}],
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_MALFORMED_CONTAINER,)
+
+    def test_container_and_value_malformations_are_distinct(self) -> None:
+        """The refusal must not tell an operator to fix an already-valid flag."""
+        container = acceptance_receipt_triggers({"review_requirement": [{"x": 1}]})
+        value = acceptance_receipt_triggers(
+            {"review_requirement": {"independent_review_required": "maybe"}}
+        )
+        assert container == (RECEIPT_TRIGGER_MALFORMED_CONTAINER,)
+        assert value == (RECEIPT_TRIGGER_MALFORMED_REVIEW,)
+        assert container != value
+
+    def test_absent_route_metadata_is_not_malformed(self) -> None:
+        assert acceptance_receipt_triggers({"quality_floor": "verification_receipt"}) == ()
+
+    def test_valid_mapping_route_metadata_is_not_malformed(self) -> None:
+        frontmatter = {"route_metadata": {"quality_floor": "verification_receipt"}}
+        assert acceptance_receipt_triggers(frontmatter) == ()
 
 
 class TestIndependentReviewMirror:

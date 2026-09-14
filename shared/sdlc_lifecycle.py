@@ -300,6 +300,10 @@ ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS = frozenset({"accepted"})
 RECEIPT_TRIGGER_REVIEW_FLOOR = f"quality_floor:{REVIEW_FLOOR_QUALITY_FLOOR}"
 RECEIPT_TRIGGER_INDEPENDENT_REVIEW = "review_requirement.independent_review_required"
 RECEIPT_TRIGGER_MALFORMED_REVIEW = "review_requirement.independent_review_required:malformed"
+#: The flag may be perfectly valid while the container holding it is the wrong
+#: shape; the refusal must say which, or it sends the operator to fix a value
+#: that is already correct.
+RECEIPT_TRIGGER_MALFORMED_CONTAINER = "review_requirement:malformed_container"
 
 #: Scalar spellings the route schema coerces to ``True`` / ``False`` for
 #: ``ReviewRequirement.independent_review_required``. Enumerated from the model
@@ -318,7 +322,8 @@ _INDEPENDENT_REVIEW_FALSY = frozenset({"false", "no", "n", "off", "f", "0"})
 _REVIEW_ABSENT = "absent"
 _REVIEW_DEMANDED = "demanded"
 _REVIEW_DECLINED = "declined"
-_REVIEW_MALFORMED = "malformed"
+_REVIEW_MALFORMED = "malformed"  # flag value the schema rejects
+_REVIEW_MALFORMED_CONTAINER = "malformed_container"  # container is not a mapping
 
 
 def _schema_bool(raw: object) -> bool | None:
@@ -384,7 +389,7 @@ def _independent_review_state(container: Mapping[str, Any]) -> str:
         return _REVIEW_ABSENT
     block = container["review_requirement"]
     if not isinstance(block, Mapping):
-        return _REVIEW_MALFORMED
+        return _REVIEW_MALFORMED_CONTAINER
     if "independent_review_required" not in block:
         return _REVIEW_ABSENT
     verdict = _schema_bool(block["independent_review_required"])
@@ -396,16 +401,31 @@ def _independent_review_state(container: Mapping[str, Any]) -> str:
 def _independent_review_states(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
     """States of the top-level block and the ``route_metadata`` mirror.
 
-    Both are consulted and each is classified independently, so a demand or a
-    malformed declaration in *either* arms the gate (fail-closed on
+    Each container in the lookup chain is classified independently, so a demand
+    or an unreadable declaration in *either* arms the gate (fail-closed on
     disagreement) exactly as the floor lookup treats its own mirror.
+
+    **Every level of the chain is checked for shape, not just the innermost.**
+    A present-but-non-mapping container is ``malformed_container``, never
+    skipped: skipping it discards whatever it holds. This bit twice — first a
+    non-mapping ``review_requirement`` classified as absent, then a non-mapping
+    ``route_metadata`` skipped outright, which silently discarded a review
+    demand nested inside it. Both are the same error (treating "wrong shape" as
+    "not present") at different depths, so the rule is stated once and applied
+    at every level rather than patched per level.
     """
 
-    containers: list[Mapping[str, Any]] = [frontmatter]
-    route_metadata = frontmatter.get("route_metadata")
-    if isinstance(route_metadata, Mapping):
-        containers.append(route_metadata)
-    return tuple(_independent_review_state(container) for container in containers)
+    states = [_independent_review_state(frontmatter)]
+    if "route_metadata" in frontmatter:
+        route_metadata = frontmatter["route_metadata"]
+        if isinstance(route_metadata, Mapping):
+            states.append(_independent_review_state(route_metadata))
+        else:
+            # Present but unreadable: the mirror cannot be consulted at all, so
+            # anything it declares is invisible. Arm rather than assume it was
+            # empty — assess_route_metadata rejects this shape outright.
+            states.append(_REVIEW_MALFORMED_CONTAINER)
+    return tuple(states)
 
 
 def acceptance_receipt_triggers(frontmatter: Mapping[str, Any]) -> tuple[str, ...]:
@@ -456,6 +476,8 @@ def acceptance_receipt_triggers(frontmatter: Mapping[str, Any]) -> tuple[str, ..
         triggers.append(RECEIPT_TRIGGER_INDEPENDENT_REVIEW)
     if _REVIEW_MALFORMED in states:
         triggers.append(RECEIPT_TRIGGER_MALFORMED_REVIEW)
+    if _REVIEW_MALFORMED_CONTAINER in states:
+        triggers.append(RECEIPT_TRIGGER_MALFORMED_CONTAINER)
     return tuple(triggers)
 
 
