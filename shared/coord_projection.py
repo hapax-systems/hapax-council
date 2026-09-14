@@ -3778,13 +3778,19 @@ def _refuse_if_scratch_occupied(
 ) -> None:
     """Refuse before moving anything if any scratch destination is already taken.
 
-    Every leg below relocates entries into these names, and **no rename in the sequence may
-    land on an occupied name**, because a rename onto an occupied name destroys what is
-    there. An occupied scratch is never a race — the names are derived from the
-    transaction's own scratch operand, so nothing else computes them — it is a previous
-    attempt's remnant, and a previous attempt may have deliberately preserved another
-    writer's only copy there. Renaming over it would destroy exactly what that attempt
-    saved.
+    Every leg below relocates entries into these names, and a rename onto an occupied name
+    destroys what is there — most likely a previous attempt's remnant, and a previous attempt
+    may have deliberately preserved another writer's only copy in it. Renaming over that
+    would destroy exactly what the earlier attempt saved.
+
+    **Namespace isolation is NOT uniform across the legs, and this docstring used to claim it
+    was.** On the exchange leg the names derive from the transaction's own scratch operand,
+    so they are transaction-unique. On the **delete** leg they derive from the live filename,
+    because there ``src_name`` *is* the live projection path — so every transaction touching
+    that note computes the same ``holding``. A reviewer caught the contradiction between this
+    paragraph and the comment at the delete leg's own call site, and it matters beyond tidy
+    prose: future recovery and concurrency work must not assume an isolation that only one
+    leg has.
 
     This is the guard that was missing: the earlier shape reserved only the pin (via
     ``link``'s EEXIST) and used plain renames for the rest, so a second attempt on the same
@@ -3804,6 +3810,29 @@ def _refuse_if_scratch_occupied(
             "`cc-claim --recover-claim-publications <task_id>`",
             f"{subject}:{name}",
         )
+
+
+def _scratch_is_a_live_second_link(
+    dir_fd: int,
+    name: str,
+    expected: os.stat_result,
+) -> bool:
+    """Is this leftover scratch a redundant link to an inode that is still live?
+
+    The distinction decides whether an unremovable scratch is merely untidy or actually
+    poisons the projection. A *foreign* leftover is somebody else's entry and harms nothing.
+    One of **ours** is a second name for an inode a live path also names, so the live entry
+    carries ``st_nlink > 1`` and :func:`_entry_state_at` will refuse it as path-unsafe on the
+    next readback — which is a failure of this transition, reported at the wrong place and
+    blamed on the wrong thing.
+    """
+
+    try:
+        current = os.lstat(name, dir_fd=dir_fd)
+    except OSError:
+        # Unreadable: we cannot show it is ours, so do not escalate on a guess.
+        return False
+    return _same_entry(current, expected) and current.st_nlink > 1
 
 
 def _retire_scratch(
@@ -4168,9 +4197,34 @@ def _fallback_exchange(
     #    to overlook. A mismatch is left for the recovery sweep and logged, never raised:
     #    the projection has already succeeded by this point, so raising would discard a
     #    verified post-state over a remnant that is merely untidy.
-    for redundant, expected in ((spent, replacement), (holding, displaced), (pin, displaced)):
-        _retire_scratch(dir_fd, redundant, expected, subject=f"{src_name}->{dst_name}")
+    #
+    #    But a scratch that is OURS and could not be removed is a different matter from a
+    #    foreign one left alone, and ignoring the return value hid that. Our redundant
+    #    scratch is a second link to a live inode, so leaving it means the live entry keeps
+    #    `st_nlink == 2` and the very next `_entry_state_at` raises
+    #    `transition_projection_path_unsafe` — a reviewer confirmed that by replay for
+    #    create, update and delete alike. The transition then fails anyway, after its
+    #    mutations, with a diagnosis pointing at the wrong thing.
+    #
+    #    So an unremovable scratch of ours is reported HERE, where the cause is known,
+    #    rather than as a mystified path-unsafe refusal one readback later.
+    stranded = [
+        redundant
+        for redundant, expected in ((spent, replacement), (holding, displaced), (pin, displaced))
+        if not _retire_scratch(dir_fd, redundant, expected, subject=f"{src_name}->{dst_name}")
+        and _scratch_is_a_live_second_link(dir_fd, redundant, expected)
+    ]
     os.fsync(dir_fd)
+    if stranded:
+        raise LifecycleTransitionError(
+            "transition_projection_recovery_required",
+            "preserve both exchanged entries and reconcile the racing update: the projection "
+            f"landed but {', '.join(stranded)} could not be removed, so a live entry still "
+            "carries a second link and every later readback will refuse it as path-unsafe. "
+            "Next: remove the named scratch once you have confirmed it is redundant, then "
+            "rerun `cc-claim --recover-claim-publications <task_id>`",
+            f"{src_name}->{dst_name} {scratches}",
+        )
 
 
 def _fallback_noreplace(

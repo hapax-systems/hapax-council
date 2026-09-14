@@ -5016,3 +5016,44 @@ def test_noreplace_holding_relocation_refuses_a_replaced_source(tmp_path: Path) 
     surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
     assert b"racing-writer\n" in surviving
     assert b"live-preimage\n" in surviving
+
+
+def test_a_scratch_of_ours_that_cannot_be_removed_is_reported_where_it_happens(
+    tmp_path: Path,
+) -> None:
+    """An unremovable scratch of OURS poisons the next readback, so it is named here.
+
+    Absorbing the cleanup error was only half the contract. The callers ignored the return
+    value, so a redundant link of ours survived, the live entry kept `st_nlink == 2`, and the
+    very next `_entry_state_at` refused it as `transition_projection_path_unsafe` — the
+    transition failing anyway, after its mutations, with a diagnosis pointing at the wrong
+    thing. A reviewer confirmed that by replay across create, update and delete.
+
+    Reported at the point where the cause is known instead. A foreign leftover still does not
+    escalate: it harms nothing, and only a second link to a live inode does.
+    """
+
+    (tmp_path / ".src").write_bytes(b"replacement\n")
+    (tmp_path / "dst").write_bytes(b"displaced\n")
+    real_unlink = os.unlink
+
+    def refuse_to_unlink_scratches(*args: object, **kwargs: object) -> None:
+        if args and ".transition-" in str(args[0]):
+            raise OSError(errno.EIO, os.strerror(errno.EIO), "unlink")
+        return real_unlink(*args, **kwargs)  # type: ignore[arg-type]
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with mock.patch.object(os, "unlink", refuse_to_unlink_scratches):
+            with pytest.raises(cp.LifecycleTransitionError) as caught:
+                cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
+    finally:
+        os.close(dir_fd)
+
+    assert caught.value.reason_code == "transition_projection_recovery_required"
+    # It names the scratch, says why continuing would fail, and gives the next command.
+    assert "path-unsafe" in str(caught.value)
+    assert "recover-claim-publications" in caught.value.repair_action
+    assert any(name in str(caught.value) for name in _fallback_remnants(tmp_path))
+    # The projection's own post-state still landed; this is about the leftover, not a loss.
+    assert (tmp_path / "dst").read_bytes() == b"replacement\n"
