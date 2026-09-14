@@ -2473,6 +2473,207 @@ def test_receipt_surface_predecessor_scan_samples_the_clock_after_the_ledger_pas
     assert summary["receipt_surface_replaced_platforms"] == ["codex"]
 
 
+def test_receipt_surface_tick_start_anchor_sees_holes_the_post_ledger_scan_masks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """C1 (#4665, round 17), end-to-end: the predecessor evidence must be the
+    TICK-START snapshot, not a post-ledger rescan. The canonical's quota
+    envelope dies at T+20; a backup observed T+100 only starts vouching at
+    observed_at - 60s = T+40 — a real 20s hole. A 50s ledger pass lets the
+    post-ledger rescan select the backup (no longer future-dated at T+50) and
+    charge its OWN far-later expiry as the predecessor end, so the round-16
+    predicate read rc=0 across the hole. Anchored at tick start, the walk
+    from the canonical's T+20 expiry to the replacement's T+60 landing crosses
+    the backup's honest T+40 coverage start and the hole is charged: rc=4."""
+    t0 = datetime(2026, 6, 10, 0, 0, 0, tzinfo=UTC)
+
+    class _ScriptedClock(datetime):
+        current = t0
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current if tz is not None else cls.current.replace(tzinfo=None)
+
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    monkeypatch.setitem(main_globals, "datetime", _ScriptedClock)
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW, stale_after_seconds=3600)
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:59:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="80s",
+    )
+    # The backup's mtime is pinned to its own observed_at by the helper, so at
+    # the T clock its tick-start interval is the skew-dropped honest one
+    # [T+40, ...) — predecessor evidence even though selection shadows it.
+    _backup_codex_receipt(
+        platform_receipts,
+        observed_at="2026-06-10T00:01:40Z",
+        outer_stale_after="24h",
+        quota_stale_after="15m",
+    )
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    original_load = main_globals["load_quota_spend_ledger"]
+
+    def slow_ledger_pass(base):
+        _ScriptedClock.current = t0 + timedelta(seconds=50)
+        return original_load(base)
+
+    def publishing_refresh(*, timeout, receipt_dir):
+        _ScriptedClock.current = t0 + timedelta(seconds=150)
+        _codex_platform_receipt(
+            platform_receipts,
+            observed_at="2026-06-10T00:01:00Z",
+            outer_stale_after="24h",
+            quota_stale_after="15m",
+        )
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:01:00Z")
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "load_quota_spend_ledger", slow_ledger_pass)
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", publishing_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 4
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_continuity_degraded"] is True
+    assert summary["receipt_continuity_gap_s"] == 20.0
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-10T00:00:20Z"
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+    assert summary["receipt_surface_publication_instants"] == {"codex": "2026-06-10T00:01:00Z"}
+
+
+def test_receipt_surface_maintaining_successor_survives_backup_winning_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """M1 (#4665, round 17), end-to-end: when the final selection moves onto a
+    backup (observed T+200, mtime pinned T-60), the REPLACEMENT the refresh
+    actually wrote (canonical restamped T+40, landed T+40) is the successor
+    that binds — not the backup's own routable-from. The successor lands
+    inside the tick-begin coverage (canonical expiring T+80), so coverage was
+    never interrupted; charging the backup's T+140 routable-from against the
+    T+80 predecessor fabricated a 60s hole (rc=4) on uninterrupted coverage.
+    The moved-path landing keeps gap=-40 rc=0 while still reporting the
+    replacement."""
+    t0 = datetime(2026, 6, 10, 0, 0, 0, tzinfo=UTC)
+
+    class _ScriptedClock(datetime):
+        current = t0
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current if tz is not None else cls.current.replace(tzinfo=None)
+
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    monkeypatch.setitem(main_globals, "datetime", _ScriptedClock)
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW, stale_after_seconds=3600)
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:59:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="140s",
+    )
+    _backup_codex_receipt(
+        platform_receipts,
+        observed_at="2026-06-10T00:03:20Z",
+        outer_stale_after="24h",
+        quota_stale_after="15m",
+    )
+    # The backup is an OLD file whose stamp is far ahead: pin its mtime a
+    # minute before T, as an untouched artifact would carry.
+    old_stamp = datetime.fromisoformat("2026-06-09T23:59:00+00:00").timestamp()
+    os.utime(platform_receipts / "z-codex-backup.json", (old_stamp, old_stamp))
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def publishing_refresh(*, timeout, receipt_dir):
+        _ScriptedClock.current = t0 + timedelta(seconds=150)
+        _codex_platform_receipt(
+            platform_receipts,
+            observed_at="2026-06-10T00:00:40Z",
+            outer_stale_after="24h",
+            quota_stale_after="15m",
+        )
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:00:40Z")
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", publishing_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_continuity_degraded"] is False
+    assert summary["receipt_continuity_gap_s"] == -40.0
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-10T00:01:20Z"
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+
+
 def test_receipt_surface_scan_drops_a_platform_whose_every_receipt_is_future_dated(
     tmp_path: Path,
 ) -> None:

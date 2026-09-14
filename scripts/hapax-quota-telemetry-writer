@@ -2869,14 +2869,31 @@ def _route_quota_surface_expiry(
 FUTURE_DATING_TOLERANCE = timedelta(minutes=1)
 
 
-def _scan_receipt_surface(
+def _scan_receipt_surface_detailed(
     receipt_dir: Path,
     route_pools: dict[str, tuple[CapacityPool, QuotaSource]] | None = None,
     *,
     now: datetime | None = None,
-) -> tuple[dict[str, tuple[datetime, datetime, datetime]], list[str]]:
-    """Per-platform (observed_at, effective expiry, routable-from instant) scan
-    plus the platforms whose receipt names no registry route.
+) -> tuple[
+    dict[str, tuple[datetime, datetime, datetime]],
+    dict[str, list[tuple[datetime, datetime, datetime, Path]]],
+    set[Path],
+    list[str],
+]:
+    """Per-platform selected surface states, the FULL readable evidence set,
+    the admissible pool paths, and the platforms whose receipt names no
+    registry route.
+
+    Returns ``(states, readable_by_platform, admissible_paths,
+    no_named_route)``: `states` is the selected per-platform
+    ``(observed_at, effective expiry, routable-from instant)`` exactly as
+    routing's loader would consume; `readable_by_platform` carries
+    ``(observed_at, effective expiry, routable-from, path)`` for EVERY
+    parseable receipt — predecessor evidence the continuity predicate
+    (round 17) must see even when selection shadows it this scan; and
+    `admissible_paths` are the paths in the selected pool (eligible, else
+    the non-future-dated fallback), the only final-scan files whose
+    intervals may witness coverage.
 
     When one platform has several receipt files in the directory, the SELECTED
     receipt is the one routing's loader would consume — the greatest
@@ -2912,7 +2929,15 @@ def _scan_receipt_surface(
     gap witness must charge the coverage start there (codex-1 critical C1,
     #4665 round 16: an untouched backup observed at T+200 with mtime T-60 won
     the post-refresh scan once it stopped being future-dated, and its old
-    mtime fabricated gap=-140 rc=0 across a real T+80..T+140 hole).
+    mtime fabricated gap=-140 rc=0 across a real T+80..T+140 hole). One skew
+    guard: production guarantees observed_at <= mtime <= scan clock, so an
+    mtime BEYOND the scan clock is fixture residue or clock skew, never a
+    landing instant this scan can vouch for — the mtime term is dropped
+    entirely there and routable-from falls back to observed_at minus the
+    tolerance (codex-1 critical C1, #4665 round 17: synthetic fixtures carry
+    real wall mtimes against pinned June clocks, and charging them let every
+    fixture interval start in September, far past any successor the pinned
+    tests advance to).
 
     The second element names platforms whose receipt binds NO registry route
     (empty routes, or every named route absent from the registry): their
@@ -2924,9 +2949,11 @@ def _scan_receipt_surface(
     if route_pools is None:
         route_pools = static_registry_route_pools()
     states: dict[str, tuple[datetime, datetime, datetime]] = {}
+    readable_by_platform: dict[str, list[tuple[datetime, datetime, datetime, Path]]] = {}
+    admissible_paths: set[Path] = set()
     no_named_route: set[str] = set()
     if not receipt_dir.is_dir():
-        return states, []
+        return states, readable_by_platform, admissible_paths, sorted(no_named_route)
     candidates: dict[str, list[tuple[datetime, Path, PlatformCapabilityReceipt]]] = {}
     for path in sorted(receipt_dir.glob("*.json")):
         try:
@@ -2939,6 +2966,16 @@ def _scan_receipt_surface(
     # The future-dating window mirrors receipt_is_fresh's own rejection clause
     # (observed more than one minute ahead of the clock is not evidence).
     checked_now = ensure_utc(now or datetime.now(UTC))
+
+    def _routable_from(observed_at: datetime, path: Path) -> datetime:
+        landing = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        admitted_at = observed_at - FUTURE_DATING_TOLERANCE
+        if landing > checked_now:
+            # Skew guard (see docstring): an mtime beyond the scan clock is
+            # never a landing instant this scan can vouch for.
+            return admitted_at
+        return max(landing, admitted_at)
+
     for platform, platform_candidates in candidates.items():
         # Routing's temporal eligibility first; the expired fallback below
         # exists ONLY to keep predecessor evidence measurable when routing
@@ -2961,6 +2998,19 @@ def _scan_receipt_surface(
             if candidate[0] <= checked_now + FUTURE_DATING_TOLERANCE
         ]
         pool = eligible or admissible_fallback
+        # Full readable evidence set first: EVERY parseable receipt keeps an
+        # interval, selected or not, because the continuity predicate (round
+        # 17) charges holes against predecessor-era coverage that selection
+        # may legitimately shadow this scan.
+        readable_by_platform[platform] = [
+            (
+                observed_at,
+                receipt_surface_effective_expiry(receipt, route_pools),
+                _routable_from(observed_at, path),
+                path,
+            )
+            for observed_at, path, receipt in platform_candidates
+        ]
         if not pool:
             # Every candidate is future-dated: routing holds nothing AND no
             # expired predecessor exists — there is no honest evidence for
@@ -2974,24 +3024,200 @@ def _scan_receipt_surface(
         for candidate in pool[1:]:
             if candidate[0] > observed_at:
                 observed_at, path, receipt = candidate
+        admissible_paths.add(path)
         # Route coverage is judged on the SELECTED receipt — the one routing
         # would actually consume for this platform — not on a shadowed
         # sibling's routes.
         if not any(route_id in route_pools for route_id in receipt.routes):
             no_named_route.add(platform)
-        landing = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
         # The selected receipt starts vouching for the platform only once it is
         # both on disk and not future-dated: observed_at minus the tolerance is
         # the earliest clock that admits it, so an eligibility transition onto a
         # pre-existing file cannot credit that file's old mtime as coverage
         # across the hole before the transition (see the docstring above).
-        routable_from = max(landing, observed_at - FUTURE_DATING_TOLERANCE)
         states[platform] = (
             observed_at,
             receipt_surface_effective_expiry(receipt, route_pools),
-            routable_from,
+            _routable_from(observed_at, path),
         )
-    return states, sorted(no_named_route)
+    return states, readable_by_platform, admissible_paths, sorted(no_named_route)
+
+
+def _scan_receipt_surface(
+    receipt_dir: Path,
+    route_pools: dict[str, tuple[CapacityPool, QuotaSource]] | None = None,
+    *,
+    now: datetime | None = None,
+) -> tuple[dict[str, tuple[datetime, datetime, datetime]], list[str]]:
+    """Selected per-platform receipt-surface states (the detailed scan's
+    first and last elements) — the shape every pre-round-17 consumer uses."""
+    states, _readable, _admissible, no_named_route = _scan_receipt_surface_detailed(
+        receipt_dir, route_pools, now=now
+    )
+    return states, no_named_route
+
+
+def _merge_half_open_intervals(
+    intervals: Iterable[tuple[datetime, datetime]],
+) -> list[tuple[datetime, datetime]]:
+    """Merge half-open [start, end) intervals into a sorted disjoint cover.
+
+    Zero-or-negative-width entries cover no instant and are dropped here;
+    callers that need their ends as candidate witness endpoints read the RAW
+    intervals directly instead."""
+    ordered = sorted((start, end) for start, end in intervals if start < end)
+    merged: list[list[datetime]] = []
+    for start, end in ordered:
+        if merged and start <= merged[-1][1]:
+            if end > merged[-1][1]:
+                merged[-1][1] = end
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
+
+
+def _interval_covering_end(
+    intervals: Iterable[tuple[datetime, datetime]], instant: datetime
+) -> datetime | None:
+    """Greatest end among the RAW (unmerged) intervals containing `instant`."""
+    ends = [end for start, end in intervals if start <= instant < end]
+    return max(ends) if ends else None
+
+
+def _first_uncovered_run_s(
+    intervals: Iterable[tuple[datetime, datetime]], start: datetime, end: datetime
+) -> float | None:
+    """Seconds of the first uncovered run in [start, end), or None when the
+    whole window is covered."""
+    if end <= start:
+        return None
+    cursor = start
+    for iv_start, iv_end in sorted(intervals):
+        if iv_end <= cursor:
+            continue
+        if iv_start > cursor:
+            return (min(iv_start, end) - cursor).total_seconds()
+        cursor = max(cursor, iv_end)
+        if cursor >= end:
+            return None
+    return (end - cursor).total_seconds()
+
+
+def _receipt_surface_continuity(
+    tick_start: datetime,
+    tick_scan: tuple[
+        dict[str, tuple[datetime, datetime, datetime]],
+        dict[str, list[tuple[datetime, datetime, datetime, Path]]],
+        set[Path],
+        list[str],
+    ],
+    final_scan: tuple[
+        dict[str, tuple[datetime, datetime, datetime]],
+        dict[str, list[tuple[datetime, datetime, datetime, Path]]],
+        set[Path],
+        list[str],
+    ],
+) -> dict[str, tuple[float, datetime | None, datetime | None, datetime]]:
+    """Round-17 receipt-surface continuity predicate.
+
+    For every platform the final scan selected whose observed_at MOVED since
+    the tick-start scan, charge the coverage hole (if any) between the
+    predecessor-era evidence and the replacement's routable-from instant.
+    Returns platform -> (gap_seconds, witness_end, tick_observed_at,
+    successor_routable); gap is successor_routable minus the covering end
+    (negative = margin), holes are positive run lengths, and witness_end is
+    the predecessor endpoint the gap is charged against (None only when the
+    platform had no tick evidence at all — a cold surface asserting nothing).
+
+    The predecessor evidence is the TICK-START readable set (predecessor-era
+    files only, judged with the T0 clock), not a post-ledger rescan: the
+    ledger pass and the refresh each run for real seconds, and a mid-pass
+    rescan lets successor evidence flip eligibility BEFORE the refresh's own
+    landing, masking exactly the mid-pass holes this predicate exists to
+    charge (codex-1 critical C1, #4665 round 17: a 50s ledger pass let a
+    T+100 backup stop being future-dated, the post-ledger scan selected it,
+    and the tick read rc=0 across a real 20s hole between the canonical's
+    expiry and the backup's own coverage start). The successor landing is the
+    minimum routable-from over MOVED paths — the refresh rewrites receipt
+    files, so a path whose observed_at differs between the two scans is that
+    platform's replacement landing, and the earliest one binds (a later
+    landing would charge the platform for the refresh's tail, round 11 M1).
+    """
+    tick_states, tick_readable, _tick_admissible, _tick_no_named = tick_scan
+    final_states, final_readable, final_admissible, _final_no_named = final_scan
+    results: dict[str, tuple[float, datetime | None, datetime | None, datetime]] = {}
+    for platform, (final_obs, _final_expiry, final_routable) in final_states.items():
+        tick_entries = tick_readable.get(platform, [])
+        tick_obs: datetime | None
+        if platform in tick_states:
+            tick_obs = tick_states[platform][0]
+            if final_obs == tick_obs:
+                # Not republished this tick: a lingering dead receipt is a
+                # maintenance defect, not a replacement hole.
+                continue
+        elif not tick_entries:
+            # No tick evidence at all: cold surface, asserts nothing.
+            continue
+        else:
+            tick_obs = None
+        tick_obs_by_path = {path: obs for obs, _expiry, _routable, path in tick_entries}
+        moved_landings = [
+            routable
+            for obs, _expiry, routable, path in final_readable.get(platform, [])
+            if path in tick_obs_by_path and tick_obs_by_path[path] != obs
+        ]
+        successor_routable = min(moved_landings) if moved_landings else final_routable
+        raw_tick = [(routable, expiry) for _obs, expiry, routable, _path in tick_entries]
+        merged_tick = _merge_half_open_intervals(raw_tick)
+        anchor_end = next((end for start, end in merged_tick if start <= tick_start < end), None)
+        gap_s: float
+        witness_end: datetime | None
+        if anchor_end is not None:
+            # Sign convention: gap is successor_routable minus the covering end
+            # (negative = margin); a HOLE is its positive uncovered run length,
+            # which can be shorter than successor minus anchor when later
+            # evidence covers part of the window.
+            if successor_routable <= anchor_end:
+                # Replacement landed inside the coverage in force at tick
+                # begin: pure margin, never a hole.
+                witness_end = anchor_end
+                gap_s = (successor_routable - anchor_end).total_seconds()
+            else:
+                final_admissible_intervals = [
+                    (routable, expiry)
+                    for _obs, expiry, routable, path in final_readable.get(platform, [])
+                    if path in final_admissible
+                ]
+                coverage = list(raw_tick) + final_admissible_intervals
+                hole = _first_uncovered_run_s(coverage, anchor_end, successor_routable)
+                if hole is not None:
+                    witness_end = anchor_end
+                    gap_s = hole
+                else:
+                    witness_end = _interval_covering_end(
+                        coverage, successor_routable - timedelta(microseconds=1)
+                    )
+                    if witness_end is None:
+                        witness_end = anchor_end
+                    gap_s = (successor_routable - witness_end).total_seconds()
+        else:
+            # No coverage in force at tick begin: charge against the raw
+            # predecessor evidence nearest (and no later than) the successor
+            # landing — a covering interval means pure margin, an earlier end
+            # means a hole, and neither means the platform is fresh.
+            witness_end = _interval_covering_end(
+                raw_tick, successor_routable - timedelta(microseconds=1)
+            )
+            if witness_end is None:
+                prior_ends = [end for _start, end in raw_tick if end <= successor_routable]
+                witness_end = max(prior_ends) if prior_ends else None
+            gap_s = (
+                (successor_routable - witness_end).total_seconds()
+                if witness_end is not None
+                else 0.0
+            )
+        results[platform] = (gap_s, witness_end, tick_obs, successor_routable)
+    return results
 
 
 def quota_receipt_surface_expiries(
@@ -3103,6 +3329,21 @@ def main(argv: list[str] | None = None) -> int:
     # catch exactly that gap, would have been blind to it (critical finding
     # on #4665, round 5, C2).
     invocation_mono_started = monotonic_clock()
+
+    # Tick-start receipt snapshot (round 17): the surface AS THE TICK BEGAN —
+    # predecessor-era files only, judged with the T0 clock (fixed under
+    # --now), sampled BEFORE the pull/ledger/refresh legs touch anything.
+    # The continuity predicate below anchors replacement gaps on THIS scan;
+    # the post-ledger predecessor scan further down keeps only its
+    # no-named-route role, because as a gap witness it samples the surface
+    # after the ledger pass's real seconds have already flipped successor
+    # evidence's eligibility — masking exactly the mid-pass holes the tick
+    # must charge (codex-1 critical C1, #4665 round 17).
+    tick_start_receipt_scan = None
+    if not args.skip_receipts:
+        tick_start_receipt_scan = _scan_receipt_surface_detailed(
+            args.platform_capability_receipt_dir, now=now
+        )
 
     receipts_ok = True
     pull_forward: dict[str, Any] = {
@@ -3278,7 +3519,6 @@ def main(argv: list[str] | None = None) -> int:
     # fallback the gap witnesses cannot see (claude-1 minor, #4665 round 12);
     # post-refresh state overrides this below when the refresh ran.
     receipt_surface_no_named_route: list[str] | None = None
-    predecessor_surface_states: dict[str, tuple[datetime, datetime, datetime]] = {}
     if not args.skip_receipts:
         # Each receipt scan judges eligibility with the clock routing itself
         # would sample AT THAT STAGE, never the post-pull instant shared `now`
@@ -3292,15 +3532,13 @@ def main(argv: list[str] | None = None) -> int:
         # tick exited rc=0 across a real 60s hole). --now keeps the synthetic
         # clock fixed and the tests deterministic.
         predecessor_scan_now = now if args.now else datetime.now(UTC).replace(microsecond=0)
-        predecessor_surface_states, receipt_surface_no_named_route = _scan_receipt_surface(
-            args.platform_capability_receipt_dir, now=predecessor_scan_now
-        )
-    receipt_surface_predecessors = {
-        platform: (observed, expiry)
-        for platform, (observed, expiry, _published_at) in predecessor_surface_states.items()
-    }
+        (
+            _predecessor_surface_states,
+            receipt_surface_no_named_route,
+        ) = _scan_receipt_surface(args.platform_capability_receipt_dir, now=predecessor_scan_now)
     receipt_publication_at: datetime | None = None
-    receipt_surface_replacements: dict[str, tuple[datetime, datetime, datetime]] = {}
+    receipt_surface_replacements: dict[str, tuple[datetime, datetime | None, datetime]] = {}
+    receipt_surface_gaps: dict[str, tuple[float, datetime | None, datetime | None, datetime]] = {}
     if not args.skip_receipts:
         receipts_ok = refresh_capability_receipts(
             timeout=args.receipt_timeout,
@@ -3320,33 +3558,34 @@ def main(argv: list[str] | None = None) -> int:
                 invocation_wall_started
                 + timedelta(seconds=monotonic_clock() - invocation_mono_started)
             ).replace(microsecond=0)
-            # Which platforms the refresh actually republished: observed_at
-            # moved for them. Receipts the refresh never touches (retired
-            # platforms' lingering dead receipts) are a maintenance defect,
-            # not a replacement hole — see the helper's docstring. Each
-            # platform carries its OWN routable-from instant — the later of
-            # its receipt file's mtime and the clock its selected evidence
-            # stops being future-dated — never the refresh's single
-            # completion instant, which charges every platform for the whole
-            # refresh's tail (codex-1 major, #4665 round 11, M1: a platform
-            # replaced 40s into a 260s refresh, well inside its predecessor's
-            # lifetime, read as a 60s hole and flapped rc=4 on uninterrupted
-            # coverage; codex-1 critical, round 16: a file only an eligibility
-            # transition selected must not credit its old mtime either).
-            # Sampled AFTER the refresh — see the predecessor scan above: the
+            # Which platforms the refresh actually republished, charged by the
+            # round-17 continuity predicate against the TICK-START snapshot
+            # above: the gap each replaced platform owes is measured from the
+            # predecessor-era evidence in force when the tick began, across
+            # everything the ledger pass and the refresh did in between, to
+            # this platform's replacement landing (the earliest routable-from
+            # over the paths the refresh rewrote — codex-1 criticals C1/M1,
+            # #4665 rounds 11, 16, 17). Sampled AFTER the refresh: the
             # successor is judged with the clock routing samples once the
-            # refresh has landed, not the pre-refresh one (codex-1 critical
-            # C2, #4665 round 15).
+            # refresh has landed (codex-1 critical C2, #4665 round 15).
             successor_scan_now = now if args.now else datetime.now(UTC).replace(microsecond=0)
-            successors, receipt_surface_no_named_route = _scan_receipt_surface(
+            final_receipt_scan = _scan_receipt_surface_detailed(
                 args.platform_capability_receipt_dir, now=successor_scan_now
             )
-            receipt_surface_replacements = {
-                platform: (*receipt_surface_predecessors[platform], published_at)
-                for platform, (observed, _expiry, published_at) in successors.items()
-                if platform in receipt_surface_predecessors
-                and observed != receipt_surface_predecessors[platform][0]
-            }
+            receipt_surface_no_named_route = final_receipt_scan[3]
+            if tick_start_receipt_scan is not None:
+                receipt_surface_gaps = _receipt_surface_continuity(
+                    invocation_wall_started, tick_start_receipt_scan, final_receipt_scan
+                )
+                receipt_surface_replacements = {
+                    platform: (tick_obs, witness_end, successor_routable)
+                    for platform, (
+                        _gap_s,
+                        witness_end,
+                        tick_obs,
+                        successor_routable,
+                    ) in receipt_surface_gaps.items()
+                }
         blocker_now = now if args.now else datetime.now(UTC).replace(microsecond=0)
         # Only the codex blocker reads what the refresh rewrote; recompute it and
         # rebuild only when it actually changed, so the common tick writes once.
@@ -3493,20 +3732,21 @@ def main(argv: list[str] | None = None) -> int:
     receipt_continuity_degraded = False
     receipt_surface_predecessor_expiry: datetime | None = None
     if receipt_publication_at is not None and receipt_surface_replacements:
-        receipt_surface_predecessor_expiry = min(
-            expiry for _observed, expiry, _published in receipt_surface_replacements.values()
-        )
-        # Per-platform, never aggregate: each replaced platform's OWN landing
-        # instant against its OWN predecessor expiry, and the WORST platform
-        # binds (codex-1 major, #4665 round 11, M1). A single refresh-wide
-        # instant here re-charged the earliest-replaced platform for every
-        # later platform's refresh time — a 40s-early replacement inside a
-        # 260s refresh read as a 60s hole against uninterrupted coverage.
+        # Round 17: the worst platform's gap and the MINIMUM witness endpoint
+        # come from the continuity predicate's per-platform verdicts — each
+        # platform's OWN successor landing against its OWN predecessor
+        # evidence chain (tick-start anchor, mid-pass coverage, successor
+        # routable-from). A platform whose witness end is None had no tick
+        # evidence at all (cold surface) and asserts nothing.
+        witness_ends = [
+            expiry
+            for _observed, expiry, _published in receipt_surface_replacements.values()
+            if expiry is not None
+        ]
+        if witness_ends:
+            receipt_surface_predecessor_expiry = min(witness_ends)
         receipt_continuity_gap_s = round(
-            max(
-                (published - expiry).total_seconds()
-                for _observed, expiry, published in receipt_surface_replacements.values()
-            ),
+            max(gap_s for gap_s, _end, _obs, _succ in receipt_surface_gaps.values()),
             1,
         )
         receipt_continuity_degraded = receipt_continuity_gap_s > 0.0
@@ -3545,7 +3785,12 @@ def main(argv: list[str] | None = None) -> int:
         worst_platform = max(
             receipt_surface_replacements,
             key=lambda p: (
-                receipt_surface_replacements[p][2] - receipt_surface_replacements[p][1]
+                receipt_surface_replacements[p][2]
+                - (
+                    receipt_surface_replacements[p][1]
+                    if receipt_surface_replacements[p][1] is not None
+                    else receipt_surface_replacements[p][2]
+                )
             ).total_seconds(),
         )
         print(
