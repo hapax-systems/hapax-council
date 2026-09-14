@@ -1681,6 +1681,22 @@ def _merge_queue_ref_pr_numbers(
     return queued
 
 
+def _frontmatter_block_text(text: str) -> str:
+    """The raw frontmatter block only, for checks that must not see the body.
+
+    Uses the same complete-line fence rule as the shared parser, so the region
+    this returns is exactly the region the shared parser loads as YAML.
+    """
+
+    lines = text.split("\n")
+    if not lines or lines[0].rstrip() != "---":
+        return ""
+    for index in range(1, len(lines)):
+        if lines[index].rstrip() == "---":
+            return "\n".join(lines[1:index])
+    return ""
+
+
 def _frontmatter(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     try:
         text = path.read_text(encoding="utf-8")
@@ -1696,11 +1712,16 @@ def _frontmatter(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     # The ANSI check and the typed reason strings stay here: they are this
     # caller's legibility contract (operator directive 2026-06-10 — a reason code
     # must name the true failure), not parsing.
-    if "\x1b[" in text:
+    parsed, state = frontmatter_state_from_text(text)
+    if "\x1b[" in _frontmatter_block_text(text):
         # ANSI escapes silently break YAML and made a task invisible on
         # 2026-06-10 (admission reported missing_cc_task_link — a lie).
+        # Scoped to the FRONTMATTER BLOCK, never the whole file: colored command
+        # output pasted into a session-log body is harmless to the metadata, and
+        # rejecting on it drops the task from load_task_notes and blocks its PR
+        # as unlinked — the same "reason code names the wrong failure" defect
+        # this check exists to prevent, pointed the other way.
         return None, "ANSI escape sequences in frontmatter"
-    parsed, state = frontmatter_state_from_text(text)
     if state == FRONTMATTER_ABSENT and not text.startswith("---"):
         return None, "no frontmatter fence"
     if state == FRONTMATTER_UNTERMINATED:

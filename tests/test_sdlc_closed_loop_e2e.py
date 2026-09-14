@@ -313,6 +313,47 @@ def test_receipt_gate_does_not_depend_on_the_close_admission() -> None:
     assert "shared.sdlc_lifecycle" in imports
 
 
+def test_the_close_path_snapshot_sees_the_review_demand(tmp_path: Path) -> None:
+    """The terminal-close snapshot reads the SAME declaration as the gate.
+
+    ``shared.sdlc_close`` computes its blockers from
+    ``shared.sdlc_task_store._snapshot``, which parses via
+    ``shared.frontmatter``. That parser carried the prefix fence defect, so with
+    ``---extra: abc`` between the identity fields and the demand the snapshot
+    omitted the requirement entirely: the standalone gate returned 2 while the
+    terminal-close path recorded a pass with no receipt.
+
+    I found that parser defective in the previous round and judged it out of
+    scope. It was not out of scope — it is reachable from this row's own close
+    path. Pinned here so the judgment cannot be repeated silently.
+    """
+    from shared.sdlc_lifecycle import acceptance_receipt_blockers
+    from shared.sdlc_task_store import _snapshot
+
+    note = tmp_path / "dash-key.md"
+    note.write_text(
+        "---\n"
+        "type: cc-task\n"
+        "task_id: dash-key\n"
+        "status: in_progress\n"
+        "quality_floor: verification_receipt\n"
+        "---extra: abc\n"
+        "review_requirement:\n"
+        "  independent_review_required: true\n"
+        "---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    snapshot = _snapshot(note, expected_task_id="dash-key", state="active")
+
+    assert "review_requirement" in snapshot.frontmatter, (
+        "the close-path snapshot lost the declaration below the dash-prefixed key"
+    )
+    assert acceptance_receipt_blockers(snapshot.frontmatter, note) == (
+        "missing_acceptance_receipt",
+    )
+
+
 def test_every_surface_parses_a_note_the_same_way(tmp_path: Path) -> None:
     """Sharing the PREDICATE is not enough if the surfaces parse differently.
 

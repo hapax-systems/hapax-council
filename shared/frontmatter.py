@@ -73,7 +73,15 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
     else:
         text = path_or_text
 
-    if not text.startswith("---"):
+    # Fences are COMPLETE lines at column 0. A substring scan for "\n---" also
+    # matched `---extra: abc` (a legal YAML key) and an indented `---` inside a
+    # literal or folded scalar, truncating the block there and silently dropping
+    # every field below — including, on the SDLC path, a task's declared review
+    # requirement, so a row closed unreviewed because its metadata had been cut
+    # in half. ``rstrip`` tolerates trailing whitespace on a real fence;
+    # leading whitespace disqualifies it, because indentation means content.
+    lines = text.split("\n")
+    if lines[0].rstrip() != "---":
         return FrontmatterParseResult(
             frontmatter=None,
             body=text,
@@ -81,8 +89,12 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
             error_message="document does not start with YAML frontmatter",
         )
 
-    end = text.find("\n---", 3)
-    if end == -1:
+    close_index = None
+    for index in range(1, len(lines)):
+        if lines[index].rstrip() == "---":
+            close_index = index
+            break
+    if close_index is None:
         return FrontmatterParseResult(
             frontmatter=None,
             body=text,
@@ -90,8 +102,8 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
             error_message="frontmatter closing marker is missing",
         )
 
-    yaml_text = text[3:end].strip()
-    body = text[end + 4 :].lstrip("\n")
+    yaml_text = "\n".join(lines[1:close_index]).strip()
+    body = "\n".join(lines[close_index + 1 :]).lstrip("\n")
     if not yaml_text:
         return FrontmatterParseResult(frontmatter={}, body=body)
 

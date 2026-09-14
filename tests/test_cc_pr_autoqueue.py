@@ -9691,6 +9691,89 @@ def test_blocks_review_floor_pr_without_acceptance_receipt(tmp_path: Path) -> No
     assert "missing_acceptance_receipt" in report["decisions"][0]["reasons"]
 
 
+def test_admission_sees_a_demand_below_a_dash_prefixed_yaml_key(tmp_path: Path) -> None:
+    """Admission must read the same declaration the close gate reads.
+
+    ``---extra: abc`` is a legal YAML key. Autoqueue's private fence scan
+    truncated the block there, so admission saw no arming declaration on a note
+    whose close gate demanded a receipt — the closure trap. Exercised through
+    ``run_reconciler``, not by comparing parsers, so restoring the private scan
+    fails here.
+    """
+    vault = _make_vault(tmp_path)
+    (vault / "active" / "dash-key-task.md").write_text(
+        "---\n"
+        "type: cc-task\n"
+        "task_id: dash-key-task\n"
+        "status: pr_open\n"
+        "assigned_to: delta\n"
+        "pr: 93\n"
+        "pr_repo: owner/repo\n"
+        "branch: feat/93\n"
+        "risk_tier: T2\n"
+        "quality_floor: verification_receipt\n"
+        "authority_case: CASE-TEST\n"
+        "parent_spec: docs/spec.md\n"
+        "route_metadata_schema: 1\n"
+        "mutation_surface: source\n"
+        "authority_level: support_non_authoritative\n"
+        "---extra: abc\n"
+        "review_requirement:\n"
+        "  independent_review_required: true\n"
+        "---\n\n# dash-key-task\n",
+        encoding="utf-8",
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(93)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert "missing_acceptance_receipt" in report["decisions"][0]["reasons"]
+
+
+def test_ansi_in_the_body_does_not_invalidate_the_metadata(tmp_path: Path) -> None:
+    """The ANSI check is scoped to the frontmatter block, not the whole file.
+
+    Colored command output pasted into a session log is harmless to the
+    metadata. Rejecting on it drops the task from the loader and blocks its PR
+    as *unlinked* — the same "reason code names the wrong failure" defect the
+    ANSI check exists to prevent, pointed the other way.
+    """
+    vault = _make_vault(tmp_path)
+    note = vault / "active" / "body-ansi-task.md"
+    _write_task(vault, task_id="body-ansi-task", pr=94)
+    note.write_text(
+        note.read_text(encoding="utf-8") + "\n## Session log\n\n\x1b[32mgreen output\x1b[0m\n",
+        encoding="utf-8",
+    )
+
+    parsed, error = autoqueue._frontmatter(note)
+
+    assert error is None, f"body ANSI wrongly rejected the note: {error}"
+    assert parsed is not None and parsed["task_id"] == "body-ansi-task"
+
+
+def test_ansi_inside_the_frontmatter_is_still_rejected(tmp_path: Path) -> None:
+    """The original incident shape stays caught (2026-06-10)."""
+    vault = _make_vault(tmp_path)
+    note = vault / "active" / "fm-ansi-task.md"
+    note.write_text(
+        "---\ntype: cc-task\ntask_id: fm-ansi-task\nstatus: \x1b[32mready\x1b[0m\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    parsed, error = autoqueue._frontmatter(note)
+
+    assert parsed is None
+    assert error == "ANSI escape sequences in frontmatter"
+
+
 def test_blocks_non_frontier_pr_declaring_independent_review_without_receipt(
     tmp_path: Path,
 ) -> None:
