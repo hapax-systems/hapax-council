@@ -244,7 +244,7 @@ runtimes:
       - security
       - all-green
     run_markers:
-      - 'astral-sh/ruff-action@0ce1b0bf8b818ef400413f810f8a11cdbda0034b'
+      - 'astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89'
       - 'uv run python scripts/check-unused-functions.py'
       - 'uv run python scripts/check-new-module-consumers.py'
       - 'uv run python scripts/check-producer-consumers.py'
