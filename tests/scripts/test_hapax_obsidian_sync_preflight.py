@@ -1139,6 +1139,69 @@ def test_ancestor_exemption_unit(tmp_path: pathlib.Path) -> None:
     assert errors == []
 
 
+@pytest.mark.parametrize("mode", ["pull-only", "mirror-remote"])
+def test_download_only_modes_predict_no_upload(
+    vault: pathlib.Path, tmp_path: pathlib.Path, mode: str
+) -> None:
+    """`pull-only` and `mirror-remote` only DOWNLOAD, so nothing uploads. Reporting the
+    admitted set as the prediction would be a confident wrong number — the largest one
+    this tool could produce, since it would be the whole kept set."""
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        syncMode=mode,
+    )
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["sync_mode"] == mode
+    assert report["uploads_enabled"] is False
+    assert report["predicted_upload"]["bytes"] == 0
+    assert report["predicted_upload"]["files"] == 0
+    # the admitted set is preserved, just not called a prediction
+    assert report["admitted_if_bidirectional"]["bytes"] == 161
+
+
+def test_mirror_remote_warns_about_reverting_local_changes(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """mirror-remote reverts local changes to match the remote; an operator should hear
+    that from a preflight rather than afterwards."""
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg, vault, ignoreFolders=["20-projects/_dashboard"], syncMode="mirror-remote"
+    )
+    out = _run_env(vault, xdg, "--from-sync-config").stdout
+    assert "DOWNLOAD ONLY" in out
+    assert "REVERTS local changes" in out
+
+
+def test_bidirectional_is_the_default_and_uploads(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """ob stores bidirectional by DELETING the key, so absence must resolve to it."""
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg, vault, ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"]
+    )
+    report = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
+    assert report["sync_mode"] == "bidirectional"
+    assert report["uploads_enabled"] is True
+    assert report["predicted_upload"]["bytes"] == 161
+    assert "admitted_if_bidirectional" not in report
+
+
+def test_invalid_sync_mode_is_refused(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    xdg = tmp_path / "xdg"
+    _write_live_config(xdg, vault, ignoreFolders=["20-projects/_dashboard"], syncMode="sideways")
+    result = _run_env(vault, xdg, "--from-sync-config")
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert "Invalid sync mode" in result.stderr
+    assert "Next:" in result.stderr
+
+
 def test_config_candidate_stat_error_is_reported(
     vault: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
@@ -1676,6 +1739,62 @@ def test_config_scan_does_not_invent_depths(vault: pathlib.Path, tmp_path: pathl
     report = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
     assert report["config_uploads"]["bytes"] == 11
     assert set(report["config_uploads"]["by_category"]) == {"community-plugin-data"}
+
+
+def test_recheck_client_passes_on_a_matching_bundle(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The recheck must be a predicate, not a printout: every rule present means exit 0."""
+    root = tmp_path / "node_modules"
+    pkg = root / "obsidian-headless"
+    pkg.mkdir(parents=True)
+    (pkg / "cli.js").write_text(
+        "\n".join(needle for _, needle in preflight.CLIENT_RULES), encoding="utf-8"
+    )
+    (pkg / "package.json").write_text(json.dumps({"version": "0.0.14"}), encoding="utf-8")
+    monkeypatch.setattr(
+        preflight.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=f"{root}\n", stderr=""),
+    )
+    assert preflight.recheck_client() == OK
+
+
+def test_recheck_client_fails_and_names_the_drifted_rule(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """A client whose rules moved must exit non-zero and say WHICH rule, since every
+    prediction replays them."""
+    root = tmp_path / "node_modules"
+    pkg = root / "obsidian-headless"
+    pkg.mkdir(parents=True)
+    kept = [needle for _, needle in preflight.CLIENT_RULES[1:]]
+    (pkg / "cli.js").write_text("\n".join(kept), encoding="utf-8")
+    (pkg / "package.json").write_text(json.dumps({"version": "9.9.9"}), encoding="utf-8")
+    monkeypatch.setattr(
+        preflight.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=f"{root}\n", stderr=""),
+    )
+    assert preflight.recheck_client() == ERROR
+    captured = capsys.readouterr()
+    assert preflight.CLIENT_RULES[0][0] in captured.err
+    assert "DRIFT" in captured.out
+    assert "Next:" in captured.err
+
+
+def test_recheck_client_refuses_extra_arguments() -> None:
+    result = _run("--recheck-client", "/tmp")
+    assert result.returncode == ERROR
+    assert "takes no other arguments" in result.stderr
+
+
+def test_client_rules_cover_every_documented_rule() -> None:
+    """The rule table is the drift detector, so it must not silently lag the docstring."""
+    labels = {label for label, _ in preflight.CLIENT_RULES}
+    for expected in ("per-file maximum", "concurrent sibling scan", "exclusion prefix test"):
+        assert expected in labels
+    assert len(preflight.CLIENT_RULES) >= 12
 
 
 def test_docs_do_not_reference_nonexistent_helpers() -> None:

@@ -60,19 +60,11 @@ Recheck every claim in this docstring — the exit statuses and each replayed ru
 Recheck the rules against the CLIENT (they are read off a minified bundle, so they
 can drift with any upgrade; `npm ls -g obsidian-headless` gives the pinned version):
 
-    node -e 'const p=require("path").join(
-        require("child_process").execSync("npm root -g").toString().trim(),
-        "obsidian-headless", "cli.js");
-      const s=require("fs").readFileSync(p,"utf8");
-      console.log(p, require(p.replace("cli.js","package.json")).version);
-      for (const k of ["function Ne(","function Cs(","function _e(","function Is(",
-      "_allowSyncFile(","reconcileSymbolicLinkCreation(","function ws(","function Kr(",
-      "Xc=","me=[","us=[","perFileMax"])
-      console.log(k, s.slice(s.indexOf(k), s.indexOf(k)+200), "\n")'
+    scripts/hapax-obsidian-sync-preflight --recheck-client
 
-(It locates the bundle itself via ``npm root -g`` and prints the installed version, so
-there is no variable to set and no chance of rechecking a different copy than the one
-in use.)
+That locates the installed bundle itself (via ``npm root -g``), checks each rule this file
+depends on against it, prints one OK/DRIFT line per rule, and **exits non-zero if any rule
+drifted** — so it is usable in CI rather than something a human has to eyeball.
 
 Rules replayed from obsidian-headless 0.0.14 ``cli.js``:
   * emitted namespace — ``Ne(s) = Cs(_e(s)).normalize("NFC")``: ``_e`` collapses every
@@ -128,6 +120,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import unicodedata
 from pathlib import Path
@@ -157,6 +150,9 @@ PERSISTED_FILE_TYPES_KEY = "allowTypes"
 # A config written by ob always carries these; used to tell "no exclusions
 # configured" apart from "this file is not an ob sync config / schema moved".
 PERSISTED_REQUIRED_KEYS = ("vaultId", "vaultPath", "conflictStrategy")
+# cli.js sync-config: bidirectional is stored by DELETING syncMode, so absence is it.
+SYNC_MODES = ("bidirectional", "pull-only", "mirror-remote")
+UPLOADING_SYNC_MODES = ("bidirectional",)
 # Populated below once the category list exists. Maps every persisted list field the
 # tool READS to its allowed values (None = any strings). Validation is driven by this
 # table so a newly-read field cannot silently bypass the shape check.
@@ -690,12 +686,13 @@ class _LinkPolicy:
     def follow(self, abspath: str, relpath: str, on_error, *, scan_root: str) -> bool:
         """``scan_root`` has NO default on purpose: it is the resolved directory the
         link was found in, and omitting it turns a deterministic ancestor-watcher skip
-        into a spurious race. A call site that forgets it should fail loudly."""
-        try:
-            target = os.path.realpath(abspath)
-        except OSError as exc:  # pragma: no cover
-            on_error(exc)
-            return False
+        into a spurious race. A call site that forgets it should fail loudly.
+
+        No error handling around ``realpath``: with ``strict=False`` (the default) it does
+        not raise — not for a missing target, not even for a symlink loop — so a guard
+        there would be untestable dead code rather than robustness.
+        """
+        target = os.path.realpath(abspath)
         if any(_overlaps(target, seen) for seen in self.root_targets):
             self.skipped.append({"path": relpath, "target": target})
             return False
@@ -795,10 +792,7 @@ def predict(
         # including beneath excluded directories, and exclusions are applied per FILE
         # below, where they decide what counts rather than what is scanned.
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-        try:
-            scan_root = os.path.realpath(dirpath)
-        except OSError:  # pragma: no cover
-            scan_root = dirpath
+        scan_root = os.path.realpath(dirpath)  # cannot raise: strict=False
         for name in list(dirnames):
             child = os.path.join(dirpath, name)
             if os.path.islink(child) and not links.follow(
@@ -915,6 +909,71 @@ def predict(
     }
 
 
+# Each entry is (label, needle-that-must-appear-in-cli.js). These are the exact rules this
+# file replays, so a drifted client shows up as a named DRIFT line rather than as a silently
+# wrong prediction. Kept as substrings of the minified bundle because that is what ships.
+CLIENT_RULES: tuple[tuple[str, str], ...] = (
+    ("emitted-name pipeline (Ne)", 'function Ne(s){return Cs(_e(s)).normalize("NFC")}'),
+    ("nonbreaking-space rewrite (Cs)", 'function Cs(s){return s.replace(Xc," ")}'),
+    ("nonbreaking-space set (Xc)", "Xc=/\\u00A0|\\u202F/g"),
+    ("slash/backslash collapsing (_e)", 'function _e(s){return s=s.replace(/([\\\\/])+/g,"/")'),
+    ("hidden-at-any-depth (Is)", 'function Is(s){for(;s;){if(W(s).startsWith("."))return!0'),
+    ("exclusion prefix test", 'if(t&&e===r||e.startsWith(r+"/"))return!1'),
+    ("symlink overlap rejection", "if(n===c||c.startsWith(n+r)||n.startsWith(c+r))return"),
+    ("default attachment set (me)", 'me=["image","audio","pdf","video"]'),
+    ("valid attachment types (us)", 'us=["image","audio","video","pdf","unsupported"]'),
+    ("attachment-type parser (Kr)", "if(!us.includes(t))throw new Error(`Invalid file type"),
+    ("config-dir validator (Ss)", 'function Ss(s){return s&&s.startsWith(".")&&!s.includes("/")'),
+    ("per-file maximum", "this.perFileMax=199*1024*1024"),
+    ("per-file skip", "File too large to sync"),
+    ("concurrent sibling scan", "await Promise.all"),
+)
+
+
+def recheck_client() -> int:
+    """Verify every replayed rule against the installed client. Exit 3 on any drift."""
+    try:
+        root = subprocess.run(
+            ["npm", "root", "-g"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(
+            f"cannot locate the global npm root: {exc}. Next: install node/npm, or run "
+            "this on the host that runs ob.",
+            file=sys.stderr,
+        )
+        return ERROR
+    bundle = Path(root) / "obsidian-headless" / "cli.js"
+    try:
+        source = bundle.read_text(encoding="utf-8", errors="replace")
+        version = json.loads((bundle.parent / "package.json").read_text(encoding="utf-8"))[
+            "version"
+        ]
+    except (OSError, ValueError, KeyError) as exc:
+        print(
+            f"cannot read {bundle}: {exc}. Next: npm install -g obsidian-headless.", file=sys.stderr
+        )
+        return ERROR
+
+    print(f"{bundle} (obsidian-headless {version})")
+    drifted = []
+    for label, needle in CLIENT_RULES:
+        present = needle in source
+        print(f"  [{'OK  ' if present else 'DRIFT'}] {label}")
+        if not present:
+            drifted.append(label)
+    if drifted:
+        print(
+            f"DRIFT: {len(drifted)} rule(s) no longer match this client "
+            f"({', '.join(drifted)}). Every prediction here replays those rules, so they "
+            "must be re-read from the bundle before the output is trusted. Next: re-read "
+            "the named functions in cli.js and update this file's model and its tests.",
+            file=sys.stderr,
+        )
+        return ERROR
+    return OK
+
+
 def _sync_config_dir() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
     return Path(base) / "obsidian-headless" / "sync"
@@ -977,6 +1036,27 @@ def load_live_config(vault: Path) -> dict:
         f"path matches the 'vaultPath' in a config under {root}, and run "
         "'ob sync-setup' if this vault is not connected yet."
     )
+
+
+def resolve_sync_mode(value: object) -> str:
+    """The sync direction, which decides whether an upload happens AT ALL.
+
+    cli.js validates `--mode` against `bidirectional` (the default, and stored by DELETING
+    the key), `pull-only` ("only download, ignore local changes") and `mirror-remote`
+    ("only download, revert local changes"). Under either download-only mode no local file
+    is uploaded, so predicting an upload set as though it were would be a confident wrong
+    number — and `mirror-remote` additionally REVERTS local changes, which is a data-risk
+    the operator should hear about from a preflight rather than afterwards.
+    """
+    if not value:
+        return "bidirectional"
+    if value not in SYNC_MODES:
+        raise ValueError(
+            f'Invalid sync mode: "{value}". ob accepts {", ".join(SYNC_MODES)} and refuses '
+            "to start otherwise, so this config could not be in use as written. Next: "
+            "re-apply it with 'ob sync-config --mode bidirectional'."
+        )
+    return str(value)
 
 
 def resolve_config_dir(value: object) -> str:
@@ -1069,9 +1149,28 @@ def _resolve_file_types(args: argparse.Namespace, live: dict) -> tuple[str, ...]
 
 
 def main(argv: list[str] | None = None) -> int:
+    # --recheck-client is a standalone mode with no vault argument, so it is handled
+    # before the parser that requires one.
+    supplied = list(sys.argv[1:] if argv is None else argv)
+    if "--recheck-client" in supplied:
+        if len(supplied) != 1:
+            print(
+                "--recheck-client takes no other arguments. Next: run it alone to check "
+                "the installed client, or drop it to preflight a vault.",
+                file=sys.stderr,
+            )
+            return ERROR
+        return recheck_client()
+
     parser = _Parser(
         prog="hapax-obsidian-sync-preflight",
         description="Validate an Obsidian Sync exclusion list and predict the upload set.",
+    )
+    parser.add_argument(
+        "--recheck-client",
+        action="store_true",
+        help="verify every replayed rule against the installed obsidian-headless bundle "
+        "and exit non-zero on drift (takes no other arguments)",
     )
     parser.add_argument("vault", help="local vault path")
     source = parser.add_mutually_exclusive_group(required=True)
@@ -1137,9 +1236,11 @@ def main(argv: list[str] | None = None) -> int:
     configs = frozenset(live.get(PERSISTED_CONFIGS_KEY) or ())
     try:
         config_dir = resolve_config_dir(live.get("configDir"))
+        sync_mode = resolve_sync_mode(live.get("syncMode"))
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return ERROR
+    uploads_enabled = sync_mode in UPLOADING_SYNC_MODES
     findings = validate_entries(
         vault,
         entries,
@@ -1169,6 +1270,13 @@ def main(argv: list[str] | None = None) -> int:
     prediction["predicted_upload"]["gib"] = round(
         prediction["predicted_upload"]["bytes"] / 1073741824, 3
     )
+    if not uploads_enabled:
+        # A download-only mode uploads nothing, so the predicted upload IS zero. The
+        # admitted set is kept under its own key because it is still the answer to "what
+        # would go if this were bidirectional" — but it must not be reported as the
+        # prediction, which is the confident-wrong-number failure this tool exists to stop.
+        prediction["admitted_if_bidirectional"] = dict(prediction["predicted_upload"])
+        prediction["predicted_upload"] = {"bytes": 0, "gib": 0.0, "files": 0, "by_ext": {}}
 
     report = {
         "vault": str(vault),
@@ -1178,6 +1286,8 @@ def main(argv: list[str] | None = None) -> int:
         "entries_total": len(findings),
         "entries_effective": len(effective),
         "entries_unmatchable": len(bad),
+        "sync_mode": sync_mode,
+        "uploads_enabled": uploads_enabled,
         "configs": sorted(configs),
         "findings": findings,
         **prediction,
@@ -1188,6 +1298,18 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"vault: {vault}" + (f"  ({live['vaultName']})" if live.get("vaultName") else ""))
         print(f"file types: {','.join(file_types) or '(none — attachments will not sync)'}")
+        if not uploads_enabled:
+            print(
+                f"sync mode: {sync_mode} — DOWNLOAD ONLY, so nothing uploads; the "
+                f"{prediction['admitted_if_bidirectional']['files']} admitted files are "
+                "reported under admitted_if_bidirectional"
+                + (
+                    "\n  WARNING: mirror-remote also REVERTS local changes to match the "
+                    "remote, so local edits can be lost"
+                    if sync_mode == "mirror-remote"
+                    else ""
+                )
+            )
         print(f"exclusion entries: {len(findings)} total, {len(effective)} effective")
         for finding in findings:
             mark = "ok  " if finding["verdict"] == "ok" else "FAIL"
