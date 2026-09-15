@@ -15,6 +15,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import warnings
 
 import pytest
 
@@ -884,6 +885,123 @@ def test_nonbreaking_space_collision_is_refused(vault: pathlib.Path) -> None:
     assert json.loads(result.stdout)["emitted_path_collisions"]
 
 
+def test_collision_against_a_directory_is_detected(vault: pathlib.Path) -> None:
+    """A DIRECTORY occupies an emitted name too. Registering only admitted files missed
+    this: the directory took the name and the colliding file was never compared."""
+    area = vault / "30-areas"
+    nbsp = chr(0xA0)  # built from the codepoint: a literal is invisible in source
+    (area / "a b.md").mkdir()  # a directory whose name ends in .md
+    (area / f"a{nbsp}b.md").write_bytes(b"f" * 77)  # nbsp -> same emitted path
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--json",
+    )
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert [c["path"] for c in json.loads(result.stdout)["emitted_path_collisions"]] == [
+        "30-areas/a b.md"
+    ]
+
+
+def test_collision_against_an_excluded_file_is_detected(vault: pathlib.Path) -> None:
+    """An excluded file still occupies the emitted name, so a collision with it is real
+    even though the excluded one never uploads."""
+    area = vault / "30-areas"
+    nbsp = chr(0xA0)
+    (area / "a b.md").write_bytes(b"x" * 40)  # ordinary space, will be excluded
+    (area / f"a{nbsp}b.md").write_bytes(b"y" * 77)  # nbsp
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages,30-areas/a b.md",
+        "--json",
+    )
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert json.loads(result.stdout)["emitted_path_collisions"]
+
+
+def test_collision_against_an_oversized_file_is_detected(vault: pathlib.Path) -> None:
+    """Likewise a file dropped by the size limit — it is still the name's occupant."""
+    area = vault / "30-areas"
+    nbsp = chr(0xA0)
+    (area / "a b.md").write_bytes(b"x" * 40)
+    (area / f"a{nbsp}b.md").write_bytes(b"y" * 101)  # nbsp, over the limit below
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--per-file-max",
+        "100",
+        "--json",
+    )
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert json.loads(result.stdout)["emitted_path_collisions"]
+
+
+def test_backslash_in_a_name_is_emitted_as_a_separator(
+    vault: pathlib.Path,
+) -> None:
+    """cli.js `_e` collapses runs of "/" OR "\\" to one "/", and a backslash is a legal
+    Linux filename character — so `x\\y` and `x/y` are the SAME emitted path."""
+    area = vault / "30-areas"
+    (area / "x\\y").write_bytes(b"b" * 50)  # one file literally named 'x\y'
+    (area / "x").mkdir()
+    (area / "x" / "y").write_bytes(b"f" * 60)
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--json",
+    )
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert [c["path"] for c in json.loads(result.stdout)["emitted_path_collisions"]] == [
+        "30-areas/x/y"
+    ]
+
+
+def test_backslash_name_alone_is_emitted_with_a_separator(vault: pathlib.Path) -> None:
+    """Without a competitor it is not a collision, but the emitted path must still
+    carry the rewritten separator."""
+    (vault / "30-areas" / "p\\q.md").write_bytes(b"b" * 50)
+    report = json.loads(
+        _run(
+            str(vault),
+            "--excluded-folders",
+            "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+            "--json",
+        ).stdout
+    )
+    paths = {item["path"] for item in report["largest_included_files"]}
+    assert "30-areas/p/q.md" in paths, paths
+
+
+def test_ancestor_watcher_is_deterministic_not_a_race(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """A link found BENEATH an accepted link is governed by that ancestor's watcher,
+    which exists before its descendants are scanned — so the skip is deterministic and
+    must not be reported as scheduling-dependent."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "note.md").write_bytes(b"n" * 77)
+    (outside / "back").symlink_to(outside, target_is_directory=True)
+    (vault / "linked").symlink_to(outside, target_is_directory=True)
+
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--json",
+    )
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["symlinks_scheduling_dependent"] == []
+    assert [link["path"] for link in report["symlinks_escaping_vault"]] == ["linked"]
+    assert [link["path"] for link in report["symlinks_skipped_overlapping"]] == ["linked/back"]
+    assert report["predicted_upload"]["bytes"] == 161 + 77
+
+
 def test_config_uploads_honour_the_per_file_limit(
     vault: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
@@ -1388,6 +1506,16 @@ def test_config_scan_does_not_invent_depths(vault: pathlib.Path, tmp_path: pathl
     report = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
     assert report["config_uploads"]["bytes"] == 11
     assert set(report["config_uploads"]["by_category"]) == {"community-plugin-data"}
+
+
+def test_source_has_no_invalid_escape_sequences() -> None:
+    """A docstring documenting backslash handling produced `SyntaxWarning: invalid
+    escape sequence`, which becomes a SyntaxError in a future Python. ruff did not flag
+    it, so compile with the warning promoted to an error."""
+    source = SCRIPT.read_text(encoding="utf-8")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SyntaxWarning)
+        compile(source, str(SCRIPT), "exec")
 
 
 def test_script_ships_executable_with_a_working_shebang() -> None:

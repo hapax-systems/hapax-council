@@ -56,9 +56,13 @@ can drift with any upgrade; `npm ls -g obsidian-headless` gives the pinned versi
       console.log(k, s.slice(s.indexOf(k), s.indexOf(k)+160), "\n")'
 
 Rules replayed from obsidian-headless 0.0.14 ``cli.js``:
-  * emitted namespace — ``Ne(s) = Cs(_e(s)).normalize("NFC")``, where ``Cs``
-    rewrites U+00A0 and U+202F to ordinary spaces. ``ignoreFolders`` entries are
-    then compared to that literally, so both the space rewrite and NFC matter.
+  * emitted namespace — ``Ne(s) = Cs(_e(s)).normalize("NFC")``: ``_e`` collapses every
+    run of forward slashes or backslashes to one ``/`` and trims the ends, ``Cs``
+    rewrites U+00A0 and U+202F to ordinary spaces, then NFC runs. ``ignoreFolders``
+    entries are compared to the result literally, so all three steps matter. Because
+    U+005C is a legal Linux filename character, a file whose name contains one occupies
+    an emitted path with a separator there, so distinct on-disk names can collide in a
+    single remote path.
   * entry trimming — ob trims each comma-separated CLI field with JavaScript
     ``trim()`` semantics, which are NOT Python's ``str.strip()``. A PERSISTED list
     is not trimmed at all; it is compared byte for byte.
@@ -108,6 +112,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import unicodedata
 from pathlib import Path
@@ -165,13 +170,22 @@ class _Parser(argparse.ArgumentParser):
 # the relative paths a directory walk builds, so it is deliberately not replicated:
 # doing so would mask a malformed path we construct ourselves.
 _EMITTED_SPACE_CODEPOINTS = (0x00A0, 0x202F)
+_SLASH_RUN_RE = re.compile(r"[\\/]+")  # cli.js `_e`: /([\\/])+/g -> "/"
 
 
 def _emitted(rel: str) -> str:
-    """The path ob compares exclusions against — cli.js ``Ne(s)``."""
+    """The path ob compares exclusions against — cli.js ``Ne(s) = Cs(_e(s)).NFC``.
+
+    ``_e`` collapses every run of ``/`` OR ``\\`` to a single ``/`` and trims the ends.
+    That is NOT a no-op on Linux, where a backslash is a legal filename character: a
+    directory literally named ``x\\y`` is emitted as ``x/y``, so it occupies the same
+    remote path as a real ``x/y``. An earlier revision skipped ``_e`` on the grounds
+    that walked paths have no doubled or leading slashes, which missed this.
+    """
+    rel = _SLASH_RUN_RE.sub("/", rel).strip("/")
     for codepoint in _EMITTED_SPACE_CODEPOINTS:
         rel = rel.replace(chr(codepoint), " ")
-    return unicodedata.normalize("NFC", rel)
+    return unicodedata.normalize("NFC", rel) or "/"
 
 
 # ECMAScript WhiteSpace + LineTerminator, i.e. exactly what String.prototype.trim
@@ -556,7 +570,7 @@ class _LinkPolicy:
         self.escaping: list[dict] = []
         self.ambiguous: list[dict] = []
 
-    def follow(self, abspath: str, relpath: str, on_error) -> bool:
+    def follow(self, abspath: str, relpath: str, on_error, *, scan_root: str = "") -> bool:
         try:
             target = os.path.realpath(abspath)
         except OSError as exc:  # pragma: no cover
@@ -571,6 +585,16 @@ class _LinkPolicy:
             # A new directory link would install a watcher over any earlier file
             # link's target, so that earlier admission was order-dependent too.
             racing += [t for t in self.file_targets if _overlaps(target, t)]
+        # An ANCESTOR watcher is not a competitor. If we only reached this link by
+        # descending through an accepted link, that link's watcher was installed before
+        # its descendants were scanned, so the skip is deterministic — the same reason
+        # the vault root is deterministic. Only a target claimed by something OUTSIDE
+        # the current descent is a genuine sibling race.
+        if racing and scan_root:
+            racing = [t for t in racing if not _overlaps(scan_root, t)]
+            if not racing:
+                self.skipped.append({"path": relpath, "target": target})
+                return False
         if racing:
             # Whether this alias uploads depends on which concurrent scan installs its
             # watcher first. There is no exact answer to report.
@@ -604,7 +628,7 @@ def predict(
     traversal_errors: list[dict] = []
     too_large: list[dict] = []
     collisions: list[dict] = []
-    seen_emitted: dict[str, str] = {}
+    emitted_sources: dict[str, str] = {}
 
     def _on_error(exc: OSError) -> None:
         # A skipped subtree makes every total below a floor, not a measurement.
@@ -645,15 +669,40 @@ def predict(
         # excluded directories, or a real scheduling race stays invisible. Exclusions
         # are applied per FILE below, where they decide what counts.
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        try:
+            scan_root = os.path.realpath(dirpath)
+        except OSError:  # pragma: no cover
+            scan_root = dirpath
         for name in list(dirnames):
             child = os.path.join(dirpath, name)
-            if os.path.islink(child) and not links.follow(child, _rel(name), _on_error):
+            if os.path.islink(child) and not links.follow(
+                child, _rel(name), _on_error, scan_root=scan_root
+            ):
                 dirnames.remove(name)
+
+        # Register the emitted namespace for EVERY visible entry, directory or file,
+        # before any admission filter. Two on-disk names can normalize to one emitted
+        # path — an NFD and an NFC spelling, a nonbreaking and an ordinary space, or a
+        # backslash rewritten to a separator — and ob keys remote entries by that path,
+        # so they are the same remote entry and which local one survives is not
+        # determinable here. Registering only ADMITTED files missed collisions against a
+        # directory, an excluded file or an oversized one, any of which still occupies
+        # the name.
+        for name in list(dirnames) + list(filenames):
+            if name.startswith("."):
+                continue
+            emitted = _rel(name)
+            source = os.path.join(dirpath, name)
+            previous = emitted_sources.get(emitted)
+            if previous is not None and previous != source:
+                collisions.append({"path": emitted, "also_from": previous})
+            else:
+                emitted_sources[emitted] = source
 
         for name in filenames:
             if name.startswith("."):
                 continue
-            rel = f"{rel_dir}/{_emitted(name)}" if rel_dir else _emitted(name)
+            rel = _rel(name)
             if _excluded(rel, entries):
                 continue
             child = os.path.join(dirpath, name)
@@ -678,14 +727,6 @@ def predict(
                 # dropped by size. Counting it would overstate the upload.
                 too_large.append({"path": rel, "bytes": size})
                 continue
-            # Two on-disk names can normalize to ONE emitted path (an NFD and an NFC
-            # spelling, or a nonbreaking and an ordinary space). ob keys files by the
-            # emitted path, so they are the same remote file and only one survives —
-            # which one is not determinable from here. Counting both double-counts.
-            if rel in seen_emitted:
-                collisions.append({"path": rel, "also_from": seen_emitted[rel]})
-                continue
-            seen_emitted[rel] = os.path.join(dirpath, name)
             upload_bytes += size
             upload_files += 1
             ext = by_ext.setdefault(_extension(name), [0, 0])
