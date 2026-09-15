@@ -2097,6 +2097,25 @@ def test_rejects_non_coding_plan_model_by_default(monkeypatch: pytest.MonkeyPatc
         module.load_config()
 
 
+def test_default_coding_plan_model_is_glm_5_3(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+
+    config = module.load_config()
+
+    assert config.model == "glm-5.3"
+    assert "glm-5.3" in module.CODING_PLAN_MODELS
+    assert "glm-5.2" in module.CODING_PLAN_MODELS
+
+
+def test_accepts_glm_5_3_without_experimental_allow(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    _clean_env(monkeypatch)
+    monkeypatch.setenv("HAPAX_GLMCP_REVIEW_MODEL", "glm-5.3")
+
+    assert module.load_config().model == "glm-5.3"
+
+
 def test_accepts_reviewed_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_module()
     _clean_env(monkeypatch)
