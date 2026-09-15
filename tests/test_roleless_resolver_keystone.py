@@ -27,6 +27,7 @@ Self-contained per project convention — no shared conftest fixtures.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -274,4 +275,142 @@ def test_roleless_session_does_not_share_role_keyed_claim_file(tmp_path: Path) -
     assert "POISONED-CLAIM-ID" not in result.stdout, (
         "roleless session read the shared cc-active-task- claim file (empty-ROLE collision "
         f"not guarded): stdout={result.stdout!r}"
+    )
+
+
+# Scripts that touch the claim plane but deliberately bind role through the bare
+# ``hapax_agent_identity``. Each needs a recorded reason, because the bare resolver
+# returns EMPTY for a roleless session where ``hapax_effective_role`` returns the
+# literal "roleless" — the divergence that stranded two sessions on 2026-08-21.
+# Keyed by REPO-RELATIVE PATH, never bare filename: a future unrelated file that
+# happened to share a name would otherwise inherit the exemption silently.
+_BARE_IDENTITY_ALLOWED = {
+    # A DISPLAY surface, not a claim decision: it prints an identity banner and
+    # runs its own explicit cascade that ends in a deliberate default, so an
+    # empty identity is a handled case rather than a skipped branch. Its roleless
+    # output is pinned behaviorally by
+    # test_session_context_proclaims_roleless_not_alpha_in_roleless_cwd above.
+    "hooks/scripts/session-context.sh",
+    # Defines both resolvers; naturally names them.
+    "hooks/scripts/agent-role.sh",
+}
+
+# ``hapax_agent_identity`` NOT followed by ``_or_default`` — the defaulting variant
+# yields "roleless" and is not the divergence under test.
+_BARE_IDENTITY_RE = re.compile(r"hapax_agent_identity(?!_or_default)")
+
+# Floor for "the scan actually looked at something", so a scan that silently matched
+# nothing can never pass forever. Not a target: it is deliberately well BELOW the count
+# measured on 2026-08-21 (the writer cc-claim, the releaser cc-close, the four gates
+# cc-task-gate / authorization-packet-validator / pr-release-gate /
+# mcp-connector-mutator-gate, and cc-task-pr-link — nine). A floor set at the live count
+# would fail on any unrelated refactor that merges or retires a script, which trains
+# people to edit the number instead of reading the failure.
+_MIN_CLAIM_PLANE_SCRIPTS = 5
+
+
+def test_claim_plane_scripts_never_bind_role_through_the_bare_identity_resolver() -> None:
+    """Invariant 5, derived rather than enumerated: no shell script that touches a
+    ``cc-active-task-`` claim file binds role through the bare ``hapax_agent_identity``,
+    unless it is on ``_BARE_IDENTITY_ALLOWED`` with a recorded reason.
+
+    The name states the NEGATIVE deliberately. An earlier name promised that every such
+    script "resolves role through the shared resolver", which is a stronger claim than
+    the scan makes — see the MATCHING and ROOT limits below. A test whose name overstates
+    its assertion is the same defect this file exists to catch, one level up: a rule
+    represented but not enforced.
+
+    The claim plane has three participants and one fact — which role holds this claim.
+    The WRITER (cc-claim) and the READER (cc-task-gate) always agreed; the RELEASER
+    (cc-close) bound through ``hapax_agent_identity``, which returns EMPTY exactly where
+    the shared resolver returns "roleless". cc-close guards its release block with
+    ``[[ -n "$role" ]]``, so the lease survived the close and the gate — reading through
+    the other resolver — blocked every later mutation with "claimed task not found in
+    vault". A session that finished its work correctly was left worse off than one that
+    abandoned it (measured twice, 2026-08-21, both recoveries operator-driven).
+
+    This is written as a scan with an allowlist rather than a list of known consumers on
+    purpose. The cross-consumer test above enumerates three gates, and cc-close was a
+    fourth consumer of the same fact that the enumeration simply did not mention — so the
+    defect was invisible to the test whose stated job was cross-consumer agreement. A new
+    claim-plane script now fails this by default and has to justify itself into the
+    allowlist.
+
+    RECORDED LIMIT — this scan asserts only the NEGATIVE (no bare-identity binding). A
+    review seat correctly observed that rejecting the wrong resolver is not the same as
+    requiring the right one: a new script with a hand-rolled env cascade and no resolver
+    call would pass. The positive was attempted and is NOT assertable by text scan, and
+    the failed attempt is worth recording so it is not retried blindly:
+
+    * "touches ``cc-active-task-``" over-selects — lane reapers, health checks and claim
+      audits sweep OTHER sessions' leases and correctly never resolve a self-role.
+    * narrowing to "also resolves a self-role" still over-selects — the spawners
+      (``hapax-claude``, ``hapax-vibe``, ``hapax-codex-headless``, ...) SET the env
+      cascade that everything else reads, and setting is textually indistinguishable
+      from reading.
+
+    Measured 2026-08-21 on the narrowed population: 7 scripts resolve through the shared
+    resolver, 7 do not, and all 7 of the latter are spawners or audits rather than
+    defects. A third discriminator would be the third guard on one hazard — the point at
+    which the shape, not the boundary, is wrong.
+
+    The positive closes one level down, where it is mechanically decidable: a script
+    either calls the shared claim-key builder (``hapax_agent_claim_key``) or it does
+    not. That is deferred work, described here by what it is rather than by a task id —
+    an id cited in a comment is unverifiable from inside the test and rots silently,
+    while the named function is checkable by grep and fails loudly if it disappears.
+
+    MATCHING LIMIT — comment stripping is line-prefix only, so a bare-resolver mention in
+    a TRAILING comment on a code line would still be flagged. Accepted rather than
+    patched: stripping mid-line ``#`` cannot distinguish a comment from a ``#`` inside a
+    string or a parameter expansion, and would trade a loud false positive for a silent
+    false negative.
+
+    ROOT LIMIT — this scan covers SHELL participants under ``scripts/`` and
+    ``hooks/scripts/`` only. It does not reach Python consumers (which do not source
+    ``agent-role.sh`` and resolve role by other means) or any claim-plane script living
+    outside those two roots. Widening it belongs with giving ``hapax_agent_claim_key`` a
+    return shape its callers can use and routing every consumer through it, in both
+    languages — the level where this closes properly, as one builder rather than one
+    scan per convention. Described by the function rather than by a task id, for the
+    reason given just above: an id in a comment cannot be checked from here.
+    """
+    roots = (REPO_ROOT / "scripts", REPO_ROOT / "hooks" / "scripts")
+    wrong_resolver: list[str] = []
+    scanned = 0
+    for root in roots:
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            rel = str(path.relative_to(REPO_ROOT))
+            if rel in _BARE_IDENTITY_ALLOWED:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if "cc-active-task-" not in text:
+                continue
+            scanned += 1
+            # Comment lines are stripped before matching: the invariant is about
+            # CALL SITES, and a script that explains why it no longer uses the bare
+            # resolver would otherwise be flagged by its own explanation. (This
+            # test flagged cc-close on the comment documenting the fix.)
+            code = "\n".join(
+                line for line in text.splitlines() if not line.lstrip().startswith("#")
+            )
+            if _BARE_IDENTITY_RE.search(code):
+                wrong_resolver.append(rel)
+
+    # A scan that silently matched nothing would pass forever. Pin that it looked.
+    assert scanned >= _MIN_CLAIM_PLANE_SCRIPTS, (
+        f"claim-plane scan found only {scanned} scripts referencing cc-active-task-, "
+        f"below the {_MIN_CLAIM_PLANE_SCRIPTS} floor — the scan roots or the marker "
+        "changed and this test is no longer checking anything. Fix the scan, do not "
+        "lower the floor."
+    )
+    assert not wrong_resolver, (
+        "claim-plane scripts bind role through the bare hapax_agent_identity, which "
+        "returns empty for a roleless session where hapax_effective_role returns "
+        f"'roleless' — the stranding divergence: {wrong_resolver}"
     )
