@@ -48,6 +48,7 @@ fi
 if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1 ||
   ! declare -F hapax_consume_launch_capability_descriptors >/dev/null 2>&1; then
   echo "hapax-kimi: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
+  echo "hapax-kimi: if this ran over SSH from hapax-methodology-dispatch, the incomplete checkout is on THIS host (${HOSTNAME:-$(uname -n)}), not the dispatcher's — repair or re-sync the council checkout there. Exit 78 is this identity refusal specifically; dispatch's own 8/9 mean launcher-not-found and no-declared-model-pin." >&2
   exit 78
 fi
 # Already minted unconditionally before this change; routed through the shared

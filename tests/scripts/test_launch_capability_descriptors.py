@@ -655,6 +655,43 @@ class TestWhatTheChildReceives:
         )
         assert _model_from_codex_arg(observed.get("argmodel_raw", "")) == "gpt-6-mini", observed
 
+    @pytest.mark.parametrize(
+        "override",
+        [
+            ["--model", "gpt-6-astra", "-c", 'model="gpt-6-mini"'],
+            ["-c", 'model="gpt-6-mini"', "--model", "gpt-6-astra"],
+            ["-c", 'model="gpt-6-mini"', "-mgpt-6-astra"],
+            ["--config", 'model="gpt-6-mini"', "--model=gpt-6-astra"],
+        ],
+        ids=["flag-then-config", "config-then-flag", "config-then-short", "alias-then-flag-eq"],
+    )
+    def test_the_dedicated_model_flag_outranks_a_config_override(
+        self, override: list[str], tmp_path: Path
+    ) -> None:
+        """Two sources with a precedence, not one list resolved by position.
+
+        codex computes the effective model as `model.or(cfg.model)`: a dedicated
+        `--model` wins whenever it is present, whatever the order on the line.
+        Resolving both by "last wins" recorded `gpt-6-mini` while the harness ran
+        `gpt-6-astra` — the record disagreeing with the launch, which is the exact
+        failure this field exists to prevent (review round 25, codex-1).
+
+        MEASURED, not inferred, because a precedence claim about someone else's
+        parser is not something to take on reading: codex-cli 0.153.4 on this host,
+        given `--model gpt-6-astra -c 'model="gpt-6-mini"'`, wrote
+        `"model":"gpt-6-astra"` into its own session rollout.
+
+        `config-then-flag` is the case that fails under last-wins in BOTH
+        directions of scan, so it is the one that distinguishes a real oracle from
+        a reversed copy of the bug.
+        """
+        observed = self._run("hapax-codex-headless", tmp_path, {}, extra_args=["--", *override])
+        assert observed["capmodel"] == "gpt-6-astra", (
+            f"{override!r} recorded {observed['capmodel']!r}, but codex runs "
+            "gpt-6-astra — the dedicated flag outranks the config override"
+        )
+        assert _model_from_codex_arg(observed.get("argmodel_raw", "")) == "gpt-6-astra", observed
+
     @pytest.mark.parametrize("name", sorted(set(PINNED_LAUNCHERS) & _DRIVABLE))
     def test_an_addressed_route_does_reach_the_child(self, name: str, tmp_path: Path) -> None:
         """The other direction: clearing everything would be safe and useless.
@@ -702,36 +739,41 @@ def _model_from_codex_arg(raw: str) -> str:
         candidate = table.get("model") if isinstance(table, dict) else None
         return candidate if isinstance(candidate, str) else ""
 
-    # Scanned from the END, taking the first hit — "last wins", implemented the
-    # opposite way round from the launcher's forward scan so the two agreeing is
-    # evidence rather than a shared habit.
+    # TWO scans, because codex has two sources with a fixed precedence between
+    # them, not one list resolved by position: `model.or(cfg.model)` keeps a
+    # dedicated `--model` whenever one is present. Reversing a single scan's
+    # direction, as the previous version did, preserves the wrong assumption while
+    # looking like an independent check — the shared bug was precedence, not order
+    # (review round 25, codex-1; measured against codex-cli 0.153.4, which ran
+    # gpt-6-astra for `--model gpt-6-astra -c 'model="gpt-6-mini"'`).
+    #
+    # Each scan still runs from the END, taking the first hit, so "last wins"
+    # WITHIN a source is still implemented the opposite way round from the
+    # launcher's forward scan.
     model_flags = ("--model", "-m")
     config_flags = ("-c", "--config")
-    for i in range(len(args) - 1, -1, -1):
-        arg = args[i]
-        prev = args[i - 1] if i else None
-        for flag in model_flags:
-            if arg.startswith(f"{flag}=") and arg[len(flag) + 1 :]:
-                return arg[len(flag) + 1 :]
-            if len(flag) == 2 and arg.startswith(flag) and len(arg) > 2:
-                return arg[len(flag) :]
-        for flag in config_flags:
-            attached = None
-            if arg.startswith(f"{flag}="):
-                attached = arg[len(flag) + 1 :]
-            elif len(flag) == 2 and arg.startswith(flag) and len(arg) > 2:
-                attached = arg[len(flag) :]
-            if attached is not None:
-                found = _c_value(attached)
+
+    def _scan(flags: tuple[str, ...], read_value) -> str:
+        for i in range(len(args) - 1, -1, -1):
+            arg = args[i]
+            prev = args[i - 1] if i else None
+            for flag in flags:
+                attached = None
+                if arg.startswith(f"{flag}="):
+                    attached = arg[len(flag) + 1 :]
+                elif len(flag) == 2 and arg.startswith(flag) and len(arg) > 2:
+                    attached = arg[len(flag) :]
+                if attached is not None:
+                    found = read_value(attached)
+                    if found:
+                        return found
+            if prev in flags:
+                found = read_value(arg)
                 if found:
                     return found
-        if prev in model_flags:
-            return arg
-        if prev in config_flags:
-            found = _c_value(arg)
-            if found:
-                return found
-    return ""
+        return ""
+
+    return _scan(model_flags, lambda value: value) or _scan(config_flags, _c_value)
 
 
 class TestTheRunnerCleansToo:

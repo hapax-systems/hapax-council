@@ -485,6 +485,16 @@ class TestLauncherBehaviour:
         assert "identity helper not found" in combined, (
             f"{name} failed without naming the cause or a remedy\n{combined}"
         )
+        # The remedies the first line names — "run from a complete council
+        # checkout", "set HAPAX_COUNCIL_DIR" — are available to an operator at a
+        # terminal and to nobody else. These launchers are also invoked by
+        # hapax-methodology-dispatch across an SSH boundary, where the caller can
+        # do neither and the broken checkout is on the far host (review round 25,
+        # claude-1). So the refusal has to say WHERE, and has to say that 78 is not
+        # dispatch's own 8/9.
+        assert "hapax-methodology-dispatch" in combined and "THIS host" in combined, (
+            f"{name}'s refusal names no remedy reachable from the dispatch side\n{combined}"
+        )
 
     def test_two_launches_export_different_identities(self, tmp_path: Path) -> None:
         """The EXPORTED id must differ per launch — asserted by running it twice.

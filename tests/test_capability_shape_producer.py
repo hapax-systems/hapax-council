@@ -17,6 +17,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -177,6 +179,66 @@ class TestCcClaimIntegration:
         assert "model_family=claude-opus-5" in note
         assert "harness=claude" in note
         assert "route=claude.headless.opus" in note
+
+    @pytest.mark.parametrize(
+        "branch, script, mode",
+        [
+            ("non-zero returncode", "#!/bin/sh\nexit 1\n", 0o755),
+            ("empty stdout", "#!/bin/sh\nexit 0\n", 0o755),
+        ],
+        ids=["returncode", "empty-stdout"],
+    )
+    def test_a_revision_git_cannot_supply_costs_one_field_not_the_claim(
+        self, branch: str, script: str, mode: int, tmp_path: Path
+    ) -> None:
+        """`_scaffold_revision`'s failure branches, exercised rather than assumed.
+
+        Each returns None so the shape suffix simply omits the field. None was
+        reachable from any test: the helper lives inside cc-claim's bash-hosted
+        Python heredoc, which the vulture whitelist itself records as invisible to
+        static analysis, and the producer suite pins `capability_shape_from_env`
+        rather than this local helper (review round 25, claude-1).
+
+        Driven by a stub `git` earlier on PATH, so the real subprocess really runs
+        and really fails. The assertion is the same either way: an unreadable
+        revision costs ONE FIELD, never the claim.
+
+        **What this cannot reach, measured rather than assumed.** The third branch
+        (`subprocess.run` raising OSError) is NOT reachable by manipulating the
+        stub: execvp skips a PATH entry it cannot execute and keeps searching, so a
+        non-executable stub, a bad-shebang stub and a garbage-header stub all let
+        the REAL git run and return a real revision — all three "passed" while
+        proving nothing until they were probed directly. Reaching that branch needs
+        git absent from PATH entirely, which also removes what the surrounding
+        launcher needs to run. Stated here rather than faked, so no later reader
+        mistakes two covered branches for three.
+        """
+        home = tmp_path / "home"
+        stub_dir = tmp_path / "stub-bin"
+        stub_dir.mkdir()
+        stub = stub_dir / "git"
+        stub.write_text(script, encoding="utf-8")
+        stub.chmod(mode)
+
+        note = self._claim(
+            home,
+            f"task-no-git-{mode}-{len(script)}",
+            PATH=f"{stub_dir}:{os.environ.get('PATH', '')}",
+            HAPAX_AGENT_INTERFACE="claude",
+            HAPAX_CAPABILITY_MODEL="claude-opus-5",
+        )
+
+        assert "claimed (cc-claim, session=" in note, (
+            f"the claim did not land at all with git {branch} — an unreadable "
+            f"revision must cost one field, not the claim\n{note}"
+        )
+        assert "scaffold_revision=" not in note, (
+            f"a revision was recorded from a tree git cannot read\n{note}"
+        )
+        assert "shape=()" not in note, f"an empty shape reads as a measured one\n{note}"
+        assert "model_family=claude-opus-5" in note, (
+            f"the other shape terms were dropped along with the revision\n{note}"
+        )
 
     def test_shape_is_appended_after_the_pinned_session_substring(self, tmp_path: Path) -> None:
         """`(cc-claim, session=…)` is a format other readers match on."""

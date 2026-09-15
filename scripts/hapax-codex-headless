@@ -30,6 +30,7 @@ fi
 if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1 ||
   ! declare -F hapax_consume_launch_capability_descriptors >/dev/null 2>&1; then
   echo "hapax-codex-headless: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
+  echo "hapax-codex-headless: if this ran over SSH from hapax-methodology-dispatch, the incomplete checkout is on THIS host (${HOSTNAME:-$(uname -n)}), not the dispatcher's — repair or re-sync the council checkout there. Exit 78 is this identity refusal specifically; dispatch's own 8/9 mean launcher-not-found and no-declared-model-pin." >&2
   exit 78
 fi
 if ! declare -F hapax_agent_is_codex_name >/dev/null 2>&1; then
@@ -804,10 +805,11 @@ fi
 # Resolved HERE, before cc-claim runs, because the claim is written at the gate
 # below and an export after that is an export nobody reads.
 #
-# `-c` options apply in order and the LAST `model="..."` wins, including one an
-# operator passes after `--`. So the override is honoured rather than ignored, and
-# CODEX_ARGS is built from this same variable further down — one source, so what is
-# recorded and what is passed cannot drift.
+# A dedicated `--model`/`-m` beats every `-c model="..."` regardless of order, and
+# `-c` overrides apply in order among themselves — codex's own precedence, measured
+# rather than assumed (see the resolver's comment). So an operator's override is
+# honoured rather than ignored, and CODEX_ARGS is built from this same variable
+# further down — one source, so what is recorded and what is passed cannot drift.
 CODEX_DEFAULT_MODEL="gpt-6-astra"
 # Resolved by PARSING each `-c` value as the TOML fragment codex treats it as —
 # not by a shell pattern. The pattern version got two valid spellings wrong:
@@ -854,7 +856,24 @@ def config_model(value):
 MODEL_FLAGS = ("--model", "-m")
 CONFIG_FLAGS = ("-c", "--config")
 
-model = sys.argv[2]
+# TWO results, not one — the dedicated flag and the config override are separate
+# sources and codex does NOT resolve them by position. `codex-rs` computes the
+# effective model as `model.or(cfg.model)`: `Option::or` keeps the dedicated
+# `--model` whenever it is present, so `-c model="X"` only applies when no
+# `--model` was given, no matter which came last on the line.
+#
+# Measured on this host with codex-cli 0.153.4, because a precedence claim about
+# someone else's parser is exactly the kind of thing that should not be taken on
+# reasoning: `codex exec --model gpt-6-astra -c 'model="gpt-6-mini"'` recorded
+# `"model":"gpt-6-astra"` in its own session rollout. The single-variable
+# last-wins version recorded `gpt-6-mini` while the harness ran `gpt-6-astra`
+# (review round 25, codex-1).
+#
+# Within each source, last wins: clap keeps the final `--model`, and codex applies
+# `-c` overrides in order.
+flag_model = None
+config_override = None
+
 args = sys.argv[3:]
 index = 0
 while index < len(args):
@@ -862,12 +881,12 @@ while index < len(args):
     nxt = args[index + 1] if index + 1 < len(args) else None
     taken = 1
     if arg in MODEL_FLAGS and nxt is not None:
-        model, taken = nxt, 2
+        flag_model, taken = nxt, 2
     elif arg in CONFIG_FLAGS and nxt is not None:
         chosen = config_model(nxt)
         taken = 2
         if chosen:
-            model = chosen
+            config_override = chosen
     else:
         for flag in (*MODEL_FLAGS, *CONFIG_FLAGS):
             attached = None
@@ -879,14 +898,15 @@ while index < len(args):
                 continue
             if flag in MODEL_FLAGS:
                 if attached:
-                    model = attached
+                    flag_model = attached
             else:
                 chosen = config_model(attached)
                 if chosen:
-                    model = chosen
+                    config_override = chosen
             break
     index += taken
-print(model)
+
+print(flag_model or config_override or sys.argv[2])
 PYEOF
 )"
 if [[ -z "$CODEX_MODEL" ]]; then
