@@ -3516,7 +3516,7 @@ def test_exchange_fallback_keeps_both_entries_recoverable_at_every_cut(
     surviving pin must carry the dotted prefix the scratch sweeps look for.
     """
 
-    for cut in range(1, 5):
+    for cut in range(1, 12):
         directory = tmp_path / f"cut-{cut}"
         directory.mkdir()
         (directory / ".src").write_bytes(b"replacement\n")
@@ -3559,11 +3559,11 @@ def test_exchange_fallback_keeps_both_entries_recoverable_at_every_cut(
         # test `".transition-pin." in name`, which the switch to deterministic names made
         # unmatchable — the names end at `.transition-pin` with no suffix — so it silently
         # stopped examining anything. A reviewer caught that; this is the repaired form.
-        computable = {
-            cp._fallback_scratch_name(base, role)
-            for base in (".src", "dst")
-            for role in cp._FALLBACK_SCRATCH_ROLES
-        }
+        # The round-32 conversions extended the computable set beyond bare role names:
+        # reserves for adornment targets, the dance's stacked `.transition-safety`, and
+        # the release's `.transition-withdrawn` are all reachable crash states now, so the
+        # closure is generated rather than listed.
+        computable = _computable_fallback_names(".src", "dst")
         remnants = [p.name for p in directory.iterdir() if ".transition-" in p.name]
         for name in remnants:
             assert name.startswith("."), (
@@ -3571,6 +3571,10 @@ def test_exchange_fallback_keeps_both_entries_recoverable_at_every_cut(
             )
             assert name in computable, (
                 f"cut {cut} left {name}, which is not computable from the operands"
+            )
+            assert name.count(".transition-") <= 3, (
+                f"cut {cut} left {name} stacked deeper than any leg adorns — a name "
+                "nothing can recompute, which is the unfindable-remnant defect again"
             )
 
 
@@ -4185,17 +4189,49 @@ def test_flags_without_a_rebuild_are_never_retried_by_another_route(
 
 
 def _fallback_remnants(directory: Path) -> list[str]:
-    """Scratches left by a rebuilt rename leg, and only those.
+    """Scratches and adornments left by a rebuilt rename leg, and only those.
 
     Deliberately narrower than `*.transition-*`, which also matches the transaction's own
     `.transition-scratch` that several tests legitimately leave behind. The assertions this
     replaces globbed `*.transition-pin.*` — a trailing-dot pattern that the switch to
     deterministic names made unmatchable, so six "no residue" assertions silently became
     no-ops. A reviewer caught that.
+
+    Round 32 widened the residue class: the retirement dance and the rename-based release
+    hang `_RETIREMENT_ADORNMENTS` suffixes off names the legs already computed
+    (`.transition-safety`, `.transition-withdrawn`, …), so matching the role suffixes alone
+    would repeat the silent no-op this helper's own history warns about — a test leaving a
+    `.transition-safety` remnant would pass a "no residue" assertion. Both suffix sets are
+    matched now; stacked adornments (`…staged.transition-safety`) still end in one, so a
+    single `endswith` covers them.
     """
 
     suffixes = tuple(f".transition-{role}" for role in cp._FALLBACK_SCRATCH_ROLES)
+    suffixes += cp._RETIREMENT_ADORNMENTS
     return sorted(path.name for path in directory.iterdir() if path.name.endswith(suffixes))
+
+
+def _computable_fallback_names(*bases: str) -> set[str]:
+    """Every fallback name computable from the operands — roles AND stacked adornments.
+
+    The residue contract is not "dotted" but *computable*: an operator — or the discovery
+    sweep the projection-lock task owes — must be able to enumerate every remnant from the
+    operands alone. That set is not just `_fallback_scratch_name(base, role)`: the
+    round-32 conversions reserve bare adorned names off the operand stem
+    (`.src.transition-consumed`), stack a second adornment during the dance
+    (`.src.transition-staged.transition-safety`), and the refill stacks TWO off a role
+    name (`.src.transition-holding.transition-staged.transition-safety`). Depth is bounded
+    by two adornments by construction — no leg adorns an adorned name twice — so a remnant
+    deeper than that is a bug this closure exists to surface.
+    """
+
+    names = {base if base.startswith(".") else f".{base}" for base in bases}
+    for base in list(names):
+        for role in cp._FALLBACK_SCRATCH_ROLES:
+            names.add(f"{base}.transition-{role}")
+    for _ in range(2):
+        names |= {f"{name}{suffix}" for name in names for suffix in cp._RETIREMENT_ADORNMENTS}
+    return names
 
 
 def _replace_atomically(directory: Path, name: str, payload: bytes) -> None:
@@ -4455,12 +4491,10 @@ def test_scratch_names_are_dotted_and_deterministic(tmp_path: Path) -> None:
     scratch_names = {name for name in created if ".transition-" in name}
     assert scratch_names, created
     assert all(name.startswith(".") for name in scratch_names), scratch_names
-    # Every scratch the leg touched is one an operator can recompute from the operands.
-    computable = {
-        cp._fallback_scratch_name(base, role)
-        for base in ("manifest.json", "dst")
-        for role in cp._FALLBACK_SCRATCH_ROLES
-    }
+    # Every scratch the leg touched is one an operator can recompute from the operands —
+    # roles AND the round-32 adornments (staged/safety/…), because the leg now creates
+    # both classes and both are crash-reachable remnants.
+    computable = _computable_fallback_names("manifest.json", "dst")
     assert scratch_names <= computable, scratch_names - computable
 
 
@@ -4539,56 +4573,71 @@ def test_exchange_preserves_a_replacement_arriving_at_the_install_itself(
     assert b"displaced\n" in surviving
 
 
-def test_a_foreign_rename_onto_our_reserved_placeholder_is_destroyed_r4(
+def test_a_foreign_rename_onto_our_reserved_placeholder_is_refused_and_preserved_r4(
     tmp_path: Path,
 ) -> None:
-    """Residual R4, pinned as a boundary rather than hidden: the one silent loss left.
+    """Residual R4 — CLOSED by the round-32 consume-then-refuse publish.
 
-    The exchange's publish and refill cannot use a link — their source name must be
-    consumed by the move — so they reserve the destination with `O_CREAT|O_EXCL` and
-    rename onto their own placeholder. That reservation excludes every writer that
-    acquires the name the way this module does, but not a foreign `rename` straight
-    onto it: the consuming rename destroys that arrival, and the post-rename identity
-    check passes because what it verifies is OUR inode at the destination. This test
-    injects exactly that arrival and asserts the documented behavior, not a repair:
-    the loss stands (residual R4), link-publish closes it only for scratch → live
-    installs, and the closure for this leg is the projected-path writer lock
-    (`projection-lock-coverage-projected-path-writers-20260913`), not anything in
-    this module. Green on the reserve-then-rename conversion both before and after
-    the round-31 race closure — the reorder does not touch this window.
+    The exchange's publish reserves the LIVE destination, and a foreign `rename` onto
+    that reservation is not excluded by `O_CREAT|O_EXCL`. Under the reserve-then-rename
+    shape the consuming rename destroyed that arrival while the post-rename identity
+    check passed — the one silent loss, pinned here for two rounds as a boundary. The
+    link publish closes it by construction: the reservation is consumed EARLY, withdrawn
+    by rename to a dotted `{src}.transition-consumed` name — a rename carries whatever
+    occupies the name, so the arrival is preserved THERE — and the identity check at the
+    withdrawn name then refuses with both entries intact and the live destination freed.
+    The window that remains elsewhere is the NOREPLACE inline leg, whose reserved
+    destination is dotted by caller census (R2-class); this leg has no live-name window
+    left, and the projection-lock row
+    (`projection-lock-coverage-projected-path-writers-20260913`) remains the closure for
+    the rogue-on-dotted class, not for this one.
     """
 
     (tmp_path / ".src").write_bytes(b"replacement\n")
     (tmp_path / "dst").write_bytes(b"displaced\n")
+    pin = cp._fallback_scratch_name(".src", "pin")
+    holding = cp._fallback_scratch_name(".src", "holding")
+    consumed = ".src.transition-consumed"
     real_rename = os.rename
     fired = False
 
-    def foreign_arrival_under_the_publish(*args: object, **kwargs: object) -> None:
-        # The R4 window: our placeholder holds `dst`, the consuming rename has not
-        # run. A protocol-ignoring writer renames its own entry onto the name — over
-        # the placeholder — and the real call then overwrites that arrival.
+    def foreign_arrival_under_the_withdraw(*args: object, **kwargs: object) -> None:
+        # The R4 window under the closed shape: our placeholder holds `dst`, the consuming
+        # withdraw rename has not run. A protocol-ignoring writer atomically replaces the
+        # name — over the placeholder — and the real rename then carries THAT arrival
+        # across to the consumed name instead of destroying it. The selector pins the
+        # destination operand too: the displaced-entry relocation one step earlier also
+        # renames FROM `dst`, and firing there is the arrival-at-holding refusal pinned
+        # separately above — not this one.
         nonlocal fired
-        if not fired and args and str(args[0]) == ".src" and str(args[1]) == "dst":
+        if not fired and args and str(args[0]) == "dst" and str(args[1]) == consumed:
             fired = True
             _replace_atomically(tmp_path, "dst", b"late-arrival\n")
         return real_rename(*args, **kwargs)  # type: ignore[arg-type]
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        with mock.patch.object(os, "rename", foreign_arrival_under_the_publish):
-            cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
+        with mock.patch.object(os, "rename", foreign_arrival_under_the_withdraw):
+            with pytest.raises(cp.LifecycleTransitionError) as caught:
+                cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
+        assert caught.value.reason_code == "transition_precondition_changed"
     finally:
         os.close(dir_fd)
 
     assert fired
-    # The exchange succeeds — the identity check sees our inode at `dst` — and the
-    # foreign arrival is gone. That is the residual, stated where a reader will find
-    # it: a silent loss bounded by the projected-path writer lock, not by this module.
-    assert (tmp_path / "dst").read_bytes() == b"replacement\n"
-    assert (tmp_path / ".src").read_bytes() == b"displaced\n"
-    surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
-    assert b"late-arrival\n" not in surviving
-    assert _fallback_remnants(tmp_path) == []
+    # The arrival is PRESERVED at the consumed name — refused, not destroyed — and the
+    # live destination is freed with both operands untouched by the refusal.
+    assert (tmp_path / consumed).read_bytes() == b"late-arrival\n"
+    assert os.stat(tmp_path / consumed).st_nlink == 1
+    assert not (tmp_path / "dst").exists()
+    assert (tmp_path / ".src").read_bytes() == b"replacement\n"
+    # The displaced entry is preserved at both of its scratch names by the failing path,
+    # which unlinks nothing — and the refusal names all three preserved locations.
+    assert (tmp_path / pin).read_bytes() == b"displaced\n"
+    assert (tmp_path / holding).read_bytes() == b"displaced\n"
+    assert "preserved" in str(caught.value)
+    assert "recover-claim-publications" in caught.value.repair_action
+    assert set(_fallback_remnants(tmp_path)) == {pin, holding, consumed}
 
 
 def test_delete_leg_preserves_a_replacement_arriving_after_the_check(
@@ -4704,21 +4753,22 @@ def test_a_scratch_install_refuses_a_foreign_arrival_on_the_live_name(
 def test_a_foreign_replacement_of_the_published_live_name_keeps_our_staged_bytes(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """The post-link retire's accepted exposure: OUR bytes stranded, THEIRS intact.
+    """The retire dance's accepted exposure: OUR bytes stranded, THEIRS intact.
 
-    The retire that follows a link-publish is a conditional unlink, and its
-    check-then-act window is open to a protocol-ignoring writer (R2). The worst case
-    on the live side: a foreign writer replaces the just-published live name in the
-    gap, dropping our staged inode's link count back to 1 after the retire's count.
-    The retire's identity check still matches but the count no longer says
-    "redundant", so the scratch is KEPT — our staged bytes survive recoverably at the
-    dotted name and the foreign entry stands at the live name — and it is the
-    caller's readback that refuses. Accepted in the residual list (R2): the staged
-    bytes are ours and the journal rebuilds them, which is why this strand is
-    acceptable where the displaced entry's loss was not.
+    The retire that follows a link-publish is the round-32 dance — withdraw to a reserved
+    `.transition-safety` name, remove only from there, only while another name still
+    reaches the inode. The worst case on the live side: a foreign writer replaces the
+    just-published live name after the withdrawal, so at the count the staged inode's
+    remaining name is the SAFETY name alone. The old conditional unlink destroyed that
+    last name (round-31 C1's replay); the dance instead PRESERVES the staged bytes at the
+    safety name — recoverable under a name the journal can rebuild from — frees the
+    scratch name so the operand does not wedge, and reports the strand. Accepted in the
+    residual list (R2/R5): the staged bytes are ours and the journal rebuilds them,
+    which is why this strand is acceptable where the displaced entry's loss was not.
     """
 
     staged = ".staged.transition-scratch"
+    safety = f"{staged}.transition-safety"
     (tmp_path / staged).write_bytes(b"staged-bytes\n")
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
@@ -4732,14 +4782,67 @@ def test_a_foreign_replacement_of_the_published_live_name_keeps_our_staged_bytes
     # The foreign entry owns the live name, whole, as its only name.
     assert (tmp_path / "task.md").read_bytes() == b"foreigner\n"
     assert os.stat(tmp_path / "task.md").st_nlink == 1
-    # Our staged bytes are STRANDED at the scratch — kept, not unlinked — recoverable
-    # under a name the journal can rebuild from.
-    assert (tmp_path / staged).read_bytes() == b"staged-bytes\n"
-    assert os.stat(tmp_path / staged).st_nlink == 1
+    # Our staged bytes are PRESERVED at the safety name — the dance withdrew them there
+    # before the count found them stranded — and the scratch name itself is FREE, so the
+    # operand does not wedge behind a refusal.
+    assert not (tmp_path / staged).exists()
+    assert (tmp_path / safety).read_bytes() == b"staged-bytes\n"
+    assert os.stat(tmp_path / safety).st_nlink == 1
     # The retire reported the strand rather than failing the leg or destroying
     # either entry.
     assert cp._SCRATCH_ABANDONED in caplog.text
-    assert "ONLY name" in caplog.text
+    assert "PRESERVED" in caplog.text
+    assert "only remaining name" in caplog.text
+
+
+def test_a_displaced_entry_stranded_by_a_live_sibling_replacement_survives_c1(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """C1, replayed end to end: writer B's displaced entry must survive writer C.
+
+    The codex round-31 replay: A link-publishes; writer C replaces the LIVE sibling while
+    the retire is in flight; the scratch then holds writer B's displaced entry as its
+    inode's LAST name, and the pre-dance identity-checked unlink destroyed exactly that.
+    The dance answers by construction — the entry is withdrawn to the safety name first,
+    the count finds no second name, and the entry is PRESERVED there with the scratch
+    name freed. This is the two-writer regression the review asked for, at the
+    interleaving that produced the original loss.
+    """
+
+    staged = ".staged.transition-scratch"
+    safety = f"{staged}.transition-safety"
+    (tmp_path / staged).write_bytes(b"writer-B displaced\n")
+    real_rename = os.rename
+    replaced = False
+
+    def writer_c_replaces_the_live_sibling(*args: object, **kwargs: object) -> None:
+        # After the dance's withdrawal, before its count: writer C replaces the live
+        # name the link publish just installed.
+        nonlocal replaced
+        result = real_rename(*args, **kwargs)  # type: ignore[arg-type]
+        if not replaced and args and str(args[0]) == staged:
+            replaced = True
+            _replace_atomically(tmp_path, "task.md", b"writer-C replacement\n")
+        return result
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with caplog.at_level("WARNING"):
+            with mock.patch.object(os, "rename", writer_c_replaces_the_live_sibling):
+                cp._fallback_noreplace(dir_fd, staged, dir_fd, "task.md")
+    finally:
+        os.close(dir_fd)
+
+    assert replaced
+    # C owns the live name; B's entry is PRESERVED at the safety name as its inode's only
+    # remaining name; the scratch name is free. Nothing destroyed, nothing raised.
+    assert (tmp_path / "task.md").read_bytes() == b"writer-C replacement\n"
+    assert os.stat(tmp_path / "task.md").st_nlink == 1
+    assert (tmp_path / safety).read_bytes() == b"writer-B displaced\n"
+    assert os.stat(tmp_path / safety).st_nlink == 1
+    assert not (tmp_path / staged).exists()
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert "PRESERVED" in caplog.text
 
 
 def test_an_entry_removed_after_publication_is_a_refusal_not_a_crash(tmp_path: Path) -> None:
@@ -4789,13 +4892,17 @@ def test_cleanup_keeps_a_spent_scratch_that_is_a_displaced_entrys_last_name(
 
     The replay needs no I/O failure anywhere. A writer replaces the live note, so the exchange
     preserves THAT inode while publishing; the caller detects the mismatch and exchanges back;
-    a second writer then takes over the live name; and cleanup unlinks `.transition-spent`,
+    a second writer then takes over the live name; and cleanup meets `.transition-spent`,
     which by then holds the displaced entry's only remaining copy.
 
     No writer touches a scratch name, so the `O_CREAT|O_EXCL` reservation that protects the
     scratch names is irrelevant here — this is about what cleanup is entitled to remove. The
-    guard is `st_nlink`: a scratch that is ours AND redundant is removable; ours and the only
-    name is kept, because removing it destroys the entry rather than tidying a duplicate.
+    pre-dance guard was `st_nlink`: ours AND redundant is removable, and "ours and the only
+    name" was merely KEPT — which left the operand wedged behind the leftover name. The
+    round-32 dance removes nothing at the given name at all: the entry is withdrawn to a
+    reserved `.transition-safety` name first, the count finds it stranded there, and the
+    outcome is PRESERVED-at-safety with the scratch name FREED — recoverable, and not a
+    wedge.
 
     Driven directly at `_retire_scratch`, because reaching the state through the full exchange
     requires the caller's rollback, and this pins the decision the cleanup actually makes.
@@ -4806,6 +4913,7 @@ def test_cleanup_keeps_a_spent_scratch_that_is_a_displaced_entrys_last_name(
     displaced_inode = displaced.stat().st_ino
     expected = displaced.stat()  # ours by identity...
     assert expected.st_nlink == 1  # ...and the only name for it
+    safety = "spent-scratch.transition-safety"
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -4814,16 +4922,23 @@ def test_cleanup_keeps_a_spent_scratch_that_is_a_displaced_entrys_last_name(
     finally:
         os.close(dir_fd)
 
-    assert displaced.exists(), (
+    # The displaced entry survives — at the safety name the dance withdrew it to, still
+    # the inode's only name — and the scratch name it occupied is free, so retries on
+    # the operand are not wedged behind it.
+    assert not displaced.exists(), (
         "cleanup removed a scratch that was the only name for its inode — the displaced "
         "entry is unrecoverable, which is exactly the reproduced C2 loss"
     )
-    assert displaced.stat().st_ino == displaced_inode
-    assert displaced.read_bytes() == b"DISPLACED WRITER ONLY COPY\n"
-    # Keeping it blocks retries on this operand, so it is reported as the stuck state it is.
-    assert freed is False
+    preserved = tmp_path / safety
+    assert preserved.stat().st_ino == displaced_inode
+    assert preserved.read_bytes() == b"DISPLACED WRITER ONLY COPY\n"
+    assert os.stat(preserved).st_nlink == 1
+    assert freed is True
+    # Preserved-and-stranded is a state an operator must reconcile, so it is reported as
+    # that rather than passed over in silence.
     assert cp._SCRATCH_ABANDONED in caplog.text
-    assert "ONLY name" in caplog.text
+    assert "PRESERVED" in caplog.text
+    assert "only remaining name" in caplog.text
     assert "clear it by hand" in caplog.text
 
 
@@ -4888,15 +5003,26 @@ def test_noreplace_interrupted_before_publishing_loses_nothing(tmp_path: Path) -
     Process termination does not run cleanup handlers, so the state a crash leaves is the
     state on disk at that instant. A Python-level interruption runs the reservation's
     release on the way out, which is what this pins: the source intact, the reserved
-    name released, no bytes anywhere else. The hard-crash window — a kill that skips
-    handlers between the reserve and the rename — strands the empty placeholder instead
-    (residual R3); that one fails toward refusal and is cleared by hand.
+    name freed — and, since the round-32 rename-based release, the placeholder
+    WITHDRAWN to a `.transition-withdrawn` name rather than unlinked, so an arrival
+    that reached the name in the gap survives under a computable dotted name instead
+    of being destroyed by the release (C3's class; the release itself is pinned in
+    `test_a_release_withdraw_carries_a_racing_arrival_across_c3`). The hard-crash
+    window — a kill that skips handlers between the reserve and the rename — strands
+    the empty placeholder at the reserved name instead (residual R3); that one fails
+    toward refusal and is cleared by hand.
     """
 
     (tmp_path / "task.md").write_bytes(b"live-preimage\n")
+    withdrawn = ".task.md.scratch.transition-withdrawn"
+    real_rename = os.rename
 
     def crash_before_the_publish(*args: object, **kwargs: object) -> None:
-        raise _Crash()
+        # Only the publish rename dies; the release's own withdraw must run, or the
+        # remnant this test pins is never produced.
+        if args and str(args[0]) == "task.md" and str(args[1]) == ".task.md.scratch":
+            raise _Crash()
+        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -4907,36 +5033,46 @@ def test_noreplace_interrupted_before_publishing_loses_nothing(tmp_path: Path) -
         os.close(dir_fd)
 
     # The source never moved, and the reservation was released even on the way out of a
-    # hard failure: a placeholder left here would refuse every later attempt on this
-    # operand, which is the wedge the release exists to prevent.
+    # hard failure: a placeholder left at this name would refuse every later attempt on
+    # this operand, which is the wedge the release exists to prevent.
     assert (tmp_path / "task.md").read_bytes() == b"live-preimage\n"
     assert os.stat(tmp_path / "task.md").st_nlink == 1
     assert not (tmp_path / ".task.md.scratch").exists()
-    assert _fallback_remnants(tmp_path) == []
+    # The release withdrew rather than unlinked, and the withdrawal is the remnant it
+    # leaves: the empty placeholder, under a name a sweep can compute from the operand.
+    assert (tmp_path / withdrawn).read_bytes() == b""
+    assert _fallback_remnants(tmp_path) == [withdrawn]
 
 
 @pytest.mark.parametrize("leg", ["exchange", "noreplace"])
-@pytest.mark.parametrize("cut", [1, 2, 3, 4, 5])
+@pytest.mark.parametrize("cut", list(range(1, 13)))
 def test_fsync_failure_at_every_cut_loses_nothing_and_leaves_reachable_remnants(
-    tmp_path: Path, leg: str, cut: int
+    tmp_path: Path, leg: str, cut: int, caplog: pytest.LogCaptureFixture
 ) -> None:
     """T1, done properly: a failure at EVERY step, not only the first.
 
     The previous version raised on *every* `fsync`, so it always fired at the earliest one
     — before installation or retirement — and the later cuts went untested. A reviewer was
     right that this made the test weaker than its name. Now the failure is injected at the
-    Nth `fsync`, which walks it through pin, move-aside, publish, retire and finalise.
+    Nth `fsync`, which walks it through pin, move-aside, publish, retire and finalise —
+    twelve barriers on the exchange, counted by the barrier test below.
 
     Two properties at each cut, and the second is what recovery needs:
 
     * **No bytes are lost.** Every generation that existed is still readable under some
       name, because each step is a move or a create-or-fail.
     * **Every remnant is reachable.** The leftover names are exactly the ones computable
-      from the operands, so an operator — or the discovery work owed by the projection-lock
-      task — can enumerate them without a directory sweep, which this module does not have.
+      from the operands — roles and the round-32 adornments — so an operator, or the
+      discovery work owed by the projection-lock task, can enumerate them without a
+      directory sweep, which this module does not have.
 
-    Cuts beyond a leg's fsync count simply complete; that is asserted rather than skipped,
-    so a leg that silently loses an fsync shows up here.
+    Completion is not uniform any more, and that is the point of the round-32 barrier
+    split: the four PROPAGATING barriers (the consume and vacate withdrawals of the two
+    link publishes) fail the leg, while the three dance withdrawals ABSORB the failure
+    and report it — a completed leg with "could not be made durable" in the log is the
+    absorbed outcome, not a swallowed one. Cuts beyond a leg's fsync count simply
+    complete; that is asserted rather than skipped, so a leg that silently loses an
+    fsync shows up here.
     """
 
     if leg == "exchange":
@@ -4969,7 +5105,10 @@ def test_fsync_failure_at_every_cut_loses_nothing_and_leaves_reachable_remnants(
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        with mock.patch.object(os, "fsync", failing_fsync):
+        with (
+            mock.patch.object(os, "fsync", failing_fsync),
+            caplog.at_level("WARNING"),
+        ):
             try:
                 call(dir_fd)
                 completed = True
@@ -4979,28 +5118,34 @@ def test_fsync_failure_at_every_cut_loses_nothing_and_leaves_reachable_remnants(
     finally:
         os.close(dir_fd)
 
-    # The cut either fired inside the leg, or the leg had fewer fsyncs than `cut`.
-    assert completed == (seen < cut), (leg, cut, seen, completed)
+    # The cut either fired inside the leg, or the leg had fewer fsyncs than `cut` — or
+    # it fired inside a dance withdrawal, which absorbs the failure and completes with
+    # the barrier's loss reported in the log instead.
+    assert completed == (seen < cut) or "could not be made durable" in caplog.text, (
+        leg,
+        cut,
+        seen,
+        completed,
+        caplog.text,
+    )
 
     present = {path.name: path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
     assert expected <= set(present.values()), (leg, cut, present)
 
-    computable = {
-        cp._fallback_scratch_name(base, role)
-        for base in operands
-        for role in cp._FALLBACK_SCRATCH_ROLES
-    } | set(operands)
+    computable = _computable_fallback_names(*operands) | set(operands)
     unreachable = set(present) - computable
     assert not unreachable, (leg, cut, unreachable)
 
 
 @pytest.mark.parametrize(
     ("leg", "required_barriers"),
-    # The exchange's five mutations each carry a barrier. The converted delete leg's
+    # The exchange is now link-publish plus withdraw-dances: eleven name-establishing
+    # mutations, each followed by its own barrier, and the pin retire closes out with
+    # an explicit barrier after its dance's unlink — twelve in all. The delete leg's
     # success path is ONE publish rename followed by ONE barrier — the reserve is an
     # `os.open`, which establishes an empty placeholder rather than resolving a name to
     # an inode, so no barrier is owed to it.
-    [("exchange", 5), ("noreplace", 1)],
+    [("exchange", 12), ("noreplace", 1)],
 )
 def test_each_leg_performs_its_durability_barriers(
     tmp_path: Path, leg: str, required_barriers: int
@@ -5014,9 +5159,10 @@ def test_each_leg_performs_its_durability_barriers(
 
     This is the missing half. The required count is written down here, so deleting any
     `fsync` from either leg fails this test — which is what "the witness must not accept
-    removal of durability barriers" requires. Ordering is pinned too: the last thing a leg
-    does is a barrier, so a crash after the final rename cannot leave the directory entry
-    unflushed.
+    removal of durability barriers" requires. Ordering is pinned too: every
+    name-establishing mutation is followed by a barrier before the next, and the final
+    one is barriered before the leg ends — the retire dance's unlink of a redundant
+    name may legitimately trail the last barrier.
     """
 
     if leg == "exchange":
@@ -5054,7 +5200,10 @@ def test_each_leg_performs_its_durability_barriers(
         os.close(dir_fd)
 
     assert order.count("fsync") >= required_barriers, (leg, order)
-    assert order[-1] == "fsync", (leg, order)
+    # No trailing-barrier assert: the exchange now ends with the retire dance's unlink
+    # of a redundant name, which may legitimately follow the last barrier. The
+    # established-based loop below already requires a barrier after the FINAL
+    # name-establishing mutation, which is the durability-relevant event.
 
     # Ordering, asserted so that MOVING a barrier fails rather than only DELETING one.
     #
@@ -5136,38 +5285,55 @@ def test_exchange_refuses_when_any_scratch_destination_is_occupied(
     assert "recover-claim-publications" in raised.value.repair_action
 
 
-def test_refill_refuses_a_source_recreated_after_retirement(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("fire_point", "fire_dst"),
+    [
+        ("publish-vacate", ".manifest.json.transition-staged"),
+        ("refill-consume-withdraw", ".manifest.json.transition-holding.transition-consumed"),
+    ],
+)
+def test_refill_refuses_a_source_recreated_after_retirement(
+    tmp_path: Path, fire_point: str, fire_dst: str
+) -> None:
     """The refill is create-or-fail, because both identity checks precede it.
 
     A writer can recreate `src` between its consumption at the publish and the refill,
-    after every check has already passed. The refill's reserve is `O_CREAT|O_EXCL`, so
-    that writer's entry is refused rather than silently overwritten — the same
-    create-or-fail property the old `link(pin → src)` had. Since the retire-before-
-    refill reorder the retire has already COMPLETED when this refusal fires: step 5
-    frees the pin while `src` is still vacant, so the pin is gone and the displaced
-    entry's remaining name is `holding` alone.
+    after every check has already passed. The publish is a link dance now, so the
+    window has two openings and both are pinned here: the recreation can land at the
+    publish's own vacate — `src` has just been renamed to its staged name — or one
+    beat later, inside the refill, between its placeholder's consume-withdraw and its
+    `link(staged2 -> src)`.
+
+    At the first opening the refill's reserve (`O_CREAT|O_EXCL`) at the live name
+    meets the arrival and refuses. At the second the refill's publish link meets
+    EEXIST and refuses, naming the arrival's preserved live name and the staged name
+    where the displaced entry survives. At both points the retire at step 5 has
+    already completed: the pin is gone, and the displaced entry lives on its
+    remaining scratch name alone.
     """
 
     (tmp_path / "manifest.json").write_bytes(b"replacement\n")
     (tmp_path / "dst").write_bytes(b"displaced\n")
     pin = cp._fallback_scratch_name("manifest.json", "pin")
     holding = cp._fallback_scratch_name("manifest.json", "holding")
+    staged2 = f"{holding}.transition-staged"
     real_rename = os.rename
     fired = False
 
-    def recreate_src_after_the_publish(*args: object, **kwargs: object) -> None:
-        # The publish rename consumes `src`; the writer recreates the live name
-        # immediately after, so the refill's reserve at `src` finds it occupied.
+    def recreate_src_inside_the_window(*args: object, **kwargs: object) -> None:
+        # Fires once, at whichever rename's destination is `fire_dst` — the publish's
+        # vacate or the refill's consume-withdraw, each unique in the trace — and the
+        # writer recreates the live name immediately after, inside the window.
         nonlocal fired
         result = real_rename(*args, **kwargs)  # type: ignore[arg-type]
-        if not fired and args and str(args[0]) == "manifest.json" and str(args[1]) == "dst":
+        if not fired and args and str(args[1]) == fire_dst:
             fired = True
             (tmp_path / "manifest.json").write_bytes(b"recreated-by-another-writer\n")
         return result
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        with mock.patch.object(os, "rename", recreate_src_after_the_publish):
+        with mock.patch.object(os, "rename", recreate_src_inside_the_window):
             with pytest.raises(cp.LifecycleTransitionError) as caught:
                 cp._fallback_exchange(dir_fd, "manifest.json", dir_fd, "dst")
         assert caught.value.reason_code == "transition_precondition_changed"
@@ -5176,14 +5342,25 @@ def test_refill_refuses_a_source_recreated_after_retirement(tmp_path: Path) -> N
 
     assert fired
     # The other writer's entry stands, and the interrupted exchange is intact behind the
-    # refusal: published at `dst`, displaced preserved at `holding` — the retire at
-    # step 5 already freed the pin, whose sibling was the dotted `holding`, so the
-    # refusal inherits one scratch name, not two.
+    # refusal: published at `dst`, displaced preserved, pin already retired at step 5.
     assert (tmp_path / "manifest.json").read_bytes() == b"recreated-by-another-writer\n"
     assert (tmp_path / "dst").read_bytes() == b"replacement\n"
-    assert (tmp_path / holding).read_bytes() == b"displaced\n"
-    assert os.stat(tmp_path / holding).st_nlink == 1
     assert not (tmp_path / pin).exists()
+    if fire_point == "publish-vacate":
+        # The refusal fired at the refill's reserve, before the refill's own dance
+        # touched `holding` — the displaced entry keeps its step-2 name.
+        assert (tmp_path / holding).read_bytes() == b"displaced\n"
+        assert os.stat(tmp_path / holding).st_nlink == 1
+        assert not (tmp_path / staged2).exists()
+    else:
+        # The refusal fired at the refill's publish link: `holding` was already vacated
+        # to `staged2`, so the displaced entry survives there, and the refusal names
+        # both the arrival's live name and that staged name.
+        assert (tmp_path / staged2).read_bytes() == b"displaced\n"
+        assert os.stat(tmp_path / staged2).st_nlink == 1
+        assert not (tmp_path / holding).exists()
+        assert "manifest.json" in str(caught.value)
+        assert staged2 in str(caught.value)
     # executive_function: name the next command, and say what not to delete.
     assert "recover-claim-publications" in str(caught.value)
     assert "do not delete" in str(caught.value)
@@ -5195,16 +5372,15 @@ def test_an_arrival_during_the_pin_retire_meets_a_create_or_fail_refill(
     """R1's window, reopened at the reorder: benign now, and this pins it stays that way.
 
     The retire of the pin is still a check followed by an act — there is no
-    compare-and-unlink — so an arrival can land inside it. What the retire-before-
-    refill reorder buys is that the window is harmless: at step 5 the pin's sibling
-    is the dotted `holding` and the live `src` name is VACANT, so a writer taking
-    `src` in the gap meets the refill's `O_CREAT|O_EXCL` reserve and is refused with
-    every generation intact. This injects the arrival at the closest observable
-    point — the pin's own unlink, between the retire's count and its act — and
-    asserts the typed refusal. Before the reorder the pin was never unlinked at all
-    (it was consumed into `src` by a rename, and the leg that retired a scratch ran
-    after the refill had made `src` live, which was residual R1); on that shape this
-    injection point does not exist and the leg raised nothing, which is the honest
+    compare-and-unlink — so an arrival can land inside it. The retire is a withdraw
+    dance now: the pin is renamed to its `.transition-safety` name, barriered, and
+    only then unlinked if its inode survives elsewhere. This injects the arrival at
+    the closest observable point — the dance's guarded unlink of the safety name,
+    between its count and its act — while the live `src` name is VACANT (vacated at
+    step 3), so a writer taking `src` in the gap meets the refill's
+    `O_CREAT|O_EXCL` reserve at step 6 and is refused with every generation intact.
+    On the pre-reorder shape — the pin consumed into `src` by a rename, residual R1 —
+    no such injection point existed and the leg raised nothing, which is the honest
     red this test was written against.
     """
 
@@ -5216,12 +5392,13 @@ def test_an_arrival_during_the_pin_retire_meets_a_create_or_fail_refill(
     fired = False
 
     def take_src_during_the_pin_unlink(*args: object, **kwargs: object) -> None:
-        # Inside the retire's check-then-act window: the count has read nlink 2
-        # (pin + holding), the unlink has not run. The writer takes the VACANT live
-        # name — `_replace_atomically` renames onto a name that does not exist, which
-        # is a create — and the real unlink then frees the pin as intended.
+        # Inside the retire dance's count-then-unlink window: the pin has been
+        # withdrawn to `{pin}.transition-safety`, the count has read nlink 2 (safety +
+        # holding), the unlink has not run. The writer takes the VACANT live name —
+        # `_replace_atomically` renames onto a name that does not exist, which is a
+        # create — and the real unlink then frees the safety name as intended.
         nonlocal fired
-        if not fired and args and str(args[0]) == pin:
+        if not fired and args and str(args[0]) == f"{pin}.transition-safety":
             fired = True
             _replace_atomically(tmp_path, ".src", b"attacker\n")
         return real_unlink(*args, **kwargs)  # type: ignore[arg-type]
@@ -5247,6 +5424,9 @@ def test_an_arrival_during_the_pin_retire_meets_a_create_or_fail_refill(
     assert (tmp_path / holding).read_bytes() == b"displaced\n"
     assert os.stat(tmp_path / holding).st_nlink == 1
     assert not (tmp_path / pin).exists()
+    # The dance unlinked the withdrawn safety name (nlink 2 → 1), so it leaves no
+    # residue of its own either.
+    assert not (tmp_path / f"{pin}.transition-safety").exists()
     surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
     assert b"attacker\n" in surviving
     assert b"replacement\n" in surviving
@@ -5263,29 +5443,29 @@ def test_cleanup_leaves_a_scratch_another_writer_replaced(
     """Cleanup is the last place this repair can lose data, and it did.
 
     An unconditional `unlink` of a scratch destroys whatever occupies that name, including
-    an entry another writer put there while the leg ran. Identity is re-read immediately
-    before each removal; a mismatch is moved aside under a stable, greppable name rather
-    than raised — by cleanup time the projection has already succeeded, so raising would
-    discard a verified post-state over an untidy remnant. Since the retire-before-refill
-    reorder the scratch the exchange retires is the `pin`, at step 5 — `holding` is
-    consumed by the refill and no cleanup follows it at all.
+    an entry another writer put there while the leg ran. Removal is a withdraw dance
+    now, and the dance re-reads identity before it removes anything; a mismatch is
+    moved aside under a stable, greppable name rather than raised — by cleanup time the
+    projection has already succeeded, so raising would discard a verified post-state
+    over an untidy remnant. Since the retire-before-refill reorder the scratch the
+    exchange retires is the `pin`, at step 5 — `holding` is consumed by the refill and
+    no cleanup follows it at all.
     """
 
     (tmp_path / ".src").write_bytes(b"replacement\n")
     (tmp_path / "dst").write_bytes(b"displaced\n")
     pin = cp._fallback_scratch_name(".src", "pin")
-    real_rename = os.rename
+    real_unlink = os.unlink
     swapped = False
 
-    def replace_the_pin_after_the_publish(*args: object, **kwargs: object) -> None:
-        # The window that exercises the retire's guard: the publish rename has landed
-        # and step 5's retire of the pin has not yet re-read its identity, so a writer
+    def replace_the_pin_before_its_retire(*args: object, **kwargs: object) -> None:
+        # The window that exercises the retire's guard: step 3's publish is complete —
+        # its staged retire dance has just unlinked the staged safety name — and step
+        # 5's retire of the pin has not yet re-read the pin's identity, so a writer
         # that replaces the pin's name with its own entry arrives between the two.
-        # `_replace_atomically` renames too, and the pair filter keeps this from firing
-        # on the racer's own move.
         nonlocal swapped
-        result = real_rename(*args, **kwargs)  # type: ignore[arg-type]
-        if not swapped and args and str(args[0]) == ".src" and str(args[1]) == "dst":
+        result = real_unlink(*args, **kwargs)  # type: ignore[arg-type]
+        if not swapped and args and str(args[0]) == ".src.transition-staged.transition-safety":
             swapped = True
             _replace_atomically(tmp_path, pin, b"someone-elses-entry\n")
         return result
@@ -5293,7 +5473,7 @@ def test_cleanup_leaves_a_scratch_another_writer_replaced(
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         with caplog.at_level("WARNING"):
-            with mock.patch.object(os, "rename", replace_the_pin_after_the_publish):
+            with mock.patch.object(os, "unlink", replace_the_pin_before_its_retire):
                 cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
     finally:
         os.close(dir_fd)
@@ -5313,7 +5493,7 @@ def test_cleanup_leaves_a_scratch_another_writer_replaced(
     assert not (tmp_path / pin).exists(), "the scratch name must be free for a retry"
     assert cp._SCRATCH_ABANDONED in caplog.text
     assert pin in caplog.text
-    assert "will not clear this name" in caplog.text
+    assert "inspect it before removing anything" in caplog.text
 
 
 def test_directory_noreplace_refuses_an_empty_destination_appearing_after_the_check(
@@ -5652,12 +5832,17 @@ def test_cleanups_occupancy_argument_is_pinned_not_just_argued(
     )
     survivors = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
     assert b"COMPETITOR\n" not in survivors
-    # And the entry that was there is handled by its own branch. The identity branch KEEPS it
-    # now: `expected` is the only name for that inode in this fixture, and removing a last name
-    # is what codex-1's C2 replay destroyed. Redundant-and-ours is the only removable case, and
-    # it is covered by the ordinary exchange tests where `spent` is a genuine second link.
+    # And the entry that was there is handled by its own branch. The identity branch now
+    # PRESERVES it: `expected` is the only name for that inode in this fixture, so the
+    # withdraw dance finds nlink 1 at the safety name and keeps the entry there —
+    # removing a last name is what codex-1's C2 replay destroyed. Redundant-and-ours is
+    # the only removable case, and it is covered by the ordinary exchange tests where
+    # `spent` is a genuine second link.
     if branch == "identity":
-        assert (tmp_path / "scratch").read_bytes() == b"ours\n"
+        assert not (tmp_path / "scratch").exists(), "the scratch name must be free"
+        preserved = tmp_path / "scratch.transition-safety"
+        assert preserved.read_bytes() == b"ours\n"
+        assert os.stat(preserved).st_nlink == 1
     else:
         assert (tmp_path / "scratch.transition-abandoned").read_bytes() == b"someone-elses\n"
 
@@ -5751,13 +5936,14 @@ def test_a_participant_cannot_replace_a_scratch_cleanup_is_about_to_unlink(
 ) -> None:
     """The cleanup boundary, for the same two classes of writer.
 
-    `_retire_scratch` reads identity and then unlinks, and those are still two operations —
-    reviewers are right that no second identity check can close the gap between them. What
-    closes it against a PARTICIPANT is that the name is occupied for the whole of it, so a
-    writer acquiring names the way this module does is refused and never lands a replacement.
-    Since the retire-before-refill reorder the one conditional unlink the exchange's success
-    path still performs is the PIN retire at step 5; `holding` is consumed by the refill and
-    never unlinked, so the boundary lives at the pin now.
+    `_retire_scratch` counts and then unlinks, and those are still two operations —
+    reviewers are right that no second identity check can close the gap between them.
+    What closes it against a PARTICIPANT is that the name is occupied for the whole of
+    it, so a writer acquiring names the way this module does is refused and never lands
+    a replacement. The retire is a withdraw dance now, and the one conditional unlink
+    the exchange's success path still performs is the dance's guarded removal of the
+    PIN's `.transition-safety` name at step 5 — the pin itself is never unlinked and
+    `holding` is consumed by the refill, so the boundary lives at the safety name.
 
     **This property does not come from the reservation and this test does not pin it.**
     Measured: with the reservation reverted to a check, the relocation test above goes red
@@ -5770,14 +5956,17 @@ def test_a_participant_cannot_replace_a_scratch_cleanup_is_about_to_unlink(
     (tmp_path / ".src").write_bytes(b"replacement\n")
     (tmp_path / "dst").write_bytes(b"displaced\n")
     pin = cp._fallback_scratch_name(".src", "pin")
+    safety = f"{pin}.transition-safety"
     real_unlink = os.unlink
     outcome: str | None = None
 
     def race_inside_the_cleanup_gap(*args: object, **kwargs: object) -> None:
-        # `_retire_scratch` has re-read identity and decided this name is ours.
+        # The dance has withdrawn the pin to its safety name, re-proven identity there,
+        # and read nlink 2 — the guarded unlink has not run. The participant tries for
+        # the SAFETY name, the occupied one.
         nonlocal outcome
-        if outcome is None and args and str(args[0]) == pin:
-            outcome = _participant_takes(dir_fd, pin, b"replaced-after-the-check\n")
+        if outcome is None and args and str(args[0]) == safety:
+            outcome = _participant_takes(dir_fd, safety, b"replaced-after-the-check\n")
         return real_unlink(*args, **kwargs)  # type: ignore[arg-type]
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
@@ -5993,42 +6182,108 @@ def test_a_reservation_that_cannot_be_released_is_reported_as_a_wedge(
 
     The release swallowed every error and logged nothing, so its one bad outcome — a
     placeholder that refuses every later attempt on the operand, permanently — was silent.
-    Every other remnant path here logs `_SCRATCH_ABANDONED` with a remedy; this one now does
+    Every other remnant path here logs `_SCRATCH_ABANDONED` with a remedy; this one does
     too, and names the command that clears it.
+
+    The release withdraws by rename now, so the wedge has a new shape: a stale remnant
+    already sitting at the `.transition-withdrawn` name refuses the withdrawal's
+    `O_CREAT|O_EXCL` reserve, and the placeholder this attempt took stays at the live
+    scratch name. A remnant there is most likely a previous attempt's preserved bytes,
+    so it is named — never touched.
     """
 
     (tmp_path / ".src").write_bytes(b"replacement\n")
     (tmp_path / "dst").write_bytes(b"displaced\n")
     holding = cp._fallback_scratch_name(".src", "holding")
+    withdrawn = f"{holding}.transition-withdrawn"
+    (tmp_path / withdrawn).write_bytes(b"stale-from-a-previous-attempt\n")
     real_rename = os.rename
-    real_unlink = os.unlink
 
     def fail_the_relocation(*args: object, **kwargs: object) -> None:
         if len(args) > 1 and str(args[1]) == holding:
             raise OSError(errno.EIO, os.strerror(errno.EIO))
         return real_rename(*args, **kwargs)  # type: ignore[arg-type]
 
-    def refuse_to_unlink(*args: object, **kwargs: object) -> None:
-        if args and str(args[0]) == holding:
-            raise OSError(errno.EIO, os.strerror(errno.EIO), "unlink")
-        return real_unlink(*args, **kwargs)  # type: ignore[arg-type]
-
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         with caplog.at_level("WARNING"):
-            with (
-                mock.patch.object(os, "rename", fail_the_relocation),
-                mock.patch.object(os, "unlink", refuse_to_unlink),
-            ):
+            with mock.patch.object(os, "rename", fail_the_relocation):
                 with pytest.raises(OSError):
                     cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
     finally:
         os.close(dir_fd)
 
     assert cp._SCRATCH_ABANDONED in caplog.text
-    assert holding in caplog.text
+    assert withdrawn in caplog.text
     assert "transition_projection_scratch_exists" in caplog.text
     assert "recover-claim-publications" in caplog.text
+    # The wedge itself: the placeholder this attempt took is STILL THERE, empty, and
+    # the stale remnant that refused the withdrawal is untouched.
+    assert (tmp_path / holding).read_bytes() == b""
+    assert (tmp_path / withdrawn).read_bytes() == b"stale-from-a-previous-attempt\n"
+
+
+def test_a_release_withdraw_carries_a_racing_arrival_across_c3(tmp_path: Path) -> None:
+    """Round-31 codex C3, replayed against the round-32 release.
+
+    The NOREPLACE fallback's reservation destination is a name a racing writer can
+    reach. The pre-round-32 release proved the placeholder's identity with `lstat`
+    and then unlinked — two operations — so a rogue that replaced the reserved name
+    between them had its entry destroyed by a call that had already decided the name
+    was safe to remove. The release withdraws by rename now: one rename carries
+    WHATEVER occupies the name at the instant of the call across to the reserved
+    `.transition-withdrawn` name, ours or the rogue's. This injects the rogue between
+    the release's identity check and the withdrawal — at the withdraw reserve's own
+    `os.open`, the last syscall before the rename — and pins that it survives.
+    """
+
+    (tmp_path / "task.md").write_bytes(b"live-preimage\n")
+    withdrawn = ".task.md.scratch.transition-withdrawn"
+    real_rename = os.rename
+    real_open = os.open
+    rogue_landed = False
+
+    def fail_the_publish(*args: object, **kwargs: object) -> None:
+        # Only the publish pair dies; the release's withdraw rename, and the rogue's
+        # own move, must both go through. The pair filter keeps both safe.
+        if args and str(args[0]) == "task.md" and str(args[1]) == ".task.md.scratch":
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
+
+    def rogue_lands_at_the_reserve(*args: object, **kwargs: object) -> int:
+        # The withdraw reserve has just taken the `.transition-withdrawn` name, and
+        # the release's identity check has ALREADY passed — the reserved name still
+        # held this attempt's placeholder when it ran. A rogue replacing the reserved
+        # name now sits exactly in the gap the old unlink could not see; the
+        # withdrawal's rename then carries it across instead.
+        nonlocal rogue_landed
+        fd = real_open(*args, **kwargs)  # type: ignore[arg-type]
+        if not rogue_landed and args and str(args[0]) == withdrawn:
+            rogue_landed = True
+            _replace_atomically(tmp_path, ".task.md.scratch", b"rogue-arrival\n")
+        return fd
+
+    dir_fd = real_open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with (
+            mock.patch.object(os, "rename", fail_the_publish),
+            mock.patch.object(os, "open", rogue_lands_at_the_reserve),
+        ):
+            with pytest.raises(OSError):
+                cp._fallback_noreplace(dir_fd, "task.md", dir_fd, ".task.md.scratch")
+    finally:
+        os.close(dir_fd)
+
+    assert rogue_landed
+    # The rogue survived the release: carried to the withdrawn name, not destroyed,
+    # and the reserved name is free for the next attempt.
+    assert not (tmp_path / ".task.md.scratch").exists()
+    assert (tmp_path / withdrawn).read_bytes() == b"rogue-arrival\n"
+    assert os.stat(tmp_path / withdrawn).st_nlink == 1
+    # The source never moved.
+    assert (tmp_path / "task.md").read_bytes() == b"live-preimage\n"
+    surviving = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
+    assert b"rogue-arrival\n" in surviving
 
 
 def test_a_reservation_is_not_released_when_someone_else_filled_it(
@@ -6116,6 +6371,11 @@ def test_retire_scratch_absorbs_io_errors_on_every_branch(
     so an `EIO` from either escaped the helper — failing a projection that had already
     succeeded, which is the single outcome this function's contract exists to prevent. A
     reviewer found it by replay; this pins both branches.
+
+    The removal the `unlink` parametrization breaks is the dance's guarded removal of
+    the withdrawn `.transition-safety` name — the only unlink left — and its outcome
+    changed with it: the scratch name is already free, the entry is PRESERVED at the
+    safety name (still reached by its sibling), and the call still never raises.
     """
 
     target = tmp_path / "scratch"
@@ -6147,8 +6407,23 @@ def test_retire_scratch_absorbs_io_errors_on_every_branch(
         f"the patched {failing} was never called, so the error handler it exists to pin was "
         "not exercised — check the fixture still reaches the removal attempt"
     )
-    assert freed is False
-    assert target.read_bytes() == b"ours\n", "an unreadable or unremovable scratch is left"
+    if failing == "lstat":
+        # Unreadable: left exactly in place, name still taken, reported.
+        assert freed is False
+        assert target.read_bytes() == b"ours\n", "an unreadable scratch is left"
+        assert "could not be examined" in caplog.text
+    else:
+        # Unremovable: the dance withdrew `scratch` first, so the NAME is free — which
+        # is what the caller owes the next attempt — and the redundant entry lives on
+        # at the safety name, still reached by its sibling. `freed is True` is the
+        # honest answer here, not a green wash: the leftover is a computable dotted
+        # remnant a sweep finds, not an occupied live scratch name.
+        assert freed is True
+        assert not target.exists()
+        preserved = tmp_path / "scratch.transition-safety"
+        assert preserved.read_bytes() == b"ours\n"
+        assert os.stat(preserved).st_nlink == 2
+        assert "could not be removed" in caplog.text
     assert cp._SCRATCH_ABANDONED in caplog.text
 
 
@@ -6165,20 +6440,30 @@ def test_a_scratch_of_ours_that_cannot_be_removed_is_reported_where_it_happens(
 
     Reported at the point where the cause is known instead. A foreign leftover still does not
     escalate: it harms nothing, and only a second link to a live inode does.
+
+    Round-32 note on the injection: the unremovable scratch of ours is now the dance's
+    own WITHDRAWAL failing — the pin stays at its name, the refill still completes, and
+    the stranded check at the end of the leg is what turns the leftover into this
+    refusal: `.src` reads back at nlink 2 with the pin, which is the `path-unsafe`
+    shape the message names.
     """
 
     (tmp_path / ".src").write_bytes(b"replacement\n")
     (tmp_path / "dst").write_bytes(b"displaced\n")
-    real_unlink = os.unlink
+    pin = cp._fallback_scratch_name(".src", "pin")
+    real_rename = os.rename
 
-    def refuse_to_unlink_scratches(*args: object, **kwargs: object) -> None:
-        if args and ".transition-" in str(args[0]):
-            raise OSError(errno.EIO, os.strerror(errno.EIO), "unlink")
-        return real_unlink(*args, **kwargs)  # type: ignore[arg-type]
+    def refuse_the_pin_withdraw(*args: object, **kwargs: object) -> None:
+        # The step-5 dance's withdrawal of the pin is the only rename that dies; the
+        # refill's own dance — and everything else — must run, or the post-state this
+        # test pins is never produced.
+        if len(args) > 1 and str(args[1]) == f"{pin}.transition-safety":
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        return real_rename(*args, **kwargs)  # type: ignore[arg-type]
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        with mock.patch.object(os, "unlink", refuse_to_unlink_scratches):
+        with mock.patch.object(os, "rename", refuse_the_pin_withdraw):
             with pytest.raises(cp.LifecycleTransitionError) as caught:
                 cp._fallback_exchange(dir_fd, ".src", dir_fd, "dst")
     finally:
@@ -6189,5 +6474,7 @@ def test_a_scratch_of_ours_that_cannot_be_removed_is_reported_where_it_happens(
     assert "path-unsafe" in str(caught.value)
     assert "recover-claim-publications" in caught.value.repair_action
     assert any(name in str(caught.value) for name in _fallback_remnants(tmp_path))
+    assert (tmp_path / pin).read_bytes() == b"displaced\n", "the stranded scratch is the pin"
     # The projection's own post-state still landed; this is about the leftover, not a loss.
     assert (tmp_path / "dst").read_bytes() == b"replacement\n"
+    assert (tmp_path / ".src").read_bytes() == b"displaced\n"
