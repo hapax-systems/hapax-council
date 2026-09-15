@@ -5200,3 +5200,19 @@ _ = (_hold_task_note_lock,)
 from shared.cc_task_lock import hold_role_lease_lock as _hold_role_lease_lock  # noqa: E402
 
 _ = (_hold_role_lease_lock,)
+
+# Held-lock observer (same row, round 21). Same blind spot again: the caller is
+# cc-claim's `--recover-claim-publications` branch, a bash-hosted Python heredoc
+# vulture cannot parse. It exists for the ONE caller that cannot name its resources
+# in advance — recovering every task's claim publication touches an unbounded set,
+# so the checkable precondition is "is any other writer mid-mutation", not "which
+# notes will I touch".
+#
+# Live-call evidence:
+# tests/test_cc_task_lock.py::TestRecoveryParticipatesToo::test_recovering_all_tasks_refuses_while_any_writer_is_mid_mutation
+# holds a task lock with plain fcntl and requires the all-tasks recovery to refuse
+# naming that holder; its sibling requires the same command to proceed when nothing
+# is held, so the guard cannot be satisfied by refusing always.
+from shared.cc_task_lock import held_task_locks as _held_task_locks  # noqa: E402
+
+_ = (_held_task_locks,)

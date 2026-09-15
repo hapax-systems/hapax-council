@@ -808,16 +808,42 @@ fi
 # operator passes after `--`. So the override is honoured rather than ignored, and
 # CODEX_ARGS is built from this same variable further down — one source, so what is
 # recorded and what is passed cannot drift.
-CODEX_MODEL="gpt-6-astra"
-for _extra in ${CODEX_EXTRA+"${CODEX_EXTRA[@]}"}; do
-  case "$_extra" in
-    model=\"*\")
-      _override="${_extra#model=\"}"
-      CODEX_MODEL="${_override%\"}"
-      ;;
-    model=*) CODEX_MODEL="${_extra#model=}" ;;
-  esac
-done
+CODEX_DEFAULT_MODEL="gpt-6-astra"
+# Resolved by PARSING each `-c` value as the TOML fragment codex treats it as —
+# not by a shell pattern. The pattern version got two valid spellings wrong:
+# `model = "gpt-6-mini"` (spaces around `=`) matched nothing and silently recorded
+# the default, and `model='gpt-6-mini'` recorded the single quotes as part of the
+# name. In both cases the override still reached the harness, so the RECORD
+# disagreed with the launch — which is the one thing this field must never do.
+#
+# Last assignment wins, because codex applies `-c` in order.
+CODEX_MODEL="$(
+  python3 -I - codex-model-resolve "$CODEX_DEFAULT_MODEL" \
+    ${CODEX_EXTRA+"${CODEX_EXTRA[@]}"} <<'PYEOF' || true
+import sys
+import tomllib
+
+model = sys.argv[2]
+for arg in sys.argv[3:]:
+    if not arg.startswith("model"):
+        continue
+    try:
+        parsed = tomllib.loads(arg)
+    except tomllib.TOMLDecodeError:
+        continue
+    value = parsed.get("model")
+    if isinstance(value, str) and value:
+        model = value
+print(model)
+PYEOF
+)"
+if [[ -z "$CODEX_MODEL" ]]; then
+  # The resolver could not run at all. Recording the default would be a guess about
+  # an override we could not read, so record nothing rather than something wrong —
+  # and say so, because a claim with no model is a real loss of evidence.
+  echo "hapax-codex-headless: WARNING — could not resolve the effective codex model (python3/tomllib unavailable); this lane's claims will record no model_family. Next action: repair python3 for this checkout." >&2
+  CODEX_MODEL=""
+fi
 # NOT exported here — see the publish beside the consume call further down. Exporting
 # at this point put the value in the environment BEFORE
 # hapax_consume_launch_capability_descriptors ran, and that call clears
@@ -894,7 +920,9 @@ hapax_consume_launch_capability_descriptors hapax-codex-headless
 # none. Published unconditionally: the value is this launcher's own resolution
 # (CODEX_MODEL, which also builds `-c model=` below), never something inherited,
 # so it is exactly what "publish what you executed with" means — pinned or not.
-export HAPAX_CAPABILITY_MODEL="$CODEX_MODEL"
+if [[ -n "$CODEX_MODEL" ]]; then
+  export HAPAX_CAPABILITY_MODEL="$CODEX_MODEL"
+fi
 # Session succession is NOT done here. A launcher-side helper lived here across
 # review rounds 2-6 and was removed: it cannot be made correct in a launcher (see
 # the REMOVED block in hooks/scripts/agent-role.sh for the proof) and is rowed
@@ -1190,7 +1218,7 @@ CODEX_ARGS=(
   --skip-git-repo-check
   --json
   --cd "$WORKDIR"
-  -c "model=\"$CODEX_MODEL\""
+  -c "model=\"${CODEX_MODEL:-$CODEX_DEFAULT_MODEL}\""
   -c 'model_reasoning_effort="xhigh"'
   -c 'approval_policy="never"'
   -c 'sandbox_mode="danger-full-access"'

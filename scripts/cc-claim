@@ -108,15 +108,60 @@ if [[ ! -x "$python_runner" ]]; then
   echo "cc-claim: python3 missing; cannot rewrite frontmatter. Next action: install python3 or rerun from a provisioned repo virtualenv." >&2
   exit 3
 fi
+# Resolve the role BEFORE the recovery branches, not after them. Both recovery
+# paths mutate task notes and the activation cache, so both must take the same
+# locks cc-close does — and the role lock needs a role. The resolution itself is
+# unchanged; only its position moved (review round 21).
+if declare -F hapax_effective_role >/dev/null 2>&1; then
+  recovery_role="$(hapax_effective_role 2>/dev/null || true)"
+else
+  recovery_role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
+fi
+
 if [[ "$rehydrate_activation_cache_only" == "true" ]]; then
-  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" "${recovery_role:-}" <<'PYEOF'
 import sys
 from pathlib import Path
 
 repo_root = Path(sys.argv[1]).resolve()
 task_id = sys.argv[2]
+recovery_role = sys.argv[3] if len(sys.argv) > 3 else ""
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
+
+# Recovery mutates the SAME resources a close does: the task note and the
+# activation cache. It returned before the lock acquisition below and used
+# sdlc_claim's own `task-locks/<digest>.lock`, which cc-close does not take — so a
+# rehydrate could replace a note between cc-close's read and its unlink, and the
+# archived snapshot would silently lack the recovered changes (review round 21).
+# A second lock namespace is not exclusion; it is two processes agreeing to watch
+# different doors.
+from shared.cc_task_lock import (  # noqa: E402
+    TaskLockTimeout,
+    hold_role_lease_lock,
+    hold_task_note_lock,
+)
+
+try:
+    hold_task_note_lock(task_id)
+    if recovery_role:
+        hold_role_lease_lock(recovery_role)
+except TaskLockTimeout as exc:
+    print(
+        f"cc-claim: BLOCKED — {exc}. A cc-close or cc-claim is mid-mutation on this "
+        "task. Next action: let it finish and rerun the rehydrate. Nothing was "
+        "modified.",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+except OSError as exc:
+    print(
+        f"cc-claim: BLOCKED — could not take the cc-task lock for '{task_id}': {exc}. "
+        "This is NOT contention. Next action: check permissions on the hapax cache "
+        "directory. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(5)
 
 from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
 from shared.sdlc_claim import (  # noqa: E402
@@ -146,14 +191,65 @@ PYEOF
   exit $?
 fi
 if [[ "$recover_claim_publications_only" == "true" ]]; then
-  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" "${recovery_role:-}" <<'PYEOF'
 import sys
 from pathlib import Path
 
 repo_root = Path(sys.argv[1]).resolve()
 task_id = sys.argv[2] or None
+recovery_role = sys.argv[3] if len(sys.argv) > 3 else ""
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
+
+# Same reason as the rehydrate branch above: recovery rewrites task notes and the
+# activation cache under sdlc_claim's own lock namespace, which cc-close does not
+# take. Two lock namespaces over one resource is not exclusion.
+from shared.cc_task_lock import (  # noqa: E402
+    TaskLockTimeout,
+    held_task_locks,
+    hold_role_lease_lock,
+    hold_task_note_lock,
+)
+
+try:
+    if task_id:
+        hold_task_note_lock(task_id)
+    if recovery_role:
+        hold_role_lease_lock(recovery_role)
+except TaskLockTimeout as exc:
+    print(
+        f"cc-claim: BLOCKED — {exc}. A cc-close or cc-claim is mid-mutation. Next "
+        "action: let it finish and rerun the recovery. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+except OSError as exc:
+    print(
+        f"cc-claim: BLOCKED — could not take the cc-task lock: {exc}. This is NOT "
+        "contention. Next action: check permissions on the hapax cache directory. "
+        "Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(5)
+
+if not task_id:
+    # The all-tasks form touches an unbounded set, so there is no single task lock
+    # to take. Rather than proceed unprotected or refuse a documented recovery
+    # outright, check the precondition that actually matters and is checkable at
+    # the moment of use: is any OTHER writer mid-mutation right now? If none is,
+    # recovery is safe; if one is, name it and stop.
+    busy = held_task_locks()
+    if busy:
+        print(
+            "cc-claim: BLOCKED — recovering ALL tasks while another writer holds a "
+            f"task lock ({', '.join(str(p) for p in busy)}). That recovery can "
+            "replace a note between a close's read and its unlink. Next action: let "
+            "the holder finish, or recover one task at a time with "
+            "`cc-claim --recover-claim-publications <task-id>`, which takes that "
+            "task's lock. Nothing was modified.",
+            file=sys.stderr,
+        )
+        sys.exit(4)
 
 from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
 from shared.sdlc_claim import ClaimPublicationError, recover_claim_publications  # noqa: E402

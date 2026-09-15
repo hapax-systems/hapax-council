@@ -315,11 +315,16 @@ def test_the_precondition_holds_against_the_bytes_actually_rewritten(
     )
 
     assert result.returncode == 2, f"expected the precondition refusal\n{result.stderr}"
-    assert "is status 'in_progress' at write time" in result.stderr, (
+    # The phrase both guards share. cc-close checks this precondition TWICE under
+    # the lock — once before the mutating artifact gate, once in the writer against
+    # the bytes it rewrites — because a mutation sits between those points. Either
+    # refusal is the right one; an unrecognised argument produces neither, which is
+    # what this assertion is for.
+    assert "--expect-status 'withdrawn' was required" in result.stderr, (
         "cc-close exited nonzero for some other reason — an unrecognised argument "
         f"would also do that, and would prove nothing\n{result.stderr}"
     )
-    assert "--expect-status 'withdrawn' was required" in result.stderr, result.stderr
+    assert "is status 'in_progress'" in result.stderr, result.stderr
     assert note.exists(), "a task that had resumed was moved to closed/"
     assert "status: in_progress" in note.read_text(encoding="utf-8")
 
@@ -394,10 +399,11 @@ def test_the_precondition_is_evaluated_after_the_lock_is_taken(tmp_path: Path) -
     stdout, stderr = proc.communicate(timeout=60)
 
     assert proc.returncode == 2, f"expected the precondition refusal\n{stdout}\n{stderr}"
-    assert "is status 'in_progress' at write time" in stderr, (
+    assert "is status 'in_progress'" in stderr, (
         "cc-close validated before acquiring the lock, so it decided on a view of "
         f"the note that was already stale\n{stderr}"
     )
+    assert "--expect-status 'withdrawn' was required" in stderr, stderr
     assert note.exists(), "the resumed note was moved to closed/"
     assert "status: in_progress" in note.read_text(encoding="utf-8")
 
@@ -476,7 +482,7 @@ class TestOnlyTheFrontmatterCounts:
             "withdrawn",
         )
         assert result.returncode == 2, f"a body line satisfied the precondition\n{result.stdout}"
-        assert "is status 'in_progress' at write time" in result.stderr, result.stderr
+        assert "is status 'in_progress'" in result.stderr, result.stderr
         assert note.exists(), "the live note was unlinked"
 
     def test_duplicate_governed_keys_are_refused_not_guessed(self, tmp_path: Path) -> None:

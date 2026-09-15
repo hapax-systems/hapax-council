@@ -600,9 +600,29 @@ uv run pytest tests/test_cc_hygiene_stale_claim_marker.py -q \
 `stale_claim_marker` has no killswitch of its own. It is covered by the sweeper's,
 which stops every check:
 
+A bare `HAPAX_CC_HYGIENE_OFF=1` on its own line sets an **unexported shell
+variable**, which the next process you start does not see — and it does not touch
+the systemd timer that runs the real sweeps. Two effective forms:
+
 ```bash
-HAPAX_CC_HYGIENE_OFF=1     # sweeper-wide: silences all checks, not just this one
+# one run, in the foreground
+HAPAX_CC_HYGIENE_OFF=1 uv run python scripts/cc-hygiene-sweeper.py
+
+# the scheduled sweeps — this is the one that matters when you are being paged
+systemctl --user stop hapax-cc-hygiene.timer
+systemctl --user set-environment HAPAX_CC_HYGIENE_OFF=1   # if you want runs to no-op instead
 ```
+
+Verify it took, rather than assuming:
+
+```bash
+HAPAX_CC_HYGIENE_OFF=1 uv run python scripts/cc-hygiene-sweeper.py 2>&1 |
+  grep -c 'killswitch active, no checks run'      # expect 1
+systemctl --user is-active hapax-cc-hygiene.timer # expect 'inactive' after the stop
+```
+
+Restore with `systemctl --user unset-environment HAPAX_CC_HYGIENE_OFF` and
+`systemctl --user start hapax-cc-hygiene.timer`.
 
 **`HAPAX_CC_HYGIENE_OFF=1` is the ONLY escape hatch for this check**, and it stops
 every other check with it. There is no `--skip-check`, no per-check env var, and

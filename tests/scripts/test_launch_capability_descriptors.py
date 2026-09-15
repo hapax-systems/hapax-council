@@ -383,11 +383,17 @@ class TestWhatTheChildReceives:
         '    printf "capmodel=%s\\n" "${HAPAX_CAPABILITY_MODEL:-}"\n'
         '    printf "harness=%s\\n" "${HAPAX_AGENT_INTERFACE:-}"\n'
         '    printf "pinned=%s\\n" "${HAPAX_CAPABILITY_PINNED:-}"\n'
-        # The model as PASSED, scanned out of the harness's own argv. Comparing the
-        # record against the argv is what makes "recorded == launched" a measurement
-        # rather than two copies of the same default.
-        '    for a in "$@"; do case "$a" in model=*) m="$a" ;; esac; done\n'
-        '    printf "argmodel=%s\\n" "$(printf "%s" "${m:-}" | sed \'s/^model=//; s/^"//; s/"$//\')"\n'
+        # The model as PASSED — recorded RAW here, and resolved in the test with
+        # `tomllib`. An earlier stub repeated the launcher's own `model=*` scan and
+        # quote-stripping, so its equality assertion agreed with the defect: both
+        # sides mis-parsed `model = "x"` and `model='x'` identically. An oracle has
+        # to be independent of the thing it checks.
+        # EVERY `model`-ish `-c` value, joined — the oracle decides which one sets
+        # the `model` key. Matching `model*` and keeping the last picked up
+        # `model_reasoning_effort=...`; matching `model=*` would have been the
+        # launcher's own (wrong) pattern again.
+        '    for a in "$@"; do case "$a" in model*) m="${m:-}${m:+;;}$a" ;; esac; done\n'
+        '    printf "argmodel_raw=%s\\n" "${m:-}"\n'
         '  } > "$STUB_OUT"\n'
         "fi\n"
         "printf '%s\\n' "
@@ -541,9 +547,11 @@ class TestWhatTheChildReceives:
         assert observed["capmodel"], (
             f"the codex lane published no model, so its claims record none: {observed}"
         )
-        assert observed["capmodel"] == observed.get("argmodel"), (
+        passed = _model_from_codex_arg(observed.get("argmodel_raw", ""))
+        assert observed["capmodel"] == passed, (
             "the recorded model and the one passed to codex disagree: "
-            f"recorded={observed['capmodel']!r} passed={observed.get('argmodel')!r}"
+            f"recorded={observed['capmodel']!r} passed={passed!r} "
+            f"(raw {observed.get('argmodel_raw')!r})"
         )
 
     @pytest.mark.parametrize("pinned", [False, True], ids=["unpinned", "dispatched"])
@@ -564,7 +572,31 @@ class TestWhatTheChildReceives:
         assert observed["capmodel"] == "gpt-6-mini", (
             f"an operator override was passed to codex but not recorded: {observed}"
         )
-        assert observed.get("argmodel") == "gpt-6-mini", observed
+        assert _model_from_codex_arg(observed.get("argmodel_raw", "")) == "gpt-6-mini", observed
+
+    @pytest.mark.parametrize(
+        "spelling",
+        ['model="gpt-6-mini"', 'model = "gpt-6-mini"', "model='gpt-6-mini'"],
+        ids=["tight", "spaced", "single-quoted"],
+    )
+    def test_every_valid_toml_spelling_of_the_override_is_recorded(
+        self, spelling: str, tmp_path: Path
+    ) -> None:
+        """All three are the same TOML assignment; a shell pattern said otherwise.
+
+        `model = "gpt-6-mini"` matched nothing and silently recorded the default,
+        and `model='gpt-6-mini'` recorded the quotes as part of the name — while
+        the override still reached the harness in both cases, so the record
+        disagreed with the launch. Resolved with `tomllib` now, on both sides,
+        independently.
+        """
+        observed = self._run(
+            "hapax-codex-headless", tmp_path, {}, extra_args=["--", "-c", spelling]
+        )
+        assert observed["capmodel"] == "gpt-6-mini", (
+            f"spelling {spelling!r} recorded {observed['capmodel']!r}"
+        )
+        assert _model_from_codex_arg(observed.get("argmodel_raw", "")) == "gpt-6-mini", observed
 
     @pytest.mark.parametrize("name", sorted(set(PINNED_LAUNCHERS) & _DRIVABLE))
     def test_an_addressed_route_does_reach_the_child(self, name: str, tmp_path: Path) -> None:
@@ -588,6 +620,31 @@ class TestWhatTheChildReceives:
         assert observed["pinned"] == "", (
             f"{name} passed the grant on to its own child — it authorises one hop"
         )
+
+
+def _model_from_codex_arg(raw: str) -> str:
+    """The model a `-c` value really sets, per TOML — the test's INDEPENDENT oracle.
+
+    Deliberately not the launcher's parser and not a copy of it: `tomllib` is the
+    semantics codex itself applies, so agreement between this and the recorded value
+    is evidence rather than two implementations sharing a bug. The previous stub
+    repeated the launcher's `model=*` scan and quote-stripping and so agreed with it
+    on `model = "x"` and `model='x'`, both of which it got wrong.
+    """
+    import tomllib
+
+    model = ""
+    for fragment in raw.split(";;"):
+        if not fragment:
+            continue
+        try:
+            parsed = tomllib.loads(fragment)
+        except tomllib.TOMLDecodeError:
+            continue
+        value = parsed.get("model")
+        if isinstance(value, str) and value:
+            model = value  # last assignment wins, as codex applies -c in order
+    return model
 
 
 class TestTheRunnerCleansToo:

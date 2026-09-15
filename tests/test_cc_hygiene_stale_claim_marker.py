@@ -787,6 +787,50 @@ class TestSweepBinding:
         )
         assert "marker_dir=" in rendered, rendered
 
+    def test_a_duplicate_status_does_not_produce_retirement_advice(self, tmp_path: Path) -> None:
+        """`status: in_progress` then `status: refused` is undecidable, not refused.
+
+        `yaml.safe_load` takes the last silently, so the scan read this note as
+        cleanly `refused` and the join advised removing a LIVE lane's claim and
+        epoch. cc-close's own duplicate validation cannot protect this path:
+        `refused` is not a status cc-close remediation ever reaches. So the scan
+        itself has to decide, and "undecidable" routes to the same place every
+        unreadable note does — advice withheld, operator adjudication.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cc_hygiene_sweeper_dupkey", REPO_ROOT / "scripts" / "cc-hygiene-sweeper.py"
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        cache = tmp_path / "cache" / "hapax"
+        relay = cache / "relay"
+        relay.mkdir(parents=True)
+        vault = tmp_path / "vault"
+        (vault / "active").mkdir(parents=True)
+        (vault / "closed").mkdir(parents=True)
+        (vault / "active" / "t1.md").write_text(
+            "---\ntype: cc-task\ntask_id: t1\nstatus: in_progress\nstatus: refused\n"
+            "assigned_to: eta\n---\n",
+            encoding="utf-8",
+        )
+        (cache / "cc-active-task-eta").write_text("t1\n", encoding="utf-8")
+
+        state = mod.run_sweep(vault_root=vault, relay_root=relay, repo_root=tmp_path, reap=False)
+        stale = [e for e in state.events if e.check_id == "stale_claim_marker"]
+        actions = {e.metadata.get("next_action") for e in stale}
+        assert "retire-orphan-marker" not in actions, (
+            f"a live lane's marker was recommended for retirement on the strength of "
+            f"the LAST of two status keys: {stale}"
+        )
+        reasons = {e.metadata.get("reason") for e in stale}
+        assert "vault_view_incomplete" in reasons, (
+            f"the undecidable note produced no incomplete-view event: {stale}"
+        )
+
     def test_a_first_read_that_fails_is_not_erased_by_a_second_that_succeeds(
         self, tmp_path: Path
     ) -> None:

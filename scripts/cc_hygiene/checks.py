@@ -24,6 +24,7 @@ from typing import Any
 
 import yaml
 
+from shared.cc_task_frontmatter import read_governed_frontmatter
 from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
 from shared.session_identity import split_claim_marker_key
 
@@ -766,6 +767,19 @@ def parse_task_note(path: Path) -> TaskNote | None:
         return None
     m = _FRONTMATTER_RE.match(text)
     if not m:
+        return None
+    # Duplicate GOVERNED keys make this note unreadable, not readable-as-the-last.
+    # `yaml.safe_load` takes the last silently, so a note declaring
+    # `status: in_progress` then `status: refused` scanned as cleanly `refused` —
+    # and the live<->declared join then advised retiring a LIVE lane's marker.
+    # cc-close's own duplicate validation cannot protect that path, because
+    # `refused` never reaches cc-close (review round 21, reproduced).
+    #
+    # Returning None routes it to the same place every other unreadable note goes:
+    # the rejected-note list, which makes the join refuse advice rather than give
+    # destructive advice from a view it cannot decide.
+    reading = read_governed_frontmatter(text)
+    if reading.duplicate_keys or reading.error is not None:
         return None
     try:
         fm = yaml.safe_load(m.group(1)) or {}

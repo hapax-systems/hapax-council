@@ -957,6 +957,183 @@ class TestTheOrderingInvariant:
                     )
 
 
+class TestRecoveryParticipatesToo:
+    """Recovery mutates the same resources a close does, so it takes the same locks.
+
+    `--recover-claim-publications` and `--rehydrate-activation-cache` returned
+    before the lock acquisition and used `shared.sdlc_claim`'s own
+    `task-locks/<digest>.lock`, which cc-close never takes. Two lock namespaces
+    over one resource is not exclusion — it is two processes agreeing to watch
+    different doors — so a recovery could replace a note between cc-close's read
+    and its unlink and the archived snapshot would silently lack the recovered
+    changes.
+    """
+
+    def test_rehydrate_waits_for_a_held_task_lock(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        _write_note(vault, "t1", "in_progress")
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        env = _lane_env(home)
+
+        held = lock_path("t1", home / ".cache" / "hapax" / "cc-task-locks")
+        handle = os.open(held, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            proc = subprocess.Popen(
+                ["bash", str(CC_CLAIM), "--rehydrate-activation-cache", "t1"],
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            settle = time.monotonic() + 3.0
+            while proc.poll() is None and time.monotonic() < settle:
+                time.sleep(0.05)
+            blocked = proc.poll() is None
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
+        stdout, stderr = proc.communicate(timeout=120)
+
+        assert blocked, (
+            "the rehydrate path ran while a close held the task lock — it can replace "
+            f"the note between that close's read and its unlink\n{stdout}\n{stderr}"
+        )
+
+    def test_recovering_all_tasks_refuses_while_any_writer_is_mid_mutation(
+        self, tmp_path: Path
+    ) -> None:
+        """The all-tasks form has no single lock to take, so it checks instead.
+
+        Not "proceed unprotected" and not "refuse always": the precondition that
+        actually matters is whether another writer is mid-mutation right now, and
+        that is checkable at the moment of use.
+        """
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        _write_note(vault, "t1", "in_progress")
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        env = _lane_env(home, HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS="0.4")
+
+        held = lock_path("t1", home / ".cache" / "hapax" / "cc-task-locks")
+        handle = os.open(held, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            result = subprocess.run(
+                ["bash", str(CC_CLAIM), "--recover-claim-publications"],
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=120,
+            )
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            os.close(handle)
+
+        assert result.returncode == 4, f"{result.stdout}\n{result.stderr}"
+        assert "recovering ALL tasks while another writer holds a task lock" in result.stderr, (
+            result.stderr
+        )
+        assert str(held) in result.stderr, "the refusal did not name the holder"
+        assert "one task at a time" in result.stderr, (
+            "the refusal does not name the narrower command that IS safe"
+        )
+
+    def test_recovering_all_tasks_proceeds_when_nothing_is_held(self, tmp_path: Path) -> None:
+        """Fail-closed must not mean fail-always."""
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        _write_note(vault, "t1", "in_progress")
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            ["bash", str(CC_CLAIM), "--recover-claim-publications"],
+            env=_lane_env(home),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        assert "another writer holds a task lock" not in result.stderr, result.stderr
+
+
+class TestARefusalMutatesNothing:
+    """ "Nothing was modified" has to be true of the artifact ledger too.
+
+    Identity and --expect-status were checked only in the writer, which runs AFTER
+    the artifact-disposition gate. So `--status done --expect-status done --debt`
+    against an in_progress task rewrote the note and the ledger, then refused with
+    "Nothing was modified" — and each repeat refreshed the debt timestamps, so the
+    refusal was not even idempotent.
+    """
+
+    def test_a_failed_expect_status_leaves_note_and_ledger_untouched(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        note = _write_note(vault, "t1", "in_progress")
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        ledger = _artifact_ledger_with_open_debt(home, "t1")
+        note_before = note.read_text(encoding="utf-8")
+        ledger_before = ledger.read_text(encoding="utf-8")
+        env = _lane_env(home, HAPAX_PR_MERGE_GATE_OFF="1")
+
+        result = subprocess.run(
+            [
+                "bash",
+                str(CC_CLOSE),
+                "t1",
+                "--status",
+                "done",
+                "--expect-status",
+                "done",
+                "--debt",
+                "deferred artifact capture",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=180,
+        )
+
+        assert result.returncode != 0, f"a stale precondition was accepted\n{result.stdout}"
+        assert "Nothing was modified" in result.stderr, result.stderr
+        assert note.read_text(encoding="utf-8") == note_before, (
+            "the note was rewritten by the artifact gate before the precondition was "
+            "checked, under a refusal that said nothing was modified"
+        )
+        assert ledger.read_text(encoding="utf-8") == ledger_before, (
+            "the artifact ledger was rewritten under the same refusal"
+        )
+
+    def test_repeated_refusals_do_not_refresh_debt_timestamps(self, tmp_path: Path) -> None:
+        """Idempotence: a refusal repeated is a refusal, not a slow mutation."""
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        _write_note(vault, "t1", "in_progress")
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        ledger = _artifact_ledger_with_open_debt(home, "t1")
+        env = _lane_env(home, HAPAX_PR_MERGE_GATE_OFF="1")
+        argv = [
+            "bash",
+            str(CC_CLOSE),
+            "t1",
+            "--status",
+            "done",
+            "--expect-status",
+            "done",
+            "--debt",
+            "deferred artifact capture",
+        ]
+        subprocess.run(argv, env=env, capture_output=True, check=False, timeout=180)
+        first = ledger.read_text(encoding="utf-8")
+        subprocess.run(argv, env=env, capture_output=True, check=False, timeout=180)
+        assert ledger.read_text(encoding="utf-8") == first, (
+            "a repeated refusal refreshed the debt record"
+        )
+
+
 class TestBothWritersParticipate:
     """The load-bearing pair: each tool must block on the lock the other holds."""
 

@@ -403,6 +403,71 @@ if [[ -n "$role" ]]; then
   fi
 fi
 
+# --- Preconditions, BEFORE the mutating gate ----------------------------------
+#
+# Identity and --expect-status were checked only in the writer, which runs after
+# the artifact-disposition gate. So `--status done --expect-status done --debt`
+# against an in_progress task rewrote the note AND the artifact ledger, then
+# refused with "Nothing was modified" — and each repeat refreshed the debt
+# timestamps (review round 20->21, reproduced).
+#
+# Checked here as well as in the writer because a MUTATION sits between the two
+# points, not because one check was weak: this one decides whether the gate may
+# run at all, the writer's decides whether the unlink may happen against the bytes
+# it is rewriting. Both read through shared/cc_task_frontmatter.py, so there is one
+# implementation of "what does this note declare" and no second copy to drift.
+precondition_rc=0
+python3 -I - precondition-guard "$SCRIPT_DIR/.." "$note_path" "$task_id" "${expect_status:-}" <<'PYEOF' || precondition_rc=$?
+import sys
+
+sys.path.insert(0, sys.argv[2])
+from pathlib import Path
+
+from shared.cc_task_frontmatter import read_governed_frontmatter, scalar
+
+path, task_id = Path(sys.argv[3]), sys.argv[4]
+expect_status = sys.argv[5] if len(sys.argv) > 5 else ""
+reading = read_governed_frontmatter(path)
+if reading.error is not None:
+    print(
+        f"cc-close: refusing — '{path}' frontmatter is not readable ({reading.error}). "
+        "Next action: repair the note, or run cc-task-repair. Nothing was modified.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+if reading.duplicate_keys:
+    print(
+        f"cc-close: refusing — '{path}' frontmatter declares "
+        f"{', '.join(reading.duplicate_keys)} more than once, so which line is "
+        "authoritative is undecidable. Next action: remove the duplicate key(s). "
+        "Nothing was modified.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+declared = scalar(reading, "task_id")
+if declared != task_id:
+    print(
+        f"cc-close: refusing — '{path}' declares task_id '{declared}', not '{task_id}'. "
+        "Next action: pass the exact task id, or repair the note. Nothing was modified.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+if expect_status:
+    observed = scalar(reading, "status")
+    if observed != expect_status:
+        print(
+            f"cc-close: refusing — '{path}' is status '{observed}', but --expect-status "
+            f"'{expect_status}' was required. The task changed after the command was "
+            "generated. Next action: re-run the sweep and use its current "
+            "recommendation. Nothing was modified.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+PYEOF
+if [[ "$precondition_rc" -ne 0 ]]; then
+  exit "$precondition_rc"
+fi
+
 # --- Mutating gates, now UNDER both locks -------------------------------------
 #
 # The artifact-disposition gate rewrites the task note and the artifact ledger when
