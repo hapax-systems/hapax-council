@@ -243,15 +243,17 @@ class TestTimerAgents:
         assert "llm_backup" in et
         assert "backup_local" in et
         assert "backup_gdrive_critical" in et
-        assert "backup_remote" not in et
+        assert et["backup_remote"] == "hapax-backup-remote.timer"
 
-    def test_backup_remote_is_retired_on_demand(self, registry):
+    def test_backup_remote_is_live_daily_timer(self, registry):
         remote = registry.get_agent("backup_remote")
         assert remote is not None
-        assert remote.schedule.type == ScheduleType.ON_DEMAND
-        assert remote.service_tier == 3
-        assert "retired" in remote.purpose.lower()
-        assert "backup_remote" not in registry.expected_timers()
+        assert remote.schedule.type == ScheduleType.TIMER
+        assert remote.schedule.interval == "daily"
+        assert remote.schedule.systemd_unit == "hapax-backup-remote.timer"
+        assert remote.service_tier == 1
+        assert "live daily" in remote.purpose.lower()
+        assert registry.expected_timers()["backup_remote"] == "hapax-backup-remote.timer"
 
     def test_expected_timers_matches_legacy(self, registry):
         """Verify registry-derived timers are a superset of the old YAML file."""
