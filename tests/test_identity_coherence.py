@@ -35,6 +35,11 @@ _IDENTITY_ENV = (
     "CODEX_SESSION",
     "CODEX_THREAD_ID",
     "CODEX_THREAD_NAME",
+    # A coordinating Codex lane exports these three; inherited, they made the
+    # synthetic roles below resolve to the lane's identity (root, 2026-09-05).
+    "CODEX_SESSION_NAME",
+    "CODEX_ROLE",
+    "CODEX_HOME",
 )
 
 

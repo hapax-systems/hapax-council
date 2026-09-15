@@ -228,6 +228,51 @@ def _coerce_string_list(value: object) -> list[str]:
     return [str(value).strip()]
 
 
+def _coerce_scope_ref_list(value: object) -> list[str]:
+    """Like :func:`_coerce_string_list`, but a declared scope ref keeps its exact subject.
+
+    `mutation_scope_refs` names filesystem surfaces, and whitespace is part of a POSIX
+    filename — so the generic coercion's `.strip()` edits the declared subject here, where
+    every other field it serves wants trimming. Measured at `4ff1b3131`: the two distinct
+    declarations `['/tmp/selected ', '/tmp/selected\\t']` both became `/tmp/selected`, which
+    destroys the subject *and* makes two different declarations indistinguishable, so a digest
+    bound to one matches the other.
+
+    This is deliberately a SECOND, field-specific coercion rather than a change to
+    `_coerce_string_list`: that helper serves many fields that are not scope subjects, and
+    rewriting generic frontmatter normalization is out of scope for this contract.
+
+    Blank-dropping is kept and is a different question from trimming: `""` cannot name a
+    surface, while `" "` can, so only genuinely empty entries are dropped.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        # Blank rule, stated at `scope_within_decayed`: absent means the empty string, and a
+        # whitespace name is a declaration. The scalar branch used to test `.strip()` against a
+        # sentinel set while the list branch below tested the raw string, so one declaration got
+        # two answers depending only on how it was written (cx-blue, 2026-09-08):
+        #     ' '  -> []          [' ']  -> [' ']
+        #     'null' -> []        ['null'] -> ['null']
+        # Resolved toward the list branch, because the drop is the unsafe half: YAML already
+        # spells absence as `null`, which arrives as None and is handled above, so a STRING here
+        # was quoted deliberately and names a subject.
+        return [] if value == "" else [value]
+    if isinstance(value, (list, tuple, set, frozenset)):
+        # A `None` ITEM is a true absence, exactly as a `None` value is on the branch above:
+        # YAML spells it `[~]` or `[null]`, and it names no surface. `str(item)` turned it into
+        # the literal filename "None" — a subject nobody declared — which then resolved, bound
+        # evidence and could be compared against a member (review finding, gemini, at
+        # `850ccfdbb`, reported against the generic helper; the same line was in this
+        # field-specific copy, which is the half that is mine).
+        #
+        # Dropped rather than refused by name: absence is what YAML `~` MEANS here, unlike `""`,
+        # which is a string an author wrote and which the frame gate refuses because emptying a
+        # declared scope is indistinguishable from declaring none.
+        return [str(item) for item in value if item is not None and str(item)]
+    return [str(value)] if str(value) else []
+
+
 _CLASSIFICATION_VALIDITY_KEYS = (
     "label",
     "source",
@@ -948,7 +993,7 @@ class DemandVector(_RouteModel):
     @field_validator("mutation_scope_refs", mode="before")
     @classmethod
     def _mutation_scope_refs_are_strings(cls, value: object) -> list[str]:
-        return _coerce_string_list(value)
+        return _coerce_scope_ref_list(value)
 
 
 class DemandVectorFreshness(_RouteModel):
@@ -1030,7 +1075,7 @@ class RouteMetadata(_RouteModel):
     @field_validator("mutation_scope_refs", mode="before")
     @classmethod
     def _mutation_scope_refs_are_strings(cls, value: object) -> list[str]:
-        return _coerce_string_list(value)
+        return _coerce_scope_ref_list(value)
 
     @model_validator(mode="after")
     def _support_outputs_need_review(self) -> Self:
@@ -1131,16 +1176,41 @@ ROUTE_METADATA_FIELDS = frozenset(
 )
 
 
+def _field_is_absent(field: object, value: object) -> bool:
+    """Emptiness, asked per field rather than once for all of them.
+
+    `mutation_scope_refs` names filesystem surfaces, and the generic predicate treats any string
+    that strips to `""`, `"null"` or `"None"` as an absence. That is right for the many fields it
+    serves and wrong here, where whitespace is a legal POSIX filename — and it applied only to
+    the SCALAR spelling, because a list is not a string, so one declaration got two answers
+    depending on how it was written (cx-blue, 2026-09-08):
+
+        mutation_scope_refs: ' '     -> field dropped -> []
+        mutation_scope_refs: [' ']   -> kept          -> [' ']
+
+    Field-specific by design, and deliberately not a change to `_is_empty_frontmatter_value`:
+    that predicate serves fields which are not filesystem subjects, and rewriting generic
+    frontmatter normalization is out of scope for this contract. The scope-ref rule is the one
+    stated at `scope_within_decayed` — absent means None or the empty string, and everything else
+    is a declaration that must survive or be refused by name.
+    """
+    if field == "mutation_scope_refs":
+        if value is None:
+            return True
+        return value == "" if isinstance(value, str) else False
+    return _is_empty_frontmatter_value(value)
+
+
 def route_metadata_payload_from_frontmatter(frontmatter: Mapping[str, Any]) -> dict[str, Any]:
     """Extract route metadata fields from canonical frontmatter data."""
     payload: dict[str, Any] = {}
     nested = frontmatter.get("route_metadata")
     if isinstance(nested, Mapping):
         payload.update(
-            {key: value for key, value in nested.items() if not _is_empty_frontmatter_value(value)}
+            {key: value for key, value in nested.items() if not _field_is_absent(key, value)}
         )
     for field in ROUTE_METADATA_FIELDS:
-        if field in frontmatter and not _is_empty_frontmatter_value(frontmatter[field]):
+        if field in frontmatter and not _field_is_absent(field, frontmatter[field]):
             payload[field] = frontmatter[field]
     return payload
 
@@ -2031,7 +2101,9 @@ def _demand_source_refs(
 
     seen = {ref.artifact_path for ref in refs}
     for index, raw_ref in enumerate(mutation_scope_refs):
-        path = _resolve_optional_path(raw_ref)
+        # Field-specific: a scope ref's whitespace is part of its subject, and this path feeds
+        # the evidence digest. See _resolve_scope_ref_path.
+        path = _resolve_scope_ref_path(str(raw_ref))
         if path is None:
             continue
         path_text = str(path)
@@ -2242,6 +2314,42 @@ def _optional_frontmatter_string(value: object) -> str | None:
     if text.lower() in {"", "none", "null", "~"}:
         return None
     return text
+
+
+def _resolve_scope_ref_path(raw: str) -> Path | None:
+    """Resolve a declared scope ref to a path WITHOUT editing its subject.
+
+    `_resolve_optional_path` routes through `_optional_frontmatter_string`, which strips — so
+    the evidence binding re-trimmed every `mutation_scope_refs` entry even once the validators
+    preserved it, and the digest was taken over a name the operator never declared. Two
+    declarations differing only in trailing whitespace resolved to one path, so a digest bound
+    to either matched the other.
+
+    Field-specific by design. `parent_spec` and `parent_request` keep the generic resolver:
+    they are not filesystem subjects whose whitespace carries meaning, and rewriting the shared
+    helper is out of scope for this contract.
+
+    **ONE drop rule, not two (review finding, claude, at `069e726dc`).** This used to re-test
+    absence here — `raw.strip().lower() in {"", "none", "null", "~"}` — which disagreed with the
+    coercion it accompanies once that stopped reading a quoted `"null"` or `" "` as an absence.
+    Whether a declaration is PRESENT is settled upstream; the only question left here is whether
+    the present declaration is a filesystem path this binding can take a digest over, and
+    `_looks_like_path` is the one rule that answers it.
+
+    Nothing that reaches `_source_ref` can vanish silently: a path that does not exist binds as
+    `MISSING` and a path that is not a file binds as `UNPARSEABLE`, each with its own message. A
+    named row saying the declared subject is absent beats no row at all, which is why `~` now
+    binds (as `UNPARSEABLE`, "source artifact is not a file") rather than disappearing.
+    """
+    if not raw:
+        return None
+    if not _looks_like_path(raw):
+        return None
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    repo_root = Path(__file__).resolve().parents[1]
+    return repo_root / path
 
 
 def _resolve_optional_path(value: object) -> Path | None:
