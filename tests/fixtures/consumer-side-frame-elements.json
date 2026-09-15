@@ -1,0 +1,17 @@
+[
+  {
+    "id": "frame:relevance-report",
+    "kind": "relevance_report",
+    "payload": {
+      "verdicts": [
+        {
+          "subject": {"member_id": "synthetic-producer"},
+          "relation": "scope_exited",
+          "verdict": "TRUE",
+          "obstruction": null,
+          "evidence_grain": "member"
+        }
+      ]
+    }
+  }
+]

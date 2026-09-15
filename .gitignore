@@ -100,3 +100,4 @@ coverage.xml
 coverage.json
 .coverage_html/
 htmlcov/
+.consumer-side-report.json
