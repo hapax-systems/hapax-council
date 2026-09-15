@@ -1149,8 +1149,22 @@ class TestRecoveryParticipatesToo:
             f"closer could read the note it is replacing\n{stdout}\n{stderr}"
         )
 
-    def test_an_ordinary_claim_completes_the_recovery_it_triggers(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "journal_role",
+        ["beta", "eta", "zeta"],
+        ids=["sorts-before-caller", "same-as-caller", "sorts-after-caller"],
+    )
+    def test_an_ordinary_claim_completes_the_recovery_it_triggers(
+        self, journal_role: str, tmp_path: Path
+    ) -> None:
         """The AUTOMATIC path, end to end — not the explicit `--recover` command.
+
+        Parametrised over where the JOURNAL's role sorts relative to the CALLER's
+        (always eta here), because the first version used eta for both identities
+        and so could not see the round-26 critical: the caller's role lock was
+        taken first and the journal's requested after, so `beta` — anything sorting
+        earlier — was refused by the ascending-order rule on every attempt, forever.
+        `sorts-before-caller` is the case that distinguishes a fix from a rerun.
 
         Every recovery test above drives `cc-claim --recover-claim-publications`.
         That left the path users actually hit uncovered, and it was broken: an
@@ -1166,7 +1180,7 @@ class TestRecoveryParticipatesToo:
         home = tmp_path / "home"
         vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
         (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
-        journal = _interrupted_journal(home, "t-auto", "eta")
+        journal = _interrupted_journal(home, "t-auto", journal_role)
         assert journal.is_file(), "fixture produced no journal to recover"
         # Back to claimable so the ordinary claim path runs rather than refusing.
         _write_note(vault, "t-auto", "offered")
@@ -1192,6 +1206,11 @@ class TestRecoveryParticipatesToo:
         )
         assert "another process has held" not in result.stderr, (
             "the refusal names a writer that does not exist:\n" + result.stderr
+        )
+        assert "ascending order" not in result.stderr, (
+            f"a journal owned by {journal_role!r} was refused on lock ordering by an "
+            "eta caller — the caller's role lock was taken before the journals were "
+            f"discovered, and no rerun can reorder that\n{result.stderr}"
         )
         # Proof that recovery REACHED the journal rather than dying on the lock.
         # This fixture's interruption (a deleted receipt) is genuinely
@@ -1265,6 +1284,20 @@ class TestRecoveryParticipatesToo:
         assert "hold" not in result.stdout, (
             f"a journal whose owner cannot be named was passed to recovery anyway: {result.stdout}"
         )
+        # THE EXIT STATUS, which this test used to omit. Skipping is right; saying
+        # the run succeeded is not. With only unreadable journals present it
+        # recovered nothing, exited 0 and printed "no admitted claim-publication
+        # journals required recovery" — the opposite of what happened, to a caller
+        # that reads status rather than stderr (review round 26, codex-1).
+        assert result.returncode == 8, (
+            "a recovery that could touch nothing reported success "
+            f"(rc={result.returncode})\n{result.stdout}\n{result.stderr}"
+        )
+        assert "INCOMPLETE" in result.stderr, result.stderr
+        assert "no admitted claim-publication journals required recovery" not in result.stdout, (
+            "the run claimed there was nothing to recover while naming a journal it "
+            f"skipped\n{result.stdout}"
+        )
 
     def test_a_journal_naming_no_role_is_refused_too(self, tmp_path: Path) -> None:
         """Ownership unresolved is the same refusal as identity unresolved.
@@ -1292,6 +1325,11 @@ class TestRecoveryParticipatesToo:
         assert "hold" not in result.stdout, (
             f"a journal naming no role was recovered against a guessed owner: {result.stdout}"
         )
+        assert result.returncode == 8, (
+            "a recovery that could touch nothing reported success "
+            f"(rc={result.returncode})\n{result.stdout}\n{result.stderr}"
+        )
+        assert "INCOMPLETE" in result.stderr, result.stderr
 
     def test_the_journals_role_is_locked_not_the_callers(self, tmp_path: Path) -> None:
         """Recovering an eta journal from a beta shell must lock ETA.
@@ -1602,6 +1640,76 @@ class TestARefusalMutatesNothing:
         )
         assert ledger.read_text(encoding="utf-8") == ledger_before, (
             "the artifact ledger was rewritten under the same refusal"
+        )
+
+    def test_an_unrewritable_status_spelling_refuses_before_the_debt_gate(
+        self, tmp_path: Path
+    ) -> None:
+        """The precondition that was missing: can this note be rewritten AT ALL.
+
+        Identity and --expect-status moved ahead of the mutating gate in round 21.
+        "Is the rewrite even possible" did not — it stayed in the writer's
+        output check, which runs after the gate. So a `--debt` close against a note
+        using EXPLICIT MAPPING syntax (`? status` on its own line, `: in_progress`
+        on the next — valid YAML naming the same field, which no line regex over
+        `status:` can match) recorded debt in the artifact ledger, then refused with
+        "Nothing was modified", and every retry refreshed the debt timestamps
+        (review round 26, codex-1; reproduced end to end before the fix — ledger
+        mutated on both runs, note untouched, rc=2 both times).
+
+        Not fixed by teaching the regex explicit mapping syntax. That spelling is
+        one of several YAML can produce, and patching the matcher for each is the
+        boundary-patching this file keeps refusing: the predicate is "does the
+        proposed result parse to the closure being reported", and it is now asked
+        BEFORE anything mutates as well as after.
+        """
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        vault_active = vault / "active"
+        vault_active.mkdir(parents=True, exist_ok=True)
+        (vault / "closed").mkdir(parents=True, exist_ok=True)
+        note = vault_active / "t1.md"
+        note.write_text(
+            "---\ntype: cc-task\ntask_id: t1\n? status\n: in_progress\n"
+            "assigned_to: eta\ncompleted_at: \nupdated_at: \n---\n\n## Session log\n",
+            encoding="utf-8",
+        )
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        ledger = _artifact_ledger_with_open_debt(home, "t1")
+        note_before = note.read_text(encoding="utf-8")
+        ledger_before = ledger.read_text(encoding="utf-8")
+        env = _lane_env(home, HAPAX_PR_MERGE_GATE_OFF="1")
+        argv = [
+            "bash",
+            str(CC_CLOSE),
+            "t1",
+            "--status",
+            "done",
+            "--debt",
+            "deferred artifact capture",
+        ]
+
+        first = subprocess.run(
+            argv, env=env, text=True, capture_output=True, check=False, timeout=180
+        )
+        assert first.returncode != 0, (
+            f"a note whose status cannot be rewritten was closed\n{first.stdout}"
+        )
+        assert ledger.read_text(encoding="utf-8") == ledger_before, (
+            "debt was recorded in the artifact ledger before anything checked whether "
+            f"the close could be written at all\n{first.stderr}"
+        )
+        assert note.read_text(encoding="utf-8") == note_before, first.stderr
+        assert "Nothing was modified" in first.stderr, first.stderr
+
+        # Idempotent: the second refusal must not move the ledger either, which is
+        # what "each repeat refreshed the debt timestamps" measured.
+        second = subprocess.run(
+            argv, env=env, text=True, capture_output=True, check=False, timeout=180
+        )
+        assert second.returncode == first.returncode
+        assert ledger.read_text(encoding="utf-8") == ledger_before, (
+            "repeating the refusal refreshed the debt record"
         )
 
     def test_repeated_refusals_do_not_refresh_debt_timestamps(self, tmp_path: Path) -> None:

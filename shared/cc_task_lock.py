@@ -302,6 +302,7 @@ def hold_journal_locks(
     *,
     task_id: str | None = None,
     also_tasks: tuple[str, ...] = (),
+    also_roles: tuple[str, ...] = (),
     timeout: float | None = None,
     passes: int = 8,
 ) -> tuple[set[tuple[str, str]], list[str]]:
@@ -329,6 +330,15 @@ def hold_journal_locks(
     A journal that appears after the role phase has begun cannot be ordered, and
     :func:`_acquire` refuses it by name rather than deadlocking. That refusal is a
     rerun, not a failure: the second run discovers it during the task phase.
+
+    ``also_tasks`` and ``also_roles`` carry locks the CALLER needs that no journal
+    names — its own task note, its own role's leases. They belong here rather than
+    in a separate acquisition beside this one, because ordering is a property of
+    the whole set: a caller that took its own role lock first and then called this
+    could be handed a journal naming an earlier-sorting role, and the refusal would
+    be permanent rather than a rerun (review round 26, codex-1 — an eta caller
+    recovering a beta journal requested beta after eta, every time, forever). One
+    ordered acquisition has no such case; discovery happens before any role lock.
 
     Returns the locked owners and any journals refused as unattributable.
     """
@@ -375,7 +385,7 @@ def hold_journal_locks(
                 "rerun — the second run discovers them before it starts. Nothing "
                 "was modified"
             )
-        want_roles = {r for (_t, r) in owners}
+        want_roles = {r for (_t, r) in owners} | set(also_roles)
         if want_roles <= locked_roles:
             return owners, refusals
         for role in sorted(want_roles - locked_roles):

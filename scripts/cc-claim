@@ -333,14 +333,39 @@ except ClaimPublicationError as exc:
         file=sys.stderr,
     )
     sys.exit(8)
-if not results:
-    scope = task_id or "all tasks"
-    print(f"cc-claim: no admitted claim-publication journals required recovery for {scope}")
+_scope = task_id or "all tasks"
+if not results and not blind:
+    print(f"cc-claim: no admitted claim-publication journals required recovery for {_scope}")
     sys.exit(0)
 holds = [item for item in results if item.state == "hold"]
 for item in results:
     suffix = f":{item.reason_code}" if item.reason_code else ""
     print(f"cc-claim: recovery {item.publication_id}:{item.state}{suffix}")
+if not results:
+    # Skipping them ran everything that COULD run — which was nothing. Saying "no
+    # journals required recovery" here is the exact opposite of what happened.
+    print(
+        f"cc-claim: recovered nothing for {_scope} — every journal found was "
+        "unattributable and was skipped (listed above).",
+        file=sys.stderr,
+    )
+if blind:
+    # INCOMPLETE, and the exit status has to say so. Skipping unattributable
+    # journals is right — they cannot be locked, and refusing the whole run would
+    # take out unrelated recoveries — but an exit 0 tells the caller the recovery
+    # is DONE, and with only malformed journals present it also printed "no
+    # journals required recovery" (review round 26, codex-1, reproduced). The
+    # skipped ones remain interrupted and something still has to deal with them.
+    print(
+        f"cc-claim: INCOMPLETE — {len(blind)} claim-publication journal(s) could not "
+        "be attributed to a task and role, so nothing could take the locks that "
+        "protect what recovering them would rewrite. They are still interrupted. "
+        "Next action: repair or quarantine each journal named above (its manifest "
+        "must declare intent.task_id and intent.role), then rerun "
+        "cc-claim --recover-claim-publications" + (f" {task_id}" if task_id else "") + ".",
+        file=sys.stderr,
+    )
+    sys.exit(8)
 if holds:
     print(
         "cc-claim: HOLD — admitted claim-publication recovery still has held journals. "
@@ -563,9 +588,12 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from shared.cc_task_lock import (  # noqa: E402
+    TaskLockOrderViolation,
     TaskLockTimeout,
-    hold_role_lease_lock,
-    hold_task_note_lock,
+    hold_journal_locks,
+)
+from shared.gate0b_claim_publication_install import (  # noqa: E402
+    default_claim_publication_roots as _lock_phase_roots,
 )
 
 # Serialize this whole heredoc against cc-close, which takes the SAME lock
@@ -593,16 +621,42 @@ from shared.cc_task_lock import (  # noqa: E402
 # Exit codes are distinct because the remedies are: 4 is contention, which is
 # retryable; 5 is an unusable cache directory, which is not, and a caller branching
 # on the code alone could not tell them apart when both were 4.
+# ONE acquisition for the whole set, because ordering is a property of the set.
+#
+# This used to be two calls — the task lock, then THIS ROLE's lease lock — with the
+# automatic recovery further down taking the journals' role locks later. That is
+# unfixable by retry: an eta caller recovering a beta journal requested beta AFTER
+# eta, the ascending-order rule refused it, and every rerun repeated the same
+# sequence. Automatic recovery for any journal whose role sorts before the caller's
+# was permanently unreachable (review round 26, codex-1, reproduced).
+#
+# So the journals are DISCOVERED HERE, before any role lock exists, and the
+# caller's own task and role ride along as `also_*`. `hold_journal_locks` then
+# takes the union in one ascending pass: all task locks to a fixpoint, then all
+# role locks. The recovery further down calls it again and every lock is already
+# held, so it is a no-op — the primitive is re-entrant per process.
+#
+# Journals for OTHER tasks are not this claim's business, hence `task_id=`.
 try:
-    hold_task_note_lock(task_id)
-    if role:
-        hold_role_lease_lock(role)
+    _journal_root = Path(_lock_phase_roots(home=Path.home()).claim_transaction_root)
+    hold_journal_locks(
+        _journal_root,
+        task_id=task_id,
+        also_tasks=(task_id,),
+        also_roles=(role,) if role else (),
+    )
 except TaskLockTimeout as exc:
     print(
         f"cc-claim: BLOCKED — {exc}. Another cc-claim or cc-close is mid-mutation on "
         "this task or this role's leases. Next action: let it finish and re-run; if "
         "nothing is running, check for a wedged process holding the lock. Nothing "
         "was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+except TaskLockOrderViolation as exc:
+    print(
+        f"cc-claim: BLOCKED — {exc}. Nothing was modified.",
         file=sys.stderr,
     )
     sys.exit(4)

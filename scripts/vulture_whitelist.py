@@ -5221,3 +5221,24 @@ _ = (_hold_role_lease_lock,)
 from shared.cc_task_lock import hold_journal_locks as _hold_journal_locks  # noqa: E402
 
 _ = (_hold_journal_locks,)
+
+# Two observability/test-support entry points on the same module (round 25-26).
+# Both are called only from tests/test_cc_task_lock.py, and that is correct rather
+# than a smell to be hidden:
+#
+# - `held_lock_order()` is a read-only view of module-private acquisition order.
+#   The ordering test has to assert WHAT was acquired and in WHAT ORDER; without
+#   this accessor it would reach into `_ORDER` directly, which is worse — a test
+#   coupled to a private is a test that silently stops meaning anything when the
+#   private changes shape.
+# - `release_all_process_locks()` closes every held descriptor, i.e. simulates
+#   process exit. Production must never call it: holds last until the process ends
+#   precisely so no code path can let go early. A pytest module is ONE process for
+#   many logical ones, so the autouse fixture ends each test the way a process
+#   ends. Its docstring says both halves.
+from shared.cc_task_lock import held_lock_order as _held_lock_order  # noqa: E402
+from shared.cc_task_lock import (
+    release_all_process_locks as _release_all_process_locks,  # noqa: E402
+)
+
+_ = (_held_lock_order, _release_all_process_locks)
