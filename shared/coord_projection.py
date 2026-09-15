@@ -3684,7 +3684,19 @@ def _entry_matches(state: _EntryState | None, payload: bytes | None, mode: int |
 #: rather than a transaction scratch — it held an entry moved off the live path when a
 #: publication had to be withdrawn. A recovery sweep that assumes every scratch role derives
 #: from a transaction operand will mis-attribute one.
+#: Since the 2026-09-15 retire-before-refill reorder, `pin` is generated and then RETIRED
+#: at exchange step 5 (not consumed by a rename), and `holding` is consumed by the step-6
+#: refill — so a live exchange leaves neither.
 _FALLBACK_SCRATCH_ROLES = ("pin", "holding", "spent", "rollback")
+
+#: Suffixes marking a name as THIS TRANSACTION's own staged entry: `_write_scratch`
+#: creates `.transition-scratch` operands and `_atomic_install` stages
+#: `.transition-tmp` candidates. A NOREPLACE whose source carries one of these is a
+#: scratch → live install, which `link(2)` serves better than reserve-then-rename (see
+#: `_fallback_noreplace`); the retire that follows such a link is a conditional unlink
+#: that is sound only because the retired name is one of these dotted, transaction-
+#: unique names — never a live one.
+_TRANSIENT_SCRATCH_SUFFIXES = (".transition-scratch", ".transition-tmp")
 
 
 def _fallback_scratch_name(base_name: str, role: str) -> str:
@@ -3836,41 +3848,66 @@ def _relocate_to_scratch(
     identity check and moved here when that check was deleted. Every entry names its pin and
     the row that closes it.
 
-    * **R1 — cleanup's conditional unlink can destroy an inode's last name. NARROWED by that
-      conversion, not closed.** Three retires used to run at nlink 2 — the exchange's
-      ``spent``, the exchange's ``pin``, and the delete leg's ``holding``. Two are gone **by
-      construction**: the publish and refill renames now CONSUME the source's name instead
-      of leaving it for cleanup (``spent`` no longer exists on any path; ``pin`` is consumed
-      by the refill rename), and the delete leg no longer computes a scratch name at all.
-      What remains is exactly ONE site: the exchange's ``holding`` retire, which runs while
-      the displaced inode still carries its live ``src`` name — nlink 2, and that live
-      projected path is a name no reservation in this module protects, so a writer replacing
-      ``src`` between :func:`_retire_scratch`'s count and its unlink still destroys the
-      inode's last name. An earlier version of this entry located the race on the scratch
-      name itself and concluded the reservation covered it; that was wrong then and would be
-      wrong now. No in-function primitive closes the remaining site: ``unlink`` takes no
-      condition, ``renameat2(RENAME_EXCHANGE)`` is the flag this mount refuses, and the
-      recoverable-unlink trick fails ``EXDEV`` on tmpfs, xfs and the nfs4 export alike. On
-      NFS ``st_nlink`` even still reads 1 after an unlink, so the count is least trustworthy
-      where it matters most. **Closed by**
-      ``projection-lock-coverage-projected-path-writers-20260913`` (excluding the writer),
-      or by plumbing the caller's recorded preimage down so removal is conditioned on
-      *reproducibility* rather than redundancy. **No test covers this window**; the
-      regressions beside it construct a scratch already at nlink 1 and so never exercise the
-      2→1 change after the ``lstat``.
+    * **R1 — cleanup's conditional unlink could destroy an inode's last name. CLOSED by
+      construction 2026-09-15 (round-30 review, findings R1+C3), not narrowed.** History,
+      because it took three passes and each false reading is load-bearing: the
+      reserve-then-rename conversion first narrowed three retires-at-nlink-2
+      (exchange ``spent``, exchange ``pin``, delete-leg ``holding``) to one — the
+      exchange's ``holding`` retire, which ran while the displaced inode still carried
+      its LIVE ``src`` name, so a writer replacing ``src`` between the count and the
+      unlink destroyed the inode's last name. The closure is ordering, not a new
+      primitive: the exchange now retires its pin at step 5, BEFORE the refill, when
+      the displaced inode's other name is the dotted ``holding``; the refill then
+      consumes ``holding`` so no cleanup follows at all. Every conditional unlink
+      left in this module — the exchange pin retire, and the scratch retire after a
+      link-publish — runs against a DOTTED, transaction-unique name, so its window
+      is R2 below, never a live name. Two closures were falsified by measurement on
+      the way: deleting the pin entirely (the racing writer's own atomic replace of
+      ``dst`` then destroys an unpinned displaced inode —
+      ``test_exchange_preserves_a_replacement_arriving_at_the_install_itself`` fails
+      exactly there), and consuming the pin into ``src`` (which is the shape this
+      entry used to describe). No primitive was missing; the order was.
     * **R2 — a writer that ignores the protocol is not excluded from a scratch name.** Renaming
       or create-truncating straight onto one is bound by neither the reservation nor a lock in
       this module. Pinned by ``test_a_writer_ignoring_the_protocol_is_not_excluded`` so it
-      cannot be quietly read as closed.
+      cannot be quietly read as closed. Since the R1 closure this is the only class the
+      module's remaining conditional unlinks are exposed to: the exchange pin retire's
+      sibling and the post-link scratch retire are dotted names, so a rogue writing them
+      is the worst case. The post-link scratch retire has one further, accepted
+      exposure on the LIVE side: a foreign writer replacing the just-published live
+      name in the retire's gap strands our staged bytes at the scratch (kept, nlink 1)
+      and the caller's readback refuses — the staged bytes are ours and the journal
+      rebuilds them, which is why this is acceptable where the displaced entry's loss
+      was not.
     * **R3 — a hard crash between a reservation and the rename that consumes it** strands an
       empty placeholder, and clearing it is manual (:data:`_SCRATCH_REMEDY`). Two adjacent
       statements wide, and it fails toward refusal rather than toward loss.
+    * **R4 — a reserved placeholder sits at a LIVE name, and a foreign arrival on it is
+      destroyed silently.** ``O_CREAT|O_EXCL`` excludes other takers of that acquisition
+      path, not a foreign ``rename`` or create-truncate onto the same name; the
+      consuming rename then destroys that arrival and the post-rename identity check
+      passes, because it sees our inode at the destination. That is a silent loss, not
+      a refusal — the regression the round-30 review flagged (C2) against the
+      pre-conversion ``link``-publish, whose EEXIST refused every occupant.
+      Link-publish closes it for scratch → live installs; the exchange's publish and
+      refill, and the live-source NOREPLACE publish, cannot use a link (their source
+      name must be consumed), so the window stands there and is pinned by
+      ``test_a_foreign_rename_onto_our_reserved_placeholder_is_destroyed_r4``
+      rather than hidden. **Closed by**
+      ``projection-lock-coverage-projected-path-writers-20260913`` (excluding the
+      writer), same as R1's original closure row.
     * **ACCEPTED — publish-then-refuse.** A rename into a reserved destination carries
       across whatever occupies the source, so a writer that replaced the source after the
       caller's check is published before the post-rename identity check refuses. The racing
       writer's bytes are preserved at the destination and named in the refusal; nothing is
       destroyed. Accepted by coordinator ruling 2026-09-15T02:36Z; pinned on the delete leg
       by ``test_noreplace_publishes_then_refuses_a_replacement_racing_the_source``.
+      One refinement since that ruling, from the round-30 review (C1): the refusal no
+      longer RESTORES the carried entry to the source name — the restoration was itself
+      two conditional acts with a destroy window between them — so the carried bytes
+      stay preserved AT the destination and the live source name stays vacant, a
+      crash-consistent intermediate for recovery, and the refusal names both states.
+      Pinned by the same test, rewritten to that contract.
 
     Nothing else in this module is known-open. If you add to that set, add it here.
     """
@@ -4160,38 +4197,37 @@ def _retire_scratch(
     reserve-then-rename conversion deleted that function along with the delete-leg shape that
     called it, so the distinction no longer has two living parties.)
 
-    **The residual, measured rather than described, because it is not closable at this layer.**
-    The removal is guarded by identity *and* by ``st_nlink > 1``, which together lose nothing in
-    every interleaving this module can observe. It is still a check followed by an act, so the
-    question is which removals have only one other name to fall back on. Measured on the
-    exchange leg, 2026-09-15 — first as three sites, then again after the reserve-then-rename
-    conversion narrowed the field. The count cleanup now observes:
+    **The residual, measured rather than described.** The removal is guarded by identity
+    *and* by ``st_nlink > 1``, which together lose nothing in every interleaving this
+    module can observe. It is still a check followed by an act, so the question is which
+    removals have only one other name to fall back on, and WHAT that other name is.
+    Measured on the exchange leg, 2026-09-15 — first as three sites, then as one after
+    the reserve-then-rename conversion, then closed by the retire-before-refill reorder.
+    The count cleanup now observes:
 
     ===============================  =======  ==========================================
     scratch                          nlink    removing it leaves
     ===============================  =======  ==========================================
-    ``.transition-holding``          2        **one** name, and it is a projected path
+    ``.transition-pin``              2        **one** name, and it is the DOTTED
+                                           ``.transition-holding`` scratch — never a
+                                           live projected path
     ===============================  =======  ==========================================
 
-    This is the ONE remaining exposure in the module (residual R1, restated with its history
-    in :func:`_relocate_to_scratch`). The exchange's ``pin`` and ``spent`` retires are gone —
-    the refill rename now consumes ``pin``, ``spent`` no longer exists, and the delete leg
-    computes no scratch at all — and the surviving ``holding`` retire dropped from nlink 3 to
-    nlink 2 because the refill is a consuming rename rather than a second link. A writer
-    replacing that single remaining name between the count and the unlink destroys the inode.
-    The conversion narrowed R1 from three sites to this one; it did not close it. (The table
-    this replaces measured ``holding`` at 3 with ``pin`` and ``spent`` at 2, and was first read
-    as "two unlinks" before the delete leg's own ``holding`` was measured into it; both false
-    readings are kept in the PR record.)
-
-    No primitive fixes it. Measured the same day on tmpfs, xfs and the nfs4 export: ``unlink``
-    takes no condition; ``renameat2(RENAME_EXCHANGE)`` is the flag this mount refuses, which is
-    why this module exists; and the recoverable-unlink trick — hold an fd, unlink, re-link from
-    ``/proc/self/fd`` — fails ``EXDEV`` on all three. Two closures exist and both are outside
-    this function: plumb the caller's recorded preimage down so removal can be conditioned on
-    reproducibility, or exclude the writer
-    (``projection-lock-coverage-projected-path-writers-20260913``). Tracking is not doing, and
-    this paragraph is not a closure.
+    Before the reorder this table held ``.transition-holding`` at nlink 2 with a LIVE
+    projected path for its sibling — residual R1, three reviewer families' blocking
+    finding — because the retire ran AFTER the refill had made ``src`` live. Ordering
+    closed it: the pin retire now runs BEFORE the refill, its sibling is a dotted,
+    transaction-unique name no legitimate writer touches, and the refill consumes
+    ``holding`` so no cleanup follows on the success path at all. The worst case of the
+    remaining window is therefore the R2 rogue class (a protocol-ignoring writer on the
+    dotted sibling) rather than a legitimate writer on a live name. No primitive fixes
+    even that remainder — measured on tmpfs, xfs and the nfs4 export: ``unlink`` takes no
+    condition; ``renameat2(RENAME_EXCHANGE)`` is the flag this mount refuses, which is
+    why this module exists; and the recoverable-unlink trick — hold an fd, unlink,
+    re-link from ``/proc/self/fd`` — fails ``EXDEV`` on all three. The closures that
+    exist are outside this function: exclude the writer
+    (``projection-lock-coverage-projected-path-writers-20260913``). Tracking is not
+    doing, and this paragraph is not a closure.
 
     So certainty, not the check, decides the verb:
 
@@ -4310,14 +4346,14 @@ def _retire_scratch(
         )
     _logger.warning(
         "%s: %s name=%s expected_inode=%s found_inode=%s outcome=%s — this entry is another "
-        "writer's; inspect it before removing anything, then rerun "
-        "`cc-claim --recover-claim-publications <task_id>`",
+        "writer's; inspect it before removing anything. %s",
         _SCRATCH_ABANDONED,
         subject,
         name,
         expected.st_ino,
         current.st_ino,
         outcome,
+        _SCRATCH_REMEDY,
     )
     return freed
 
@@ -4350,48 +4386,57 @@ def _fallback_exchange(
     the raced and unraced post-states are byte-, inode- and nlink-identical.
 
     What closes it is that no primitive here is a blind replace. Every mutation is either a
-    ``link`` that cannot create a second name for an occupied one, or a ``rename`` into a
-    name this leg holds an ``O_CREAT|O_EXCL`` reservation on:
+    ``link`` that cannot create a second name for an occupied one, a ``rename`` into a
+    name this leg holds an ``O_CREAT|O_EXCL`` reservation on, or a guarded retire of a
+    dotted scratch name:
 
-    1. ``link(dst → pin)``       — pin the displaced inode
+    1. ``link(dst → pin)``       — pin the displaced inode, so no foreign replace of
+                                   ``dst`` can destroy it once the leg is under way
     2. ``rename(dst → holding)`` — MOVE dst aside; a writer's replacement keeps its inode
     3. ``rename(src → dst)``     — publish by consuming src into our reserved placeholder;
                                    a racing create at dst, or a replaced src, is REFUSED
     4. verify ``dst``            — the publication holds the intended inode
-    5. ``rename(pin → src)``     — refill src by consuming the pin through a reserved
-                                   placeholder; a writer that recreated ``src`` after
-                                   step 3 is refused rather than overwritten
-    6. cleanup, success path only
+    5. retire ``pin``            — the ONE conditional unlink, ordered while the displaced
+                                   inode's other name is the DOTTED ``holding``, never a
+                                   live name (residual R1 ran this retire after the
+                                   refill, against the live ``src``; see step 5's comment)
+    6. ``rename(holding → src)`` — refill src through a reserved placeholder; a writer
+                                   that recreated ``src`` after step 3 is refused rather
+                                   than overwritten
 
-    Steps 2, 3 and 5 are :func:`_relocate_to_scratch`. Step 3 replaced a
-    ``link(src → dst)`` whose EEXIST refused a racing create; the reservation keeps that
-    refusal, and the identity check inside the relocation adds one the link never had: a
-    writer that replaced ``src`` itself is detected after the fact. **That detection is
-    publish-then-refuse, by construction and accepted** (coordinator ruling
-    2026-09-15T02:36Z, residual list in :func:`_relocate_to_scratch`): the rename carries
-    the racing writer's entry across to ``dst``, the identity check then refuses with that
-    writer's bytes preserved AT ``dst``, and the displaced original is still at ``pin`` and
-    ``holding`` — nothing is destroyed, and the refusal names all three. Step 5 replaced a
-    ``link(pin → src)`` with the same trade: a writer that recreated ``src`` makes the
-    reserve fail and keeps its entry, and the pin is consumed by the rename instead of
-    surviving to cleanup.
+    Steps 2, 3 and 6 are :func:`_relocate_to_scratch`; step 5 is :func:`_retire_scratch`.
+    Step 3 replaced a ``link(src → dst)`` whose EEXIST refused a racing create; the
+    reservation keeps that refusal, and the identity check inside the relocation adds one
+    the link never had: a writer that replaced ``src`` itself is detected after the fact.
+    **That detection is publish-then-refuse, by construction and accepted** (coordinator
+    ruling 2026-09-15T02:36Z, residual list in :func:`_relocate_to_scratch`): the rename
+    carries the racing writer's entry across to ``dst``, the identity check then refuses
+    with that writer's bytes preserved AT ``dst``, and the displaced original is still at
+    ``pin`` and ``holding`` — nothing is destroyed, and the refusal names all three. The
+    pin itself is load-bearing insurance, not a vestigial second name: a racing writer's
+    atomic replace of ``dst`` destroys an inode that has no second name, and deleting the
+    pin to simplify cleanup was measured to lose the displaced entry exactly there. It is
+    spent at step 5, once every live-name writer it insures against has been met, and the
+    refill then consumes ``holding`` so no cleanup follows on the success path at all.
 
     Crash windows, all recoverable, none lossy: before step 2 the pin and the original
     ``dst`` are both intact; between 2 and 3 the displaced bytes are at ``pin`` and
     ``holding`` while ``dst`` is absent — or, after a refused publish, the racing writer's
     bytes are at ``dst`` under the refusal above; between 3 and 5 both generations exist
-    under distinct names; after 5 the state is the syscall's. **A failure at any step
-    returns without unlinking anything**, because after step 2 a scratch can be the sole
-    name of a live entry.
+    under distinct names; between 5 and 6 the displaced entry's only name is the dotted
+    ``holding``, exposed to nothing but a protocol-ignoring writer (the R2 class the
+    residual list pins — the trade that buys R1's closure); after 6 the state is the
+    syscall's. **A failure at any step returns without unlinking anything** beyond step
+    5's guarded retire, which by then only ever removes a name whose inode still holds
+    ``holding``.
 
-    Cost: 5 mutations and 5 fsyncs against the syscall's one — fewer legs than the
-    ``link``-publish shape this replaces, whose step-5 ``spent`` retirement is gone
-    entirely. Exactly **one** scratch is ever unlinked on any path: the ``holding`` retire
-    at step 6, which runs while the displaced inode still carries its live ``src`` name
-    (nlink 2 — the one residual window left in this module; see :func:`_retire_scratch`).
-    ``pin`` is consumed by the step-5 rename and ``spent`` no longer exists at all. Two
-    live scratch classes (:data:`_FALLBACK_SCRATCH_ROLES` keeps two more as legacy names
-    for pre-conversion remnants) — and nothing in this module discovers any of them; see
+    Cost: 5 mutations and 5 fsyncs against the syscall's one. Exactly **one** scratch is
+    ever unlinked on any path — the ``pin`` retire at step 5 — and its sibling name is
+    dotted, so the window on it is the R2 rogue class, not the live-name R1 window this
+    ordering replaces. ``holding`` is consumed by the refill rename, ``spent`` no longer
+    exists at all, and the success path leaves zero scratches. Two live scratch classes
+    (:data:`_FALLBACK_SCRATCH_ROLES` keeps two more as legacy names for pre-conversion
+    remnants) — and nothing in this module discovers any of them; see
     :func:`_fallback_scratch_name` for why they are at least computable, and §8 of the
     design for the discovery that is owed.
 
@@ -4477,54 +4522,57 @@ def _fallback_exchange(
             f"{src_name}->{dst_name} {scratches}",
         )
 
-    # 5. Refill src by consuming the pin through a reserved placeholder. This step used to
-    #    be `link(pin → src)`; a writer that recreated `src` after its consumption at step 3
-    #    makes the reserve fail and keeps its entry — the same create-or-fail property, now
-    #    with the pin consumed by the rename instead of surviving to cleanup. The displaced
-    #    entry stays preserved at `holding` for recovery.
+    # 5. Retire the pin BEFORE the refill, not after it. Ordering is the whole fix:
+    #    retired here, the conditional unlink's sibling is `holding` — a dotted,
+    #    transaction-unique name no legitimate writer touches — so the worst case of
+    #    the check-then-act window is the R2 rogue class the residual list already
+    #    pins. Retired after the refill (the shape this replaces), the sibling was the
+    #    LIVE `src` name, and a writer replacing that between the count and the unlink
+    #    destroyed the displaced inode's last name: residual R1, three reviewer
+    #    families' blocking finding. Two orders were falsified by measurement before
+    #    this one: deleting the pin entirely loses the displaced entry when a racing
+    #    writer's own atomic replace of `dst` lands between the reference `lstat` and
+    #    step 2 (`test_exchange_preserves_a_replacement_arriving_at_the_install_itself`
+    #    fails exactly that way), and consuming the pin into `src` leaves `holding` to
+    #    be unlinked against a live sibling. Retire-early keeps the pin's insurance
+    #    through every step that can meet a live-name writer and spends it only once
+    #    the displaced entry's other name is dotted.
+    pin_freed = _retire_scratch(dir_fd, pin, displaced, subject=f"{src_name}->{dst_name}")
+    os.fsync(dir_fd)
+
+    # 6. Refill src from `holding` through a reserved placeholder. A writer that
+    #    recreated `src` after its consumption at step 3 makes the reserve fail and
+    #    keeps its entry — create-or-fail, the property every refill has had. The
+    #    displaced entry's remaining name is `holding` (and `pin` too, if step 5 could
+    #    not free it), so the refusal says so.
+    preserved = (
+        f"the displaced entry is preserved at {holding} — do not delete it, it is the "
+        f"displaced entry's remaining name"
+        if pin_freed
+        else f"the displaced entry is preserved at {pin} and {holding} — do not delete "
+        f"either, they are the displaced entry's remaining names"
+    )
     _relocate_to_scratch(
         dir_fd,
-        pin,
+        holding,
         src_name,
         displaced,
         subject=f"{src_name}->{dst_name}",
-        recover=(
-            f"the published entry stands at {dst_name} and the displaced entry is preserved "
-            f"at {holding} — do not delete {holding}, it is the displaced entry's remaining "
-            f"name, {recover}"
-        ),
+        recover=f"{preserved}, {recover}",
     )
 
-    # 6. Cleanup runs ONLY here, on the success path, and only on a name still holding the
-    #    inode this transition put there: `holding` names the displaced entry now at src,
-    #    and it is the ONE scratch this leg ever unlinks. `pin` was consumed by the step-5
-    #    rename; the published entry's only name is `dst`. Every failure above returns
-    #    without unlinking anything at all, deliberately: after step 2 a scratch can be the
-    #    sole name of a live entry, so tidying up on a failure path would destroy exactly
-    #    what this repair exists to preserve.
-    #
-    #    The removal is identity-checked rather than unconditional. A writer can replace a
-    #    scratch name while the leg runs, and an unconditional unlink would destroy that
-    #    entry — the same defect as an unconditional rename, in the one place it is easiest
-    #    to overlook. A mismatch is LEFT IN PLACE and logged, never raised: the projection
-    #    has already succeeded by this point, so raising would discard a verified post-state
-    #    over a remnant. Note "left for the recovery sweep" is what this used to say, and
-    #    there is no such sweep — see `_SCRATCH_REMEDY`; clearing it is manual, and the log
-    #    line is the only thing that will tell anyone it is there.
-    #
-    #    A scratch that is OURS and could not be removed is a different matter from a
-    #    foreign one left alone. Ours is a second link to a live inode, so leaving it means
-    #    the live entry keeps `st_nlink == 2` and the very next `_entry_state_at` raises
-    #    `transition_projection_path_unsafe` — for create, update and delete alike. The
-    #    transition fails anyway, after its mutations, with a diagnosis pointing at the
-    #    wrong thing, so it is reported HERE where the cause is known.
+    # 7. A pin that step 5 could not free is now a second link to the LIVE `src`
+    #    inode — the refill just made that name live — so the next `_entry_state_at`
+    #    refuses the operand as path-unsafe. Report it here, where the cause is known,
+    #    rather than letting the readback misattribute it. The removal itself is
+    #    identity-checked and never raised, for the reasons `_retire_scratch` states;
+    #    every failure above returns without unlinking anything beyond step 5's
+    #    guarded retire, which only removes a name whose inode still holds `holding`.
     stranded = [
         redundant
-        for redundant, expected in ((holding, displaced),)
-        if not _retire_scratch(dir_fd, redundant, expected, subject=f"{src_name}->{dst_name}")
-        and _scratch_is_a_live_second_link(dir_fd, redundant, expected)
+        for redundant, expected in ((pin, displaced),)
+        if not pin_freed and _scratch_is_a_live_second_link(dir_fd, redundant, expected)
     ]
-    os.fsync(dir_fd)
     if stranded:
         raise LifecycleTransitionError(
             "transition_projection_recovery_required",
@@ -4545,28 +4593,68 @@ def _fallback_noreplace(
 ) -> None:
     """Reproduce ``RENAME_NOREPLACE``'s refusal where the mount lacks the flag.
 
-    Two shapes, because the source decides which primitive can carry the
-    property, and the module renames both files and whole journal directories
-    under this flag.
+    Three shapes, because the source decides which primitive can carry the
+    property, and the module renames journal directories, staged scratches and
+    live entries under this flag: a directory goes to
+    :func:`_fallback_noreplace_directory`; a source carrying one of
+    :data:`_TRANSIENT_SCRATCH_SUFFIXES` is a scratch → live install, published
+    by ``link(2)`` (create-or-EEXIST for every occupant — no placeholder
+    window); a live source keeps reserve-then-rename, because its name must be
+    consumed by the move and a link does not consume.
     """
 
     intended = os.lstat(src_name, dir_fd=src_dir_fd)
     if stat.S_ISDIR(intended.st_mode):
         _fallback_noreplace_directory(src_dir_fd, src_name, dst_dir_fd, dst_name)
         return
-    # Reserve-then-rename, inline rather than via `_relocate_to_scratch`: this leg has no
-    # scratch name to leave behind and no displaced entry to preserve under one, so the
-    # helper's scratch-remnant vocabulary would only blur the refusal messages. The shape is
-    # still the one it implements — take the destination with `O_CREAT|O_EXCL` immediately
-    # before the rename that consumes it, publish by renaming the source onto our own
-    # placeholder, then verify WHAT landed.
+    if src_name.endswith(_TRANSIENT_SCRATCH_SUFFIXES):
+        # Scratch → live install, published by LINK rather than reserve-then-rename.
+        # `link(2)` is create-or-EEXIST for EVERY occupant of the destination — the
+        # NOREPLACE contract itself, with no arrival-exclusion window at all: a reserved
+        # placeholder can be renamed onto by a foreign writer and that arrival is then
+        # destroyed by the consuming rename while the post-rename identity check passes
+        # (residual R4); a link that finds the destination occupied refuses, whoever
+        # occupies it. The EEXIST escapes bare, exactly as the raw EEXIST of the
+        # `link(2)` publish this module once used did — callers already discriminate on
+        # it (`_renameat2` re-raises the fallback's OSError unaltered).
+        #
+        # The retire that follows is a conditional unlink, and it is sound HERE because
+        # the retired name is one of the dotted, transaction-unique suffixes above: the
+        # worst case of its check-then-act window is a rogue writing a protocol-reserved
+        # name (R2), or — if a foreign writer replaces the just-published live name in
+        # the gap — the loss of OUR staged bytes, which the journal can rebuild. A live
+        # name must never be retired this way; that is why this branch is gated on the
+        # source's shape and live-source legs keep reserve-then-rename below.
+        os.link(
+            src_name,
+            dst_name,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=False,
+        )
+        os.fsync(dst_dir_fd)
+        _retire_scratch(src_dir_fd, src_name, intended, subject=f"{src_name}->{dst_name}")
+        if src_dir_fd != dst_dir_fd:
+            os.fsync(src_dir_fd)
+        return
+    # Reserve-then-rename for a LIVE source, inline rather than via
+    # `_relocate_to_scratch`: this leg has no scratch name to leave behind and no
+    # displaced entry to preserve under one, so the helper's scratch-remnant vocabulary
+    # would only blur the refusal messages. The shape is still the one it implements —
+    # take the destination with `O_CREAT|O_EXCL` immediately before the rename that
+    # consumes it, publish by renaming the source onto our own placeholder, then verify
+    # WHAT landed.
     #
-    # The reservation IS the NOREPLACE property: `O_CREAT|O_EXCL` is create-or-EEXIST, which
-    # is what every file call site depends on — each already maps an EEXIST-shaped outcome
-    # onto a precondition-changed refusal, so the raw `FileExistsError` propagates bare
-    # exactly as the raw EEXIST of the `link(2)` this replaces did. Measured on the NFS4.2
-    # vault mount: exclusive create to a fresh name succeeds, to an existing name returns
-    # EEXIST.
+    # The reservation is the closest NOREPLACE stand-in this shape has: `O_CREAT|O_EXCL`
+    # is create-or-EEXIST, which is what every file call site depends on — each already
+    # maps an EEXIST-shaped outcome onto a precondition-changed refusal, so the raw
+    # `FileExistsError` propagates bare exactly as the raw EEXIST of the `link(2)` this
+    # replaces did. Measured on the NFS4.2 vault mount: exclusive create to a fresh name
+    # succeeds, to an existing name returns EEXIST. Its one uncovered window — a foreign
+    # rename/truncate onto the placeholder between the reserve and the consuming
+    # rename — is residual R4, stated in the residual list and pinned by a boundary
+    # test; a link cannot serve this leg, because the source's live name must be
+    # CONSUMED by the move, and a link does not consume.
     reservation = os.open(
         dst_name,
         os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC,
@@ -4616,66 +4704,30 @@ def _fallback_noreplace(
             f"{src_name}->{dst_name}",
         ) from exc
     if not _same_entry(published, intended):
-        # Publish-then-refuse, accepted (coordinator ruling 2026-09-15T02:36Z): the rename
-        # carried a racing writer's `src` replacement across, and it now sits at `dst`.
-        # Restore the canonical `src` name by linking that entry BACK — create-or-fail, so a
-        # writer that meanwhile recreated `src` is refused rather than overwritten — then
-        # drop our publication of it by an identity-checked unlink. Nothing is destroyed on
-        # any branch: the writer's bytes end up at `src` (or stay at both names behind a
-        # typed refusal saying so), and the entry this transition INTENDED to move was
-        # destroyed by the racing writer's replacement, before any mutation here touched it.
-        try:
-            os.link(dst_name, src_name, src_dir_fd=dst_dir_fd, dst_dir_fd=src_dir_fd)
-        except FileExistsError as exc:
-            raise LifecycleTransitionError(
-                "transition_precondition_changed",
-                "preserve both entries and prepare a new transition: a racing writer's "
-                f"replacement of {src_name} was published to {dst_name}, and {src_name} has "
-                "since been recreated — neither entry was overwritten. Next: reconcile "
-                f"{src_name} against {dst_name} by hand, then rerun "
-                "`cc-claim --recover-claim-publications <task_id>`",
-                f"{src_name}->{dst_name}",
-            ) from exc
-        os.fsync(src_dir_fd)
-        try:
-            carried = os.lstat(dst_name, dir_fd=dst_dir_fd)
-        except OSError:
-            carried = None
-        if carried is None or not _same_entry(carried, published):
-            # Not the entry we linked back, or already gone: leave the name exactly as it
-            # is and say so — removing a name we cannot identify is the defect this whole
-            # module exists to prevent.
-            _logger.warning(
-                "%s: %s name=%s could not be identified after the canonical name was "
-                "restored, so it is LEFT IN PLACE. %s",
-                _SCRATCH_ABANDONED,
-                src_name,
-                dst_name,
-                _SCRATCH_REMEDY,
-            )
-        else:
-            try:
-                os.unlink(dst_name, dir_fd=dst_dir_fd)
-            except OSError as exc:
-                _logger.warning(
-                    "%s: %s name=%s could not be unlinked after the canonical name was "
-                    "restored (%s) — LEFT IN PLACE. %s",
-                    _SCRATCH_ABANDONED,
-                    src_name,
-                    dst_name,
-                    exc,
-                    _SCRATCH_REMEDY,
-                )
-            else:
-                os.fsync(dst_dir_fd)
+        # Publish-then-refuse, accepted (coordinator ruling 2026-09-15T02:36Z) — and
+        # REFUSE-ONLY since the round-30 review closed C1: the racing writer's bytes
+        # stay exactly where the rename carried them, AT `dst`, and the live `src`
+        # name stays vacant. The restoration this replaces — link the carried entry
+        # back to `src`, then an identity-checked unlink of `dst` — recreated a second
+        # name for the racer's inode and then destroyed our publication of it, two
+        # conditional acts where a refusal needs none, and the gap between them let a
+        # second writer's arrival at either name be destroyed while the refusal claimed
+        # "nothing was destroyed". Deliberate contract change from that restoration
+        # (the 02:36Z ruling's "refusal restores the canonical path"): preserving the
+        # carried bytes where they landed is the same crash-consistent intermediate
+        # move-or-fail already produces elsewhere — a computable name holding the
+        # racer's entry and a vacant live path for recovery to reconcile — and it
+        # destroys nothing on any branch.
         raise LifecycleTransitionError(
             "transition_precondition_changed",
             "preserve the racing replacement and prepare a new transition: a concurrent "
             f"writer replaced {src_name} before it was moved, that writer's entry was "
-            f"carried to {dst_name} and has been restored to {src_name}, and nothing was "
-            "destroyed. The entry this transition intended to move was replaced by the "
-            "writer before the move — reload the current position, then rerun "
-            "`cc-claim --recover-claim-publications <task_id>`",
+            f"carried to {dst_name} and is preserved there, and {src_name}'s only name "
+            "was consumed by the move. The entry this transition intended to move was "
+            "replaced by the racing writer before any mutation here — nothing this leg "
+            "did destroyed anything. Next: reconcile "
+            f"{dst_name} against the intended preimage by hand, then reload the current "
+            "position and rerun `cc-claim --recover-claim-publications <task_id>`",
             f"{src_name}->{dst_name}",
         )
 
@@ -4972,21 +5024,26 @@ def _cas_project(projection: FileProjection, scratch: _ProjectionScratch) -> Non
                 # that names nothing — instead of a projection refusal. The
                 # fallback now answers EINVAL, but the untyped hole was never
                 # specific to it: ENOSPC or EIO would read the same way.
-                # The remedy cannot assume the install left nothing behind. When the rebuilt
-                # NOREPLACE leg ran, it may already have published the entry AND retired the
-                # source to a `.transition-holding` name before whatever failed here — so the
-                # "exact scratch" this used to tell the operator to discard is absent, and the
-                # real remnant is a holding entry that keeps the published inode multiply
-                # linked, which fails the next readback as path_unsafe. Name both states and
-                # how to tell them apart, rather than one that may not exist.
+                # The remedy cannot assume the install left nothing behind. Since
+                # the link-publish conversion the leg has exactly two post-states
+                # when it fails after staging: either the link never landed — the
+                # live name is absent and the exact scratch is still present, so
+                # discarding the scratch and retrying is correct — or the link
+                # landed and a later step failed, in which case the live name holds
+                # the published inode and the exact scratch, if still present, is a
+                # SECOND LINK to it that the next readback will refuse as
+                # path-unsafe. Name how to tell them apart. (An earlier version of
+                # this remedy described a `.transition-holding` remnant this leg
+                # has never created — reserve-then-rename vocabulary pasted onto a
+                # leg that no longer uses it; a reviewer caught it.)
                 raise LifecycleTransitionError(
                     "transition_projection_install_failed",
-                    "hold the transaction, then check which state it left: if the exact "
-                    "scratch is still present, discard it and retry; if it is absent, the "
-                    "rebuilt fallback had already published and retired it, so look for the "
-                    "matching `.transition-holding` entry beside the projected path — that "
-                    "holds a second link to the published inode and the next readback will "
-                    f"refuse as transition_projection_path_unsafe until it is cleared. "
+                    "hold the transaction, then check which state it left: if the live "
+                    "name is absent, nothing was published — discard the exact scratch "
+                    "and retry; if the live name is present, the link published and any "
+                    "scratch still beside it is a second link to the published inode, "
+                    "which the next readback will refuse as "
+                    "transition_projection_path_unsafe until it is cleared. "
                     f"{_SCRATCH_REMEDY}",
                     str(projection.path),
                 ) from exc
