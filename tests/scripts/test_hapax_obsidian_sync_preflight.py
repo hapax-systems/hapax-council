@@ -1202,6 +1202,78 @@ def test_invalid_sync_mode_is_refused(vault: pathlib.Path, tmp_path: pathlib.Pat
     assert "Next:" in result.stderr
 
 
+def test_non_normalized_config_subdirectory_aborts_the_descent(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """`adapter.list` stats the `_e` form but PUSHES the emitted form, and the next level is
+    asked to list THAT. So a theme directory whose name is not already NFC is listed
+    successfully, then descended by a path that does not exist — readdir raises and the scan
+    aborts. Descending by the on-disk name instead succeeded where ob fails."""
+    obsidian = vault / ".obsidian"
+    themes = obsidian / "themes"
+    themes.mkdir(parents=True)
+    nfd = "café"  # emitted as NFC 'café', which is not what is on disk
+    (themes / nfd).mkdir()
+    (themes / nfd / "theme.css").write_bytes(b"t" * 7)
+    (obsidian / "appearance.json").write_bytes(b"a" * 19)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["appearance", "appearance-data"],
+    )
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["config_uploads"]["bytes"] == 0, "the sibling was counted anyway"
+    assert report["traversal_errors"], "the failed descent was not recorded"
+
+
+@pytest.mark.parametrize("reserved", ["themes", "snippets", "plugins"])
+def test_reserved_config_path_as_a_file_aborts_the_scan(
+    vault: pathlib.Path, tmp_path: pathlib.Path, reserved: str
+) -> None:
+    """cli.js gates on `u.exists(...)` — an access() check that does not care about type —
+    then calls `u.list(...)` regardless. So a reserved name that is a FILE gets readdir'd,
+    raises ENOTDIR and aborts the scan. Skipping on "not a directory" made that a silent
+    success."""
+    obsidian = vault / ".obsidian"
+    obsidian.mkdir()
+    (obsidian / reserved).write_bytes(b"x" * 3)  # a FILE where a directory is expected
+    (obsidian / "appearance.json").write_bytes(b"a" * 19)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["appearance"],
+    )
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["config_uploads"]["bytes"] == 0
+    assert any(reserved in e["path"] for e in report["traversal_errors"])
+
+
+def test_absent_reserved_config_path_is_fine(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """The control: when the reserved names simply do not exist, `exists()` is false and the
+    scan proceeds normally."""
+    obsidian = vault / ".obsidian"
+    obsidian.mkdir()
+    (obsidian / "appearance.json").write_bytes(b"a" * 19)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["appearance"],
+    )
+    report = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
+    assert report["traversal_errors"] == []
+    assert report["config_uploads"]["bytes"] == 19
+
+
 def test_unstattable_child_anywhere_aborts_the_config_scan(
     vault: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:

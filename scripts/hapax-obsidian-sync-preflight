@@ -481,7 +481,7 @@ def predict_config_uploads(
     class _EnumerationAborted(Exception):
         """`adapter.list` stats every child, so one unstattable child kills the scan."""
 
-    def _list_children(path: Path) -> tuple[list[str], list[str]]:
+    def _list_children(path: Path) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         """Mirror cli.js ``adapter.list``: readdir, then ``stat`` EVERY child, and split
         into (files, folders) by what that stat says. Returns names, not paths.
 
@@ -497,11 +497,18 @@ def predict_config_uploads(
         except OSError as exc:
             _on_error(exc)
             raise _EnumerationAborted from exc
-        files: list[str] = []
-        folders: list[str] = []
+        # Each entry is (emitted, on-disk). The emitted form is what ob pushes and what the
+        # next level is asked to list; the on-disk form is kept so two spellings of one
+        # emitted name remain distinguishable for identity purposes.
+        files: list[tuple[str, str]] = []
+        folders: list[tuple[str, str]] = []
         for name in names:
+            # cli.js stats the `_e` form (`o`) but PUSHES the emitted form (`a = Ne(o)`).
+            # Both matter: the stat succeeds for a merely non-NFC name, while the pushed
+            # name is what the NEXT level is asked to list — and on a byte-preserving
+            # filesystem that path does not exist, so the descent fails there instead.
             try:
-                info = os.stat(path / name)  # follows links, as adapter.list does
+                info = os.stat(path / _e_path(name))  # follows links, as adapter.list does
             except OSError as exc:
                 _on_error(exc)
                 raise _EnumerationAborted from exc
@@ -509,9 +516,9 @@ def predict_config_uploads(
             # NEITHER for anything else (a fifo, a socket, a device) — such an entry simply
             # does not appear in the listing.
             if S_ISREG(info.st_mode):
-                files.append(name)
+                files.append((_emitted(name), name))
             elif S_ISDIR(info.st_mode):
-                folders.append(name)
+                folders.append((_emitted(name), name))
         return files, folders
 
     # The config scan is NOT a recursive walk. cli.js enumerates a fixed set of
@@ -523,7 +530,9 @@ def predict_config_uploads(
     # depths ob never reaches and, via a shared link policy, suppressed aliases ob does
     # upload — which is why _LinkPolicy is deliberately not used here. The emitted
     # NAMESPACE is shared, though: ob has one remote keyspace for both trees.
-    candidates: list[str] = ["config"]
+    # (emitted, on-disk) pairs. `<cfg>/config` is the one candidate ob SYNTHESISES, and for
+    # it the two forms coincide.
+    candidates: list[tuple[str, str]] = [("config", "config")]
     try:
         # `u.list()` splits into files and folders, and cli.js iterates `.folders` under
         # themes/ and plugins/ and `.files` elsewhere. LISTING those subdirectories rather
@@ -531,30 +540,44 @@ def predict_config_uploads(
         # skipped rather than descended, and a bad child INSIDE a plugin or theme directory
         # aborts the whole scan in ob — which synthesised names would never have noticed.
         root_files, _ = _list_children(root)
-        candidates += [n for n in root_files if _extension(n) == "json"]
+        candidates += [(e, r) for e, r in root_files if _extension(e) == "json"]
 
+        # cli.js gates each of these on `await u.exists(...)` and then calls `u.list(...)`
+        # unconditionally. `exists` is an access() check that does not care whether the path
+        # is a directory, so if `themes` is a FILE the following list() readdirs it, raises
+        # ENOTDIR and aborts the whole scan. Skipping on "not a directory" — as an earlier
+        # revision did — turned that abort into a silent success.
         themes = root / "themes"
-        if themes.is_dir():
+        if os.path.exists(themes):
             _, theme_dirs = _list_children(themes)
-            for theme in theme_dirs:
-                theme_files, _ = _list_children(themes / theme)
+            for theme_emitted, theme_raw in theme_dirs:
+                # Descend by the EMITTED name, as ob does with what list() pushed.
+                theme_files, _ = _list_children(themes / theme_emitted)
                 candidates += [
-                    f"themes/{theme}/{n}"
-                    for n in theme_files
-                    if n in ("manifest.json", "theme.css")
+                    (f"themes/{theme_emitted}/{e}", f"themes/{theme_raw}/{r}")
+                    for e, r in theme_files
+                    if e in ("manifest.json", "theme.css")
                 ]
 
         snippets = root / "snippets"
-        if snippets.is_dir():
+        if os.path.exists(snippets):
             snippet_files, _ = _list_children(snippets)
-            candidates += [f"snippets/{n}" for n in snippet_files if _extension(n) == "css"]
+            candidates += [
+                (f"snippets/{e}", f"snippets/{r}")
+                for e, r in snippet_files
+                if _extension(e) == "css"
+            ]
 
         plugins = root / "plugins"
-        if plugins.is_dir():
+        if os.path.exists(plugins):
             _, plugin_dirs = _list_children(plugins)
-            for plugin in plugin_dirs:
-                plugin_files, _ = _list_children(plugins / plugin)
-                candidates += [f"plugins/{plugin}/{n}" for n in plugin_files if n in _PLUGIN_FILES]
+            for plugin_emitted, plugin_raw in plugin_dirs:
+                plugin_files, _ = _list_children(plugins / plugin_emitted)
+                candidates += [
+                    (f"plugins/{plugin_emitted}/{e}", f"plugins/{plugin_raw}/{r}")
+                    for e, r in plugin_files
+                    if e in _PLUGIN_FILES
+                ]
     except _EnumerationAborted:
         # ob's scan is one try/catch around the whole thing: the throw aborts it, nothing
         # is indexed, and it logs "Failed to scan config files". So no config file uploads
@@ -562,8 +585,7 @@ def predict_config_uploads(
         # guard, because a config sync that silently does nothing is not a clean result.
         return _result()
 
-    for rel in candidates:
-        rel_emitted = _emitted(rel)
+    for rel_emitted, rel_on_disk in candidates:
         # ob runs the ignoreFolders loop BEFORE the config-dir branch, so an
         # exclusion naming a config path excludes it.
         if _excluded(f"{_emitted(config_dir)}/{rel_emitted}", entries):
@@ -591,13 +613,13 @@ def predict_config_uploads(
         # indistinguishable and count one file twice.
         if not namespace.claim(
             f"{_emitted(config_dir)}/{rel_emitted}",
-            str(root / rel),
+            str(root / rel_on_disk),
             ambiguous_when_shared=False,
         ):
             continue  # two spellings of one emitted name index the same entry once
         if stat.st_size > per_file_max:
             # The size skip is in the shared sync loop, so it governs config files too.
-            too_large.append({"path": f"{config_dir}/{rel}", "bytes": stat.st_size})
+            too_large.append({"path": f"{config_dir}/{rel_emitted}", "bytes": stat.st_size})
             continue
         total_bytes += stat.st_size
         files += 1
