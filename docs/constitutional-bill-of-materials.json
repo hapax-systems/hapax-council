@@ -1,0 +1,151 @@
+{
+  "schema_version": "1.0.0",
+  "generated_on": "2026-08-22",
+  "source": "shared/constitutional_bom.py:COMMITMENTS",
+  "commitments": [
+    {
+      "id": "deny-wins",
+      "commitment_class": "decision_order",
+      "rule": "Any deny veto blocks the decision.",
+      "disposition": "enforced",
+      "source": "agents/_governance.py:VetoChain",
+      "evidence_burden": "all vetoes evaluated",
+      "appeal_cost": "blocked action requires remediation",
+      "visibility": "decision result includes gate and reason",
+      "amendment_path": "change VetoChain semantics and tests",
+      "contestability": "reason is inspectable",
+      "recovery": "caller chooses a later retry or alternate path"
+    },
+    {
+      "id": "unknown-fails-closed",
+      "commitment_class": "unknown_handling",
+      "rule": "Unknown authority or required state blocks.",
+      "disposition": "enforced",
+      "source": "shared/policy_decision.py:FailMode.FAIL_CLOSED",
+      "evidence_burden": "required field must be confirmed",
+      "appeal_cost": "operator must supply or repair missing state",
+      "visibility": "required field is returned",
+      "amendment_path": "amend policy and version",
+      "contestability": "missing field is named",
+      "recovery": "no automatic unsafe fallback"
+    },
+    {
+      "id": "evidence-thresholds",
+      "commitment_class": "evidence_burden",
+      "rule": "Evidence floors and quality gates precede stronger claims or release.",
+      "disposition": "enforced",
+      "source": "config/review-lenses/registry.yaml; shared/route_metadata_schema.py",
+      "evidence_burden": "frontier_review_required and receipt evidence",
+      "appeal_cost": "additional review/receipt work",
+      "visibility": "findings and receipts are retained",
+      "amendment_path": "amend route metadata and gate tests",
+      "contestability": "independent review is required",
+      "recovery": "degraded routes remain blocked"
+    },
+    {
+      "id": "appeal-is-explicit",
+      "commitment_class": "appeal_cost",
+      "rule": "A block is not silently overridden; appeal requires an explicit governed path.",
+      "disposition": "enforced",
+      "source": "scripts/cc-task-gate.sh; shared/governance",
+      "evidence_burden": "authority case and task evidence",
+      "appeal_cost": "operator time and a new governed action",
+      "visibility": "block reason is visible",
+      "amendment_path": "amend the governing task/spec",
+      "contestability": "operator can contest with evidence",
+      "recovery": "preserve the blocked state until accepted"
+    },
+    {
+      "id": "default-visibility",
+      "commitment_class": "visibility",
+      "rule": "Decision reasons, receipts, and unknowns are observable rather than suppressed.",
+      "disposition": "enforced",
+      "source": "shared/policy_decision.py; shared/axiom_audit.py",
+      "evidence_burden": "observable result fields",
+      "appeal_cost": "inspection and remediation effort",
+      "visibility": "public claims remain scoped to evidence",
+      "amendment_path": "amend schema and publication gate",
+      "contestability": "audit findings are citable",
+      "recovery": "retain failed evidence for review"
+    },
+    {
+      "id": "weight-defaults",
+      "commitment_class": "weights",
+      "rule": "Axiom and route weights influence selection when no adopter profile replaces them.",
+      "disposition": "enforced",
+      "source": "axioms/registry.yaml; shared/axiom_registry.py",
+      "evidence_burden": "declared weights are loaded",
+      "appeal_cost": "profile selection or amendment effort",
+      "visibility": "weights are registry-visible",
+      "amendment_path": "operator-approved registry amendment",
+      "contestability": "weights can be inspected and challenged",
+      "recovery": "restore the prior versioned registry"
+    },
+    {
+      "id": "amendment-path",
+      "commitment_class": "amendment",
+      "rule": "Constitutional behavior changes through versioned source/spec amendments.",
+      "disposition": "enforced",
+      "source": "shared/policy_decision.py:POLICY_DECIDE_VERSION; cc-task contract",
+      "evidence_burden": "task authority and tests",
+      "appeal_cost": "review and release queue cost",
+      "visibility": "version stamps are emitted",
+      "amendment_path": "new governed task/spec and review",
+      "contestability": "change is diffable",
+      "recovery": "revert to a prior committed version"
+    },
+    {
+      "id": "contestability",
+      "commitment_class": "contestability",
+      "rule": "A decision exposes enough reason and required state for a challenge.",
+      "disposition": "enforced",
+      "source": "shared/policy_decision.py:Decision",
+      "evidence_burden": "reason and required_field are mandatory outputs",
+      "appeal_cost": "operator investigation cost",
+      "visibility": "reason/current value/remediation are visible",
+      "amendment_path": "amend Decision schema and consumers",
+      "contestability": "caller can dispute the stated gate",
+      "recovery": "hold action while disputed"
+    },
+    {
+      "id": "recovery-is-bounded",
+      "commitment_class": "recovery",
+      "rule": "Recovery attempts are bounded; exhaustion escalates instead of looping forever.",
+      "disposition": "enforced",
+      "source": "agents/studio_compositor/v4l2_stall_recovery.py",
+      "evidence_burden": "fresh frame is required",
+      "appeal_cost": "downtime or operator intervention",
+      "visibility": "recovery counters and escalation are observable",
+      "amendment_path": "amend recovery FSM and tests",
+      "contestability": "failure is escalated",
+      "recovery": "withhold the watchdog ping / restart the unit"
+    },
+    {
+      "id": "unclassified-commitments",
+      "commitment_class": "unknown_class",
+      "rule": "Commitments outside the classifier are emitted as unknown and counted.",
+      "disposition": "unknown",
+      "source": "shared/constitutional_bom.py:Commitment.disposition",
+      "evidence_burden": "classification is incomplete",
+      "appeal_cost": "classification review cost",
+      "visibility": "unknown appears in the BOM and report",
+      "amendment_path": "add a typed class and regeneration",
+      "contestability": "finding remains contestable",
+      "recovery": "do not infer a safe default; retain unknown"
+    }
+  ],
+  "unknown_count": 1,
+  "unknown_disposition": "finding_and_review_required; never omitted",
+  "reference_profile": {
+    "profile_id": "hapax-estate-reference",
+    "label": "Explicit reference profile \u2014 example, not adopter default",
+    "is_default": false,
+    "weights": {
+      "single_user": 100,
+      "executive_function": 95,
+      "corporate_boundary": 90,
+      "interpersonal_transparency": 88,
+      "management_governance": 85
+    }
+  }
+}
