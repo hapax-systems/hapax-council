@@ -1205,12 +1205,18 @@ def test_invalid_sync_mode_is_refused(vault: pathlib.Path, tmp_path: pathlib.Pat
 def test_config_candidate_stat_error_is_reported(
     vault: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
-    """A config candidate that exists but cannot be stat'd is a real read failure, not a
-    drop, and must reach the exit-3 guard."""
+    """A config candidate that ENUMERATES fine but cannot be stat'd is a read failure, not
+    a drop, and must reach the exit-3 guard.
+
+    A symlink loop is the right injection: `listdir` still returns the name, so the
+    candidate is built, and only the per-candidate `os.stat` raises (ELOOP). Removing all
+    permissions from the directory instead — as an earlier version did — fails `_listdir`
+    BEFORE the candidate exists, so that test stayed green with the per-candidate handler
+    deleted and was therefore testing the wrong branch.
+    """
     obsidian = vault / ".obsidian"
     (obsidian / "snippets").mkdir(parents=True)
-    (obsidian / "snippets" / "x.css").write_bytes(b"c" * 10)
-    (obsidian / "snippets").chmod(0o000)
+    (obsidian / "snippets" / "x.css").symlink_to(obsidian / "snippets" / "x.css")
     xdg = tmp_path / "xdg"
     _write_live_config(
         xdg,
@@ -1218,13 +1224,12 @@ def test_config_candidate_stat_error_is_reported(
         ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
         allowSpecialFiles=["appearance-data"],
     )
-    try:
-        result = _run_env(vault, xdg, "--from-sync-config", "--json")
-        assert result.returncode == ERROR, result.stdout + result.stderr
-        assert "FLOOR" in result.stderr
-        assert json.loads(result.stdout)["traversal_errors"]
-    finally:
-        (obsidian / "snippets").chmod(0o755)
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert "FLOOR" in result.stderr
+    errors = json.loads(result.stdout)["traversal_errors"]
+    assert any("x.css" in e["path"] for e in errors), errors
+    assert any("symbolic links" in (e["error"] or "") for e in errors), errors
 
 
 def test_follow_requires_a_scan_root() -> None:
@@ -1741,44 +1746,104 @@ def test_config_scan_does_not_invent_depths(vault: pathlib.Path, tmp_path: pathl
     assert set(report["config_uploads"]["by_category"]) == {"community-plugin-data"}
 
 
-def test_recheck_client_passes_on_a_matching_bundle(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+# An INDEPENDENT client fixture: these are excerpts transcribed from obsidian-headless
+# 0.0.14's cli.js, NOT generated from CLIENT_RULES. That matters — the earlier fixture was
+# built by joining the needles, so it could only ever confirm that each needle matches
+# itself, and could not detect a rule the table fails to cover. Mutating this fixture the
+# way a real upgrade might is what makes the recheck falsifiable.
+_CLIENT_FIXTURE = r"""
+function Ne(s){return Cs(_e(s)).normalize("NFC")}
+function Cs(s){return s.replace(Xc," ")}
+var Xc=/ | /g;
+function _e(s){return s=s.replace(/([\\/])+/g,"/").replace(/(^\/+|\/+$)/g,""),s===""&&(s="/"),s}
+function Is(s){for(;s;){if(W(s).startsWith("."))return!0;s=be(s)}return!1}
+var Vt=["bmp","png","jpg","jpeg","gif","svg","webp","avif"],Wt=["mp3","wav","m4a","3gp","flac","ogg","oga","opus"],Ht=["mp4","webm","ogv","mov","mkv"],Gt=["pdf"],fo=["md"],ks=["canvas"],ho=["base"];
+var us=["image","audio","video","pdf","unsupported"],me=["image","audio","pdf","video"];
+function Kr(s){let e=s.split(",").map(t=>t.trim().toLowerCase());for(let t of e)if(!us.includes(t))throw new Error(`Invalid file type: "${t}".`);return e}
+function ws(s){if(s){if(!Ss(s))throw new Error(`Invalid config directory: "${s}".`);return s}}
+function Ss(s){return s&&s.startsWith(".")&&!s.includes("/")&&!s.includes("\\")}
+_allowSyncFile(e,t){for(let r of this.ignoreFolders)if(t&&e===r||e.startsWith(r+"/"))return!1;if(!t&&e.startsWith(this.configDir+"/")){let r=e.substring((this.configDir+"/").length),o=r.split("/");if(o.some(f=>f==="node_modules"||f.startsWith(".")))return!1;let a=W(r),l=$(a),c=null;return r==="workspace.json"||r==="workspace-mobile.json"?!1:(r==="app.json"||r==="types.json"?c="app":r==="appearance.json"?c="appearance":r==="hotkeys.json"?c="hotkey":r==="core-plugins.json"||r==="core-plugins-migration.json"?c="core-plugin":r==="community-plugins.json"?c="community-plugin":o[0]==="themes"&&o.length===3&&(a==="theme.css"||a==="manifest.json")||o[0]==="snippets"&&o.length===2&&l==="css"?c="appearance-data":o.length===1&&l==="json"?c="core-plugin-data":o[0]==="plugins"&&o.length===3&&this.isPluginFile(a)&&(c="community-plugin-data"),c&&this.allowSpecialFiles.has(c))}if(e.startsWith("."))return!1;if(t)return!0;let i=$(W(e));if(i==="md"||i==="canvas"||i==="base")return!0;let{allowTypes:n}=this;return Vt.includes(i)?n.has("image"):i==="webm"?n.has("audio")||n.has("video"):Wt.includes(i)?n.has("audio"):Ht.includes(i)?n.has("video"):Gt.includes(i)?n.has("pdf"):!!n.has("unsupported")}
+isPluginFile(e){return e==="manifest.json"||e==="main.js"||e==="styles.css"||e==="data.json"}
+reconcileSymbolicLinkCreation(e,t){let i=this.getFullRealPath(e),n;try{n=await this.fsPromises.realpath(i)}catch{return}let r=this.path.sep,o=this.watchers;if(o.hasOwnProperty(t))o[t].resolvedPath=n;else for(let l in o)if(o.hasOwnProperty(l)&&l!==t){let c=o[l].resolvedPath;if(n===c||c.startsWith(n+r)||n.startsWith(c+r))return}}
+async listRecursive(e){let t=this.getFullRealPath(e),i=await this.fsPromises.readdir(t);this.thingsHappening();let n=[];for(let r of i)n.push(this.listRecursiveChild(e,r));await Promise.all(n)}
+async listRecursiveChild(e,t){let i=_e(e===""?t:e+"/"+t),n=Ne(i);if(this.trigger("raw",n),Is(n))return await this.reconcileDeletion(i,n);try{await this.reconcileFileInternal(i,n)}catch(r){}}
+this.perFileMax=199*1024*1024;
+if(!m.folder&&m.size>e.perFileMax){this.logSkip(`File too large to sync`,p);continue}
+m.push(r+"config");let g=await u.list(n);for(let F of g.files)$(F)==="json"&&m.push(F);if(await u.exists(r+"themes")){let F=await u.list(r+"themes");for(let b of F.folders){let w=await u.list(b);for(let v of w.files){let A=W(v);(A==="manifest.json"||A==="theme.css")&&m.push(v)}}}if(await u.exists(r+"snippets")){let F=await u.list(r+"snippets");for(let b of F.files)$(b)==="css"&&m.push(b)}if(await u.exists(r+"plugins")){let F=await u.list(r+"plugins");for(let b of F.folders){let w=await u.list(b);for(let v of w.files){let A=W(v);f.isPluginFile(A)&&m.push(v)}}}
+s.mode!=="bidirectional"&&s.mode!=="pull-only"&&s.mode!=="mirror-remote"&&(console.error(`Invalid sync mode`),process.exit(1));
+"""
+
+
+# The bundle writes the nonbreaking-space regex with JS ESCAPES, so its text contains the
+# characters backslash-u-0-0-A-0 rather than the characters themselves. Assembled from
+# codepoints because an editor or formatter will happily "normalize" either form into the
+# other, and then this fixture would silently stop transcribing the client.
+_BACKSLASH = chr(92)
+_CLIENT_FIXTURE += f"var Xc=/{_BACKSLASH}u00A0|{_BACKSLASH}u202F/g;\n"
+
+
+def _install_fixture(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, source: str, version: object = "0.0.14"
 ) -> None:
-    """The recheck must be a predicate, not a printout: every rule present means exit 0."""
     root = tmp_path / "node_modules"
     pkg = root / "obsidian-headless"
-    pkg.mkdir(parents=True)
-    (pkg / "cli.js").write_text(
-        "\n".join(needle for _, needle in preflight.CLIENT_RULES), encoding="utf-8"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "cli.js").write_text(source, encoding="utf-8")
+    payload = (
+        json.dumps(version) if not isinstance(version, str) else json.dumps({"version": version})
     )
-    (pkg / "package.json").write_text(json.dumps({"version": "0.0.14"}), encoding="utf-8")
+    (pkg / "package.json").write_text(payload, encoding="utf-8")
     monkeypatch.setattr(
         preflight.subprocess,
         "run",
         lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=f"{root}\n", stderr=""),
     )
+
+
+def test_recheck_passes_on_the_independent_client_fixture(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every rule in the table must be found in a transcription of the real bundle. If this
+    fails, either a needle is wrong or the fixture has fallen behind the client."""
+    _install_fixture(tmp_path, monkeypatch, _CLIENT_FIXTURE)
     assert preflight.recheck_client() == OK
 
 
-def test_recheck_client_fails_and_names_the_drifted_rule(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+@pytest.mark.parametrize(
+    ("label", "old", "new"),
+    [
+        # Each is a change that MOVES upload behaviour. The recheck must catch all of them;
+        # an earlier table missed every one while still reporting OK.
+        ("audio class gains a format", '"oga","opus"]', '"oga","opus","aac"]'),
+        ("plugin data.json no longer admitted", '||e==="data.json"', ""),
+        ("themes stop enumerating theme.css", '||A==="theme.css"', ""),
+        ("video class loses a format", '"mov","mkv"]', '"mov"]'),
+        ("native classes change", 'ks=["canvas"]', 'ks=["canvas","excalidraw"]'),
+        ("per-file maximum changes", "perFileMax=199*1024*1024", "perFileMax=99*1024*1024"),
+        (
+            "size skip drops the folder guard",
+            "!m.folder&&m.size>e.perFileMax",
+            "m.size>e.perFileMax",
+        ),
+        ("sibling scan becomes sequential", "await Promise.all(n)", "for(const q of n)await q"),
+        ("snippets admit more than css", '$(b)==="css"&&m.push(b)', "m.push(b)"),
+        ("core-plugin-data widens", 'o.length===1&&l==="json"', "o.length===1"),
+        ("node_modules skip removed", 'f==="node_modules"||', ""),
+        ("pull-only mode dropped", '&&s.mode!=="pull-only"', ""),
+    ],
+)
+def test_recheck_detects_real_behaviour_changes(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+    label: str,
+    old: str,
+    new: str,
 ) -> None:
-    """A client whose rules moved must exit non-zero and say WHICH rule, since every
-    prediction replays them."""
-    root = tmp_path / "node_modules"
-    pkg = root / "obsidian-headless"
-    pkg.mkdir(parents=True)
-    kept = [needle for _, needle in preflight.CLIENT_RULES[1:]]
-    (pkg / "cli.js").write_text("\n".join(kept), encoding="utf-8")
-    (pkg / "package.json").write_text(json.dumps({"version": "9.9.9"}), encoding="utf-8")
-    monkeypatch.setattr(
-        preflight.subprocess,
-        "run",
-        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=f"{root}\n", stderr=""),
-    )
-    assert preflight.recheck_client() == ERROR
+    assert old in _CLIENT_FIXTURE, f"fixture does not contain {old!r}; it has fallen behind"
+    _install_fixture(tmp_path, monkeypatch, _CLIENT_FIXTURE.replace(old, new), version="9.9.9")
+    assert preflight.recheck_client() == ERROR, f"{label} went undetected"
     captured = capsys.readouterr()
-    assert preflight.CLIENT_RULES[0][0] in captured.err
     assert "DRIFT" in captured.out
     assert "Next:" in captured.err
 

@@ -941,14 +941,65 @@ CLIENT_RULES: tuple[tuple[str, str], ...] = (
         "concurrent sibling scan",
         "n.push(this.listRecursiveChild(e,r));await Promise.all(n)",
     ),
-    ("config category: app", 'r==="app.json"||r==="types.json"?c="app"'),
-    ("config category gate", "c&&this.allowSpecialFiles.has(c)"),
-    ("config: workspace never syncs", 'r==="workspace.json"||r==="workspace-mobile.json"?!1'),
-    ("config: plugin file set", 'isPluginFile(e){return e==="manifest.json"||e==="main.js"'),
     (
         "sync-mode validation",
         '"bidirectional"&&s.mode!=="pull-only"&&s.mode!=="mirror-remote"',
     ),
+    # The class tables in FULL. Pinning only the image array let a change to the audio,
+    # video, pdf or native set pass unnoticed while upload behaviour moved.
+    ("audio class array", 'Wt=["mp3","wav","m4a","3gp","flac","ogg","oga","opus"]'),
+    ("video class array", 'Ht=["mp4","webm","ogv","mov","mkv"]'),
+    ("pdf and native class arrays", 'Gt=["pdf"],fo=["md"],ks=["canvas"],ho=["base"]'),
+    # The config-dir rules in FULL, both the ENUMERATION (which paths are candidates) and
+    # the CATEGORY chain (which category each maps to). Pinning one branch of each let a
+    # dropped `theme.css` candidate or a removed `data.json` admission pass unnoticed.
+    ("config queue seed", 'm.push(r+"config")'),
+    (
+        "config: top-level json enumeration",
+        'let g=await u.list(n);for(let F of g.files)$(F)==="json"&&m.push(F)',
+    ),
+    (
+        "config: themes enumeration",
+        'if(await u.exists(r+"themes")){let F=await u.list(r+"themes");for(let b of F.folders)'
+        '{let w=await u.list(b);for(let v of w.files){let A=W(v);(A==="manifest.json"||A==="theme.css")&&m.push(v)}}}',
+    ),
+    (
+        "config: snippets enumeration",
+        'if(await u.exists(r+"snippets")){let F=await u.list(r+"snippets");'
+        'for(let b of F.files)$(b)==="css"&&m.push(b)}',
+    ),
+    (
+        "config: plugins enumeration",
+        'if(await u.exists(r+"plugins")){let F=await u.list(r+"plugins");for(let b of F.folders)'
+        "{let w=await u.list(b);for(let v of w.files){let A=W(v);f.isPluginFile(A)&&m.push(v)}}}",
+    ),
+    ("config: workspace never syncs", 'r==="workspace.json"||r==="workspace-mobile.json"?!1'),
+    ("config category: app", 'r==="app.json"||r==="types.json"?c="app"'),
+    (
+        "config categories: appearance/hotkey/core-plugin/community-plugin",
+        'r==="appearance.json"?c="appearance":r==="hotkeys.json"?c="hotkey":'
+        'r==="core-plugins.json"||r==="core-plugins-migration.json"?c="core-plugin":'
+        'r==="community-plugins.json"?c="community-plugin"',
+    ),
+    (
+        "config category: appearance-data",
+        'o[0]==="themes"&&o.length===3&&(a==="theme.css"||a==="manifest.json")'
+        '||o[0]==="snippets"&&o.length===2&&l==="css"?c="appearance-data"',
+    ),
+    ("config category: core-plugin-data", 'o.length===1&&l==="json"?c="core-plugin-data"'),
+    (
+        "config category: community-plugin-data",
+        'o[0]==="plugins"&&o.length===3&&this.isPluginFile(a)&&(c="community-plugin-data")',
+    ),
+    (
+        "config: plugin file set",
+        'return e==="manifest.json"||e==="main.js"||e==="styles.css"||e==="data.json"',
+    ),
+    (
+        "config: node_modules and dot skip",
+        'if(o.some(f=>f==="node_modules"||f.startsWith(".")))return!1',
+    ),
+    ("config category gate", "c&&this.allowSpecialFiles.has(c)"),
 )
 
 
