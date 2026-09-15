@@ -4898,6 +4898,18 @@ _CLAIM_PUBLICATION_DIRECTORY_RE = re.compile(r"^claim-pub-[0-9a-f]{64}$")
 #: would leave the others holding forever, so this matches the marker and not the
 #: stamp. Tightening it requires first giving the estate a quarantine *verb* —
 #: filed separately, not assumed here.
+#:
+#: "No code produces this name" is the SOLE rationale for a deliberately loose pattern that
+#: skips inspection, so it is recheckable rather than asserted. From the repo root::
+#:
+#:     rg -n 'quarantined-' --glob '!*.md' -- scripts shared agents hooks
+#:
+#: Expected as of 2026-09-15, and stated so the output DECIDES something rather than merely
+#: printing: four hits in this file (this comment and the pattern itself) plus exactly one
+#: unrelated hit, ``scripts/hapax-audio-topology`` returning the audio-domain constant
+#: ``"quarantined-declared-inactive"``. **No hit renames, creates or otherwise emits a
+#: ``claim-pub-<sha>.quarantined-<stamp>`` directory.** If that ever changes, this pattern can
+#: and should be tightened to the grammar the new producer emits.
 _CLAIM_PUBLICATION_QUARANTINED_DIRECTORY_RE = re.compile(
     r"^claim-pub-[0-9a-f]{64}\.quarantined-\S+$"
 )

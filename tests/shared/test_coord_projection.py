@@ -3652,13 +3652,14 @@ def test_rebuilt_noreplace_promotes_a_directory_across_directories(
 ) -> None:
     """Journal materialization renames a whole staged transaction directory into
     the canonical root under NOREPLACE. `link(2)` refuses directories, so this leg
-    cannot use the file rebuild; it checks the destination with `lstat` and then
-    renames, because plain `rename(2)` already carries the NOREPLACE property for
-    directories unconditionally — ENOTEMPTY onto a populated directory, ENOTDIR onto
-    a file — leaving only an empty destination directory to be refused explicitly.
-    A mkdir-reservation design was drafted for this and **rejected**; see
-    `_fallback_noreplace_directory`, which says why. Cross-directory by
-    construction — the shape the ratified design's projection-leg inventory did not
+    cannot use the file rebuild; it lstats the destination and then renames, refusing
+    **any** existing entry with EEXIST — not only an empty directory. This docstring
+    said "leaving only an empty destination directory to be refused explicitly",
+    describing a narrow guard that was never implemented; the empty-directory case is
+    merely the one where the guard is indispensable, since `rename` refuses the other
+    shapes on its own. A mkdir-reservation design was drafted for this and
+    **rejected**; see `_fallback_noreplace_directory`, which says why. Cross-directory
+    by construction — the shape the ratified design's projection-leg inventory did not
     cover."""
 
     staging = tmp_path / "staging"
@@ -6185,9 +6186,18 @@ def test_retire_scratch_absorbs_io_errors_on_every_branch(
     target.write_bytes(b"ours\n")
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
+        # A REDUNDANT scratch, deliberately. With a single link the nlink guard keeps the entry
+        # before the patched `unlink` can raise, so the error handler is never reached and every
+        # assertion below passes while covering nothing — a reviewer showed the body stays green
+        # with that handler deleted. The second link is what makes the removal attempt happen.
+        os.link("scratch", "live-elsewhere", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         expected = os.lstat("scratch", dir_fd=dir_fd)
+        assert expected.st_nlink == 2, "the fixture must be redundant or the unlink is skipped"
+        reached = False
 
         def boom(*args: object, **kwargs: object) -> None:
+            nonlocal reached
+            reached = True
             raise OSError(errno.EIO, os.strerror(errno.EIO), failing)
 
         with caplog.at_level("WARNING"):
@@ -6197,6 +6207,10 @@ def test_retire_scratch_absorbs_io_errors_on_every_branch(
     finally:
         os.close(dir_fd)
 
+    assert reached, (
+        f"the patched {failing} was never called, so the error handler it exists to pin was "
+        "not exercised — check the fixture still reaches the removal attempt"
+    )
     assert freed is False
     assert target.read_bytes() == b"ours\n", "an unreadable or unremovable scratch is left"
     assert cp._SCRATCH_ABANDONED in caplog.text

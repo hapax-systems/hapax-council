@@ -3771,7 +3771,11 @@ def _relocate_to_scratch(
     ``link`` refuses by making a second name for the *live* inode, which puts the live
     projected entry at ``st_nlink == 2``, and :func:`_entry_state_at` rejects that as
     ``transition_projection_path_unsafe``. A placeholder is a separate empty inode, so the
-    live entry is never touched. Measured 2026-09-14 on tmpfs, xfs and the nfs4 export:
+    live entry is never touched. The table below is the property, and it is filesystem
+    -independent — link counts are POSIX semantics, not a mount's choice. The committed test
+    exercises it on whatever filesystem ``tmp_path`` resolves to (xfs in this worktree, tmpfs
+    elsewhere), and the live witness exercises it again on the export, so both rows a reader
+    can reach are reachable by the two invocations below. Measured 2026-09-14:
 
     ===========================================  ==============  ===========================
     after ...                                    live nlink      ``_entry_state_at`` verdict
@@ -4398,23 +4402,47 @@ def _refuse_if_displaced_entry_moved(
     So atomicity was supplying race *detection*, not only atomicity. This re-reads the
     destination's identity immediately before the step that retires it.
 
-    **What is closed:** the *live* names. Retiring an entry by moving it, rather than
-    unlinking or overwriting it, closes the window there — which is where every reproduced
-    loss occurred.
+    **What is closed:** *displacing* a live name. Retiring an entry by moving it, rather than
+    unlinking or overwriting it, closes the window there — which is where every reproduced loss
+    occurred. This paragraph used to say "the live names" without qualification, and a reviewer
+    was right that the unqualified form is false: cleanup can still lose bytes when a writer
+    replaces only the live name, which is residual R1 below.
 
-    **What is closed on the scratch names, and against whom.** Both remaining boundaries —
-    an arrival between the vacancy check and the rename that targets a scratch, and a
-    replacement between cleanup's identity check and its ``unlink`` — are shut against any
-    writer that acquires these names the way this module does. The first by the
-    ``O_CREAT|O_EXCL`` reservation in :func:`_relocate_to_scratch`; the second because the
-    name is occupied for the whole of that gap.
+    **What is closed on the scratch names, and against whom.** An arrival between the vacancy
+    check and the rename that targets a scratch is shut by the ``O_CREAT|O_EXCL`` reservation in
+    :func:`_relocate_to_scratch`, against any writer that acquires these names the way this
+    module does.
 
-    **What is open:** a writer that ignores the protocol — renaming or create-truncating
-    straight onto a scratch name — is excluded by neither, and would not be excluded by a
-    lock in this module either. That boundary is pinned by
-    ``test_a_writer_ignoring_the_protocol_is_not_excluded`` so it cannot be quietly read as
-    closed. Removing the concurrency outright is tracked as
-    ``projection-lock-coverage-projected-path-writers-20260913``.
+    **THE RESIDUAL LIST — the module's single authoritative statement of what is still open.**
+    Kept here rather than only in the comment beside each site, so that reading one function
+    cannot leave a maintainer believing the set is empty. Every entry names its pin and the row
+    that closes it.
+
+    * **R1 — cleanup's conditional unlink can destroy an inode's last name.**
+      :func:`_retire_scratch` removes a scratch only when it is ours *and* ``st_nlink > 1``, but
+      that count is a snapshot: a writer replacing the one remaining name between the read and
+      the unlink leaves the unlink destroying the entry. Measured scope is exactly **two**
+      unlinks — ``.transition-pin`` and ``.transition-spent``, both observed at nlink 2, where
+      removal leaves a single projected name; ``.transition-holding`` is observed at nlink 3 and
+      is safe. No in-function primitive closes it: ``unlink`` takes no condition,
+      ``renameat2(RENAME_EXCHANGE)`` is the flag this mount refuses, and the recoverable-unlink
+      trick fails ``EXDEV`` on tmpfs, xfs and the nfs4 export alike. On NFS ``st_nlink`` even
+      reads 1 after an unlink, so the count is least trustworthy where it matters most.
+      *Reviewed as codex-1 C2, re-classed MAJOR by coordinator adjudication 2026-09-15 with the
+      dissent preserved, on the measured grounds above; not silently downgraded.*
+      **Closed by** ``projection-lock-coverage-projected-path-writers-20260913`` (excluding the
+      writer), or by plumbing the caller's recorded preimage down so removal is conditioned on
+      *reproducibility* rather than redundancy — the alternative closure, for that row's
+      implementer.
+    * **R2 — a writer that ignores the protocol is not excluded from a scratch name.** Renaming
+      or create-truncating straight onto one is bound by neither the reservation nor a lock in
+      this module. Pinned by ``test_a_writer_ignoring_the_protocol_is_not_excluded`` so it
+      cannot be quietly read as closed.
+    * **R3 — a hard crash between a reservation and the rename that consumes it** strands an
+      empty placeholder, and clearing it is manual (:data:`_SCRATCH_REMEDY`). Two adjacent
+      statements wide, and it fails toward refusal rather than toward loss.
+
+    Nothing else in this module is known-open. If you add to that set, add it here.
 
     **The refusal is the typed hold, not a bare errno.** These legs used to raise
     ``OSError(EBUSY)`` and rely on each call site to map it, which worked but described a
