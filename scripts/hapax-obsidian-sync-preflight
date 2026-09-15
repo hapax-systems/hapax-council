@@ -545,7 +545,13 @@ class _LinkPolicy:
         # `listRecursive` pushes every child's scan and awaits Promise.all, so two
         # aliases can both clear the overlap check before either installs its watcher.
         self.root_targets = [os.path.realpath(vault)]
+        # Directory links install a watcher, so they make LATER links overlap. File
+        # links do not — but a later DIRECTORY link can still install a watcher over a
+        # file link's target, and then whether the file link was admitted depends on
+        # which resolved first. So file targets are remembered separately: they never
+        # suppress another file link, but they do make a later directory link ambiguous.
         self.link_targets: list[str] = []
+        self.file_targets: list[str] = []
         self.skipped: list[dict] = []
         self.escaping: list[dict] = []
         self.ambiguous: list[dict] = []
@@ -559,7 +565,12 @@ class _LinkPolicy:
         if any(_overlaps(target, seen) for seen in self.root_targets):
             self.skipped.append({"path": relpath, "target": target})
             return False
+        is_dir = os.path.isdir(target)
         racing = [t for t in self.link_targets if _overlaps(target, t)]
+        if is_dir:
+            # A new directory link would install a watcher over any earlier file
+            # link's target, so that earlier admission was order-dependent too.
+            racing += [t for t in self.file_targets if _overlaps(target, t)]
         if racing:
             # Whether this alias uploads depends on which concurrent scan installs its
             # watcher first. There is no exact answer to report.
@@ -570,8 +581,10 @@ class _LinkPolicy:
         # goes straight to reconcileFileCreation. So a file link is admitted without
         # reserving its target — reserving it would make one file link suppress a
         # later, legitimate upload of the same or an overlapping path.
-        if os.path.isdir(target):
+        if is_dir:
             self.link_targets.append(target)
+        else:
+            self.file_targets.append(target)
         self.escaping.append({"path": relpath, "target": target})
         return True
 
@@ -624,19 +637,18 @@ def predict(
         # by name below. Pruning must precede link registration: ob rejects a hidden
         # path before registering its target, so registering a hidden link's target
         # here would let it suppress a visible link to the same place.
-        # Hidden first: ob rejects a hidden path before registering its target.
+        # Hidden pruning is the ONLY pruning: ob rejects a hidden path before
+        # registering its target, but exclusions do not prune the scan at all.
+        # `listRecursive` reconciles links and installs watchers without consulting
+        # ignoreFolders — `allowSyncFile` applies that later, when deciding what to
+        # upload. So links must be discovered throughout the tree, INCLUDING beneath
+        # excluded directories, or a real scheduling race stays invisible. Exclusions
+        # are applied per FILE below, where they decide what counts.
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-        # Then the link rule — BEFORE exclusion pruning. Scanning and admission are
-        # separate in ob: `listRecursive` reconciles links (and installs watchers)
-        # without consulting ignoreFolders, which is only applied later by
-        # `allowSyncFile`. So an EXCLUDED alias still competes for its target's
-        # watcher, and pruning it first would hide a race that really exists.
         for name in list(dirnames):
             child = os.path.join(dirpath, name)
             if os.path.islink(child) and not links.follow(child, _rel(name), _on_error):
                 dirnames.remove(name)
-        # Exclusions last: they control what COUNTS, not what ob scans.
-        dirnames[:] = [d for d in dirnames if not _excluded(_rel(d), entries)]
 
         for name in filenames:
             if name.startswith("."):
@@ -1038,9 +1050,11 @@ def main(argv: list[str] | None = None) -> int:
             "link already claimed. ob scans siblings CONCURRENTLY (listRecursive awaits "
             "Promise.all), so whether one alias uploads or both do depends on which scan "
             "installs its watcher first — there is no exact prediction to give. Next: "
-            "REMOVE or rename the duplicate link. Excluding it does not help: ob "
-            "reconciles links while scanning and only applies exclusions afterwards, "
-            "so an excluded alias still competes for the watcher.",
+            "DELETE the duplicate link, or retarget it somewhere disjoint, or give it a "
+            "name starting with '.' (hidden paths are rejected before a target is "
+            "registered). A plain rename does NOT help — the target is unchanged — and "
+            "neither does excluding it: ob reconciles links while scanning and applies "
+            "exclusions only afterwards, so an excluded alias still competes.",
             file=sys.stderr,
         )
         return ERROR

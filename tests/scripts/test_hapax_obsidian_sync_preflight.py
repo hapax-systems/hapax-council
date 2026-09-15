@@ -740,9 +740,116 @@ def test_excluding_an_alias_does_not_hide_the_race(
         "--json",
     )
     assert result.returncode == ERROR, result.stdout + result.stderr
-    assert "Excluding it does not help" in result.stderr
+    assert "an excluded alias still competes" in result.stderr
     report = json.loads(result.stdout)
     assert [link["path"] for link in report["symlinks_scheduling_dependent"]] == ["b-link"]
+
+
+def test_link_beneath_an_excluded_parent_is_still_discovered(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """Exclusions do not prune ob's SCAN, so a link nested inside an excluded directory
+    still competes for its target's watcher. Pruning excluded subtrees hid the race
+    entirely — the one case the directly-excluded-alias test could not reach."""
+    outside = tmp_path / "shared"
+    outside.mkdir()
+    (outside / "note.md").write_bytes(b"n" * 77)
+    (vault / "excluded").mkdir()
+    (vault / "excluded" / "nested").symlink_to(outside, target_is_directory=True)
+    (vault / "visible").symlink_to(outside, target_is_directory=True)
+
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages,excluded",
+        "--json",
+    )
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    racy = [link["path"] for link in report["symlinks_scheduling_dependent"]]
+    # Exactly one of the pair is flagged; WHICH one depends on walk order, which is an
+    # artifact of this tool rather than of the client, so only detection is pinned.
+    assert len(racy) == 1, f"race beneath an excluded parent went undetected: {racy}"
+    admitted = [link["path"] for link in report["symlinks_escaping_vault"]]
+    assert sorted(racy + admitted) == ["excluded/nested", "visible"]
+
+
+def test_excluded_subtree_files_are_still_not_counted(vault: pathlib.Path) -> None:
+    """Discovering links inside excluded subtrees must not start COUNTING their files."""
+    (vault / "excluded" / "deep").mkdir(parents=True)
+    (vault / "excluded" / "deep" / "note.md").write_bytes(b"e" * 500)
+    report = json.loads(
+        _run(
+            str(vault),
+            "--excluded-folders",
+            "20-projects/_dashboard,30-areas/hapax/ocr/pages,excluded",
+            "--json",
+        ).stdout
+    )
+    assert report["predicted_upload"]["bytes"] == 161
+    assert not any(p["path"].startswith("excluded/") for p in report["largest_included_files"])
+
+
+def test_file_alias_then_directory_link_is_ambiguous(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """A file link installs no watcher, but a later DIRECTORY link installs one over
+    its target — so whether the file alias was admitted depends on which resolved
+    first. File targets must be remembered even though they never suppress a peer."""
+    outside = tmp_path / "shared"
+    outside.mkdir()
+    (outside / "note.md").write_bytes(b"n" * 77)
+    (vault / "00-inbox").mkdir(exist_ok=True)
+    (vault / "a.md").symlink_to(outside / "note.md")  # sorts before 'sub'
+    (vault / "sub").mkdir()
+    (vault / "sub" / "dirlink").symlink_to(outside, target_is_directory=True)
+
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--json",
+    )
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    racy = [link["path"] for link in json.loads(result.stdout)["symlinks_scheduling_dependent"]]
+    assert racy == ["sub/dirlink"], racy
+
+
+def test_two_file_aliases_to_one_file_stay_exact(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """The other order: neither file link installs a watcher, so both are admitted
+    deterministically and this must NOT refuse."""
+    outside = tmp_path / "shared.md"
+    outside.write_bytes(b"s" * 21)
+    (vault / "a-alias.md").symlink_to(outside)
+    (vault / "b-alias.md").symlink_to(outside)
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--json",
+    )
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["symlinks_scheduling_dependent"] == []
+    assert report["predicted_upload"]["bytes"] == 161 + 21 + 21
+
+
+def test_refusal_names_actions_that_actually_work(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """A plain rename leaves the target unchanged and re-triggers the refusal, so it
+    must not be offered as a remedy."""
+    outside = tmp_path / "shared"
+    outside.mkdir()
+    (outside / "note.md").write_bytes(b"n" * 31)
+    (vault / "a-link").symlink_to(outside, target_is_directory=True)
+    (vault / "b-link").symlink_to(outside, target_is_directory=True)
+    err = _run(str(vault), "--excluded-folders", "20-projects/_dashboard").stderr
+    assert "DELETE" in err
+    assert "retarget" in err
+    assert "A plain rename does NOT help" in err
 
 
 def test_emitted_path_collision_is_refused(vault: pathlib.Path) -> None:
