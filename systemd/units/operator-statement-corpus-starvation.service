@@ -1,0 +1,7 @@
+[Unit]
+Description=Detect stale operator statement corpus producer
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 /home/hapax/projects/hapax-council/scripts/operator_statement_corpus.py --check-starvation
+
