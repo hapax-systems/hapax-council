@@ -604,8 +604,22 @@ jobs:
         # blank cells silently, so fail loud here with diagnostic output.
         run: |
           uv run --no-sync python scripts/ci_verify_pango_font.py "Px437 IBM VGA 8x16"
+      - name: Stage pinned Reins test source
+        env:
+          REINS_TEST_COMMIT: edf05c05615df083d8dfd90ad1c11d88ba88761e # pragma: allowlist secret (git commit identifier, not a credential)
+          REINS_TEST_SOURCE: ${{ runner.temp }}/reins
+        run: |
+          set -euo pipefail
+          trap 'echo "Reins test source staging failed for commit $REINS_TEST_COMMIT. Next action: check GitHub reachability and access to hapax-systems/reins, verify the pinned commit is available and the runner temporary directory is writable, then rerun the job." >&2' ERR
+          git clone --depth 1 --no-checkout https://github.com/hapax-systems/reins.git "$REINS_TEST_SOURCE"
+          git -C "$REINS_TEST_SOURCE" fetch --depth 1 origin "$REINS_TEST_COMMIT"
+          git -C "$REINS_TEST_SOURCE" checkout --detach "$REINS_TEST_COMMIT"
+          actual_commit="$(git -C "$REINS_TEST_SOURCE" rev-parse HEAD)"
+          echo "$actual_commit"
+          test "$actual_commit" = "$REINS_TEST_COMMIT"
       - name: Run full pytest shard
         env:
+          HAPAX_REINS_TEST_SOURCE_API: ${{ runner.temp }}/reins/api
           LITELLM_BASE_URL: "http://0.0.0.0:1"
           QDRANT_URL: "http://0.0.0.0:1"
           OLLAMA_HOST: "http://0.0.0.0:1"
