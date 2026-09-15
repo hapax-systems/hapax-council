@@ -95,12 +95,22 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     REVIEW_TEAM_QUORUM_EVIDENCE,
     TASK_MERGE_READY_STATUSES,
     ReleaseAutoArmAssessment,
-    acceptance_receipt_blockers,
-    apply_release_auto_arm,
     assess_release_auto_arm,
-    frontmatter_from_text,
     release_auto_arm_waivers,
     task_closure_validity,
+)
+from shared.sdlc_note_contract import (  # noqa: E402
+    FRONTMATTER_ABSENT,
+    FRONTMATTER_EMPTY_BLOCK,
+    FRONTMATTER_INVALID_OPENING_FENCE,
+    FRONTMATTER_NOT_A_MAPPING,
+    FRONTMATTER_PARSE_ERROR,
+    FRONTMATTER_UNTERMINATED,
+    acceptance_receipt_blockers,
+    apply_release_auto_arm,
+    frontmatter_block_text,
+    frontmatter_from_text,
+    frontmatter_state_from_text,
 )
 
 LOG = logging.getLogger("cc-pr-autoqueue")
@@ -1681,21 +1691,49 @@ def _frontmatter(path: Path) -> tuple[dict[str, Any] | None, str | None]:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         return None, f"unreadable: {exc.__class__.__name__}"
-    if not text.startswith("---"):
-        return None, "no frontmatter fence"
-    end = text.find("\n---", 3)
-    if end == -1:
-        return None, "unterminated frontmatter fence"
-    raw = text[3:end].strip()
-    if "\x1b[" in raw:
+    # Fence scanning and YAML loading come from the SHARED parser. This function
+    # used to carry its own copy (``text.find("\n---", 3)``), which truncated the
+    # block at any line merely *starting* with ``---`` — a legal YAML key such as
+    # ``---extra: abc``. Admission then saw no arming declaration on a note whose
+    # close gate demanded a receipt, so the row was admitted while being
+    # unclosable. One parser, one reading.
+    #
+    # The ANSI check and the typed reason strings stay here: they are this
+    # caller's legibility contract (operator directive 2026-06-10 — a reason code
+    # must name the true failure), not parsing.
+    parsed, state = frontmatter_state_from_text(text)
+    # The region scanned comes from the shared parser, so "region checked equals
+    # region parsed" is structural rather than two walks that happen to agree.
+    block_text, _ = frontmatter_block_text(text)
+    if "\x1b[" in block_text:
         # ANSI escapes silently break YAML and made a task invisible on
         # 2026-06-10 (admission reported missing_cc_task_link — a lie).
+        # Scoped to the FRONTMATTER BLOCK, never the whole file: colored command
+        # output pasted into a session-log body is harmless to the metadata, and
+        # rejecting on it drops the task from load_task_notes and blocks its PR
+        # as unlinked — the same "reason code names the wrong failure" defect
+        # this check exists to prevent, pointed the other way.
         return None, "ANSI escape sequences in frontmatter"
-    try:
-        parsed = yaml.safe_load(raw) or {}
-    except yaml.YAMLError as exc:
-        return None, f"YAML error: {str(exc).splitlines()[0][:90]}"
-    if not isinstance(parsed, dict):
+    if state == FRONTMATTER_INVALID_OPENING_FENCE:
+        # The first line attempted a marker and is not one (e.g. "---extra: [").
+        # Must NOT read as valid-empty: the loader would drop the note and
+        # admission would report a missing task link with no repair diagnostic —
+        # the 2026-06-10 "reason code names the wrong failure" shape again.
+        # The shared parser now classifies this, so both surfaces agree.
+        return None, "invalid opening frontmatter fence"
+    if state == FRONTMATTER_EMPTY_BLOCK:
+        # A real marker pair enclosing nothing. The walk reports this as its own
+        # state, so the distinction from "no fence at all" is structural — this
+        # branch used to re-read line 0 with is_frontmatter_fence, a second
+        # reading of a fact the parser already had.
+        return parsed, None
+    if state == FRONTMATTER_ABSENT:
+        return None, "no frontmatter fence"
+    if state == FRONTMATTER_UNTERMINATED:
+        return None, "unterminated frontmatter fence"
+    if state == FRONTMATTER_PARSE_ERROR:
+        return None, "YAML error: frontmatter did not parse"
+    if state == FRONTMATTER_NOT_A_MAPPING:
         return None, "frontmatter is not a mapping"
     return parsed, None
 
@@ -1822,9 +1860,12 @@ def _task_blockers(
     if require_route_metadata and task.route_metadata_schema != 1:
         blockers.append("task_missing_route_metadata_schema_1")
 
-    # Routing Phase 0.2: review-floor (frontier_review_required) tasks admit
-    # only with a signed acceptance receipt beside the note. Applies to active
-    # and closed task links alike; non-review-floor tasks return no blockers.
+    # Routing Phase 0.2: receipt-ARMED tasks admit only with a signed acceptance
+    # receipt beside the note. Armed = the frontier_review_required floor OR a
+    # declared review_requirement.independent_review_required (see
+    # shared.sdlc_lifecycle.acceptance_receipt_triggers) — not floor-only, since
+    # a row may demand independent review under any floor. Applies to active and
+    # closed task links alike; a row with neither declaration returns no blockers.
     blockers.extend(acceptance_receipt_blockers(task.frontmatter, task.path))
 
     # Review-team quorum gate (CASE-ROUTING-OPERATIONALIZATION-20260609): every
@@ -2833,13 +2874,18 @@ def arm_release_for_task(
             return True, "note_unchanged"
         reasons = ",".join(pre_arm_assessment.blockers or ("not_eligible",))
         return False, f"release_auto_arm_ineligible:{reasons}"
-    armed = apply_release_auto_arm(
+    armed, refusal = apply_release_auto_arm(
         text,
         now_iso=now_iso,
         role=role,
         head_sha=expected_head_sha,
         head_ref=head_ref,
     )
+    if refusal:
+        # Named separately from "note_unchanged", which this function also
+        # returns for an already-armed note: an eligible task whose note cannot
+        # be written exactly is a refusal with a repair, not a no-op success.
+        return False, f"release_auto_arm_write_refused:{refusal}"
     if armed == text:
         return False, "note_unchanged"
     try:

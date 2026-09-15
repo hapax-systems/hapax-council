@@ -9691,6 +9691,198 @@ def test_blocks_review_floor_pr_without_acceptance_receipt(tmp_path: Path) -> No
     assert "missing_acceptance_receipt" in report["decisions"][0]["reasons"]
 
 
+def test_admission_sees_a_demand_below_a_dash_prefixed_yaml_key(tmp_path: Path) -> None:
+    """Admission must read the same declaration the close gate reads.
+
+    ``---extra: abc`` is a legal YAML key. Autoqueue's private fence scan
+    truncated the block there, so admission saw no arming declaration on a note
+    whose close gate demanded a receipt — the closure trap. Exercised through
+    ``run_reconciler``, not by comparing parsers, so restoring the private scan
+    fails here.
+    """
+    vault = _make_vault(tmp_path)
+    (vault / "active" / "dash-key-task.md").write_text(
+        "---\n"
+        "type: cc-task\n"
+        "task_id: dash-key-task\n"
+        "status: pr_open\n"
+        "assigned_to: delta\n"
+        "pr: 93\n"
+        "pr_repo: owner/repo\n"
+        "branch: feat/93\n"
+        "risk_tier: T2\n"
+        "quality_floor: verification_receipt\n"
+        "authority_case: CASE-TEST\n"
+        "parent_spec: docs/spec.md\n"
+        "route_metadata_schema: 1\n"
+        "mutation_surface: source\n"
+        "authority_level: support_non_authoritative\n"
+        "---extra: abc\n"
+        "review_requirement:\n"
+        "  independent_review_required: true\n"
+        "---\n\n# dash-key-task\n",
+        encoding="utf-8",
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(93)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert "missing_acceptance_receipt" in report["decisions"][0]["reasons"]
+
+
+def test_invalid_opening_fence_is_diagnosed_not_silently_empty(tmp_path: Path) -> None:
+    """An attempted-but-invalid fence must not read as valid empty frontmatter.
+
+    For a note beginning ``---extra: [`` the loader would otherwise drop the
+    note with TASK_NOTE_PARSE_FAILURES empty, so admission reports a missing
+    task link with no repair diagnostic — the 2026-06-10 "reason code names the
+    wrong failure" shape.
+    """
+    vault = _make_vault(tmp_path)
+    note = vault / "active" / "bad-fence.md"
+    note.write_text("---extra: [\ntask_id: bad-fence\n---\nbody\n", encoding="utf-8")
+
+    parsed, error = autoqueue._frontmatter(note)
+
+    assert parsed is None
+    assert error == "invalid opening frontmatter fence"
+
+
+def test_empty_frontmatter_between_real_fences_is_not_an_error(tmp_path: Path) -> None:
+    """The distinction the diagnostic above depends on: a real fence enclosing nothing."""
+    vault = _make_vault(tmp_path)
+    note = vault / "active" / "empty-fm.md"
+    note.write_text("---\n---\nbody\n", encoding="utf-8")
+
+    parsed, error = autoqueue._frontmatter(note)
+
+    assert error is None
+    assert parsed == {}
+
+
+def test_ansi_in_the_body_does_not_invalidate_the_metadata(tmp_path: Path) -> None:
+    """The ANSI check is scoped to the frontmatter block, not the whole file.
+
+    Colored command output pasted into a session log is harmless to the
+    metadata. Rejecting on it drops the task from the loader and blocks its PR
+    as *unlinked* — the same "reason code names the wrong failure" defect the
+    ANSI check exists to prevent, pointed the other way.
+    """
+    vault = _make_vault(tmp_path)
+    note = vault / "active" / "body-ansi-task.md"
+    _write_task(vault, task_id="body-ansi-task", pr=94)
+    note.write_text(
+        note.read_text(encoding="utf-8") + "\n## Session log\n\n\x1b[32mgreen output\x1b[0m\n",
+        encoding="utf-8",
+    )
+
+    parsed, error = autoqueue._frontmatter(note)
+
+    assert error is None, f"body ANSI wrongly rejected the note: {error}"
+    assert parsed is not None and parsed["task_id"] == "body-ansi-task"
+
+
+def test_ansi_inside_crlf_frontmatter_is_still_rejected(tmp_path: Path) -> None:
+    """A CRLF note with escapes in its frontmatter is still rejected.
+
+    Note for anyone extending this: it does NOT pin the fence predicate's CR
+    tolerance. ``Path.read_text`` performs universal-newline translation, so no
+    CR survives to reach the predicate on this path. The caller where CR does
+    survive is ``sdlc_task_store._snapshot``, which decodes raw bytes — pinned in
+    ``tests/test_sdlc_closed_loop_e2e.py``.
+    """
+    vault = _make_vault(tmp_path)
+    note = vault / "active" / "crlf-ansi.md"
+    note.write_bytes(
+        b"---\r\ntype: cc-task\r\ntask_id: crlf-ansi\r\n"
+        b"status: \x1b[32mready\x1b[0m\r\n---\r\n\r\nbody\r\n"
+    )
+
+    parsed, error = autoqueue._frontmatter(note)
+
+    assert parsed is None
+    assert error == "ANSI escape sequences in frontmatter"
+
+
+def test_ansi_inside_the_frontmatter_is_still_rejected(tmp_path: Path) -> None:
+    """The original incident shape stays caught (2026-06-10)."""
+    vault = _make_vault(tmp_path)
+    note = vault / "active" / "fm-ansi-task.md"
+    note.write_text(
+        "---\ntype: cc-task\ntask_id: fm-ansi-task\nstatus: \x1b[32mready\x1b[0m\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    parsed, error = autoqueue._frontmatter(note)
+
+    assert parsed is None
+    assert error == "ANSI escape sequences in frontmatter"
+
+
+def test_blocks_non_frontier_pr_declaring_independent_review_without_receipt(
+    tmp_path: Path,
+) -> None:
+    """Admission arms on the declaration, not only the floor.
+
+    A `verification_receipt` row demanding independent review must be held the
+    same way a frontier-floor row is; before PR #4669 it admitted freely.
+    """
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="independent-review-task",
+        pr=90,
+        quality_floor="verification_receipt",
+        authority_level="support_non_authoritative",
+        extra_frontmatter={"review_requirement": {"independent_review_required": True}},
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(90)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    assert report["counts"]["blocked"] == 1
+    assert "missing_acceptance_receipt" in report["decisions"][0]["reasons"]
+
+
+def test_admits_non_frontier_pr_declining_independent_review(tmp_path: Path) -> None:
+    """The widening is scoped: an explicit decline is not held."""
+    vault = _make_vault(tmp_path)
+    _write_task(
+        vault,
+        task_id="declining-task",
+        pr=91,
+        quality_floor="verification_receipt",
+        authority_level="support_non_authoritative",
+        extra_frontmatter={"review_requirement": {"independent_review_required": False}},
+    )
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(91)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        runner=runner,
+    )
+
+    reasons = report["decisions"][0].get("reasons", []) if report["decisions"] else []
+    assert "missing_acceptance_receipt" not in reasons
+    assert report["counts"]["blocked"] == 0
+
+
 def test_queues_review_floor_pr_with_acceptance_receipt(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
     _write_task(

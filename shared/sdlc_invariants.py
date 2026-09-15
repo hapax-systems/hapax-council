@@ -48,12 +48,12 @@ from shared.sdlc_lifecycle import (
     SDLC_STAGE_METADATA,
     TASK_TERMINAL_STATUSES,
     StageMetadataError,
-    frontmatter_from_text,
     is_active_blocked_with_evidence,
 )
 from shared.sdlc_lifecycle import (
     stage_token as _stage_token,
 )
+from shared.sdlc_note_contract import frontmatter_from_text
 
 #: Authority-case stage-transition ledger this monitor reads (the trace input).
 DEFAULT_AUTHORITY_LEDGER = Path(os.path.expanduser("~/.cache/hapax/authority-case-ledger.jsonl"))
