@@ -39,9 +39,19 @@ Usage:
     hapax-obsidian-sync-preflight VAULT --from-sync-config          # audit the LIVE list
     hapax-obsidian-sync-preflight VAULT --from-sync-config --json
 
-Exit: 0 list valid (prediction printed); 2 refused — an entry cannot match, so the
-list would fail open; 3 usage error, IO error, no sync config, or an incomplete
-traversal (a partial total must never read as successful verification).
+Exit codes:
+
+* **0** — the list is appliable and the prediction is exact.
+* **2** — refused because the list would FAIL OPEN: an entry cannot match anything, or a
+  ``--from-sync-config`` audit found no exclusions configured at all.
+* **3** — refused because no exact prediction exists. Either the input is unusable (usage
+  error, not a directory, no sync config, a malformed or unrecognized config, an invalid
+  ``configDir`` or ``--file-types``), or the client's own outcome is not determinable:
+  an incomplete traversal (a partial total must never read as successful verification),
+  two symlinks racing for one target, or two files whose emitted paths are the same.
+
+The last group is the point of the tool as much as the first: where ob's result depends on
+scheduling or on a name it cannot find, saying so beats reporting a plausible number.
 
 Recheck every claim in this docstring — the exit statuses and each replayed rule:
 
@@ -98,10 +108,6 @@ Rules replayed from obsidian-headless 0.0.14 ``cli.js``:
     for any field not in ``us`` — an EMPTY field included, so ``,`` and ``image,`` are
     rejected. Only the exact empty string restores the defaults.
 
-Where the client's own outcome is not determinate, this refuses instead of guessing:
-``listRecursive`` scans siblings concurrently, so two directory links resolving to one
-target can both clear the overlap check before either installs its watcher, and
-whether one or both upload depends on scheduling.
   * exclusions precede everything — the ``ignoreFolders`` loop runs before the
     hidden-path check and before the config-dir branch, so an entry naming a hidden
     or config-dir path does match.
@@ -175,9 +181,9 @@ class _Parser(argparse.ArgumentParser):
 # `Xc = / | /g` — so the emitted name has nonbreaking (U+00A0) and narrow
 # nonbreaking (U+202F) spaces rewritten to ORDINARY spaces before NFC runs. Held as
 # codepoints rather than literals because the characters are invisible in source.
-# `_e` only collapses repeated slashes and trims leading/trailing ones, a no-op for
-# the relative paths a directory walk builds, so it is deliberately not replicated:
-# doing so would mask a malformed path we construct ourselves.
+# `_e` runs FIRST and is replicated in full by `_e_path` below — it collapses runs of
+# forward slashes and U+005C alike, which is not a no-op on a filesystem where U+005C is
+# a legal filename character.
 _EMITTED_SPACE_CODEPOINTS = (0x00A0, 0x202F)
 _SLASH_RUN_RE = re.compile(r"[\\/]+")  # cli.js `_e`: /([\\/])+/g -> "/"
 
@@ -598,15 +604,22 @@ class _EmittedNamespace:
     holding two spellings of one emitted name yields that name twice and the second
     write simply overwrites the first.
 
-    This deliberately DEDUPES rather than refusing. An earlier revision treated a shared
-    emitted path as an ambiguity to refuse, which was an approximation: with
-    `_resolves_to` in place, a name whose normalization changes it is dropped outright
-    because ob cannot find it, so on a byte-preserving filesystem two entries cannot both
-    claim one path. What remains is this bookkeeping, which keeps the config scan from
-    counting one file twice through two candidate spellings.
+    A shared emitted path means different things in the two scans, so `claim` takes
+    `ambiguous_when_shared` rather than applying one rule to both:
 
-    It lives here rather than inside a walk because that is the defect shape this file
-    has hit four times: a second scan silently bypassing a guard built for the first.
+    * MAIN walk — two spellings are two separate reconciles writing the same key, and
+      `listRecursive` runs them concurrently, so whose CONTENT lands at that remote path
+      depends on scheduling. `main` refuses on these.
+    * CONFIG scan — both candidates look the SAME emitted path up, so they stat one file
+      and the duplicate adds nothing. Counted once, reported, not refused.
+
+    Note that a name whose normalization changes it is usually gone before it gets here:
+    in the main walk `_lookup_resolves` drops it when the `_e` lookup finds nothing, and
+    in the config scan the emitted lookup does the same. What reaches `claim` is the
+    residue where both spellings really are findable.
+
+    It lives here rather than inside a walk because that is the defect shape this file has
+    hit four times: a second scan silently bypassing a guard built for the first.
     """
 
     def __init__(self) -> None:
@@ -793,14 +806,16 @@ def predict(
             ):
                 dirnames.remove(name)
 
-        # Register the emitted namespace for EVERY visible entry, directory or file,
-        # before any admission filter. Two on-disk names can normalize to one emitted
-        # path — an NFD and an NFC spelling, a nonbreaking and an ordinary space, or a
-        # backslash rewritten to a separator — and ob keys remote entries by that path,
-        # so they are the same remote entry and which local one survives is not
-        # determinable here. Registering only ADMITTED files missed collisions against a
-        # directory, an excluded file or an oversized one, any of which still occupies
-        # the name.
+        # Register the emitted namespace for EVERY visible entry, directory or file, and
+        # before any admission filter: a directory, an excluded file or an oversized one
+        # still occupies the name, so registering only ADMITTED files missed collisions
+        # against them.
+        #
+        # Two on-disk names can normalize to one emitted path — an NFD and an NFC
+        # spelling, or a nonbreaking and an ordinary space — and ob keys remote entries by
+        # that path, so they are one remote entry. A U+005C name does NOT reach this point:
+        # the `_e` lookup above cannot find it, so it is dropped as unresolvable rather
+        # than competing for the name.
         for name in list(dirnames) + list(filenames):
             if name.startswith("."):
                 continue
@@ -1134,8 +1149,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     bad = [f for f in findings if f["verdict"] != "ok"]
     effective = [f["normalized"] for f in findings if f["verdict"] == "ok"]
-    # One policy across both walks: ob's watcher set is global, so a target accepted
-    # in the main tree must not be re-followed from the config dir either.
+    # The link policy governs the MAIN walk only — the config scan reaches files through
+    # `adapter.list`/`stat`, which never consult the watcher set. The emitted NAMESPACE is
+    # shared, because ob has one remote keyspace for both trees.
     links = _LinkPolicy(vault)
     namespace = _EmittedNamespace()
     prediction = predict(

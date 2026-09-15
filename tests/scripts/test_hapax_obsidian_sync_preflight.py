@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import warnings
@@ -1675,6 +1676,33 @@ def test_config_scan_does_not_invent_depths(vault: pathlib.Path, tmp_path: pathl
     report = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
     assert report["config_uploads"]["bytes"] == 11
     assert set(report["config_uploads"]["by_category"]) == {"community-plugin-data"}
+
+
+def test_docs_do_not_reference_nonexistent_helpers() -> None:
+    """Documentation drift has been a finding in five separate review rounds, including a
+    docstring citing `_resolves_to` after it was renamed. Names of OUR helpers are
+    mechanically checkable, so check them instead of re-reading prose each round.
+
+    Deliberately narrow: only identifiers with an internal underscore (or a leading
+    underscore and a capital) are treated as ours, which excludes the many cli.js names
+    the docs quote (`_e`, `Ne`, `Cs`, `Is`, `Kr`, `ws`, `Ss`).
+    """
+    source = SCRIPT.read_text(encoding="utf-8")
+    ours = re.compile(r"`{1,2}(_[a-z][a-z0-9]*_[a-z0-9_]+|_[A-Z][A-Za-z]+)`{1,2}")
+    referenced = {m.group(1) for m in ours.finditer(source)}
+    assert referenced, "the extraction found nothing; the pattern has rotted"
+    missing = sorted(name for name in referenced if not hasattr(preflight, name))
+    assert not missing, f"docs reference names that do not exist: {missing}"
+
+
+def test_documented_exit_codes_match_the_constants() -> None:
+    """The docstring promises 0/2/3 with specific meanings; pin the numbers so a renamed
+    or renumbered constant cannot leave the contract describing the wrong behaviour."""
+    doc = preflight.__doc__ or ""
+    assert "Exit codes:" in doc
+    assert (preflight.OK, preflight.REFUSED, preflight.ERROR) == (0, 2, 3)
+    for code in ("**0**", "**2**", "**3**"):
+        assert code in doc, f"exit code {code} is not documented"
 
 
 def test_source_has_no_invalid_escape_sequences() -> None:
