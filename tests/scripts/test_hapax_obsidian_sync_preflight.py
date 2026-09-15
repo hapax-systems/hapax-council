@@ -1650,11 +1650,18 @@ def test_invalid_config_dir_is_refused(
     assert "Next:" in result.stderr
 
 
-def test_nonexistent_config_candidate_is_dropped_not_an_error(
+def test_one_dangling_child_aborts_the_whole_config_scan(
     vault: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
-    """ob checks `exists()` and deletes the entry, so a dangling or absent candidate
-    is not a traversal failure — only a real read error is."""
+    """`adapter.list` stats EVERY child, and that stat follows symlinks — so one dangling
+    child raises, the throw escapes `list()` into the config scan's single try/catch, and
+    ob logs "Failed to scan config files" having indexed nothing.
+
+    An earlier version of this test asserted the opposite: exit 0 with the dangling
+    candidate quietly skipped and its 19-byte sibling counted. That certified a prediction
+    the client does not deliver — the fail-open shape this tool exists to prevent — so the
+    assertion is inverted here rather than preserved.
+    """
     obsidian = vault / ".obsidian"
     obsidian.mkdir()
     (obsidian / "app.json").symlink_to(obsidian / "gone.json")  # dangling
@@ -1667,11 +1674,35 @@ def test_nonexistent_config_candidate_is_dropped_not_an_error(
         allowSpecialFiles=["app", "appearance"],
     )
     result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert "FLOOR" in result.stderr
+    report = json.loads(result.stdout)
+    assert report["config_uploads"]["bytes"] == 0, "the sibling was counted anyway"
+    assert any("app.json" in e["path"] for e in report["traversal_errors"])
+
+
+def test_absent_candidate_that_is_never_listed_is_not_an_error(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """The other side: a candidate ob SYNTHESISES rather than lists — `<cfg>/config`, or a
+    plugin's `data.json` that simply is not there — is absent without anything failing, so
+    it is dropped quietly and the rest of the scan still counts."""
+    obsidian = vault / ".obsidian"
+    (obsidian / "plugins" / "dv").mkdir(parents=True)
+    (obsidian / "plugins" / "dv" / "main.js").write_bytes(b"m" * 11)  # no data.json beside it
+    (obsidian / "appearance.json").write_bytes(b"b" * 19)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["appearance", "community-plugin-data"],
+    )
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
     assert result.returncode == OK, result.stdout + result.stderr
     report = json.loads(result.stdout)
     assert report["traversal_errors"] == []
-    assert report["config_uploads"]["bytes"] == 19
-    assert set(report["config_uploads"]["by_category"]) == {"appearance"}
+    assert report["config_uploads"]["bytes"] == 30  # 19 + 11
 
 
 def test_config_scan_covers_each_enumerated_shape(

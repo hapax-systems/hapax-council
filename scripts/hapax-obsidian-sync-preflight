@@ -477,12 +477,31 @@ def predict_config_uploads(
     if not configs or not root.is_dir():
         return _result()
 
+    class _EnumerationAborted(Exception):
+        """`adapter.list` stats every child, so one unstattable child kills the scan."""
+
     def _listdir(path: Path) -> list[str]:
+        """Mirror cli.js ``adapter.list``: readdir, then ``stat`` EVERY child.
+
+        That stat follows symlinks, so a single dangling child raises — and the throw
+        propagates out of `list()` to the config scan's one big try/catch, which logs
+        "Failed to scan config files" and indexes NOTHING this cycle. Using a name-only
+        listdir and dropping individual candidates certified a prediction ob will not
+        deliver: measured, a dangling `.obsidian/app.json` beside a real 19-byte
+        `appearance.json` made this report 19 bytes where the client reports none.
+        """
         try:
-            return sorted(os.listdir(path))
+            names = sorted(os.listdir(path))
         except OSError as exc:
             _on_error(exc)
-            return []
+            raise _EnumerationAborted from exc
+        for name in names:
+            try:
+                os.stat(path / name)
+            except OSError as exc:
+                _on_error(exc)
+                raise _EnumerationAborted from exc
+        return names
 
     # The config scan is NOT a recursive walk. cli.js enumerates a fixed set of
     # shapes through `adapter.list` / `exists` / `stat` (all of which FOLLOW symlinks,
@@ -494,29 +513,36 @@ def predict_config_uploads(
     # upload — which is why _LinkPolicy is deliberately not used here. The emitted
     # NAMESPACE is shared, though: ob has one remote keyspace for both trees.
     candidates: list[str] = ["config"]
-    candidates += [n for n in _listdir(root) if _extension(n) == "json"]
-    # `u.list()` splits into folders and files, and cli.js iterates only `.folders`
-    # under themes/ and plugins/ — so a stray FILE there is skipped, not descended.
-    # Building candidates under it would stat `plugins/somefile/manifest.json` and
-    # raise ENOTDIR, turning a case ob ignores into a refusal.
-    themes = root / "themes"
-    if themes.is_dir():
-        for theme in _listdir(themes):
-            if not (themes / theme).is_dir():
-                continue
-            candidates += [
-                f"themes/{theme}/manifest.json",
-                f"themes/{theme}/theme.css",
-            ]
-    snippets = root / "snippets"
-    if snippets.is_dir():
-        candidates += [f"snippets/{n}" for n in _listdir(snippets) if _extension(n) == "css"]
-    plugins = root / "plugins"
-    if plugins.is_dir():
-        for plugin in _listdir(plugins):
-            if not (plugins / plugin).is_dir():
-                continue
-            candidates += [f"plugins/{plugin}/{n}" for n in sorted(_PLUGIN_FILES)]
+    try:
+        candidates += [n for n in _listdir(root) if _extension(n) == "json"]
+        # `u.list()` splits into folders and files, and cli.js iterates only `.folders`
+        # under themes/ and plugins/ — so a stray FILE there is skipped, not descended.
+        # Building candidates under it would stat `plugins/somefile/manifest.json` and
+        # raise ENOTDIR, turning a case ob ignores into a refusal.
+        themes = root / "themes"
+        if themes.is_dir():
+            for theme in _listdir(themes):
+                if not (themes / theme).is_dir():
+                    continue
+                candidates += [
+                    f"themes/{theme}/manifest.json",
+                    f"themes/{theme}/theme.css",
+                ]
+        snippets = root / "snippets"
+        if snippets.is_dir():
+            candidates += [f"snippets/{n}" for n in _listdir(snippets) if _extension(n) == "css"]
+        plugins = root / "plugins"
+        if plugins.is_dir():
+            for plugin in _listdir(plugins):
+                if not (plugins / plugin).is_dir():
+                    continue
+                candidates += [f"plugins/{plugin}/{n}" for n in sorted(_PLUGIN_FILES)]
+    except _EnumerationAborted:
+        # ob's scan is one try/catch around the whole thing: the throw aborts it, nothing
+        # is indexed, and it logs "Failed to scan config files". So no config file uploads
+        # this cycle — and the traversal error already recorded sends this to the exit-3
+        # guard, because a config sync that silently does nothing is not a clean result.
+        return _result()
 
     for rel in candidates:
         rel_emitted = _emitted(rel)
