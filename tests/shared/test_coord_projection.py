@@ -5565,19 +5565,37 @@ def test_every_docstring_recheck_selector_actually_selects_something() -> None:
     could not be confirmed from the review packet; this confirms them from the suite instead.
     """
 
+    import ast
     import inspect
 
-    own_source = inspect.getsource(sys.modules[__name__])
-    integration_source = (
-        Path(__file__).with_name("test_coord_projection_nfs_integration.py").read_text()
-    )
+    # Match against PARSED FUNCTION NAMES, not source text. The first version of this test
+    # fell back to `selector in haystack`, and `haystack` was the whole module source — which
+    # contains `_DOCSTRING_RECHECK_SELECTORS` itself, so every selector matched its own
+    # declaration. A reviewer renamed every test function in memory and the assertion still
+    # passed. A test that cannot fail is the defect this test exists to catch, committed inside
+    # the test that catches it.
+    def collected_test_names(path: Path) -> set[str]:
+        tree = ast.parse(path.read_text())
+        return {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+        }
+
+    here = Path(inspect.getsourcefile(sys.modules[__name__]) or __file__)
+    names = {
+        __name__: collected_test_names(here),
+        "nfs_integration": collected_test_names(
+            here.with_name("test_coord_projection_nfs_integration.py")
+        ),
+    }
     module_source = inspect.getsource(cp)
 
     for selector, where in _DOCSTRING_RECHECK_SELECTORS:
-        haystack = own_source if where == __name__ else integration_source
-        assert f"def test_{selector}" in haystack or f"{selector}" in haystack, (
-            f"the docstring recheck selector {selector!r} matches no test — the -k command "
-            "would select nothing and exit without checking anything"
+        assert any(selector in name for name in names[where]), (
+            f"the docstring recheck selector {selector!r} matches no collected test in "
+            f"{where} — `pytest -k {selector}` would select nothing and exit without "
+            "checking anything, which is the invisible skip this pins"
         )
         assert selector in module_source, (
             f"{selector!r} is pinned here but no longer cited by any docstring; drop it from "

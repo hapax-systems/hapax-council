@@ -4221,17 +4221,33 @@ def _retire_scratch(
     ``transition_projection_path_unsafe`` on the very next readback. Not removing would break
     every following transaction on that operand, so "never unlink" is unavailable here.
 
-    **The residual, stated plainly because it is not closable at this layer.** The removal is
-    guarded by identity *and* by ``st_nlink > 1``, which together mean it loses nothing in every
-    interleaving this module can observe. It is still a check followed by an act: a reviewer
-    replayed a rollback in which a writer replaces the live name after the count is read, so the
-    scratch holds the displaced inode's last name at the instant of the unlink and the bytes go.
-    No primitive fixes that — measured 2026-09-15 on tmpfs, xfs and the nfs4 export,
-    ``unlink`` takes no condition, ``renameat2(RENAME_EXCHANGE)`` is the flag this mount
-    refuses, and the recoverable-unlink trick (hold an fd, unlink, re-link from
-    ``/proc/self/fd``) fails ``EXDEV`` on all three. What closes it is excluding the writer:
-    ``projection-lock-coverage-projected-path-writers-20260913``. Tracking is not doing, and
-    this sentence is not a closure.
+    **The residual, measured rather than described, because it is not closable at this layer.**
+    The removal is guarded by identity *and* by ``st_nlink > 1``, which together lose nothing in
+    every interleaving this module can observe. It is still a check followed by an act, so the
+    question is which removals have only one other name to fall back on. Measured on the
+    exchange leg, 2026-09-15 — the counts cleanup actually observes:
+
+    ===============================  =======  ==========================================
+    scratch                          nlink    removing it leaves
+    ===============================  =======  ==========================================
+    ``.transition-holding``          3        two names — safe even if one then vanishes
+    ``.transition-pin``              2        **one** name, and it is a projected path
+    ``.transition-spent``            2        **one** name, and it is a projected path
+    ===============================  =======  ==========================================
+
+    So the residual is exactly **two** unlinks, not one and not all three: a writer replacing
+    that single remaining name between the count and the unlink destroys the inode. (I had
+    assumed the guard already saved the last name everywhere; the measurement says that holds
+    for ``holding`` only.)
+
+    No primitive fixes it. Measured the same day on tmpfs, xfs and the nfs4 export: ``unlink``
+    takes no condition; ``renameat2(RENAME_EXCHANGE)`` is the flag this mount refuses, which is
+    why this module exists; and the recoverable-unlink trick — hold an fd, unlink, re-link from
+    ``/proc/self/fd`` — fails ``EXDEV`` on all three. Two closures exist and both are outside
+    this function: plumb the caller's recorded preimage down so removal can be conditioned on
+    reproducibility, or exclude the writer
+    (``projection-lock-coverage-projected-path-writers-20260913``). Tracking is not doing, and
+    this paragraph is not a closure.
 
     So certainty, not the check, decides the verb:
 
@@ -4671,7 +4687,12 @@ def _fallback_noreplace(
         # check leaves. See :func:`_refuse_if_displaced_entry_moved`.
         _refuse_if_displaced_entry_moved(src_dir_fd, src_name, intended, dst_name)
     except BaseException:
-        # Withdraw the link we just made, so the prior state is restored, nlink included.
+        # Take the link we just made off the LIVE name. This does not restore the prior state
+        # exactly — that is what the comment here used to claim, "nlink included", and it is no
+        # longer true. The entry is moved to a scratch name and KEPT, so when the source
+        # survives the inode ends up with an extra link, which is a remnant an operator clears
+        # by hand (`_SCRATCH_REMEDY`). What IS restored is the thing the rollback needs: the
+        # live name no longer resolves to this transaction's publication.
         #
         # `dst_name` here is the LIVE projection filename on the create leg, and that is what
         # makes this different from every other cleanup in this file. `_retire_scratch` was
@@ -4683,9 +4704,10 @@ def _fallback_noreplace(
         # does not reach this call site at all.
         #
         # So withdraw by MOVING, which is the rule the source retirement below already
-        # follows: a rename carries across whatever occupies the name, and the identity check
-        # then runs against a private name nobody else can reach, where it is finally
-        # race-free. Ours is dropped; anyone else's is preserved and named in the log.
+        # follows: a rename carries across whatever occupies the name. Note the moved entry is
+        # then kept in BOTH cases — ours and anyone else's — because no primitive removes a
+        # name while guaranteeing the inode keeps one. This comment used to end "ours is
+        # dropped", describing a removal the helper no longer performs.
         _withdraw_publication_by_moving(
             dst_dir_fd, dst_name, intended, subject=f"{src_name}(rollback)"
         )

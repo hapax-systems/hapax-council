@@ -577,3 +577,79 @@ def test_the_scratch_reservation_is_genuinely_exclusive_on_this_mount(
     assert live.stat().st_nlink == 1, "the placeholder changed the live entry's link count"
     os.link(live, bench / "second-name")
     assert live.stat().st_nlink == 2, "link(2) no longer adds a name — recheck the premise"
+
+
+# --- the gate itself, driven rather than read ------------------------------------------
+#
+# `test_every_refusal_in_this_module_names_a_next_action` scans source text, and a reviewer was
+# right that source-scanning cannot detect a refusal QUIETLY TURNED INTO A SKIP — which is the
+# one regression this module's whole fail-closed design exists to prevent. These invoke the
+# fixture under each configuration and assert Failed vs Skipped, so the distinction is pinned
+# behaviourally. They run in CI, unlike the witness itself.
+
+
+def _run_fixture(monkeypatch: pytest.MonkeyPatch, **env: str | None) -> str:
+    """Invoke `unsupporting_mount`'s body and report which outcome it took."""
+
+    for key, value in env.items():
+        if value is None:
+            monkeypatch.delenv(key, raising=False)
+        else:
+            monkeypatch.setenv(key, value)
+    # The fixture is a plain function under the pytest wrapper; call its body directly so the
+    # outcome is observable as an exception rather than as a collection-time decision.
+    body = unsupporting_mount.__wrapped__  # type: ignore[attr-defined]
+    try:
+        body()
+    except BaseException as outcome:  # noqa: BLE001 — Failed and Skipped are both wanted
+        return type(outcome).__name__
+    return "returned"
+
+
+_GOOD_WAIVER = (
+    f"hosted runner cannot mount nfs4; expiry owned by row "
+    f"{_WAIVER_EXPIRY_ANCHORS[0]}-self-hosted-{_WAIVER_EXPIRY_ANCHORS[1]}"
+)
+
+
+@pytest.mark.parametrize(
+    ("label", "env", "expected"),
+    [
+        # Nothing offered and nothing declared: the fail-closed case. Must be RED, never green.
+        ("no mount, no waiver", {_ENV_DIR: None, _ENV_WAIVER: None}, "Failed"),
+        # A waiver that does not name its expiry row is a permanent skip in disguise.
+        ("waiver without a row", {_ENV_DIR: None, _ENV_WAIVER: "cannot mount nfs4"}, "Failed"),
+        # The ONE legitimate skip: no mount offered, absence declared, row named.
+        ("governed waiver", {_ENV_DIR: None, _ENV_WAIVER: _GOOD_WAIVER}, "Skipped"),
+        # Configured but broken: unwritable, and a supported filesystem. Both are broken
+        # CONFIGURATIONS rather than absent mounts, so neither is waivable as one.
+        ("unwritable path", {_ENV_DIR: "/proc/nonexistent-nfs-probe", _ENV_WAIVER: None}, "Failed"),
+    ],
+    ids=["fail-closed", "unowned-waiver", "governed-waiver", "unwritable"],
+)
+def test_the_gate_fails_where_it_must_and_skips_only_where_it_may(
+    monkeypatch: pytest.MonkeyPatch, label: str, env: dict[str, str | None], expected: str
+) -> None:
+    assert _run_fixture(monkeypatch, **env) == expected, label
+
+
+def test_a_configured_mount_that_supports_the_flags_fails_rather_than_skips(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The case the waiver must NOT cover: a mount that would never reach the fallback.
+
+    `tmp_path` is tmpfs, which supports both flags, so a green run against it would prove
+    nothing about the repair. Pointing the variable at it is a broken configuration and has to
+    be red — and it must stay red even when a perfectly good waiver is also set, because a
+    waiver declares an ABSENT mount, not a wrong one.
+    """
+
+    assert _run_fixture(monkeypatch, HAPAX_NFS_INTEGRATION_DIR=str(tmp_path)) == "Failed"
+    assert (
+        _run_fixture(
+            monkeypatch,
+            HAPAX_NFS_INTEGRATION_DIR=str(tmp_path),
+            HAPAX_NFS_INTEGRATION_WAIVED=_GOOD_WAIVER,
+        )
+        == "Failed"
+    ), "a governed waiver excused a configured-but-wrong mount; it may only excuse an absent one"
