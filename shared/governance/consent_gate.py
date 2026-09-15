@@ -27,7 +27,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from shared.governance.consent import ConsentRegistry, load_contracts
+from shared.governance.consent import (
+    ConsentRegistry,
+    estate_identity_operation,
+    load_contracts,
+    resolve_contract_id,
+    resolve_principal_id,
+)
 from shared.governance.consent_label import ConsentLabel
 from shared.governance.gate_token import GateToken
 from shared.governance.governor import GovernorWrapper, consent_output_policy
@@ -87,6 +93,7 @@ class ConsentGatedWriter:
             _audit_path=audit_path,
         )
 
+    @estate_identity_operation()
     def check(
         self,
         data: Labeled[Any],
@@ -99,17 +106,19 @@ class ConsentGatedWriter:
         Returns GateDecision with allowed=True/False, reason, and a
         GateToken (unforgeable proof of gate passage).
         """
+        person_ids = tuple(resolve_principal_id(pid) for pid in person_ids)
+        provenance = frozenset(resolve_contract_id(cid) for cid in data.provenance)
         now = datetime.now(UTC).isoformat()
 
         # 1. Check provenance — all contracts must be active
-        active_ids = frozenset(cid for cid, c in self._registry._contracts.items() if c.active)
+        active_ids = frozenset(resolve_contract_id(c.id) for c in self._registry.active_contracts)
         if data.provenance and not check_provenance(data, active_ids):
-            revoked = data.provenance - active_ids
+            revoked = provenance - active_ids
             decision = self._deny(
                 reason=f"Provenance contains revoked contracts: {sorted(revoked)}",
                 data_category=data_category,
                 person_ids=person_ids,
-                provenance=data.provenance,
+                provenance=provenance,
                 timestamp=now,
             )
             self._record(decision)
@@ -123,7 +132,7 @@ class ConsentGatedWriter:
                 reason=denial.reason if denial else "Governor denied output",
                 data_category=data_category,
                 person_ids=person_ids,
-                provenance=data.provenance,
+                provenance=provenance,
                 timestamp=now,
             )
             self._record(decision)
@@ -141,7 +150,7 @@ class ConsentGatedWriter:
                     ),
                     data_category=data_category,
                     person_ids=person_ids,
-                    provenance=data.provenance,
+                    provenance=provenance,
                     timestamp=now,
                 )
                 self._record(decision)
@@ -151,7 +160,7 @@ class ConsentGatedWriter:
         decision = self._allow(
             data_category=data_category,
             person_ids=person_ids,
-            provenance=data.provenance,
+            provenance=provenance,
             timestamp=now,
         )
         self._record(decision)

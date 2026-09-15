@@ -5132,3 +5132,40 @@ from agents.deliberative_council.models import (
 
 _PhaseOneResult._populate_dossier_sections
 _CouncilVerdict._populate_dossier_sections
+
+# Private-custody identity binding (2026-09-06, row
+# principal-identifiers-live-source-subset-20260905): `load_identity_snapshot` is the provider
+# entry point `agentgov.consent.identity_operation` reaches through `import_module(provider)`
+# and attribute lookup on the declared AGENTGOV_IDENTITY_PROVIDER, and `contains_predecessor`
+# is the optional classifier capability the portable package probes with getattr before
+# sanitizing a diagnostic. DETECTOR BLIND SPOT, not dead code: both are called dynamically
+# through the declared provider binding.
+from shared.governance import consent as _estate_consent  # noqa: E402
+
+_estate_consent.load_identity_snapshot
+_estate_consent._CorrespondenceSnapshot.contains_predecessor
+
+# Consent revoke/retry are FastAPI-dispatched endpoints; the router retains the
+# callables through decorators, which vulture does not follow.
+from logos.api.routes import consent as _consent_routes  # noqa: E402
+
+_consent_routes.revoke_consent
+_consent_routes.retry_consent_purge
+
+# Mirror registry surface decorated for one-snapshot custody (2026-09-06, row
+# principal-identifiers-live-source-subset-20260905). Both methods predate this change;
+# the diff gate reports them only because `@estate_identity_operation()` rewrote their
+# definition lines. `purge_subject` has a production caller through the registry protocol
+# (packages/agentgov/src/agentgov/revocation.py:184 calls it on the injected registry, an
+# attribute call vulture does not resolve) — DETECTOR BLIND SPOT. `subject_data_categories`
+# is mirrored registry API required for parity with the authoritative implementation at
+# packages/agentgov/src/agentgov/consent.py:359, and its callers in this checkout are the
+# consent and identifier test suites — LIVE SURFACE WITH NO IN-TREE PRODUCTION CALLER,
+# retained for that parity, not asserted to be reached from production here.
+from agents import _governance as _agents_governance  # noqa: E402
+from logos import _governance as _logos_governance  # noqa: E402
+
+_agents_governance.ConsentRegistry.subject_data_categories
+_agents_governance.ConsentRegistry.purge_subject
+_logos_governance.ConsentRegistry.subject_data_categories
+_logos_governance.ConsentRegistry.purge_subject
