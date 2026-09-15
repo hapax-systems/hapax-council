@@ -4664,6 +4664,132 @@ def test_rollback_preserves_a_writer_who_replaced_the_live_destination(
     ), "the writer's entry was neither left live nor reported as preserved"
 
 
+def test_withdrawal_refuses_an_occupied_rollback_target_instead_of_overwriting_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An earlier attempt's preserved bytes at the rollback name must survive this one.
+
+    The other withdrawal tests all start with a vacant target and inject their failure after
+    the reservation succeeds, so the occupied-target refusal — the whole reason
+    `_move_aside_atomically` takes the name with `O_CREAT|O_EXCL` before renaming — had no
+    coverage. Mutating the `O_EXCL` away must fail this.
+    """
+
+    (tmp_path / ".staged").write_bytes(b"this attempt's content\n")
+    aside = cp._fallback_scratch_name("live-note.md", "rollback")
+    # A previous attempt already preserved somebody's only copy here.
+    (tmp_path / aside).write_bytes(b"AN EARLIER ATTEMPT'S PRESERVED BYTES\n")
+
+    def fail_the_source_check(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with caplog.at_level("WARNING"):
+            with mock.patch.object(cp, "_refuse_if_displaced_entry_moved", fail_the_source_check):
+                with pytest.raises(OSError):
+                    cp._fallback_noreplace(dir_fd, ".staged", dir_fd, "live-note.md")
+    finally:
+        os.close(dir_fd)
+
+    assert (tmp_path / aside).read_bytes() == b"AN EARLIER ATTEMPT'S PRESERVED BYTES\n", (
+        "the withdrawal overwrote an earlier attempt's preserved bytes — the reservation no "
+        "longer refuses an occupied target"
+    )
+    # Refusing to move means the publication stays live; that is the safe direction, and it
+    # must be reported with the name that caused the refusal.
+    assert (tmp_path / "live-note.md").exists()
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert aside in caplog.text
+    assert "clear it by hand" in caplog.text
+
+
+def test_abandonment_refuses_an_occupied_target_instead_of_overwriting_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The same property on the cleanup side, which also had no occupied-target test."""
+
+    (tmp_path / "scratch").write_bytes(b"someone-elses\n")
+    (tmp_path / "other").write_bytes(b"ours\n")
+    abandoned = "scratch.transition-abandoned"
+    (tmp_path / abandoned).write_bytes(b"AN EARLIER ABANDONMENT\n")
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        expected = os.lstat("other", dir_fd=dir_fd)  # deliberately NOT what `scratch` holds
+        with caplog.at_level("WARNING"):
+            freed = cp._retire_scratch(dir_fd, "scratch", expected, subject="probe")
+    finally:
+        os.close(dir_fd)
+
+    assert (tmp_path / abandoned).read_bytes() == b"AN EARLIER ABANDONMENT\n", (
+        "abandonment overwrote an earlier abandonment — the reservation no longer refuses"
+    )
+    # Neither entry destroyed; the name stays occupied, so it is reported as the stuck state.
+    assert (tmp_path / "scratch").read_bytes() == b"someone-elses\n"
+    assert freed is False
+    assert cp._SCRATCH_ABANDONED in caplog.text
+
+
+def test_withdrawal_keeps_the_published_inode_when_it_is_the_last_name(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Identity is not redundancy, and the withdrawal used to treat them as the same thing.
+
+    It unlinked whenever the moved entry matched `expected`, on the stated grounds that "the
+    source still names that inode, so nothing is lost". That is a premise, not a check, and a
+    reviewer replayed the sequence that breaks it:
+
+      a writer replaces the SOURCE before the leg lstats it, so `intended` is THAT inode;
+      the leg publishes it by linking source -> destination;
+      another writer replaces the source again;
+      the source check refuses;
+      the withdrawal moves the published inode aside, matches `expected`, and unlinks it.
+
+    Its only two names were the source (now somebody else's) and the destination (just
+    removed), so it is destroyed — and the journal recorded a different inode, so nothing can
+    reconstruct it. `st_nlink` on the moved entry is what tells the two cases apart.
+    """
+
+    published = tmp_path / ".staged"
+    published.write_bytes(b"WRITER B ONLY COPY\n")
+    published_inode = published.stat().st_ino
+    aside = cp._fallback_scratch_name("live-note.md", "rollback")
+
+    def replace_the_source_again_then_refuse(*_args: object, **_kwargs: object) -> None:
+        # Runs after the publication link and before the withdrawal: the source stops naming
+        # the inode this transition just published.
+        _replace_atomically(tmp_path, ".staged", b"a third writer\n")
+        raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with caplog.at_level("WARNING"):
+            with mock.patch.object(
+                cp, "_refuse_if_displaced_entry_moved", replace_the_source_again_then_refuse
+            ):
+                with pytest.raises(OSError) as raised:
+                    cp._fallback_noreplace(dir_fd, ".staged", dir_fd, "live-note.md")
+        assert raised.value.errno == errno.EIO
+    finally:
+        os.close(dir_fd)
+
+    kept = tmp_path / aside
+    assert kept.exists(), (
+        "the withdrawal removed the last name for the inode it had just published — the "
+        "entry is unrecoverable and the journal recorded a different one"
+    )
+    assert kept.stat().st_ino == published_inode
+    assert kept.read_bytes() == b"WRITER B ONLY COPY\n"
+    # The live name is clear, the third writer's entry is untouched, and the kept copy is
+    # explained rather than left as an unattributed remnant.
+    assert not (tmp_path / "live-note.md").exists()
+    assert (tmp_path / ".staged").read_bytes() == b"a third writer\n"
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert "only name left" in caplog.text
+    assert "clear it by hand" in caplog.text
+
+
 def test_rollback_carries_a_pre_rename_arrival_into_the_scratch_and_reports_it(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

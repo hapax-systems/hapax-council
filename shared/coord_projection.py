@@ -110,6 +110,18 @@ _RENAME_EXCHANGE = 2
 #: inode operations register no ``.rename2`` and ``vfs_rename`` refuses any
 #: non-zero flag before the filesystem is reached. tmpfs and xfs support both,
 #: and keep the unchanged fast path.
+#:
+#: Only EINVAL is what the vault export was measured to answer; the other three are the
+#: errnos a mount uses to say the same thing, and each is asserted to dispatch by
+#: ``test_every_unsupported_errno_dispatches_a_rebuild_that_really_runs``. Recheck the whole
+#: set — membership in both directions, and each member driving a real rebuild — with::
+#:
+#:     uv run --no-sync pytest tests/shared/test_coord_projection.py \
+#:       -k "unsupported_errno or declared_unsupported_set"
+#:
+#: The measurement narrative is in the operator's vault at
+#: ``NFS-RENAMEAT2-PROBE-MEASUREMENT-20260913.md`` — a location, not a command; the
+#: invocation above is the evidence a reader can run.
 _RENAME_FLAG_UNSUPPORTED_ERRNOS = frozenset(
     {errno.EINVAL, errno.ENOSYS, errno.ENOTSUP, errno.EOPNOTSUPP}
 )
@@ -3968,11 +3980,14 @@ def _withdraw_publication_by_moving(
     if not _move_aside_atomically(dir_fd, live_name, aside):
         _logger.warning(
             "%s: %s name=%s could not be withdrawn after a failed publication — it is "
-            "LEFT IN PLACE and still live; inspect it and rerun "
-            "`cc-claim --recover-claim-publications <task_id>`",
+            "LEFT IN PLACE and still live. The usual cause is that %s is already occupied "
+            "by an earlier attempt's preserved bytes, which is why the move refused rather "
+            "than overwriting it. %s",
             _SCRATCH_ABANDONED,
             subject,
             live_name,
+            aside,
+            _SCRATCH_REMEDY,
         )
         return
     try:
@@ -3986,17 +4001,26 @@ def _withdraw_publication_by_moving(
             "%s: %s name=%s was moved off the live path to %s but could not then be "
             "examined (%s), so it is LEFT THERE and unattributed — it may hold another "
             "writer's only copy, or an extra link that will fail the next readback as "
-            "transition_projection_path_unsafe. Inspect %s, then rerun "
-            "`cc-claim --recover-claim-publications <task_id>`",
+            "transition_projection_path_unsafe. %s",
             _SCRATCH_ABANDONED,
             subject,
             live_name,
             aside,
             exc,
-            aside,
+            _SCRATCH_REMEDY,
         )
         return
-    if _same_entry(moved, expected):
+    # Identity is NOT redundancy, and this branch used to conflate them. It unlinked whenever
+    # the moved entry matched `expected`, justified by "the source still names that inode, so
+    # nothing is lost" — a premise, not a check. A reviewer replayed the sequence that breaks
+    # it: a writer replaces the SOURCE after this publication linked it, so the published
+    # inode's only surviving name is the one we are about to remove, and the journal recorded a
+    # different inode entirely. Reproduced: the entry was destroyed and unrecoverable.
+    #
+    # `st_nlink` on the moved entry answers the question the premise assumed. Above 1, some
+    # other name still reaches the inode and dropping ours loses nothing. At exactly 1, this is
+    # the last name — so it is kept, whoever it belongs to.
+    if _same_entry(moved, expected) and moved.st_nlink > 1:
         try:
             os.unlink(aside, dir_fd=dir_fd)
         except FileNotFoundError:
@@ -4004,28 +4028,41 @@ def _withdraw_publication_by_moving(
         except OSError as exc:
             _logger.warning(
                 "%s: %s name=%s was withdrawn to %s but that copy could not be removed "
-                "(%s) — it is OURS and redundant, so nothing is lost, but it is an extra "
-                "link to the source inode and the next readback of %s will refuse as "
-                "transition_projection_path_unsafe until it is cleared. Remove %s, then "
-                "rerun `cc-claim --recover-claim-publications <task_id>`",
+                "(%s) — it is OURS and genuinely redundant (nlink was %d), so nothing is "
+                "lost, but it is an extra link to the source inode and the next readback of "
+                "%s will refuse as transition_projection_path_unsafe until it is cleared. %s",
                 _SCRATCH_ABANDONED,
                 subject,
                 live_name,
                 aside,
                 exc,
+                moved.st_nlink,
                 live_name,
-                aside,
+                _SCRATCH_REMEDY,
             )
+        return
+    if _same_entry(moved, expected):
+        _logger.warning(
+            "%s: %s name=%s was withdrawn to %s and KEPT, because it is the only name left "
+            "for that inode — a writer replaced the source after this publication linked it, "
+            "so removing this copy would destroy the entry outright, and the journal recorded "
+            "a different inode. It holds the bytes this transition published. %s",
+            _SCRATCH_ABANDONED,
+            subject,
+            live_name,
+            aside,
+            _SCRATCH_REMEDY,
+        )
         return
     _logger.warning(
         "%s: %s name=%s was replaced by another writer before this publication could be "
-        "withdrawn — their entry is PRESERVED at %s and the live name is clear; reconcile "
-        "it by hand, do not delete it, then rerun "
-        "`cc-claim --recover-claim-publications <task_id>`",
+        "withdrawn — their entry is PRESERVED at %s and the live name is clear. Do not delete "
+        "it. %s",
         _SCRATCH_ABANDONED,
         subject,
         live_name,
         aside,
+        _SCRATCH_REMEDY,
     )
 
 
@@ -4055,7 +4092,10 @@ def _move_aside_atomically(dir_fd: int, name: str, target: str) -> bool:
             0o600,
             dir_fd=dir_fd,
         )
-    except OSError:
+    except OSError as exc:
+        # Name the target. Every sibling remnant branch does, and a caller that only reports
+        # "could not be withdrawn" leaves the operator without the name that caused it.
+        _wedged(target, f"it could not be reserved as a move-aside target ({exc})")
         return False
     try:
         placeholder = os.fstat(reservation)
@@ -4511,9 +4551,11 @@ def _fallback_exchange(
     #    Each removal is identity-checked rather than unconditional. A writer can replace a
     #    scratch name while the leg runs, and an unconditional unlink would destroy that
     #    entry — the same defect as an unconditional rename, in the one place it is easiest
-    #    to overlook. A mismatch is left for the recovery sweep and logged, never raised:
-    #    the projection has already succeeded by this point, so raising would discard a
-    #    verified post-state over a remnant that is merely untidy.
+    #    to overlook. A mismatch is LEFT IN PLACE and logged, never raised: the projection
+    #    has already succeeded by this point, so raising would discard a verified post-state
+    #    over a remnant. Note "left for the recovery sweep" is what this used to say, and
+    #    there is no such sweep — see `_SCRATCH_REMEDY`; clearing it is manual, and the log
+    #    line is the only thing that will tell anyone it is there.
     #
     #    A scratch that is OURS and could not be removed is a different matter from a
     #    foreign one left alone. Ours is a second link to a live inode, so leaving it means
@@ -4955,9 +4997,22 @@ def _cas_project(projection: FileProjection, scratch: _ProjectionScratch) -> Non
                 # that names nothing — instead of a projection refusal. The
                 # fallback now answers EINVAL, but the untyped hole was never
                 # specific to it: ENOSPC or EIO would read the same way.
+                # The remedy cannot assume the install left nothing behind. When the rebuilt
+                # NOREPLACE leg ran, it may already have published the entry AND retired the
+                # source to a `.transition-holding` name before whatever failed here — so the
+                # "exact scratch" this used to tell the operator to discard is absent, and the
+                # real remnant is a holding entry that keeps the published inode multiply
+                # linked, which fails the next readback as path_unsafe. Name both states and
+                # how to tell them apart, rather than one that may not exist.
                 raise LifecycleTransitionError(
                     "transition_projection_install_failed",
-                    "hold the transaction and discard its exact unlinked scratch",
+                    "hold the transaction, then check which state it left: if the exact "
+                    "scratch is still present, discard it and retry; if it is absent, the "
+                    "rebuilt fallback had already published and retired it, so look for the "
+                    "matching `.transition-holding` entry beside the projected path — that "
+                    "holds a second link to the published inode and the next readback will "
+                    f"refuse as transition_projection_path_unsafe until it is cleared. "
+                    f"{_SCRATCH_REMEDY}",
                     str(projection.path),
                 ) from exc
             os.fsync(dir_fd)
