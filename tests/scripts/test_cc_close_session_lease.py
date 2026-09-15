@@ -340,12 +340,27 @@ def test_cc_close_guard_failure_spares_the_lease_rather_than_deleting_it(
     )
     broken.chmod(0o755)
 
+    # cc-close prefers `<repo>/.venv/bin/python` over PATH (review round 27, so a
+    # host whose python3 lacks PyYAML cannot make a valid note read as missing).
+    # That makes a PATH shim invisible to it — this test went green for the wrong
+    # reason the moment that landed. Running a COPY from a tree with no `.venv`
+    # selects the documented fallback, which is the interpreter the shim shadows.
+    # The mechanism is a fixture detail; the invariant below is not.
+    installed = tmp_path / "installed"
+    (installed / "scripts").mkdir(parents=True)
+    (installed / "hooks" / "scripts").mkdir(parents=True)
+    shutil.copy2(SCRIPT, installed / "scripts" / "cc-close")
+    for helper in ("cc-task-root.sh", "agent-role.sh"):
+        source = SCRIPT.parent.parent / "hooks" / "scripts" / helper
+        if source.is_file():
+            shutil.copy2(source, installed / "hooks" / "scripts" / helper)
+
     env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "eta"
     env["PATH"] = f"{fakebin}:{env.get('PATH', '')}"
     result = subprocess.run(
-        ["bash", str(SCRIPT), "foo", "--status", "withdrawn"],
+        ["bash", str(installed / "scripts" / "cc-close"), "foo", "--status", "withdrawn"],
         env=env,
         text=True,
         capture_output=True,

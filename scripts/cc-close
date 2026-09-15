@@ -14,7 +14,19 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve through symlinks, as cc-claim does. cc-close's own header documents
+# `ln -sf .../scripts/cc-close ~/.local/bin/cc-close`, and without this every
+# sibling it reaches for resolves against the SYMLINK's directory: for the
+# installed copy that is `~/.local`, which holds no `hooks/`, no `shared/` and no
+# `.venv`. Measured 2026-09-15: `~/.local/hooks/scripts/cc-task-root.sh` does not
+# exist, so the documented install refused at its first helper. Found while fixing
+# the interpreter resolution below — same defect class, one level up: a path
+# derived from `$0` is wrong for exactly the deployment the header recommends.
+_cc_close_self="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  _cc_close_self="$(readlink -f "$_cc_close_self" 2>/dev/null || printf '%s' "$_cc_close_self")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$_cc_close_self")" && pwd)"
 ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
 if [[ -f "$ROLE_HELPER" ]]; then
   # shellcheck source=../hooks/scripts/agent-role.sh
@@ -67,6 +79,30 @@ fi
 cc_task_root_resolve || exit $?
 vault_root="$CC_TASK_ROOT"
 note_path=""
+
+# ONE interpreter for every python cc-close runs, resolved like cc-claim's.
+#
+# cc-close read frontmatter with bare `python3` while the parser it imports
+# (shared/frontmatter.py) requires PyYAML. On the deployment layout where
+# dependencies live only in the repo virtualenv — the estate's own lane clones —
+# `import yaml` raised, the `|| true` swallowed it, and an empty result read as "no
+# such note": a live, valid, present task was reported as **"already closed?"**
+# (review round 27, codex-1; reproduced with a python3 that cannot import yaml).
+# Withdrawn and superseded closes previously needed only the standard library, so
+# this was a new dependency on a path that had none.
+#
+# The virtualenv is preferred and bare python3 is the fallback, because cc-close
+# must still work from an installed symlink outside any checkout. What is NOT
+# acceptable is failing quietly, so the scan below reports an unimportable
+# dependency as itself.
+CC_CLOSE_PYTHON="$SCRIPT_DIR/../.venv/bin/python"
+if [[ ! -x "$CC_CLOSE_PYTHON" ]]; then
+  CC_CLOSE_PYTHON="$(command -v python3 || true)"
+fi
+if [[ ! -x "$CC_CLOSE_PYTHON" ]]; then
+  echo "cc-close: no usable python interpreter (looked for $SCRIPT_DIR/../.venv/bin/python, then python3 on PATH). Next action: run 'uv sync' in this worktree, or install python3. Nothing was modified." >&2
+  exit 3
+fi
 # EVERY candidate that DECLARES this id must be considered, and more than one is
 # fatal. Selecting the "first" match — by any ordering — is what let
 # `cc-close t1` withdraw live work: first t1-next.md by prefix, then t1-a.md when
@@ -78,26 +114,52 @@ note_path=""
 shopt -s nullglob
 _cc_candidates=("$vault_root/active/$task_id.md" "$vault_root/active/$task_id-"*.md)
 shopt -u nullglob
+# ONE interpreter start for the whole candidate list, not one per candidate. The
+# per-candidate loop was O(n) process spawns inside the close path on any vault
+# where a common id prefix matches many notes (review round 27, claude-1).
 _cc_matching=()
-for _cc_candidate in "${_cc_candidates[@]}"; do
-  [[ -f "$_cc_candidate" ]] || continue
-  _cc_declared="$(python3 -I - "$SCRIPT_DIR/.." "$_cc_candidate" <<'PYEOF' || true
+_cc_scan_rc=0
+_cc_scan_out="$("$CC_CLOSE_PYTHON" -I - "$SCRIPT_DIR/.." "$task_id" ${_cc_candidates+"${_cc_candidates[@]}"} <<'PYEOF'
 import sys
 
 sys.path.insert(0, sys.argv[1])
 from pathlib import Path
 
-from shared.frontmatter import parse_frontmatter
+# The dependency is reported as itself. Swallowing this is what made a present,
+# valid note read as "already closed?" — the failure mode a guard may not have.
+try:
+    from shared.frontmatter import parse_frontmatter
+except ImportError as exc:  # pragma: no cover - exercised via subprocess
+    print(f"cc-close-dependency-unavailable: {exc}", file=sys.stderr)
+    raise SystemExit(3) from exc
 
-fm, _body = parse_frontmatter(Path(sys.argv[2]))
-value = (fm or {}).get("task_id")
-print(str(value).strip() if value is not None else "")
+# Emits `<declared task_id>\t<path>` for every readable candidate, so the caller
+# can both select and EXPLAIN — "declares 'x', not 'y'" and "declares no readable
+# task_id" are different repairs, and neither needs a second interpreter start.
+for candidate in sys.argv[3:]:
+    path = Path(candidate)
+    if not path.is_file():
+        continue
+    fm, _body = parse_frontmatter(path)
+    value = (fm or {}).get("task_id")
+    print(f"{str(value).strip() if value is not None else ''}\t{candidate}")
 PYEOF
-  )"
-  if [[ "$_cc_declared" == "$task_id" ]]; then
-    _cc_matching+=("$_cc_candidate")
-  fi
-done
+)" || _cc_scan_rc=$?
+if [[ "$_cc_scan_rc" -eq 3 ]]; then
+  echo "cc-close: refusing — the frontmatter parser could not be imported by $CC_CLOSE_PYTHON (see the cc-close-dependency-unavailable line above). This is NOT a malformed note, and the notes were NOT inspected. Next action: run 'uv sync' in $SCRIPT_DIR/.. so the pinned interpreter exists, or install PyYAML for this python. Nothing was modified." >&2
+  exit 3
+elif [[ "$_cc_scan_rc" -ne 0 ]]; then
+  echo "cc-close: refusing — reading the candidate notes for '$task_id' failed (python exited $_cc_scan_rc). Nothing was modified. Next action: reproduce with: $CC_CLOSE_PYTHON -c 'import shared.frontmatter'" >&2
+  exit 3
+fi
+declare -A _cc_declared_for=()
+if [[ -n "$_cc_scan_out" ]]; then
+  while IFS=$'\t' read -r _cc_declared _cc_path; do
+    [[ -n "$_cc_path" ]] || continue
+    _cc_declared_for["$_cc_path"]="$_cc_declared"
+    [[ "$_cc_declared" == "$task_id" ]] && _cc_matching+=("$_cc_path")
+  done <<<"$_cc_scan_out"
+fi
 if [[ "${#_cc_matching[@]}" -gt 1 ]]; then
   printf "cc-close: refusing — %d notes in %s/active/ declare task_id '%s':\n" \
     "${#_cc_matching[@]}" "$vault_root" "$task_id" >&2
@@ -127,19 +189,11 @@ if [[ -n "$note_path" ]]; then
   # passed a request for t1 and a missing value passed everything — while a valid
   # `task_id: t1 # comment` was rejected. A guard whose failure mode is "admit" is
   # not a guard.
-  selected_task_id="$(python3 -I - "$SCRIPT_DIR/.." "$note_path" <<'PYEOF' || true
-import sys
-
-sys.path.insert(0, sys.argv[1])
-from pathlib import Path
-
-from shared.frontmatter import parse_frontmatter
-
-fm, _body = parse_frontmatter(Path(sys.argv[2]))
-value = (fm or {}).get("task_id")
-print(str(value).strip() if value is not None else "")
-PYEOF
-  )"
+  # Read from the ONE scan above, not from a second interpreter start. A second
+  # read is also a second chance to disagree with the first — and it carried the
+  # same swallowed-ImportError bug, so on a host without PyYAML it turned a valid
+  # note into "declares no readable task_id" (review round 27, codex-1).
+  selected_task_id="${_cc_declared_for[$note_path]-}"
   if [[ -z "$selected_task_id" ]]; then
     echo "cc-close: refusing — '$note_path' declares no readable task_id. Next action: repair the note's frontmatter (a single-line 'task_id: <id>' scalar), then re-run. Nothing was modified." >&2
     exit 2
@@ -159,14 +213,13 @@ if [[ -z "$note_path" ]]; then
   exit 2
 fi
 
-if ! command -v python3 &>/dev/null; then
-  echo "cc-close: python3 missing; cannot rewrite frontmatter" >&2
-  exit 3
-fi
+# The interpreter was resolved and checked above, where every call site gets it
+# from. This second, weaker check asked whether *some* python3 is on PATH, which
+# says nothing about the one cc-close actually runs.
 
 frontmatter_task_id() {
   local file="$1"
-  python3 - "$file" <<'PYEOF'
+  "$CC_CLOSE_PYTHON" - "$file" <<'PYEOF'
 import re
 import sys
 from pathlib import Path
@@ -203,7 +256,7 @@ fi
 # Rapid-closure flag — require --retroactive for tasks closed <5min after claim.
 # Prevents the 22-second paperwork closure pattern found by CCTV disconfirmation.
 if [[ "$final_status" == "done" && -z "${retroactive:-}" && "${HAPAX_RAPID_CLOSE_OFF:-0}" != "1" ]]; then
-  claimed_at="$(python3 -c "
+  claimed_at="$("$CC_CLOSE_PYTHON" -c "
 import re, sys
 from pathlib import Path
 text = Path('$note_path').read_text()
@@ -211,7 +264,7 @@ m = re.search(r'^claimed_at:\s*(.+)$', text, re.MULTILINE)
 if m: print(m.group(1).strip().strip(\"'\").strip('\"'))
 " 2>/dev/null || true)"
   if [[ -n "$claimed_at" ]]; then
-    elapsed="$(python3 -c "
+    elapsed="$("$CC_CLOSE_PYTHON" -c "
 from datetime import datetime, timezone
 try:
     claimed = datetime.fromisoformat('$claimed_at'.replace('Z','+00:00'))
@@ -240,7 +293,7 @@ if [[ "$final_status" == "done" ]]; then
   CHECKER="$SCRIPT_DIR/cc-task-closure-check.py"
   if [[ -f "$CHECKER" ]]; then
     set +e
-    python3 "$CHECKER" "$note_path"
+    "$CC_CLOSE_PYTHON" "$CHECKER" "$note_path"
     gate_rc=$?
     set -e
     if [[ "$gate_rc" -ne 0 ]]; then
@@ -256,7 +309,7 @@ if [[ "$final_status" == "done" ]]; then
   RECEIPT_CHECKER="$SCRIPT_DIR/cc-close-acceptance-receipt-check.py"
   if [[ -f "$RECEIPT_CHECKER" ]]; then
     set +e
-    python3 "$RECEIPT_CHECKER" "$note_path"
+    "$CC_CLOSE_PYTHON" "$RECEIPT_CHECKER" "$note_path"
     receipt_rc=$?
     set -e
     if [[ "$receipt_rc" -ne 0 ]]; then
@@ -271,7 +324,7 @@ if [[ "$final_status" == "done" ]]; then
     PR_MERGE_CHECKER="$SCRIPT_DIR/cc-close-pr-merge-check.py"
     if [[ -f "$PR_MERGE_CHECKER" ]]; then
       set +e
-      python3 "$PR_MERGE_CHECKER" "$note_path" ${pr:+--pr "$pr"}
+      "$CC_CLOSE_PYTHON" "$PR_MERGE_CHECKER" "$note_path" ${pr:+--pr "$pr"}
       merge_rc=$?
       set -e
       if [[ "$merge_rc" -ne 0 ]]; then
@@ -317,7 +370,7 @@ fi
 # shared.cc_task_lock falls back to 30 for both. Two parsers for one knob is the
 # same shape as two derivations for one path — the runbook promised a shared
 # default the code did not implement.
-lock_facts="$(python3 -I - "$SCRIPT_DIR/.." "$task_id" "${role:-}" <<'PYEOF' || true
+lock_facts="$("$CC_CLOSE_PYTHON" -I - "$SCRIPT_DIR/.." "$task_id" "${role:-}" <<'PYEOF' || true
 import sys
 
 sys.path.insert(0, sys.argv[1])
@@ -417,7 +470,7 @@ fi
 # it is rewriting. Both read through shared/cc_task_frontmatter.py, so there is one
 # implementation of "what does this note declare" and no second copy to drift.
 precondition_rc=0
-python3 -I - precondition-guard "$SCRIPT_DIR/.." "$note_path" "$task_id" "${expect_status:-}" \
+"$CC_CLOSE_PYTHON" -I - precondition-guard "$SCRIPT_DIR/.." "$note_path" "$task_id" "${expect_status:-}" \
   "$final_status" "${pr:-}" <<'PYEOF' || precondition_rc=$?
 import sys
 
@@ -534,9 +587,9 @@ if [[ "$final_status" == "done" ]]; then
   if [[ -f "$DISP_CHECKER" ]]; then
     set +e
     if [[ -n "${debt_reason:-}" ]]; then
-      python3 "$DISP_CHECKER" "$note_path" "$task_id" --debt "$debt_reason"
+      "$CC_CLOSE_PYTHON" "$DISP_CHECKER" "$note_path" "$task_id" --debt "$debt_reason"
     else
-      python3 "$DISP_CHECKER" "$note_path" "$task_id"
+      "$CC_CLOSE_PYTHON" "$DISP_CHECKER" "$note_path" "$task_id"
     fi
     disp_rc=$?
     set -e
@@ -551,11 +604,11 @@ if [[ "$final_status" == "done" ]]; then
   # note, and a read outside is a fact about a file another writer may replace.
   SIBLING_CHECKER="$SCRIPT_DIR/cc-close-sibling-check.py"
   if [[ -f "$SIBLING_CHECKER" ]]; then
-    python3 "$SIBLING_CHECKER" "$note_path" || true
+    "$CC_CLOSE_PYTHON" "$SIBLING_CHECKER" "$note_path" || true
   fi
 fi
 
-python3 - "$SCRIPT_DIR/.." "$note_path" "$task_id" "$final_status" "$pr" "$role" \
+"$CC_CLOSE_PYTHON" - "$SCRIPT_DIR/.." "$note_path" "$task_id" "$final_status" "$pr" "$role" \
   "${expect_status:-}" <<'PYEOF'
 import re
 import sys
@@ -814,7 +867,7 @@ if [[ -n "$role" ]]; then
       # in any test that needs to fail ONE of them — they are otherwise
       # indistinguishable except by argument count, which changes whenever a call
       # gains an argument. It did, in this round.
-      python3 -I - lease-guard "$SCRIPT_DIR/.." "$claim_key" "$role" <<'PYEOF' || guard_rc=$?
+      "$CC_CLOSE_PYTHON" -I - lease-guard "$SCRIPT_DIR/.." "$claim_key" "$role" <<'PYEOF' || guard_rc=$?
 import sys
 
 sys.path.insert(0, sys.argv[2])
@@ -844,7 +897,7 @@ PYEOF
         # Could not EVALUATE. Preserve the lease (uncertainty never deletes) and
         # say so with an exact remedy, because the note is about to move to
         # closed/ and a rerun of cc-close can no longer reach this cleanup.
-        echo "cc-close: WARNING — cleanup incomplete: could not evaluate the foreign-lease guard for '$claim_file' (python3 exited $guard_rc). The lease was PRESERVED. Next action: repair python3/PYTHONPATH for this checkout, then retire it by hand once you have confirmed the closure: rm -f '$claim_file' '$HOME/.cache/hapax/cc-claim-epoch-$claim_key'" >&2
+        echo "cc-close: WARNING — cleanup incomplete: could not evaluate the foreign-lease guard for '$claim_file' ($CC_CLOSE_PYTHON exited $guard_rc). The lease was PRESERVED. Next action: repair that interpreter or its PYTHONPATH for this checkout, then retire it by hand once you have confirmed the closure: rm -f '$claim_file' '$HOME/.cache/hapax/cc-claim-epoch-$claim_key'" >&2
         cleanup_incomplete=1
         continue
       fi
@@ -894,7 +947,7 @@ if [[ "$final_status" == "done" && "${HAPAX_REQUEST_RECONCILER_OFF:-0}" != "1" &
   phase_advance="$SCRIPT_DIR/cc-phase-advance.py"
   if [[ -f "$phase_advance" ]]; then
     set +e
-    python3 "$phase_advance" "$vault_root/closed/$(basename "$note_path")" "$task_id"
+    "$CC_CLOSE_PYTHON" "$phase_advance" "$vault_root/closed/$(basename "$note_path")" "$task_id"
     set -e
   fi
 

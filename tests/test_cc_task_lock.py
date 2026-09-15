@@ -467,7 +467,13 @@ class TestTheCloseSideFdIsHeldThroughout:
                 if not observed_held:
                     time.sleep(0.005)
             while observed_held and proc.poll() is None:
-                if _acquirable(handle):
+                # Re-check liveness AFTER the acquire, not only before it. The lock
+                # is released by process exit, so between `poll()` saying "alive"
+                # and the acquire succeeding, the process can have finished — and
+                # reading that as a stolen lock makes this test fail under load
+                # while the invariant holds. A gap only matters if the writer is
+                # still running when the lock frees.
+                if _acquirable(handle) and proc.poll() is None:
                     stole_it = True
                     break
                 time.sleep(0.005)
@@ -1132,7 +1138,10 @@ class TestRecoveryParticipatesToo:
                 if not observed_held:
                     time.sleep(0.005)
             while observed_held and proc.poll() is None:
-                if _free():
+                # Liveness re-checked AFTER the acquire: the lock is released by
+                # process exit, so "acquirable" observed in the gap between poll()
+                # and the acquire is teardown, not a writer letting go mid-run.
+                if _free() and proc.poll() is None:
                     stole_it = True
                     break
                 time.sleep(0.005)

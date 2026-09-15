@@ -5242,3 +5242,21 @@ from shared.cc_task_lock import (
 )
 
 _ = (_held_lock_order, _release_all_process_locks)
+
+# The closure rewrite (round 26-27). Both call sites are bash-hosted Python
+# heredocs in scripts/cc-close — the precondition guard that runs BEFORE the
+# mutating artifact-disposition gate, and the writer that runs after it. It exists
+# as a shared function precisely so those two cannot drift: it returns the bytes a
+# close would write without writing them, and both ask the same question of the
+# same answer.
+#
+# Live-call evidence: tests/test_cc_task_lock.py::TestARefusalMutatesNothing::
+# test_an_unrewritable_status_spelling_refuses_before_the_debt_gate runs real
+# cc-close against a note using explicit YAML mapping syntax and requires the
+# artifact ledger to be byte-identical after two consecutive refusals. Removing
+# the pre-gate call reds it with the ledger already rewritten.
+from shared.cc_task_frontmatter import (  # noqa: E402
+    propose_closure_rewrite as _propose_closure_rewrite,
+)
+
+_ = (_propose_closure_rewrite,)
