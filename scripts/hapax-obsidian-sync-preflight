@@ -124,6 +124,7 @@ import subprocess
 import sys
 import unicodedata
 from pathlib import Path
+from stat import S_ISDIR, S_ISREG
 
 OK = 0
 REFUSED = 2
@@ -480,28 +481,38 @@ def predict_config_uploads(
     class _EnumerationAborted(Exception):
         """`adapter.list` stats every child, so one unstattable child kills the scan."""
 
-    def _listdir(path: Path) -> list[str]:
-        """Mirror cli.js ``adapter.list``: readdir, then ``stat`` EVERY child.
+    def _list_children(path: Path) -> tuple[list[str], list[str]]:
+        """Mirror cli.js ``adapter.list``: readdir, then ``stat`` EVERY child, and split
+        into (files, folders) by what that stat says. Returns names, not paths.
 
-        That stat follows symlinks, so a single dangling child raises — and the throw
-        propagates out of `list()` to the config scan's one big try/catch, which logs
-        "Failed to scan config files" and indexes NOTHING this cycle. Using a name-only
-        listdir and dropping individual candidates certified a prediction ob will not
-        deliver: measured, a dangling `.obsidian/app.json` beside a real 19-byte
-        `appearance.json` made this report 19 bytes where the client reports none.
+        The stat FOLLOWS symlinks, which has two consequences this must reproduce: a
+        symlink to a directory is classified as a FOLDER and descended, and a single
+        dangling child raises — the throw propagating out of `list()` into the config
+        scan's one try/catch, which logs "Failed to scan config files" having indexed
+        NOTHING that cycle. A name-only listdir that dropped individual candidates
+        certified a prediction ob does not deliver.
         """
         try:
             names = sorted(os.listdir(path))
         except OSError as exc:
             _on_error(exc)
             raise _EnumerationAborted from exc
+        files: list[str] = []
+        folders: list[str] = []
         for name in names:
             try:
-                os.stat(path / name)
+                info = os.stat(path / name)  # follows links, as adapter.list does
             except OSError as exc:
                 _on_error(exc)
                 raise _EnumerationAborted from exc
-        return names
+            # cli.js pushes to `.files` on isFile() and `.folders` on isDirectory(), and to
+            # NEITHER for anything else (a fifo, a socket, a device) — such an entry simply
+            # does not appear in the listing.
+            if S_ISREG(info.st_mode):
+                files.append(name)
+            elif S_ISDIR(info.st_mode):
+                folders.append(name)
+        return files, folders
 
     # The config scan is NOT a recursive walk. cli.js enumerates a fixed set of
     # shapes through `adapter.list` / `exists` / `stat` (all of which FOLLOW symlinks,
@@ -514,29 +525,36 @@ def predict_config_uploads(
     # NAMESPACE is shared, though: ob has one remote keyspace for both trees.
     candidates: list[str] = ["config"]
     try:
-        candidates += [n for n in _listdir(root) if _extension(n) == "json"]
-        # `u.list()` splits into folders and files, and cli.js iterates only `.folders`
-        # under themes/ and plugins/ — so a stray FILE there is skipped, not descended.
-        # Building candidates under it would stat `plugins/somefile/manifest.json` and
-        # raise ENOTDIR, turning a case ob ignores into a refusal.
+        # `u.list()` splits into files and folders, and cli.js iterates `.folders` under
+        # themes/ and plugins/ and `.files` elsewhere. LISTING those subdirectories rather
+        # than synthesising the known filenames matters twice: a stray FILE in plugins/ is
+        # skipped rather than descended, and a bad child INSIDE a plugin or theme directory
+        # aborts the whole scan in ob — which synthesised names would never have noticed.
+        root_files, _ = _list_children(root)
+        candidates += [n for n in root_files if _extension(n) == "json"]
+
         themes = root / "themes"
         if themes.is_dir():
-            for theme in _listdir(themes):
-                if not (themes / theme).is_dir():
-                    continue
+            _, theme_dirs = _list_children(themes)
+            for theme in theme_dirs:
+                theme_files, _ = _list_children(themes / theme)
                 candidates += [
-                    f"themes/{theme}/manifest.json",
-                    f"themes/{theme}/theme.css",
+                    f"themes/{theme}/{n}"
+                    for n in theme_files
+                    if n in ("manifest.json", "theme.css")
                 ]
+
         snippets = root / "snippets"
         if snippets.is_dir():
-            candidates += [f"snippets/{n}" for n in _listdir(snippets) if _extension(n) == "css"]
+            snippet_files, _ = _list_children(snippets)
+            candidates += [f"snippets/{n}" for n in snippet_files if _extension(n) == "css"]
+
         plugins = root / "plugins"
         if plugins.is_dir():
-            for plugin in _listdir(plugins):
-                if not (plugins / plugin).is_dir():
-                    continue
-                candidates += [f"plugins/{plugin}/{n}" for n in sorted(_PLUGIN_FILES)]
+            _, plugin_dirs = _list_children(plugins)
+            for plugin in plugin_dirs:
+                plugin_files, _ = _list_children(plugins / plugin)
+                candidates += [f"plugins/{plugin}/{n}" for n in plugin_files if n in _PLUGIN_FILES]
     except _EnumerationAborted:
         # ob's scan is one try/catch around the whole thing: the throw aborts it, nothing
         # is indexed, and it logs "Failed to scan config files". So no config file uploads
@@ -1026,6 +1044,21 @@ CLIENT_RULES: tuple[tuple[str, str], ...] = (
         'if(o.some(f=>f==="node_modules"||f.startsWith(".")))return!1',
     ),
     ("config category gate", "c&&this.allowSpecialFiles.has(c)"),
+    # The ADAPTER semantics both scans depend on, and the asymmetry between them: `list`
+    # STATS each child (following links, so a symlinked dir counts as a folder and a
+    # dangling child throws and kills the enumeration), while reconcile uses LSTAT (so the
+    # main walk sees a link as a link and routes it to the overlap rule). Switching either
+    # call to the other would change predictions while leaving every other needle intact.
+    (
+        "adapter.list stats children (follows links)",
+        "l=await this.fsPromises.stat(this.getFullRealPath(o));"
+        "l.isFile()&&n.files.push(a),l.isDirectory()&&n.folders.push(a)",
+    ),
+    (
+        "reconcile lstats (does not follow)",
+        ",n=await this.fsPromises.lstat(i);n.isFile()?await this.reconcileFileCreation(e,t,n)"
+        ":n.isDirectory()?await this.reconcileFolderCreation(e,t):n.isSymbolicLink()",
+    ),
 )
 
 

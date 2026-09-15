@@ -1202,34 +1202,76 @@ def test_invalid_sync_mode_is_refused(vault: pathlib.Path, tmp_path: pathlib.Pat
     assert "Next:" in result.stderr
 
 
-def test_config_candidate_stat_error_is_reported(
+def test_unstattable_child_anywhere_aborts_the_config_scan(
     vault: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
-    """A config candidate that ENUMERATES fine but cannot be stat'd is a read failure, not
-    a drop, and must reach the exit-3 guard.
+    """Every level of the config enumeration stats its children, so an unstattable child
+    at ANY depth kills the scan — including inside a plugin directory, which synthesised
+    candidate names would never have reached.
 
-    A symlink loop is the right injection: `listdir` still returns the name, so the
-    candidate is built, and only the per-candidate `os.stat` raises (ELOOP). Removing all
-    permissions from the directory instead — as an earlier version did — fails `_listdir`
-    BEFORE the candidate exists, so that test stayed green with the per-candidate handler
-    deleted and was therefore testing the wrong branch.
+    (This is the enumeration path. It is named for what it exercises: an earlier version
+    called itself a per-candidate stat test while actually failing here, and a version
+    before that failed even earlier, in listdir.)
     """
     obsidian = vault / ".obsidian"
-    (obsidian / "snippets").mkdir(parents=True)
-    (obsidian / "snippets" / "x.css").symlink_to(obsidian / "snippets" / "x.css")
+    (obsidian / "plugins" / "dv").mkdir(parents=True)
+    (obsidian / "plugins" / "dv" / "main.js").write_bytes(b"m" * 11)
+    loop = obsidian / "plugins" / "dv" / "data.json"
+    loop.symlink_to(loop)  # stats with ELOOP, inside a plugin dir
     xdg = tmp_path / "xdg"
     _write_live_config(
         xdg,
         vault,
         ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
-        allowSpecialFiles=["appearance-data"],
+        allowSpecialFiles=["community-plugin-data"],
     )
     result = _run_env(vault, xdg, "--from-sync-config", "--json")
     assert result.returncode == ERROR, result.stdout + result.stderr
     assert "FLOOR" in result.stderr
-    errors = json.loads(result.stdout)["traversal_errors"]
-    assert any("x.css" in e["path"] for e in errors), errors
+    report = json.loads(result.stdout)
+    assert report["config_uploads"]["bytes"] == 0, "main.js counted despite the aborted scan"
+    errors = report["traversal_errors"]
+    assert any("data.json" in e["path"] for e in errors), errors
     assert any("symbolic links" in (e["error"] or "") for e in errors), errors
+
+
+def test_candidate_stat_failure_after_enumeration_is_recorded(
+    vault: pathlib.Path, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-candidate `os.stat` guard is now only reachable by a RACE: enumeration has
+    already stat'd every listed child, so a candidate can only fail afterwards if the tree
+    changed underneath. That is exactly why it stays — a live vault does change — and the
+    only honest way to test it is to inject the race, in process.
+
+    Without this, removing the handler would leave the suite green, which is how the
+    previous two attempts at this test went wrong.
+    """
+    obsidian = vault / ".obsidian"
+    obsidian.mkdir()
+    (obsidian / "app.json").write_bytes(b"a" * 12)
+    target = str(obsidian / "app.json")
+    real_stat = preflight.os.stat
+    calls: list[str] = []
+
+    def flaky_stat(path, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        if str(path) == target:
+            calls.append(str(path))
+            if len(calls) > 1:  # succeed during enumeration, fail at candidate time
+                raise OSError(5, "Input/output error", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(preflight.os, "stat", flaky_stat)
+    result = preflight.predict_config_uploads(
+        vault,
+        ".obsidian",
+        frozenset({"app"}),
+        [],
+        preflight.DEFAULT_PER_FILE_MAX,
+        preflight._EmittedNamespace(),
+    )
+    assert result["bytes"] == 0
+    assert [e["path"] for e in result["traversal_errors"]] == [target]
+    assert "Input/output error" in result["traversal_errors"][0]["error"]
 
 
 def test_follow_requires_a_scan_root() -> None:
@@ -1802,6 +1844,8 @@ this.perFileMax=199*1024*1024;
 if(!m.folder&&m.size>e.perFileMax){this.logSkip(`File too large to sync`,p);continue}
 m.push(r+"config");let g=await u.list(n);for(let F of g.files)$(F)==="json"&&m.push(F);if(await u.exists(r+"themes")){let F=await u.list(r+"themes");for(let b of F.folders){let w=await u.list(b);for(let v of w.files){let A=W(v);(A==="manifest.json"||A==="theme.css")&&m.push(v)}}}if(await u.exists(r+"snippets")){let F=await u.list(r+"snippets");for(let b of F.files)$(b)==="css"&&m.push(b)}if(await u.exists(r+"plugins")){let F=await u.list(r+"plugins");for(let b of F.folders){let w=await u.list(b);for(let v of w.files){let A=W(v);f.isPluginFile(A)&&m.push(v)}}}
 s.mode!=="bidirectional"&&s.mode!=="pull-only"&&s.mode!=="mirror-remote"&&(console.error(`Invalid sync mode`),process.exit(1));
+async list(e){return this.queue(async()=>{let t=this.getFullPath(e),i=await this.fsPromises.readdir(t),n={folders:[],files:[]};for(let r of i){let o=_e(e===""?r:e+"/"+r),a=Ne(o),l=await this.fsPromises.stat(this.getFullRealPath(o));l.isFile()&&n.files.push(a),l.isDirectory()&&n.folders.push(a)}return n})}
+async reconcileFileInternal(e,t){let i=this.getFullRealPath(e),n=await this.fsPromises.lstat(i);n.isFile()?await this.reconcileFileCreation(e,t,n):n.isDirectory()?await this.reconcileFolderCreation(e,t):n.isSymbolicLink()&&await this.reconcileSymbolicLinkCreation(e,t)}
 """
 
 
@@ -1861,6 +1905,18 @@ def test_recheck_passes_on_the_independent_client_fixture(
         ("core-plugin-data widens", 'o.length===1&&l==="json"', "o.length===1"),
         ("node_modules skip removed", 'f==="node_modules"||', ""),
         ("pull-only mode dropped", '&&s.mode!=="pull-only"', ""),
+        # The adapter asymmetry: list() follows links, reconcile does not. Swapping either
+        # changes predictions while every other needle stays intact.
+        (
+            "adapter.list stops following links",
+            "l=await this.fsPromises.stat(this.getFullRealPath(o))",
+            "l=await this.fsPromises.lstat(this.getFullRealPath(o))",
+        ),
+        (
+            "reconcile starts following links",
+            ",n=await this.fsPromises.lstat(i);n.isFile()",
+            ",n=await this.fsPromises.stat(i);n.isFile()",
+        ),
     ],
 )
 def test_recheck_detects_real_behaviour_changes(
