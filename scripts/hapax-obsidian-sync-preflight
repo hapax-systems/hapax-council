@@ -418,6 +418,7 @@ def predict_config_uploads(
     configs: frozenset[str],
     entries: list[str],
     per_file_max: int,
+    namespace: _EmittedNamespace,
 ) -> dict:
     """The config-dir files ob uploads when ``configs`` is non-empty.
 
@@ -465,8 +466,9 @@ def predict_config_uploads(
     # apply here): the literal file `<cfg>/config`, top-level `*.json`,
     # `themes/<dir>/{manifest.json,theme.css}`, `snippets/*.css`, and
     # `plugins/<dir>/<isPluginFile>`. Modelling it as a recursive walk both invented
-    # depths ob never reaches and, via the shared link policy, suppressed aliases ob
-    # does upload.
+    # depths ob never reaches and, via a shared link policy, suppressed aliases ob does
+    # upload — which is why _LinkPolicy is deliberately not used here. The emitted
+    # NAMESPACE is shared, though: ob has one remote keyspace for both trees.
     candidates: list[str] = ["config"]
     candidates += [n for n in _listdir(root) if _extension(n) == "json"]
     # `u.list()` splits into folders and files, and cli.js iterates only `.folders`
@@ -511,6 +513,9 @@ def predict_config_uploads(
             continue
         if not os.path.isfile(candidate):
             continue  # ob requires stat().type === "file"
+        # Config files live in the SAME remote namespace as the main tree, so they
+        # register here too — a config path can collide with a main-tree path.
+        namespace.register(f"{_emitted(config_dir)}/{rel_emitted}", str(candidate))
         if stat.st_size > per_file_max:
             # The size skip is in the shared sync loop, so it governs config files too.
             too_large.append({"path": f"{config_dir}/{rel}", "bytes": stat.st_size})
@@ -536,6 +541,28 @@ def _overlaps(a: str, b: str) -> bool:
 DEFAULT_PER_FILE_MAX = 199 * 1024 * 1024
 
 
+class _EmittedNamespace:
+    """The set of paths ob will key remote entries by, shared across every scan.
+
+    ob has ONE remote namespace, so the main tree and the config directory compete in
+    it. Keeping the registry here rather than local to a walk is what stops a second
+    scan from silently bypassing collision detection — the shape of defect this file
+    has now hit three times (config traversal errors, the config per-file limit, and
+    collisions).
+    """
+
+    def __init__(self) -> None:
+        self.sources: dict[str, str] = {}
+        self.collisions: list[dict] = []
+
+    def register(self, emitted: str, source: str) -> None:
+        previous = self.sources.get(emitted)
+        if previous is not None and previous != source:
+            self.collisions.append({"path": emitted, "also_from": previous})
+            return
+        self.sources[emitted] = source
+
+
 class _LinkPolicy:
     """ob's symlink rule, in ONE place for every walk and every entry kind.
 
@@ -543,14 +570,19 @@ class _LinkPolicy:
     overlaps the resolved path of an already-watched path — before it distinguishes a
     file from a directory. The vault root is always watched, so a link into the vault
     (or to a directory containing it) is reconciled through neither route; a link
-    escaping to a disjoint subtree is followed and becomes watched itself.
+    escaping to a disjoint subtree is followed. Only a DIRECTORY link then becomes
+    watched — the watcher is installed in the `isDirectory` branch — so a file link is
+    admitted without reserving its target, though its target is still remembered
+    because a later directory link can install a watcher over it.
 
-    This was patched three times as separate cases — directory links, then file links,
-    then the config dir — which is the signal to stop patching and state the rule
-    once. Registration happens only for links the caller has already decided are
-    visible: a hidden link is rejected by ob before its target is ever registered, so
-    registering it here would let a hidden link suppress a visible upload of the same
-    target, and make the result depend on traversal order.
+    This governs the main tree only. The config scan reaches files through
+    `adapter.list`/`stat`, which never consult the watcher set, so it deliberately does
+    NOT use this policy.
+
+    Callers pass only links they have already decided are visible: ob rejects a hidden
+    path before registering its target, so registering one here would let a hidden link
+    suppress a visible upload of the same target and make the result depend on
+    traversal order.
     """
 
     def __init__(self, vault: Path) -> None:
@@ -570,7 +602,10 @@ class _LinkPolicy:
         self.escaping: list[dict] = []
         self.ambiguous: list[dict] = []
 
-    def follow(self, abspath: str, relpath: str, on_error, *, scan_root: str = "") -> bool:
+    def follow(self, abspath: str, relpath: str, on_error, *, scan_root: str) -> bool:
+        """``scan_root`` has NO default on purpose: it is the resolved directory the
+        link was found in, and omitting it turns a deterministic ancestor-watcher skip
+        into a spurious race. A call site that forgets it should fail loudly."""
         try:
             target = os.path.realpath(abspath)
         except OSError as exc:  # pragma: no cover
@@ -619,6 +654,7 @@ def predict(
     file_types: frozenset[str],
     links: _LinkPolicy,
     per_file_max: int,
+    namespace: _EmittedNamespace,
 ) -> dict:
     by_class: dict[str, list[int]] = {}
     by_ext: dict[str, list[int]] = {}
@@ -627,8 +663,6 @@ def predict(
     largest: list[tuple[int, str]] = []
     traversal_errors: list[dict] = []
     too_large: list[dict] = []
-    collisions: list[dict] = []
-    emitted_sources: dict[str, str] = {}
 
     def _on_error(exc: OSError) -> None:
         # A skipped subtree makes every total below a floor, not a measurement.
@@ -655,19 +689,20 @@ def predict(
         def _rel(name: str, _rel_dir: str = rel_dir) -> str:
             return f"{_rel_dir}/{_emitted(name)}" if _rel_dir else _emitted(name)
 
-        # Prune FIRST. Pruning every dotted directory at every level is equivalent to
-        # cli.js ``Is(s)`` ("hidden if ANY path component is dotted"), because no
-        # descendant of a pruned directory is ever visited; dotted FILES are skipped
-        # by name below. Pruning must precede link registration: ob rejects a hidden
-        # path before registering its target, so registering a hidden link's target
-        # here would let it suppress a visible link to the same place.
-        # Hidden pruning is the ONLY pruning: ob rejects a hidden path before
-        # registering its target, but exclusions do not prune the scan at all.
-        # `listRecursive` reconciles links and installs watchers without consulting
-        # ignoreFolders — `allowSyncFile` applies that later, when deciding what to
-        # upload. So links must be discovered throughout the tree, INCLUDING beneath
-        # excluded directories, or a real scheduling race stays invisible. Exclusions
-        # are applied per FILE below, where they decide what counts.
+        # Hidden pruning is the ONLY pruning of this walk, and it comes first.
+        #
+        # Dropping every dotted directory at every level is equivalent to cli.js `Is(s)`
+        # ("hidden if ANY path component is dotted") because no descendant of a pruned
+        # directory is visited; dotted FILES are skipped by name below. It must precede
+        # link handling, since ob rejects a hidden path before registering its target —
+        # otherwise a hidden link could claim a target and suppress a visible link to
+        # the same place, making the result depend on traversal order.
+        #
+        # Exclusions do NOT prune here. `listRecursive` reconciles links and installs
+        # watchers without consulting ignoreFolders; `allowSyncFile` applies that later,
+        # when deciding what to upload. So links are discovered throughout the tree,
+        # including beneath excluded directories, and exclusions are applied per FILE
+        # below, where they decide what counts rather than what is scanned.
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
         try:
             scan_root = os.path.realpath(dirpath)
@@ -691,13 +726,7 @@ def predict(
         for name in list(dirnames) + list(filenames):
             if name.startswith("."):
                 continue
-            emitted = _rel(name)
-            source = os.path.join(dirpath, name)
-            previous = emitted_sources.get(emitted)
-            if previous is not None and previous != source:
-                collisions.append({"path": emitted, "also_from": previous})
-            else:
-                emitted_sources[emitted] = source
+            namespace.register(_rel(name), os.path.join(dirpath, name))
 
         for name in filenames:
             if name.startswith("."):
@@ -709,7 +738,9 @@ def predict(
             # The overlap rule applies to FILE links too: ob rejects on overlap before
             # it distinguishes a file from a directory, so an in-vault file alias is
             # not uploaded even though os.stat would happily follow it.
-            if os.path.islink(child) and not links.follow(child, rel, _on_error):
+            if os.path.islink(child) and not links.follow(
+                child, rel, _on_error, scan_root=scan_root
+            ):
                 continue
             try:
                 size = os.stat(child).st_size
@@ -760,7 +791,7 @@ def predict(
         "symlinks_skipped_overlapping": links.skipped,
         "symlinks_scheduling_dependent": links.ambiguous,
         "files_over_per_file_max": too_large,
-        "emitted_path_collisions": collisions,
+        "emitted_path_collisions": namespace.collisions,
         "per_file_max_bytes": per_file_max,
         "traversal_errors": traversal_errors,
     }
@@ -1003,10 +1034,13 @@ def main(argv: list[str] | None = None) -> int:
     # One policy across both walks: ob's watcher set is global, so a target accepted
     # in the main tree must not be re-followed from the config dir either.
     links = _LinkPolicy(vault)
-    prediction = predict(vault, effective, frozenset(file_types), links, args.per_file_max)
+    namespace = _EmittedNamespace()
+    prediction = predict(
+        vault, effective, frozenset(file_types), links, args.per_file_max, namespace
+    )
 
     config_uploads = predict_config_uploads(
-        vault, config_dir, configs, effective, args.per_file_max
+        vault, config_dir, configs, effective, args.per_file_max, namespace
     )
     prediction["config_uploads"] = config_uploads
     prediction["traversal_errors"].extend(config_uploads["traversal_errors"])

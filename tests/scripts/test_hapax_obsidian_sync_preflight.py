@@ -1002,6 +1002,60 @@ def test_ancestor_watcher_is_deterministic_not_a_race(
     assert report["predicted_upload"]["bytes"] == 161 + 77
 
 
+def test_config_uploads_enter_the_same_collision_namespace(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """ob has ONE remote namespace, so config files compete in it too. The collision
+    registry was local to the main walk, so the config scan bypassed it entirely."""
+    nbsp = chr(0xA0)
+    obsidian = vault / ".obsidian"
+    (obsidian / "snippets").mkdir(parents=True)
+    (obsidian / "snippets" / "a b.css").write_bytes(b"x" * 10)
+    (obsidian / "snippets" / f"a{nbsp}b.css").write_bytes(b"y" * 11)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["appearance-data"],
+    )
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    collisions = json.loads(result.stdout)["emitted_path_collisions"]
+    assert [c["path"] for c in collisions] == [".obsidian/snippets/a b.css"]
+
+
+def test_file_link_beneath_an_accepted_link_is_not_a_race(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """The ancestor-watcher discount must apply to FILE links too; the file loop was
+    calling follow() without the scan root, so this reported a spurious race."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "note.md").write_bytes(b"n" * 77)
+    (outside / "alias.md").symlink_to(outside / "note.md")  # file link inside the target
+    (vault / "linked").symlink_to(outside, target_is_directory=True)
+
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--json",
+    )
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["symlinks_scheduling_dependent"] == []
+    assert [link["path"] for link in report["symlinks_skipped_overlapping"]] == ["linked/alias.md"]
+
+
+def test_follow_requires_a_scan_root() -> None:
+    """Omitting scan_root silently converted a deterministic skip into a race, so the
+    parameter has no default and a forgetful call site must fail loudly."""
+    policy = preflight._LinkPolicy(pathlib.Path("/tmp"))
+    with pytest.raises(TypeError):
+        policy.follow("/tmp/x", "x", lambda exc: None)
+
+
 def test_config_uploads_honour_the_per_file_limit(
     vault: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
