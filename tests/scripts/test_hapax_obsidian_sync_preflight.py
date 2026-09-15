@@ -718,12 +718,12 @@ def test_directory_link_does_reserve_its_target(
     assert [link["path"] for link in report["symlinks_skipped_overlapping"]] == ["b-link"]
 
 
-@pytest.mark.parametrize("config_dir", [".obsidian", ".obsidian-custom", "visible-config"])
+@pytest.mark.parametrize("config_dir", [".obsidian", ".obsidian-custom"])
 def test_config_dir_setting_is_honoured(
     vault: pathlib.Path, tmp_path: pathlib.Path, config_dir: str
 ) -> None:
-    """The configDir fallback was untested; a non-default (or non-hidden) config dir
-    must still be scanned, and a wrong fallback would silently predict zero."""
+    """The configDir fallback was untested; a non-default config dir must still be
+    scanned, and a wrong fallback would silently predict zero."""
     target = vault / config_dir
     target.mkdir()
     (target / "app.json").write_bytes(b"a" * 55)
@@ -1023,18 +1023,83 @@ def test_unreadable_config_dir_refuses_like_the_main_walk(
         locked.chmod(0o755)
 
 
-def test_unreadable_config_file_refuses(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
-    """A per-file stat failure inside the config dir, distinct from the dir case."""
-    obsidian = vault / ".obsidian"
-    obsidian.mkdir()
-    (obsidian / "app.json").symlink_to(obsidian / "gone.json")
+@pytest.mark.parametrize(
+    ("config_dir", "expected_needle"),
+    [
+        ("visible-config", "Invalid config directory"),
+        (".bad/nested", "Invalid config directory"),
+        (".bad\\nested", "Invalid config directory"),
+        (42, "dotfolder name"),
+    ],
+)
+def test_invalid_config_dir_is_refused(
+    vault: pathlib.Path, tmp_path: pathlib.Path, config_dir: object, expected_needle: str
+) -> None:
+    """cli.js ``ws``/``Ss`` require a dotfolder NAME with no separators and THROW
+    otherwise, so such a config cannot be in use. Scanning the named directory anyway
+    would report a confident total for a directory ob never reads."""
     xdg = tmp_path / "xdg"
     _write_live_config(
-        xdg, vault, ignoreFolders=["20-projects/_dashboard"], allowSpecialFiles=["app"]
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard"],
+        allowSpecialFiles=["app"],
+        configDir=config_dir,
+    )
+    result = _run_env(vault, xdg, "--from-sync-config")
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert "Traceback" not in result.stderr
+    assert expected_needle in result.stderr
+    assert "Next:" in result.stderr
+
+
+def test_nonexistent_config_candidate_is_dropped_not_an_error(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """ob checks `exists()` and deletes the entry, so a dangling or absent candidate
+    is not a traversal failure — only a real read error is."""
+    obsidian = vault / ".obsidian"
+    obsidian.mkdir()
+    (obsidian / "app.json").symlink_to(obsidian / "gone.json")  # dangling
+    (obsidian / "appearance.json").write_bytes(b"b" * 19)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["app", "appearance"],
     )
     result = _run_env(vault, xdg, "--from-sync-config", "--json")
-    assert result.returncode == ERROR, result.stdout + result.stderr
-    assert any("app.json" in e["path"] for e in json.loads(result.stdout)["traversal_errors"])
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["traversal_errors"] == []
+    assert report["config_uploads"]["bytes"] == 19
+    assert set(report["config_uploads"]["by_category"]) == {"appearance"}
+
+
+def test_config_scan_does_not_invent_depths(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """ob enumerates fixed shapes, so a plugin file one level too deep, a nested
+    snippet, a deeper theme file and a stray json below the top level are NOT
+    uploaded. A recursive walk counted all of them."""
+    obsidian = vault / ".obsidian"
+    (obsidian / "plugins" / "dv" / "extra").mkdir(parents=True)
+    (obsidian / "snippets" / "nested").mkdir(parents=True)
+    (obsidian / "themes" / "t" / "deeper").mkdir(parents=True)
+    (obsidian / "plugins" / "dv" / "main.js").write_bytes(b"m" * 11)  # the only one counted
+    (obsidian / "plugins" / "dv" / "extra" / "main.js").write_bytes(b"x" * 999)
+    (obsidian / "snippets" / "nested" / "deep.css").write_bytes(b"y" * 999)
+    (obsidian / "themes" / "t" / "deeper" / "theme.css").write_bytes(b"z" * 999)
+    (obsidian / "plugins" / "dv" / "random.json").write_bytes(b"q" * 999)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=list(preflight.VALID_CONFIG_CATEGORIES),
+    )
+    report = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
+    assert report["config_uploads"]["bytes"] == 11
+    assert set(report["config_uploads"]["by_category"]) == {"community-plugin-data"}
 
 
 def test_script_ships_executable_with_a_working_shebang() -> None:
