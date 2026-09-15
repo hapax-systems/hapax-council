@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import errno
 import hashlib
 import json
 import os
@@ -635,6 +636,49 @@ def test_lifecycle_effects_default_deny_before_journal_event_or_projection(
 
     assert note.read_bytes() == b"stage: S6\n"
     assert not root.exists()
+    assert log.replay().events == ()
+
+
+def test_hollow_terminal_admission_is_refused_before_default_deny_skip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"stage: S10\n")
+    projection = cp.FileProjection.capture(note, after=b"stage: S11\n")
+    monkeypatch.setattr(cp, "_LIFECYCLE_EFFECT_ACTIVATION", False)
+    order: list[str] = []
+    real_validate = cp._validate_terminal_close_admission
+    real_require = cp._require_lifecycle_effect_activation
+
+    def wrapped_validate(*args: object, **kwargs: object) -> None:
+        order.append("validate")
+        real_validate(*args, **kwargs)
+
+    def wrapped_require() -> None:
+        order.append("require")
+        real_require()
+
+    monkeypatch.setattr(cp, "_validate_terminal_close_admission", wrapped_validate)
+    monkeypatch.setattr(cp, "_require_lifecycle_effect_activation", wrapped_require)
+
+    with pytest.raises(cp.LifecycleTransitionError) as raised:
+        cp._execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(from_stage="S10", to_stage="S11"),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+            terminal_close_admission={"schema": "nope"},
+            locked_preflight=lambda: None,
+        )
+
+    assert raised.value.reason_code != "transition_effect_activation_unavailable"
+    assert order[0] == "validate"
+    assert "require" not in order
+    assert note.read_bytes() == b"stage: S10\n"
     assert log.replay().events == ()
 
 
@@ -3232,3 +3276,998 @@ def test_read_only_fs_snapshot_refuses_unbounded_root_observation() -> None:
             snapshot.pin_absolute_dir(Path("/"), private_final=False)
 
     assert raised.value.reason_code == "fs_snapshot_root_observation_forbidden"
+
+
+_ORIGINAL_RENAMEAT2_SYSCALL = cp._renameat2_syscall
+
+
+def _einval_same_dir_syscall(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+    flags: int,
+) -> None:
+    # Journal promotion is a cross-directory directory rename on local disk.
+    # Inject EINVAL only for same-directory CAS, which is the NFS vault case.
+    if src_dir_fd != dst_dir_fd:
+        _ORIGINAL_RENAMEAT2_SYSCALL(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+        return
+    raise OSError(errno.EINVAL, "Invalid argument", f"{src_name}->{dst_name}")
+
+
+def _enosys_same_dir_syscall(
+    src_dir_fd: int,
+    src_name: str,
+    dst_dir_fd: int,
+    dst_name: str,
+    flags: int,
+) -> None:
+    if src_dir_fd != dst_dir_fd:
+        _ORIGINAL_RENAMEAT2_SYSCALL(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+        return
+    raise OSError(errno.ENOSYS, "Function not implemented", f"{src_name}->{dst_name}")
+
+
+def test_einval_fallback_update_commits(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"stage: S6\n")
+    projection = cp.FileProjection.capture(note, after=b"stage: S7\n")
+    with mock.patch.object(cp, "_renameat2_syscall", side_effect=_einval_same_dir_syscall):
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+            timestamp="2026-07-11T15:00:00Z",
+        )
+    assert note.read_bytes() == b"stage: S7\n"
+    assert (note.parent / ".drain-lock").is_file()
+
+
+def test_enosys_fallback_update_commits(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"stage: S6\n")
+    projection = cp.FileProjection.capture(note, after=b"stage: S7\n")
+    with mock.patch.object(cp, "_renameat2_syscall", side_effect=_enosys_same_dir_syscall):
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+            timestamp="2026-07-11T15:00:00Z",
+        )
+    assert note.read_bytes() == b"stage: S7\n"
+
+
+def test_einval_fallback_create_commits(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    projection = cp.FileProjection.capture(note, after=b"created\n")
+    with mock.patch.object(cp, "_renameat2_syscall", side_effect=_einval_same_dir_syscall):
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+            timestamp="2026-07-11T15:00:00Z",
+        )
+    assert note.read_bytes() == b"created\n"
+
+
+def test_einval_fallback_create_racing_eexist_is_precondition(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    projection = cp.FileProjection.capture(note, after=b"created by transition\n")
+    raced = False
+    original_link = os.link
+
+    def race_link(src: str, dst: str, **kwargs: object) -> None:
+        nonlocal raced
+        if not raced and kwargs.get("dst_dir_fd") is not None:
+            raced = True
+            note.write_bytes(b"racer\n")
+        original_link(src, dst, **kwargs)
+
+    with (
+        mock.patch.object(cp, "_renameat2_syscall", side_effect=_einval_same_dir_syscall),
+        mock.patch("os.link", side_effect=race_link),
+    ):
+        with pytest.raises(cp.LifecycleTransitionError, match="precondition_changed"):
+            cp.execute_lifecycle_transition(
+                event_log=log,
+                intent=_intent(),
+                projections=[projection],
+                transaction_root=tmp_path / "transactions",
+                lock_root=tmp_path / "locks",
+                timestamp="2026-07-11T15:00:00Z",
+            )
+    assert note.read_bytes() == b"racer\n"
+
+
+def test_einval_fallback_delete_commits(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"gone-soon\n")
+    projection = cp.FileProjection.capture(note, after=None)
+    with mock.patch.object(cp, "_renameat2_syscall", side_effect=_einval_same_dir_syscall):
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+            timestamp="2026-07-11T15:00:00Z",
+        )
+    assert not note.exists()
+
+
+def test_noreplace_fallback_crash_between_link_and_unlink_restores_absence(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "created.md"
+    src.write_bytes(b"postimage")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+    real_link = os.link
+
+    def crash_before_drop(src_name: str, dst_name: str, **kwargs: object) -> None:
+        if str(dst_name).endswith(".drop-src"):
+            raise RuntimeError("crash after link")
+        real_link(src_name, dst_name, **kwargs)
+
+    try:
+        with mock.patch.object(cp.os, "link", side_effect=crash_before_drop):
+            with pytest.raises(RuntimeError, match="crash after link"):
+                cp._renameat2_noreplace_fallback(fd, "scratch", fd, "created.md")
+        assert dst.read_bytes() == b"postimage"
+        assert src.read_bytes() == b"postimage"
+        projection = cp.FileProjection.from_snapshot(
+            dst,
+            before=None,
+            before_mode=None,
+            after=b"postimage",
+            after_mode=stat.S_IMODE(dst.stat().st_mode),
+        )
+        scratch = cp._scratch_for(projection, "txn-link-crash", 0)
+        # _scratch_for names a different scratch file; point rollback at the
+        # actual remaining source name from the fallback.
+        scratch = dataclasses.replace(scratch, path=src)
+        assert cp._cas_rollback(projection, scratch) is True
+        assert not dst.exists()
+        assert src.read_bytes() == b"postimage"
+    finally:
+        os.close(fd)
+
+
+def test_link_then_unlink_src_does_not_delete_raced_source(tmp_path: Path) -> None:
+    src = tmp_path / "note.md"
+    parked = tmp_path / ".note.md.exchange-displaced"
+    src.write_bytes(b"before-image")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_link = os.link
+
+    def plant_racer(src_name: str, dst_name: str, **kwargs: object) -> None:
+        real_link(src_name, dst_name, **kwargs)
+        os.unlink(src_name, dir_fd=fd)
+        racer = os.open(
+            src_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o644,
+            dir_fd=fd,
+        )
+        try:
+            os.write(racer, b"racer")
+        finally:
+            os.close(racer)
+
+    try:
+        with mock.patch.object(cp.os, "link", side_effect=plant_racer):
+            with pytest.raises(OSError) as raised:
+                cp._link_then_unlink_src(fd, "note.md", fd, parked.name)
+        assert raised.value.errno == errno.EEXIST
+        assert src.read_bytes() == b"racer"
+        assert parked.read_bytes() == b"before-image"
+    finally:
+        os.close(fd)
+
+
+def test_drop_extra_link_puts_post_check_racer_back(tmp_path: Path) -> None:
+    src = tmp_path / "note.md"
+    peer = tmp_path / "peer"
+    src.write_bytes(b"before-image")
+    os.link(src, peer)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_drain = cp._drain_peer_aliases
+
+    def steal_source_then_drain(dir_fd: int, keep_name: str) -> None:
+        os.unlink("note.md", dir_fd=dir_fd)
+        racer = os.open(
+            "note.md",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o644,
+            dir_fd=dir_fd,
+        )
+        try:
+            os.write(racer, b"racer")
+        finally:
+            os.close(racer)
+        real_drain(dir_fd, keep_name)
+
+    try:
+        with mock.patch.object(cp, "_drain_peer_aliases", side_effect=steal_source_then_drain):
+            with pytest.raises(OSError) as raised:
+                cp._drop_extra_link(fd, "note.md", "peer")
+        assert raised.value.errno == errno.EEXIST
+        assert src.read_bytes() == b"racer"
+        assert peer.read_bytes() == b"before-image"
+    finally:
+        os.close(fd)
+
+
+def test_cas_rollback_create_nlink2_unlinks_dest(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "created.md"
+    src.write_bytes(b"postimage")
+    os.link(src, dst)
+    projection = cp.FileProjection.from_snapshot(
+        dst,
+        before=None,
+        before_mode=None,
+        after=b"postimage",
+        after_mode=stat.S_IMODE(dst.stat().st_mode),
+    )
+    scratch = cp._scratch_for(projection, "txn-create-nlink", 0)
+    scratch = dataclasses.replace(scratch, path=src)
+    assert cp._cas_rollback(projection, scratch) is True
+    assert not dst.exists()
+    assert src.read_bytes() == b"postimage"
+
+
+def test_drop_extra_link_refuses_occupied_parking_name(tmp_path: Path) -> None:
+    src = tmp_path / "note.md"
+    peer = tmp_path / "peer"
+    parked = tmp_path / cp._drop_src_name("note.md")
+    src.write_bytes(b"before-image")
+    os.link(src, peer)
+    parked.write_bytes(b"racer")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(OSError) as raised:
+            cp._drop_extra_link(fd, "note.md", "peer")
+        assert raised.value.errno == errno.EEXIST
+        assert src.read_bytes() == b"before-image"
+        assert parked.read_bytes() == b"racer"
+        assert peer.read_bytes() == b"before-image"
+    finally:
+        os.close(fd)
+
+
+def test_link_then_unlink_src_raises_exdev_before_link(tmp_path: Path) -> None:
+    left = tmp_path / "left"
+    right = tmp_path / "right"
+    left.mkdir()
+    right.mkdir()
+    (left / "src").write_bytes(b"payload")
+    fd_left = os.open(left, os.O_RDONLY | os.O_DIRECTORY)
+    fd_right = os.open(right, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(OSError) as raised:
+            cp._link_then_unlink_src(fd_left, "src", fd_right, "dst")
+        assert raised.value.errno == errno.EXDEV
+        assert not (right / "dst").exists()
+        assert (left / "src").read_bytes() == b"payload"
+    finally:
+        os.close(fd_left)
+        os.close(fd_right)
+
+
+def test_cas_rollback_update_dest_absent_drop_src_restores_preimage(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    drop = tmp_path / cp._drop_src_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"after-image")
+    displaced.write_bytes(b"before-image")
+    restored = cp.FileProjection.from_snapshot(
+        dst,
+        before=b"before-image",
+        before_mode=stat.S_IMODE(displaced.stat().st_mode),
+        after=b"after-image",
+        after_mode=stat.S_IMODE(dst.stat().st_mode),
+    )
+    dst.unlink()
+    os.link(displaced, drop)
+    scratch = cp._scratch_for(restored, "txn-absent-drop", 0)
+    scratch = dataclasses.replace(scratch, path=src)
+    assert not dst.exists()
+    assert cp._cas_rollback(restored, scratch) is True
+    assert dst.read_bytes() == b"before-image"
+    assert not drop.exists()
+
+
+def test_cas_rollback_create_nlink3_drops_all_extras(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "created.md"
+    drop = tmp_path / cp._drop_src_name("scratch")
+    src.write_bytes(b"postimage")
+    os.link(src, dst)
+    os.link(src, drop)
+    projection = cp.FileProjection.from_snapshot(
+        dst,
+        before=None,
+        before_mode=None,
+        after=b"postimage",
+        after_mode=stat.S_IMODE(dst.stat().st_mode),
+    )
+    scratch = cp._scratch_for(projection, "txn-create-nlink3", 0)
+    scratch = dataclasses.replace(scratch, path=src)
+    assert cp._cas_rollback(projection, scratch) is True
+    assert not dst.exists()
+    assert not drop.exists()
+    assert src.read_bytes() == b"postimage"
+
+
+def test_cas_rollback_create_leaves_unrelated_drop_src_suffix(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "created.md"
+    decoy = tmp_path / "unrelated.drop-src"
+    src.write_bytes(b"postimage")
+    os.link(src, dst)
+    os.link(src, decoy)
+    projection = cp.FileProjection.from_snapshot(
+        dst,
+        before=None,
+        before_mode=None,
+        after=b"postimage",
+        after_mode=stat.S_IMODE(dst.stat().st_mode),
+    )
+    scratch = cp._scratch_for(projection, "txn-create-decoy", 0)
+    scratch = dataclasses.replace(scratch, path=src)
+    assert cp._cas_rollback(projection, scratch) is True
+    assert not dst.exists()
+    assert decoy.read_bytes() == b"postimage"
+    assert src.read_bytes() == b"postimage"
+
+
+def test_cas_rollback_delete_nlink3_drops_all_extras(tmp_path: Path) -> None:
+    dest = tmp_path / "note.md"
+    parked = tmp_path / "parked"
+    drop = tmp_path / cp._drop_link_name("note.md")
+    dest.write_bytes(b"before-image")
+    os.link(dest, parked)
+    os.link(dest, drop)
+    projection = cp.FileProjection.from_snapshot(
+        dest,
+        before=b"before-image",
+        before_mode=stat.S_IMODE(dest.stat().st_mode),
+        after=None,
+        after_mode=None,
+    )
+    scratch = cp._scratch_for(projection, "txn-del-nlink3", 0)
+    scratch = dataclasses.replace(scratch, path=parked)
+    assert cp._cas_rollback(projection, scratch) is True
+    assert dest.read_bytes() == b"before-image"
+    assert not parked.exists()
+    assert not drop.exists()
+
+
+def test_cas_rollback_update_drop_link_third_name_keeps_preimage(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    drop = tmp_path / cp._drop_link_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    os.link(dst, displaced)
+    os.link(dst, drop)
+    restored = cp.FileProjection.from_snapshot(
+        dst,
+        before=b"before-image",
+        before_mode=stat.S_IMODE(dst.stat().st_mode),
+        after=b"after-image",
+        after_mode=stat.S_IMODE(src.stat().st_mode),
+    )
+    scratch = cp._scratch_for(restored, "txn-third-link", 0)
+    scratch = dataclasses.replace(scratch, path=src)
+    assert cp._cas_rollback(restored, scratch) is True
+    assert dst.read_bytes() == b"before-image"
+    assert not displaced.exists()
+    assert not drop.exists()
+    assert src.read_bytes() == b"after-image"
+
+
+def test_cas_rollback_delete_drop_link_keeps_dest(tmp_path: Path) -> None:
+    dest = tmp_path / "note.md"
+    drop = tmp_path / cp._drop_link_name("note.md")
+    dest.write_bytes(b"before-image")
+    os.link(dest, drop)
+    projection = cp.FileProjection.from_snapshot(
+        dest,
+        before=b"before-image",
+        before_mode=stat.S_IMODE(dest.stat().st_mode),
+        after=None,
+        after_mode=None,
+    )
+    scratch = cp._scratch_for(projection, "txn-del-drop", 0)
+    scratch = dataclasses.replace(scratch, path=tmp_path / "parked")
+    assert cp._cas_rollback(projection, scratch) is True
+    assert dest.read_bytes() == b"before-image"
+    assert not drop.exists()
+
+
+def test_cas_rollback_delete_nlink2_keeps_dest(tmp_path: Path) -> None:
+    dest = tmp_path / "note.md"
+    parked = tmp_path / "parked"
+    dest.write_bytes(b"before-image")
+    os.link(dest, parked)
+    projection = cp.FileProjection.from_snapshot(
+        dest,
+        before=b"before-image",
+        before_mode=stat.S_IMODE(dest.stat().st_mode),
+        after=None,
+        after_mode=None,
+    )
+    scratch = cp._scratch_for(projection, "txn-del-nlink", 0)
+    scratch = dataclasses.replace(scratch, path=parked)
+    assert cp._cas_rollback(projection, scratch) is True
+    assert dest.read_bytes() == b"before-image"
+    assert not parked.exists()
+
+
+def test_park_and_drop_if_inode_holds_when_name_reappears(tmp_path: Path) -> None:
+    keep = tmp_path / "note.md"
+    keep.write_bytes(b"ours")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    expected_ino = keep.stat().st_ino
+    real_unlink = os.unlink
+
+    def plant_racer(name: str, **kwargs: object) -> None:
+        if ".drain." in str(name):
+            keep.write_bytes(b"racer")
+        real_unlink(name, **kwargs)
+
+    try:
+        with mock.patch.object(cp.os, "unlink", side_effect=plant_racer):
+            assert cp._park_and_drop_if_inode(fd, "note.md", expected_ino) is False
+        assert keep.read_bytes() == b"racer"
+    finally:
+        os.close(fd)
+
+
+def test_drain_peer_aliases_leaves_a_replacement(tmp_path: Path) -> None:
+    keep = tmp_path / "note.md"
+    extra = tmp_path / cp._drop_src_name("note.md")
+    racer = tmp_path / "racer.md"
+    keep.write_bytes(b"keep")
+    os.link(keep, extra)
+    racer.write_bytes(b"racer")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        cp._drain_peer_aliases(fd, "note.md")
+        assert keep.read_bytes() == b"keep"
+        assert not extra.exists()
+        assert racer.read_bytes() == b"racer"
+        assert (tmp_path / ".drain-lock").is_file()
+    finally:
+        os.close(fd)
+
+
+def test_drain_peer_aliases_leaves_an_external_hardlink(tmp_path: Path) -> None:
+    keep = tmp_path / "note.md"
+    extra = tmp_path / "note.bak"
+    keep.write_bytes(b"keep")
+    os.link(keep, extra)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        cp._drain_peer_aliases(fd, "note.md")
+        assert keep.read_bytes() == b"keep"
+        assert extra.read_bytes() == b"keep"
+    finally:
+        os.close(fd)
+
+
+def test_drain_peer_aliases_restore_does_not_clobber_second_racer(tmp_path: Path) -> None:
+    keep = tmp_path / "note.md"
+    extra = tmp_path / cp._drop_src_name("note.md")
+    keep.write_bytes(b"keep")
+    os.link(keep, extra)
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_rename = os.rename
+
+    def park_then_plant(src: str, dst: str, **kwargs: object) -> None:
+        real_rename(src, dst, **kwargs)
+        if ".drain." in str(dst):
+            extra.write_bytes(b"racer2")
+
+    try:
+        with mock.patch.object(cp.os, "rename", side_effect=park_then_plant):
+            cp._drain_peer_aliases(fd, "note.md")
+        assert keep.read_bytes() == b"keep"
+        assert extra.read_bytes() == b"racer2"
+    finally:
+        os.close(fd)
+
+
+def test_cas_rollback_update_three_link_park_restores_preimage(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    drop = tmp_path / cp._drop_src_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    os.link(dst, displaced)
+    os.link(dst, drop)
+    restored = cp.FileProjection.from_snapshot(
+        dst,
+        before=b"before-image",
+        before_mode=stat.S_IMODE(dst.stat().st_mode),
+        after=b"after-image",
+        after_mode=stat.S_IMODE(src.stat().st_mode),
+    )
+    scratch = cp._scratch_for(restored, "txn-three-link", 0)
+    scratch = dataclasses.replace(scratch, path=src)
+    assert cp._cas_rollback(restored, scratch) is True
+    assert dst.read_bytes() == b"before-image"
+    assert not displaced.exists()
+    assert not drop.exists()
+    assert src.read_bytes() == b"after-image"
+
+
+def test_cas_rollback_update_relink_refuses_racer_at_dest(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    src.write_bytes(b"after-image")
+    os.link(src, dst)
+    displaced.write_bytes(b"before-image")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_link = os.link
+
+    def plant_dest_then_link(src_name: str, dst_name: str, **kwargs: object) -> None:
+        if dst_name == "note.md":
+            racer = os.open(
+                "note.md",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                0o644,
+                dir_fd=fd,
+            )
+            try:
+                os.write(racer, b"racer")
+            finally:
+                os.close(racer)
+        real_link(src_name, dst_name, **kwargs)
+
+    try:
+        restored = cp.FileProjection.from_snapshot(
+            dst,
+            before=b"before-image",
+            before_mode=stat.S_IMODE(displaced.stat().st_mode),
+            after=b"after-image",
+            after_mode=stat.S_IMODE(dst.stat().st_mode),
+        )
+        scratch = cp._scratch_for(restored, "txn-relink-racer", 0)
+        scratch = dataclasses.replace(scratch, path=src)
+        with mock.patch.object(cp.os, "link", side_effect=plant_dest_then_link):
+            assert cp._cas_rollback(restored, scratch) is False
+        assert dst.read_bytes() == b"racer"
+        assert displaced.read_bytes() == b"before-image"
+        assert src.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
+def test_cas_rollback_final_exchange_nlink_restores_preimage(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    src.write_bytes(b"before-image")
+    os.link(src, displaced)
+    dst.write_bytes(b"after-image")
+    restored = cp.FileProjection.from_snapshot(
+        dst,
+        before=b"before-image",
+        before_mode=stat.S_IMODE(src.stat().st_mode),
+        after=b"after-image",
+        after_mode=stat.S_IMODE(dst.stat().st_mode),
+    )
+    scratch = cp._scratch_for(restored, "txn-final-nlink", 0)
+    scratch = dataclasses.replace(scratch, path=src)
+    assert cp._cas_rollback(restored, scratch) is True
+    assert dst.read_bytes() == b"before-image"
+    assert not displaced.exists()
+
+
+def test_noreplace_delete_crash_between_link_and_unlink_keeps_dest(
+    tmp_path: Path,
+) -> None:
+    dest = tmp_path / "note.md"
+    parked = tmp_path / "parked"
+    dest.write_bytes(b"before-image")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+    real_link = os.link
+
+    def crash_before_drop(src_name: str, dst_name: str, **kwargs: object) -> None:
+        if str(dst_name).endswith(".drop-src"):
+            raise RuntimeError("crash after link")
+        real_link(src_name, dst_name, **kwargs)
+
+    try:
+        with mock.patch.object(cp.os, "link", side_effect=crash_before_drop):
+            with pytest.raises(RuntimeError, match="crash after link"):
+                cp._renameat2_noreplace_fallback(fd, "note.md", fd, "parked")
+        assert dest.read_bytes() == b"before-image"
+        assert parked.read_bytes() == b"before-image"
+        projection = cp.FileProjection.from_snapshot(
+            dest,
+            before=b"before-image",
+            before_mode=stat.S_IMODE(dest.stat().st_mode),
+            after=None,
+            after_mode=None,
+        )
+        scratch = cp._scratch_for(projection, "txn-del-link-crash", 0)
+        scratch = dataclasses.replace(scratch, path=parked)
+        assert cp._cas_rollback(projection, scratch) is True
+        assert dest.read_bytes() == b"before-image"
+        assert not parked.exists()
+    finally:
+        os.close(fd)
+
+
+def test_exchange_fallback_crash_after_parking_dest_keeps_preimage(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+    real_link = os.link
+
+    def crash_before_dest_drop(src_name: str, dst_name: str, **kwargs: object) -> None:
+        if str(dst_name).endswith(".drop-src"):
+            raise RuntimeError("crash before dest unlink")
+        real_link(src_name, dst_name, **kwargs)
+
+    try:
+        with mock.patch.object(cp.os, "link", side_effect=crash_before_dest_drop):
+            with pytest.raises(RuntimeError, match="crash before dest unlink"):
+                cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert dst.read_bytes() == b"before-image"
+        assert displaced.read_bytes() == b"before-image"
+        restored = cp.FileProjection.from_snapshot(
+            dst,
+            before=b"before-image",
+            before_mode=stat.S_IMODE(dst.stat().st_mode),
+            after=b"after-image",
+            after_mode=stat.S_IMODE(src.stat().st_mode),
+        )
+        scratch = cp._scratch_for(restored, "txn-park-crash", 0)
+        scratch = dataclasses.replace(scratch, path=src)
+        assert cp._cas_rollback(restored, scratch) is True
+        assert dst.read_bytes() == b"before-image"
+        assert not displaced.exists()
+        assert src.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
+def test_exchange_fallback_crash_between_steps_preserves_both_payloads(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    calls = {"n": 0}
+    real_unlink = os.unlink
+
+    def crash_after_displace(name: str, **kwargs: object) -> None:
+        calls["n"] += 1
+        real_unlink(name, **kwargs)
+        if calls["n"] == 1:
+            raise RuntimeError("crash after displace")
+
+    try:
+        with mock.patch.object(cp.os, "unlink", side_effect=crash_after_displace):
+            with pytest.raises(RuntimeError, match="crash after displace"):
+                cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert not dst.exists()
+        assert displaced.read_bytes() == b"before-image"
+        assert src.read_bytes() == b"after-image"
+        restored = cp.FileProjection.from_snapshot(
+            dst,
+            before=b"before-image",
+            before_mode=stat.S_IMODE(displaced.stat().st_mode),
+            after=b"after-image",
+            after_mode=stat.S_IMODE(src.stat().st_mode),
+        )
+        scratch = cp._scratch_for(restored, "txn-crash", 0)
+        assert cp._cas_rollback(restored, scratch) is True
+        assert dst.read_bytes() == b"before-image"
+    finally:
+        os.close(fd)
+
+
+def test_exchange_fallback_crash_after_link_before_unlink_restores_preimage(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+
+    real_link = os.link
+    calls = {"n": 0}
+
+    def crash_before_src_drop(src_name: str, dst_name: str, **kwargs: object) -> None:
+        if str(dst_name).endswith(".drop-src"):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("crash before unlink")
+        real_link(src_name, dst_name, **kwargs)
+
+    try:
+        with mock.patch.object(cp.os, "link", side_effect=crash_before_src_drop):
+            with pytest.raises(RuntimeError, match="crash before unlink"):
+                cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert dst.read_bytes() == b"after-image"
+        assert src.read_bytes() == b"after-image"
+        assert displaced.read_bytes() == b"before-image"
+        restored = cp.FileProjection.from_snapshot(
+            dst,
+            before=b"before-image",
+            before_mode=stat.S_IMODE(displaced.stat().st_mode),
+            after=b"after-image",
+            after_mode=stat.S_IMODE(dst.stat().st_mode),
+        )
+        scratch = cp._scratch_for(restored, "txn-crash-link", 0)
+        scratch = dataclasses.replace(scratch, path=src)
+        assert cp._cas_rollback(restored, scratch) is True
+        assert dst.read_bytes() == b"before-image"
+        assert not displaced.exists()
+        assert src.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
+def test_exchange_fallback_crash_after_step_two_restores_preimage(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_unlink = os.unlink
+    calls = {"n": 0}
+
+    def crash_after_src_unlink(name: str, **kwargs: object) -> None:
+        calls["n"] += 1
+        real_unlink(name, **kwargs)
+        if calls["n"] == 4:
+            raise RuntimeError("crash after dest installed")
+
+    try:
+        with mock.patch.object(cp.os, "unlink", side_effect=crash_after_src_unlink):
+            with pytest.raises(RuntimeError, match="crash after dest installed"):
+                cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert dst.read_bytes() == b"after-image"
+        assert displaced.read_bytes() == b"before-image"
+        assert not src.exists()
+        restored = cp.FileProjection.from_snapshot(
+            dst,
+            before=b"before-image",
+            before_mode=stat.S_IMODE(displaced.stat().st_mode),
+            after=b"after-image",
+            after_mode=stat.S_IMODE(dst.stat().st_mode),
+        )
+        scratch = cp._scratch_for(restored, "txn-crash-step2", 0)
+        assert cp._cas_rollback(restored, scratch) is True
+        assert dst.read_bytes() == b"before-image"
+        assert not displaced.exists()
+        assert scratch.path.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
+def test_exchange_fallback_refuses_racer_created_destination(
+    tmp_path: Path,
+) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_unlink = os.unlink
+    calls = {"n": 0}
+
+    def plant_racer(name: str, **kwargs: object) -> None:
+        calls["n"] += 1
+        real_unlink(name, **kwargs)
+        if calls["n"] == 1:
+            racer = os.open(
+                "note.md",
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                0o644,
+                dir_fd=fd,
+            )
+            try:
+                os.write(racer, b"racer")
+            finally:
+                os.close(racer)
+
+    try:
+        with mock.patch.object(cp.os, "unlink", side_effect=plant_racer):
+            with pytest.raises(OSError) as raised:
+                cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert raised.value.errno == errno.EEXIST
+        assert dst.read_bytes() == b"racer"
+        assert displaced.read_bytes() == b"before-image"
+        assert src.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
+def test_exchange_fallback_refuses_racer_at_displaced_name(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    real_link = os.link
+    planted = {"n": 0}
+
+    def plant_displaced(src_name: str, dst_name: str, **kwargs: object) -> None:
+        planted["n"] += 1
+        if planted["n"] == 1:
+            racer = os.open(
+                cp._exchange_displaced_name("note.md"),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+                0o644,
+                dir_fd=fd,
+            )
+            try:
+                os.write(racer, b"racer")
+            finally:
+                os.close(racer)
+        real_link(src_name, dst_name, **kwargs)
+
+    try:
+        with mock.patch.object(cp.os, "link", side_effect=plant_displaced):
+            with pytest.raises(OSError) as raised:
+                cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert raised.value.errno == errno.EEXIST
+        assert dst.read_bytes() == b"before-image"
+        assert displaced.read_bytes() == b"racer"
+        assert src.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
+def test_exchange_fallback_refuses_occupied_displaced_name(tmp_path: Path) -> None:
+    src = tmp_path / "scratch"
+    dst = tmp_path / "note.md"
+    displaced = tmp_path / cp._exchange_displaced_name("note.md")
+    src.write_bytes(b"after-image")
+    dst.write_bytes(b"before-image")
+    displaced.write_bytes(b"stale-preimage")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(OSError) as raised:
+            cp._renameat2_exchange_fallback(fd, "scratch", fd, "note.md")
+        assert raised.value.errno == errno.EEXIST
+        assert dst.read_bytes() == b"before-image"
+        assert displaced.read_bytes() == b"stale-preimage"
+        assert src.read_bytes() == b"after-image"
+    finally:
+        os.close(fd)
+
+
+def test_einval_fallback_rollback_restores_preimage(tmp_path: Path) -> None:
+    log = _log(tmp_path)
+    note = tmp_path / "vault" / "task-1.md"
+    note.parent.mkdir()
+    note.write_bytes(b"stage: S6\n")
+    projection = cp.FileProjection.capture(note, after=b"stage: S7\n")
+
+    def crash(phase: str, index: int | None) -> None:
+        if phase == "after_projection":
+            raise RuntimeError("boom")
+
+    with mock.patch.object(cp, "_renameat2_syscall", side_effect=_einval_same_dir_syscall):
+        with pytest.raises(RuntimeError, match="boom"):
+            cp.execute_lifecycle_transition(
+                event_log=log,
+                intent=_intent(),
+                projections=[projection],
+                transaction_root=tmp_path / "transactions",
+                lock_root=tmp_path / "locks",
+                timestamp="2026-07-11T15:00:00Z",
+                failure_hook=crash,
+            )
+    assert note.read_bytes() == b"stage: S6\n"
+
+
+def test_renameat2_non_einval_still_raises(tmp_path: Path) -> None:
+    def eperm_syscall(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EPERM, "Operation not permitted")
+
+    src = tmp_path / "a"
+    dst = tmp_path / "b"
+    src.write_bytes(b"x")
+    dst.write_bytes(b"y")
+    fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with mock.patch.object(cp, "_renameat2_syscall", side_effect=eperm_syscall):
+            with pytest.raises(OSError) as raised:
+                cp._renameat2(fd, "a", fd, "b", cp._RENAME_EXCHANGE)
+        assert raised.value.errno == errno.EPERM
+        assert src.read_bytes() == b"x"
+        assert dst.read_bytes() == b"y"
+    finally:
+        os.close(fd)
+
+
+def test_einval_fallback_on_vault_nfs_mount(tmp_path: Path) -> None:
+    if os.environ.get("HAPAX_NFS_VAULT_PROBE") != "1":
+        pytest.skip("set HAPAX_NFS_VAULT_PROBE=1 to probe the live vault NFS mount")
+    vault = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks"
+    if not vault.is_dir():
+        pytest.skip("vault mount absent")
+    probe = subprocess.run(
+        ["findmnt", "-n", "-o", "FSTYPE", "-T", str(vault)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if "nfs" not in probe.stdout.lower():
+        pytest.skip("vault is not NFS")
+    root = vault / f".coord-nfs-probe-{os.getpid()}"
+    root.mkdir()
+    try:
+        log = _log(tmp_path)
+        note = root / "task-1.md"
+        note.write_bytes(b"stage: S6\n")
+        projection = cp.FileProjection.capture(note, after=b"stage: S7\n")
+        cp.execute_lifecycle_transition(
+            event_log=log,
+            intent=_intent(),
+            projections=[projection],
+            transaction_root=tmp_path / "transactions",
+            lock_root=tmp_path / "locks",
+            timestamp="2026-07-11T15:00:00Z",
+        )
+        assert note.read_bytes() == b"stage: S7\n"
+    finally:
+        note = root / "task-1.md"
+        if note.exists():
+            note.unlink()
+        lock = root / ".drain-lock"
+        if lock.exists():
+            lock.unlink()
+        root.rmdir()

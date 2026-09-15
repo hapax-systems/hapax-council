@@ -6,10 +6,12 @@ filters entries for the closing task, and checks whether each artifact has reach
 a terminal disposition appropriate for its authority ceiling.
 
 Exit codes:
-- 0: closure permitted (all dispositions satisfied, warnings only, or fail-open)
-- 2: closure BLOCKED (gate-ceiling artifact lacks terminal disposition)
+- 0: closure permitted (all dispositions satisfied, or bypassed)
+- 2: closure BLOCKED (gate-ceiling artifact lacks terminal disposition,
+  or ledger missing/malformed)
 
-Fail-open on infrastructure errors (missing/empty/malformed ledger).
+Missing or malformed ledger is fail-closed. A well-formed empty YAML
+list (`[]`) is an empty catalog and is permitted.
 
 Bypass: HAPAX_ARTIFACT_DISPOSITION_GATE_OFF=1
 
@@ -25,7 +27,15 @@ from pathlib import Path
 
 import yaml
 
-LEDGER_PATH = Path.home() / ".cache" / "hapax" / "document-pipeline" / "artifact-ledger.yaml"
+
+def _ledger_path() -> Path:
+    override = os.environ.get("HAPAX_ARTIFACT_LEDGER_PATH")
+    if override:
+        return Path(override)
+    return Path.home() / ".cache" / "hapax" / "document-pipeline" / "artifact-ledger.yaml"
+
+
+LEDGER_PATH = _ledger_path()
 
 CLASS_TO_CEILING: dict[str, str] = {
     "specification": "gate",
@@ -69,11 +79,15 @@ def read_ledger(ledger_path: Path) -> list[dict] | None:
         data = yaml.safe_load(text)
     except yaml.YAMLError:
         print(
-            "warning: artifact ledger malformed (YAML parse error), failing open", file=sys.stderr
+            f"error: artifact ledger malformed at {ledger_path} (YAML parse error); refusing close",
+            file=sys.stderr,
         )
         return None
     if not isinstance(data, list):
-        print("warning: artifact ledger is not a list, failing open", file=sys.stderr)
+        print(
+            f"error: artifact ledger at {ledger_path} is not a list; refusing close",
+            file=sys.stderr,
+        )
         return None
     return data
 
@@ -148,7 +162,7 @@ def gate(
     note_path: Path,
     task_id: str,
     debt_reason: str | None = None,
-    ledger_path: Path = LEDGER_PATH,
+    ledger_path: Path | None = None,
     role: str = "",
 ) -> int:
     """Run the disposition gate. Returns exit code (0 or 2)."""
@@ -159,9 +173,16 @@ def gate(
         )
         return 0
 
+    if ledger_path is None:
+        ledger_path = _ledger_path()
     ledger = read_ledger(ledger_path)
     if ledger is None:
-        return 0
+        print(
+            f"error: artifact ledger missing, empty, or malformed at {ledger_path}; "
+            "refusing close. Next: create or repair that ledger, then retry.",
+            file=sys.stderr,
+        )
+        return 2
 
     task_entries = [e for e in ledger if e.get("task_id") == task_id]
     if not task_entries:
