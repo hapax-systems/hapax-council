@@ -204,104 +204,28 @@ if str(repo_root) not in sys.path:
 # Same reason as the rehydrate branch above: recovery rewrites task notes and the
 # activation cache under sdlc_claim's own lock namespace, which cc-close does not
 # take. Two lock namespaces over one resource is not exclusion.
-from shared.cc_task_lock import (  # noqa: E402
-    TaskLockTimeout,
-    hold_role_lease_lock,
-    hold_task_note_lock,
-)
+from shared.cc_task_lock import TaskLockTimeout, hold_journal_locks  # noqa: E402
 from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
 from shared.sdlc_claim import ClaimPublicationError, recover_claim_publications  # noqa: E402
 
 roots = default_claim_publication_roots(home=Path.home())
 
 
-def _pending_owners(transaction_root):
-    """(task_id, role) per interrupted journal, read from its own manifest.
-
-    The all-tasks form used to PROBE — `held_task_locks()` acquired each lock
-    non-blockingly and released it before returning, so it answered "was anyone
-    mid-mutation a moment ago", not "is this protected". A closer could take its
-    locks straight after the scan, read the note, and then archive its stale
-    snapshot over the recovered one: the same check-then-use I have been removing
-    everywhere else, reintroduced by me in the one place it was hardest to see
-    (review round 22).
-
-    A journal names its own task and role in `intent`, so the set is enumerable
-    after all and each recovery can run under the locks that protect exactly what it
-    touches. A manifest that cannot be read is refused rather than recovered
-    unprotected — an unattributable journal is precisely the one whose note we
-    cannot name.
-
-    Returns PAIRS, not a mapping. Keying by task discarded roles: two journals for
-    one task kept only the last, so recovery could rewrite a role's leases while
-    holding a different role's lock. And the role must come from the JOURNAL, never
-    from the caller's environment — `recover_claim_publications` writes
-    `intent.role`, so recovering an eta journal from a beta shell locked beta and
-    left eta's lease namespace open to cc-close's read-then-delete sweep (review
-    round 23, both codex seats).
-    """
-    import json
-
-    root = Path(transaction_root)
-    owners: set[tuple[str, str]] = set()
-    unreadable: list[str] = []
-    if not root.is_dir():
-        return owners, unreadable
-    for entry in sorted(root.iterdir()):
-        manifest = entry / "manifest.json"
-        if not manifest.is_file():
-            continue
-        try:
-            intent = (json.loads(manifest.read_text(encoding="utf-8")) or {}).get("intent") or {}
-            pending_task = str(intent.get("task_id") or "").strip()
-            pending_role = str(intent.get("role") or "").strip()
-        except (OSError, ValueError) as exc:
-            unreadable.append(f"{manifest}: {type(exc).__name__}: {exc}")
-            continue
-        if not pending_task:
-            unreadable.append(f"{manifest}: declares no task_id")
-            continue
-        if not pending_role:
-            # Ownership unresolved. Recovering it would rewrite SOME role's leases
-            # with no way to name which lock protects them, so refuse rather than
-            # pick — the same rule the note-side duplicate guard follows.
-            unreadable.append(f"{manifest}: declares no role for task '{pending_task}'")
-            continue
-        owners.add((pending_task, pending_role))
-    return owners, unreadable
-
-
-# Both forms read ownership from the journals. `recovery_role` (the caller's
-# environment) is deliberately NOT consulted for locking: the journal says whose
-# leases the recovery will rewrite, and the caller's shell does not.
-pending, blind = _pending_owners(roots.claim_transaction_root)
-if task_id:
-    pending = {(t, r) for (t, r) in pending if t == task_id}
-    blind = [b for b in blind if task_id in b]
-if blind:
-    print(
-        "cc-claim: BLOCKED — "
-        + f"{len(blind)} interrupted claim-publication journal(s) do not name a "
-        "readable task and role, so the locks protecting what recovery would rewrite "
-        "cannot be taken: "
-        + "; ".join(blind)
-        + ". Next action: repair or quarantine those journals, then rerun. "
-        "Nothing was modified.",
-        file=sys.stderr,
-    )
-    sys.exit(8)
-
-# ALL task locks first, then all role locks, each set in sorted order. cc-close
-# takes task-then-role for its single pair, so no one ever waits for a task lock
-# while holding a role lock and there is no cycle to deadlock on. Held to process
-# exit, so nothing recovered here can be closed underneath us mid-run.
-_pending_tasks = sorted({t for (t, _r) in pending} | ({task_id} if task_id else set()))
-_pending_roles = sorted({r for (_t, r) in pending})
+# Ownership comes from the journals, and the locks are taken to a FIXPOINT.
+#
+# `recovery_role` (the caller's environment) is deliberately not consulted: the
+# journal says whose note and whose leases a recovery will rewrite, and the caller's
+# shell does not. And discovering owners once is not enough — recovery enumerates
+# the journals again, so a publisher already holding a task lock can leave a NEW
+# journal for another role before releasing it, and that one would be recovered with
+# no lock on what it rewrites (review round 24). `hold_journal_locks` re-scans after
+# each acquisition until the owner set stops growing.
 try:
-    for pending_task in _pending_tasks:
-        hold_task_note_lock(pending_task)
-    for pending_role in _pending_roles:
-        hold_role_lease_lock(pending_role)
+    pending, blind = hold_journal_locks(
+        roots.claim_transaction_root,
+        task_id=task_id,
+        also_tasks=(task_id,) if task_id else (),
+    )
 except TaskLockTimeout as exc:
     print(
         f"cc-claim: BLOCKED — {exc}. A cc-close or cc-claim is mid-mutation. Next "
@@ -317,6 +241,18 @@ except OSError as exc:
         file=sys.stderr,
     )
     sys.exit(5)
+
+blocked_tasks = {t for (t, _msg) in blind if t}
+for _t, _msg in blind:
+    # Reported, and EXCLUDED — not a blanket refusal. A journal whose owner cannot
+    # be named must not be recovered, because nothing can lock what it rewrites; the
+    # other tasks' journals are unaffected and refusing them too would take out
+    # unrelated recoveries for one unreadable file.
+    print(f"cc-claim: recovery skipped (unattributable journal): {_msg}", file=sys.stderr)
+
+_pending_tasks = sorted(
+    ({t for (t, _r) in pending} | ({task_id} if task_id else set())) - blocked_tasks
+)
 
 try:
     results = []
@@ -921,21 +857,57 @@ if canon_enforced:
     )
     held = [item for item in inspections if item.disposition == "hold"]
     if held:
+        # AUTOMATIC recovery needs the same journal-derived locks the explicit
+        # `--recover-claim-publications` path takes. This call was reached holding
+        # only the caller's task and role locks, so a beta caller recovering an eta
+        # journal for this task rewrote eta's leases with eta unlocked — and a
+        # concurrent cc-close for another eta task could then delete the marker and
+        # epoch this recovery had just published (review round 24).
+        from shared.cc_task_lock import (  # noqa: E402
+            TaskLockTimeout as _JournalLockTimeout,
+        )
+        from shared.cc_task_lock import (  # noqa: E402
+            hold_journal_locks as _hold_journal_locks,
+        )
+
         try:
-            recovered = recover_claim_publications(
-                cache_dir=cache_dir,
-                transaction_root=transaction_root,
-                receipt_root=receipt_root,
-                lock_root=lock_root,
-                task_id=task_id,
-            )
-        except ClaimPublicationError as exc:
+            _owners, _blind = _hold_journal_locks(transaction_root, task_id=task_id)
+        except _JournalLockTimeout as exc:
             print(
-                f"cc-claim: HOLD — {exc}. Next action: repair the named recovery root, "
-                f"then rerun `cc-claim --recover-claim-publications {task_id}`.",
+                f"cc-claim: BLOCKED — {exc}. Next action: let the other writer finish "
+                "and rerun cc-claim. Nothing was modified.",
                 file=sys.stderr,
             )
-            sys.exit(8)
+            sys.exit(4)
+        _unattributable = [msg for (_t, msg) in _blind]
+        for _msg in _unattributable:
+            print(
+                f"cc-claim: recovery skipped (unattributable journal): {_msg}",
+                file=sys.stderr,
+            )
+        if _unattributable:
+            # Skip recovery entirely for THIS task: its journal set contains one
+            # whose leases nothing can lock, and recover_claim_publications takes a
+            # task, not a journal. The inspection HOLD below still reports the
+            # underlying condition, which is the honest outcome — nothing was
+            # recovered and nothing was silently left looking recovered.
+            recovered = ()
+        else:
+            try:
+                recovered = recover_claim_publications(
+                    cache_dir=cache_dir,
+                    transaction_root=transaction_root,
+                    receipt_root=receipt_root,
+                    lock_root=lock_root,
+                    task_id=task_id,
+                )
+            except ClaimPublicationError as exc:
+                print(
+                    f"cc-claim: HOLD — {exc}. Next action: repair the named recovery "
+                    f"root, then rerun `cc-claim --recover-claim-publications {task_id}`.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
         inspections = inspect_claim_publications(
             cache_dir=cache_dir,
             transaction_root=transaction_root,

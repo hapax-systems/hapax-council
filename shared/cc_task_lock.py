@@ -221,6 +221,120 @@ def hold_role_lease_lock(
     return _hold(role_lock_path(role, cache_dir), f"cc-task role lock for '{role}'", timeout)
 
 
+def journal_owners(
+    transaction_root: Path, *, task_id: str | None = None
+) -> tuple[set[tuple[str, str]], list[str]]:
+    """``{(task_id, role)}`` per interrupted claim-publication journal, plus refusals.
+
+    A journal says whose note and whose leases a recovery will rewrite. The CALLER's
+    role does not: ``recover_claim_publications`` writes ``intent.role``, so a beta
+    shell recovering an eta journal must hold eta's lock, not beta's.
+
+    A journal that does not declare BOTH a readable task and a readable role is
+    returned as a refusal rather than an owner. Recovering it would rewrite some
+    role's leases with no way to name the lock that protects them, and guessing the
+    caller's role is precisely the defect.
+
+    Refusals carry ``(task_id_or_None, message)`` so a caller can exclude exactly the
+    affected task and still recover the others. A blanket refusal would take out
+    unrelated recoveries — and, on the automatic path, block a legitimate claim —
+    for one unreadable file; fail-closed means "do not act on what you cannot name",
+    not "do nothing at all".
+
+    Every container is type-checked, not merely JSON-decoded: ``{"intent":
+    ["malformed"]}`` is valid JSON whose ``intent`` has no ``.get``, and an
+    AttributeError there would replace a named refusal with a traceback (review
+    round 24).
+    """
+    import json
+
+    root = Path(transaction_root)
+    owners: set[tuple[str, str]] = set()
+    refusals: list[tuple[str | None, str]] = []
+    if not root.is_dir():
+        return owners, refusals
+    for entry in sorted(root.iterdir()):
+        manifest = entry / "manifest.json"
+        if not manifest.is_file():
+            continue
+        try:
+            document = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            refusals.append((None, f"{manifest}: {type(exc).__name__}: {exc}"))
+            continue
+        if not isinstance(document, dict):
+            refusals.append(
+                (None, f"{manifest}: top level is {type(document).__name__}, not a mapping")
+            )
+            continue
+        intent = document.get("intent")
+        if not isinstance(intent, dict):
+            refusals.append(
+                (None, f"{manifest}: 'intent' is {type(intent).__name__}, not a mapping")
+            )
+            continue
+        owner_task = str(intent.get("task_id") or "").strip()
+        owner_role = str(intent.get("role") or "").strip()
+        if task_id is not None and owner_task and owner_task != task_id:
+            continue
+        if not owner_task:
+            refusals.append((None, f"{manifest}: declares no task_id"))
+            continue
+        if not owner_role:
+            refusals.append((owner_task, f"{manifest}: declares no role for task '{owner_task}'"))
+            continue
+        owners.add((owner_task, owner_role))
+    return owners, refusals
+
+
+def hold_journal_locks(
+    transaction_root: Path,
+    *,
+    task_id: str | None = None,
+    also_tasks: tuple[str, ...] = (),
+    timeout: float | None = None,
+    passes: int = 8,
+) -> tuple[set[tuple[str, str]], list[str]]:
+    """Hold a lock for every journal owner, RE-DISCOVERING until the set stops growing.
+
+    Discovering owners and then locking them is not enough: recovery enumerates the
+    journals again, so a publisher that already held a task lock can leave a NEW
+    journal for another role before releasing it, and that journal would then be
+    recovered with no lock on the leases it rewrites (review round 24).
+
+    Locks are held to process exit and the owner set only ever grows, so re-scanning
+    after each acquisition reaches a fixpoint. `passes` bounds it: a set that will
+    not settle means journals are being published faster than they can be locked,
+    and the caller must refuse rather than keep chasing.
+
+    Returns the locked owners and any journals refused as unattributable. Task locks
+    are taken before role locks, in sorted order, so no one waits for a task lock
+    while holding a role lock — the ordering cc-close also observes.
+    """
+    locked_tasks: set[str] = set()
+    locked_roles: set[str] = set()
+    owners: set[tuple[str, str]] = set()
+    refusals: list[str] = []
+    for _pass in range(passes):
+        found, refusals = journal_owners(transaction_root, task_id=task_id)
+        owners = found
+        want_tasks = {t for (t, _r) in owners} | set(also_tasks)
+        want_roles = {r for (_t, r) in owners}
+        if want_tasks <= locked_tasks and want_roles <= locked_roles:
+            return owners, refusals
+        for task in sorted(want_tasks - locked_tasks):
+            hold_task_note_lock(task, timeout=timeout)
+            locked_tasks.add(task)
+        for role in sorted(want_roles - locked_roles):
+            hold_role_lease_lock(role, timeout=timeout)
+            locked_roles.add(role)
+    raise TaskLockTimeout(
+        f"claim-publication journals kept appearing while locking them ({passes} "
+        "passes); another publisher is writing faster than this recovery can take "
+        "the locks that protect what it would rewrite"
+    )
+
+
 def _hold(path: Path, description: str, timeout: float | None) -> Path:
     timeout = resolved_timeout(timeout)
     deadline = time.monotonic() + timeout

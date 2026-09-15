@@ -1186,9 +1186,11 @@ class TestRecoveryParticipatesToo:
             check=False,
             timeout=120,
         )
-        assert result.returncode == 8, f"{result.stdout}\n{result.stderr}"
-        assert "do not name a readable task and role" in result.stderr, result.stderr
-        assert str(journal) in result.stderr, "the refusal did not name the journal"
+        assert "recovery skipped (unattributable journal)" in result.stderr, result.stderr
+        assert str(journal) in result.stderr, "the skip did not name the journal"
+        assert "hold" not in result.stdout, (
+            f"a journal whose owner cannot be named was passed to recovery anyway: {result.stdout}"
+        )
 
     def test_a_journal_naming_no_role_is_refused_too(self, tmp_path: Path) -> None:
         """Ownership unresolved is the same refusal as identity unresolved.
@@ -1211,8 +1213,11 @@ class TestRecoveryParticipatesToo:
             check=False,
             timeout=120,
         )
-        assert result.returncode == 8, f"{result.stdout}\n{result.stderr}"
         assert "declares no role" in result.stderr, result.stderr
+        assert "recovery skipped (unattributable journal)" in result.stderr, result.stderr
+        assert "hold" not in result.stdout, (
+            f"a journal naming no role was recovered against a guessed owner: {result.stdout}"
+        )
 
     def test_the_journals_role_is_locked_not_the_callers(self, tmp_path: Path) -> None:
         """Recovering an eta journal from a beta shell must lock ETA.
@@ -1276,6 +1281,95 @@ class TestRecoveryParticipatesToo:
             "success is asserted by its own message, not by the absence of one — an "
             f"unrelated failure passed the earlier version of this test\n{result.stdout}"
         )
+
+
+class TestJournalLockFixpoint:
+    """Discovering owners once is not enough; recovery enumerates again.
+
+    A publisher already holding a task lock can leave a NEW journal for another role
+    before releasing it, and that journal would then be recovered with no lock on
+    the leases it rewrites. `hold_journal_locks` re-scans after each acquisition
+    until the owner set stops growing.
+    """
+
+    def _roots(self, home: Path):
+        sys.path.insert(0, str(REPO_ROOT))
+        from shared.gate0b_claim_publication_install import default_claim_publication_roots
+
+        return default_claim_publication_roots(home=home)
+
+    def _journal(self, home: Path, name: str, task: str, role: str) -> Path:
+        import json
+
+        root = Path(self._roots(home).claim_transaction_root)
+        entry = root / f"claim-pub-{name * 64}"[:80]
+        entry.mkdir(parents=True, exist_ok=True)
+        (entry / "manifest.json").write_text(
+            json.dumps({"intent": {"task_id": task, "role": role}}), encoding="utf-8"
+        )
+        return entry / "manifest.json"
+
+    def test_a_journal_that_appears_during_the_wait_is_locked_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The second pass must find it, and hold ITS role."""
+        import shared.cc_task_lock as mod
+
+        home = tmp_path / "home"
+        (home / ".cache").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        self._journal(home, "a", "t-one", "eta")
+
+        root = Path(self._roots(home).claim_transaction_root)
+        real_owners = mod.journal_owners
+        calls: list[int] = []
+
+        def owners_then_publish(transaction_root, *, task_id=None):
+            calls.append(1)
+            found = real_owners(transaction_root, task_id=task_id)
+            if len(calls) == 1:
+                # A publisher lands a second journal, for a DIFFERENT role, exactly
+                # in the window between discovery and acquisition.
+                self._journal(home, "b", "t-two", "beta")
+            return found
+
+        monkeypatch.setattr(mod, "journal_owners", owners_then_publish)
+        owners, refusals = mod.hold_journal_locks(root, timeout=5)
+
+        assert not refusals, refusals
+        assert owners == {("t-one", "eta"), ("t-two", "beta")}, (
+            f"the late journal was not picked up by the re-scan: {owners}"
+        )
+        for role in ("eta", "beta"):
+            path = mod.role_lock_path(role)
+            handle = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                with pytest.raises(OSError):
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(handle)
+
+    def test_a_set_that_never_settles_refuses(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Chasing forever is not an option; the refusal names why."""
+        import shared.cc_task_lock as mod
+
+        home = tmp_path / "home"
+        (home / ".cache").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        root = Path(self._roots(home).claim_transaction_root)
+        root.mkdir(parents=True, exist_ok=True)
+
+        counter = iter(range(1000))
+
+        def always_new(transaction_root, *, task_id=None):
+            n = next(counter)
+            return {(f"t-{n}", f"r-{n}")}, []
+
+        monkeypatch.setattr(mod, "journal_owners", always_new)
+        with pytest.raises(TaskLockTimeout, match="kept appearing"):
+            mod.hold_journal_locks(root, timeout=5, passes=3)
 
 
 class TestARefusalMutatesNothing:
