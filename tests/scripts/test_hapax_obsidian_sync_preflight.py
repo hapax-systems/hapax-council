@@ -695,27 +695,55 @@ def test_file_link_does_not_reserve_its_target(vault: pathlib.Path, tmp_path: pa
     assert report["symlinks_skipped_overlapping"] == []
 
 
-def test_directory_link_does_reserve_its_target(
+def test_two_aliases_to_one_dir_is_refused_as_scheduling_dependent(
     vault: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
-    """The other half: a directory link IS watched, so a second link to the same
-    directory is skipped rather than counted twice."""
+    """A directory link IS watched once admitted, but `listRecursive` pushes every
+    child's scan and awaits Promise.all — so two aliases can BOTH clear the overlap
+    check before either installs its watcher. Whether one or both upload depends on
+    scheduling, so there is no exact total to report and the tool must refuse rather
+    than pick one. (An earlier version asserted exactly one always uploads.)"""
     outside = tmp_path / "shared"
     outside.mkdir()
     (outside / "note.md").write_bytes(b"n" * 31)
     (vault / "a-link").symlink_to(outside, target_is_directory=True)
     (vault / "b-link").symlink_to(outside, target_is_directory=True)
-    report = json.loads(
-        _run(
-            str(vault),
-            "--excluded-folders",
-            "20-projects/_dashboard,30-areas/hapax/ocr/pages",
-            "--json",
-        ).stdout
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--json",
     )
-    assert report["predicted_upload"]["bytes"] == 161 + 31, "counted the same dir twice"
-    assert [link["path"] for link in report["symlinks_escaping_vault"]] == ["a-link"]
-    assert [link["path"] for link in report["symlinks_skipped_overlapping"]] == ["b-link"]
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert "CONCURRENTLY" in result.stderr
+    assert "Next:" in result.stderr
+    report = json.loads(result.stdout)
+    assert [link["path"] for link in report["symlinks_scheduling_dependent"]] == ["b-link"]
+
+
+def test_one_alias_plus_a_root_overlap_is_still_exact(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """Overlap with the VAULT ROOT is deterministic — `watch()` installs that watcher
+    before `listAll()` — so an internal alias alongside an escaping link must not
+    trigger the ambiguity refusal."""
+    outside = tmp_path / "shared"
+    outside.mkdir()
+    (outside / "note.md").write_bytes(b"n" * 31)
+    (vault / "escaping").symlink_to(outside, target_is_directory=True)
+    (vault / "internal").symlink_to(vault / "30-areas", target_is_directory=True)
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--json",
+    )
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["symlinks_scheduling_dependent"] == []
+    assert [link["path"] for link in report["symlinks_escaping_vault"]] == ["escaping"]
+    assert [link["path"] for link in report["symlinks_skipped_overlapping"]] == ["internal"]
+    assert report["predicted_upload"]["bytes"] == 161 + 31
 
 
 @pytest.mark.parametrize("config_dir", [".obsidian", ".obsidian-custom"])
@@ -1077,6 +1105,53 @@ def test_nonexistent_config_candidate_is_dropped_not_an_error(
     assert set(report["config_uploads"]["by_category"]) == {"appearance"}
 
 
+def test_config_scan_covers_each_enumerated_shape(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """The defining cases of the bounded enumeration, one per shape cli.js pushes:
+    the literal `config` file, a top-level json, a theme pair, a snippet, and a plugin
+    file — plus the two it explicitly refuses (workspace.json, node_modules)."""
+    obsidian = vault / ".obsidian"
+    (obsidian / "themes" / "moon").mkdir(parents=True)
+    (obsidian / "snippets").mkdir()
+    (obsidian / "plugins" / "dv").mkdir(parents=True)
+    (obsidian / "plugins" / "node_modules").mkdir()
+    (obsidian / "config").write_bytes(b"c" * 2)  # literal file named 'config'
+    (obsidian / "app.json").write_bytes(b"a" * 3)
+    (obsidian / "hotkeys.json").write_bytes(b"h" * 4)
+    (obsidian / "community-plugins.json").write_bytes(b"p" * 5)
+    (obsidian / "stray.json").write_bytes(b"s" * 6)  # core-plugin-data
+    (obsidian / "workspace.json").write_bytes(b"w" * 900)  # never synced
+    (obsidian / "themes" / "moon" / "theme.css").write_bytes(b"t" * 7)
+    (obsidian / "themes" / "moon" / "manifest.json").write_bytes(b"m" * 8)
+    (obsidian / "snippets" / "tweak.css").write_bytes(b"k" * 9)
+    (obsidian / "plugins" / "dv" / "data.json").write_bytes(b"d" * 10)
+    (obsidian / "plugins" / "node_modules" / "main.js").write_bytes(b"n" * 900)
+
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=list(preflight.VALID_CONFIG_CATEGORIES),
+    )
+    report = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
+    uploads = report["config_uploads"]
+    # 3+4+5+6+7+8+9+10 = 52. Excluded: workspace.json and node_modules by name, and
+    # the literal `config` file — cli.js PUSHES it into the scan queue, but that queue
+    # only builds the local file index; admission still runs through allowSyncFile,
+    # where `config` has no extension, so no category matches and it never uploads.
+    assert uploads["bytes"] == 52
+    assert uploads["by_category"] == {
+        "app": {"bytes": 3, "files": 1},
+        "appearance-data": {"bytes": 24, "files": 3},  # theme.css+manifest.json+snippet
+        "community-plugin": {"bytes": 5, "files": 1},
+        "community-plugin-data": {"bytes": 10, "files": 1},
+        "core-plugin-data": {"bytes": 6, "files": 1},  # stray.json only
+        "hotkey": {"bytes": 4, "files": 1},
+    }
+
+
 def test_config_scan_does_not_invent_depths(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
     """ob enumerates fixed shapes, so a plugin file one level too deep, a nested
     snippet, a deeper theme file and a stray json below the top level are NOT
@@ -1192,10 +1267,75 @@ def test_no_sync_config_is_an_error_not_a_silent_pass(
     assert "no ob sync" in result.stderr
 
 
-def test_invalid_file_type_refuses(vault: pathlib.Path) -> None:
-    result = _run(str(vault), "--excluded-folders", "20-projects", "--file-types", "img")
-    assert result.returncode == ERROR
-    assert "invalid file type" in result.stderr
+@pytest.mark.parametrize("selection", ["img", ",", "image,", ",image", " ", "image,,pdf"])
+def test_file_type_parsing_matches_the_client(vault: pathlib.Path, selection: str) -> None:
+    """cli.js `Kr` splits on ",", trims, lowercases and throws for ANY field not in
+    `us` — the empty field that "," or "image," produces included. Dropping empties
+    would certify a selection ob refuses to apply. " " is not the reset either: only
+    the EXACT empty string is."""
+    result = _run(str(vault), "--excluded-folders", "20-projects", "--file-types", selection)
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert "Invalid file type" in result.stderr
+    assert "Next:" in result.stderr
+
+
+def test_exact_empty_file_types_restores_defaults(vault: pathlib.Path) -> None:
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--file-types",
+        "",
+        "--json",
+    )
+    assert result.returncode == OK, result.stdout + result.stderr
+    assert json.loads(result.stdout)["file_types"] == list(preflight.DEFAULT_FILE_TYPES)
+
+
+def test_mixed_case_and_padded_file_types_are_accepted(vault: pathlib.Path) -> None:
+    """Kr lowercases and trims each field, so these ARE appliable and must not refuse."""
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--file-types",
+        " Image , PDF ",
+        "--json",
+    )
+    assert result.returncode == OK, result.stdout + result.stderr
+    assert json.loads(result.stdout)["file_types"] == ["image", "pdf"]
+
+
+def test_files_over_per_file_max_are_not_counted(vault: pathlib.Path) -> None:
+    """cli.js: `!m.folder && m.size > e.perFileMax` -> logSkip("File too large to
+    sync"). A file admitted by class but over the limit never uploads, so counting it
+    overstates the total — which is how "33 files >= 200 MB were never synced" was
+    already true of the real vault."""
+    big = vault / "90-attachments"
+    big.mkdir(exist_ok=True)
+    (big / "huge.pdf").write_bytes(b"p" * 2048)
+    base = (
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+    )
+    over = json.loads(_run(*base, "--per-file-max", "2047", "--json").stdout)
+    assert over["predicted_upload"]["bytes"] == 161, "an oversize file was counted"
+    assert [f["path"] for f in over["files_over_per_file_max"]] == ["90-attachments/huge.pdf"]
+    assert over["per_file_max_bytes"] == 2047
+
+    # Boundary: exactly AT the limit still uploads (the client compares with >).
+    at = json.loads(_run(*base, "--per-file-max", "2048", "--json").stdout)
+    assert at["predicted_upload"]["bytes"] == 161 + 2048
+    assert at["files_over_per_file_max"] == []
+
+
+def test_default_per_file_max_is_the_client_fallback(vault: pathlib.Path) -> None:
+    report = json.loads(
+        _run(str(vault), "--excluded-folders", "20-projects/_dashboard", "--json").stdout
+    )
+    assert report["per_file_max_bytes"] == 199 * 1024 * 1024
+    assert report["per_file_max_bytes"] == preflight.DEFAULT_PER_FILE_MAX
 
 
 @pytest.mark.parametrize(

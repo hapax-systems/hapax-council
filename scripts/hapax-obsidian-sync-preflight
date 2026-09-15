@@ -74,8 +74,21 @@ Rules replayed from obsidian-headless 0.0.14 ``cli.js``:
   * the config scan is NOT a walk — it enumerates fixed shapes through
     ``adapter.list``/``exists``/``stat``, which follow symlinks and never consult the
     watcher set, so the overlap rule does not apply there and no deeper nesting is
-    reached. ``ws``/``Ss`` also require ``configDir`` to be a dotfolder name with no
-    separators, and throw otherwise.
+    reached. That queue only builds the local file index; admission still runs through
+    ``_allowSyncFile``, which is why the literal ``<cfg>/config`` file is enumerated
+    but never uploaded. ``ws``/``Ss`` also require ``configDir`` to be a dotfolder name
+    with no separators, and throw otherwise.
+  * per-file size — ``!m.folder && m.size > perFileMax`` is skipped with
+    ``File too large to sync``. The client's fallback is 199 MiB, but the SERVER may
+    send its own at login, which is not observable locally — hence ``--per-file-max``.
+  * ``--file-types`` is parsed by ``Kr``: split on ``,``, trim, lowercase, and throw
+    for any field not in ``us`` — an EMPTY field included, so ``,`` and ``image,`` are
+    rejected. Only the exact empty string restores the defaults.
+
+Where the client's own outcome is not determinate, this refuses instead of guessing:
+``listRecursive`` scans siblings concurrently, so two directory links resolving to one
+target can both clear the overlap check before either installs its watcher, and
+whether one or both upload depends on scheduling.
   * exclusions precede everything — the ``ignoreFolders`` loop runs before the
     hidden-path check and before the config-dir branch, so an entry naming a hidden
     or config-dir path does match.
@@ -485,6 +498,14 @@ def _overlaps(a: str, b: str) -> bool:
     return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
 
 
+# cli.js `Zi`: `this.perFileMax = 199*1024*1024`, replaced by the server's
+# `perFileMax` in the login handshake when it sends one. The seed loop then does
+# `!m.folder && m.size > e.perFileMax` -> `logSkip("File too large to sync")`, so a
+# file STRICTLY larger than the limit never uploads. This is why the audit's "33 files
+# >= 200 MB were never synced" was true without anyone configuring it.
+DEFAULT_PER_FILE_MAX = 199 * 1024 * 1024
+
+
 class _LinkPolicy:
     """ob's symlink rule, in ONE place for every walk and every entry kind.
 
@@ -503,9 +524,15 @@ class _LinkPolicy:
     """
 
     def __init__(self, vault: Path) -> None:
-        self.accepted = [os.path.realpath(vault)]
+        # The root watcher is installed by `watch()` BEFORE `listAll()` runs, so
+        # overlap with it is deterministic. Overlap with another LINK's target is not:
+        # `listRecursive` pushes every child's scan and awaits Promise.all, so two
+        # aliases can both clear the overlap check before either installs its watcher.
+        self.root_targets = [os.path.realpath(vault)]
+        self.link_targets: list[str] = []
         self.skipped: list[dict] = []
         self.escaping: list[dict] = []
+        self.ambiguous: list[dict] = []
 
     def follow(self, abspath: str, relpath: str, on_error) -> bool:
         try:
@@ -513,8 +540,14 @@ class _LinkPolicy:
         except OSError as exc:  # pragma: no cover
             on_error(exc)
             return False
-        if any(_overlaps(target, seen) for seen in self.accepted):
+        if any(_overlaps(target, seen) for seen in self.root_targets):
             self.skipped.append({"path": relpath, "target": target})
+            return False
+        racing = [t for t in self.link_targets if _overlaps(target, t)]
+        if racing:
+            # Whether this alias uploads depends on which concurrent scan installs its
+            # watcher first. There is no exact answer to report.
+            self.ambiguous.append({"path": relpath, "target": target})
             return False
         # Only a DIRECTORY link becomes watched: cli.js installs the watcher in the
         # `a.isDirectory()` branch (`Yi && startWatchPath(t)`), while the isFile branch
@@ -522,13 +555,17 @@ class _LinkPolicy:
         # reserving its target — reserving it would make one file link suppress a
         # later, legitimate upload of the same or an overlapping path.
         if os.path.isdir(target):
-            self.accepted.append(target)
+            self.link_targets.append(target)
         self.escaping.append({"path": relpath, "target": target})
         return True
 
 
 def predict(
-    vault: Path, entries: list[str], file_types: frozenset[str], links: _LinkPolicy
+    vault: Path,
+    entries: list[str],
+    file_types: frozenset[str],
+    links: _LinkPolicy,
+    per_file_max: int,
 ) -> dict:
     by_class: dict[str, list[int]] = {}
     by_ext: dict[str, list[int]] = {}
@@ -536,6 +573,7 @@ def predict(
     upload_bytes = upload_files = 0
     largest: list[tuple[int, str]] = []
     traversal_errors: list[dict] = []
+    too_large: list[dict] = []
 
     def _on_error(exc: OSError) -> None:
         # A skipped subtree makes every total below a floor, not a measurement.
@@ -600,6 +638,11 @@ def predict(
             bucket[1] += 1
             if not _admitted(klass, file_types):
                 continue
+            if size > per_file_max:
+                # cli.js logSkip("File too large to sync"): admitted by class, then
+                # dropped by size. Counting it would overstate the upload.
+                too_large.append({"path": rel, "bytes": size})
+                continue
             upload_bytes += size
             upload_files += 1
             ext = by_ext.setdefault(_extension(name), [0, 0])
@@ -631,6 +674,9 @@ def predict(
         "largest_included_files": [{"bytes": b, "path": p} for b, p in largest[:20]],
         "symlinks_escaping_vault": links.escaping,
         "symlinks_skipped_overlapping": links.skipped,
+        "symlinks_scheduling_dependent": links.ambiguous,
+        "files_over_per_file_max": too_large,
+        "per_file_max_bytes": per_file_max,
         "traversal_errors": traversal_errors,
     }
 
@@ -763,11 +809,24 @@ def _validate_config_types(config: Path, data: dict) -> None:
 def _resolve_file_types(args: argparse.Namespace, live: dict) -> tuple[str, ...] | None:
     """Resolve the attachment selection, honouring ob's three distinct cases."""
     if args.file_types is not None:
-        if args.file_types.strip() == "":
-            # cli.js: `s.fileTypes===""? delete t.allowTypes : ...` — clearing the
-            # option RESTORES the defaults rather than selecting nothing.
+        if args.file_types == "":
+            # cli.js: `s.fileTypes===""? delete t.allowTypes : ...` — the EXACT empty
+            # string restores the defaults. " " is not it: that goes to Kr and throws.
             return DEFAULT_FILE_TYPES
-        return tuple(t.strip().lower() for t in args.file_types.split(",") if t.strip())
+        # Mirror cli.js `Kr`: split, JS-trim, lowercase, and reject ANY field that is
+        # not a known type — including the empty field that "," or "image," produces.
+        # Dropping empties instead would certify a selection ob refuses to apply.
+        fields = tuple(_js_trim(t).lower() for t in args.file_types.split(","))
+        invalid = [t for t in fields if t not in VALID_FILE_TYPES]
+        if invalid:
+            raise ValueError(
+                f'Invalid file type: "{invalid[0]}". Valid values: '
+                f"{', '.join(VALID_FILE_TYPES)}. ob rejects empty comma-separated "
+                "fields too, so ',' and 'image,' are invalid. Next: pass a "
+                "comma-separated list with no empty fields, or the empty string to "
+                "restore ob's defaults."
+            )
+        return fields
     if PERSISTED_FILE_TYPES_KEY in live:
         # An empty persisted array is honoured as "no attachments": JS `[] || me`
         # keeps `[]`. Absence is the default set. These are NOT the same state.
@@ -802,6 +861,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="report unmatchable entries but exit 0 anyway",
     )
+    parser.add_argument(
+        "--per-file-max",
+        type=int,
+        default=DEFAULT_PER_FILE_MAX,
+        help="bytes above which ob skips a file (default %(default)s, the client's "
+        "fallback; the SERVER may send a different perFileMax at login, which is not "
+        "observable locally — pass it here if you know it)",
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     args = parser.parse_args(argv)
 
@@ -827,15 +894,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         entries = args.excluded_folders.split(",")
 
-    file_types = _resolve_file_types(args, live)
-    invalid = [t for t in file_types if t not in VALID_FILE_TYPES]
-    if invalid:
-        print(
-            f"invalid file type(s): {','.join(invalid)}; valid: {','.join(VALID_FILE_TYPES)}. "
-            "Next: pass a comma-separated subset of those, or an empty string for "
-            "ob's defaults.",
-            file=sys.stderr,
-        )
+    try:
+        file_types = _resolve_file_types(args, live)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
         return ERROR
 
     configs = frozenset(live.get(PERSISTED_CONFIGS_KEY) or ())
@@ -856,7 +918,7 @@ def main(argv: list[str] | None = None) -> int:
     # One policy across both walks: ob's watcher set is global, so a target accepted
     # in the main tree must not be re-followed from the config dir either.
     links = _LinkPolicy(vault)
-    prediction = predict(vault, effective, frozenset(file_types), links)
+    prediction = predict(vault, effective, frozenset(file_types), links, args.per_file_max)
 
     config_uploads = predict_config_uploads(vault, config_dir, configs, effective)
     prediction["config_uploads"] = config_uploads
@@ -900,6 +962,13 @@ def main(argv: list[str] | None = None) -> int:
         )
         for ext, stats in list(upload["by_ext"].items())[:8]:
             print(f"  .{ext or '(none)'}: {stats['bytes']} B / {stats['files']} files")
+        if prediction["files_over_per_file_max"]:
+            skipped = prediction["files_over_per_file_max"]
+            print(
+                f"  {len(skipped)} file(s) exceed per-file max "
+                f"{prediction['per_file_max_bytes']} B and are NOT counted "
+                f"(largest: {max(s['bytes'] for s in skipped)} B)"
+            )
         if config_uploads["files"]:
             print(
                 f"  config dir {config_uploads['config_dir']}/: "
@@ -912,6 +981,19 @@ def main(argv: list[str] | None = None) -> int:
                 f"{link['target']}; ob follows it, so everything admitted beneath "
                 "it uploads. Counted above."
             )
+
+    if prediction["symlinks_scheduling_dependent"]:
+        first = prediction["symlinks_scheduling_dependent"][0]
+        print(
+            f"REFUSED: {len(prediction['symlinks_scheduling_dependent'])} symlink(s) "
+            f"(e.g. {first['path']} -> {first['target']}) resolve to a target another "
+            "link already claimed. ob scans siblings CONCURRENTLY (listRecursive awaits "
+            "Promise.all), so whether one alias uploads or both do depends on which scan "
+            "installs its watcher first — there is no exact prediction to give. Next: "
+            "remove the duplicate alias, or exclude all but one, then re-run.",
+            file=sys.stderr,
+        )
+        return ERROR
 
     if prediction["traversal_errors"]:
         first = prediction["traversal_errors"][0]
