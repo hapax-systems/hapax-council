@@ -20,13 +20,13 @@ from typing import Any
 
 import yaml
 
+from shared.governance.consent import REGISTERED_CHILD_PRINCIPALS
+
 log = logging.getLogger(__name__)
 
 # ── Consent contracts (from shared/governance/consent.py) ──────────────
 
 _CONTRACTS_DIR = Path(__file__).parent.parent / "axioms" / "contracts"
-
-REGISTERED_CHILD_PRINCIPALS: frozenset[str] = frozenset({"simon", "agatha"})
 
 
 @dataclass(frozen=True)
