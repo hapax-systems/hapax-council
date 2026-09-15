@@ -644,6 +644,13 @@ class TestOnlyTheFrontmatterCounts:
         to the status being reported. A key spelling neither the rewrite nor a
         duplicate check anticipated is caught here — this is what makes the class
         unrepresentable rather than patched twice.
+
+        Round 26 moved the FIRST asking of this question ahead of the mutating
+        artifact-disposition gate, so the refusal a caller sees now comes from the
+        pre-gate guard rather than the writer. The assertion below is therefore on
+        the invariant — refused, status named, note intact — and not on which of
+        the two identical checks spoke, because pinning the later message made this
+        test fail when the same defect was caught EARLIER.
         """
         home = tmp_path / "home"
         result, note = self._close(
@@ -674,8 +681,14 @@ class TestOnlyTheFrontmatterCounts:
             "an explicit-key spelling was archived without the status being rewritten"
             f"\n{result.stdout}"
         )
-        assert "not 't1'/'withdrawn'" in result.stderr, result.stderr
+        assert "in_progress" in result.stderr and "withdrawn" in result.stderr, (
+            "the refusal did not name what the note would have parsed as versus what "
+            f"was being reported\n{result.stderr}"
+        )
         assert note.exists(), "the note was unlinked despite the refusal"
+        assert note.read_text(encoding="utf-8").count("? status") == 1, (
+            "the note was rewritten under a refusal"
+        )
 
     def test_a_merge_key_does_not_disable_duplicate_validation(self, tmp_path: Path) -> None:
         """A validator that cannot run must REFUSE, not clear its evidence.

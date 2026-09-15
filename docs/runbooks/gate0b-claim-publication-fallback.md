@@ -335,6 +335,30 @@ per-task lock**. Not in an earlier process: a check that re-reads the note, exit
 and only then hands off to a writer that re-reads it leaves exactly the window the
 flag exists to close.
 
+It is *also* checked once earlier, in the same process and under the same locks,
+along with the task identity and — since round 26 — **whether the note can be
+rewritten to the closure at all**. That earlier point exists because a MUTATION
+sits between the two: with `--debt`, the artifact-disposition gate records debt in
+`~/.cache/hapax/document-pipeline/artifact-ledger.yaml`. A note spelling a
+governed key in a form the line rewrite cannot match (explicit mapping syntax —
+`? status` on one line, `: in_progress` on the next — is valid YAML for the same
+field) used to get its debt recorded, then refuse with "Nothing was modified", and
+refresh the debt timestamps on every retry.
+
+Two checks, one predicate, one implementation: both call
+`shared/cc_task_frontmatter.py::propose_closure_rewrite`, which returns the bytes a
+close *would* write without writing them. The pre-gate call decides whether the
+gate may run; the writer's call decides whether the unlink may happen.
+
+```bash
+uv run pytest tests/test_cc_task_lock.py::TestARefusalMutatesNothing \
+              tests/test_stale_marker_remediation_integration.py::TestOnlyTheFrontmatterCounts -q
+```
+
+Expected: green, including
+`test_an_unrewritable_status_spelling_refuses_before_the_debt_gate`, which asserts
+the ledger is byte-identical after two consecutive refusals.
+
 ### The per-task mutation lock
 
 `cc-close` and `cc-claim` now take one exclusive lock per task id

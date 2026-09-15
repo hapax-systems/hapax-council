@@ -152,3 +152,55 @@ def scalar(reading: GovernedFrontmatter, key: str) -> str:
     """One governed field as a stripped string; "" when absent or null."""
     value = (reading.frontmatter or {}).get(key)
     return "" if value is None else str(value).strip()
+
+
+def set_governed_scalar(block: str, key: str, value: str) -> str:
+    """Rewrite one governed field's LINE, matching the spellings YAML calls equal.
+
+    ``k:``, ``"k":`` and ``'k':`` are one field to a parser, so a rewrite that
+    recognises only the bare spelling leaves the note saying something different
+    from what it reports. Line surgery rather than a YAML round-trip because the
+    round trip destroys comments, ordering and quoting style.
+
+    What it CANNOT match is explicit mapping syntax — ``? status`` on one line and
+    ``: done`` on the next — which is valid YAML for the same field. That is not a
+    bug to be patched into this regex; it is why every caller must check the RESULT
+    (see :func:`propose_closure_rewrite`) instead of trusting the substitution.
+    """
+
+    import re
+
+    pattern = rf"^(?:{re.escape(key)}|\"{re.escape(key)}\"|'{re.escape(key)}')\s*:.*$"
+    return re.sub(pattern, f"{key}: {value}", block, count=1, flags=re.MULTILINE)
+
+
+def propose_closure_rewrite(
+    reading: GovernedFrontmatter,
+    *,
+    status: str,
+    timestamp: str,
+    pr: str = "",
+) -> str:
+    """The exact bytes a close would write, WITHOUT writing them.
+
+    One implementation for two callers that must not disagree: cc-close's
+    precondition guard, which runs before the mutating artifact-disposition gate,
+    and cc-close's writer, which runs after it. Both need the answer to "can this
+    note be rewritten to the closure being reported"; only one of them can answer
+    it before anything has been mutated.
+
+    They are two checks of one predicate on purpose, because a MUTATION sits
+    between them — the debt gate rewrites the artifact ledger. Asking only at the
+    writer meant a `--debt` close against a note using explicit mapping syntax
+    recorded debt, refreshed its timestamps on every retry, and then refused with
+    "Nothing was modified" (review round 26, codex-1, reproduced). Asking only at
+    the guard would trust a prediction about bytes that the gate may since have
+    changed.
+    """
+
+    block = set_governed_scalar(reading.block, "status", status)
+    block = set_governed_scalar(block, "completed_at", timestamp)
+    block = set_governed_scalar(block, "updated_at", timestamp)
+    if pr:
+        block = set_governed_scalar(block, "pr", pr)
+    return "---" + block + reading.rest

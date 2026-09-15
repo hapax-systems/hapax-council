@@ -417,16 +417,24 @@ fi
 # it is rewriting. Both read through shared/cc_task_frontmatter.py, so there is one
 # implementation of "what does this note declare" and no second copy to drift.
 precondition_rc=0
-python3 -I - precondition-guard "$SCRIPT_DIR/.." "$note_path" "$task_id" "${expect_status:-}" <<'PYEOF' || precondition_rc=$?
+python3 -I - precondition-guard "$SCRIPT_DIR/.." "$note_path" "$task_id" "${expect_status:-}" \
+  "$final_status" "${pr:-}" <<'PYEOF' || precondition_rc=$?
 import sys
 
 sys.path.insert(0, sys.argv[2])
 from pathlib import Path
 
-from shared.cc_task_frontmatter import read_governed_frontmatter, scalar
+from shared.cc_task_frontmatter import (
+    propose_closure_rewrite,
+    read_governed_frontmatter,
+    scalar,
+)
+from shared.frontmatter import parse_frontmatter_with_diagnostics
 
 path, task_id = Path(sys.argv[3]), sys.argv[4]
 expect_status = sys.argv[5] if len(sys.argv) > 5 else ""
+final_status = sys.argv[6] if len(sys.argv) > 6 else ""
+pr = sys.argv[7] if len(sys.argv) > 7 else ""
 reading = read_governed_frontmatter(path)
 if reading.error is not None:
     print(
@@ -460,6 +468,48 @@ if expect_status:
             f"'{expect_status}' was required. The task changed after the command was "
             "generated. Next action: re-run the sweep and use its current "
             "recommendation. Nothing was modified.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+# CAN this note be rewritten to the closure being reported? Asked HERE, before the
+# artifact-disposition gate, because that gate MUTATES: with `--debt` it records
+# debt in the artifact ledger. A note using explicit mapping syntax (`? status` on
+# one line, `: in_progress` on the next — valid YAML naming the same field, which
+# the line rewrite cannot match) got its debt recorded, then hit the writer's
+# output check and exited 2 saying "Nothing was modified", and every retry
+# refreshed the debt timestamps (review round 26, codex-1, reproduced: ledger
+# mutated on both runs, note untouched, rc=2 both times).
+#
+# The writer keeps its own identical check. Two checks, one predicate, because a
+# mutation sits between them — the same reason identity and --expect-status are
+# checked twice. `propose_closure_rewrite` is the single implementation both call,
+# so there is no second copy of the rewrite to drift.
+if final_status:
+    _proposed = propose_closure_rewrite(
+        reading, status=final_status, timestamp="1970-01-01T00:00:00Z", pr=pr
+    )
+    _check = parse_frontmatter_with_diagnostics(_proposed)
+    if not _check.ok or _check.frontmatter is None:
+        print(
+            f"cc-close: refusing — rewriting '{path}' to status '{final_status}' would "
+            f"produce a note that no longer parses ({_check.error_kind}: "
+            f"{_check.error_message}). Nothing was modified — checked before any gate "
+            "ran. Next action: a governed field (status, completed_at, updated_at, pr) "
+            "holds a mapping or block value rather than a scalar; repair it to a "
+            "single-line scalar and re-run.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    _would_be = str(_check.frontmatter.get("status", "")).strip()
+    if _would_be != final_status:
+        print(
+            f"cc-close: refusing — rewriting '{path}' would leave it parsing as status "
+            f"'{_would_be}', not '{final_status}'. Nothing was modified, and no debt "
+            "was recorded — this is checked before the artifact-disposition gate runs. "
+            "Next action: the note spells a governed key in a form the line rewrite "
+            "cannot match (most often explicit mapping syntax, `? status` on its own "
+            "line). Rewrite it as `status: <value>` and re-run.",
             file=sys.stderr,
         )
         raise SystemExit(2)
@@ -513,7 +563,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
-from shared.cc_task_frontmatter import read_governed_frontmatter
+from shared.cc_task_frontmatter import propose_closure_rewrite, read_governed_frontmatter
 from shared.frontmatter import parse_frontmatter_with_diagnostics
 
 path, task_id, final_status, pr, role = (Path(sys.argv[2]), *sys.argv[3:7])
@@ -548,8 +598,10 @@ if _end == -1:
         file=sys.stderr,
     )
     sys.exit(2)
-fm_text = text[3:_end]
-rest = text[_end:]
+# The block/rest split is NOT recomputed here — `read_governed_frontmatter` below
+# carries both, and the rewrite is applied to that reading. Two splits of one note
+# is two answers to "where does the frontmatter end", and only one of them can be
+# the one the parser used.
 
 # ONE reading, shared with the pre-gate guard above and with cc-hygiene's note scan
 # (shared/cc_task_frontmatter.py). The duplicate detector lived inline here for six
@@ -626,17 +678,12 @@ now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 # be archived reporting `withdrawn` while its YAML still parsed as `in_progress`.
 # Line surgery keeps comments, ordering and quoting style that a full YAML
 # round-trip would destroy; it just has to recognise the same key YAML does.
-def _fm_set(block: str, key: str, value: str) -> str:
-    pattern = rf"^(?:{re.escape(key)}|\"{re.escape(key)}\"|'{re.escape(key)}')\s*:.*$"
-    return re.sub(pattern, f"{key}: {value}", block, count=1, flags=re.MULTILINE)
-
-
-fm_text = _fm_set(fm_text, "status", final_status)
-fm_text = _fm_set(fm_text, "completed_at", now)
-fm_text = _fm_set(fm_text, "updated_at", now)
-if pr:
-    fm_text = _fm_set(fm_text, "pr", pr)
-text = "---" + fm_text + rest
+#
+# The rewrite itself now lives in shared/cc_task_frontmatter.py, because the
+# pre-gate guard has to run the SAME rewrite to answer "is this note rewritable"
+# before the artifact-disposition gate records debt. Two call sites, one
+# implementation, no copy to drift (review round 26).
+text = propose_closure_rewrite(_reading, status=final_status, timestamp=now, pr=pr)
 
 # Verify the RESULT, before anything is written or unlinked.
 #
