@@ -721,6 +721,112 @@ def test_two_aliases_to_one_dir_is_refused_as_scheduling_dependent(
     assert [link["path"] for link in report["symlinks_scheduling_dependent"]] == ["b-link"]
 
 
+def test_excluding_an_alias_does_not_hide_the_race(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """Scanning and admission are separate in ob: `listRecursive` reconciles links and
+    installs watchers without consulting ignoreFolders, which `allowSyncFile` applies
+    only afterwards. So an EXCLUDED alias still competes for the watcher, and pruning
+    it before the link check would hide a race that really exists."""
+    outside = tmp_path / "shared"
+    outside.mkdir()
+    (outside / "note.md").write_bytes(b"n" * 31)
+    (vault / "a-link").symlink_to(outside, target_is_directory=True)
+    (vault / "b-link").symlink_to(outside, target_is_directory=True)
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages,b-link",
+        "--json",
+    )
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert "Excluding it does not help" in result.stderr
+    report = json.loads(result.stdout)
+    assert [link["path"] for link in report["symlinks_scheduling_dependent"]] == ["b-link"]
+
+
+def test_emitted_path_collision_is_refused(vault: pathlib.Path) -> None:
+    """Two on-disk spellings can normalize to ONE emitted path, so they are one remote
+    file and counting both double-counts. Which local copy wins is not determinable."""
+    area = vault / "30-areas"
+    (area / "café.md").write_bytes(b"c" * 40)  # NFC
+    (area / "café.md").write_bytes(b"d" * 41)  # NFD — same emitted path
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--json",
+    )
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert "ONE remote file" in result.stderr
+    collisions = json.loads(result.stdout)["emitted_path_collisions"]
+    assert [c["path"] for c in collisions] == ["30-areas/café.md"]
+
+
+def test_nonbreaking_space_collision_is_refused(vault: pathlib.Path) -> None:
+    area = vault / "30-areas"
+    (area / "a b.md").write_bytes(b"c" * 40)
+    (area / "a b.md").write_bytes(b"d" * 41)  # nbsp -> ordinary space when emitted
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--json",
+    )
+    assert result.returncode == ERROR, result.stdout + result.stderr
+    assert json.loads(result.stdout)["emitted_path_collisions"]
+
+
+def test_config_uploads_honour_the_per_file_limit(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """The size skip lives in the shared sync loop, so it governs config files too."""
+    obsidian = vault / ".obsidian"
+    obsidian.mkdir()
+    (obsidian / "app.json").write_bytes(b"a" * 4096)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["app"],
+    )
+    report = json.loads(
+        _run_env(vault, xdg, "--from-sync-config", "--per-file-max", "4095", "--json").stdout
+    )
+    assert report["config_uploads"]["bytes"] == 0, "an oversize config file was counted"
+    assert [f["path"] for f in report["config_uploads"]["files_over_per_file_max"]] == [
+        ".obsidian/app.json"
+    ]
+    assert any(f["path"] == ".obsidian/app.json" for f in report["files_over_per_file_max"]), (
+        "config skips must surface in the top-level list too"
+    )
+
+
+@pytest.mark.parametrize("parent", ["plugins", "themes"])
+def test_stray_file_in_plugins_or_themes_is_skipped_not_an_error(
+    vault: pathlib.Path, tmp_path: pathlib.Path, parent: str
+) -> None:
+    """cli.js iterates only `.folders` there, so a stray FILE is ignored. Building
+    candidates under it would stat `plugins/<file>/manifest.json` and raise ENOTDIR,
+    turning a case ob ignores into a refusal."""
+    obsidian = vault / ".obsidian"
+    (obsidian / parent).mkdir(parents=True)
+    (obsidian / parent / "README.md").write_bytes(b"r" * 5)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=list(preflight.VALID_CONFIG_CATEGORIES),
+    )
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["traversal_errors"] == []
+    assert report["config_uploads"]["files"] == 0
+
+
 def test_one_alias_plus_a_root_overlap_is_still_exact(
     vault: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:

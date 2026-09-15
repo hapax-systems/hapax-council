@@ -248,11 +248,12 @@ def resolve_entry(vault: Path, entry: str) -> tuple[bool, str]:
             "contains a '.' or '..' component; the filesystem resolves it but ob "
             "emits normalized relative paths that never contain dot segments",
         )
-    # NOTE: no refusal for a dotted component. ob runs the ignoreFolders loop BEFORE
-    # the hidden-path check, so a hidden entry does match — and it is load-bearing for
-    # the config dir, whose files DO sync when `configs` is enabled. Refusing these
-    # rejected valid config-dir exclusions. Ones that cannot matter are annotated as
-    # redundant by the caller instead.
+    # A dotted component is deliberately NOT refused here. ob runs the ignoreFolders
+    # loop before the hidden-path check, so a hidden entry does match, and that is
+    # load-bearing for the config dir, whose files do sync when `configs` is enabled.
+    # An earlier revision refused every dotted entry and thereby rejected valid
+    # config-dir exclusions. Entries that match but cannot change anything are
+    # annotated with `no_effect_reason` by validate_entries instead.
 
     current = vault
     for depth, part in enumerate(parts):
@@ -402,6 +403,7 @@ def predict_config_uploads(
     config_dir: str,
     configs: frozenset[str],
     entries: list[str],
+    per_file_max: int,
 ) -> dict:
     """The config-dir files ob uploads when ``configs`` is non-empty.
 
@@ -416,6 +418,7 @@ def predict_config_uploads(
     # Errors flow to the SAME exit-3 guard the main walk uses; a partial total here
     # must not read as successful verification either.
     errors: list[dict] = []
+    too_large: list[dict] = []
 
     def _on_error(exc: OSError) -> None:
         errors.append({"path": str(exc.filename), "error": exc.strerror})
@@ -424,6 +427,7 @@ def predict_config_uploads(
         return {
             "bytes": total_bytes,
             "files": files,
+            "files_over_per_file_max": too_large,
             "by_category": {
                 k: {"bytes": v[0], "files": v[1]} for k, v in sorted(by_category.items())
             },
@@ -451,9 +455,15 @@ def predict_config_uploads(
     # does upload.
     candidates: list[str] = ["config"]
     candidates += [n for n in _listdir(root) if _extension(n) == "json"]
+    # `u.list()` splits into folders and files, and cli.js iterates only `.folders`
+    # under themes/ and plugins/ — so a stray FILE there is skipped, not descended.
+    # Building candidates under it would stat `plugins/somefile/manifest.json` and
+    # raise ENOTDIR, turning a case ob ignores into a refusal.
     themes = root / "themes"
     if themes.is_dir():
         for theme in _listdir(themes):
+            if not (themes / theme).is_dir():
+                continue
             candidates += [
                 f"themes/{theme}/manifest.json",
                 f"themes/{theme}/theme.css",
@@ -464,6 +474,8 @@ def predict_config_uploads(
     plugins = root / "plugins"
     if plugins.is_dir():
         for plugin in _listdir(plugins):
+            if not (plugins / plugin).is_dir():
+                continue
             candidates += [f"plugins/{plugin}/{n}" for n in sorted(_PLUGIN_FILES)]
 
     for rel in candidates:
@@ -485,6 +497,10 @@ def predict_config_uploads(
             continue
         if not os.path.isfile(candidate):
             continue  # ob requires stat().type === "file"
+        if stat.st_size > per_file_max:
+            # The size skip is in the shared sync loop, so it governs config files too.
+            too_large.append({"path": f"{config_dir}/{rel}", "bytes": stat.st_size})
+            continue
         total_bytes += stat.st_size
         files += 1
         bucket = by_category.setdefault(category, [0, 0])
@@ -574,6 +590,8 @@ def predict(
     largest: list[tuple[int, str]] = []
     traversal_errors: list[dict] = []
     too_large: list[dict] = []
+    collisions: list[dict] = []
+    seen_emitted: dict[str, str] = {}
 
     def _on_error(exc: OSError) -> None:
         # A skipped subtree makes every total below a floor, not a measurement.
@@ -606,14 +624,19 @@ def predict(
         # by name below. Pruning must precede link registration: ob rejects a hidden
         # path before registering its target, so registering a hidden link's target
         # here would let it suppress a visible link to the same place.
-        dirnames[:] = [
-            d for d in dirnames if not d.startswith(".") and not _excluded(_rel(d), entries)
-        ]
-        # Then apply ob's link rule to what survives.
+        # Hidden first: ob rejects a hidden path before registering its target.
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        # Then the link rule — BEFORE exclusion pruning. Scanning and admission are
+        # separate in ob: `listRecursive` reconciles links (and installs watchers)
+        # without consulting ignoreFolders, which is only applied later by
+        # `allowSyncFile`. So an EXCLUDED alias still competes for its target's
+        # watcher, and pruning it first would hide a race that really exists.
         for name in list(dirnames):
             child = os.path.join(dirpath, name)
             if os.path.islink(child) and not links.follow(child, _rel(name), _on_error):
                 dirnames.remove(name)
+        # Exclusions last: they control what COUNTS, not what ob scans.
+        dirnames[:] = [d for d in dirnames if not _excluded(_rel(d), entries)]
 
         for name in filenames:
             if name.startswith("."):
@@ -643,6 +666,14 @@ def predict(
                 # dropped by size. Counting it would overstate the upload.
                 too_large.append({"path": rel, "bytes": size})
                 continue
+            # Two on-disk names can normalize to ONE emitted path (an NFD and an NFC
+            # spelling, or a nonbreaking and an ordinary space). ob keys files by the
+            # emitted path, so they are the same remote file and only one survives —
+            # which one is not determinable from here. Counting both double-counts.
+            if rel in seen_emitted:
+                collisions.append({"path": rel, "also_from": seen_emitted[rel]})
+                continue
+            seen_emitted[rel] = os.path.join(dirpath, name)
             upload_bytes += size
             upload_files += 1
             ext = by_ext.setdefault(_extension(name), [0, 0])
@@ -676,6 +707,7 @@ def predict(
         "symlinks_skipped_overlapping": links.skipped,
         "symlinks_scheduling_dependent": links.ambiguous,
         "files_over_per_file_max": too_large,
+        "emitted_path_collisions": collisions,
         "per_file_max_bytes": per_file_max,
         "traversal_errors": traversal_errors,
     }
@@ -920,9 +952,12 @@ def main(argv: list[str] | None = None) -> int:
     links = _LinkPolicy(vault)
     prediction = predict(vault, effective, frozenset(file_types), links, args.per_file_max)
 
-    config_uploads = predict_config_uploads(vault, config_dir, configs, effective)
+    config_uploads = predict_config_uploads(
+        vault, config_dir, configs, effective, args.per_file_max
+    )
     prediction["config_uploads"] = config_uploads
     prediction["traversal_errors"].extend(config_uploads["traversal_errors"])
+    prediction["files_over_per_file_max"].extend(config_uploads["files_over_per_file_max"])
     prediction["predicted_upload"]["bytes"] += config_uploads["bytes"]
     prediction["predicted_upload"]["files"] += config_uploads["files"]
     prediction["predicted_upload"]["gib"] = round(
@@ -982,6 +1017,19 @@ def main(argv: list[str] | None = None) -> int:
                 "it uploads. Counted above."
             )
 
+    if prediction["emitted_path_collisions"]:
+        first = prediction["emitted_path_collisions"][0]
+        print(
+            f"REFUSED: {len(prediction['emitted_path_collisions'])} file(s) normalize to "
+            f"an emitted path another file already occupies (e.g. {first['path']}, also "
+            f"from {first['also_from']}). ob keys remote files by the emitted path — "
+            "nonbreaking spaces rewritten and NFC applied — so these are ONE remote "
+            "file and which local copy wins is not determinable here. Next: rename one "
+            "of them so the emitted paths differ.",
+            file=sys.stderr,
+        )
+        return ERROR
+
     if prediction["symlinks_scheduling_dependent"]:
         first = prediction["symlinks_scheduling_dependent"][0]
         print(
@@ -990,7 +1038,9 @@ def main(argv: list[str] | None = None) -> int:
             "link already claimed. ob scans siblings CONCURRENTLY (listRecursive awaits "
             "Promise.all), so whether one alias uploads or both do depends on which scan "
             "installs its watcher first — there is no exact prediction to give. Next: "
-            "remove the duplicate alias, or exclude all but one, then re-run.",
+            "REMOVE or rename the duplicate link. Excluding it does not help: ob "
+            "reconciles links while scanning and only applies exclusions afterwards, "
+            "so an excluded alias still competes for the watcher.",
             file=sys.stderr,
         )
         return ERROR
