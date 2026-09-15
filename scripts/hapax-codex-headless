@@ -824,8 +824,10 @@ import sys
 import tomllib
 
 # EVERY form the harness accepts, in argv order, last wins:
-#   --model X / --model=X / -m X / -m=X   (the flags codex documents)
-#   -c model="X" / -c model=X / -c 'model = "X"'   (config override, TOML or raw)
+#   --model X / --model=X / -m X / -m=X / -mX      (the model flag)
+#   -c V / -c=V / -cV / --config V / --config=V    (config override; --config is
+#                                                   codex's documented alias for -c)
+# with V being `model="X"`, `model = "X"`, `model='X'`, or the raw `model=X`.
 #
 # The first cut recognised only a complete TOML assignment starting with `model`,
 # so `--model`, `-m` and an unquoted `-c model=gpt-6-mini` all recorded the default
@@ -835,41 +837,55 @@ import tomllib
 # `-c` values are TOML when they parse as TOML and a raw string otherwise, which is
 # codex's own fallback; that is why the bare `model=X` branch exists rather than
 # being treated as malformed.
+def config_model(value):
+    """What a config-override value sets `model` to, or None.
+
+    TOML when it parses as TOML, raw string otherwise — codex's own fallback, which
+    is why the bare `model=X` branch exists rather than being rejected.
+    """
+    try:
+        table = tomllib.loads(value)
+    except tomllib.TOMLDecodeError:
+        return value[len("model=") :] or None if value.startswith("model=") else None
+    candidate = table.get("model") if isinstance(table, dict) else None
+    return candidate if isinstance(candidate, str) and candidate else None
+
+
+MODEL_FLAGS = ("--model", "-m")
+CONFIG_FLAGS = ("-c", "--config")
+
 model = sys.argv[2]
 args = sys.argv[3:]
 index = 0
 while index < len(args):
     arg = args[index]
     nxt = args[index + 1] if index + 1 < len(args) else None
-    if arg in ("--model", "-m"):
-        if nxt:
-            model = nxt
-            index += 2
-            continue
-    elif arg.startswith("--model="):
-        model = arg[len("--model=") :]
-    elif arg.startswith("-m="):
-        model = arg[len("-m=") :]
-    elif arg == "-c" and nxt is not None:
-        value = nxt
-        chosen = None
-        try:
-            parsed = tomllib.loads(value)
-        except tomllib.TOMLDecodeError:
-            parsed = None
-        if isinstance(parsed, dict):
-            candidate = parsed.get("model")
-            if isinstance(candidate, str) and candidate:
-                chosen = candidate
-        elif value.startswith("model="):  # raw-string fallback: model=gpt-6-mini
-            chosen = value[len("model=") :]
-        if chosen is None and parsed is None and value.startswith("model="):
-            chosen = value[len("model=") :]
+    taken = 1
+    if arg in MODEL_FLAGS and nxt is not None:
+        model, taken = nxt, 2
+    elif arg in CONFIG_FLAGS and nxt is not None:
+        chosen = config_model(nxt)
+        taken = 2
         if chosen:
             model = chosen
-        index += 2
-        continue
-    index += 1
+    else:
+        for flag in (*MODEL_FLAGS, *CONFIG_FLAGS):
+            attached = None
+            if arg.startswith(f"{flag}="):
+                attached = arg[len(flag) + 1 :]
+            elif len(flag) == 2 and arg.startswith(flag) and len(arg) > 2:
+                attached = arg[len(flag) :]  # clap short-option form: -cV / -mV
+            if attached is None:
+                continue
+            if flag in MODEL_FLAGS:
+                if attached:
+                    model = attached
+            else:
+                chosen = config_model(attached)
+                if chosen:
+                    model = chosen
+            break
+    index += taken
 print(model)
 PYEOF
 )"

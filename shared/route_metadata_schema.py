@@ -802,8 +802,12 @@ class CapabilityShape(_RouteModel):
     unlabelled measurement series incomparable with itself.
 
     **Read it as provenance, not as a dispatch descriptor.** cc-claim fills it from
-    the claiming worktree's HEAD, and in a worktree-per-lane estate that is the
-    lane's own feature branch — not the revision the capability was dispatched
+    `git -C <cc-claim's own script tree> rev-parse HEAD` — the revision of the
+    CHECKOUT THE SCRIPT LIVES IN, which is the claiming worktree only when cc-claim
+    is invoked from that worktree. Run through the `~/.local/bin/cc-claim` symlink
+    from somewhere else and it records the INSTALLED checkout's HEAD instead
+    (review round 23). In a worktree-per-lane estate either reading is a lane's own
+    feature branch, and neither is the revision the capability was dispatched
     under. So two lanes running one route on one model legitimately record
     different values here, and comparing a series on this field alone will
     over-partition it. Recording the dispatch origin instead would need a writer at

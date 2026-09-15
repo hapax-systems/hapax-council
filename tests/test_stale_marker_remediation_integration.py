@@ -408,6 +408,44 @@ def test_the_precondition_is_evaluated_after_the_lock_is_taken(tmp_path: Path) -
     assert "status: in_progress" in note.read_text(encoding="utf-8")
 
 
+def test_a_remediation_generated_from_relative_roots_runs_from_anywhere(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The sweeper accepts relative roots; the command it emits must not keep them.
+
+    A sweep run as `--vault-root vault --relay-root .cache/hapax` emitted
+    `HAPAX_CC_TASKS_ROOT=vault HOME=.`. cc-task-root refuses a relative vault root
+    outright, and `HOME=.` otherwise points cc-close's locks and lease cleanup at
+    whatever directory the EXECUTOR is in — so a command documented as runnable
+    verbatim meant something different to its reader. Generated from a relative cwd
+    here, then executed from a DIFFERENT one.
+    """
+    home = tmp_path / "home"
+    vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    cache = home / ".cache" / "hapax"
+    note = _write_note(vault, "t1.md", "t1", "withdrawn")
+
+    monkeypatch.chdir(home)
+    events = _sweep(
+        Path("Documents/Personal/20-projects/hapax-cc-tasks"), Path(".cache/hapax"), "eta", "t1"
+    )
+    assert len(events) == 1, events
+    remediation = events[0].metadata["remediation"]
+    assert "HOME=." not in remediation and "HOME='.'" not in remediation, (
+        f"the command carries a relative HOME: {remediation}"
+    )
+    assert str(vault.resolve()) in remediation, remediation
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    result = _run(remediation, home)
+
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert not note.exists(), "the close did not act on the observed vault"
+    assert not (cache / "cc-active-task-eta").exists(), "the observed marker survived"
+
+
 class TestOnlyTheFrontmatterCounts:
     """A note's BODY must not decide, or receive, a governed field mutation.
 

@@ -1173,7 +1173,14 @@ def check_stale_claim_marker(
     # takes a configured marker dir, so hardcoding ~/.cache/hapax told an operator
     # sweeping another cache to delete their LOCAL claim files instead of the
     # observed ones — a destructive instruction aimed at the wrong machine's state.
-    marker_dir = cache_dir if cache_dir is not None else Path.home() / ".cache" / "hapax"
+    # Resolved once, here, so EVERY path this check emits — the marker paths an
+    # operator is told to `rm`, the marker_dir in the metadata, and the roots pinned
+    # into a generated cc-close command — is absolute. A relative sweep root reached
+    # the operator as a relative instruction, which means something different
+    # wherever they run it (review round 23).
+    marker_dir = (
+        Path(cache_dir).resolve() if cache_dir is not None else Path.home() / ".cache" / "hapax"
+    )
     # Count BEFORE collapsing. `{n.task_id: n for n in notes}` silently keeps the
     # last note for a duplicated id: with active/t1-a.md (in_progress) and
     # active/t1-z.md (withdrawn) both declaring task_id t1, the dict yields the
@@ -1500,11 +1507,19 @@ def check_stale_claim_marker(
                 # could leave the reported marker and close a same-named task
                 # somewhere else. HAPAX_CC_TASKS_ROOT is cc-task-root.sh's
                 # documented override for the vault.
-                vault_root = Path(note.path).parent.parent
+                # ABSOLUTE, resolved against the sweeper's cwd at generation time.
+                # The sweeper accepts relative roots and the command kept them, so a
+                # sweep run with `--vault-root vault --relay-root .cache/hapax`
+                # emitted `HAPAX_CC_TASKS_ROOT=vault HOME=.` — which cc-task-root
+                # refuses outright, and where `HOME=.` otherwise points cc-close's
+                # locks and lease cleanup at whatever directory the EXECUTOR happens
+                # to be in. A command documented as runnable verbatim cannot carry a
+                # path that means something different to its reader (round 23).
+                vault_root = Path(note.path).resolve().parent.parent
                 remediation = (
                     f"HAPAX_AGENT_NAME={shlex.quote(role)} "
                     f"HAPAX_CC_TASKS_ROOT={shlex.quote(str(vault_root))} "
-                    f"HOME={shlex.quote(str(home_for_cache))} "
+                    f"HOME={shlex.quote(str(Path(home_for_cache).resolve()))} "
                     f"cc-close {shlex.quote(task_id)} --status {shlex.quote(status_text)} "
                     # The state this sweep OBSERVED, revalidated by cc-close under
                     # the mutation lock. A generated command is executed later by a

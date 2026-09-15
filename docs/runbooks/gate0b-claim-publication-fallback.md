@@ -518,26 +518,39 @@ name.
 `cc-claim` stamps a capability shape into the session-log line:
 `shape=(model_family=…, harness=…, route=…, scaffold_revision=…)`.
 
-**`scaffold_revision` is the CLAIMING WORKTREE's HEAD, not the revision the
-capability was dispatched under.** In a worktree-per-lane estate that is the lane's
-feature branch, so two lanes running the same model on the same route legitimately
-record different values. **Do not group a measurement series on it** — it
-over-partitions, and a consumer reading docs alone would reasonably infer the
-dispatch scaffold. The caveat lives in
+**`scaffold_revision` is the HEAD of the checkout `cc-claim` ITSELF lives in** — not
+the revision the capability was dispatched under, and **not reliably the claiming
+worktree either**. It comes from `git -C <cc-claim's own script tree> rev-parse
+HEAD`, so:
+
+- invoked as `<worktree>/scripts/cc-claim`, it records that worktree's HEAD;
+- invoked through the `~/.local/bin/cc-claim` symlink from a different worktree, it
+  records the **installed** checkout's HEAD, which may be neither the lane's tree
+  nor the dispatch revision.
+
+In a worktree-per-lane estate both readings are some lane's feature branch. **Do not
+group a measurement series on this field** — it over-partitions, and a consumer
+reading docs alone would reasonably infer the dispatch scaffold. The caveat lives in
 `shared/route_metadata_schema.py::CapabilityShape` too; it is repeated here because
 the person comparing capability numbers is reading this, not the model.
 
-Recheck what it actually reports:
+Recheck what it actually reports — note the path: this asks the SCRIPT's tree, not
+your cwd's:
 
 ```bash
-git -C "$(git rev-parse --show-toplevel)" rev-parse --short HEAD
+cc_claim="$(readlink -f "$(command -v cc-claim || echo ./scripts/cc-claim)")"
+git -C "$(dirname "$cc_claim")/.." rev-parse --short HEAD
 grep -o 'scaffold_revision=[0-9a-f]*' ~/Documents/Personal/20-projects/hapax-cc-tasks/active/*.md | tail -5
 ```
 
-Expected: the revisions in claims made from this worktree equal this worktree's
-HEAD — which is the point. A dispatcher-side writer is owed work and is tracked
-separately; until it lands, `model_family`, `harness` and `route` are the terms of
-the shape key that mean what they say.
+Expected: the two agree **only when the claim was made by the same copy of
+cc-claim** the first command resolves. Measured on this host 2026-09-14: the
+installed symlink reports `cc5259f69` while a claim made from a lane worktree
+recorded `798955891` — two different checkouts, one field, no way to tell them
+apart after the fact. That is the behaviour, not a bug, and it is the reason a
+dispatcher-side writer is owed work — tracked as deferred residual (3) on the task
+note. Until it lands, `model_family`, `harness` and `route` are the terms of the
+shape key that mean what they say.
 
 ### `cc-close` refuses with "declares task_id ..."
 

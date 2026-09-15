@@ -121,35 +121,70 @@ def _artifact_ledger_with_open_debt(home: Path, task_id: str) -> Path:
 
 
 def _interrupted_journal(home: Path, task_id: str, role: str) -> Path:
-    """An admitted claim-publication journal awaiting recovery, with a real manifest.
+    """A REAL admitted claim-publication journal, left awaiting recovery.
 
-    The all-tasks recovery test used to create NO journal, so it asserted only that
-    one message was absent — an unrelated failure passed it. Recovery also reads
-    `intent.task_id` to decide which lock to take, so a test without a manifest
-    cannot exercise the locking at all.
+    Produced by running a genuine admitted `cc-claim` and then deleting its
+    receipt, which is what an interrupted publication looks like. A hand-written
+    manifest does not work and quietly weakens the test: review round 23 measured
+    that the hand-rolled one is rejected by the real loader
+    (`claim_publication_manifest_schema_unknown`), so a lock-duration assertion
+    around it could pass while the recovery it was supposedly protecting never ran.
+
+    Returns the manifest path.
     """
-    import json
     import sys as _sys
+    from datetime import UTC, datetime
 
     _sys.path.insert(0, str(REPO_ROOT))
-    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+    from shared.gate0b_claim_publication_install import (
+        default_claim_publication_roots,
+        install_claim_publication_composition,
+    )
 
     roots = default_claim_publication_roots(home=home)
-    entry = Path(roots.claim_transaction_root) / f"claim-pub-{'a' * 64}"
-    entry.mkdir(parents=True, exist_ok=True)
-    manifest = entry / "manifest.json"
-    manifest.write_text(
-        json.dumps(
-            {
-                "schema": 1,
-                "publication_id": f"claim-pub-{'a' * 64}",
-                "state": "recovery_required",
-                "intent": {"task_id": task_id, "role": role},
-                "projections": [],
-            }
-        ),
-        encoding="utf-8",
+    install_claim_publication_composition(
+        roots=roots,
+        installed_at=datetime(2026, 8, 9, 17, 0, tzinfo=UTC),
+        install_task_ref="cc-task-lock-recovery-fixture",
     )
+    # The note must be claimable for the admitted publication to happen at all; the
+    # caller rewrites its status afterwards if it needs a different one.
+    vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+    _write_note(vault, task_id, "offered")
+
+    env = _lane_env(home)
+    env.pop("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF", None)
+    env["HAPAX_AGENT_ROLE"] = role
+    env["HAPAX_AGENT_NAME"] = role
+    env.update(
+        {
+            "HAPAX_CLAIM_DISPATCH_MESSAGE_ID": f"dispatch-{task_id}",
+            "HAPAX_CLAIM_DISPATCH_BINDING_HASH": "b" * 64,
+            "HAPAX_CLAIM_DISPATCH_PLATFORM": "codex",
+            "HAPAX_CLAIM_DISPATCH_MODE": "headless",
+            "HAPAX_CLAIM_DISPATCH_PROFILE": "ultra",
+            "HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE": "CASE-TEST-001",
+            "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY": f"coord-{task_id}",
+        }
+    )
+    claimed = subprocess.run(
+        ["bash", str(CC_CLAIM), task_id],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=180,
+    )
+    assert claimed.returncode == 0, (
+        f"the admitted claim fixture did not publish: {claimed.stdout}\n{claimed.stderr}"
+    )
+
+    entries = sorted(Path(roots.claim_transaction_root).glob("claim-pub-*/manifest.json"))
+    assert entries, "no admitted journal was written by the fixture claim"
+    manifest = entries[-1]
+    # Interrupt it: drop the receipt so the journal is left requiring recovery.
+    for receipt in Path(roots.claim_receipt_root).glob("*.json"):
+        receipt.unlink()
     return manifest
 
 
@@ -1051,8 +1086,6 @@ class TestRecoveryParticipatesToo:
         is: a competitor polls and must never get in while the process runs.
         """
         home = tmp_path / "home"
-        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
-        _write_note(vault, "t-recover", "in_progress")
         (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
         journal = _interrupted_journal(home, "t-recover", "eta")
         assert journal.is_file()
@@ -1104,9 +1137,9 @@ class TestRecoveryParticipatesToo:
         """The post-scan race, directly: cc-close begins AFTER recovery is underway."""
         home = tmp_path / "home"
         vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
-        note = _write_note(vault, "t-recover", "withdrawn")
         (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
         _interrupted_journal(home, "t-recover", "eta")
+        note = _write_note(vault, "t-recover", "withdrawn")
 
         target = lock_path("t-recover", home / ".cache" / "hapax" / "cc-task-locks")
         handle = os.open(target, os.O_RDWR | os.O_CREAT, 0o600)
@@ -1141,8 +1174,6 @@ class TestRecoveryParticipatesToo:
         Recovering it unprotected is the only alternative, and that is the defect.
         """
         home = tmp_path / "home"
-        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
-        _write_note(vault, "t-recover", "in_progress")
         (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
         journal = _interrupted_journal(home, "t-recover", "eta")
         journal.write_text('{"intent": {"role": "eta"}}', encoding="utf-8")
@@ -1156,8 +1187,75 @@ class TestRecoveryParticipatesToo:
             timeout=120,
         )
         assert result.returncode == 8, f"{result.stdout}\n{result.stderr}"
-        assert "name no readable task" in result.stderr, result.stderr
+        assert "do not name a readable task and role" in result.stderr, result.stderr
         assert str(journal) in result.stderr, "the refusal did not name the journal"
+
+    def test_a_journal_naming_no_role_is_refused_too(self, tmp_path: Path) -> None:
+        """Ownership unresolved is the same refusal as identity unresolved.
+
+        The role decides which lease namespace recovery will rewrite. A journal
+        that names a task but no role cannot have that namespace locked, and
+        falling back to the CALLER's role is exactly the defect round 23 reported:
+        recovering an eta journal from a beta shell locked beta.
+        """
+        home = tmp_path / "home"
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        journal = _interrupted_journal(home, "t-recover", "eta")
+        journal.write_text('{"intent": {"task_id": "t-recover"}}', encoding="utf-8")
+
+        result = subprocess.run(
+            ["bash", str(CC_CLAIM), "--recover-claim-publications"],
+            env=_lane_env(home),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        assert result.returncode == 8, f"{result.stdout}\n{result.stderr}"
+        assert "declares no role" in result.stderr, result.stderr
+
+    def test_the_journals_role_is_locked_not_the_callers(self, tmp_path: Path) -> None:
+        """Recovering an eta journal from a beta shell must lock ETA.
+
+        `recover_claim_publications` writes `intent.role`; the caller's environment
+        does not decide whose leases move. Locking the caller's role left the real
+        one open to cc-close's read-then-delete sweep.
+        """
+        home = tmp_path / "home"
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        _interrupted_journal(home, "t-recover", "eta")
+
+        env = _lane_env(home)
+        env["HAPAX_AGENT_ROLE"] = "beta"  # a DIFFERENT role runs the recovery
+        env["HAPAX_AGENT_NAME"] = "beta"
+
+        eta_lock = role_lock_path("eta", home / ".cache" / "hapax" / "cc-task-locks")
+        proc = subprocess.Popen(
+            ["bash", str(CC_CLAIM), "--recover-claim-publications"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        observed_held = False
+        handle = os.open(eta_lock, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            while proc.poll() is None and not observed_held:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    observed_held = True
+                else:
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+                    time.sleep(0.005)
+        finally:
+            os.close(handle)
+        stdout, stderr = proc.communicate(timeout=180)
+
+        assert observed_held, (
+            "recovery never held ETA's role lock — it locked the caller's role, "
+            f"leaving the namespace it actually rewrites open\n{stdout}\n{stderr}"
+        )
 
     def test_recovering_all_tasks_proceeds_when_nothing_is_pending(self, tmp_path: Path) -> None:
         """Fail-closed must not mean fail-always, and success must be observable."""

@@ -616,8 +616,26 @@ class TestWhatTheChildReceives:
             ["--model", "gpt-6-mini"],
             ["--model=gpt-6-mini"],
             ["-m", "gpt-6-mini"],
+            ["-mgpt-6-mini"],
+            ["--config", 'model="gpt-6-mini"'],
+            ['--config=model="gpt-6-mini"'],
+            ["-cmodel=gpt-6-mini"],
+            ["-c=model=gpt-6-mini"],
         ],
-        ids=["c-tight", "c-spaced", "c-single", "c-raw", "flag", "flag-eq", "short"],
+        ids=[
+            "c-tight",
+            "c-spaced",
+            "c-single",
+            "c-raw",
+            "flag",
+            "flag-eq",
+            "short",
+            "short-attached",
+            "config-alias",
+            "config-alias-eq",
+            "c-attached",
+            "c-eq",
+        ],
     )
     def test_every_override_form_the_harness_accepts_is_recorded(
         self, override: list[str], tmp_path: Path
@@ -687,16 +705,29 @@ def _model_from_codex_arg(raw: str) -> str:
     # Scanned from the END, taking the first hit — "last wins", implemented the
     # opposite way round from the launcher's forward scan so the two agreeing is
     # evidence rather than a shared habit.
+    model_flags = ("--model", "-m")
+    config_flags = ("-c", "--config")
     for i in range(len(args) - 1, -1, -1):
         arg = args[i]
         prev = args[i - 1] if i else None
-        if arg.startswith("--model="):
-            return arg[len("--model=") :]
-        if arg.startswith("-m="):
-            return arg[len("-m=") :]
-        if prev in ("--model", "-m"):
+        for flag in model_flags:
+            if arg.startswith(f"{flag}=") and arg[len(flag) + 1 :]:
+                return arg[len(flag) + 1 :]
+            if len(flag) == 2 and arg.startswith(flag) and len(arg) > 2:
+                return arg[len(flag) :]
+        for flag in config_flags:
+            attached = None
+            if arg.startswith(f"{flag}="):
+                attached = arg[len(flag) + 1 :]
+            elif len(flag) == 2 and arg.startswith(flag) and len(arg) > 2:
+                attached = arg[len(flag) :]
+            if attached is not None:
+                found = _c_value(attached)
+                if found:
+                    return found
+        if prev in model_flags:
             return arg
-        if prev == "-c":
+        if prev in config_flags:
             found = _c_value(arg)
             if found:
                 return found
