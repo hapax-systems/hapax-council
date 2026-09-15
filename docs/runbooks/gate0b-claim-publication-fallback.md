@@ -252,8 +252,9 @@ sessions.** Two different operations, easily confused:
 
   **The two runnable checks for that sentence**, named here so a later operator does
   not have to reconstruct them from the prose: the predicate itself is
-  `shared/session_identity.py::is_minted_session_id` (exercised by the snippet
-  above), and the end-to-end behaviour is
+  `shared/session_identity.py::is_minted_session_id`, pinned by
+  `tests/test_session_identity.py::TestMintedShapeRecognizer` (and exercised by the
+  snippet above), and the end-to-end behaviour is
   `tests/scripts/test_cc_close_session_lease.py::test_cc_close_orphan_sweep_spares_a_role_sharing_its_prefix`,
   which runs real cc-close as `cx-blue` against a live `cx-blue-shadow` lease naming
   the same task:

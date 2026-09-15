@@ -559,6 +559,96 @@ class TestSweepBinding:
         assert str(tmp_path / "definitely-absent") in stale[0].metadata["marker_dir"]
         assert stale[0].task_id is None and stale[0].session is None
 
+    def test_an_empty_marker_dir_is_attributable_however_it_was_chosen(
+        self, tmp_path: Path
+    ) -> None:
+        """A clean join must name the directory it reconciled against — both ways.
+
+        The absent-dir branch above catches a directory that is missing. It cannot
+        catch one that exists and is empty, and that is the relocation case: the
+        sweep reports no drift while having compared the vault against nothing.
+
+        The first cut raised this only for a DERIVED directory, reasoning that an
+        explicit ``--claim-marker-dir`` is the caller's assertion about where to
+        look. Review round 24 named the hole in that: the override exists precisely
+        so an operator can point the join at the real cache, and pointed one
+        character wrong it produces a completely clean report — the same
+        silence-on-failure this check refuses for unreadable files. So both
+        provenances raise, and each says which it was, so a clean run is never
+        mistaken for a verified one.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cc_hygiene_sweeper_empty", REPO_ROOT / "scripts" / "cc-hygiene-sweeper.py"
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        vault = tmp_path / "vault"
+        (vault / "active").mkdir(parents=True)
+        (vault / "closed").mkdir(parents=True)
+        (vault / "active" / "held-somewhere-else.md").write_text(
+            "---\ntype: cc-task\ntask_id: held-somewhere-else\n"
+            "status: in_progress\nassigned_to: eta\n---\n",
+            encoding="utf-8",
+        )
+
+        # DERIVED: relay_root.parent exists (it holds `relay/`) and has no markers.
+        derived_home = tmp_path / "derived" / "cache" / "hapax"
+        (derived_home / "relay").mkdir(parents=True)
+        derived_state = mod.run_sweep(
+            vault_root=vault, relay_root=derived_home / "relay", repo_root=tmp_path, reap=False
+        )
+        derived = [
+            e
+            for e in derived_state.events
+            if e.check_id == "stale_claim_marker" and e.metadata.get("reason") == "marker_dir_empty"
+        ]
+        assert len(derived) == 1, "a derived-and-empty marker dir reported clean"
+        assert derived[0].severity == "warning"
+        assert "derived from relay_root" in derived[0].message
+        assert "derived from relay_root" in derived[0].metadata["marker_dir_provenance"]
+        assert derived[0].metadata["held_task_count"] == "1"
+
+        # OVERRIDDEN: a different empty directory, passed explicitly.
+        override = tmp_path / "operator-said-here"
+        override.mkdir()
+        override_state = mod.run_sweep(
+            vault_root=vault,
+            relay_root=derived_home / "relay",
+            repo_root=tmp_path,
+            claim_marker_dir=override,
+            reap=False,
+        )
+        overridden = [
+            e
+            for e in override_state.events
+            if e.check_id == "stale_claim_marker" and e.metadata.get("reason") == "marker_dir_empty"
+        ]
+        assert len(overridden) == 1, (
+            "an explicitly-passed empty marker dir produced a clean report — "
+            "indistinguishable from 'no drift' for the check whose job is drift"
+        )
+        assert overridden[0].metadata["marker_dir"] == str(override)
+        assert "passed explicitly by the caller" in overridden[0].message
+        assert overridden[0].metadata["marker_dir_provenance"] == "passed explicitly by the caller"
+
+        # And the event is withheld when the join actually reconciled something:
+        # this is a report about an empty comparison, not about held tasks.
+        (override / "cc-active-task-eta").write_text("held-somewhere-else\n", encoding="utf-8")
+        populated = mod.run_sweep(
+            vault_root=vault,
+            relay_root=derived_home / "relay",
+            repo_root=tmp_path,
+            claim_marker_dir=override,
+            reap=False,
+        )
+        assert not [
+            e for e in populated.events if e.metadata.get("reason") == "marker_dir_empty"
+        ], "the empty-dir warning fired against a directory that held markers"
+
     def test_marker_dir_defaults_to_the_relay_root_parent(self, tmp_path: Path) -> None:
         import importlib.util
 
