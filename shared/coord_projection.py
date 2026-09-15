@@ -3961,19 +3961,28 @@ def _withdraw_publication_by_moving(
     and unlike the scratch names, live projection files have writers that never acquire
     anything, so no reservation in this module excludes them.
 
-    A rename is atomic with respect to the name, so it takes whatever is there. Once the
-    entry is at a private scratch name that nobody else can reach, the identity check is
-    finally race-free:
+    A rename is atomic with respect to the name, so it takes whatever is there — and that
+    single move is the whole of the rollback. The live name ends up clear, which is what the
+    caller needed, and **the entry is then KEPT, always, whoever it belongs to.**
 
-    * **it is the inode we published** — drop it. The source still names that inode, so
-      nothing is lost, and the live name is correctly absent again.
-    * **it is anything else** — a writer replaced us. Keep it, and say so loudly with the
-      name to inspect. It is off the live path, which is what rollback needed, and its bytes
-      are intact, which is what matters more.
+    * **it is the inode we published** — keep it. This bullet used to say "drop it, the source
+      still names that inode, so nothing is lost", and that premise is not something this
+      function can establish; see the block comment at the identity check for the three rounds
+      of guards it cost and the primitive enumeration that ended them.
+    * **it is anything else** — a writer replaced us. Keep it, and say so loudly with the name
+      to inspect: off the live path, bytes intact.
+
+    Both branches now do the same thing and differ only in what they report, which is the
+    point — the decision that used to select between removing and keeping was the defect.
 
     If the entry cannot be moved at all, it is left exactly where it is: a publication that
     outlives its transaction is visible and repairable, a destroyed entry is neither. This
     runs while another exception is propagating, so it absorbs everything.
+
+    Cost, stated where a reader will hit it: every failed publication leaves one
+    ``.transition-rollback`` remnant, nothing sweeps those names, and clearing them is manual
+    (:data:`_SCRATCH_REMEDY`). That is a deliberate trade of tidiness for bytes, pinned by
+    ``test_rollback_clears_the_live_name_and_keeps_its_copy_where_it_is_findable``.
     """
 
     aside = _fallback_scratch_name(live_name, "rollback")
@@ -4010,47 +4019,42 @@ def _withdraw_publication_by_moving(
             _SCRATCH_REMEDY,
         )
         return
-    # Identity is NOT redundancy, and this branch used to conflate them. It unlinked whenever
-    # the moved entry matched `expected`, justified by "the source still names that inode, so
-    # nothing is lost" — a premise, not a check. A reviewer replayed the sequence that breaks
-    # it: a writer replaces the SOURCE after this publication linked it, so the published
-    # inode's only surviving name is the one we are about to remove, and the journal recorded a
-    # different inode entirely. Reproduced: the entry was destroyed and unrecoverable.
+    # THIS PATH NO LONGER REMOVES ANYTHING, and that is the fix rather than a concession.
     #
-    # `st_nlink` on the moved entry answers the question the premise assumed. Above 1, some
-    # other name still reaches the inode and dropping ours loses nothing. At exactly 1, this is
-    # the last name — so it is kept, whoever it belongs to.
-    if _same_entry(moved, expected) and moved.st_nlink > 1:
-        try:
-            os.unlink(aside, dir_fd=dir_fd)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            _logger.warning(
-                "%s: %s name=%s was withdrawn to %s but that copy could not be removed "
-                "(%s) — it is OURS and genuinely redundant (nlink was %d), so nothing is "
-                "lost, but it is an extra link to the source inode and the next readback of "
-                "%s will refuse as transition_projection_path_unsafe until it is cleared. %s",
-                _SCRATCH_ABANDONED,
-                subject,
-                live_name,
-                aside,
-                exc,
-                moved.st_nlink,
-                live_name,
-                _SCRATCH_REMEDY,
-            )
-        return
+    # Three shapes were tried here, one per review round, all for the same hazard: unlink on
+    # identity; then unlink on identity plus ``st_nlink > 1``; and a reviewer then showed that
+    # the link count is a snapshot too — another name can be replaced between the stat and the
+    # unlink, so the removal destroys the inode's last name anyway. Three mitigations for one
+    # hazard is the estate's own signal that the shape is wrong, not that a fourth guard is
+    # missing.
+    #
+    # There is no conditional removal to reach for. Measured 2026-09-15 across tmpfs, xfs and
+    # the nfs4 export: ``unlink`` takes no condition; ``renameat2(RENAME_EXCHANGE)`` is exactly
+    # what this mount refuses, which is why this module exists; and the recoverable-unlink
+    # trick — hold an fd, unlink, re-link from ``/proc/self/fd`` if the count hit zero — fails
+    # ``EXDEV`` on all three, because /proc is a different device (``AT_EMPTY_PATH`` wants
+    # ``CAP_DAC_READ_SEARCH``). On NFS ``st_nlink`` even still reads 1 after an unlink, so the
+    # count is less trustworthy there, not more.
+    #
+    # So the question is what removal was FOR. Here it was tidiness: this runs on an error
+    # path, the live name is already clear, and the entry sitting at a scratch name harms
+    # nothing except neatness. Tidiness is not worth a window that destroys bytes, so the
+    # entry is always kept and always reported. The cost is a remnant an operator clears by
+    # hand, which is recoverable; the thing avoided is not.
+    #
+    # `_retire_scratch` is the other caller of this pattern and cannot simply stop removing —
+    # see its docstring for why, and for the residual that only writer exclusion closes.
     if _same_entry(moved, expected):
         _logger.warning(
-            "%s: %s name=%s was withdrawn to %s and KEPT, because it is the only name left "
-            "for that inode — a writer replaced the source after this publication linked it, "
-            "so removing this copy would destroy the entry outright, and the journal recorded "
-            "a different inode. It holds the bytes this transition published. %s",
+            "%s: %s name=%s was withdrawn to %s and KEPT. It holds the bytes this transition "
+            "published, and nothing here can prove another name still reaches that inode at "
+            "the instant of a removal — so it is not removed. If %s or another name also "
+            "reaches it this copy is merely redundant; if not, this copy is the entry. %s",
             _SCRATCH_ABANDONED,
             subject,
             live_name,
             aside,
+            live_name,
             _SCRATCH_REMEDY,
         )
         return
@@ -4209,11 +4213,32 @@ def _retire_scratch(
     identity check buys against *that* writer is the common case — a foreign entry already
     sitting at the name when cleanup starts is preserved instead of deleted.
 
+    **The removal here cannot simply be dropped, which is what distinguishes it from
+    :func:`_withdraw_publication_by_moving`.** That function stopped removing entirely, because
+    its removal was only tidiness on an error path. This one runs on the SUCCESS path, and the
+    scratch it retires is a *second name for a live projected inode* — leave it and the live
+    entry keeps ``st_nlink == 2``, which :func:`_entry_state_at` refuses as
+    ``transition_projection_path_unsafe`` on the very next readback. Not removing would break
+    every following transaction on that operand, so "never unlink" is unavailable here.
+
+    **The residual, stated plainly because it is not closable at this layer.** The removal is
+    guarded by identity *and* by ``st_nlink > 1``, which together mean it loses nothing in every
+    interleaving this module can observe. It is still a check followed by an act: a reviewer
+    replayed a rollback in which a writer replaces the live name after the count is read, so the
+    scratch holds the displaced inode's last name at the instant of the unlink and the bytes go.
+    No primitive fixes that — measured 2026-09-15 on tmpfs, xfs and the nfs4 export,
+    ``unlink`` takes no condition, ``renameat2(RENAME_EXCHANGE)`` is the flag this mount
+    refuses, and the recoverable-unlink trick (hold an fd, unlink, re-link from
+    ``/proc/self/fd``) fails ``EXDEV`` on all three. What closes it is excluding the writer:
+    ``projection-lock-coverage-projected-path-writers-20260913``. Tracking is not doing, and
+    this sentence is not a closure.
+
     So certainty, not the check, decides the verb:
 
-    * **the name still holds our inode** — remove it; it is a second name for an entry that
-      lives elsewhere, so removing it loses nothing *unless a replacement lands in the gap
-      described above*;
+    * **the name still holds our inode AND another name still reaches it** — remove it; it is
+      redundant, so removing it loses nothing except in the residual window above;
+    * **our inode, but the only name left** — keep it. Removing it would destroy the entry
+      outright, and a remnant is recoverable where bytes are not;
     * **anything else** — never ``unlink``. The entry is moved aside under a
       ``.transition-abandoned`` name by :func:`_move_aside_atomically`, which reserves that
       name with ``O_CREAT|O_EXCL`` and then ``rename``\\ s onto its own placeholder. The
@@ -4262,23 +4287,43 @@ def _retire_scratch(
             exc,
         )
         return False
-    if _same_entry(current, expected):
+    if _same_entry(current, expected) and current.st_nlink > 1:
         try:
             os.unlink(name, dir_fd=dir_fd)
         except FileNotFoundError:
             return True
         except OSError as exc:
             _logger.warning(
-                "%s: %s name=%s is ours but could not be removed (%s) — left in place; it "
-                "is redundant, so nothing is lost, but retries will refuse until it is "
-                "cleared",
+                "%s: %s name=%s is ours and redundant (nlink %d) but could not be removed "
+                "(%s) — left in place; nothing is lost, but it is a second link to a live "
+                "inode, so the next readback refuses as transition_projection_path_unsafe "
+                "until it is cleared. %s",
                 _SCRATCH_ABANDONED,
                 subject,
                 name,
+                current.st_nlink,
                 exc,
+                _SCRATCH_REMEDY,
             )
             return False
         return True
+    if _same_entry(current, expected):
+        # Ours, and the ONLY name for that inode. Identity was treated as proof of redundancy
+        # here too — a reviewer replayed a rollback where a writer takes over the live name, so
+        # this scratch holds the displaced entry's last copy and the unlink destroyed it with no
+        # I/O failure anywhere. Keeping it blocks retries on this operand, which is the safe
+        # direction; see this function's docstring for the residual window that remains and for
+        # why no primitive closes it.
+        _logger.warning(
+            "%s: %s name=%s is ours but is the ONLY name for that inode, so it is KEPT — "
+            "removing it would destroy the entry rather than tidy a duplicate. Retries on "
+            "this operand refuse until it is cleared. %s",
+            _SCRATCH_ABANDONED,
+            subject,
+            name,
+            _SCRATCH_REMEDY,
+        )
+        return False
 
     abandoned = f"{name}.transition-abandoned"
     outcome = "left in place"

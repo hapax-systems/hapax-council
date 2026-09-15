@@ -4151,6 +4151,27 @@ def test_inspection_does_not_hold_on_a_journal_it_already_told_you_to_quarantine
     assert [entry.publication_id for entry in held] == ["claim-pub-not-a-journal"]
     assert held[0].reason_code == "claim_publication_transaction_entry_unknown"
     assert foreign.is_dir()
+    foreign.rmdir()
+
+    # And the state cx-p0 ACTUALLY produced: the live journal still present beside its
+    # quarantined sibling, same sha. "The verdict drops, the evidence does not" has to mean the
+    # live journal is inspected normally while the sibling is skipped — so the skip must be
+    # narrow (this exact suffixed name) and not sha-wide. A reviewer noted the three stamp
+    # grammars above never put both forms on disk at once, which is the case that matters.
+    live = transactions / f"claim-pub-{sha}"
+    live.mkdir(mode=0o700)
+    both = _inspect_without_effect(
+        tmp_path,
+        cache_dir=cache,
+        transaction_root=transactions,
+    )
+    assert [entry.publication_id for entry in both] == [f"claim-pub-{sha}"], (
+        "the live journal was skipped along with its quarantined sibling — the skip is "
+        "sha-wide, so quarantining one attempt would hide the next one at the same sha"
+    )
+    assert live.is_dir()
+    for stamp in ("20260821", "20260905T0041Z", "20260913T205924Z"):
+        assert (transactions / f"claim-pub-{sha}.quarantined-{stamp}").is_dir()
 
 
 def test_publication_identity_is_deterministic_but_path_bound(tmp_path: Path) -> None:

@@ -4649,19 +4649,92 @@ def test_rollback_preserves_a_writer_who_replaced_the_live_destination(
         "the rollback destroyed a writer who replaced the live destination — the exact "
         "loss this path was rebuilt to stop"
     )
-    # The withdrawal still did its job: our publication is gone, the staged source is intact
-    # for a retry, and nothing of ours is stranded under a scratch name.
+    # The withdrawal still did its job: the source is intact for a retry.
     assert (tmp_path / ".staged").read_bytes() == b"the transition's content\n"
-    assert not (tmp_path / cp._fallback_scratch_name("live-note.md", "rollback")).exists(), (
-        "our own publication was left behind under the rollback scratch name"
+    # A copy IS left under the rollback scratch name, and that is now deliberate — the
+    # withdrawal removes nothing, because no primitive removes a name while guaranteeing the
+    # inode keeps one. This used to assert the opposite; see
+    # `test_rollback_clears_the_live_name_and_keeps_its_copy_where_it_is_findable`.
+    aside = cp._fallback_scratch_name("live-note.md", "rollback")
+    assert (tmp_path / aside).exists()
+    # Whichever side of the rename the writer landed on, their bytes must be reachable and the
+    # kept copy must be reported rather than silently stranded.
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert aside in caplog.text
+    assert "clear it by hand" in caplog.text
+
+
+def test_cleanup_keeps_a_spent_scratch_that_is_a_displaced_entrys_last_name(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """codex-1's C2: cleanup treated matching identity as proof of redundancy too.
+
+    The replay needs no I/O failure anywhere. A writer replaces the live note, so the exchange
+    preserves THAT inode while publishing; the caller detects the mismatch and exchanges back;
+    a second writer then takes over the live name; and cleanup unlinks `.transition-spent`,
+    which by then holds the displaced entry's only remaining copy.
+
+    No writer touches a scratch name, so the `O_CREAT|O_EXCL` reservation that protects the
+    scratch names is irrelevant here — this is about what cleanup is entitled to remove. The
+    guard is `st_nlink`: a scratch that is ours AND redundant is removable; ours and the only
+    name is kept, because removing it destroys the entry rather than tidying a duplicate.
+
+    Driven directly at `_retire_scratch`, because reaching the state through the full exchange
+    requires the caller's rollback, and this pins the decision the cleanup actually makes.
+    """
+
+    displaced = tmp_path / "spent-scratch"
+    displaced.write_bytes(b"DISPLACED WRITER ONLY COPY\n")
+    displaced_inode = displaced.stat().st_ino
+    expected = displaced.stat()  # ours by identity...
+    assert expected.st_nlink == 1  # ...and the only name for it
+
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with caplog.at_level("WARNING"):
+            freed = cp._retire_scratch(dir_fd, "spent-scratch", expected, subject="probe")
+    finally:
+        os.close(dir_fd)
+
+    assert displaced.exists(), (
+        "cleanup removed a scratch that was the only name for its inode — the displaced "
+        "entry is unrecoverable, which is exactly the reproduced C2 loss"
     )
-    # Where the writer's entry ends up depends on which side of the rename it landed, and
-    # both are correct: either it is live (the name was vacant by then) or it was carried to
-    # the rollback scratch, which is reported. Assert the disjunction, not one branch.
-    at_live = (tmp_path / "live-note.md").exists()
-    assert at_live or (
-        cp._SCRATCH_ABANDONED in caplog.text and "recover-claim-publications" in caplog.text
-    ), "the writer's entry was neither left live nor reported as preserved"
+    assert displaced.stat().st_ino == displaced_inode
+    assert displaced.read_bytes() == b"DISPLACED WRITER ONLY COPY\n"
+    # Keeping it blocks retries on this operand, so it is reported as the stuck state it is.
+    assert freed is False
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert "ONLY name" in caplog.text
+    assert "clear it by hand" in caplog.text
+
+
+def test_cleanup_still_removes_a_scratch_that_is_genuinely_redundant(tmp_path: Path) -> None:
+    """The other side of C2's guard, which must keep working or every transaction wedges.
+
+    `_retire_scratch` runs on the SUCCESS path, and the scratch it retires is normally a second
+    name for a live projected inode. Leaving that behind gives the live entry `st_nlink == 2`,
+    which `_entry_state_at` refuses as path_unsafe on the next readback — so "never remove"
+    would break every following transaction on the operand. Redundant-and-ours must still go.
+    """
+
+    live = tmp_path / "live"
+    live.write_bytes(b"published\n")
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        # A genuine second name for the live inode, which is what `spent` actually is.
+        os.link("live", "spent-scratch", src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        expected = os.lstat("spent-scratch", dir_fd=dir_fd)
+        assert expected.st_nlink == 2
+        freed = cp._retire_scratch(dir_fd, "spent-scratch", expected, subject="probe")
+    finally:
+        os.close(dir_fd)
+
+    assert freed is True
+    assert not (tmp_path / "spent-scratch").exists(), "the redundant scratch was not removed"
+    # The live entry survives and is back to a single link, so the next readback passes.
+    assert live.read_bytes() == b"published\n"
+    assert live.stat().st_nlink == 1
 
 
 def test_withdrawal_refuses_an_occupied_rollback_target_instead_of_overwriting_it(
@@ -4786,7 +4859,7 @@ def test_withdrawal_keeps_the_published_inode_when_it_is_the_last_name(
     assert not (tmp_path / "live-note.md").exists()
     assert (tmp_path / ".staged").read_bytes() == b"a third writer\n"
     assert cp._SCRATCH_ABANDONED in caplog.text
-    assert "only name left" in caplog.text
+    assert "KEPT" in caplog.text
     assert "clear it by hand" in caplog.text
 
 
@@ -4852,17 +4925,22 @@ def test_rollback_carries_a_pre_rename_arrival_into_the_scratch_and_reports_it(
     assert "do not delete" in caplog.text or "before removing" in caplog.text
 
 
-@pytest.mark.parametrize("failing", ["lstat", "unlink"])
+@pytest.mark.parametrize("failing", ["lstat"])
 def test_a_stranded_rollback_entry_is_never_silent(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, failing: str
 ) -> None:
-    """Both post-move error branches of the withdrawal, which returned silently.
+    """The post-move error branch of the withdrawal, which returned silently.
 
-    After the live entry is moved to `.transition-rollback`, two things can still fail: the
-    identity read, and the removal of our own copy. Both used to return without a word — and
-    nothing in this module sweeps `.transition-rollback` names, so the entry was simply gone
-    from view. It can be a displaced writer's only copy, or an extra link to the source that
-    makes the next readback refuse as `path_unsafe`; either way the operator has to see it.
+    After the live entry is moved to `.transition-rollback`, the identity read can still fail.
+    It used to return without a word — and nothing in this module sweeps those names, so the
+    entry was simply gone from view. It can be a displaced writer's only copy, or an extra
+    link that makes the next readback refuse as `path_unsafe`; either way the operator has to
+    see it.
+
+    This was parameterized over `lstat` and `unlink`. The `unlink` case is gone because the
+    withdrawal no longer removes anything — see `_withdraw_publication_by_moving`, where three
+    rounds of conditional-removal guards were replaced by not removing. The parametrize is
+    kept with one member so a future removal branch is added back here rather than untested.
     """
 
     (tmp_path / ".staged").write_bytes(b"the transition's content\n")
@@ -4898,31 +4976,47 @@ def test_a_stranded_rollback_entry_is_never_silent(
     assert "path_unsafe" in caplog.text
 
 
-def test_rollback_drops_its_own_publication_when_nobody_raced_it(tmp_path: Path) -> None:
-    """The ordinary rollback: our own link is withdrawn, leaving no remnant behind.
+def test_rollback_clears_the_live_name_and_keeps_its_copy_where_it_is_findable(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The ordinary rollback, and the cost of no longer removing anything.
 
-    The preservation branch must not become a way to litter the projection root with
-    `.transition-rollback` entries on every failed transition.
+    This used to assert the withdrawal left NO remnant — "the preservation branch must not
+    become a way to litter the projection root". The withdrawal now keeps its copy in every
+    case, because three rounds of conditional removal each yielded a new interleaving that
+    destroyed a last name, and no primitive removes a name while guaranteeing the inode keeps
+    one (measured: EXDEV on tmpfs, xfs and the export).
+
+    So the remnant IS the shipped behaviour, and what has to be true is narrower: the live name
+    is clear (the rollback did its job), the source is intact for a retry, and the copy left
+    behind is at the deterministic scratch name with a log line naming it — findable rather
+    than litter. If that ever stops holding, this fails.
     """
 
     (tmp_path / ".staged").write_bytes(b"the transition's content\n")
+    aside = cp._fallback_scratch_name("live-note.md", "rollback")
 
     def fail_the_source_check(*_args: object, **_kwargs: object) -> None:
         raise OSError(errno.EIO, os.strerror(errno.EIO))
 
     dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        with mock.patch.object(cp, "_refuse_if_displaced_entry_moved", fail_the_source_check):
-            with pytest.raises(OSError):
-                cp._fallback_noreplace(dir_fd, ".staged", dir_fd, "live-note.md")
+        with caplog.at_level("WARNING"):
+            with mock.patch.object(cp, "_refuse_if_displaced_entry_moved", fail_the_source_check):
+                with pytest.raises(OSError):
+                    cp._fallback_noreplace(dir_fd, ".staged", dir_fd, "live-note.md")
     finally:
         os.close(dir_fd)
 
     assert not (tmp_path / "live-note.md").exists(), "the publication was not withdrawn"
-    assert sorted(p.name for p in tmp_path.iterdir()) == [".staged"], (
-        "the withdrawal left a remnant behind for a rollback nobody raced"
-    )
     assert (tmp_path / ".staged").read_bytes() == b"the transition's content\n"
+    # The kept copy is exactly where the deterministic name says, and nowhere else.
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted([".staged", aside])
+    assert (tmp_path / aside).read_bytes() == b"the transition's content\n"
+    # Findable, not litter: named in the log with the manual clearance instruction.
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert aside in caplog.text
+    assert "clear it by hand" in caplog.text
 
 
 def test_noreplace_interrupted_after_linking_loses_nothing(tmp_path: Path) -> None:
@@ -5451,6 +5545,46 @@ def test_a_placeholder_reservation_leaves_the_live_entrys_link_count_alone(
         os.close(dir_fd)
 
 
+#: Every `pytest -k` selector a docstring in `shared/coord_projection.py` offers as a recheck
+#: command, paired with a test name it must match.
+_DOCSTRING_RECHECK_SELECTORS = (
+    ("a_placeholder_reservation_leaves_the_live_entrys_link_count_alone", __name__),
+    ("unsupported_errno", __name__),
+    ("declared_unsupported_set", __name__),
+    ("the_scratch_reservation_is_genuinely_exclusive", "nfs_integration"),
+)
+
+
+def test_every_docstring_recheck_selector_actually_selects_something() -> None:
+    """A `-k` selector that matches nothing exits green-ish, which is an invisible skip.
+
+    The module's docstrings hand readers `pytest -k <selector>` invocations as the way to
+    recheck their claims. If a test is renamed, the selector silently selects zero tests and
+    the recheck "passes" — the same invisible-skip defect the integration module was hardened
+    against with `test_the_waiver_expiry_row_is_resolvable`. A reviewer noted the selectors
+    could not be confirmed from the review packet; this confirms them from the suite instead.
+    """
+
+    import inspect
+
+    own_source = inspect.getsource(sys.modules[__name__])
+    integration_source = (
+        Path(__file__).with_name("test_coord_projection_nfs_integration.py").read_text()
+    )
+    module_source = inspect.getsource(cp)
+
+    for selector, where in _DOCSTRING_RECHECK_SELECTORS:
+        haystack = own_source if where == __name__ else integration_source
+        assert f"def test_{selector}" in haystack or f"{selector}" in haystack, (
+            f"the docstring recheck selector {selector!r} matches no test — the -k command "
+            "would select nothing and exit without checking anything"
+        )
+        assert selector in module_source, (
+            f"{selector!r} is pinned here but no longer cited by any docstring; drop it from "
+            "_DOCSTRING_RECHECK_SELECTORS or restore the citation"
+        )
+
+
 def _participant_takes(dir_fd: int, name: str, payload: bytes) -> str:
     """A second writer acquiring the scratch name the way `_relocate_to_scratch` does.
 
@@ -5566,9 +5700,12 @@ def test_cleanups_occupancy_argument_is_pinned_not_just_argued(
     )
     survivors = {path.read_bytes() for path in tmp_path.iterdir() if path.is_file()}
     assert b"COMPETITOR\n" not in survivors
-    # And the entry that was there is handled by its own branch: ours removed, theirs kept.
+    # And the entry that was there is handled by its own branch. The identity branch KEEPS it
+    # now: `expected` is the only name for that inode in this fixture, and removing a last name
+    # is what codex-1's C2 replay destroyed. Redundant-and-ours is the only removable case, and
+    # it is covered by the ordinary exchange tests where `spent` is a genuine second link.
     if branch == "identity":
-        assert not (tmp_path / "scratch").exists()
+        assert (tmp_path / "scratch").read_bytes() == b"ours\n"
     else:
         assert (tmp_path / "scratch.transition-abandoned").read_bytes() == b"someone-elses\n"
 
