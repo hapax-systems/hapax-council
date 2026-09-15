@@ -108,24 +108,29 @@ if [[ ! -x "$python_runner" ]]; then
   echo "cc-claim: python3 missing; cannot rewrite frontmatter. Next action: install python3 or rerun from a provisioned repo virtualenv." >&2
   exit 3
 fi
-# Resolve the role BEFORE the recovery branches, not after them. Both recovery
-# paths mutate task notes and the activation cache, so both must take the same
-# locks cc-close does — and the role lock needs a role. The resolution itself is
-# unchanged; only its position moved (review round 21).
-if declare -F hapax_effective_role >/dev/null 2>&1; then
-  recovery_role="$(hapax_effective_role 2>/dev/null || true)"
-else
-  recovery_role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
-fi
+# The caller's role is NOT resolved here any more, and nothing below asks for it.
+#
+# Round 21 moved the resolution above the recovery branches so both could take a
+# role lock. Rounds 23-25 then established, one call site at a time, that the role
+# those branches must lock is the one each JOURNAL names — never the caller's —
+# and every branch now derives ownership from the journals. That left
+# `recovery_role` computed, passed into two heredocs and read by neither.
+#
+# Deleted rather than kept: it was resolved with a fail-open chain
+# (`${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}`), so an unresolvable role
+# silently degraded recovery to note-lock-only — locking less on exactly the field
+# the lock's correctness depended on, against this file's own stated principle that
+# a journal whose owner cannot be named must not be recovered (review round 25,
+# claude-1). The answer to a fail-open input is to stop depending on it, not to
+# harden the fallback.
 
 if [[ "$rehydrate_activation_cache_only" == "true" ]]; then
-  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" "${recovery_role:-}" <<'PYEOF'
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
 import sys
 from pathlib import Path
 
 repo_root = Path(sys.argv[1]).resolve()
 task_id = sys.argv[2]
-recovery_role = sys.argv[3] if len(sys.argv) > 3 else ""
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
@@ -136,21 +141,40 @@ if str(repo_root) not in sys.path:
 # archived snapshot would silently lack the recovered changes (review round 21).
 # A second lock namespace is not exclusion; it is two processes agreeing to watch
 # different doors.
+#
+# The CALLER's role is deliberately not locked here, and is no longer resolved at
+# all. Rehydration restores the identity sidecars of the journals it finds, and those
+# are keyed by each journal's own `intent.role` — so a beta shell rehydrating an
+# eta journal was rewriting eta's leases while holding beta's lock, which protects
+# nothing. Same defect as the recovery paths, at a third call site (review round
+# 25, gemini-1). Ownership comes from the journals, through the same primitive.
 from shared.cc_task_lock import (  # noqa: E402
+    TaskLockOrderViolation,
     TaskLockTimeout,
-    hold_role_lease_lock,
-    hold_task_note_lock,
+    hold_journal_locks,
 )
+from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+
+roots = default_claim_publication_roots(home=Path.home())
 
 try:
-    hold_task_note_lock(task_id)
-    if recovery_role:
-        hold_role_lease_lock(recovery_role)
+    # `also_tasks` carries the task being rehydrated even when no journal names
+    # it: the note is mutated either way, so its lock is not conditional on what
+    # the journal scan happens to find.
+    _owners, _blind = hold_journal_locks(
+        Path(roots.claim_transaction_root), task_id=task_id, also_tasks=(task_id,)
+    )
 except TaskLockTimeout as exc:
     print(
         f"cc-claim: BLOCKED — {exc}. A cc-close or cc-claim is mid-mutation on this "
         "task. Next action: let it finish and rerun the rehydrate. Nothing was "
         "modified.",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+except TaskLockOrderViolation as exc:
+    print(
+        f"cc-claim: BLOCKED — {exc}. Nothing was modified.",
         file=sys.stderr,
     )
     sys.exit(4)
@@ -163,13 +187,29 @@ except OSError as exc:
     )
     sys.exit(5)
 
-from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+# A journal this scan could not attribute either names THIS task with no role, or
+# could not be read at all — and an unreadable one may well be this task's. Either
+# way its leases cannot be locked, so the rehydrate REFUSES rather than running
+# unprotected. Refusing does less than proceeding, which is the direction a
+# failure path is allowed to move.
+_relevant = [msg for (_t, msg) in _blind if _t in (None, task_id)]
+if _relevant:
+    for _msg in _relevant:
+        print(f"cc-claim: BLOCKED — unattributable journal: {_msg}", file=sys.stderr)
+    print(
+        "cc-claim: BLOCKED — rehydrate would rewrite identity sidecars whose owning "
+        "role cannot be named, so the lock protecting them cannot be taken. Next "
+        f"action: repair or quarantine the journals named above, then rerun "
+        f"`cc-claim --rehydrate-activation-cache {task_id}`. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(8)
+
 from shared.sdlc_claim import (  # noqa: E402
     ClaimPublicationError,
     rehydrate_applied_activation_projections,
 )
 
-roots = default_claim_publication_roots(home=Path.home())
 try:
     results = rehydrate_applied_activation_projections(
         cache_dir=Path(roots.claim_cache_dir),
@@ -191,20 +231,23 @@ PYEOF
   exit $?
 fi
 if [[ "$recover_claim_publications_only" == "true" ]]; then
-  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" "${recovery_role:-}" <<'PYEOF'
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
 import sys
 from pathlib import Path
 
 repo_root = Path(sys.argv[1]).resolve()
 task_id = sys.argv[2] or None
-recovery_role = sys.argv[3] if len(sys.argv) > 3 else ""
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 # Same reason as the rehydrate branch above: recovery rewrites task notes and the
 # activation cache under sdlc_claim's own lock namespace, which cc-close does not
 # take. Two lock namespaces over one resource is not exclusion.
-from shared.cc_task_lock import TaskLockTimeout, hold_journal_locks  # noqa: E402
+from shared.cc_task_lock import (  # noqa: E402
+    TaskLockOrderViolation,
+    TaskLockTimeout,
+    hold_journal_locks,
+)
 from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
 from shared.sdlc_claim import ClaimPublicationError, recover_claim_publications  # noqa: E402
 
@@ -213,9 +256,9 @@ roots = default_claim_publication_roots(home=Path.home())
 
 # Ownership comes from the journals, and the locks are taken to a FIXPOINT.
 #
-# `recovery_role` (the caller's environment) is deliberately not consulted: the
-# journal says whose note and whose leases a recovery will rewrite, and the caller's
-# shell does not. And discovering owners once is not enough — recovery enumerates
+# The caller's environment is deliberately not consulted: the journal says whose
+# note and whose leases a recovery will rewrite, and the caller's shell does not.
+# And discovering owners once is not enough — recovery enumerates
 # the journals again, so a publisher already holding a task lock can leave a NEW
 # journal for another role before releasing it, and that one would be recovered with
 # no lock on what it rewrites (review round 24). `hold_journal_locks` re-scans after
@@ -232,6 +275,9 @@ except TaskLockTimeout as exc:
         "action: let it finish and rerun the recovery. Nothing was modified.",
         file=sys.stderr,
     )
+    sys.exit(4)
+except TaskLockOrderViolation as exc:
+    print(f"cc-claim: BLOCKED — {exc}. Nothing was modified.", file=sys.stderr)
     sys.exit(4)
 except OSError as exc:
     print(
@@ -867,9 +913,17 @@ if canon_enforced:
             TaskLockTimeout as _JournalLockTimeout,
         )
         from shared.cc_task_lock import (  # noqa: E402
+            TaskLockOrderViolation as _JournalLockOrderViolation,
+        )
+        from shared.cc_task_lock import (  # noqa: E402
             hold_journal_locks as _hold_journal_locks,
         )
 
+        # This process ALREADY holds the task lock (taken above) and this role's
+        # lease lock. Re-taking the task lock here is a no-op because the primitive
+        # records what this process holds — before that, it waited for itself and
+        # every automatic recovery exited 4 blaming a writer that did not exist
+        # (review round 25, codex-1, reproduced).
         try:
             _owners, _blind = _hold_journal_locks(transaction_root, task_id=task_id)
         except _JournalLockTimeout as exc:
@@ -878,6 +932,9 @@ if canon_enforced:
                 "and rerun cc-claim. Nothing was modified.",
                 file=sys.stderr,
             )
+            sys.exit(4)
+        except _JournalLockOrderViolation as exc:
+            print(f"cc-claim: BLOCKED — {exc}. Nothing was modified.", file=sys.stderr)
             sys.exit(4)
         _unattributable = [msg for (_t, msg) in _blind]
         for _msg in _unattributable:

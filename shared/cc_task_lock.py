@@ -203,7 +203,12 @@ def hold_task_note_lock(
     cannot serialize must refuse rather than proceed, and a refusal has to be able
     to say what it is waiting on.
     """
-    return _hold(lock_path(task_id, cache_dir), f"cc-task lock for '{task_id}'", timeout)
+    return _acquire(
+        (_TASK_RANK, task_id),
+        lock_path(task_id, cache_dir),
+        f"cc-task lock for '{task_id}'",
+        timeout,
+    )
 
 
 def hold_role_lease_lock(
@@ -218,7 +223,12 @@ def hold_role_lease_lock(
     :func:`role_lock_path` for why there are two and why the order is what keeps
     them safe.
     """
-    return _hold(role_lock_path(role, cache_dir), f"cc-task role lock for '{role}'", timeout)
+    return _acquire(
+        (_ROLE_RANK, role),
+        role_lock_path(role, cache_dir),
+        f"cc-task role lock for '{role}'",
+        timeout,
+    )
 
 
 def journal_owners(
@@ -307,32 +317,160 @@ def hold_journal_locks(
     not settle means journals are being published faster than they can be locked,
     and the caller must refuse rather than keep chasing.
 
-    Returns the locked owners and any journals refused as unattributable. Task locks
-    are taken before role locks, in sorted order, so no one waits for a task lock
-    while holding a role lock — the ordering cc-close also observes.
+    **The task set reaches its fixpoint before ANY role lock is taken.** The earlier
+    shape interleaved them — task(t1), role(eta), then task(t2) on the next pass —
+    which honours the task-before-role order only WITHIN one pass. Across passes it
+    produces exactly the cycle the order exists to forbid: a cc-close holding
+    task(t2) and waiting on role(eta) deadlocks against this process holding
+    role(eta) and waiting on task(t2) (review round 25, reproduced with competing
+    flock holders). Two phases, each its own fixpoint, restore the guarantee for
+    the whole acquisition rather than for each step of it.
+
+    A journal that appears after the role phase has begun cannot be ordered, and
+    :func:`_acquire` refuses it by name rather than deadlocking. That refusal is a
+    rerun, not a failure: the second run discovers it during the task phase.
+
+    Returns the locked owners and any journals refused as unattributable.
     """
     locked_tasks: set[str] = set()
-    locked_roles: set[str] = set()
     owners: set[tuple[str, str]] = set()
     refusals: list[str] = []
+
+    # PHASE 1 — task locks only, to a fixpoint. Nothing is held that a task lock
+    # may not be awaited behind, so a slow acquisition here cannot close a cycle.
+    settled = False
     for _pass in range(passes):
-        found, refusals = journal_owners(transaction_root, task_id=task_id)
-        owners = found
+        owners, refusals = journal_owners(transaction_root, task_id=task_id)
         want_tasks = {t for (t, _r) in owners} | set(also_tasks)
-        want_roles = {r for (_t, r) in owners}
-        if want_tasks <= locked_tasks and want_roles <= locked_roles:
-            return owners, refusals
+        if want_tasks <= locked_tasks:
+            settled = True
+            break
         for task in sorted(want_tasks - locked_tasks):
             hold_task_note_lock(task, timeout=timeout)
             locked_tasks.add(task)
+    if not settled:
+        raise TaskLockTimeout(
+            f"claim-publication journals kept naming new tasks while locking them "
+            f"({passes} passes); another publisher is writing faster than this "
+            "recovery can take the locks that protect what it would rewrite"
+        )
+
+    # PHASE 2 — role locks, also to a fixpoint. A role discovered here is still
+    # ordered correctly (roles sort after every task). A new TASK discovered here
+    # is not, and `_acquire` raises TaskLockOrderViolation rather than taking it.
+    locked_roles: set[str] = set()
+    for _pass in range(passes):
+        owners, refusals = journal_owners(transaction_root, task_id=task_id)
+        late_tasks = ({t for (t, _r) in owners} | set(also_tasks)) - locked_tasks
+        if late_tasks:
+            # Refuse, don't ignore. Silently proceeding would recover this task's
+            # journal with nothing holding its note lock, which is the defect the
+            # whole function exists to close; taking the lock now would acquire a
+            # task lock behind a role lock, which is the cycle. Neither is
+            # available, so the honest move is to name it and stop.
+            raise TaskLockOrderViolation(
+                f"journal(s) for task(s) {sorted(late_tasks)} appeared after this "
+                "process began taking role locks: the note lock cannot be taken "
+                "now without inverting the task-before-role order. Next action: "
+                "rerun — the second run discovers them before it starts. Nothing "
+                "was modified"
+            )
+        want_roles = {r for (_t, r) in owners}
+        if want_roles <= locked_roles:
+            return owners, refusals
         for role in sorted(want_roles - locked_roles):
             hold_role_lease_lock(role, timeout=timeout)
             locked_roles.add(role)
     raise TaskLockTimeout(
-        f"claim-publication journals kept appearing while locking them ({passes} "
-        "passes); another publisher is writing faster than this recovery can take "
-        "the locks that protect what it would rewrite"
+        f"claim-publication journals kept naming new roles while locking them "
+        f"({passes} passes); another publisher is writing faster than this "
+        "recovery can take the locks that protect what it would rewrite"
     )
+
+
+#: Every lock this PROCESS holds, path -> the descriptor holding it.
+#:
+#: `flock` is per open file description, not per process: two `os.open` calls on
+#: one path in one process produce two descriptions that CONFLICT. So a second
+#: acquisition of a lock this process already holds does not return, it waits for
+#: itself until the timeout and then reports "another process has held ...", which
+#: is false and unactionable. That is not hypothetical — it shipped: a normal
+#: `cc-claim <task>` took the task lock, then automatic recovery took the same
+#: lock again through `hold_journal_locks` and every recovery with an attributable
+#: journal exited 4 blaming a writer that did not exist (review round 25,
+#: reproduced against this process).
+#:
+#: A process cannot race itself for these locks, and they are held to exit so a
+#: recorded hold never goes stale. Re-acquisition is therefore a no-op rather than
+#: a conflict — which is a property of the primitive, not a special case for one
+#: caller to remember.
+_HELD: dict[Path, int] = {}
+
+#: Sort rank of each lock namespace, defining ONE total order over every lock this
+#: module hands out: all task locks, then all role locks, each ascending by name.
+#: Acquiring strictly in ascending order is what makes a cycle impossible, and it
+#: has to be enforced here because no caller can see what another caller holds.
+_TASK_RANK = 0
+_ROLE_RANK = 1
+
+#: The ascending keys acquired so far, in acquisition order.
+_ORDER: list[tuple[int, str]] = []
+
+
+class TaskLockOrderViolation(RuntimeError):
+    """A lock was requested that sorts BEFORE one this process already holds.
+
+    Not a timeout and not contention: nothing is waiting. The caller discovered a
+    resource late, and honouring it would mean acquiring out of order — which is
+    exactly the cycle the order exists to prevent. The remedy is to rerun (the set
+    settles) or to widen the initial discovery, never to take the lock anyway.
+    """
+
+
+def held_lock_order() -> tuple[tuple[int, str], ...]:
+    """The keys this process holds, in acquisition order. For tests and messages."""
+
+    return tuple(_ORDER)
+
+
+def release_all_process_locks() -> None:
+    """Close every held descriptor, releasing the locks — i.e. simulate exiting.
+
+    **Production code must never call this.** Holds last until the process ends
+    precisely so that no code path can decide to let go early; a caller that could
+    release could also release halfway through a mutation.
+
+    It exists because a test harness runs many logical "processes" inside one
+    interpreter, and the held-lock registry is per-interpreter. Forgetting the
+    registry without closing the descriptors would be worse than useless: the
+    kernel would still hold the locks and the next acquisition would wait for a
+    process that is the test itself — the exact defect this registry fixes. So the
+    reset closes, and the two stay consistent.
+    """
+
+    while _HELD:
+        _path, handle = _HELD.popitem()
+        os.close(handle)
+    _ORDER.clear()
+
+
+def _acquire(key: tuple[int, str], path: Path, description: str, timeout: float | None) -> Path:
+    if path in _HELD:
+        return path
+    if _ORDER and key < _ORDER[-1]:
+        kind = "task" if key[0] == _TASK_RANK else "role"
+        prior_kind = "task" if _ORDER[-1][0] == _TASK_RANK else "role"
+        raise TaskLockOrderViolation(
+            f"refusing to take the {kind} lock for '{key[1]}' while already holding "
+            f"the {prior_kind} lock for '{_ORDER[-1][1]}': locks are taken in one "
+            "ascending order (all tasks, then all roles) so two writers can never "
+            "wait on each other. This one was discovered too late to be ordered. "
+            "Next action: rerun — a journal was published while this process was "
+            "taking locks, and the second run discovers it before it starts"
+        )
+    _hold(path, description, timeout)
+    _ORDER.append(key)
+    return path
 
 
 def _hold(path: Path, description: str, timeout: float | None) -> Path:
@@ -342,6 +480,7 @@ def _hold(path: Path, description: str, timeout: float | None) -> Path:
     while True:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _HELD[path] = handle
             return path
         except OSError as exc:
             if exc.errno not in (errno.EACCES, errno.EAGAIN):

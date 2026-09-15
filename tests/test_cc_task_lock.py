@@ -36,8 +36,24 @@ from shared.cc_task_lock import (  # noqa: E402
     hold_role_lease_lock,
     hold_task_note_lock,
     lock_path,
+    release_all_process_locks,
     role_lock_path,
 )
+
+
+@pytest.fixture(autouse=True)
+def _each_test_is_its_own_process():
+    """Holds last until process exit; a test module is ONE process for many of them.
+
+    Without this, locks taken in-process by one test are still held in the next,
+    and the ascending-order rule then refuses a lower-sorting lock the next test
+    legitimately takes first. Every test here means "a fresh process", so end each
+    one the way a process ends.
+    """
+
+    yield
+    release_all_process_locks()
+
 
 CC_CLAIM = REPO_ROOT / "scripts" / "cc-claim"
 CC_CLOSE = REPO_ROOT / "scripts" / "cc-close"
@@ -1133,6 +1149,64 @@ class TestRecoveryParticipatesToo:
             f"closer could read the note it is replacing\n{stdout}\n{stderr}"
         )
 
+    def test_an_ordinary_claim_completes_the_recovery_it_triggers(self, tmp_path: Path) -> None:
+        """The AUTOMATIC path, end to end — not the explicit `--recover` command.
+
+        Every recovery test above drives `cc-claim --recover-claim-publications`.
+        That left the path users actually hit uncovered, and it was broken: an
+        ordinary `cc-claim <task>` takes the task lock, then automatic recovery
+        took the SAME lock again through a second descriptor, waited out the
+        timeout against itself, and exited 4 reporting contention with a writer
+        that did not exist (review round 25; codex-1 reproduced it, gemini-1 filed
+        the missing coverage).
+
+        The assertion is deliberately "it finished", not "the lock was held" — a
+        hold assertion is exactly what passed while the run never got that far.
+        """
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        journal = _interrupted_journal(home, "t-auto", "eta")
+        assert journal.is_file(), "fixture produced no journal to recover"
+        # Back to claimable so the ordinary claim path runs rather than refusing.
+        _write_note(vault, "t-auto", "offered")
+
+        env = _lane_env(home)
+        env.pop("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF", None)
+        env["HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS"] = "8"
+        started = time.monotonic()
+        result = subprocess.run(
+            ["bash", str(CC_CLAIM), "t-auto"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=180,
+        )
+        elapsed = time.monotonic() - started
+
+        assert result.returncode != 4, (
+            "an ordinary claim reported lock contention against ITSELF — the "
+            f"automatic recovery re-took a lock this process already holds "
+            f"(after {elapsed:.1f}s)\n{result.stdout}\n{result.stderr}"
+        )
+        assert "another process has held" not in result.stderr, (
+            "the refusal names a writer that does not exist:\n" + result.stderr
+        )
+        # Proof that recovery REACHED the journal rather than dying on the lock.
+        # This fixture's interruption (a deleted receipt) is genuinely
+        # unrecoverable, so the honest outcome is a HOLD naming the journal — what
+        # matters is that the hold comes from inspecting the publication, not from
+        # a lock the process was waiting on itself to release.
+        assert "Recovery results:" in result.stderr, (
+            "the automatic recovery never ran — no recovery outcome was reported\n"
+            f"rc={result.returncode}\n{result.stdout}\n{result.stderr}"
+        )
+        assert result.returncode == 8, (
+            "expected the publication HOLD for an unrecoverable receipt, got "
+            f"rc={result.returncode}\n{result.stdout}\n{result.stderr}"
+        )
+
     def test_a_closer_that_starts_after_the_preflight_still_waits(self, tmp_path: Path) -> None:
         """The post-scan race, directly: cc-close begins AFTER recovery is underway."""
         home = tmp_path / "home"
@@ -1368,8 +1442,117 @@ class TestJournalLockFixpoint:
             return {(f"t-{n}", f"r-{n}")}, []
 
         monkeypatch.setattr(mod, "journal_owners", always_new)
-        with pytest.raises(TaskLockTimeout, match="kept appearing"):
+        with pytest.raises(TaskLockTimeout, match="kept naming new tasks"):
             mod.hold_journal_locks(root, timeout=5, passes=3)
+
+    def test_a_role_set_that_never_settles_refuses_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The two phases each need their own bound, or the second chases forever.
+
+        Splitting acquisition into "all tasks, then all roles" (review round 25)
+        gave the role phase its own loop. A bound on the task phase says nothing
+        about it: one task whose journals keep naming new roles settles phase 1
+        immediately and then spins.
+        """
+        import shared.cc_task_lock as mod
+
+        home = tmp_path / "home"
+        (home / ".cache").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        root = Path(self._roots(home).claim_transaction_root)
+        root.mkdir(parents=True, exist_ok=True)
+
+        counter = iter(range(1000))
+
+        def one_task_endless_roles(transaction_root, *, task_id=None):
+            return {("t-stable", f"r-{next(counter)}")}, []
+
+        monkeypatch.setattr(mod, "journal_owners", one_task_endless_roles)
+        with pytest.raises(TaskLockTimeout, match="kept naming new roles"):
+            mod.hold_journal_locks(root, timeout=5, passes=3)
+
+    def test_a_lock_this_process_already_holds_is_not_waited_for(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The shipped deadlock: a normal claim locked its task, then locked it again.
+
+        `flock` is per open file description. `hold_task_note_lock` opens the path
+        fresh each call, so the second acquisition in one process conflicts with
+        the first and waits out the whole timeout — then reports "another process
+        has held ...", naming a writer that does not exist. Every automatic
+        recovery with an attributable journal exited 4 on it (review round 25,
+        codex-1; reproduced against this process before the fix).
+
+        The wall-clock assertion is the point: a bounded timeout makes the bug
+        *eventually* surface as a refusal, so only elapsed time distinguishes
+        "returned" from "waited for itself and gave up".
+        """
+        import shared.cc_task_lock as mod
+
+        home = tmp_path / "home"
+        (home / ".cache").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        root = Path(self._roots(home).claim_transaction_root)
+        root.mkdir(parents=True, exist_ok=True)
+        self._journal(home, "a", "row-a", "eta")
+
+        # Exactly what scripts/cc-claim does before it reaches recovery.
+        hold_task_note_lock("row-a")
+        hold_role_lease_lock("eta")
+
+        started = time.monotonic()
+        owners, refusals = mod.hold_journal_locks(root, task_id="row-a", timeout=5)
+        elapsed = time.monotonic() - started
+
+        assert owners == {("row-a", "eta")}
+        assert refusals == []
+        assert elapsed < 1.0, (
+            f"re-taking a lock this process holds waited {elapsed:.2f}s — it is "
+            "conflicting with itself, which surfaces as a refusal naming a "
+            "nonexistent other writer"
+        )
+
+    def test_a_task_discovered_after_the_role_phase_refuses_rather_than_cycling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ordering must hold across the WHOLE acquisition, not within each pass.
+
+        The interleaved shape produced task(t1), role(eta), task(t2). A cc-close
+        holding task(t2) and waiting on role(eta) then waits on this process, which
+        waits on it — the cycle the task-before-role rule exists to forbid (review
+        round 25, codex-1, reproduced with competing flock holders).
+
+        A task that only becomes visible after role locks are held cannot be
+        ordered, so it is refused BY NAME. Refusing costs a rerun; taking it costs
+        a deadlock, and the rerun discovers it in the task phase.
+        """
+        import shared.cc_task_lock as mod
+
+        home = tmp_path / "home"
+        (home / ".cache").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        root = Path(self._roots(home).claim_transaction_root)
+        root.mkdir(parents=True, exist_ok=True)
+
+        scans = {"n": 0}
+
+        def a_task_appears_late(transaction_root, *, task_id=None):
+            scans["n"] += 1
+            # Phase 1 sees one task; the role phase re-scans and finds a second.
+            if scans["n"] <= 2:
+                return {("row-a", "eta")}, []
+            return {("row-a", "eta"), ("row-b", "eta")}, []
+
+        monkeypatch.setattr(mod, "journal_owners", a_task_appears_late)
+        with pytest.raises(mod.TaskLockOrderViolation, match="row-b"):
+            mod.hold_journal_locks(root, timeout=5, passes=4)
+
+        # The refusal lands on the role phase's FIRST re-scan, so not even the role
+        # lock was taken: the process holds exactly what the task phase settled on,
+        # in ascending order, and nothing acquired out of order has to be unwound.
+        order = mod.held_lock_order()
+        assert order == ((0, "row-a"),), f"locks were not taken in ascending order: {order}"
 
 
 class TestARefusalMutatesNothing:

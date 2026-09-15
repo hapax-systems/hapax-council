@@ -5205,3 +5205,19 @@ _ = (_hold_role_lease_lock,)
 # (round 22). It probed and released, so it answered "was anyone mid-mutation a
 # moment ago" — cc-claim's all-tasks recovery now enumerates each journal's own task
 # and recovers under that task's lock instead, which needs no probe.
+
+# Journal-owner locking (round 25). Same blind spot as its two siblings above, and
+# now at THREE call sites, every one of them inside a bash-hosted Python heredoc in
+# scripts/cc-claim: the explicit `--recover-claim-publications` branch, the
+# `--rehydrate-activation-cache` branch, and the automatic recovery an ordinary
+# claim triggers. Nothing in importable Python calls it.
+#
+# Live-call evidence, not assertion:
+# tests/test_cc_task_lock.py::TestRecoveryParticipatesToo::
+# test_an_ordinary_claim_completes_the_recovery_it_triggers runs a real cc-claim
+# against a real interrupted journal and requires the recovery to RUN — it reds
+# with exit 4 and a phantom-contention message when the acquisition is broken,
+# which is exactly how this shipped in round 24 and was caught in round 25.
+from shared.cc_task_lock import hold_journal_locks as _hold_journal_locks  # noqa: E402
+
+_ = (_hold_journal_locks,)
