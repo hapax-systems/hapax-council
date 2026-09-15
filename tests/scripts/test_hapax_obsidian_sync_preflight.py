@@ -1789,12 +1789,42 @@ def test_recheck_client_refuses_extra_arguments() -> None:
     assert "takes no other arguments" in result.stderr
 
 
-def test_client_rules_cover_every_documented_rule() -> None:
-    """The rule table is the drift detector, so it must not silently lag the docstring."""
-    labels = {label for label, _ in preflight.CLIENT_RULES}
-    for expected in ("per-file maximum", "concurrent sibling scan", "exclusion prefix test"):
-        assert expected in labels
-    assert len(preflight.CLIENT_RULES) >= 12
+def test_client_rules_pin_the_admission_logic_not_just_markers() -> None:
+    """The recheck is only worth running if its needles are the DECISIONS. An earlier
+    revision pinned a log message for the size skip and a bare `await Promise.all`, both of
+    which would keep reporting OK while the logic that decides what uploads changed."""
+    rules = dict((label, needle) for label, needle in preflight.CLIENT_RULES)
+    assert "File too large to sync" not in rules.values(), "a log message is not the rule"
+    assert "await Promise.all" not in rules.values(), "too loose to pin the concurrency"
+    # Each of these must be pinned by an actual predicate or data table from cli.js.
+    assert "!m.folder&&m.size>e.perFileMax" in rules["per-file size skip condition"]
+    assert "Vt=[" in rules["extension class arrays"]
+    assert 'n.has("image")' in rules["attachment class dispatch"]
+    assert "listRecursiveChild" in rules["concurrent sibling scan"]
+    assert "allowSpecialFiles.has" in rules["config category gate"]
+    assert "pull-only" in rules["sync-mode validation"]
+    assert len(preflight.CLIENT_RULES) >= 20
+
+
+@pytest.mark.parametrize("payload", ["[]", "null", '{"name":"x"}', '{"version":7}'])
+def test_recheck_rejects_unidentifiable_package_metadata(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, payload: str
+) -> None:
+    """Valid JSON need not hold a version string; subscripting it raised TypeError and
+    escaped the documented exit contract as a traceback."""
+    root = tmp_path / "node_modules"
+    pkg = root / "obsidian-headless"
+    pkg.mkdir(parents=True)
+    (pkg / "cli.js").write_text(
+        "\n".join(needle for _, needle in preflight.CLIENT_RULES), encoding="utf-8"
+    )
+    (pkg / "package.json").write_text(payload, encoding="utf-8")
+    monkeypatch.setattr(
+        preflight.subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=f"{root}\n", stderr=""),
+    )
+    assert preflight.recheck_client() == ERROR
 
 
 def test_docs_do_not_reference_nonexistent_helpers() -> None:

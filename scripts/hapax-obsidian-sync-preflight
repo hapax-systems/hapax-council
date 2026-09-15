@@ -925,8 +925,30 @@ CLIENT_RULES: tuple[tuple[str, str], ...] = (
     ("attachment-type parser (Kr)", "if(!us.includes(t))throw new Error(`Invalid file type"),
     ("config-dir validator (Ss)", 'function Ss(s){return s&&s.startsWith(".")&&!s.includes("/")'),
     ("per-file maximum", "this.perFileMax=199*1024*1024"),
-    ("per-file skip", "File too large to sync"),
-    ("concurrent sibling scan", "await Promise.all"),
+    # The ADMISSION rules proper. An earlier revision pinned only loose markers here — a
+    # log message for the size skip and a bare `await Promise.all` — which would have kept
+    # saying OK while the logic that decides what uploads changed underneath. Each needle
+    # below is the decision itself.
+    ("extension class arrays", 'Vt=["bmp","png","jpg","jpeg","gif","svg","webp","avif"]'),
+    ("native classes always sync", 'if(i==="md"||i==="canvas"||i==="base")return!0'),
+    (
+        "attachment class dispatch",
+        'return Vt.includes(i)?n.has("image"):i==="webm"?n.has("audio")||n.has("video")',
+    ),
+    ("per-file size skip condition", "!m.folder&&m.size>e.perFileMax"),
+    ("lookup uses the _e form, key uses Ne", "reconcileFileInternal(i,n)"),
+    (
+        "concurrent sibling scan",
+        "n.push(this.listRecursiveChild(e,r));await Promise.all(n)",
+    ),
+    ("config category: app", 'r==="app.json"||r==="types.json"?c="app"'),
+    ("config category gate", "c&&this.allowSpecialFiles.has(c)"),
+    ("config: workspace never syncs", 'r==="workspace.json"||r==="workspace-mobile.json"?!1'),
+    ("config: plugin file set", 'isPluginFile(e){return e==="manifest.json"||e==="main.js"'),
+    (
+        "sync-mode validation",
+        '"bidirectional"&&s.mode!=="pull-only"&&s.mode!=="mirror-remote"',
+    ),
 )
 
 
@@ -946,12 +968,22 @@ def recheck_client() -> int:
     bundle = Path(root) / "obsidian-headless" / "cli.js"
     try:
         source = bundle.read_text(encoding="utf-8", errors="replace")
-        version = json.loads((bundle.parent / "package.json").read_text(encoding="utf-8"))[
-            "version"
-        ]
-    except (OSError, ValueError, KeyError) as exc:
+        metadata = json.loads((bundle.parent / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
         print(
             f"cannot read {bundle}: {exc}. Next: npm install -g obsidian-headless.", file=sys.stderr
+        )
+        return ERROR
+    # Valid JSON need not be an object holding a version string: subscripting a list or a
+    # null raises TypeError, which would escape as a traceback and exit 1 instead of the
+    # documented exit 3. Same shape as the config-schema check.
+    version = metadata.get("version") if isinstance(metadata, dict) else None
+    if not isinstance(version, str):
+        print(
+            f"{bundle.parent / 'package.json'} has no version string (got {version!r}); "
+            "refusing to report a recheck against an unidentifiable bundle. Next: "
+            "reinstall with npm install -g obsidian-headless.",
+            file=sys.stderr,
         )
         return ERROR
 
