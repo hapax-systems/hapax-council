@@ -4418,22 +4418,41 @@ def _refuse_if_displaced_entry_moved(
     cannot leave a maintainer believing the set is empty. Every entry names its pin and the row
     that closes it.
 
-    * **R1 — cleanup's conditional unlink can destroy an inode's last name.**
+    * **R1 — cleanup's conditional unlink can destroy an inode's last name. UNRESOLVED, and
+      reproduced independently by all three reviewer families.**
       :func:`_retire_scratch` removes a scratch only when it is ours *and* ``st_nlink > 1``, but
-      that count is a snapshot: a writer replacing the one remaining name between the read and
-      the unlink leaves the unlink destroying the entry. Measured scope is exactly **two**
-      unlinks — ``.transition-pin`` and ``.transition-spent``, both observed at nlink 2, where
-      removal leaves a single projected name; ``.transition-holding`` is observed at nlink 3 and
-      is safe. No in-function primitive closes it: ``unlink`` takes no condition,
+      that count is a snapshot. **The name that gets replaced is the OTHER one, and it is a live
+      projected path that no reservation in this module protects.** An earlier version of this
+      entry located the race on the scratch name and concluded the reservation covered it; that
+      was wrong, and it is why the pattern was removed from
+      :func:`_withdraw_publication_by_moving` and left here.
+
+      Measured per leg, 2026-09-15, because an earlier version of this entry measured the
+      exchange leg and stated the result about the module:
+
+      ===============================  ===========  =======  ==============================
+      leg                              scratch      nlink    removal leaves
+      ===============================  ===========  =======  ==============================
+      exchange                         ``holding``  3        two names — safe
+      exchange                         ``spent``    2        **one**, a live projected name
+      exchange                         ``pin``      2        **one**, a live projected name
+      **delete** (``_fallback_noreplace``)  ``holding``  **2**    **one**, and it is the LIVE note
+      ===============================  ===========  =======  ==============================
+
+      So the exposure is **three** sites across **two** legs, not two on one. A remediation
+      covering only ``pin`` and ``spent`` would leave the delete leg's ``holding`` intact —
+      which is precisely what the earlier, narrower claim would have licensed.
+
+      No in-function primitive closes it: ``unlink`` takes no condition,
       ``renameat2(RENAME_EXCHANGE)`` is the flag this mount refuses, and the recoverable-unlink
       trick fails ``EXDEV`` on tmpfs, xfs and the nfs4 export alike. On NFS ``st_nlink`` even
       reads 1 after an unlink, so the count is least trustworthy where it matters most.
-      *Reviewed as codex-1 C2, re-classed MAJOR by coordinator adjudication 2026-09-15 with the
-      dissent preserved, on the measured grounds above; not silently downgraded.*
+
       **Closed by** ``projection-lock-coverage-projected-path-writers-20260913`` (excluding the
       writer), or by plumbing the caller's recorded preimage down so removal is conditioned on
-      *reproducibility* rather than redundancy — the alternative closure, for that row's
-      implementer.
+      *reproducibility* rather than redundancy. **No test covers this window**; the regressions
+      beside it construct a scratch already at nlink 1 and so never exercise the 2→1 change
+      after the ``lstat``.
     * **R2 — a writer that ignores the protocol is not excluded from a scratch name.** Renaming
       or create-truncating straight onto one is bound by neither the reservation nor a lock in
       this module. Pinned by ``test_a_writer_ignoring_the_protocol_is_not_excluded`` so it
