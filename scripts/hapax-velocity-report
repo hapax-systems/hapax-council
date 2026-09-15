@@ -81,7 +81,14 @@ success_runs=$(gh_api "repos/$REPO/actions/runs?created=>=$DATE&status=success&p
 hook_rejections="n/a"
 
 # Open issues / security
-open_prs=$(gh_api "repos/$REPO/pulls?state=open&per_page=1" --jq 'length' 2>/dev/null || echo 0)
+# Count every open PR, not the size of the page we asked for. The previous form was
+# `per_page=1 --jq length`, which yields 1 for any repository with at least one open PR and
+# 0 only for one with none — so the single figure this report exists to track was the one
+# figure it could not produce. `per_page=100` would trade a constant wrong answer for a
+# silent cap at 100, which this queue is heading towards, so page through and count items.
+open_prs=$(gh_api --paginate "repos/$REPO/pulls?state=open&per_page=100" \
+    --jq '.[].number' 2>/dev/null | wc -l | tr -d '[:space:]')
+open_prs="${open_prs:-0}"
 
 # --- DORA Classification ---
 # Lead time: we merge same-day, deploy via post-merge-deploy
