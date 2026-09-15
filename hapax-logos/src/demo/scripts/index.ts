@@ -100,13 +100,13 @@ export async function loadDemo(name: string): Promise<DemoManifest> {
       const { DEMO_SCRIPT } = await import("./brother");
       return { name, audioDir: "/api/demos/brother-demo/files/audio", scenes: DEMO_SCRIPT };
     }
-    case "alexis": {
-      const { DEMO_SCRIPT } = await import("./alexis");
-      return { name, audioDir: "/api/demos/alexis-demo/files/audio", scenes: DEMO_SCRIPT };
+    case "principal-a2": {
+      const { DEMO_SCRIPT } = await import("./principal-a2");
+      return { name, audioDir: "/api/demos/principal-a2-demo/files/audio", scenes: DEMO_SCRIPT };
     }
-    case "alexis-v4": {
-      const { DEMO_SCRIPT } = await import("./alexis-v4");
-      return { name, audioDir: "/api/demos/alexis-v4-demo/files/audio", scenes: DEMO_SCRIPT };
+    case "principal-a2-v4": {
+      const { DEMO_SCRIPT } = await import("./principal-a2-v4");
+      return { name, audioDir: "/api/demos/principal-a2-v4-demo/files/audio", scenes: DEMO_SCRIPT };
     }
     case "kids": {
       const { DEMO_SCRIPT } = await import("./kids");

@@ -132,8 +132,8 @@ brief guessed):
 
 | file | parties | scope | direction | visibility_mechanism | assessment |
 |---|---|---|---|---|---|
-| `contract-agatha.yaml` | operator, agatha | audio, presence, transcription, video | one_way | guardian_mediated | valid |
-| `contract-simon.yaml` | operator, simon | audio, presence, transcription | (not shown, likely one_way) | — | valid |
+| `contract-principal-c1.yaml` | operator, principal-c1 | audio, presence, transcription, video | one_way | guardian_mediated | valid |
+| `contract-principal-c2.yaml` | operator, principal-c2 | audio, presence, transcription | (not shown, likely one_way) | — | valid |
 | `contract-guest-2026-03-30.yaml` | operator, guest | audio | one_way | (not shown) | valid, likely template |
 | `contract--2026-03-23.yaml` | operator, **""** | **[]** | one_way | on_request | **MALFORMED** |
 

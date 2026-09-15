@@ -91,7 +91,7 @@ The following were verified before writing this epic. Each informs a phase's sco
 - `agents/hapax_daimonion/proofs/research/protocols/deviations/DEVIATION-040-total-affordance-field.md` exists in a different directory (daimonion-scoped). DEVIATION numbering is per-directory; canonical path is `research/protocols/deviations/`.
 
 **Consent state:**
-- 3 bilateral contracts: `contract-agatha.yaml`, `contract-simon.yaml` (both guardian-mediated child principals), `contract-guest-2026-03-30.yaml` (audio scope, on_request).
+- 3 bilateral contracts: `contract-principal-c1.yaml`, `contract-principal-c2.yaml` (both guardian-mediated child principals), `contract-guest-2026-03-30.yaml` (audio scope, on_request).
 - `ConsentRegistry` instantiated via `AffordancePipeline.select()`. Capability-level gate working.
 - `toggle_livestream` consent-gated via affordance pipeline.
 - **FINDING-R:** 8 of 10 Qdrant collections bypass consent gate on **upsert**. `stream-reactions` has 2178 points with `chat_authors` field.

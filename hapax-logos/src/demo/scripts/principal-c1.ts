@@ -1,5 +1,5 @@
 /**
- * Aggie demo — hand-choreographed for Agatha (11).
+ * principal-c1 demo — hand-choreographed for principal-c1.
  * Updated with classification inspector, theme switching, boot overlay,
  * ground surface enrichment, keyboard hints.
  */

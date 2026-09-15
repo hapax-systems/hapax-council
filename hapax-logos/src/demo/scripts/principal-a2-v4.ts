@@ -1,5 +1,5 @@
 /**
- * Alexis demo v4 — hand-choreographed.
+ * principal-a2 demo v4 — hand-choreographed.
  * Every action precisely timed to narration content.
  * No Opus inference. No keyword matching. Direct control.
  */

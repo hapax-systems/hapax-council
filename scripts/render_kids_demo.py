@@ -1,6 +1,6 @@
-"""Render narration audio for kids demo — Agatha (11) and Simon (8).
+"""Render narration audio for kids demo — principal-c1 and principal-c2.
 
-Same substance as Alexis v4. Adjusted for two brilliant kids who care
+Same substance as principal-a2 v4. Adjusted for two brilliant kids who care
 about both the ideas and the spectacle. No condescension. No simplification
 of concepts — just clearer framing and more concrete anchors.
 

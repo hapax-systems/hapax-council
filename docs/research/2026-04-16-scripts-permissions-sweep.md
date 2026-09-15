@@ -81,11 +81,11 @@ status: catalog
 | `scripts/rebuild-service.sh` | +x | `#!/usr/bin/env` | OK |
 | `scripts/record_wake_word.py` | - | `#!/usr/bin/env` | SHEBANG-NO-EXEC |
 | `scripts/reload-after-build.sh` | +x | `#!/usr/bin/env` | OK |
-| `scripts/render_aggie_demo.py` | - | `-` | OK |
-| `scripts/render_alexis_demo.py` | - | `-` | OK |
-| `scripts/render_alexis_demo_v2.py` | - | `-` | OK |
-| `scripts/render_alexis_demo_v3.py` | - | `-` | OK |
-| `scripts/render_alexis_demo_v4.py` | - | `-` | OK |
+| `scripts/render_principal_c1_demo.py` | - | `-` | OK |
+| `scripts/render_principal_a2_demo.py` | - | `-` | OK |
+| `scripts/render_principal_a2_demo_v2.py` | - | `-` | OK |
+| `scripts/render_principal_a2_demo_v3.py` | - | `-` | OK |
+| `scripts/render_principal_a2_demo_v4.py` | - | `-` | OK |
 | `scripts/render_brother_demo.py` | - | `-` | OK |
 | `scripts/render_kids_demo.py` | - | `-` | OK |
 | `scripts/research-registry.py` | +x | `#!/usr/bin/env` | OK |
