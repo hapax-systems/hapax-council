@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -10,6 +11,8 @@ SCRIPT = REPO / "systemd" / "scripts" / "backup.sh"
 UNITS = REPO / "systemd" / "units"
 MANIFESTS = REPO / "agents" / "manifests"
 RUNBOOK = REPO / "docs" / "runbooks" / "llm-stack-backup-reconciliation.md"
+REGISTRY = REPO / "config" / "infrastructure" / "host-storage-registry.json"
+ACTIVATION_ROOT = "%h/.cache/hapax/source-activation/worktree"
 
 
 def _unit_value(text: str, section: str, key: str) -> str | None:
@@ -32,7 +35,7 @@ def test_llm_backup_script_is_deprecated_receipt() -> None:
 
     assert "DEPRECATED" in text
     assert "hapax-backup-local.service" in text
-    assert "hapax-backup-gdrive-critical.service" in text
+    assert "hapax-backup-critical-offsite.service" in text
     assert "hapax-backup-remote.service" not in text
     assert "docs/runbooks/llm-stack-backup-reconciliation.md" in text
     assert "pg_dump" not in text
@@ -54,28 +57,34 @@ def test_llm_backup_receipt_writes_no_legacy_artifacts(tmp_path: Path) -> None:
     assert not legacy_target.exists()
 
 
-def test_llm_backup_unit_uses_source_controlled_receipt() -> None:
+def test_llm_backup_unit_uses_activated_source_controlled_receipt() -> None:
     text = (UNITS / "llm-backup.service").read_text()
     exec_start = _unit_value(text, "Service", "ExecStart")
     working_dir = _unit_value(text, "Service", "WorkingDirectory")
 
-    assert exec_start is not None
-    assert "/home/hapax/projects/hapax-council/systemd/scripts/backup.sh" in exec_start
+    assert exec_start == f"{ACTIVATION_ROOT}/systemd/scripts/backup.sh"
     assert "/home/hapax/Scripts/setup" not in exec_start
     assert "llm-stack-scripts" not in exec_start
-    assert working_dir == "/home/hapax/projects/hapax-council"
+    assert working_dir == ACTIVATION_ROOT
+    assert "projects" not in text, "a mutable development checkout is not a production root"
 
 
 def test_backup_manifests_name_canonical_lanes() -> None:
     llm = yaml.safe_load((MANIFESTS / "llm_backup.yaml").read_text())
     local = yaml.safe_load((MANIFESTS / "backup_local.yaml").read_text())
     remote = yaml.safe_load((MANIFESTS / "backup_remote.yaml").read_text())
-    gdrive = yaml.safe_load((MANIFESTS / "backup_gdrive_critical.yaml").read_text())
+    critical_offsite = yaml.safe_load((MANIFESTS / "backup_critical_offsite.yaml").read_text())
+    registry = json.loads(REGISTRY.read_text())
+    b2_policy = next(
+        policy
+        for policy in registry["backup_policies"]
+        if policy["store_id"] == "b2-restic-offsite"
+    )
 
     assert "Deprecated compatibility receipt" in llm["purpose"]
     assert llm["outputs"] == ["Deprecation receipt in the systemd journal"]
     assert "backup_local" in llm["peers"]
-    assert "backup_gdrive_critical" in llm["peers"]
+    assert "backup_critical_offsite" in llm["peers"]
     assert "backup_remote" not in llm["peers"]
     assert "/mnt/nas/backups/restic" in local["outputs"][0]
     assert "PostgreSQL" in local["purpose"]
@@ -83,9 +92,17 @@ def test_backup_manifests_name_canonical_lanes() -> None:
     assert remote["schedule"]["type"] == "on-demand"
     assert remote["schedule"]["interval"] == "retired"
     assert "retired" in remote["purpose"].lower()
-    assert gdrive["schedule"]["systemd_unit"] == "hapax-backup-gdrive-critical.timer"
-    assert "rclone:gdrive:hapax-backups/restic-critical" in gdrive["narrative"]
-    assert "prune" in gdrive["decision_scope"]
+    assert b2_policy["cadence"] == "retired"
+    assert b2_policy["intended_state"] == "retired"
+    assert "backblaze b2" in llm["narrative"].lower()
+    assert "retired on this branch" in llm["narrative"].lower()
+    assert "remains a separate daily lane" not in llm["narrative"].lower()
+    assert "#4623" in llm["narrative"]
+    assert "retired" in remote["narrative"].lower()
+    assert critical_offsite["schedule"]["systemd_unit"] == "hapax-backup-critical-offsite.timer"
+    assert "rclone:r2:hapax-restic-critical" in critical_offsite["narrative"]
+    assert critical_offsite["capabilities"] == ["restic_backup", "s3_upload"]
+    assert "prune" in critical_offsite["decision_scope"]
 
 
 def test_reconciliation_runbook_documents_restore_path() -> None:
@@ -93,15 +110,83 @@ def test_reconciliation_runbook_documents_restore_path() -> None:
 
     for expected in [
         "hapax-backup-local.service",
-        "hapax-backup-gdrive-critical.service",
+        "hapax-backup-critical-offsite.service",
         "postgres-all.sql",
         "Qdrant",
         "n8n",
         "$HOME/llm-stack/",
         "scripts/hapax-backup-watchdog",
-        "rclone:gdrive:hapax-backups/restic-critical",
-        "hapax-backup-remote.timer` should be installed",
+        "rclone:r2:hapax-restic-critical",
+        "hapax-backup-remote.timer",
+        "b2:hapax-backups/restic",
     ]:
         assert expected in text
 
     assert "No obsolete `ragdb` database assumption" in text
+
+
+def test_runbook_declares_review_discovered_source_mutations() -> None:
+    text = RUNBOOK.read_text()
+    scope = text.split("## Review-discovered mutation scope", 1)[1].split(
+        "This intentionally removes", 1
+    )[0]
+
+    assert "critical-offsite-backend-neutral-20260902" in scope
+    for path in (
+        "systemd/units/hapax-backup-watchdog.service",
+        "agents/manifests/backup_remote.yaml",
+        "systemd/expected-timers.yaml",
+        "tests/systemd/test_critical_offsite_unit_root.py",
+    ):
+        assert f"`{path}`" in scope
+    assert "repository source mutations only" in scope
+    assert "does not authorize" in scope
+    assert "live runtime state" in scope
+
+
+def test_backup_surfaces_have_no_retired_critical_provider_names() -> None:
+    old_job_name = "-".join(("gdrive", "critical"))
+    old_env_name = "_".join(("GDRIVE", "CRITICAL"))
+    old_repo_name = "".join(("gdrive", ":hapax-backups"))
+    # The only permitted occurrences of the old job name are two historical vault-artifact
+    # FILENAMES the critical lane still backs up (evidence written in June 2026 under the old
+    # name); they may appear in exactly one place — the evidence list of the live script — and the
+    # exemption is asserted, not applied silently (review finding on #4622, round 6: the previous
+    # form stripped the names before checking and could have hidden a live use).
+    allowed_vault_evidence_names = {
+        f"{old_job_name}-offsite-bootstrap-proof-2026-06-05.md",
+        f"{old_job_name}-offsite-source-automation-plan-2026-06-05.md",
+    }
+    evidence_list_owner = REPO / "scripts" / "hapax-backup-critical-offsite"
+    forbidden = (old_job_name, old_env_name, old_repo_name)
+    failures: list[str] = []
+    exempted: set[str] = set()
+
+    for relative_root in (
+        "scripts",
+        "systemd",
+        "config/infrastructure",
+        "agents/manifests",
+    ):
+        for path in (REPO / relative_root).rglob("*"):
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for allowed in allowed_vault_evidence_names:
+                if allowed in text:
+                    if path == evidence_list_owner:
+                        exempted.add(allowed)
+                        text = text.replace(allowed, "")
+                    else:
+                        failures.append(
+                            f"{path.relative_to(REPO)}: {allowed} (only the evidence list may name it)"
+                        )
+            for old_name in forbidden:
+                if old_name in text:
+                    failures.append(f"{path.relative_to(REPO)}: {old_name}")
+
+    assert not failures, "Retired critical backup names remain:\n" + "\n".join(failures)
+    assert exempted == allowed_vault_evidence_names, (
+        "the exemption must match the evidence list exactly; drop a name here when the artifact "
+        f"is renamed: {sorted(allowed_vault_evidence_names - exempted)}"
+    )

@@ -5,11 +5,11 @@ import subprocess
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-backup-watchdog"
-GDRIVE_SCRIPT = REPO_ROOT / "scripts" / "hapax-backup-gdrive-critical"
+CRITICAL_OFFSITE_SCRIPT = REPO_ROOT / "scripts" / "hapax-backup-critical-offsite"
 SERVICE = REPO_ROOT / "systemd" / "units" / "hapax-backup-watchdog.service"
 TIMER = REPO_ROOT / "systemd" / "units" / "hapax-backup-watchdog.timer"
-GDRIVE_SERVICE = REPO_ROOT / "systemd" / "units" / "hapax-backup-gdrive-critical.service"
-GDRIVE_TIMER = REPO_ROOT / "systemd" / "units" / "hapax-backup-gdrive-critical.timer"
+CRITICAL_OFFSITE_SERVICE = REPO_ROOT / "systemd" / "units" / "hapax-backup-critical-offsite.service"
+CRITICAL_OFFSITE_TIMER = REPO_ROOT / "systemd" / "units" / "hapax-backup-critical-offsite.timer"
 USER_PRESET = REPO_ROOT / "systemd" / "user-preset.d" / "hapax.preset"
 
 
@@ -46,17 +46,19 @@ class TestWatchdogScript:
         text = SCRIPT.read_text()
         assert "pass show" in text, "Must use pass for restic password"
 
-    def test_script_checks_tier1_and_not_retired_b2(self):
+    def test_script_checks_tier1_and_not_separate_b2(self):
         text = SCRIPT.read_text()
         assert "Tier1-NAS" in text, "Must check Tier 1 (NAS) snapshots"
-        assert "Tier2-B2" not in text, "Retired B2 lane must not be required"
+        assert "Tier2-B2" not in text, "Separate B2 lane must not be required"
         assert "rclone:b2:hapax-backups/restic" not in text
 
-    def test_script_checks_gdrive_critical(self):
+    def test_script_checks_critical_offsite(self):
         text = SCRIPT.read_text()
-        assert "GDrive-Critical" in text, "Must check GDrive critical snapshots"
-        assert "rclone:gdrive:hapax-backups/restic-critical" in text
-        assert "GDRIVE_CRITICAL_PASSWORD_ENTRY" in text
+        assert "Critical-Offsite" in text, "Must check critical off-site snapshots"
+        assert "rclone:r2:hapax-restic-critical" in text
+        assert "CRITICAL_OFFSITE_PASSWORD_ENTRY" in text
+        assert "cloudflare/r2/restic-password" in text
+        assert "HAPAX_CRITICAL_OFFSITE_MAX_AGE_HOURS" in text
 
     def test_script_checks_qdrant(self):
         text = SCRIPT.read_text()
@@ -102,6 +104,41 @@ class TestWatchdogScript:
         assert result.returncode == 1
         assert "NO postgres-all.sql" in result.stdout
 
+    def test_dump_check_ignores_the_snapshot_header_line(self, tmp_path):
+        """`restic ls --long` prints `snapshot <id> of [paths]` first. Since the dump is a
+        top-level manifest path, that header names it; the size parse must read the file entry,
+        not the header (measured 2026-09-02: "could not parse dump size" on a good snapshot)."""
+        text = SCRIPT.read_text()
+        start = text.index("check_postgres_dump_in_snapshot() {")
+        end = text.index("\n}\n", start) + 3
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "pass").write_text("#!/usr/bin/env bash\necho secret\n", encoding="utf-8")
+        (bin_dir / "restic").write_text(
+            "#!/usr/bin/env bash\n"
+            'echo "snapshot 911d1922 of [/vault/a.md /store/postgres-dumps/postgres-all.sql] filtered by [] at 2026-09-02 14:30:04):"\n'
+            'echo "-rw-r--r--  1000  1000 6702143009 2026-09-02 14:30:04 /store/postgres-dumps/postgres-all.sql"\n',
+            encoding="utf-8",
+        )
+        (bin_dir / "pass").chmod(0o755)
+        (bin_dir / "restic").chmod(0o755)
+        probe = tmp_path / "probe.sh"
+        probe.write_text(
+            "#!/usr/bin/env bash\nset -euo pipefail\n"
+            "FAILURES=()\nlog() { printf '%s\\n' \"$*\"; }\n"
+            + text[start:end]
+            + "check_postgres_dump_in_snapshot repo lbl entry\n"
+            + 'printf "%s\\n" "${FAILURES[@]}"\n'
+            + "exit ${#FAILURES[@]}\n",
+            encoding="utf-8",
+        )
+        probe.chmod(0o755)
+        env = {**__import__("os").environ, "PATH": f"{bin_dir}:{__import__('os').environ['PATH']}"}
+        result = subprocess.run([str(probe)], capture_output=True, text=True, timeout=10, env=env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "postgres dump present, 6702143009 bytes" in result.stdout
+        assert "could not parse dump size" not in result.stdout
+
     def test_script_bash_syntax_valid(self):
         result = subprocess.run(
             ["bash", "-n", str(SCRIPT)],
@@ -112,21 +149,28 @@ class TestWatchdogScript:
         assert result.returncode == 0, f"Syntax error: {result.stderr}"
 
 
-class TestGDriveCriticalScript:
-    """Verify bounded GDrive critical backup source script."""
+class TestCriticalOffsiteScript:
+    """Verify bounded critical off-site backup source script."""
 
     def test_script_exists_and_is_executable(self):
-        assert GDRIVE_SCRIPT.exists(), f"{GDRIVE_SCRIPT} does not exist"
-        assert GDRIVE_SCRIPT.stat().st_mode & 0o111, "Script must be executable"
+        assert CRITICAL_OFFSITE_SCRIPT.exists(), f"{CRITICAL_OFFSITE_SCRIPT} does not exist"
+        assert CRITICAL_OFFSITE_SCRIPT.stat().st_mode & 0o111, "Script must be executable"
 
-    def test_script_uses_gdrive_critical_repo(self):
-        text = GDRIVE_SCRIPT.read_text()
-        assert "rclone:gdrive:hapax-backups/restic-critical" in text
-        assert "backblaze/restic-password" in text
+    def test_script_uses_r2_critical_offsite_repo(self):
+        text = CRITICAL_OFFSITE_SCRIPT.read_text()
+        assert "HAPAX_CRITICAL_OFFSITE_REPO" in text
+        assert "rclone:r2:hapax-restic-critical" in text
+        assert "HAPAX_CRITICAL_OFFSITE_RESTIC_PASSWORD_ENTRY" in text
+        assert "cloudflare/r2/restic-password" in text
+        assert "HAPAX_CRITICAL_OFFSITE_WORK_DIR" in text
+        assert "/store/llm-data/critical-offsite-backup" in text
+        assert "/store/llm-data/restic-cache/critical-offsite" in text
+        assert "--tag critical-offsite" in text
+        assert '--tag "critical-offsite-$(date -u +%Y%m%d)"' in text
         assert "pass show" in text
 
     def test_script_is_bounded_not_broad_b2(self):
-        text = GDRIVE_SCRIPT.read_text()
+        text = CRITICAL_OFFSITE_SCRIPT.read_text()
         assert "docker exec postgres pg_dumpall" not in text
         assert "/tmp/hapax-backup-dumps" not in text
         assert "/data/minio" not in text
@@ -136,12 +180,12 @@ class TestGDriveCriticalScript:
         assert "--prune" not in text
 
     def test_script_refuses_unreadable_manifest_paths(self):
-        text = GDRIVE_SCRIPT.read_text()
+        text = CRITICAL_OFFSITE_SCRIPT.read_text()
         assert "validate_manifest_readability" in text
         assert "refusing partial snapshot" in text
 
     def test_materialize_fails_when_tier1_has_no_dump(self, tmp_path):
-        text = GDRIVE_SCRIPT.read_text()
+        text = CRITICAL_OFFSITE_SCRIPT.read_text()
         start = text.index("materialize_validated_dump() {")
         end = text.index("\nappend_required() {", start)
         bin_dir = tmp_path / "bin"
@@ -167,7 +211,7 @@ class TestGDriveCriticalScript:
         assert "contains no postgres-all.sql" in result.stderr
 
     def test_materialize_does_not_truncate_durable_path_when_restic_fails(self, tmp_path):
-        text = GDRIVE_SCRIPT.read_text()
+        text = CRITICAL_OFFSITE_SCRIPT.read_text()
         start = text.index("materialize_validated_dump() {")
         end = text.index("\nappend_required() {", start)
         bin_dir = tmp_path / "bin"
@@ -199,7 +243,7 @@ class TestGDriveCriticalScript:
         assert durable.read_text(encoding="utf-8") == "keep-me"
 
     def test_script_requires_validated_dump_on_durable_path(self):
-        text = GDRIVE_SCRIPT.read_text()
+        text = CRITICAL_OFFSITE_SCRIPT.read_text()
         assert "append_required" in text
         assert "materialize_validated_dump" in text
         assert "/store/llm-data/postgres-dumps/postgres-all.sql" in text
@@ -207,18 +251,18 @@ class TestGDriveCriticalScript:
         assert "restic dump latest" in text
 
     def test_script_names_the_pitr_rpo_decision_doc(self):
-        text = GDRIVE_SCRIPT.read_text()
+        text = CRITICAL_OFFSITE_SCRIPT.read_text()
         assert "postgres-backup-rpo-pitr-decision-2026-06-05.md" in text
         assert "postgres-backup-rpo-decision-2026-06-05.md" not in text
 
     def test_script_appends_vault_bundle_dir_if_present(self):
-        text = GDRIVE_SCRIPT.read_text()
+        text = CRITICAL_OFFSITE_SCRIPT.read_text()
         assert "VAULT_BUNDLE_DIR" in text
         assert "/store/llm-data/vault-bundles" in text
 
     def test_append_required_fails_closed_when_the_path_is_absent(self, tmp_path):
-        """Drive the real function, not a copy. The gdrive script is not source-safe."""
-        text = GDRIVE_SCRIPT.read_text()
+        """Drive the real function, not a copy; the backup script is not source-safe."""
+        text = CRITICAL_OFFSITE_SCRIPT.read_text()
         start = text.index("append_required() {")
         end = text.index("\n}\n", start) + 3
         extract = tmp_path / "append_required.sh"
@@ -242,7 +286,7 @@ class TestGDriveCriticalScript:
         assert not manifest.exists() or manifest.read_text() == ""
 
     def test_append_required_writes_the_path_when_it_exists(self, tmp_path):
-        text = GDRIVE_SCRIPT.read_text()
+        text = CRITICAL_OFFSITE_SCRIPT.read_text()
         start = text.index("append_required() {")
         end = text.index("\n}\n", start) + 3
         extract = tmp_path / "append_required.sh"
@@ -270,7 +314,7 @@ class TestGDriveCriticalScript:
 
     def test_script_bash_syntax_valid(self):
         result = subprocess.run(
-            ["bash", "-n", str(GDRIVE_SCRIPT)],
+            ["bash", "-n", str(CRITICAL_OFFSITE_SCRIPT)],
             capture_output=True,
             text=True,
             timeout=10,
@@ -320,25 +364,43 @@ class TestWatchdogSystemdUnits:
         assert hour >= 5, f"Timer fires at {hour}:00, should be >=05:00"
 
 
-class TestGDriveCriticalSystemdUnits:
-    """Verify GDrive critical service/timer are source-defined but not auto-enabled."""
+class TestCriticalOffsiteSystemdUnits:
+    """Verify critical off-site service/timer are source-defined but not preset."""
 
     def test_service_and_timer_exist(self):
-        assert GDRIVE_SERVICE.exists()
-        assert GDRIVE_TIMER.exists()
+        assert CRITICAL_OFFSITE_SERVICE.exists()
+        assert CRITICAL_OFFSITE_TIMER.exists()
 
     def test_service_is_oneshot_and_uses_source_script(self):
-        unit = _parse_unit(GDRIVE_SERVICE)
+        unit = _parse_unit(CRITICAL_OFFSITE_SERVICE)
+        assert unit["Unit"]["Description"] == ["Hapax Critical Off-site Backup (restic)"]
+        assert unit["Unit"]["OnFailure"] == ["notify-failure@%n.service"]
+        assert unit["Unit"]["ConditionPathExists"] == [
+            "/store/llm-data",
+            "%h/.config/rclone/rclone.conf",
+        ]
         assert unit["Service"]["Type"] == ["oneshot"]
         exec_start = unit["Service"]["ExecStart"][0]
-        assert "scripts/hapax-backup-gdrive-critical" in exec_start
+        assert "scripts/hapax-backup-critical-offsite" in exec_start
+        assert (
+            unit["Service"]["Environment"][-2:]
+            == [
+                # An entry NAME in the secret store, not a value; the entropy detector cannot tell.
+                "HAPAX_CRITICAL_OFFSITE_RESTIC_PASSWORD_ENTRY=cloudflare/r2/restic-password",  # pragma: allowlist secret
+                "RESTIC_CACHE_DIR=/store/llm-data/restic-cache/critical-offsite",
+            ]
+        )
+        assert unit["Service"]["MemoryHigh"] == ["1G"]
         assert unit["Service"]["MemoryMax"] == ["2G"]
         assert unit["Service"]["CPUQuota"] == ["25%"]
+        assert unit["Service"]["TimeoutStartSec"] == ["2h"]
 
-    def test_timer_is_persistent_and_not_auto_enabled(self):
-        unit = _parse_unit(GDRIVE_TIMER)
+    def test_timer_is_persistent_and_not_preset(self):
+        unit = _parse_unit(CRITICAL_OFFSITE_TIMER)
+        assert unit["Unit"]["Description"] == ["Hapax Critical Off-site Backup (restic)"]
+        assert unit["Timer"]["OnCalendar"] == ["*-*-* 04:35:00"]
         assert unit["Timer"]["Persistent"] == ["true"]
         assert unit["Timer"]["RandomizedDelaySec"] == ["45m"]
         assert "Install" in unit
-        assert "# Hapax-Auto-Enable: true" not in GDRIVE_TIMER.read_text()
-        assert "enable hapax-backup-gdrive-critical.timer" not in USER_PRESET.read_text()
+        assert "# Hapax-Auto-Enable: true" not in CRITICAL_OFFSITE_TIMER.read_text()
+        assert "enable hapax-backup-critical-offsite.timer" not in USER_PRESET.read_text()

@@ -40,8 +40,8 @@ timer_display:
 
 narrative: |
   The Remote Backup agent is retired as a required routine lane. On 2026-06-06
-  the operator selected Google Drive critical offsite backup as the canonical
-  offsite path and retired broad Backblaze B2 coverage rather than raising the
+  the operator selected a bounded critical off-site backup as the canonical
+  off-site path and retired broad Backblaze B2 coverage rather than raising the
   B2 storage cap. The service file may remain as a historical/manual receipt,
   but no `hapax-backup-remote.timer` should be installed, enabled, or expected
   by health policy.
