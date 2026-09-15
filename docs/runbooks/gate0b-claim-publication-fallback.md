@@ -250,6 +250,19 @@ sessions.** Two different operations, easily confused:
   as is any lease whose remainder came from a spawner this system did not mint for.
   Uncertainty preserves.
 
+  **The two runnable checks for that sentence**, named here so a later operator does
+  not have to reconstruct them from the prose: the predicate itself is
+  `shared/session_identity.py::is_minted_session_id` (exercised by the snippet
+  above), and the end-to-end behaviour is
+  `tests/scripts/test_cc_close_session_lease.py::test_cc_close_orphan_sweep_spares_a_role_sharing_its_prefix`,
+  which runs real cc-close as `cx-blue` against a live `cx-blue-shadow` lease naming
+  the same task:
+
+  ```bash
+  uv run pytest tests/scripts/test_cc_close_session_lease.py \
+    -k "spares_a_role_sharing_its_prefix or clears_a_lease_for_this_task" -q
+  ```
+
   Recheck the live behaviour before relying on either half:
 
   ```bash

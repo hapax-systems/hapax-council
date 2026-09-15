@@ -168,36 +168,19 @@ def role_lock_path(role: str, cache_dir: Path | None = None) -> Path:
     return directory / f"{_safe_name(role)}.lock"
 
 
-def held_task_locks(cache_dir: Path | None = None) -> list[Path]:
-    """Task locks another process is holding RIGHT NOW.
-
-    For the one caller that cannot name its resources in advance: recovering every
-    task's claim publication touches an unbounded set, so there is no single lock to
-    take. The checkable precondition is not "which notes will I touch" but "is any
-    other writer mid-mutation", and that is answerable — a non-blocking flock on
-    each existing task lock either succeeds (nobody holds it) or does not.
-
-    A lock we can take and immediately release was not held; the release is
-    immediate precisely so this stays an observation rather than an acquisition.
-    """
-    directory = lock_dir(cache_dir) / "tasks"
-    if not directory.is_dir():
-        return []
-    held: list[Path] = []
-    for path in sorted(directory.glob("*.lock")):
-        try:
-            handle = os.open(path, os.O_RDWR)
-        except OSError:
-            continue
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            held.append(path)
-        else:
-            fcntl.flock(handle, fcntl.LOCK_UN)
-        finally:
-            os.close(handle)
-    return held
+# --- `held_task_locks`: REMOVED, deliberately ---------------------------------
+# A "is anyone mid-mutation right now" probe lived here for one round, for the
+# all-tasks recovery that could not name its resources in advance. It acquired each
+# lock non-blockingly and RELEASED it before returning, so it answered a question
+# about the past: a closer could take its locks immediately afterwards and archive a
+# stale snapshot over the recovered note. Check-then-use, which is the exact shape
+# this module exists to eliminate — reintroduced in the one place it was hardest to
+# see, and caught in review round 22.
+#
+# It is gone rather than hardened because the premise was wrong: the set IS
+# enumerable. An interrupted journal names its own task and role in its manifest, so
+# cc-claim now recovers per task under that task's lock. A probe cannot be made into
+# a hold; only naming the resource can.
 
 
 class TaskLockTimeout(RuntimeError):

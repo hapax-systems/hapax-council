@@ -206,16 +206,95 @@ if str(repo_root) not in sys.path:
 # take. Two lock namespaces over one resource is not exclusion.
 from shared.cc_task_lock import (  # noqa: E402
     TaskLockTimeout,
-    held_task_locks,
     hold_role_lease_lock,
     hold_task_note_lock,
 )
+from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+from shared.sdlc_claim import ClaimPublicationError, recover_claim_publications  # noqa: E402
 
+roots = default_claim_publication_roots(home=Path.home())
+
+
+def _pending_owners(transaction_root):
+    """(task_id, role) per interrupted journal, read from its own manifest.
+
+    The all-tasks form used to PROBE — `held_task_locks()` acquired each lock
+    non-blockingly and released it before returning, so it answered "was anyone
+    mid-mutation a moment ago", not "is this protected". A closer could take its
+    locks straight after the scan, read the note, and then archive its stale
+    snapshot over the recovered one: the same check-then-use I have been removing
+    everywhere else, reintroduced by me in the one place it was hardest to see
+    (review round 22).
+
+    A journal names its own task and role in `intent`, so the set is enumerable
+    after all and each recovery can run under the locks that protect exactly what it
+    touches. A manifest that cannot be read is refused rather than recovered
+    unprotected — an unattributable journal is precisely the one whose note we
+    cannot name.
+    """
+    import json
+
+    root = Path(transaction_root)
+    owners: dict[str, str] = {}
+    unreadable: list[str] = []
+    if not root.is_dir():
+        return owners, unreadable
+    for entry in sorted(root.iterdir()):
+        manifest = entry / "manifest.json"
+        if not manifest.is_file():
+            continue
+        try:
+            intent = (json.loads(manifest.read_text(encoding="utf-8")) or {}).get("intent") or {}
+            pending_task = str(intent.get("task_id") or "").strip()
+            pending_role = str(intent.get("role") or "").strip()
+        except (OSError, ValueError) as exc:
+            unreadable.append(f"{manifest}: {type(exc).__name__}: {exc}")
+            continue
+        if not pending_task:
+            unreadable.append(f"{manifest}: declares no task_id")
+            continue
+        owners[pending_task] = pending_role
+    return owners, unreadable
+
+
+if task_id:
+    pending = {task_id: recovery_role}
+    blind = []
+    if not recovery_role:
+        # Stated, not silent. Without a role the role-lease lock is skipped, so this
+        # recovery is serialized against cc-close's NOTE handling but not against its
+        # lease sweep. That is a real narrowing and an operator should see it rather
+        # than infer it from a conditional (review round 22).
+        print(
+            f"cc-claim: NOTE — no role resolved, so '{task_id}' is recovered under its "
+            "task lock only; the role lease namespace is NOT excluded. Next action: "
+            "export HAPAX_AGENT_ROLE (or run from a governed lane) if a cc-close for "
+            "this role may run concurrently.",
+            file=sys.stderr,
+        )
+else:
+    pending, blind = _pending_owners(roots.claim_transaction_root)
+    if blind:
+        print(
+            "cc-claim: BLOCKED — "
+            + f"{len(blind)} interrupted claim-publication journal(s) name no readable "
+            "task, so their notes cannot be locked before recovery: "
+            + "; ".join(blind)
+            + ". Next action: repair or quarantine those journals, then rerun. "
+            "Nothing was modified.",
+            file=sys.stderr,
+        )
+        sys.exit(8)
+
+# ALL task locks first, then all role locks, each set in sorted order. cc-close
+# takes task-then-role for its single pair, so no one ever waits for a task lock
+# while holding a role lock and there is no cycle to deadlock on. Held to process
+# exit, so nothing recovered here can be closed underneath us mid-run.
 try:
-    if task_id:
-        hold_task_note_lock(task_id)
-    if recovery_role:
-        hold_role_lease_lock(recovery_role)
+    for pending_task in sorted(pending):
+        hold_task_note_lock(pending_task)
+    for pending_role in sorted({r for r in pending.values() if r}):
+        hold_role_lease_lock(pending_role)
 except TaskLockTimeout as exc:
     print(
         f"cc-claim: BLOCKED — {exc}. A cc-close or cc-claim is mid-mutation. Next "
@@ -232,37 +311,30 @@ except OSError as exc:
     )
     sys.exit(5)
 
-if not task_id:
-    # The all-tasks form touches an unbounded set, so there is no single task lock
-    # to take. Rather than proceed unprotected or refuse a documented recovery
-    # outright, check the precondition that actually matters and is checkable at
-    # the moment of use: is any OTHER writer mid-mutation right now? If none is,
-    # recovery is safe; if one is, name it and stop.
-    busy = held_task_locks()
-    if busy:
-        print(
-            "cc-claim: BLOCKED — recovering ALL tasks while another writer holds a "
-            f"task lock ({', '.join(str(p) for p in busy)}). That recovery can "
-            "replace a note between a close's read and its unlink. Next action: let "
-            "the holder finish, or recover one task at a time with "
-            "`cc-claim --recover-claim-publications <task-id>`, which takes that "
-            "task's lock. Nothing was modified.",
-            file=sys.stderr,
-        )
-        sys.exit(4)
-
-from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
-from shared.sdlc_claim import ClaimPublicationError, recover_claim_publications  # noqa: E402
-
-roots = default_claim_publication_roots(home=Path.home())
 try:
-    results = recover_claim_publications(
-        cache_dir=Path(roots.claim_cache_dir),
-        transaction_root=Path(roots.claim_transaction_root),
-        receipt_root=Path(roots.claim_receipt_root),
-        lock_root=Path(roots.claim_lock_root),
-        task_id=task_id,
-    )
+    results = []
+    if task_id:
+        results = list(
+            recover_claim_publications(
+                cache_dir=Path(roots.claim_cache_dir),
+                transaction_root=Path(roots.claim_transaction_root),
+                receipt_root=Path(roots.claim_receipt_root),
+                lock_root=Path(roots.claim_lock_root),
+                task_id=task_id,
+            )
+        )
+    else:
+        # Per task, under that task's lock — not one unbounded sweep.
+        for pending_task in sorted(pending):
+            results.extend(
+                recover_claim_publications(
+                    cache_dir=Path(roots.claim_cache_dir),
+                    transaction_root=Path(roots.claim_transaction_root),
+                    receipt_root=Path(roots.claim_receipt_root),
+                    lock_root=Path(roots.claim_lock_root),
+                    task_id=pending_task,
+                )
+            )
 except ClaimPublicationError as exc:
     print(
         f"cc-claim: HOLD — {exc}. Next action: repair the named recovery root, "

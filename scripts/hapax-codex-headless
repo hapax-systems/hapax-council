@@ -823,17 +823,53 @@ CODEX_MODEL="$(
 import sys
 import tomllib
 
+# EVERY form the harness accepts, in argv order, last wins:
+#   --model X / --model=X / -m X / -m=X   (the flags codex documents)
+#   -c model="X" / -c model=X / -c 'model = "X"'   (config override, TOML or raw)
+#
+# The first cut recognised only a complete TOML assignment starting with `model`,
+# so `--model`, `-m` and an unquoted `-c model=gpt-6-mini` all recorded the default
+# while the override still reached codex — the record disagreeing with the launch,
+# which is the one thing this field must never do (review round 22).
+#
+# `-c` values are TOML when they parse as TOML and a raw string otherwise, which is
+# codex's own fallback; that is why the bare `model=X` branch exists rather than
+# being treated as malformed.
 model = sys.argv[2]
-for arg in sys.argv[3:]:
-    if not arg.startswith("model"):
+args = sys.argv[3:]
+index = 0
+while index < len(args):
+    arg = args[index]
+    nxt = args[index + 1] if index + 1 < len(args) else None
+    if arg in ("--model", "-m"):
+        if nxt:
+            model = nxt
+            index += 2
+            continue
+    elif arg.startswith("--model="):
+        model = arg[len("--model=") :]
+    elif arg.startswith("-m="):
+        model = arg[len("-m=") :]
+    elif arg == "-c" and nxt is not None:
+        value = nxt
+        chosen = None
+        try:
+            parsed = tomllib.loads(value)
+        except tomllib.TOMLDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            candidate = parsed.get("model")
+            if isinstance(candidate, str) and candidate:
+                chosen = candidate
+        elif value.startswith("model="):  # raw-string fallback: model=gpt-6-mini
+            chosen = value[len("model=") :]
+        if chosen is None and parsed is None and value.startswith("model="):
+            chosen = value[len("model=") :]
+        if chosen:
+            model = chosen
+        index += 2
         continue
-    try:
-        parsed = tomllib.loads(arg)
-    except tomllib.TOMLDecodeError:
-        continue
-    value = parsed.get("model")
-    if isinstance(value, str) and value:
-        model = value
+    index += 1
 print(model)
 PYEOF
 )"

@@ -831,6 +831,46 @@ class TestSweepBinding:
             f"the undecidable note produced no incomplete-view event: {stale}"
         )
 
+    def test_a_duplicate_assigned_to_is_not_read_as_healthy_ownership(self, tmp_path: Path) -> None:
+        """Contested ownership reported as healthy is worse than a false alarm.
+
+        `assigned_to: beta` then `assigned_to: eta` parsed as owned by eta, so an
+        eta marker produced ZERO events — the join's whole job is noticing that two
+        parties believe they hold a task, and this is the shape where they might.
+        `assigned_to` was missing from the governed-key set because the set had been
+        built from "fields cc-close rewrites" rather than "fields a destructive
+        decision rests on".
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "cc_hygiene_sweeper_owner", REPO_ROOT / "scripts" / "cc-hygiene-sweeper.py"
+        )
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        cache = tmp_path / "cache" / "hapax"
+        relay = cache / "relay"
+        relay.mkdir(parents=True)
+        vault = tmp_path / "vault"
+        (vault / "active").mkdir(parents=True)
+        (vault / "closed").mkdir(parents=True)
+        (vault / "active" / "t1.md").write_text(
+            "---\ntype: cc-task\ntask_id: t1\nstatus: in_progress\n"
+            "assigned_to: beta\nassigned_to: eta\n---\n",
+            encoding="utf-8",
+        )
+        (cache / "cc-active-task-eta").write_text("t1\n", encoding="utf-8")
+
+        state = mod.run_sweep(vault_root=vault, relay_root=relay, repo_root=tmp_path, reap=False)
+        stale = [e for e in state.events if e.check_id == "stale_claim_marker"]
+        assert stale, "an ambiguous owner produced no event at all — reported healthy"
+        reasons = {e.metadata.get("reason") for e in stale}
+        assert "vault_view_incomplete" in reasons, (
+            f"the ambiguous note was not reported as an incomplete view: {stale}"
+        )
+
     def test_a_first_read_that_fails_is_not_erased_by_a_second_that_succeeds(
         self, tmp_path: Path
     ) -> None:

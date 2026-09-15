@@ -33,7 +33,21 @@ from shared.frontmatter import parse_frontmatter_with_diagnostics
 #: The fields cc-close reads or rewrites, and the ones the hygiene join decides on.
 #: A duplicate elsewhere in the frontmatter is the vault's business; a duplicate
 #: here makes "what does this note say" undecidable for a destructive action.
-GOVERNED_KEYS: tuple[str, ...] = ("task_id", "status", "completed_at", "updated_at", "pr")
+#:
+#: ``assigned_to`` is in the set even though cc-close never rewrites it, because the
+#: live↔declared join decides **contested ownership** on it: a note declaring
+#: ``assigned_to: beta`` and then ``assigned_to: eta`` parsed as owned by eta and
+#: produced ZERO events for an eta marker — the contested case reported as healthy,
+#: which is the one outcome worse than a false alarm. The set is "fields a
+#: destructive decision rests on", not "fields this writer edits" (review round 22).
+GOVERNED_KEYS: tuple[str, ...] = (
+    "task_id",
+    "status",
+    "assigned_to",
+    "completed_at",
+    "updated_at",
+    "pr",
+)
 
 
 @dataclass(frozen=True)

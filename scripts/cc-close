@@ -513,8 +513,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, sys.argv[1])
-import yaml
-
+from shared.cc_task_frontmatter import read_governed_frontmatter
 from shared.frontmatter import parse_frontmatter_with_diagnostics
 
 path, task_id, final_status, pr, role = (Path(sys.argv[2]), *sys.argv[3:7])
@@ -552,94 +551,29 @@ if _end == -1:
 fm_text = text[3:_end]
 rest = text[_end:]
 
-_parsed = parse_frontmatter_with_diagnostics(text)
-if not _parsed.ok or _parsed.frontmatter is None:
+# ONE reading, shared with the pre-gate guard above and with cc-hygiene's note scan
+# (shared/cc_task_frontmatter.py). The duplicate detector lived inline here for six
+# rounds and drifted from the scan's: it missed `assigned_to`, which the hygiene
+# join decides contested ownership on.
+_reading = read_governed_frontmatter(text)
+if _reading.error is not None:
     print(
-        f"cc-close: refusing — '{path}' frontmatter did not parse "
-        f"({_parsed.error_kind}: {_parsed.error_message}). Next action: repair the note, "
-        "or run cc-task-repair. Nothing was modified.",
+        f"cc-close: refusing — '{path}' frontmatter is not readable ({_reading.error}). "
+        "A close is not made against a validation that did not run. Next action: "
+        "repair the note, or run cc-task-repair. Nothing was modified.",
         file=sys.stderr,
     )
     sys.exit(2)
-frontmatter = _parsed.frontmatter
-
-# Duplicate top-level keys: YAML takes the last silently, so `status:` twice makes
-# the field the writer validates and the field a reader sees potentially different
-# lines, and a line rewrite would then edit only one of them. Refuse rather than
-# pick. Only the keys this writer reads or rewrites are checked — a duplicate
-# elsewhere is the vault's business, not this close's.
-#
-# Detected THROUGH YAML, not by matching key lines. The first cut matched
-# `^([A-Za-z_][...]*):`, which sees `status:` and not `"status":` — so
-# `status: withdrawn` followed by `"status": in_progress` read as no duplicate at
-# all, and the rewrite then edited the unquoted line while the parsed value came
-# from the quoted one. YAML resolves both spellings to one key; only a YAML-level
-# check sees what a YAML reader will see.
-_GOVERNED_KEYS = ("task_id", "status", "completed_at", "updated_at", "pr")
-
-
-class _DuplicateKeyLoader(yaml.SafeLoader):
-    """SafeLoader that records duplicate mapping keys instead of last-wins.
-
-    A SUBCLASS of SafeLoader, so `!!python/object` and every other arbitrary-type
-    tag stays unresolvable — `yaml.load(..., Loader=<a SafeLoader subclass>)` has
-    SafeLoader's tag set, not the unsafe one. The subclass exists only to hook
-    mapping construction, and the hook constructs nothing SafeLoader would not:
-    it counts keys and then delegates to `yaml.SafeLoader.construct_mapping`.
-    """
-
-
-def _construct_mapping_recording_duplicates(loader, node, deep=False):  # type: ignore[no-untyped-def]
-    # flatten_mapping FIRST. It is what SafeConstructor does before building a
-    # mapping, and it resolves `<<:` merge keys. Constructing key nodes without it
-    # hit the merge tag and raised, and the handler below then cleared every
-    # duplicate it had found and carried on — a validator that fails OPEN on valid
-    # input. Measured in review round 16: `<<: {extra: yes}` beside a duplicated
-    # status archived the note instead of refusing.
-    loader.flatten_mapping(node)
-    seen: set = set()
-    for key_node, _value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        try:
-            if key in seen:
-                _duplicate_keys.add(key)
-            seen.add(key)
-        except TypeError:  # unhashable key: not a governed field, not our business
-            continue
-    return yaml.SafeLoader.construct_mapping(loader, node, deep=deep)
-
-
-_duplicate_keys: set = set()
-_dup_scan_failed = ""
-_DuplicateKeyLoader.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping_recording_duplicates
-)
-try:
-    yaml.load(fm_text, Loader=_DuplicateKeyLoader)  # noqa: S506 - SafeLoader subclass
-except yaml.YAMLError as exc:
-    # REFUSE, never clear. "The scan could not complete" is not "there were no
-    # duplicates", and the earlier parse succeeding does not license the difference:
-    # this loader answers a question that one does not.
-    _dup_scan_failed = str(exc)
-if _dup_scan_failed:
+if _reading.duplicate_keys:
     print(
-        f"cc-close: refusing — '{path}' frontmatter could not be checked for duplicate "
-        f"keys ({_dup_scan_failed}). A close is not made against a validation that did "
-        "not run. Next action: simplify the frontmatter (an unusual YAML construct in "
-        "a governed field is the usual cause) and re-run. Nothing was modified.",
+        f"cc-close: refusing — '{path}' frontmatter declares "
+        f"{', '.join(_reading.duplicate_keys)} more than once, so which line is "
+        "authoritative is undecidable. Next action: remove the duplicate key(s). "
+        "Nothing was modified.",
         file=sys.stderr,
     )
     sys.exit(2)
-_dupes = sorted(str(k) for k in _duplicate_keys if k in _GOVERNED_KEYS)
-if _dupes:
-    print(
-        f"cc-close: refusing — '{path}' frontmatter declares {', '.join(_dupes)} more "
-        "than once, so which line is authoritative is undecidable. Next action: remove "
-        "the duplicate key(s). Nothing was modified.",
-        file=sys.stderr,
-    )
-    sys.exit(2)
-
+frontmatter = _reading.frontmatter
 
 def _scalar(key: str) -> str:
     value = frontmatter.get(key)

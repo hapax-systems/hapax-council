@@ -356,6 +356,38 @@ def test_the_dispatcher_addresses_the_launcher_it_pins() -> None:
         assert f'"{addressee}"' in code, (
             f"hapax-methodology-dispatch never addresses a pin to {addressee}"
         )
+    # The NEGATIVE, per launch path — the property that makes "silence is the
+    # refusal" load-bearing. Only the two launchers a dispatcher hands a route to may
+    # be pinned; if `launch_claude_interactive` or `launch_vibe_headless` ever wrote
+    # a pin, their launchers would keep whatever descriptors happened to be in the
+    # environment, which is the round-12 defect with authority attached.
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader(
+        "hapax_methodology_dispatch_negpin", str(SCRIPTS / "hapax-methodology-dispatch")
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[loader.name] = mod
+    loader.exec_module(mod)
+
+    import inspect
+
+    for name in ("launch_claude_interactive", "launch_vibe_headless", "launch_codex_headless"):
+        source = _strip_comments(inspect.getsource(getattr(mod, name)))
+        pins = "_pin_capability_descriptors" in source
+        expected = name == "launch_codex_headless"
+        assert pins is expected, (
+            f"{name} {'does not pin' if expected else 'writes a pin'}; only the "
+            "launchers a dispatcher hands a route to may address one"
+        )
+        if not expected:
+            assert "HAPAX_CAPABILITY_PINNED" not in source, (
+                f"{name} sets HAPAX_CAPABILITY_PINNED directly, bypassing the pinner"
+            )
+
     assert "_scrub_capability_descriptors" not in code, (
         "the scrub is back alongside the pin — two mitigations for one hazard, and "
         "the scrub still cannot see a by-hand launch"
@@ -388,11 +420,11 @@ class TestWhatTheChildReceives:
         # quote-stripping, so its equality assertion agreed with the defect: both
         # sides mis-parsed `model = "x"` and `model='x'` identically. An oracle has
         # to be independent of the thing it checks.
-        # EVERY `model`-ish `-c` value, joined — the oracle decides which one sets
-        # the `model` key. Matching `model*` and keeping the last picked up
-        # `model_reasoning_effort=...`; matching `model=*` would have been the
-        # launcher's own (wrong) pattern again.
-        '    for a in "$@"; do case "$a" in model*) m="${m:-}${m:+;;}$a" ;; esac; done\n'
+        # The WHOLE argv, joined. Filtering here to `model`-ish args missed
+        # `--model X` and `-m X`, where the flag and its value are separate
+        # arguments — the same blind spot the launcher had. The stub records; the
+        # oracle decides.
+        '    for a in "$@"; do m="${m:-}${m:+;;}$a"; done\n'
         '    printf "argmodel_raw=%s\\n" "${m:-}"\n'
         '  } > "$STUB_OUT"\n'
         "fi\n"
@@ -575,26 +607,33 @@ class TestWhatTheChildReceives:
         assert _model_from_codex_arg(observed.get("argmodel_raw", "")) == "gpt-6-mini", observed
 
     @pytest.mark.parametrize(
-        "spelling",
-        ['model="gpt-6-mini"', 'model = "gpt-6-mini"', "model='gpt-6-mini'"],
-        ids=["tight", "spaced", "single-quoted"],
+        "override",
+        [
+            ["-c", 'model="gpt-6-mini"'],
+            ["-c", 'model = "gpt-6-mini"'],
+            ["-c", "model='gpt-6-mini'"],
+            ["-c", "model=gpt-6-mini"],
+            ["--model", "gpt-6-mini"],
+            ["--model=gpt-6-mini"],
+            ["-m", "gpt-6-mini"],
+        ],
+        ids=["c-tight", "c-spaced", "c-single", "c-raw", "flag", "flag-eq", "short"],
     )
-    def test_every_valid_toml_spelling_of_the_override_is_recorded(
-        self, spelling: str, tmp_path: Path
+    def test_every_override_form_the_harness_accepts_is_recorded(
+        self, override: list[str], tmp_path: Path
     ) -> None:
-        """All three are the same TOML assignment; a shell pattern said otherwise.
+        """All seven reach codex; all seven must reach the record.
 
-        `model = "gpt-6-mini"` matched nothing and silently recorded the default,
-        and `model='gpt-6-mini'` recorded the quotes as part of the name — while
-        the override still reached the harness in both cases, so the record
-        disagreed with the launch. Resolved with `tomllib` now, on both sides,
-        independently.
+        The resolver recognised only a complete TOML assignment beginning with
+        `model`, so `--model`, `-m` and an unquoted `-c model=X` recorded the
+        DEFAULT while the override still took effect — the record disagreeing with
+        the launch, which is the one thing this field must never do. The two
+        spellings with spaces and single quotes failed the same way through the
+        earlier shell pattern.
         """
-        observed = self._run(
-            "hapax-codex-headless", tmp_path, {}, extra_args=["--", "-c", spelling]
-        )
+        observed = self._run("hapax-codex-headless", tmp_path, {}, extra_args=["--", *override])
         assert observed["capmodel"] == "gpt-6-mini", (
-            f"spelling {spelling!r} recorded {observed['capmodel']!r}"
+            f"override {override!r} recorded {observed['capmodel']!r}"
         )
         assert _model_from_codex_arg(observed.get("argmodel_raw", "")) == "gpt-6-mini", observed
 
@@ -633,18 +672,35 @@ def _model_from_codex_arg(raw: str) -> str:
     """
     import tomllib
 
-    model = ""
-    for fragment in raw.split(";;"):
-        if not fragment:
-            continue
+    args = [a for a in raw.split(";;") if a != ""]
+
+    def _c_value(value: str) -> str:
+        """What a `-c` argument sets `model` to, or ""."""
         try:
-            parsed = tomllib.loads(fragment)
+            table = tomllib.loads(value)
         except tomllib.TOMLDecodeError:
-            continue
-        value = parsed.get("model")
-        if isinstance(value, str) and value:
-            model = value  # last assignment wins, as codex applies -c in order
-    return model
+            # codex's raw-string fallback for a `-c` value that is not TOML.
+            return value[len("model=") :] if value.startswith("model=") else ""
+        candidate = table.get("model") if isinstance(table, dict) else None
+        return candidate if isinstance(candidate, str) else ""
+
+    # Scanned from the END, taking the first hit — "last wins", implemented the
+    # opposite way round from the launcher's forward scan so the two agreeing is
+    # evidence rather than a shared habit.
+    for i in range(len(args) - 1, -1, -1):
+        arg = args[i]
+        prev = args[i - 1] if i else None
+        if arg.startswith("--model="):
+            return arg[len("--model=") :]
+        if arg.startswith("-m="):
+            return arg[len("-m=") :]
+        if prev in ("--model", "-m"):
+            return arg
+        if prev == "-c":
+            found = _c_value(arg)
+            if found:
+                return found
+    return ""
 
 
 class TestTheRunnerCleansToo:

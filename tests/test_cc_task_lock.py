@@ -120,6 +120,39 @@ def _artifact_ledger_with_open_debt(home: Path, task_id: str) -> Path:
     return ledger
 
 
+def _interrupted_journal(home: Path, task_id: str, role: str) -> Path:
+    """An admitted claim-publication journal awaiting recovery, with a real manifest.
+
+    The all-tasks recovery test used to create NO journal, so it asserted only that
+    one message was absent — an unrelated failure passed it. Recovery also reads
+    `intent.task_id` to decide which lock to take, so a test without a manifest
+    cannot exercise the locking at all.
+    """
+    import json
+    import sys as _sys
+
+    _sys.path.insert(0, str(REPO_ROOT))
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+
+    roots = default_claim_publication_roots(home=home)
+    entry = Path(roots.claim_transaction_root) / f"claim-pub-{'a' * 64}"
+    entry.mkdir(parents=True, exist_ok=True)
+    manifest = entry / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "publication_id": f"claim-pub-{'a' * 64}",
+                "state": "recovery_required",
+                "intent": {"task_id": task_id, "role": role},
+                "projections": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
 def _lane_env(home: Path, **extra: str) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in _IDENTITY_ENV}
     env["HOME"] = str(home)
@@ -1001,48 +1034,133 @@ class TestRecoveryParticipatesToo:
             f"the note between that close's read and its unlink\n{stdout}\n{stderr}"
         )
 
-    def test_recovering_all_tasks_refuses_while_any_writer_is_mid_mutation(
+    def test_all_task_recovery_holds_each_journals_task_lock_through_the_run(
         self, tmp_path: Path
     ) -> None:
-        """The all-tasks form has no single lock to take, so it checks instead.
+        """HOLDS, not probes.
 
-        Not "proceed unprotected" and not "refuse always": the precondition that
-        actually matters is whether another writer is mid-mutation right now, and
-        that is checkable at the moment of use.
+        The first version called a `held_task_locks()` helper that acquired each
+        lock non-blockingly and released it before returning — so it answered "was
+        anyone mid-mutation a moment ago". A closer taking its locks straight after
+        that scan could archive a stale snapshot over the recovered note: exactly
+        the check-then-use this module exists to remove.
+
+        Recovery now reads each interrupted journal's own `intent.task_id` and
+        recovers per task under that task's lock, so the lock is HELD across the
+        recovery rather than sampled before it. Asserted the way the close-side fd
+        is: a competitor polls and must never get in while the process runs.
         """
         home = tmp_path / "home"
         vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
-        _write_note(vault, "t1", "in_progress")
+        _write_note(vault, "t-recover", "in_progress")
         (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
-        env = _lane_env(home, HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS="0.4")
+        journal = _interrupted_journal(home, "t-recover", "eta")
+        assert journal.is_file()
 
-        held = lock_path("t1", home / ".cache" / "hapax" / "cc-task-locks")
-        handle = os.open(held, os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        target = lock_path("t-recover", home / ".cache" / "hapax" / "cc-task-locks")
+        proc = subprocess.Popen(
+            ["bash", str(CC_CLAIM), "--recover-claim-publications"],
+            env=_lane_env(home),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        observed_held = False
+        stole_it = False
+        handle = os.open(target, os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            result = subprocess.run(
-                ["bash", str(CC_CLAIM), "--recover-claim-publications"],
-                env=env,
+
+            def _free() -> bool:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    return False
+                fcntl.flock(handle, fcntl.LOCK_UN)
+                return True
+
+            while proc.poll() is None and not observed_held:
+                observed_held = not _free()
+                if not observed_held:
+                    time.sleep(0.005)
+            while observed_held and proc.poll() is None:
+                if _free():
+                    stole_it = True
+                    break
+                time.sleep(0.005)
+        finally:
+            os.close(handle)
+        stdout, stderr = proc.communicate(timeout=180)
+
+        assert observed_held, (
+            "the all-tasks recovery never held the journal's task lock — it probed "
+            f"instead of holding\n{stdout}\n{stderr}"
+        )
+        assert not stole_it, (
+            "the task lock became acquirable while recovery was still running, so a "
+            f"closer could read the note it is replacing\n{stdout}\n{stderr}"
+        )
+
+    def test_a_closer_that_starts_after_the_preflight_still_waits(self, tmp_path: Path) -> None:
+        """The post-scan race, directly: cc-close begins AFTER recovery is underway."""
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        note = _write_note(vault, "t-recover", "withdrawn")
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        _interrupted_journal(home, "t-recover", "eta")
+
+        target = lock_path("t-recover", home / ".cache" / "hapax" / "cc-task-locks")
+        handle = os.open(target, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(handle, fcntl.LOCK_EX)  # stand in for recovery holding it
+        try:
+            closer = subprocess.Popen(
+                ["bash", str(CC_CLOSE), "t-recover", "--status", "withdrawn"],
+                env=_lane_env(home),
                 text=True,
-                capture_output=True,
-                check=False,
-                timeout=120,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
+            settle = time.monotonic() + 3.0
+            while closer.poll() is None and time.monotonic() < settle:
+                time.sleep(0.05)
+            blocked = closer.poll() is None
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
             os.close(handle)
+        stdout, stderr = closer.communicate(timeout=180)
 
-        assert result.returncode == 4, f"{result.stdout}\n{result.stderr}"
-        assert "recovering ALL tasks while another writer holds a task lock" in result.stderr, (
-            result.stderr
+        assert blocked, (
+            "a closer starting after recovery began did not wait for the task lock\n"
+            f"{stdout}\n{stderr}"
         )
-        assert str(held) in result.stderr, "the refusal did not name the holder"
-        assert "one task at a time" in result.stderr, (
-            "the refusal does not name the narrower command that IS safe"
-        )
+        assert closer.returncode == 0, f"{stdout}\n{stderr}"
+        assert not note.exists()
 
-    def test_recovering_all_tasks_proceeds_when_nothing_is_held(self, tmp_path: Path) -> None:
-        """Fail-closed must not mean fail-always."""
+    def test_an_unattributable_journal_is_refused_not_recovered(self, tmp_path: Path) -> None:
+        """A journal naming no task cannot have its note locked, so it is not touched.
+
+        Recovering it unprotected is the only alternative, and that is the defect.
+        """
+        home = tmp_path / "home"
+        vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
+        _write_note(vault, "t-recover", "in_progress")
+        (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+        journal = _interrupted_journal(home, "t-recover", "eta")
+        journal.write_text('{"intent": {"role": "eta"}}', encoding="utf-8")
+
+        result = subprocess.run(
+            ["bash", str(CC_CLAIM), "--recover-claim-publications"],
+            env=_lane_env(home),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        assert result.returncode == 8, f"{result.stdout}\n{result.stderr}"
+        assert "name no readable task" in result.stderr, result.stderr
+        assert str(journal) in result.stderr, "the refusal did not name the journal"
+
+    def test_recovering_all_tasks_proceeds_when_nothing_is_pending(self, tmp_path: Path) -> None:
+        """Fail-closed must not mean fail-always, and success must be observable."""
         home = tmp_path / "home"
         vault = home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
         _write_note(vault, "t1", "in_progress")
@@ -1055,7 +1173,11 @@ class TestRecoveryParticipatesToo:
             check=False,
             timeout=120,
         )
-        assert "another writer holds a task lock" not in result.stderr, result.stderr
+        assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+        assert "no admitted claim-publication journals required recovery" in result.stdout, (
+            "success is asserted by its own message, not by the absence of one — an "
+            f"unrelated failure passed the earlier version of this test\n{result.stdout}"
+        )
 
 
 class TestARefusalMutatesNothing:
