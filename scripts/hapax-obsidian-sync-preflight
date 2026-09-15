@@ -50,10 +50,19 @@ Recheck every claim in this docstring — the exit statuses and each replayed ru
 Recheck the rules against the CLIENT (they are read off a minified bundle, so they
 can drift with any upgrade; `npm ls -g obsidian-headless` gives the pinned version):
 
-    node -e 'const s=require("fs").readFileSync(process.env.OB_CLI,"utf8");
-      for (const k of ["function Ne(","function Cs(","function Is(",
-      "_allowSyncFile(","reconcileSymbolicLinkCreation(","Xc=","me=["])
-      console.log(k, s.slice(s.indexOf(k), s.indexOf(k)+160), "\n")'
+    node -e 'const p=require("path").join(
+        require("child_process").execSync("npm root -g").toString().trim(),
+        "obsidian-headless", "cli.js");
+      const s=require("fs").readFileSync(p,"utf8");
+      console.log(p, require(p.replace("cli.js","package.json")).version);
+      for (const k of ["function Ne(","function Cs(","function _e(","function Is(",
+      "_allowSyncFile(","reconcileSymbolicLinkCreation(","function ws(","function Kr(",
+      "Xc=","me=[","us=[","perFileMax"])
+      console.log(k, s.slice(s.indexOf(k), s.indexOf(k)+200), "\n")'
+
+(It locates the bundle itself via ``npm root -g`` and prints the installed version, so
+there is no variable to set and no chance of rechecking a different copy than the one
+in use.)
 
 Rules replayed from obsidian-headless 0.0.14 ``cli.js``:
   * emitted namespace — ``Ne(s) = Cs(_e(s)).normalize("NFC")``: ``_e`` collapses every
@@ -173,6 +182,19 @@ _EMITTED_SPACE_CODEPOINTS = (0x00A0, 0x202F)
 _SLASH_RUN_RE = re.compile(r"[\\/]+")  # cli.js `_e`: /([\\/])+/g -> "/"
 
 
+def _e_path(rel: str) -> str:
+    """cli.js ``_e``: collapse every run of ``/`` or U+005C to one ``/``, trim the ends.
+
+    This is the form ob actually ``lstat``s in the main walk: ``listRecursiveChild``
+    computes ``i = _e(path)`` and ``n = Ne(i)``, then calls ``reconcileFileInternal(i, n)``
+    — so the LOOKUP uses ``_e`` only, while the remote KEY uses the fully emitted name.
+    The distinction is load-bearing: a name containing U+005C is looked up at a rewritten
+    path and dropped when that does not exist, whereas a nonbreaking space or an NFD
+    spelling is found on disk and merely keyed under its normalized name.
+    """
+    return _SLASH_RUN_RE.sub("/", rel).strip("/")
+
+
 def _emitted(rel: str) -> str:
     """The path ob compares exclusions against — cli.js ``Ne(s) = Cs(_e(s)).NFC``.
 
@@ -182,7 +204,7 @@ def _emitted(rel: str) -> str:
     remote path as a real ``x/y``. An earlier revision skipped ``_e`` on the grounds
     that walked paths have no doubled or leading slashes, which missed this.
     """
-    rel = _SLASH_RUN_RE.sub("/", rel).strip("/")
+    rel = _e_path(rel)
     for codepoint in _EMITTED_SPACE_CODEPOINTS:
         rel = rel.replace(chr(codepoint), " ")
     return unicodedata.normalize("NFC", rel) or "/"
@@ -503,7 +525,10 @@ def predict_config_uploads(
         category = _config_category(rel_emitted)
         if category is None or category not in configs:
             continue
-        candidate = root / rel
+        # ob stats the EMITTED path, not the on-disk one: the enumeration pushes
+        # normalized paths and the adapter looks them up. A name whose normalization
+        # changes it therefore points at something that does not exist and is dropped.
+        candidate = vault / _emitted(config_dir) / rel_emitted
         try:
             stat = os.stat(candidate)  # follows symlinks, as adapter.stat does
         except FileNotFoundError:
@@ -515,7 +540,15 @@ def predict_config_uploads(
             continue  # ob requires stat().type === "file"
         # Config files live in the SAME remote namespace as the main tree, so they
         # register here too — a config path can collide with a main-tree path.
-        namespace.register(f"{_emitted(config_dir)}/{rel_emitted}", str(candidate))
+        # KEY by the emitted path, but identify by the ON-DISK candidate: two spellings
+        # look the same path up, so using the lookup path as the identity would make them
+        # indistinguishable and count one file twice.
+        if not namespace.claim(
+            f"{_emitted(config_dir)}/{rel_emitted}",
+            str(root / rel),
+            ambiguous_when_shared=False,
+        ):
+            continue  # two spellings of one emitted name index the same entry once
         if stat.st_size > per_file_max:
             # The size skip is in the shared sync loop, so it governs config files too.
             too_large.append({"path": f"{config_dir}/{rel}", "bytes": stat.st_size})
@@ -526,6 +559,21 @@ def predict_config_uploads(
         bucket[0] += stat.st_size
         bucket[1] += 1
     return _result()
+
+
+def _lookup_resolves(vault: Path, lookup_rel: str, source: str) -> bool:
+    """Does the path ob looks up lead back to the entry the walk found?
+
+    Measured against the real tree rather than assumed, because the answer depends on the
+    filesystem: a normalizing or case-insensitive one can resolve a rewritten name, while
+    a byte-preserving one cannot.
+    """
+    try:
+        want = os.lstat(vault / lookup_rel)
+        have = os.lstat(source)
+    except OSError:
+        return False
+    return (want.st_dev, want.st_ino) == (have.st_dev, have.st_ino)
 
 
 def _overlaps(a: str, b: str) -> bool:
@@ -542,25 +590,49 @@ DEFAULT_PER_FILE_MAX = 199 * 1024 * 1024
 
 
 class _EmittedNamespace:
-    """The set of paths ob will key remote entries by, shared across every scan.
+    """The paths ob keys remote entries by, shared across every scan.
 
-    ob has ONE remote namespace, so the main tree and the config directory compete in
-    it. Keeping the registry here rather than local to a walk is what stops a second
-    scan from silently bypassing collision detection — the shape of defect this file
-    has now hit three times (config traversal errors, the config per-file limit, and
-    collisions).
+    ob has ONE remote keyspace and indexes local files into a dict keyed by the emitted
+    path, so two candidates arriving at one path are the same entry and the second does
+    not add anything — `adapter.list` already returns NORMALIZED names, so a directory
+    holding two spellings of one emitted name yields that name twice and the second
+    write simply overwrites the first.
+
+    This deliberately DEDUPES rather than refusing. An earlier revision treated a shared
+    emitted path as an ambiguity to refuse, which was an approximation: with
+    `_resolves_to` in place, a name whose normalization changes it is dropped outright
+    because ob cannot find it, so on a byte-preserving filesystem two entries cannot both
+    claim one path. What remains is this bookkeeping, which keeps the config scan from
+    counting one file twice through two candidate spellings.
+
+    It lives here rather than inside a walk because that is the defect shape this file
+    has hit four times: a second scan silently bypassing a guard built for the first.
     """
 
     def __init__(self) -> None:
         self.sources: dict[str, str] = {}
-        self.collisions: list[dict] = []
+        self.duplicates: list[dict] = []
+        self.ambiguous: list[dict] = []
 
-    def register(self, emitted: str, source: str) -> None:
+    def claim(self, emitted: str, source: str, *, ambiguous_when_shared: bool) -> bool:
+        """True if ``source`` owns ``emitted``; False if something else already does.
+
+        ``ambiguous_when_shared`` distinguishes the two scans, which genuinely differ.
+        In the MAIN walk two spellings are two separate reconciles writing the same key,
+        and `listRecursive` runs them concurrently, so WHOSE CONTENT lands at that remote
+        path depends on scheduling — not determinable, so the caller refuses. In the
+        CONFIG scan both queue entries look the SAME emitted path up, so they stat one
+        file and the duplicate is merely redundant.
+        """
         previous = self.sources.get(emitted)
-        if previous is not None and previous != source:
-            self.collisions.append({"path": emitted, "also_from": previous})
-            return
-        self.sources[emitted] = source
+        if previous is None:
+            self.sources[emitted] = source
+            return True
+        if previous == source:
+            return True
+        record = {"path": emitted, "kept_from": previous, "dropped_from": source}
+        (self.ambiguous if ambiguous_when_shared else self.duplicates).append(record)
+        return False
 
 
 class _LinkPolicy:
@@ -663,6 +735,7 @@ def predict(
     largest: list[tuple[int, str]] = []
     traversal_errors: list[dict] = []
     too_large: list[dict] = []
+    unresolvable: list[dict] = []
 
     def _on_error(exc: OSError) -> None:
         # A skipped subtree makes every total below a floor, not a measurement.
@@ -683,8 +756,13 @@ def predict(
     # because ob skips it. The overlap rule is also the cycle guard: any link back
     # into the vault, or to an ancestor of it, overlaps and is pruned.
     for dirpath, dirnames, filenames in os.walk(vault, followlinks=True, onerror=_on_error):
-        rel_dir = os.path.relpath(dirpath, vault)
-        rel_dir = "" if rel_dir == "." else _emitted(rel_dir)
+        raw_rel_dir = os.path.relpath(dirpath, vault)
+        raw_rel_dir = "" if raw_rel_dir == "." else raw_rel_dir
+        rel_dir = _emitted(raw_rel_dir) if raw_rel_dir else ""
+
+        def _lookup_rel(name: str, _raw: str = raw_rel_dir) -> str:
+            """The `_e`-only path, i.e. what ob lstats in this walk."""
+            return _e_path(f"{_raw}/{name}" if _raw else name)
 
         def _rel(name: str, _rel_dir: str = rel_dir) -> str:
             return f"{_rel_dir}/{_emitted(name)}" if _rel_dir else _emitted(name)
@@ -726,7 +804,26 @@ def predict(
         for name in list(dirnames) + list(filenames):
             if name.startswith("."):
                 continue
-            namespace.register(_rel(name), os.path.join(dirpath, name))
+            emitted = _rel(name)
+            source = os.path.join(dirpath, name)
+            # ob lstats the `_e` form, so a name containing U+005C is looked up at a
+            # rewritten path; when that does not exist the entry is DROPPED, occupies no
+            # remote name, and must not be registered here either — otherwise it would
+            # displace a file that really does live at that path. A nonbreaking space or
+            # an NFD spelling does NOT trigger this: `_e` leaves those alone, so the
+            # lookup succeeds and the entry is merely keyed under its normalized name.
+            on_disk_rel = f"{raw_rel_dir}/{name}" if raw_rel_dir else name
+            lookup = _lookup_rel(name)
+            if lookup != on_disk_rel and not _lookup_resolves(vault, lookup, source):
+                unresolvable.append({"path": emitted, "source": source})
+                if name in dirnames:
+                    dirnames.remove(name)
+                continue
+            if (
+                not namespace.claim(emitted, source, ambiguous_when_shared=True)
+                and name in dirnames
+            ):
+                dirnames.remove(name)
 
         for name in filenames:
             if name.startswith("."):
@@ -735,6 +832,10 @@ def predict(
             if _excluded(rel, entries):
                 continue
             child = os.path.join(dirpath, name)
+            if any(u["source"] == child for u in unresolvable):
+                continue  # ob cannot find the emitted path; nothing uploads
+            if namespace.sources.get(rel) not in (None, child):
+                continue  # another entry already owns this emitted path
             # The overlap rule applies to FILE links too: ob rejects on overlap before
             # it distinguishes a file from a directory, so an in-vault file alias is
             # not uploaded even though os.stat would happily follow it.
@@ -791,7 +892,9 @@ def predict(
         "symlinks_skipped_overlapping": links.skipped,
         "symlinks_scheduling_dependent": links.ambiguous,
         "files_over_per_file_max": too_large,
-        "emitted_path_collisions": namespace.collisions,
+        "emitted_paths_unresolvable": unresolvable,
+        "emitted_path_duplicates": namespace.duplicates,
+        "emitted_path_ambiguous": namespace.ambiguous,
         "per_file_max_bytes": per_file_max,
         "traversal_errors": traversal_errors,
     }
@@ -1084,6 +1187,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         for ext, stats in list(upload["by_ext"].items())[:8]:
             print(f"  .{ext or '(none)'}: {stats['bytes']} B / {stats['files']} files")
+        for item in prediction["emitted_paths_unresolvable"]:
+            print(
+                f"  NOTE: {item['source']} is NOT uploaded — its emitted path "
+                f"{item['path']} does not exist on disk, so ob looks for it and drops "
+                "the entry (normalization rewrote the name)"
+            )
+        for item in prediction["emitted_path_duplicates"]:
+            print(
+                f"  NOTE: {item['dropped_from']} shares the emitted path {item['path']} "
+                f"with {item['kept_from']} and is indexed once, not twice"
+            )
         if prediction["files_over_per_file_max"]:
             skipped = prediction["files_over_per_file_max"]
             print(
@@ -1104,15 +1218,16 @@ def main(argv: list[str] | None = None) -> int:
                 "it uploads. Counted above."
             )
 
-    if prediction["emitted_path_collisions"]:
-        first = prediction["emitted_path_collisions"][0]
+    if prediction["emitted_path_ambiguous"]:
+        first = prediction["emitted_path_ambiguous"][0]
         print(
-            f"REFUSED: {len(prediction['emitted_path_collisions'])} file(s) normalize to "
-            f"an emitted path another file already occupies (e.g. {first['path']}, also "
-            f"from {first['also_from']}). ob keys remote files by the emitted path — "
-            "nonbreaking spaces rewritten and NFC applied — so these are ONE remote "
-            "file and which local copy wins is not determinable here. Next: rename one "
-            "of them so the emitted paths differ.",
+            f"REFUSED: {len(prediction['emitted_path_ambiguous'])} pair(s) of files "
+            f"normalize to one emitted path (e.g. {first['path']}, from "
+            f"{first['kept_from']} and {first['dropped_from']}). ob keys remote entries "
+            "by that path, and `listRecursive` reconciles concurrently, so WHICH file's "
+            "content ends up there depends on scheduling. Next: rename one of them so "
+            "the emitted paths differ — normalization rewrites nonbreaking spaces to "
+            "ordinary ones and applies NFC, so those spellings are not distinct.",
             file=sys.stderr,
         )
         return ERROR

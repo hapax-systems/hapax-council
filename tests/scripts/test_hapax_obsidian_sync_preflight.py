@@ -866,8 +866,8 @@ def test_emitted_path_collision_is_refused(vault: pathlib.Path) -> None:
         "--json",
     )
     assert result.returncode == ERROR, result.stdout + result.stderr
-    assert "ONE remote file" in result.stderr
-    collisions = json.loads(result.stdout)["emitted_path_collisions"]
+    assert "normalize to one emitted path" in result.stderr
+    collisions = json.loads(result.stdout)["emitted_path_ambiguous"]
     assert [c["path"] for c in collisions] == ["30-areas/café.md"]
 
 
@@ -882,7 +882,7 @@ def test_nonbreaking_space_collision_is_refused(vault: pathlib.Path) -> None:
         "--json",
     )
     assert result.returncode == ERROR, result.stdout + result.stderr
-    assert json.loads(result.stdout)["emitted_path_collisions"]
+    assert json.loads(result.stdout)["emitted_path_ambiguous"]
 
 
 def test_collision_against_a_directory_is_detected(vault: pathlib.Path) -> None:
@@ -899,7 +899,7 @@ def test_collision_against_a_directory_is_detected(vault: pathlib.Path) -> None:
         "--json",
     )
     assert result.returncode == ERROR, result.stdout + result.stderr
-    assert [c["path"] for c in json.loads(result.stdout)["emitted_path_collisions"]] == [
+    assert [c["path"] for c in json.loads(result.stdout)["emitted_path_ambiguous"]] == [
         "30-areas/a b.md"
     ]
 
@@ -918,7 +918,7 @@ def test_collision_against_an_excluded_file_is_detected(vault: pathlib.Path) -> 
         "--json",
     )
     assert result.returncode == ERROR, result.stdout + result.stderr
-    assert json.loads(result.stdout)["emitted_path_collisions"]
+    assert json.loads(result.stdout)["emitted_path_ambiguous"]
 
 
 def test_collision_against_an_oversized_file_is_detected(vault: pathlib.Path) -> None:
@@ -936,7 +936,7 @@ def test_collision_against_an_oversized_file_is_detected(vault: pathlib.Path) ->
         "--json",
     )
     assert result.returncode == ERROR, result.stdout + result.stderr
-    assert json.loads(result.stdout)["emitted_path_collisions"]
+    assert json.loads(result.stdout)["emitted_path_ambiguous"]
 
 
 def test_backslash_in_a_name_is_emitted_as_a_separator(
@@ -954,26 +954,31 @@ def test_backslash_in_a_name_is_emitted_as_a_separator(
         "20-projects/_dashboard,30-areas/hapax/ocr/pages",
         "--json",
     )
-    assert result.returncode == ERROR, result.stdout + result.stderr
-    assert [c["path"] for c in json.loads(result.stdout)["emitted_path_collisions"]] == [
-        "30-areas/x/y"
-    ]
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    # The backslash entry resolves nowhere, so it is dropped rather than competing for
+    # the name — the genuinely nested file is not displaced.
+    assert report["emitted_path_ambiguous"] == []
+    assert [u["path"] for u in report["emitted_paths_unresolvable"]] == ["30-areas/x/y"]
 
 
-def test_backslash_name_alone_is_emitted_with_a_separator(vault: pathlib.Path) -> None:
-    """Without a competitor it is not a collision, but the emitted path must still
-    carry the rewritten separator."""
+def test_backslash_name_is_dropped_not_uploaded(vault: pathlib.Path) -> None:
+    """`_e` runs BEFORE the lstat, so a file literally named `p\\q.md` is looked up at
+    `p/q.md`. That does not exist on a byte-preserving filesystem, so ob drops the entry
+    and uploads nothing. Counting the on-disk file credited an upload that never happens.
+    """
     (vault / "30-areas" / "p\\q.md").write_bytes(b"b" * 50)
-    report = json.loads(
-        _run(
-            str(vault),
-            "--excluded-folders",
-            "20-projects/_dashboard,30-areas/hapax/ocr/pages",
-            "--json",
-        ).stdout
+    result = _run(
+        str(vault),
+        "--excluded-folders",
+        "20-projects/_dashboard,30-areas/hapax/ocr/pages",
+        "--json",
     )
-    paths = {item["path"] for item in report["largest_included_files"]}
-    assert "30-areas/p/q.md" in paths, paths
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["predicted_upload"]["bytes"] == 161, "a dropped entry was counted"
+    assert [u["path"] for u in report["emitted_paths_unresolvable"]] == ["30-areas/p/q.md"]
+    assert not any("p/q.md" in item["path"] for item in report["largest_included_files"])
 
 
 def test_ancestor_watcher_is_deterministic_not_a_race(
@@ -1002,11 +1007,62 @@ def test_ancestor_watcher_is_deterministic_not_a_race(
     assert report["predicted_upload"]["bytes"] == 161 + 77
 
 
-def test_config_uploads_enter_the_same_collision_namespace(
+@pytest.mark.parametrize(
+    "name",
+    [
+        "café.css",  # NFD: emitted as NFC, which is not what is on disk
+        "a b.css",  # nonbreaking space: emitted with an ordinary space
+    ],
+)
+def test_lone_non_normalized_config_file_is_dropped(
+    vault: pathlib.Path, tmp_path: pathlib.Path, name: str
+) -> None:
+    """The config queue carries NORMALIZED names (`adapter.list` returns `Ne(...)`) and
+    `exists`/`stat` are called on those, so a config file whose normalization changes its
+    name is looked up at a path that does not exist and is DROPPED. Statting the on-disk
+    name instead counts an upload that never happens — and with no peer present there is
+    no duplicate to mask it, which is what makes this the discriminating case."""
+    obsidian = vault / ".obsidian"
+    (obsidian / "snippets").mkdir(parents=True)
+    (obsidian / "snippets" / name).write_bytes(b"c" * 77)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["appearance-data"],
+    )
+    result = _run_env(vault, xdg, "--from-sync-config", "--json")
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["config_uploads"]["bytes"] == 0, "ob cannot find this name; it uploads nothing"
+    assert report["config_uploads"]["files"] == 0
+    assert report["traversal_errors"] == [], "an absent lookup is a drop, not an error"
+
+
+def test_normalized_config_file_is_counted(vault: pathlib.Path, tmp_path: pathlib.Path) -> None:
+    """The control: a name that normalization leaves alone is found and counted."""
+    obsidian = vault / ".obsidian"
+    (obsidian / "snippets").mkdir(parents=True)
+    (obsidian / "snippets" / "plain.css").write_bytes(b"c" * 77)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["appearance-data"],
+    )
+    report = json.loads(_run_env(vault, xdg, "--from-sync-config", "--json").stdout)
+    assert report["config_uploads"]["bytes"] == 77
+
+
+def test_config_duplicate_spellings_are_counted_once_not_refused(
     vault: pathlib.Path, tmp_path: pathlib.Path
 ) -> None:
-    """ob has ONE remote namespace, so config files compete in it too. The collision
-    registry was local to the main walk, so the config scan bypassed it entirely."""
+    """Both config candidates look up the SAME emitted path, so they stat one file: the
+    duplicate is redundant, not ambiguous, and must be counted once rather than twice or
+    refused. The main walk differs — there two reconciles race — which is why the shared
+    namespace distinguishes the two cases instead of applying one rule."""
     nbsp = chr(0xA0)
     obsidian = vault / ".obsidian"
     (obsidian / "snippets").mkdir(parents=True)
@@ -1020,9 +1076,11 @@ def test_config_uploads_enter_the_same_collision_namespace(
         allowSpecialFiles=["appearance-data"],
     )
     result = _run_env(vault, xdg, "--from-sync-config", "--json")
-    assert result.returncode == ERROR, result.stdout + result.stderr
-    collisions = json.loads(result.stdout)["emitted_path_collisions"]
-    assert [c["path"] for c in collisions] == [".obsidian/snippets/a b.css"]
+    assert result.returncode == OK, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["emitted_path_ambiguous"] == []
+    assert report["config_uploads"]["bytes"] == 10, "one file counted twice"
+    assert [d["path"] for d in report["emitted_path_duplicates"]] == [".obsidian/snippets/a b.css"]
 
 
 def test_file_link_beneath_an_accepted_link_is_not_a_race(
@@ -1046,6 +1104,63 @@ def test_file_link_beneath_an_accepted_link_is_not_a_race(
     report = json.loads(result.stdout)
     assert report["symlinks_scheduling_dependent"] == []
     assert [link["path"] for link in report["symlinks_skipped_overlapping"]] == ["linked/alias.md"]
+
+
+def test_ancestor_exemption_unit(tmp_path: pathlib.Path) -> None:
+    """The exemption is a two-line condition inside follow() with outsized consequences —
+    it decides refuse-vs-report — so it is pinned directly as well as end to end."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    outside = tmp_path / "outside"
+    (outside / "inner").mkdir(parents=True)
+    policy = preflight._LinkPolicy(vault)
+    errors: list = []
+
+    first = vault / "a"
+    first.symlink_to(outside, target_is_directory=True)
+    assert policy.follow(str(first), "a", errors.append, scan_root=str(vault)) is True
+
+    # Reached from INSIDE the accepted target: the ancestor's watcher already exists.
+    nested = outside / "inner" / "back"
+    nested.symlink_to(outside, target_is_directory=True)
+    assert (
+        policy.follow(str(nested), "a/inner/back", errors.append, scan_root=str(outside / "inner"))
+        is False
+    )
+    assert policy.ambiguous == [], "an ancestor watcher was reported as a race"
+    assert [s["path"] for s in policy.skipped] == ["a/inner/back"]
+
+    # Reached from OUTSIDE it: a genuine sibling race.
+    sibling = vault / "b"
+    sibling.symlink_to(outside, target_is_directory=True)
+    assert policy.follow(str(sibling), "b", errors.append, scan_root=str(vault)) is False
+    assert [a["path"] for a in policy.ambiguous] == ["b"]
+    assert errors == []
+
+
+def test_config_candidate_stat_error_is_reported(
+    vault: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """A config candidate that exists but cannot be stat'd is a real read failure, not a
+    drop, and must reach the exit-3 guard."""
+    obsidian = vault / ".obsidian"
+    (obsidian / "snippets").mkdir(parents=True)
+    (obsidian / "snippets" / "x.css").write_bytes(b"c" * 10)
+    (obsidian / "snippets").chmod(0o000)
+    xdg = tmp_path / "xdg"
+    _write_live_config(
+        xdg,
+        vault,
+        ignoreFolders=["20-projects/_dashboard", "30-areas/hapax/ocr/pages"],
+        allowSpecialFiles=["appearance-data"],
+    )
+    try:
+        result = _run_env(vault, xdg, "--from-sync-config", "--json")
+        assert result.returncode == ERROR, result.stdout + result.stderr
+        assert "FLOOR" in result.stderr
+        assert json.loads(result.stdout)["traversal_errors"]
+    finally:
+        (obsidian / "snippets").chmod(0o755)
 
 
 def test_follow_requires_a_scan_root() -> None:
