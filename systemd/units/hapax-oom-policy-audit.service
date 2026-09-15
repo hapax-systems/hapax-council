@@ -10,3 +10,4 @@ TimeoutStartSec=2min
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/local/sbin/hapax-oom-policy-audit --json
 SyslogIdentifier=hapax-oom-policy-audit
+# Hapax-Source-Owner: config/root-required/oom-containment.files

@@ -1,27 +1,14 @@
+# Hapax-Parked: true
 [Unit]
-Description=Hapax L-12 feedback-loop detector + smooth auto-mute
-Documentation=https://github.com/ryanklee/hapax-council/pull/1517
-After=hapax-secrets.service pipewire.service
-PartOf=hapax.target
-Requires=hapax-secrets.service
-Wants=pipewire.service
+Description=Retired L-12 feedback-loop detector sentinel
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/docs/audio-topology-reference.md
+RefuseManualStart=yes
+# The Behringer L-12 path is retired. Keep this historical unit inert even if a
+# stale dependency or enablement link survives until the next governed deploy.
+ConditionPathExists=!/
 
 [Service]
-Type=notify
-WorkingDirectory=%h/projects/hapax-council
-EnvironmentFile=-%h/.config/hapax/secrets.env
-ExecStart=%h/projects/hapax-council/.venv/bin/python -m agents.studio_compositor.feedback_loop_daemon
-Restart=always
-RestartSec=5s
-WatchdogSec=120s
-
-# Memory cap per cc-task spec.
+Type=oneshot
+ExecStart=/usr/bin/true
 MemoryMax=200M
-
-# The detector reads from the existing parec capture; it must NOT be killed
-# under memory pressure ahead of less-load-bearing services. Default OOM
-# score (0) is fine — this is a safety service.
-OOMScoreAdjust=-100
-
-[Install]
-WantedBy=hapax.target
+OOMScoreAdjust=100

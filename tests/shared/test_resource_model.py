@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -22,6 +23,22 @@ from shared.resource_model import (
     YieldTier,
     classify_state,
 )
+
+
+def _effective_service_directives(unit_name: str) -> dict[str, str]:
+    root = Path(__file__).resolve().parents[2] / "systemd" / "units"
+    sources = [root / unit_name, *sorted((root / f"{unit_name}.d").glob("*.conf"))]
+    directives: dict[str, str] = {}
+    for source in sources:
+        in_service = False
+        for raw_line in source.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if line.startswith("[") and line.endswith("]"):
+                in_service = line == "[Service]"
+            elif in_service and line and not line.startswith(("#", ";")) and "=" in line:
+                key, _, value = line.partition("=")
+                directives[key.strip()] = value.strip()
+    return directives
 
 
 class TestResourceTypeCompleteness:
@@ -274,6 +291,51 @@ class TestServiceProfileCompleteness:
             allocation = DEFAULT_SERVICE_PROFILES[name].allocations[ResourceType.RAM]
             assert allocation.limit == expected_limit
             assert allocation.enforcement == Enforcement.HARD
+
+    def test_daimonion_profile_matches_effective_capacity_dropin(self):
+        allocation = DEFAULT_SERVICE_PROFILES["hapax-daimonion"].allocations[ResourceType.RAM]
+        effective = _effective_service_directives("hapax-daimonion.service")
+
+        assert allocation.limit == 16.0
+        assert allocation.enforcement == Enforcement.HARD
+        assert effective["MemoryHigh"] == "12G"
+        assert effective["MemoryMax"] == "16G"
+        assert "MemoryHigh=12G" in allocation.notes
+        assert "MemoryMax=16G" in allocation.notes
+
+        compendium = (Path(__file__).resolve().parents[2] / "docs/compendium.md").read_text()
+        assert "MemoryHigh=12G, MemoryMax=16G" in compendium
+        assert (
+            "systemctl --user show hapax-daimonion.service -p MemoryHigh -p MemoryMax" in compendium
+        )
+
+    def test_delegated_broadcast_profiles_never_model_negative_oom_scores(self):
+        modeled_scores = {
+            name: profile.oom_score_adj
+            for name, profile in DEFAULT_SERVICE_PROFILES.items()
+            if profile.oom_score_adj is not None
+        }
+
+        protected_scores = {
+            name: modeled_scores.get(name)
+            for name in {
+                "hapax-daimonion",
+                "studio-compositor",
+                "pipewire",
+                "wireplumber",
+                "pipewire-pulse",
+                "hapax-imagination",
+            }
+        }
+        assert protected_scores == {
+            "hapax-daimonion": 100,
+            "studio-compositor": 100,
+            "pipewire": 100,
+            "wireplumber": 100,
+            "pipewire-pulse": 100,
+            "hapax-imagination": 100,
+        }
+        assert all(score >= 0 for score in modeled_scores.values())
 
 
 class TestContentionGroupConsistency:

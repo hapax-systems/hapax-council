@@ -66,6 +66,33 @@ MIGRATED_UNITS = (
     "hapax-live-cuepoints.service",
 )
 
+
+def test_retired_l12_feedback_detector_is_a_nonexecuting_parked_sentinel() -> None:
+    text = (UNITS_DIR / "hapax-feedback-loop-detector.service").read_text(encoding="utf-8")
+
+    assert "# Hapax-Parked: true" in text
+    assert "RefuseManualStart=yes" in text
+    assert "ConditionPathExists=!/" in text
+    assert _section_values(text, "Service", "Type") == ["oneshot"]
+    assert _section_values(text, "Service", "ExecStart") == ["/usr/bin/true"]
+    assert "feedback_loop_daemon" not in text
+    assert "Restart=" not in text
+    assert "[Install]" not in text
+    assert not any(f"{directive}=" in text for directive in ("PartOf", "Requires", "Wants"))
+    assert not any(form in text for form in (*CANON_FORMS, ACTIVATION))
+
+
+def test_rebuild_compatibility_copy_has_no_retired_l12_caller() -> None:
+    compatibility_path = REPO_ROOT / "systemd/hapax-rebuild-services.service"
+    canonical_path = UNITS_DIR / "hapax-rebuild-services.service"
+
+    assert compatibility_path.read_bytes() == canonical_path.read_bytes()
+    canonical = canonical_path.read_text(encoding="utf-8")
+    assert "hapax-feedback-loop-detector.service" not in _section_values(
+        canonical, "Service", "ExecStart"
+    )
+
+
 # ── canonical-rooted python -m units intentionally NOT yet migrated. Each is
 # justified in docs/research/2026-06-07-canonical-rooted-unit-audit.md. This is
 # an upper-bound allow-list: migrating one later (so it leaves the canonical
@@ -86,7 +113,6 @@ KNOWN_CANONICAL_EXCEPTIONS = frozenset(
         "hapax-broadcast-audio-health.service",
         "hapax-broadcast-egress-loopback-producer.service",
         "hapax-channel-trailer.service",
-        "hapax-feedback-loop-detector.service",
         "hapax-lufs-panic-cap.service",
         "hapax-overlay-producer.service",
         "hapax-pipewire-graph-shadow.service",
