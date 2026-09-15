@@ -345,12 +345,29 @@ def test_rehydrate_refusal_branches_leave_every_file_unchanged(
         expected = f"cc-claim: HOLD — {reason} ({detail}). Next action: {remedy}.\n"
     assert result.stderr == expected
     assert result.stdout == ""
-    assert set(tmp_path.rglob("*")) == tree_before
+
+    # The cc-task lock directory is excluded, and only it. A rehydrate now takes the
+    # same lock cc-close does BEFORE it can refuse — recovery mutates task notes and
+    # the activation cache, and it previously ran outside that exclusion entirely
+    # (review round 21). Acquiring a lock creates an empty coordination file, which
+    # is not a mutation of anything this test is about: the invariant here is that a
+    # refusal leaves no task note, journal, projection, receipt or lease changed,
+    # and all of those are still compared byte-for-byte below.
+    lock_root = home / ".cache" / "hapax" / "cc-task-locks"
+    lock_tree = {lock_root, *lock_root.parents}
+
+    def _not_lock_state(paths: set[Path]) -> set[Path]:
+        return {p for p in paths if p not in lock_tree and lock_root not in p.parents}
+
+    assert _not_lock_state(set(tmp_path.rglob("*"))) == _not_lock_state(tree_before)
     assert {
         path: (path.read_bytes(), path.stat().st_mode, path.stat().st_mtime_ns)
         for path in tmp_path.rglob("*")
-        if path.is_file()
+        if path.is_file() and lock_root not in path.parents
     } == before
+    # And the lock itself must stay EMPTY: it is a rendezvous, never a record.
+    for lock in tmp_path.rglob("cc-task-locks/**/*.lock"):
+        assert lock.stat().st_size == 0, f"the lock file carries content: {lock}"
 
 
 def test_default_claim_without_dispatch_issues_manual_binding(tmp_path: Path) -> None:

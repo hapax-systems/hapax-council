@@ -11,15 +11,22 @@ operator can patch via env or future config without rewriting code.
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import subprocess
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from shared.cc_task_frontmatter import read_governed_frontmatter
+from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
+from shared.session_identity import split_claim_marker_key
 
 from .models import HygieneEvent, Role, TaskNote
 
@@ -761,6 +768,19 @@ def parse_task_note(path: Path) -> TaskNote | None:
     m = _FRONTMATTER_RE.match(text)
     if not m:
         return None
+    # Duplicate GOVERNED keys make this note unreadable, not readable-as-the-last.
+    # `yaml.safe_load` takes the last silently, so a note declaring
+    # `status: in_progress` then `status: refused` scanned as cleanly `refused` —
+    # and the live<->declared join then advised retiring a LIVE lane's marker.
+    # cc-close's own duplicate validation cannot protect that path, because
+    # `refused` never reaches cc-close (review round 21, reproduced).
+    #
+    # Returning None routes it to the same place every other unreadable note goes:
+    # the rejected-note list, which makes the join refuse advice rather than give
+    # destructive advice from a view it cannot decide.
+    reading = read_governed_frontmatter(text)
+    if reading.duplicate_keys or reading.error is not None:
+        return None
     try:
         fm = yaml.safe_load(m.group(1)) or {}
     except yaml.YAMLError:
@@ -1017,4 +1037,583 @@ def check_vault_link_integrity(
                     metadata={"field": field, "target": target},
                 )
             )
+    return events
+
+
+# --- live <-> declared join (claims-ontology-correction) ----------------------
+# Everything above reads the vault and asks whether the DECLARED state is
+# self-consistent. Nothing read the RUNTIME state — the cc-active-task-* markers
+# the gate actually keys on — so the two could disagree indefinitely with no
+# surface reporting it. Measured 2026-09-13: cc-active-task-cx-crit named a task
+# the vault recorded CLOSED_DONE, and had for ~11h.
+#
+# cc-close now retires every lease its role holds for the task it closes, which
+# removes the common producer. This check is the backstop for the case cc-close
+# cannot cover: a lane that dies, is reaped, or has its note closed by hand never
+# runs cc-close at all, and its marker outlives the task.
+
+
+@dataclass(frozen=True)
+class ClaimMarkerScan:
+    """What a marker sweep saw, INCLUDING what it could not read.
+
+    The first cut returned a bare mapping and swallowed OSError /
+    UnicodeDecodeError per file, plus enumeration failure for the directory. An
+    injected PermissionError therefore produced an empty mapping and zero events —
+    indistinguishable from "no drift". For the one check whose entire job is
+    noticing that live state disagrees with declared state, silence-on-failure is
+    the worst possible default: it reports clean precisely when it knows least.
+    """
+
+    markers: dict[str, str]
+    unreadable: tuple[tuple[str, str], ...] = ()
+    """(path, reason) for each marker the sweep could not read."""
+
+    enumeration_error: str | None = None
+    """Set when the directory itself could not be listed; markers is then empty."""
+
+
+def read_claim_markers(cache_dir: Path) -> ClaimMarkerScan:
+    """Scan ``cc-active-task-*`` markers, preserving read failures.
+
+    Reads only the first line: several consumers treat the whole file as the id,
+    so the id file is single-line by contract. ``cc-claim-epoch-*`` sidecars use
+    a distinct prefix precisely so they cannot be swept up by this glob.
+    """
+    markers: dict[str, str] = {}
+    unreadable: list[tuple[str, str]] = []
+    # os.listdir, NOT Path.glob: on 3.12 Path.glob swallows a directory-level
+    # PermissionError inside its own scandir walk and returns an empty iterator, so
+    # the `except OSError` around it never fired and an unreadable cache read as
+    # "no markers". Verified against the pinned interpreter — glob returned [], and
+    # listdir raises. A reconciliation check must never mistake "I was denied" for
+    # "nothing to report".
+    try:
+        names = sorted(os.listdir(cache_dir))
+    except OSError as exc:
+        return ClaimMarkerScan(markers={}, enumeration_error=f"{type(exc).__name__}: {exc}")
+    paths = [cache_dir / name for name in names if name.startswith("cc-active-task-")]
+    for path in paths:
+        try:
+            if not path.is_file():
+                continue
+            head = path.read_text(encoding="utf-8").splitlines()[:1]
+        except (OSError, UnicodeDecodeError) as exc:
+            unreadable.append((str(path), f"{type(exc).__name__}: {exc}"))
+            continue
+        task_id = head[0].strip() if head else ""
+        if task_id:
+            markers[path.name[len("cc-active-task-") :]] = task_id
+    return ClaimMarkerScan(markers=markers, unreadable=tuple(unreadable))
+
+
+#: Greek worktree slots, which hold markers whether or not they currently hold a
+#: task. KNOWN_ROLES above is the narrower "permanent Claude slot" list the relay
+#: checks use; marker keys also carry zeta/eta/theta and every cx-*/vbe-* lane,
+#: which are discovered from the vault instead of enumerated here.
+_SLOT_ROLES: frozenset[str] = frozenset(
+    {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
+)
+
+#: The statuses `cc-close --status` actually accepts (scripts/cc-close:45). A
+#: STRICT SUBSET of TASK_TERMINAL_STATUSES, which is why a remedy cannot be built
+#: from terminality alone — `cc-close <task> --status refused` exits 1 before
+#: cleaning anything. Pinned by tests/test_cc_hygiene_stale_claim_marker.py against
+#: the script itself, so the two cannot drift apart silently.
+CC_CLOSE_ACCEPTED_STATUSES: frozenset[str] = frozenset({"done", "withdrawn", "superseded"})
+
+
+def check_stale_claim_marker(
+    scan: ClaimMarkerScan | Mapping[str, str],
+    notes: Iterable[TaskNote],
+    closed_notes: Iterable[TaskNote] = (),
+    *,
+    known_roles: Iterable[str] | None = None,
+    cache_dir: Path | None = None,
+    unparsed_notes: Iterable[str] = (),
+    enumeration_errors: Iterable[str] = (),
+    marker_dir_provenance: str | None = None,
+    now: datetime | None = None,
+) -> list[HygieneEvent]:
+    """Flag runtime claim markers that disagree with the vault SSOT.
+
+    Each disagreement carries its own ``next_action``, rather than one generic
+    "investigate", and the action must be a command that actually works:
+
+    - ``re-emit-close`` — terminal status, note still in **active/**. ``cc-close``
+      can reach it; the emitted command carries ``--status`` so re-closing cannot
+      overwrite the outcome the note already has. ``warning``.
+    - ``retire-orphan-marker`` — note already in **closed/**. ``cc-close`` exits 2
+      on those before reaching marker cleanup, so it is not the remedy; the event
+      names the marker and sidecar paths instead, and says plainly that no governed
+      tool retires them. ``warning``.
+    - ``operator-adjudication`` — the marker names a task that exists **nowhere**
+      in the vault. Nothing here can tell a deleted note from a corrupt marker,
+      and guessing either way destroys evidence. ``violation``.
+    - ``operator-adjudication`` — the task is live but ``assigned_to`` names a
+      **different** role. Two parties believe they hold it; that is a contested
+      claim, not a cleanup. ``violation``.
+
+    Events report the **observed disagreement**, never an inferred cause. A
+    terminal note beside a surviving marker does not establish that "the lane never
+    ran cc-close" — an interrupted close, a failed cleanup, or the cross-session
+    sweep defect this ships alongside all produce the same state after cc-close
+    ran. The cause is not observable from here, so it is not asserted.
+
+    A marker for a live task assigned to its own role is the healthy case and
+    emits nothing.
+
+    Pure over its inputs — :func:`read_claim_markers` does the IO — so the
+    disagreement matrix is testable without a runtime cache directory.
+    """
+    now = now or _now()
+    scan = scan if isinstance(scan, ClaimMarkerScan) else ClaimMarkerScan(markers=dict(scan))
+    markers = scan.markers
+    # Remediation must name the files the sweep ACTUALLY looked at. The sweeper
+    # takes a configured marker dir, so hardcoding ~/.cache/hapax told an operator
+    # sweeping another cache to delete their LOCAL claim files instead of the
+    # observed ones — a destructive instruction aimed at the wrong machine's state.
+    # Resolved once, here, so EVERY path this check emits — the marker paths an
+    # operator is told to `rm`, the marker_dir in the metadata, and the roots pinned
+    # into a generated cc-close command — is absolute. A relative sweep root reached
+    # the operator as a relative instruction, which means something different
+    # wherever they run it (review round 23).
+    marker_dir = (
+        Path(cache_dir).resolve() if cache_dir is not None else Path.home() / ".cache" / "hapax"
+    )
+    # Count BEFORE collapsing. `{n.task_id: n for n in notes}` silently keeps the
+    # last note for a duplicated id: with active/t1-a.md (in_progress) and
+    # active/t1-z.md (withdrawn) both declaring task_id t1, the dict yields the
+    # withdrawn one, the check emits `cc-close t1 --status withdrawn`, and cc-close
+    # selects t1-a.md as its first prefix match — which passes the identity guard,
+    # because it really does declare t1 — and withdraws the LIVE note. The
+    # exact-filename fix does not help when NEITHER file is t1.md.
+    active_notes = list(notes)
+    closed_note_list = list(closed_notes)
+    _active_counts = Counter(n.task_id for n in active_notes)
+    _closed_counts = Counter(n.task_id for n in closed_note_list)
+    active = {n.task_id: n for n in active_notes}
+    closed = {n.task_id: n for n in closed_note_list}
+
+    events: list[HygieneEvent] = []
+    if scan.enumeration_error is not None:
+        events.append(
+            HygieneEvent(
+                timestamp=now,
+                check_id="stale_claim_marker",
+                severity="violation",
+                message=(
+                    f"claim marker directory {marker_dir} could not be listed "
+                    f"({scan.enumeration_error}) — the live↔declared join checked nothing"
+                ),
+                metadata={
+                    "marker_dir": str(marker_dir),
+                    "next_action": "operator-adjudication",
+                    "reason": "marker_dir_unreadable",
+                    "error": scan.enumeration_error,
+                },
+            )
+        )
+    for path, reason in scan.unreadable:
+        events.append(
+            HygieneEvent(
+                timestamp=now,
+                check_id="stale_claim_marker",
+                severity="violation",
+                message=(
+                    f"claim marker {path} could not be read ({reason}) — this sweep "
+                    "is incomplete and its silence is not evidence of agreement"
+                ),
+                metadata={
+                    "marker": path,
+                    "next_action": "operator-adjudication",
+                    "reason": "marker_unreadable",
+                    "error": reason,
+                },
+            )
+        )
+
+    if known_roles is None:
+        # Roles are discovered, never derived from the marker key itself: a key is
+        # `<role>[-<session_id>]` with hyphens on BOTH sides, so
+        # `cx-crit-15c99664-780f-…` splits into a claim-keyable remainder at
+        # several points ("cx", "cx-crit", "cx-crit-15c99664-780f-41c0-9c3e" …)
+        # and picking one without an external role set is a coin flip. Every role
+        # that has ever held a task appears in some note's assigned_to.
+        discovered = {
+            n.assigned_to
+            for n in (*active.values(), *closed.values())
+            if n.assigned_to and n.assigned_to != "unassigned"
+        }
+        known_roles = discovered | _SLOT_ROLES
+
+    # Loop-invariant, and computed once so the guard below can stand FIRST.
+    #
+    # A note the PARSER rejected is invisible to every judgement in the loop, and
+    # the destructive one — retire-orphan-marker, a manual `rm` no cc-close guard
+    # can intercept — is the one that must not be made blind. Measured: with
+    # active/t1-a.md declaring t1/in_progress but lacking `type`, and a valid
+    # closed/t1-z.md declaring t1 withdrawn, the checker saw only the closed record
+    # and recommended deleting a LIVE lane's marker.
+    #
+    # ANY unparsed note, not a filename-narrowed subset. The first cut filtered by
+    # filename prefix, on the reasoning that those are the files cc-close would
+    # consider — but the note's DECLARED id is what matters and is precisely what
+    # could not be read, so `active/renamed-work.md` declaring this task escaped the
+    # filter entirely. A file whose contents are unreadable could name anything;
+    # narrowing by its name is a guess.
+    #
+    # A failed directory enumeration counts the same way: it means the view is
+    # incomplete without even knowing how many notes are missing.
+    blind_to = sorted(unparsed_notes)
+    blind_errors = sorted(enumeration_errors)
+    for key, task_id in sorted(markers.items()):
+        split = split_claim_marker_key(key, known_roles)
+        # An unresolvable key is reported AS unresolvable rather than guessed at:
+        # a wrong role in a contested-claim event would send the operator to the
+        # wrong lane, which is worse than saying the marker cannot be attributed.
+        role = split[0] if split else None
+        role_label = role if role is not None else f"<unattributable:{key}>"
+
+        # BEFORE the vault lookup, not after. "Exists nowhere in the vault" is a
+        # positive claim about the whole vault, and a sweep that could not read part
+        # of it has not established that: the rejected note may be the task. This
+        # guard sat below the lookup and the not-found branch `continue`d past it,
+        # so the one case with the least evidence produced the most confident event.
+        if blind_to or blind_errors:
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="violation",
+                    task_id=task_id,
+                    session=role,
+                    message=(
+                        "the vault view is incomplete — "
+                        + (f"{len(blind_to)} note(s) could not be parsed" if blind_to else "")
+                        + (" and " if blind_to and blind_errors else "")
+                        + (
+                            f"{len(blind_errors)} directory(ies) could not be listed"
+                            if blind_errors
+                            else ""
+                        )
+                        + f" — so this sweep cannot tell whether '{task_id}' is live, "
+                        "and recommends no retirement or closure"
+                    ),
+                    metadata={
+                        "marker": str(marker_dir / f"cc-active-task-{key}"),
+                        "role": role_label,
+                        "unparsed_notes": ", ".join(blind_to),
+                        "enumeration_errors": ", ".join(blind_errors),
+                        "next_action": "operator-adjudication",
+                        "reason": "vault_view_incomplete",
+                    },
+                )
+            )
+            continue
+
+        note = active.get(task_id)
+        if note is None:
+            note = closed.get(task_id)
+            if note is None:
+                events.append(
+                    HygieneEvent(
+                        timestamp=now,
+                        check_id="stale_claim_marker",
+                        severity="violation",
+                        task_id=task_id,
+                        session=role,
+                        message=(
+                            f"claim marker 'cc-active-task-{key}' names task "
+                            f"'{task_id}', which exists nowhere in the vault"
+                        ),
+                        metadata={
+                            "marker": f"cc-active-task-{key}",
+                            "role": role_label,
+                            "next_action": "operator-adjudication",
+                            "reason": "task_not_in_vault",
+                        },
+                    )
+                )
+                continue
+
+        # A task id present in BOTH collections is a vault inconsistency, not a
+        # terminality signal. `note` comes from active/ while `already_closed`
+        # went true from the closed/ duplicate, so a LIVE in_progress claim was
+        # reported as vault_location=closed and its marker recommended for
+        # deletion. Report the conflict; do not infer which record is real.
+        # Duplicate identities WITHIN one collection are the same class of vault
+        # inconsistency as the cross-directory case below, and more dangerous:
+        # cc-close resolves by filename, so it can select a different note than the
+        # one whose status shaped the remediation. Refuse to construct a command.
+        dupe_in = [
+            name
+            for name, counts in (("active", _active_counts), ("closed", _closed_counts))
+            if counts[task_id] > 1
+        ]
+        if dupe_in:
+            where = " and ".join(dupe_in)
+            paths = sorted(
+                n.path for n in (*active_notes, *closed_note_list) if n.task_id == task_id
+            )
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="violation",
+                    task_id=task_id,
+                    session=role,
+                    message=(
+                        f"task '{task_id}' is declared by more than one note in "
+                        f"{where}/ ({', '.join(paths)}) — cc-close resolves by "
+                        "filename, so any generated command could mutate the wrong one"
+                    ),
+                    metadata={
+                        "marker": str(marker_dir / f"cc-active-task-{key}"),
+                        "role": role_label,
+                        "duplicate_notes": ", ".join(paths),
+                        "next_action": "operator-adjudication",
+                        "reason": "duplicate_task_id_within_collection",
+                    },
+                )
+            )
+            continue
+
+        if task_id in active and task_id in closed:
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="violation",
+                    task_id=task_id,
+                    session=role,
+                    message=(
+                        f"task '{task_id}' exists in BOTH active/ and closed/ "
+                        f"(active={active[task_id].status!r}, closed="
+                        f"{closed[task_id].status!r}) — terminality cannot be "
+                        "inferred, and marker 'cc-active-task-{key}' may be live"
+                    ).replace("{key}", key),
+                    metadata={
+                        "marker": str(marker_dir / f"cc-active-task-{key}"),
+                        "role": role_label,
+                        "active_status": str(active[task_id].status),
+                        "closed_status": str(closed[task_id].status),
+                        "next_action": "operator-adjudication",
+                        "reason": "duplicate_note_active_and_closed",
+                    },
+                )
+            )
+            continue
+
+        already_closed = note.task_id in closed
+        terminal = already_closed or (note.status or "").strip() in TASK_TERMINAL_STATUSES
+        if terminal:
+            # The remedy differs by WHERE the note is, because cc-close resolves
+            # only active/ notes — it exits 2 on one already in closed/ before ever
+            # reaching marker cleanup, so prescribing it there names a command that
+            # cannot work. And for a terminal note still in active/, cc-close
+            # defaults to `done`, which would overwrite the outcome it already has.
+            status_text = (note.status or "").strip()
+            # cc-close finds markers at $HOME/.cache/hapax and nowhere else — it
+            # takes no cache override. So a close command can only be prescribed
+            # when the swept cache IS some home's .cache/hapax; otherwise cc-close
+            # cannot address the observed markers at all, and the honest remedy is
+            # the exact paths rather than a command that would act elsewhere.
+            home_for_cache = (
+                marker_dir.parent.parent if marker_dir.parts[-2:] == (".cache", "hapax") else None
+            )
+            # An owner we could not name cannot be handed a close command: the
+            # label is `<unattributable:...>`, and bash reads the angle brackets as
+            # redirections. It even passes `bash -n`, so a parse check does not
+            # catch it. Route these to a person BEFORE any command is constructed,
+            # which is also the honest disposition — a close needs a closing
+            # identity, and that is exactly what is unknown here.
+            if role is None:
+                events.append(
+                    HygieneEvent(
+                        timestamp=now,
+                        check_id="stale_claim_marker",
+                        severity="violation",
+                        task_id=task_id,
+                        session=None,
+                        message=(
+                            f"claim marker 'cc-active-task-{key}' holds terminal task "
+                            f"'{task_id}' but names no role the vault knows — no close "
+                            "command can be constructed without a closing identity"
+                        ),
+                        metadata={
+                            "marker": str(marker_dir / f"cc-active-task-{key}"),
+                            "role": role_label,
+                            "vault_status": status_text,
+                            "next_action": "operator-adjudication",
+                            "reason": "role_unattributable",
+                        },
+                    )
+                )
+                continue
+            if (
+                already_closed
+                or status_text not in CC_CLOSE_ACCEPTED_STATUSES
+                or home_for_cache is None
+            ):
+                # cc-close cannot reach this note. Either it is already in closed/,
+                # or its status is one cc-close's own --status validator rejects:
+                # that validator accepts {done, withdrawn, superseded}, while
+                # TASK_TERMINAL_STATUSES also carries refused, completed, closed,
+                # closed_poisoned, rejected, not_applicable and deferred. Emitting
+                # `cc-close <task> --status refused` would name a command that exits
+                # 1 before cleaning anything — a next_action that cannot run is
+                # worse than none, because it looks handled.
+                next_action = "retire-orphan-marker"
+                if already_closed:
+                    why = "note already in closed/"
+                elif home_for_cache is None:
+                    why = (
+                        f"cc-close reads markers from $HOME/.cache/hapax and takes no "
+                        f"cache override, so it cannot address {marker_dir}"
+                    )
+                else:
+                    why = (
+                        f"status {status_text!r} is not one cc-close accepts "
+                        f"({', '.join(sorted(CC_CLOSE_ACCEPTED_STATUSES))})"
+                    )
+                remediation = (
+                    f"no governed tool retires this marker ({why}); remove "
+                    f"{marker_dir / f'cc-active-task-{key}'} and "
+                    f"{marker_dir / f'cc-claim-epoch-{key}'} after confirming the closure"
+                )
+            else:
+                next_action = "re-emit-close"
+                # A RUNNABLE command that selects the right identity and the right
+                # roots. Three separate ways this went wrong:
+                #
+                # 1. `cc-close t1 --status withdrawn (as role eta)` — prose inside
+                #    the command; `bash -n` rejects it at the parenthesis.
+                # 2. `HAPAX_AGENT_ROLE=eta ...` — WRONG VARIABLE. cc-close resolves
+                #    identity through agent-role.sh, where HAPAX_AGENT_NAME (and the
+                #    CODEX_* names) outrank HAPAX_AGENT_ROLE. With an inherited
+                #    HAPAX_AGENT_NAME the command silently closed as that lane and
+                #    left the reported markers untouched. HAPAX_AGENT_NAME is the top
+                #    of the ladder, so that is what gets set.
+                # 3. A bare command inherits the operator's roots, so a sweep of
+                #    another vault or cache recommended a close that would act on
+                #    LOCAL state while leaving the observed orphan intact. The
+                #    observed roots are pinned into the command.
+                # Pin the ACTUAL swept roots, shell-quoted, using the variables
+                # each tool documents — never an inferred HOME. The first cut used
+                # `HOME=marker_dir.parent.parent`, which for a cache at
+                # /review/cache yields `HOME=/`, so cc-close resolved a different
+                # vault and /.cache/hapax entirely: following the runbook verbatim
+                # could leave the reported marker and close a same-named task
+                # somewhere else. HAPAX_CC_TASKS_ROOT is cc-task-root.sh's
+                # documented override for the vault.
+                # ABSOLUTE, resolved against the sweeper's cwd at generation time.
+                # The sweeper accepts relative roots and the command kept them, so a
+                # sweep run with `--vault-root vault --relay-root .cache/hapax`
+                # emitted `HAPAX_CC_TASKS_ROOT=vault HOME=.` — which cc-task-root
+                # refuses outright, and where `HOME=.` otherwise points cc-close's
+                # locks and lease cleanup at whatever directory the EXECUTOR happens
+                # to be in. A command documented as runnable verbatim cannot carry a
+                # path that means something different to its reader (round 23).
+                vault_root = Path(note.path).resolve().parent.parent
+                remediation = (
+                    f"HAPAX_AGENT_NAME={shlex.quote(role)} "
+                    f"HAPAX_CC_TASKS_ROOT={shlex.quote(str(vault_root))} "
+                    f"HOME={shlex.quote(str(Path(home_for_cache).resolve()))} "
+                    f"cc-close {shlex.quote(task_id)} --status {shlex.quote(status_text)} "
+                    # The state this sweep OBSERVED, revalidated by cc-close under
+                    # the mutation lock. A generated command is executed later by a
+                    # person; without this, a task that resumed between the sweep
+                    # and the run is still withdrawn, because `withdrawn` skips the
+                    # completion gates. The runbook says to run these verbatim, so
+                    # the command has to carry its own precondition.
+                    f"--expect-status {shlex.quote(status_text)}"
+                )
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="warning",
+                    task_id=task_id,
+                    session=role,
+                    message=(
+                        f"claim marker 'cc-active-task-{key}' still holds "
+                        f"'{task_id}', which the vault records as "
+                        f"{note.status!r}"
+                    ),
+                    metadata={
+                        "marker": f"cc-active-task-{key}",
+                        "role": role_label,
+                        "vault_status": str(note.status),
+                        "vault_location": "closed" if already_closed else "active",
+                        "next_action": next_action,
+                        "remediation": remediation,
+                    },
+                )
+            )
+            continue
+
+        if role is None:
+            # The task is live, so there is nothing stale here — but the marker
+            # cannot be attributed to any role the vault or the slot vocabulary
+            # knows, which is itself a disagreement worth a person's attention.
+            # Reporting it as "contested" would name a role we just admitted we
+            # cannot determine.
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="violation",
+                    task_id=task_id,
+                    session=None,
+                    message=(
+                        f"claim marker 'cc-active-task-{key}' holds live task "
+                        f"'{task_id}' but names no role the vault knows"
+                    ),
+                    metadata={
+                        "marker": f"cc-active-task-{key}",
+                        "role": role_label,
+                        "next_action": "operator-adjudication",
+                        "reason": "role_unattributable",
+                    },
+                )
+            )
+            continue
+
+        assigned = (note.assigned_to or "").strip()
+        if assigned and assigned != "unassigned" and assigned != role:
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="violation",
+                    task_id=task_id,
+                    session=role,
+                    message=(
+                        f"claim marker 'cc-active-task-{key}' holds '{task_id}' "
+                        f"but the vault assigns it to {assigned!r} — contested claim"
+                    ),
+                    metadata={
+                        "marker": f"cc-active-task-{key}",
+                        "role": role,
+                        "vault_assigned_to": assigned,
+                        "next_action": "operator-adjudication",
+                        "reason": "assignee_disagreement",
+                    },
+                )
+            )
+    # Stamp WHERE this join looked and HOW that location was decided onto every
+    # event, at the single return rather than in each branch — a branch added later
+    # cannot forget.
+    #
+    # This is the answer to "an existing but wrong marker directory still fails
+    # open". It cannot be closed by another guard: the absent-dir and empty-dir
+    # events already cover the two states this code can distinguish, and a third
+    # guard for the same hazard would be the design smell, not the repair. What is
+    # actually wrong is that a reader of these events could not tell a verified
+    # location from a coincidence of layout. Now every one of them says.
+    for event in events:
+        if cache_dir is not None:
+            event.metadata.setdefault("marker_dir", str(cache_dir))
+        event.metadata.setdefault("marker_dir_provenance", marker_dir_provenance or "unstated")
     return events

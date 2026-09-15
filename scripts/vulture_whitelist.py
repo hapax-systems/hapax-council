@@ -5132,3 +5132,131 @@ from agents.deliberative_council.models import (
 
 _PhaseOneResult._populate_dossier_sections
 _CouncilVerdict._populate_dossier_sections
+
+# Capability-shape producer (2026-09-14, row
+# ontology-correction-claims-and-capability-shapes-20260913). DETECTOR BLIND SPOT, not
+# dead code — the second kind described above, and a sharper case of it.
+#
+# The production caller is `_shape_suffix()` inside scripts/cc-claim, which is a bash
+# script whose claim path is a ~1000-line Python HEREDOC. Vulture cannot see it twice
+# over: cc-claim is extensionless (so vulture never parses it even when SOURCE_PATHS
+# includes scripts/), and the call site is inside a quoted heredoc rather than importable
+# module text, so no static analyser could resolve it from the file either.
+#
+# Live-call evidence, not assertion: a cc-claim run stamps the rendering into the vault
+# note's session log — `- <ts> <role> claimed (cc-claim, session=<sid>) shape=(harness=claude,
+# scaffold_revision=<sha>)`. tests/test_capability_shape_producer.py pins the producer's
+# contract and its agreement with shared.route_metadata_schema.CapabilityShape.
+#
+# The import alone satisfies the gate; the `_ = (...)` binding below is there so a reader
+# (and ruff) sees the names are referenced deliberately, matching this file's house style.
+from shared.session_identity import (  # noqa: E402
+    capability_shape_from_env as _capability_shape_from_env,
+)
+from shared.session_identity import (  # noqa: E402
+    format_capability_shape as _format_capability_shape,
+)
+
+_ = (_capability_shape_from_env, _format_capability_shape)
+
+# Minted-session-id recognizer (same row, round 2). DETECTOR BLIND SPOT: both
+# production callers are shell — scripts/cc-close's foreign-lease guard and
+# hooks/scripts/agent-role.sh::hapax_session_id_is_minted, each invoking it through
+# `python3 -I -`. It lives in shared/session_identity.py beside the minter on
+# purpose (cc-close previously carried a hand-rolled bash copy of the same
+# knowledge), and tests/test_session_identity.py::TestMintedShapeRecognizer holds
+# it in step with BOTH minters.
+from shared.session_identity import is_minted_session_id as _is_minted_session_id  # noqa: E402
+
+_ = (_is_minted_session_id,)
+
+# cc-task mutation lock (same row, round 13). DETECTOR BLIND SPOT, the same one the
+# capability-shape producer has: the production caller is inside scripts/cc-claim's
+# bash-hosted Python heredoc, which vulture cannot parse — cc-claim is extensionless,
+# and the call sits in quoted heredoc text rather than importable module source.
+# cc-close takes the SAME lock from bash instead (`exec 9>` plus flock(1)), so it
+# imports only `lock_path` to resolve the path, which leaves this entry point with no
+# statically visible caller at all.
+#
+# Live-call evidence, not assertion: tests/test_cc_task_lock.py holds a lock with
+# plain fcntl and requires cc-claim to block on it
+# (test_cc_claim_waits_for_a_held_lock_and_then_succeeds), then to refuse without
+# touching the note or any lease when it never clears. Removing cc-claim's
+# acquisition reds exactly those two, and nothing else — which is why they exist.
+from shared.cc_task_lock import hold_task_note_lock as _hold_task_note_lock  # noqa: E402
+
+_ = (_hold_task_note_lock,)
+
+# Role lease lock (same row, round 16). Same blind spot, same caller: cc-claim's
+# bash-hosted Python heredoc takes it immediately after the task lock. cc-close
+# takes the same lock from bash (`exec 8>` plus flock(1)) and imports only
+# `role_lock_path` to resolve the path, so this entry point has no statically
+# visible caller either.
+#
+# Live-call evidence: tests/test_cc_task_lock.py::TestTheRoleLeaseNamespace holds
+# the ROLE lock with plain fcntl, publishes a replacement claim for a different
+# task into the same lease filename while cc-close waits, and requires the
+# replacement to survive. Skipping cc-close's acquisition reds it.
+from shared.cc_task_lock import hold_role_lease_lock as _hold_role_lease_lock  # noqa: E402
+
+_ = (_hold_role_lease_lock,)
+
+# `held_task_locks` was whitelisted here for one round and is gone with the function
+# (round 22). It probed and released, so it answered "was anyone mid-mutation a
+# moment ago" — cc-claim's all-tasks recovery now enumerates each journal's own task
+# and recovers under that task's lock instead, which needs no probe.
+
+# Journal-owner locking (round 25). Same blind spot as its two siblings above, and
+# now at THREE call sites, every one of them inside a bash-hosted Python heredoc in
+# scripts/cc-claim: the explicit `--recover-claim-publications` branch, the
+# `--rehydrate-activation-cache` branch, and the automatic recovery an ordinary
+# claim triggers. Nothing in importable Python calls it.
+#
+# Live-call evidence, not assertion:
+# tests/test_cc_task_lock.py::TestRecoveryParticipatesToo::
+# test_an_ordinary_claim_completes_the_recovery_it_triggers runs a real cc-claim
+# against a real interrupted journal and requires the recovery to RUN — it reds
+# with exit 4 and a phantom-contention message when the acquisition is broken,
+# which is exactly how this shipped in round 24 and was caught in round 25.
+from shared.cc_task_lock import hold_journal_locks as _hold_journal_locks  # noqa: E402
+
+_ = (_hold_journal_locks,)
+
+# Two observability/test-support entry points on the same module (round 25-26).
+# Both are called only from tests/test_cc_task_lock.py, and that is correct rather
+# than a smell to be hidden:
+#
+# - `held_lock_order()` is a read-only view of module-private acquisition order.
+#   The ordering test has to assert WHAT was acquired and in WHAT ORDER; without
+#   this accessor it would reach into `_ORDER` directly, which is worse — a test
+#   coupled to a private is a test that silently stops meaning anything when the
+#   private changes shape.
+# - `release_all_process_locks()` closes every held descriptor, i.e. simulates
+#   process exit. Production must never call it: holds last until the process ends
+#   precisely so no code path can let go early. A pytest module is ONE process for
+#   many logical ones, so the autouse fixture ends each test the way a process
+#   ends. Its docstring says both halves.
+from shared.cc_task_lock import held_lock_order as _held_lock_order  # noqa: E402
+from shared.cc_task_lock import (
+    release_all_process_locks as _release_all_process_locks,  # noqa: E402
+)
+
+_ = (_held_lock_order, _release_all_process_locks)
+
+# The closure rewrite (round 26-27). Both call sites are bash-hosted Python
+# heredocs in scripts/cc-close — the precondition guard that runs BEFORE the
+# mutating artifact-disposition gate, and the writer that runs after it. It exists
+# as a shared function precisely so those two cannot drift: it returns the bytes a
+# close would write without writing them, and both ask the same question of the
+# same answer.
+#
+# Live-call evidence: tests/test_cc_task_lock.py::TestARefusalMutatesNothing::
+# test_an_unrewritable_status_spelling_refuses_before_the_debt_gate runs real
+# cc-close against a note using explicit YAML mapping syntax and requires the
+# artifact ledger to be byte-identical after two consecutive refusals. Removing
+# the pre-gate call reds it with the ledger already rewritten.
+from shared.cc_task_frontmatter import (  # noqa: E402
+    propose_closure_rewrite as _propose_closure_rewrite,
+)
+
+_ = (_propose_closure_rewrite,)

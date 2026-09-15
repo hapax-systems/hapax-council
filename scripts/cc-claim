@@ -108,6 +108,22 @@ if [[ ! -x "$python_runner" ]]; then
   echo "cc-claim: python3 missing; cannot rewrite frontmatter. Next action: install python3 or rerun from a provisioned repo virtualenv." >&2
   exit 3
 fi
+# The caller's role is NOT resolved here any more, and nothing below asks for it.
+#
+# Round 21 moved the resolution above the recovery branches so both could take a
+# role lock. Rounds 23-25 then established, one call site at a time, that the role
+# those branches must lock is the one each JOURNAL names — never the caller's —
+# and every branch now derives ownership from the journals. That left
+# `recovery_role` computed, passed into two heredocs and read by neither.
+#
+# Deleted rather than kept: it was resolved with a fail-open chain
+# (`${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}`), so an unresolvable role
+# silently degraded recovery to note-lock-only — locking less on exactly the field
+# the lock's correctness depended on, against this file's own stated principle that
+# a journal whose owner cannot be named must not be recovered (review round 25,
+# claude-1). The answer to a fail-open input is to stop depending on it, not to
+# harden the fallback.
+
 if [[ "$rehydrate_activation_cache_only" == "true" ]]; then
   "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
 import sys
@@ -118,13 +134,82 @@ task_id = sys.argv[2]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+# Recovery mutates the SAME resources a close does: the task note and the
+# activation cache. It returned before the lock acquisition below and used
+# sdlc_claim's own `task-locks/<digest>.lock`, which cc-close does not take — so a
+# rehydrate could replace a note between cc-close's read and its unlink, and the
+# archived snapshot would silently lack the recovered changes (review round 21).
+# A second lock namespace is not exclusion; it is two processes agreeing to watch
+# different doors.
+#
+# The CALLER's role is deliberately not locked here, and is no longer resolved at
+# all. Rehydration restores the identity sidecars of the journals it finds, and those
+# are keyed by each journal's own `intent.role` — so a beta shell rehydrating an
+# eta journal was rewriting eta's leases while holding beta's lock, which protects
+# nothing. Same defect as the recovery paths, at a third call site (review round
+# 25, gemini-1). Ownership comes from the journals, through the same primitive.
+from shared.cc_task_lock import (  # noqa: E402
+    TaskLockOrderViolation,
+    TaskLockTimeout,
+    hold_journal_locks,
+)
 from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+
+roots = default_claim_publication_roots(home=Path.home())
+
+try:
+    # `also_tasks` carries the task being rehydrated even when no journal names
+    # it: the note is mutated either way, so its lock is not conditional on what
+    # the journal scan happens to find.
+    _owners, _blind = hold_journal_locks(
+        Path(roots.claim_transaction_root), task_id=task_id, also_tasks=(task_id,)
+    )
+except TaskLockTimeout as exc:
+    print(
+        f"cc-claim: BLOCKED — {exc}. A cc-close or cc-claim is mid-mutation on this "
+        "task. Next action: let it finish and rerun the rehydrate. Nothing was "
+        "modified.",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+except TaskLockOrderViolation as exc:
+    print(
+        f"cc-claim: BLOCKED — {exc}. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+except OSError as exc:
+    print(
+        f"cc-claim: BLOCKED — could not take the cc-task lock for '{task_id}': {exc}. "
+        "This is NOT contention. Next action: check permissions on the hapax cache "
+        "directory. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(5)
+
+# A journal this scan could not attribute either names THIS task with no role, or
+# could not be read at all — and an unreadable one may well be this task's. Either
+# way its leases cannot be locked, so the rehydrate REFUSES rather than running
+# unprotected. Refusing does less than proceeding, which is the direction a
+# failure path is allowed to move.
+_relevant = [msg for (_t, msg) in _blind if _t in (None, task_id)]
+if _relevant:
+    for _msg in _relevant:
+        print(f"cc-claim: BLOCKED — unattributable journal: {_msg}", file=sys.stderr)
+    print(
+        "cc-claim: BLOCKED — rehydrate would rewrite identity sidecars whose owning "
+        "role cannot be named, so the lock protecting them cannot be taken. Next "
+        f"action: repair or quarantine the journals named above, then rerun "
+        f"`cc-claim --rehydrate-activation-cache {task_id}`. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(8)
+
 from shared.sdlc_claim import (  # noqa: E402
     ClaimPublicationError,
     rehydrate_applied_activation_projections,
 )
 
-roots = default_claim_publication_roots(home=Path.home())
 try:
     results = rehydrate_applied_activation_projections(
         cache_dir=Path(roots.claim_cache_dir),
@@ -155,18 +240,90 @@ task_id = sys.argv[2] or None
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+# Same reason as the rehydrate branch above: recovery rewrites task notes and the
+# activation cache under sdlc_claim's own lock namespace, which cc-close does not
+# take. Two lock namespaces over one resource is not exclusion.
+from shared.cc_task_lock import (  # noqa: E402
+    TaskLockOrderViolation,
+    TaskLockTimeout,
+    hold_journal_locks,
+)
 from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
 from shared.sdlc_claim import ClaimPublicationError, recover_claim_publications  # noqa: E402
 
 roots = default_claim_publication_roots(home=Path.home())
+
+
+# Ownership comes from the journals, and the locks are taken to a FIXPOINT.
+#
+# The caller's environment is deliberately not consulted: the journal says whose
+# note and whose leases a recovery will rewrite, and the caller's shell does not.
+# And discovering owners once is not enough — recovery enumerates
+# the journals again, so a publisher already holding a task lock can leave a NEW
+# journal for another role before releasing it, and that one would be recovered with
+# no lock on what it rewrites (review round 24). `hold_journal_locks` re-scans after
+# each acquisition until the owner set stops growing.
 try:
-    results = recover_claim_publications(
-        cache_dir=Path(roots.claim_cache_dir),
-        transaction_root=Path(roots.claim_transaction_root),
-        receipt_root=Path(roots.claim_receipt_root),
-        lock_root=Path(roots.claim_lock_root),
+    pending, blind = hold_journal_locks(
+        roots.claim_transaction_root,
         task_id=task_id,
+        also_tasks=(task_id,) if task_id else (),
     )
+except TaskLockTimeout as exc:
+    print(
+        f"cc-claim: BLOCKED — {exc}. A cc-close or cc-claim is mid-mutation. Next "
+        "action: let it finish and rerun the recovery. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+except TaskLockOrderViolation as exc:
+    print(f"cc-claim: BLOCKED — {exc}. Nothing was modified.", file=sys.stderr)
+    sys.exit(4)
+except OSError as exc:
+    print(
+        f"cc-claim: BLOCKED — could not take the cc-task lock: {exc}. This is NOT "
+        "contention. Next action: check permissions on the hapax cache directory. "
+        "Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(5)
+
+blocked_tasks = {t for (t, _msg) in blind if t}
+for _t, _msg in blind:
+    # Reported, and EXCLUDED — not a blanket refusal. A journal whose owner cannot
+    # be named must not be recovered, because nothing can lock what it rewrites; the
+    # other tasks' journals are unaffected and refusing them too would take out
+    # unrelated recoveries for one unreadable file.
+    print(f"cc-claim: recovery skipped (unattributable journal): {_msg}", file=sys.stderr)
+
+_pending_tasks = sorted(
+    ({t for (t, _r) in pending} | ({task_id} if task_id else set())) - blocked_tasks
+)
+
+try:
+    results = []
+    if task_id:
+        results = list(
+            recover_claim_publications(
+                cache_dir=Path(roots.claim_cache_dir),
+                transaction_root=Path(roots.claim_transaction_root),
+                receipt_root=Path(roots.claim_receipt_root),
+                lock_root=Path(roots.claim_lock_root),
+                task_id=task_id,
+            )
+        )
+    else:
+        # Per task, under that task's lock — not one unbounded sweep.
+        for pending_task in _pending_tasks:
+            results.extend(
+                recover_claim_publications(
+                    cache_dir=Path(roots.claim_cache_dir),
+                    transaction_root=Path(roots.claim_transaction_root),
+                    receipt_root=Path(roots.claim_receipt_root),
+                    lock_root=Path(roots.claim_lock_root),
+                    task_id=pending_task,
+                )
+            )
 except ClaimPublicationError as exc:
     print(
         f"cc-claim: HOLD — {exc}. Next action: repair the named recovery root, "
@@ -176,14 +333,39 @@ except ClaimPublicationError as exc:
         file=sys.stderr,
     )
     sys.exit(8)
-if not results:
-    scope = task_id or "all tasks"
-    print(f"cc-claim: no admitted claim-publication journals required recovery for {scope}")
+_scope = task_id or "all tasks"
+if not results and not blind:
+    print(f"cc-claim: no admitted claim-publication journals required recovery for {_scope}")
     sys.exit(0)
 holds = [item for item in results if item.state == "hold"]
 for item in results:
     suffix = f":{item.reason_code}" if item.reason_code else ""
     print(f"cc-claim: recovery {item.publication_id}:{item.state}{suffix}")
+if not results:
+    # Skipping them ran everything that COULD run — which was nothing. Saying "no
+    # journals required recovery" here is the exact opposite of what happened.
+    print(
+        f"cc-claim: recovered nothing for {_scope} — every journal found was "
+        "unattributable and was skipped (listed above).",
+        file=sys.stderr,
+    )
+if blind:
+    # INCOMPLETE, and the exit status has to say so. Skipping unattributable
+    # journals is right — they cannot be locked, and refusing the whole run would
+    # take out unrelated recoveries — but an exit 0 tells the caller the recovery
+    # is DONE, and with only malformed journals present it also printed "no
+    # journals required recovery" (review round 26, codex-1, reproduced). The
+    # skipped ones remain interrupted and something still has to deal with them.
+    print(
+        f"cc-claim: INCOMPLETE — {len(blind)} claim-publication journal(s) could not "
+        "be attributed to a task and role, so nothing could take the locks that "
+        "protect what recovering them would rewrite. They are still interrupted. "
+        "Next action: repair or quarantine each journal named above (its manifest "
+        "must declare intent.task_id and intent.role), then rerun "
+        "cc-claim --recover-claim-publications" + (f" {task_id}" if task_id else "") + ".",
+        file=sys.stderr,
+    )
+    sys.exit(8)
 if holds:
     print(
         "cc-claim: HOLD — admitted claim-publication recovery still has held journals. "
@@ -405,6 +587,89 @@ claim_epoch = int(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else 0
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+from shared.cc_task_lock import (  # noqa: E402
+    TaskLockOrderViolation,
+    TaskLockTimeout,
+    hold_journal_locks,
+)
+from shared.gate0b_claim_publication_install import (  # noqa: E402
+    default_claim_publication_roots as _lock_phase_roots,
+)
+
+# Serialize this whole heredoc against cc-close, which takes the SAME lock
+# (shared/cc_task_lock.py) around its mutating tail. Taken here, before the note
+# is read, because everything below — the eligibility read, the rewrite, the lease
+# files — is one decision made from one view of the note, and cc-close's
+# destructive step is an unlink of that note. Held until this process exits;
+# there is no scope to close around top-level statements, and process exit is the
+# one release that cannot be skipped.
+#
+# No cache_dir argument, deliberately. cc-close resolves the path by calling
+# lock_path(task_id) with no override either, so both go through lock_dir() and
+# cannot disagree. Passing cc-claim's own cache_dir here would have derived
+# $HOME/.cache/hapax while cc-close derived $XDG_CACHE_HOME/hapax — two lock files,
+# no exclusion, and nothing to notice it.
+#
+# TWO locks, in this order, for two resources: the note (keyed by task) and this
+# role's lease namespace (keyed by role). cc-close takes them in the SAME order and
+# neither takes them in the other, which is what makes a second lock safe rather
+# than a deadlock waiting for load. Without the role lock, cc-close closing task A
+# could delete the `cc-active-task-<role>[-<sid>]` file this claim had just
+# republished as task B — it held B's task lock, cc-close held A's, and the two
+# never met (review round 16, reproduced).
+#
+# Exit codes are distinct because the remedies are: 4 is contention, which is
+# retryable; 5 is an unusable cache directory, which is not, and a caller branching
+# on the code alone could not tell them apart when both were 4.
+# ONE acquisition for the whole set, because ordering is a property of the set.
+#
+# This used to be two calls — the task lock, then THIS ROLE's lease lock — with the
+# automatic recovery further down taking the journals' role locks later. That is
+# unfixable by retry: an eta caller recovering a beta journal requested beta AFTER
+# eta, the ascending-order rule refused it, and every rerun repeated the same
+# sequence. Automatic recovery for any journal whose role sorts before the caller's
+# was permanently unreachable (review round 26, codex-1, reproduced).
+#
+# So the journals are DISCOVERED HERE, before any role lock exists, and the
+# caller's own task and role ride along as `also_*`. `hold_journal_locks` then
+# takes the union in one ascending pass: all task locks to a fixpoint, then all
+# role locks. The recovery further down calls it again and every lock is already
+# held, so it is a no-op — the primitive is re-entrant per process.
+#
+# Journals for OTHER tasks are not this claim's business, hence `task_id=`.
+try:
+    _journal_root = Path(_lock_phase_roots(home=Path.home()).claim_transaction_root)
+    hold_journal_locks(
+        _journal_root,
+        task_id=task_id,
+        also_tasks=(task_id,),
+        also_roles=(role,) if role else (),
+    )
+except TaskLockTimeout as exc:
+    print(
+        f"cc-claim: BLOCKED — {exc}. Another cc-claim or cc-close is mid-mutation on "
+        "this task or this role's leases. Next action: let it finish and re-run; if "
+        "nothing is running, check for a wedged process holding the lock. Nothing "
+        "was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+except TaskLockOrderViolation as exc:
+    print(
+        f"cc-claim: BLOCKED — {exc}. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(4)
+except OSError as exc:
+    print(
+        f"cc-claim: BLOCKED — could not take the cc-task lock for '{task_id}': {exc}. "
+        "Refusing rather than racing cc-close. This is NOT contention — retrying will "
+        "not help. Next action: check permissions on the hapax cache directory. "
+        "Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(5)
+
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
@@ -414,6 +679,55 @@ from shared.sdlc_lifecycle import (  # noqa: E402
     frontmatter_from_text,
     task_closure_validity,
 )
+from shared.session_identity import (  # noqa: E402
+    capability_shape_from_env,
+    format_capability_shape,
+)
+
+
+def _scaffold_revision() -> str | None:
+    """The repo revision this claim was made from — part of the shape.
+
+    Two runs of one model on one route are different shapes when the scaffold
+    between them changed. Read from git; ``None`` when it cannot be determined,
+    because an unreadable revision is not a recorded one.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    revision = result.stdout.strip()
+    return revision if result.returncode == 0 and revision else None
+
+
+def _shape_suffix() -> str:
+    """`` shape=(…)`` appended AFTER the existing log entry, or "" when unknown.
+
+    Deliberately outside the `(cc-claim, session=…)` parentheses: that substring is
+    a format other readers match on — tests/scripts/test_cc_claim_session_identity.py
+    pins it exactly — and appending inside would have changed a line shape this
+    change has no business changing.
+
+    This is the writer the capability_shape field exists for: without it the
+    schema can represent a shape and no claim ever carries one, so "which
+    capability shape held this claim" still needs transcript archaeology —
+    exactly the gap the row names. An empty string rather than ``shape=()`` so an
+    absence is never recorded as a finding.
+    """
+    import os
+
+    rendered = format_capability_shape(
+        capability_shape_from_env(os.environ, scaffold_revision=_scaffold_revision())
+    )
+    return f" shape=({rendered})" if rendered else ""
 
 note_before = path.read_bytes()
 text = note_before.decode("utf-8")
@@ -643,21 +957,68 @@ if canon_enforced:
     )
     held = [item for item in inspections if item.disposition == "hold"]
     if held:
+        # AUTOMATIC recovery needs the same journal-derived locks the explicit
+        # `--recover-claim-publications` path takes. This call was reached holding
+        # only the caller's task and role locks, so a beta caller recovering an eta
+        # journal for this task rewrote eta's leases with eta unlocked — and a
+        # concurrent cc-close for another eta task could then delete the marker and
+        # epoch this recovery had just published (review round 24).
+        from shared.cc_task_lock import (  # noqa: E402
+            TaskLockTimeout as _JournalLockTimeout,
+        )
+        from shared.cc_task_lock import (  # noqa: E402
+            TaskLockOrderViolation as _JournalLockOrderViolation,
+        )
+        from shared.cc_task_lock import (  # noqa: E402
+            hold_journal_locks as _hold_journal_locks,
+        )
+
+        # This process ALREADY holds the task lock (taken above) and this role's
+        # lease lock. Re-taking the task lock here is a no-op because the primitive
+        # records what this process holds — before that, it waited for itself and
+        # every automatic recovery exited 4 blaming a writer that did not exist
+        # (review round 25, codex-1, reproduced).
         try:
-            recovered = recover_claim_publications(
-                cache_dir=cache_dir,
-                transaction_root=transaction_root,
-                receipt_root=receipt_root,
-                lock_root=lock_root,
-                task_id=task_id,
-            )
-        except ClaimPublicationError as exc:
+            _owners, _blind = _hold_journal_locks(transaction_root, task_id=task_id)
+        except _JournalLockTimeout as exc:
             print(
-                f"cc-claim: HOLD — {exc}. Next action: repair the named recovery root, "
-                f"then rerun `cc-claim --recover-claim-publications {task_id}`.",
+                f"cc-claim: BLOCKED — {exc}. Next action: let the other writer finish "
+                "and rerun cc-claim. Nothing was modified.",
                 file=sys.stderr,
             )
-            sys.exit(8)
+            sys.exit(4)
+        except _JournalLockOrderViolation as exc:
+            print(f"cc-claim: BLOCKED — {exc}. Nothing was modified.", file=sys.stderr)
+            sys.exit(4)
+        _unattributable = [msg for (_t, msg) in _blind]
+        for _msg in _unattributable:
+            print(
+                f"cc-claim: recovery skipped (unattributable journal): {_msg}",
+                file=sys.stderr,
+            )
+        if _unattributable:
+            # Skip recovery entirely for THIS task: its journal set contains one
+            # whose leases nothing can lock, and recover_claim_publications takes a
+            # task, not a journal. The inspection HOLD below still reports the
+            # underlying condition, which is the honest outcome — nothing was
+            # recovered and nothing was silently left looking recovered.
+            recovered = ()
+        else:
+            try:
+                recovered = recover_claim_publications(
+                    cache_dir=cache_dir,
+                    transaction_root=transaction_root,
+                    receipt_root=receipt_root,
+                    lock_root=lock_root,
+                    task_id=task_id,
+                )
+            except ClaimPublicationError as exc:
+                print(
+                    f"cc-claim: HOLD — {exc}. Next action: repair the named recovery "
+                    f"root, then rerun `cc-claim --recover-claim-publications {task_id}`.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
         inspections = inspect_claim_publications(
             cache_dir=cache_dir,
             transaction_root=transaction_root,
@@ -1211,11 +1572,11 @@ if claim_mode == "claim":
         sys.exit(6)
     text = _front + _rest
     session_suffix = f", session={session_id}" if session_id else ""
-    log_line = f"- {now} {role} claimed (cc-claim{session_suffix})\n"
+    log_line = f"- {now} {role} claimed (cc-claim{session_suffix}){_shape_suffix()}\n"
     result_message = f"cc-claim: claimed task '{task_id}' for role '{role}'"
 else:
     session_suffix = f", session={session_id}" if session_id else ""
-    log_line = f"- {now} {role} resumed ready-state task (cc-claim{session_suffix})\n"
+    log_line = f"- {now} {role} resumed ready-state task (cc-claim{session_suffix}){_shape_suffix()}\n"
     result_message = f"cc-claim: resumed task '{task_id}' for role '{role}'"
 
 text = re.sub(

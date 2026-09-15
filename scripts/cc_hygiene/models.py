@@ -26,9 +26,11 @@ CheckId = Literal[
     "refusal_dormancy",
     "spec_staleness",
     "vault_link_integrity",
+    "stale_claim_marker",
 ]
-"""The 8 research §2 check identifiers, plus spec_staleness and the
-Phase-0 vault_link_integrity recurrence guard."""
+"""The 8 research §2 check identifiers, plus spec_staleness, the Phase-0
+vault_link_integrity recurrence guard, and stale_claim_marker — the live↔declared
+join between runtime claim markers and the vault SSOT."""
 
 Severity = Literal["info", "warning", "violation"]
 """Event severity tier. ntfy alerts (PR5) gate on `violation`."""

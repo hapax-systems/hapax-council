@@ -1515,6 +1515,38 @@ CLAUDE_PROFILE_MODEL_PIN: dict[str, str] = {
 }
 
 
+def _pin_capability_descriptors(env: dict[str, str], addressee: str, route: PlatformPath) -> None:
+    """Write this launch's condition vector and ADDRESS it to the launcher.
+
+    HAPAX_CAPABILITY_ROUTE and HAPAX_CAPABILITY_MODEL are read by
+    shared.session_identity.capability_shape_from_env and land in a claim's
+    recorded condition vector, so an inherited value is a FALSE measurement — it
+    reads as observed when it describes the parent.
+
+    This used to be a scrub, called on every launch path, which covered the
+    dispatched path and only that path: an operator running `hapax-claude` by hand
+    from inside a codex lane still recorded that lane's route (review round 12).
+    Scrubbing here AND in six launchers would be two mitigations for one hazard, so
+    the shape changed instead. Launchers now clear descriptors by default and keep
+    them only when HAPAX_CAPABILITY_PINNED names them — the addressed, consume-once
+    grant already proven for the session id
+    (hooks/scripts/agent-role.sh::hapax_consume_launch_capability_descriptors).
+
+    Consequences worth stating, because both are visible as deletions:
+      * paths that do NOT call this need no scrub. Not writing the pin already
+        means the launcher clears, so silence is the refusal.
+      * HAPAX_CLAUDE_MODEL is no longer managed here. It is hapax-claude-headless's
+        INPUT, not a record: that launcher publishes HAPAX_CAPABILITY_MODEL in the
+        same branch that passes `--model`, so what is recorded is what executed.
+    """
+    env["HAPAX_CAPABILITY_ROUTE"] = f"{route.platform}.{route.mode}.{route.profile}"
+    # The pinner writes the WHOLE set. A pin says "these descriptors are yours",
+    # so a member left unwritten would be inherited under the pin's authority —
+    # the very failure this replaces. The model is the launcher's to publish.
+    env.pop("HAPAX_CAPABILITY_MODEL", None)
+    env["HAPAX_CAPABILITY_PINNED"] = addressee
+
+
 def launch_claude_headless(task_id: str, lane: str, prompt: str, route: PlatformPath) -> int:
     launcher = Path(
         os.environ.get(
@@ -1542,6 +1574,12 @@ def launch_claude_headless(task_id: str, lane: str, prompt: str, route: Platform
         )
         return 9
     env["HAPAX_CLAUDE_MODEL"] = pinned_model
+    # The route id this lane is executing under, addressed to the launcher that
+    # will record it. Without a writer here,
+    # shared.session_identity.capability_shape_from_env could only ever record
+    # route=None, and item 3's whole point is that a capability number carries its
+    # condition vector.
+    _pin_capability_descriptors(env, "hapax-claude-headless", route)
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_CLAUDE_HEADLESS_WORKDIR"] = str(lane_worktree(lane, "claude"))
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("claude", "headless")
@@ -1568,6 +1606,12 @@ def launch_claude_interactive(task_id: str, lane: str, validation: Validation) -
     # hapax-claude pins the freshly minted id into its tmux runner script.
     env = os.environ.copy()
     env.pop("HAPAX_SESSION_ID", None)
+    # This path selects no route object, so it can name no capability descriptor
+    # and writes no HAPAX_CAPABILITY_PINNED. That silence IS the refusal: hapax-claude
+    # clears descriptors unless a pin names it, so an inherited route cannot be
+    # recorded as this lane's measured condition vector. Scrubbing here as well
+    # would be a second mitigation for the one hazard, and would still leave the
+    # by-hand launch — the case round 12 reproduced — uncovered.
     if status in {"claimed", "in_progress"}:
         env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     return subprocess.call(args, env=env)
@@ -1881,6 +1925,16 @@ def launch_codex_headless(
             ]
         )
     env = os.environ.copy()
+    # Never propagate the dispatcher's own session id: each lane mints its own
+    # per-spawn HAPAX_SESSION_ID so two same-role re-dispatched lanes never share a
+    # claim key (reform-identity-coherence cluster 11, AC1). The claude paths did
+    # this from the start; codex and vibe did not, so a codex lane inherited the
+    # dispatcher's id straight through os.environ.copy().
+    env.pop("HAPAX_SESSION_ID", None)
+    # A codex lane dispatched from a claude lane would otherwise inherit the
+    # parent's descriptors and record them beside harness=codex. The pin writes the
+    # whole set and names the launcher entitled to keep it.
+    _pin_capability_descriptors(env, "hapax-codex-headless", route)
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
     if local_fallback_allowed:
@@ -1920,7 +1974,16 @@ def launch_vibe_headless(task_id: str, lane: str, prompt: str, validation: Valid
     ]
     if status in {"claimed", "in_progress"}:
         args.append("--no-claim")
-    return _sliced_call(args)
+    # Scrub the dispatcher's session id for the same reason as the codex and
+    # claude paths above — hapax-vibe now mints its own. Capability descriptors need
+    # no scrub here: this path selects no route object, so it writes no
+    # HAPAX_CAPABILITY_PINNED, and hapax-vibe therefore clears them itself.
+    # (Measured before the pin existed: a vibe lane dispatched from a
+    # codex.headless.full environment produced harness=vibe with
+    # route=codex.headless.full.)
+    env = os.environ.copy()
+    env.pop("HAPAX_SESSION_ID", None)
+    return _sliced_call(args, env)
 
 
 def advance_task_stage(task_id: str, stage: str) -> int:
