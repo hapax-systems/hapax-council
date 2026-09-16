@@ -513,6 +513,116 @@ def test_cc_cascade_unblock_waits_for_a_held_projection_lock(
     assert waited > 1.5, f"cc-cascade-unblock did not wait for the lock ({waited:.2f}s)"
 
 
+#: Child that takes the projection lock, lands a change while the tool under test is blocked on
+#: it, and releases. Kept flat and %%-substituted rather than built with an indented f-string +
+#: ``textwrap.dedent``: that combination mis-indented the generated source, the child died before
+#: printing ``HELD``, and the test reported it as "the writer never took the lock" — a broken
+#: harness wearing the costume of a real finding.
+_FIRST_WRITER = """\
+import sys, time
+sys.path.insert(0, %(repo)r)
+from pathlib import Path
+from shared import task_note_lock as tnl
+note = Path(%(note)r)
+with tnl.projected_path_lock(None, (note,), root=Path(%(root)r), timeout=30.0):
+    print("HELD", flush=True)
+    time.sleep(3)
+    text = note.read_text(encoding="utf-8")
+    note.write_text(
+        text.replace(
+            "stage: S6_IMPLEMENTATION",
+            "stage: S6_IMPLEMENTATION\\n%(marker)s",
+            1,
+        ),
+        encoding="utf-8",
+    )
+print("RELEASED", flush=True)
+"""
+
+
+@pytest.mark.parametrize(
+    ("tool", "argv_tail", "evidence"),
+    [
+        ("cc-stage-advance", ["lock-probe-1", "S7_RELEASE"], "stage: S7_RELEASE"),
+        (
+            "cc-scope-widen",
+            ["lock-probe-1", "--add", "shared/coord_projection.py"],
+            "shared/coord_projection.py",
+        ),
+    ],
+)
+def test_a_writer_does_not_clobber_a_change_made_while_it_waited(
+    probe: tuple[Path, Path, dict[str, str]], tool: str, argv_tail: list[str], evidence: str
+) -> None:
+    """The property `test_every_converted_writer_actually_takes_the_lock` cannot reach.
+
+    That test keys on the FILE — an import and a ``with`` in the source — so it cannot tell a
+    writer that locks its whole read-modify-write from one that locks only the write. The
+    difference is invisible to it and fatal in production, and it is exactly how round 4's
+    critical survived round 3: ``cc-claim`` was in ``UNDER_LOCK``, passed the membership check,
+    and was still deriving its bytes from a read taken ~800 lines before the lock.
+
+    This reaches it behaviourally. Another writer takes the lock first, changes the note, and
+    releases; the tool under test is already blocked on that lock when the change lands. If its
+    read happened before the lock, it overwrites the change with a stale snapshot and nothing
+    reports anything. If the read is inside, the change survives.
+    """
+
+    home, note, env = probe
+    root = home / "coord" / "task-locks"
+    marker = "witness_field: survived-the-wait"
+
+    first = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _FIRST_WRITER
+            % {
+                # str(), not the Path: %r on a Path renders PosixPath(...), which the child
+                # cannot evaluate without the import.
+                "repo": str(REPO_ROOT),
+                "note": str(note),
+                "root": str(root),
+                "marker": marker,
+            },
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert first.stdout is not None
+        held = first.stdout.readline().strip()
+        if held != "HELD":
+            first.wait(timeout=30)
+            raise AssertionError(
+                f"the first writer never took the lock: {held!r}; "
+                f"stderr={first.stderr.read() if first.stderr else ''!r}"
+            )
+        done = subprocess.run(
+            [str(REPO_ROOT / "scripts" / tool), *argv_tail],
+            capture_output=True,
+            text=True,
+            env={**env, "HAPAX_TASK_NOTE_LOCK_TIMEOUT": "30"},
+            timeout=120,
+        )
+    finally:
+        out, err = first.communicate(timeout=60)
+
+    assert "RELEASED" in out, f"the first writer did not finish: {out!r} {err!r}"
+    final = note.read_text(encoding="utf-8")
+
+    # Either the tool applied its change on top of the other writer's, or it refused because
+    # the note moved under it. What it must not do is silently drop the other writer's bytes.
+    assert marker in final, (
+        f"{tool} clobbered a change made while it waited for the lock — its read happened "
+        f"before the lock, not inside it.\nstdout={done.stdout!r}\nstderr={done.stderr!r}\n"
+        f"note:\n{final}"
+    )
+    if done.returncode == 0:
+        assert evidence in final, f"{tool} reported success but its own change is absent:\n{final}"
+
+
 # ───────────────────────────────────────────────────────────── conformance: the inventory
 
 #: Writers converted to take the projection lock. Each must still take it.
