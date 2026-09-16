@@ -29,12 +29,17 @@ _hapax_secret_cli() {
   command -v hapax-secret >/dev/null 2>&1
 }
 
-# hapax_secret_get NAME
-#   Print the value on stdout, trailing newline stripped. Returns non-zero and prints nothing
-#   when the secret is not resolvable here. Callers that need a diagnostic use the _or_fail
-#   form; this one stays quiet so it composes inside `||` chains.
-hapax_secret_get() {
-  local name="${1:?hapax_secret_get: a secret name is required}"
+# hapax_secret_read NAME
+#   Print whatever was stored, trailing newline stripped — INCLUDING an empty value — and
+#   return 0. Returns non-zero only when the secret could not be READ at all.
+#
+#   The distinction matters to callers that report differently for the two cases: "there is
+#   no secret here" and "there is one and it is empty" need different operator actions (look
+#   for a secret that was never put, versus re-put one that was put wrong). Collapsing them
+#   sends an operator to the wrong place; `hapax-glmcp-claude` exits 5 and 6 respectively,
+#   and lost that distinction the first time this helper was wired in.
+hapax_secret_read() {
+  local name="${1:?hapax_secret_read: a secret name is required}"
   local value
   if ! _hapax_secret_cli; then
     return 1
@@ -44,6 +49,19 @@ hapax_secret_get() {
   value="$(hapax-secret "$name" 2>/dev/null)" || return 1
   value="${value%$'\n'}"
   value="${value%$'\r'}"
+  printf '%s' "$value"
+}
+
+# hapax_secret_get NAME
+#   Print the value on stdout, trailing newline stripped. Returns non-zero and prints nothing
+#   when the secret is not resolvable here OR is empty — an empty credential is not a usable
+#   one, and most callers only ever want a usable value. Callers that need a diagnostic use
+#   the _or_fail form; this one stays quiet so it composes inside `||` chains. Callers that
+#   must tell empty from absent use `hapax_secret_read`.
+hapax_secret_get() {
+  local name="${1:?hapax_secret_get: a secret name is required}"
+  local value
+  value="$(hapax_secret_read "$name")" || return 1
   [ -n "$value" ] || return 1
   printf '%s' "$value"
 }

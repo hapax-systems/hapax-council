@@ -8,6 +8,10 @@
 
 set -euo pipefail
 
+# Secrets come from the FileStore through the one shared helper, never from pass.
+# Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/secret.sh"
+
 usage() {
   cat <<'EOF'
 usage: hapax-glmcp-claude [--check] [claude args...]
@@ -16,17 +20,17 @@ Runs Claude Code with GLM Coding Plan environment variables for this invocation.
 The Z.ai API key is read from pass at runtime.
 
 Defaults:
-  pass entry: glmcp/api-key
+  FileStore secret: glmcp/api-key
   base URL:   https://api.z.ai/api/anthropic
   model:      glm-5.2[1m]
 
 Environment overrides:
-  HAPAX_GLMCP_SECRET_ENTRY       pass entry name (default: glmcp/api-key)
+  HAPAX_GLMCP_SECRET_ENTRY       FileStore secret name (default: glmcp/api-key)
   HAPAX_GLMCP_MODEL              primary GLM model (default: glm-5.2[1m])
   HAPAX_GLMCP_HAIKU_MODEL        Haiku/default-light mapping (default: glm-4.5-air)
   HAPAX_GLMCP_ANTHROPIC_BASE_URL endpoint override, gated to the Z.ai API host
   HAPAX_GLMCP_ALLOW_NON_CODING_PLAN_MODEL=1 allow a non-docs-pinned primary model
-  HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE=1 allow a reviewed glmcp/* pass entry
+  HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE=1 allow a reviewed glmcp/* secret name
   HAPAX_GLMCP_ALLOW_BASE_URL_OVERRIDE=1 allow a reviewed endpoint override
 
 Recheck:
@@ -99,12 +103,12 @@ esac
 
 if [[ "$secret_entry" != "$default_secret_entry" ]]; then
   if [[ "${HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE:-0}" != "1" ]]; then
-    echo "hapax-glmcp-claude: refusing pass entry '$secret_entry'; expected $default_secret_entry" >&2
-    echo "Set HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE=1 only after reviewing the GLMCP-specific pass entry." >&2
+    echo "hapax-glmcp-claude: refusing secret name '$secret_entry'; expected $default_secret_entry" >&2
+    echo "Set HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE=1 only after reviewing the GLMCP-specific secret." >&2
     exit 8
   fi
   if ! valid_glmcp_secret_entry "$secret_entry"; then
-    echo "hapax-glmcp-claude: refused pass entry '$secret_entry'; this launcher only reads non-traversing glmcp/* secrets." >&2
+    echo "hapax-glmcp-claude: refused secret name '$secret_entry'; this launcher only reads non-traversing glmcp/* secrets." >&2
     echo "For other providers or experiments, use a separate launcher and secret entry." >&2
     exit 8
   fi
@@ -147,19 +151,17 @@ case "$-" in
     ;;
 esac
 
-pass_error_file="$(mktemp -t hapax-glmcp-pass.XXXXXX)"
-auth_token="$(pass show "$secret_entry" 2>"$pass_error_file" | sed -n '1p')" || {
-  echo "hapax-glmcp-claude: failed to read pass entry '$secret_entry'; check: pass show '$secret_entry' >/dev/null" >&2
-  echo "hapax-glmcp-claude: pass returned an error; stderr was suppressed to avoid replaying secret-adjacent diagnostics." >&2
-  rm -f "$pass_error_file"
-  pass_error_file=""
+# Two exit codes, kept distinct because they need different operator actions: 5 = the
+# secret could not be READ at all, 6 = it was read and is empty. Collapsing them would send
+# an operator to re-put a secret that is already there, or to look for one that is not.
+if ! auth_token="$(hapax_secret_read "$secret_entry")"; then
+  echo "hapax-glmcp-claude: could not read the secret '$secret_entry' from the FileStore." >&2
+  echo "hapax-glmcp-claude: Next action: put it with \`hapax-secret $secret_entry\` (TTY dialogue via reins), then retry. Underlying stderr is suppressed to avoid replaying secret-adjacent diagnostics." >&2
   exit 5
-}
-rm -f "$pass_error_file"
-pass_error_file=""
+fi
 
 if [[ -z "$auth_token" ]]; then
-  echo "hapax-glmcp-claude: pass entry '$secret_entry' returned an empty first line; update the pass entry so line 1 is the Z.ai API key." >&2
+  echo "hapax-glmcp-claude: the secret '$secret_entry' is empty. Next action: re-put it with \`hapax-secret $secret_entry\` so the value is the Z.ai API key." >&2
   exit 6
 fi
 

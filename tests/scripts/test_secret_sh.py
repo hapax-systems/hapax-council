@@ -183,3 +183,49 @@ class TestNoPassPath:
         )
         for forbidden in ("pass show", "pass ls", "pass insert", "gopass", "PASSWORD_STORE_DIR"):
             assert forbidden not in code, forbidden
+
+
+class TestReadVersusGet:
+    """`hapax_secret_read` tells EMPTY from ABSENT; `hapax_secret_get` does not, on purpose.
+
+    Two operator actions: look for a secret that was never put, versus re-put one that was
+    put wrong. Wiring `hapax-glmcp-claude` to `hapax_secret_get` collapsed its exit 5 and 6
+    into 5 — a real regression the exit-code test caught, which is why the two levels exist.
+    """
+
+    def test_read_returns_an_empty_value_successfully(self, tmp_path) -> None:
+        bin_dir = _fake_cli(tmp_path, {"demo/empty": ""})
+        result = _run(
+            'if value="$(hapax_secret_read demo/empty)"; then '
+            'printf "OK:[%s]" "$value"; else printf "MISS"; fi',
+            bin_dir=bin_dir,
+        )
+        assert result.stdout == "OK:[]", result.stdout
+
+    def test_read_fails_only_when_the_secret_cannot_be_read(self, tmp_path) -> None:
+        bin_dir = _fake_cli(tmp_path, {})
+        result = _run(
+            "if hapax_secret_read demo/absent >/dev/null; then echo OK; else echo MISS; fi",
+            bin_dir=bin_dir,
+        )
+        assert "MISS" in result.stdout
+
+    def test_get_treats_empty_and_absent_alike(self, tmp_path) -> None:
+        """The convenience level: most callers only ever want a USABLE value."""
+        for mapping in ({"demo/x": ""}, {}):
+            bin_dir = _fake_cli(tmp_path, mapping)
+            result = _run(
+                "if hapax_secret_get demo/x >/dev/null; then echo OK; else echo MISS; fi",
+                bin_dir=bin_dir,
+            )
+            assert "MISS" in result.stdout, mapping
+
+    def test_get_is_built_on_read_not_a_second_implementation(self) -> None:
+        code = "\n".join(
+            line
+            for line in HELPER.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        body = code.split("hapax_secret_get() {", 1)[1].split("\n}", 1)[0]
+        assert "hapax_secret_read" in body, "get must delegate, not re-derive"
+        assert "hapax-secret " not in body, "get must not call the CLI directly"

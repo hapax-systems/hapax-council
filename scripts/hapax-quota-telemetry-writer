@@ -326,6 +326,21 @@ CODEX_EXEC_AUTH_NEGATIVE_REF_TOKENS = frozenset(
     }
 )
 
+#: `secret_source` values a glmcp admission receipt may declare.
+#:
+#: `filestore:` is the live one — the reviewer reads the reins FileStore through
+#: `shared.secrets` (operator ruling 2026-09-16: pass and gopass are not used to manage
+#: secrets going forward). `pass:` is accepted only so receipts already IN FLIGHT when that
+#: change deploys are not rejected: a producer and its validator cannot swap in the same
+#: instant, and rejecting a receipt that was truthful when it was written would drop real
+#: spend from the ledger.
+#:
+#: REMOVAL CONDITION, so this does not become permanent by forgetting: admission receipts
+#: carry `stale_after_seconds` <= 3600, so every `pass:`-sourced receipt has expired one hour
+#: after the reviewer change is deployed. Drop the legacy entry on the next change to this
+#: file after that. It is a versioned data contract during a migration, not a fallback —
+#: nothing here reaches further on failure than the primary path does.
+GLMCP_ADMISSION_SECRET_SOURCES = frozenset({"filestore:glmcp/api-key", "pass:glmcp/api-key"})
 GLMCP_ADMISSION_PROVIDER = SUBSCRIPTION_PROVIDERS["glmcp"]
 GLMCP_ADMISSION_CAPACITY_POOL = "subscription_quota"
 GLMCP_ADMISSION_PAYG_CAPACITY_POOL = "api_paid_spend"
@@ -1556,7 +1571,7 @@ def active_glmcp_admission_receipts(
                 f"schema missing or unsupported; expected {GLMCP_ADMISSION_SCHEMA}",
             )
             continue
-        if fields.get("secret_source", "") != "pass:glmcp/api-key":
+        if fields.get("secret_source", "") not in GLMCP_ADMISSION_SECRET_SOURCES:
             reject(path, "secret_source missing or unsupported")
             continue
         if fields.get("secret_value_persisted", "") != "false":
