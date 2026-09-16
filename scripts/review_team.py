@@ -22,6 +22,7 @@ the admission blockers; the dispatcher killswitch is
 from __future__ import annotations
 
 import ast
+import fcntl
 import fnmatch
 import json
 import logging
@@ -204,6 +205,26 @@ _STRUCTURED_PROVIDER_OUTAGE_ACTIONS = STRUCTURED_PROVIDER_OUTAGE_ACTIONS
 #: cannot self-certify a degradation (round-4 review finding).
 FAMILY_OUTAGE_STATE = Path.home() / ".cache" / "hapax" / "review-team" / "family-outage.json"
 FAMILY_OUTAGE_TTL_S = 2 * 3600
+
+#: Durable witness of the CURRENT continuous route-block interval per family.
+#: Written by ``observe_route_block_interval``, which every caller of
+#: ``review_route_blocked_families`` folds its observation into — the dispatcher at
+#: constitution and the admission gate at evaluation — so the witness has no producer
+#: of its own to keep alive.
+#:
+#: Why it exists: comparing route-block reason CLASS (rather than the raw string, which
+#: embeds a re-stamped ``checked_at``) is correct for re-observation but cannot on its own
+#: tell continuous degradation from two separate ones. Measured on the shipped gate, one
+#: unchanged dossier ran stale(A)=ADMIT -> recovered=BLOCK -> stale(B)=ADMIT: the recovery
+#: obliged a post-recovery re-review and the next expiry silently discharged it. Raw-string
+#: comparison did block that third step, but only as an accident of timestamp drift — it
+#: equally blocked every dossier older than one producer tick during ONE continuous block.
+#: The generation below separates the two cases on purpose: a recovery the estate actually
+#: OBSERVED starts a new interval, and a dossier constituted before that interval cannot
+#: ride it.
+ROUTE_BLOCK_INTERVAL_STATE = (
+    Path.home() / ".cache" / "hapax" / "review-team" / "route-block-interval.json"
+)
 
 
 def _structured_zai_error_match_state(
@@ -731,6 +752,8 @@ def review_route_blocked_families(
     registry: Mapping[str, Any],
     *,
     platform_registry: PlatformCapabilityRegistry | None = None,
+    observe: bool = True,
+    interval_state_path: Path | None = None,
 ) -> dict[str, tuple[str, ...]]:
     """Reviewer families whose declared backing route is not admitted.
 
@@ -786,6 +809,12 @@ def review_route_blocked_families(
         )
         if reasons:
             blocked[family] = reasons
+    # Fold this reading into the durable interval witness. Both callers of this function --
+    # the dispatcher at constitution and the admission gate at evaluation -- keep it fed, so
+    # the witness needs no producer of its own to stay alive. `observe=False` is for
+    # diagnostics and probes: reading the live state must not be able to close an interval.
+    if observe:
+        observe_route_block_interval(blocked, state_path=interval_state_path)
     return blocked
 
 
@@ -830,9 +859,104 @@ def _route_block_reason_notes(
     return {family: tuple(reasons) for family, reasons in out.items()}, tuple(malformed)
 
 
+#: `<key>=<value>` where the value stops at whitespace OR `;`. An unbounded `\S+` swallows
+#: whatever follows the value without an intervening space -- `stale_after=14s;surface=quota`
+#: lost `surface=quota` -- which would merge two distinct degradation classes on a gate whose
+#: only job is to refuse a class that is not live.
 _VOLATILE_OBSERVATION_FIELD_RE = re.compile(
-    r"\s*\b(?:checked_at|observed_at|fetched_at|stale_after)=\S+"
+    r"\s*\b(?:checked_at|observed_at|fetched_at|stale_after)=[^\s;]*"
 )
+
+
+def _route_block_interval_entry(entry: Any) -> datetime | None:
+    """The stable ``blocked_since`` of a route-block interval witness entry."""
+
+    if isinstance(entry, dict):
+        return _parse_iso_datetime(entry.get("blocked_since"))
+    if isinstance(entry, str):
+        return _parse_iso_datetime(entry)
+    return None
+
+
+def load_route_block_intervals(state_path: Path | None = None) -> dict[str, datetime]:
+    """Per-family ``blocked_since`` for the current continuous route-block interval."""
+
+    path = state_path or ROUTE_BLOCK_INTERVAL_STATE
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(state, Mapping):
+        return {}
+    out: dict[str, datetime] = {}
+    for family, entry in state.items():
+        started = _route_block_interval_entry(entry)
+        if started is not None:
+            out[str(family)] = started
+    return out
+
+
+def observe_route_block_interval(
+    blocked: Mapping[str, Sequence[str]],
+    *,
+    now: datetime | None = None,
+    state_path: Path | None = None,
+) -> dict[str, datetime]:
+    """Fold one live route-block reading into the durable interval witness.
+
+    A family that is blocked and has no open interval opens one stamped ``now``; a family
+    that is blocked and already has one keeps its STABLE ``blocked_since`` (only
+    ``observed_at`` advances); a family that is NOT blocked has its entry cleared, which is
+    the recovery event. The next block therefore opens a strictly later interval, and a
+    dossier constituted before it cannot ride it.
+
+    Same epistemics as the family-outage witness: this records recoveries the estate
+    actually OBSERVED, not recoveries derivable in principle. A freshness window that opened
+    and closed between two observations is not a recovery anyone could have reviewed
+    through, and inventing one from `checked_at + stale_after` would re-create exactly the
+    every-tick refusal this change exists to remove.
+
+    Best-effort by construction: an unwritable state directory degrades to "no witness",
+    which the caller treats as unwitnessed and therefore BLOCKS. Failing closed here costs
+    a re-review; failing open would discharge a recovery obligation silently.
+    """
+
+    stamp = (now or datetime.now(UTC)).astimezone(UTC)
+    path = state_path or ROUTE_BLOCK_INTERVAL_STATE
+    iso = stamp.isoformat().replace("+00:00", "Z")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = path.with_name(f"{path.name}.lock")
+        with lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                try:
+                    state = json.loads(path.read_text(encoding="utf-8"))
+                    if not isinstance(state, dict):
+                        state = {}
+                except (OSError, json.JSONDecodeError, ValueError):
+                    state = {}
+                for family in list(state):
+                    if family not in blocked:
+                        state.pop(family, None)  # recovery observed -> interval closes
+                for family in blocked:
+                    started = _route_block_interval_entry(state.get(family))
+                    state[str(family)] = {
+                        "blocked_since": (
+                            started.isoformat().replace("+00:00", "Z")
+                            if started is not None
+                            else iso
+                        ),
+                        "observed_at": iso,
+                    }
+                tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+                tmp.write_text(json.dumps(state, indent=1, sort_keys=True), encoding="utf-8")
+                os.replace(tmp, path)
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        return load_route_block_intervals(state_path)
+    return load_route_block_intervals(state_path)
 
 
 def _route_block_reason_class(reason: str) -> str:
@@ -863,7 +987,10 @@ def _route_block_reason_class(reason: str) -> str:
     """
 
     stripped = _VOLATILE_OBSERVATION_FIELD_RE.sub("", str(reason))
-    return stripped.rstrip(" ;,").strip()
+    # Removing a field can leave the separators that surrounded it adjacent; collapse them so
+    # two reasons that differ only in which observation fields they carried project equal.
+    collapsed = re.sub(r"\s*([;,])(?:\s*[;,])+", r"\1", stripped)
+    return collapsed.strip(" ;,").strip()
 
 
 def _route_reason_code(value: str) -> str:
@@ -1817,6 +1944,8 @@ def _dossier_validity_blockers(
     outage_state_path: Path | None = None,
     admission_time: datetime | str | None = None,
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
+    route_block_intervals: Mapping[str, datetime] | None = None,
+    route_block_interval_state_path: Path | None = None,
 ) -> tuple[str, ...]:
     blockers: list[str] = []
     scoped_files = (
@@ -1994,6 +2123,11 @@ def _dossier_validity_blockers(
                     if expected_route_id and normalized_reason.startswith(f"{expected_route_id}:"):
                         normalized_reason = normalized_reason[len(expected_route_id) + 1 :]
                     live_reasons.add(_route_block_reason_class(normalized_reason))
+                # An EMPTY class names no degradation. A reason composed only of observation
+                # fields projects to "", and without this a recorded "" would be witnessed by
+                # a live "" -- two reasons that say nothing certifying each other. Dropping it
+                # from the live set and keeping it in the recorded set fails closed.
+                live_reasons.discard("")
                 if (
                     not expected_route_id
                     or recorded_route_ids != {expected_route_id}
@@ -2012,6 +2146,37 @@ def _dossier_validity_blockers(
                 blockers.append(
                     "review_dossier_route_block_degradation_reason_mismatch:"
                     + ",".join(sorted(reason_mismatches))
+                )
+                return tuple(blockers)
+            # RECOVERY GENERATION. Class comparison forgives re-observation of the same
+            # degradation; on its own it cannot tell one continuous block from two separated
+            # by a recovery, and the second case is exactly what
+            # post_route_receipt_rereview_required exists to catch. Measured on the shipped
+            # gate, one unchanged dossier ran stale(A)=ADMIT -> recovered=BLOCK ->
+            # stale(B)=ADMIT. The dossier must have been constituted INSIDE the interval that
+            # is live now: an observed recovery closes the interval, the next block opens a
+            # strictly later one, and a dossier older than it cannot ride it. No witness (a
+            # fresh or unwritable state) blocks -- the cost is a re-review, where failing open
+            # would silently discharge a recovery obligation.
+            dossier_constituted = _parse_iso_datetime(dossier.get("constituted_at"))
+            intervals = (
+                dict(route_block_intervals)
+                if route_block_intervals is not None
+                else load_route_block_intervals(route_block_interval_state_path)
+            )
+            stale_generation = []
+            for family in degraded_route_blocked:
+                blocked_since = intervals.get(family)
+                if (
+                    blocked_since is None
+                    or dossier_constituted is None
+                    or _seconds_between(dossier_constituted, blocked_since) < 0
+                ):
+                    stale_generation.append(family)
+            if stale_generation:
+                blockers.append(
+                    "review_dossier_route_block_recovery_generation_stale:"
+                    + ",".join(sorted(stale_generation))
                 )
                 return tuple(blockers)
         if sizing_degraded:
@@ -2176,6 +2341,8 @@ def review_dossier_validity_blockers(
     outage_state_path: Path | None = None,
     admission_time: datetime | str | None = None,
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
+    route_block_intervals: Mapping[str, datetime] | None = None,
+    route_block_interval_state_path: Path | None = None,
 ) -> tuple[str, ...]:
     """Validate a recorded review dossier without honoring any gate killswitch."""
 
@@ -2210,6 +2377,8 @@ def review_dossier_validity_blockers(
         outage_state_path=outage_state_path,
         admission_time=admission_time,
         route_blocked_families=route_blocked_families,
+        route_block_intervals=route_block_intervals,
+        route_block_interval_state_path=route_block_interval_state_path,
     )
 
 
@@ -2225,6 +2394,8 @@ def review_team_verdict_blockers(
     outage_state_path: Path | None = None,
     admission_time: datetime | str | None = None,
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
+    route_block_intervals: Mapping[str, datetime] | None = None,
+    route_block_interval_state_path: Path | None = None,
 ) -> tuple[str, ...]:
     """Admission blockers from the review-team quorum gate (no quorum, no merge).
 
@@ -2251,4 +2422,6 @@ def review_team_verdict_blockers(
         outage_state_path=outage_state_path,
         admission_time=admission_time,
         route_blocked_families=route_blocked_families,
+        route_block_intervals=route_block_intervals,
+        route_block_interval_state_path=route_block_interval_state_path,
     )

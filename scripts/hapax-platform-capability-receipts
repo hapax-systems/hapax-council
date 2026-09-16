@@ -32,13 +32,14 @@ from shared.capability_availability_guarantor import (  # noqa: E402
     normalize_exec_auth_host,
     resolve_exec_auth_host,
 )
-from shared.platform_capability_receipts import (  # noqa: E402
+from shared.platform_capability_receipts import (
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
     CliEvidence,
     ConfigEvidence,
     EvidenceStatus,
     PlatformCapabilityReceipt,
+    PlatformCapabilityReceiptError,  # noqa: E402
     ProviderDocsEvidence,
     SurfaceEvidence,
     ToolEvidence,
@@ -315,13 +316,32 @@ current_host = local_exec_auth_host
 
 
 def codex_exec_auth_host() -> str:
-    """The host identity this environment's exec-auth observation carries.
+    """The DESTINATION of the probe: the configured value, verbatim.
 
-    Every spelling of "this machine" resolves to this machine's own name, so the stamp does
-    not depend on which process ran the producer. A remote target stays remote.
+    This is an ssh(1) destination, so it must stay exactly what the operator configured --
+    `podium` is an ssh_config alias and `hapax-podium` need not resolve. The first cut of
+    the host-SSOT change returned the canonical identity here and broke the remote probe;
+    destination and witness identity are two different things and are now two functions.
     """
 
-    return resolve_exec_auth_host(configured_exec_auth_host())
+    return configured_exec_auth_host()
+
+
+def codex_exec_auth_witness_host() -> str:
+    """The IDENTITY the observation is stamped with: `host:<identity>:codex:exec:auth:...`.
+
+    Every spelling of "this machine" resolves to this machine's own name, so the stamp does
+    not depend on the ambient environment of whichever process ran the producer. A remote
+    destination resolves to that remote host's canonical identity.
+    """
+
+    return resolve_exec_auth_host(codex_exec_auth_host())
+
+
+def codex_exec_auth_is_local(target: str) -> bool:
+    """Does this destination name the machine the producer is running on?"""
+
+    return resolve_exec_auth_host(target) == local_exec_auth_host()
 
 
 def codex_exec_auth_command(*, codex_bin: str, cwd: Path) -> list[str]:
@@ -391,9 +411,9 @@ def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str]
     if not math.isfinite(timeout) or timeout <= 0:
         return [], ["codex_exec_auth_invalid_timeout"]
     target_host = codex_exec_auth_host()
-    normalized_target = normalize_host(target_host)
+    normalized_target = codex_exec_auth_witness_host()
     try:
-        if normalized_target in {"", "local", current_host()}:
+        if codex_exec_auth_is_local(target_host):
             _, resolved, _ = resolve_platform_binary("codex")
             if resolved is None:
                 return [], ["codex_exec_auth_binary_missing"]
@@ -432,7 +452,7 @@ def observe_codex_exec_auth(*, enabled: bool, timeout: float) -> tuple[list[str]
     if result.returncode == 0:
         if codex_exec_auth_sentinel_observed(result.stdout):
             host_ref = f"host:{normalized_target}:codex:exec:auth:saved-login:observed"
-            if normalized_target in {"", "local", current_host()}:
+            if codex_exec_auth_is_local(target_host):
                 return ["local:codex:exec:auth:observed", host_ref], []
             return [f"remote:{normalized_target}:codex:exec:auth:observed", host_ref], []
         return [], ["codex_exec_auth_sentinel_missing"]
@@ -917,6 +937,42 @@ def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path
 
 
 RETIRED_RECEIPT_DIRNAME = "retired"
+#: A receipt's `platform` becomes a filename. Anything outside this shape is refused rather
+#: than joined onto a path: `../rogue` would otherwise move the file to `<receipt_dir>/rogue.json`
+#: and REPORT a successful retirement while leaving the original inside the live reader glob,
+#: and an absolute value would escape the receipt directory entirely.
+SAFE_PLATFORM_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+
+
+def _safe_platform_name(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if candidate in {".", ".."} or not SAFE_PLATFORM_RE.match(candidate):
+        return None
+    return candidate
+
+
+def _unused_archive_path(archive_dir: Path, platform: str, stamp: str) -> Path:
+    """A destination that does not exist yet -- never one that overwrites an archive.
+
+    The first cut checked only `<platform>.json` and then fell back to a stamp computed ONCE
+    per sweep, so a third receipt for one platform in a sweep, or a second sweep inside the
+    same second, resolved to the same fallback and `Path.replace` destroyed the earlier
+    archive AND its record with no trace. The documented guarantee is never-overwrite; this
+    is what makes it true.
+    """
+
+    candidate = archive_dir / f"{platform}.json"
+    if not candidate.exists():
+        return candidate
+    base = f"{platform}.{stamp.replace(':', '')}"
+    candidate = archive_dir / f"{base}.json"
+    serial = 1
+    while candidate.exists():
+        candidate = archive_dir / f"{base}.{serial:03d}.json"
+        serial += 1
+    return candidate
 
 
 def retire_receipts_without_routes(
@@ -924,8 +980,11 @@ def retire_receipts_without_routes(
     receipt_dir: Path,
     live_platforms: set[str],
     observed_at: datetime,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """Archive receipts whose platform no longer has a route, with a dated record.
+
+    Returns ``(retired, skipped)``. A skipped entry names a file the sweep could NOT decide
+    about, so the operator is told which capability surfaces the sweep did not cover.
 
     `--all` refreshes only the platforms the registry still declares routes for, so a
     receipt written before its platform was excised is never touched again. Measured
@@ -947,13 +1006,24 @@ def retire_receipts_without_routes(
     exactly as it is on the read path -- this is a second, independent reason the file is
     gone, not a replacement for expiry.
 
-    Never overwrites an existing archive: a later observation of an
-    already-retired platform is kept beside the first under a timestamped name.
+    **Refuses to sweep on an empty live set.** `live_platforms` is an assertion about the
+    registry, and an empty one is never a true statement that every platform was retired --
+    it is a registry that failed to load or parse. Sweeping on it would move the ENTIRE live
+    receipt directory into `retired/` and stamp each record with a reason that is false,
+    leaving every reader with no capability receipts at all: the maximal form of the very
+    route-blocking this change exists to reduce.
     """
 
     if not receipt_dir.is_dir():
-        return []
+        return [], []
+    if not live_platforms:
+        raise PlatformCapabilityReceiptError(
+            "refusing to retire receipts: the live platform set is empty, which is a "
+            "registry that did not load rather than a registry with no platforms. "
+            "Next action: check the platform-capability registry loads, then rerun."
+        )
     retired: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
     archive_dir = receipt_dir / RETIRED_RECEIPT_DIRNAME
     stamp = observed_at.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     for path in sorted(receipt_dir.glob("*.json")):
@@ -961,19 +1031,57 @@ def retire_receipts_without_routes(
             continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            # One corrupt file does not abort the sweep and is not silently discarded:
-            # it is left exactly where it is for a human to look at.
+        except (OSError, ValueError) as exc:
+            # The file stays exactly where it is -- but a file the sweep could not read is a
+            # capability surface whose retire-or-keep decision was NOT made, and the operator
+            # is told so with a next action. The first cut `continue`d in silence while main
+            # still reported ok=true.
+            skipped.append(
+                {
+                    "path": str(path),
+                    "reason": "receipt_unparseable_left_in_place",
+                    "detail": f"{type(exc).__name__}: {exc}"[:200],
+                    "next_action": "inspect or remove this file; the receipt loader will reject it too",
+                }
+            )
             continue
         if not isinstance(payload, dict):
+            skipped.append(
+                {
+                    "path": str(path),
+                    "reason": "receipt_not_a_json_object_left_in_place",
+                    "detail": type(payload).__name__,
+                    "next_action": "inspect or remove this file; the receipt loader will reject it too",
+                }
+            )
             continue
-        platform = str(payload.get("platform") or "").strip()
-        if not platform or platform in live_platforms:
+        raw_platform = payload.get("platform")
+        platform = _safe_platform_name(raw_platform)
+        if platform is None:
+            skipped.append(
+                {
+                    "path": str(path),
+                    "reason": "receipt_platform_identifier_unsafe_left_in_place",
+                    "detail": repr(raw_platform)[:120],
+                    "next_action": "a platform must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}; repair or remove this file",
+                }
+            )
+            continue
+        if platform in live_platforms:
             continue
         archive_dir.mkdir(parents=True, exist_ok=True)
-        destination = archive_dir / f"{platform}.json"
-        if destination.exists():
-            destination = archive_dir / f"{platform}.{stamp.replace(':', '')}.json"
+        destination = _unused_archive_path(archive_dir, platform, stamp)
+        resolved_archive = archive_dir.resolve()
+        if not destination.resolve().is_relative_to(resolved_archive):
+            skipped.append(
+                {
+                    "path": str(path),
+                    "reason": "retirement_destination_escapes_archive_left_in_place",
+                    "detail": str(destination)[:200],
+                    "next_action": "inspect this receipt; its platform resolved outside the archive",
+                }
+            )
+            continue
         record = {
             "archived_from": str(path),
             "archived_to": str(destination),
@@ -987,7 +1095,7 @@ def retire_receipts_without_routes(
         record_path = archive_dir / f"{destination.stem}.retirement.json"
         record_path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
         retired.append(record)
-    return retired
+    return retired, skipped
 
 
 def positive_float_env_default(name: str, default: float) -> float:
@@ -1130,12 +1238,24 @@ def main(argv: list[str] | None = None) -> int:
     # Only --all knows the whole live set. A --platform run observed a subset and must not
     # conclude that everything it did not name is retired.
     retired_receipts: list[dict[str, str]] = []
+    skipped_receipts: list[dict[str, str]] = []
     if args.all and not args.dry_run:
-        retired_receipts = retire_receipts_without_routes(
-            receipt_dir=args.receipt_dir,
-            live_platforms=set(routes_by_platform),
-            observed_at=observed_at,
-        )
+        # The protection set is EVERY platform the registry declares a route for -- not the
+        # subset this script can probe. `routes_by_platform` is filtered through
+        # BINARY_BY_PLATFORM, which omits `local_tool`; the registry declares
+        # `local_tool.local.worker`, so deriving the set from the probe map would archive a
+        # local_tool receipt under `no_registry_route_declares_this_platform`, a reason that
+        # is false. Probe support and route declaration are different facts.
+        declared_platforms = {route.platform.value for route in registry.routes}
+        try:
+            retired_receipts, skipped_receipts = retire_receipts_without_routes(
+                receipt_dir=args.receipt_dir,
+                live_platforms=declared_platforms,
+                observed_at=observed_at,
+            )
+        except PlatformCapabilityReceiptError as exc:
+            print(f"hapax-platform-capability-receipts: {exc}", file=sys.stderr)
+            return 4
 
     payload = {
         "ok": True,
@@ -1144,6 +1264,7 @@ def main(argv: list[str] | None = None) -> int:
         "dry_run": args.dry_run,
         "receipts": outputs,
         "retired_receipts": retired_receipts,
+        "skipped_receipts": skipped_receipts,
     }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -1160,6 +1281,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"{item['platform']}: retired {item['archived_from']} -> "
                 f"{item['archived_to']} (observed {item['receipt_observed_at']}, "
                 f"{item['reason']})"
+            )
+        for item in skipped_receipts:
+            print(
+                f"SKIPPED {item['path']}: {item['reason']} ({item['detail']}). "
+                f"Next action: {item['next_action']}",
+                file=sys.stderr,
             )
     return 0
 

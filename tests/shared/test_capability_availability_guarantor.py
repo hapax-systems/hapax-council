@@ -1431,6 +1431,55 @@ class TestExecAuthHostSingleSourceOfTruth:
 
         assert receipt.predicate.exec_auth_attested is True
 
+    def test_the_literal_token_local_is_never_attested(self, monkeypatch) -> None:
+        """The HARDENING half of the contract change, which was documentation only.
+
+        `local` names no machine -- a reader cannot tell which box a `host:local:...` ref was
+        produced on. That ambiguity is why the same token used to be accepted under
+        HAPAX_CODEX_EXEC_AUTH_HOST=local and refused with the variable unset. It must now be
+        refused under BOTH.
+        """
+        for env in ({"HAPAX_CODEX_EXEC_AUTH_HOST": "local"}, {}):
+            for name in (
+                "HAPAX_CODEX_EXEC_AUTH_HOST",
+                "HAPAX_DISPATCH_HOST",
+                "HAPAX_DEFAULT_DISPATCH_HOST",
+            ):
+                monkeypatch.delenv(name, raising=False)
+            for name, value in env.items():
+                monkeypatch.setenv(name, value)
+            expected = guarantor.expected_exec_auth_hosts()
+            assert ("local",) not in expected, env
+            assert not guarantor._exec_auth_ref_attested(
+                guarantor._ref_tokens("host:local:codex:exec:auth:saved-login:observed"),
+                expected_hosts=expected,
+            ), env
+
+    def test_a_host_local_ref_fails_the_guarantor_end_to_end(self, monkeypatch) -> None:
+        monkeypatch.delenv("HAPAX_CODEX_EXEC_AUTH_HOST", raising=False)
+        monkeypatch.delenv("HAPAX_DEFAULT_DISPATCH_HOST", raising=False)
+        monkeypatch.setenv("HAPAX_DISPATCH_HOST", "local")
+        payload = _payload()
+        route_payload = _route_payload(payload, "codex.headless.full")
+        _mark_fresh(route_payload)
+        _mark_current_codex_session_usable(route_payload)
+        _mark_local_codex_exec_auth_observed(route_payload)
+        registry = PlatformCapabilityRegistry.model_validate(payload)
+        route = registry.require("codex.headless.full")
+        freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[
+            0
+        ]
+
+        receipt = guarantor.evaluate_route_availability(
+            route,
+            freshness,
+            refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+            now=NOW,
+        )
+
+        assert receipt.predicate.exec_auth_attested is False
+        assert "codex_exec_auth_witness_absent" in receipt.reason_codes
+
     def test_the_telemetry_writer_consumes_the_same_resolver(self) -> None:
         """Two byte-identical copies of this derivation WERE the defect. The writer must not
         carry its own."""
