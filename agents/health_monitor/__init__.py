@@ -34,8 +34,8 @@ from .checks.connectivity import (
 from .checks.connectivity import (
     check_watch_connected as check_watch_connected,
 )
-from .checks.credentials import check_pass_entries as check_pass_entries  # noqa: F401
-from .checks.credentials import check_pass_store as check_pass_store  # noqa: F401
+from .checks.credentials import check_secret_entries as check_secret_entries  # noqa: F401
+from .checks.credentials import check_secret_store as check_secret_store  # noqa: F401
 from .checks.disk import check_disk_usage as check_disk_usage  # noqa: F401
 from .checks.docker import (  # noqa: F401
     check_agents_containers as check_agents_containers,
@@ -73,7 +73,7 @@ from .checks.voice import check_voice_vram_lock as check_voice_vram_lock  # noqa
 
 # ── Constants (imported by tests and other agents) ──────────────────────────
 from .constants import CORE_CONTAINERS as CORE_CONTAINERS  # noqa: F401
-from .constants import PASS_ENTRIES as PASS_ENTRIES  # noqa: F401
+from .constants import EXPECTED_SECRETS as EXPECTED_SECRETS  # noqa: F401
 from .constants import REQUIRED_QDRANT_COLLECTIONS as REQUIRED_QDRANT_COLLECTIONS  # noqa: F401
 from .constants import REQUIRED_SECRETS as REQUIRED_SECRETS  # noqa: F401
 

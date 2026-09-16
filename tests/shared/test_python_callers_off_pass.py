@@ -55,6 +55,14 @@ CALLERS = (
     "agents/_google_auth.py",
     "shared/google_auth.py",
     "scripts/mint-google-token.py",
+    "agents/health_monitor/checks/credentials.py",
+    "agents/health_monitor/checks/secrets.py",
+    "agents/health_monitor/checks/auth.py",
+    "agents/health_monitor/constants.py",
+    "agents/hapax_cred_monitor/monitor.py",
+    "agents/hapax_cred_monitor/registry.py",
+    "agents/hapax_cred_monitor/unblocker_report.py",
+    "agents/hapax_cred_monitor/__main__.py",
 )
 
 FORBIDDEN = (
