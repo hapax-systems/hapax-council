@@ -3,7 +3,9 @@ set -euo pipefail
 
 # Secrets come from the FileStore through the one shared helper, never from pass.
 # Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
-. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/secret.sh"
+# Pure parameter expansion: resolving this with `dirname`/`cd` made sourcing depend on
+# PATH, and a caller with a restricted PATH got `/lib/secret.sh: No such file`.
+. "${BASH_SOURCE[0]%/*}/lib/secret.sh"
 
 # Bounded critical-artifact offsite backup while broad Tier 2 B2 is blocked.
 # This script does not create live database dumps, create Qdrant snapshots,

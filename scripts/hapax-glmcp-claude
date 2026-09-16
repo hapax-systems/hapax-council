@@ -10,14 +10,16 @@ set -euo pipefail
 
 # Secrets come from the FileStore through the one shared helper, never from pass.
 # Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
-. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/secret.sh"
+# Pure parameter expansion: resolving this with `dirname`/`cd` made sourcing depend on
+# PATH, and a caller with a restricted PATH got `/lib/secret.sh: No such file`.
+. "${BASH_SOURCE[0]%/*}/lib/secret.sh"
 
 usage() {
   cat <<'EOF'
 usage: hapax-glmcp-claude [--check] [claude args...]
 
 Runs Claude Code with GLM Coding Plan environment variables for this invocation.
-The Z.ai API key is read from pass at runtime.
+The Z.ai API key is read from the reins FileStore at runtime.
 
 Defaults:
   FileStore secret: glmcp/api-key
@@ -55,12 +57,9 @@ official_base_url="https://api.z.ai/api/anthropic"
 base_url="${HAPAX_GLMCP_ANTHROPIC_BASE_URL:-$official_base_url}"
 primary_model="${HAPAX_GLMCP_MODEL:-glm-5.2[1m]}"
 haiku_model="${HAPAX_GLMCP_HAIKU_MODEL:-glm-4.5-air}"
-pass_error_file=""
 
 cleanup() {
-  if [[ -n "${pass_error_file:-}" ]]; then
-    rm -f "$pass_error_file"
-  fi
+  :  # nothing to clean: the FileStore read leaves no temp file behind
 }
 
 exit_after_signal() {
@@ -119,13 +118,13 @@ case "$base_url" in
   *)
     if [[ "${HAPAX_GLMCP_ALLOW_BASE_URL_OVERRIDE:-0}" != "1" ]]; then
       echo "hapax-glmcp-claude: refusing base URL '$base_url'; expected $official_base_url" >&2
-      echo "Set HAPAX_GLMCP_ALLOW_BASE_URL_OVERRIDE=1 only after reviewing the endpoint that will receive the pass-backed token." >&2
+      echo "Set HAPAX_GLMCP_ALLOW_BASE_URL_OVERRIDE=1 only after reviewing the endpoint that will receive the FileStore-backed token." >&2
       exit 7
     fi
     case "$base_url" in
       https://api.z.ai/*) ;;
       *)
-        echo "hapax-glmcp-claude: refused base URL '$base_url'; this launcher only sends the pass-backed token to https://api.z.ai/" >&2
+        echo "hapax-glmcp-claude: refused base URL '$base_url'; this launcher only sends the FileStore-backed token to https://api.z.ai/" >&2
         echo "For non-Z.ai experiments, use a separate launcher and secret entry instead of this GLM Coding Plan lane." >&2
         exit 7
         ;;
@@ -133,8 +132,8 @@ case "$base_url" in
     ;;
 esac
 
-command -v pass >/dev/null 2>&1 || {
-  echo "hapax-glmcp-claude: pass is not on PATH; install pass or add it to PATH before using the glmcp/api-key secret." >&2
+command -v hapax-secret >/dev/null 2>&1 || {
+  echo "hapax-glmcp-claude: hapax-secret is not on PATH; install the reins CLI or add it to PATH before using the glmcp/api-key secret." >&2
   exit 3
 }
 command -v claude >/dev/null 2>&1 || {

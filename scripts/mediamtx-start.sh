@@ -8,7 +8,9 @@ set -euo pipefail
 
 # Secrets come from the FileStore through the one shared helper, never from pass.
 # Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
-. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/secret.sh"
+# Pure parameter expansion: resolving this with `dirname`/`cd` made sourcing depend on
+# PATH, and a caller with a restricted PATH got `/lib/secret.sh: No such file`.
+. "${BASH_SOURCE[0]%/*}/lib/secret.sh"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG_SRC="${REPO_DIR}/config/mediamtx.yml"
