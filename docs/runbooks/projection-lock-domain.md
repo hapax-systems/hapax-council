@@ -26,8 +26,13 @@ architecture; everything below is a binding, and each is swappable:
   revision held the lock root exclusively while polling a contended key, which made one busy note
   refuse every unrelated note in the estate; pinned against regression by
   `test_contention_on_one_task_does_not_stall_an_unrelated_task`.
-- **No hold-and-wait.** A writer that cannot take every key it needs releases what it took, waits,
-  and retries the whole attempt. No wait cycle can form, whatever other participants do.
+- **No hold-and-wait, among projected-path locks.** A writer that cannot take every key it needs
+  releases what it took, waits, and retries the whole attempt. No wait cycle can form among these
+  locks, whatever other participants do. **Composed with the claim path's role lock, the property
+  is an acquisition order** — role-then-note — and it is enforced at the moment of use, not by
+  convention: `_claim_publication_lock` refuses with `claim_publication_lock_order_inversion` if
+  the calling thread already holds any projected-path lock. If you are writing code that holds a
+  note lock and needs to publish a claim, release the note first; there is no third option.
 - **Re-entrant per thread, but not expandable.** Nesting the same keys is fine. A nested
   acquisition that *adds* a key is refused (`task_note_lock_expansion_under_hold`) — that is the
   one shape all-or-nothing cannot make deadlock-free, because an outer frame's keys cannot be
@@ -52,10 +57,12 @@ known writers so it cannot pass by finding nothing.
 
 **Two notes on how `cc-claim` and `cc-close` got here**, because the shape matters more than the
 outcome. Claim publication holds a lock keyed by the *role*, under a different root; the
-projection lock is taken **inside** it, so the order is always role-then-note. That is the whole
-deadlock argument: the role lock is acquired in exactly three places, all inside
-`_claim_publication_lock`, and nothing takes a projected-path lock and then asks for a role lock.
-A test fails if a fourth acquisition site appears. And `cc-close` is the only writer that
+projection lock is taken **inside** it, so the order is always role-then-note. That order is the
+whole deadlock argument across the two domains, and it is asserted where it can be broken: the
+role lock refuses when its caller already holds a projected-path lock (see the property above).
+A test drives both orders and expects the inversion to be refused before the role lock is
+touched; the site-count assertion that preceded it is kept as a containment check, not as the
+enforcement, because the inversion that matters needs no new site. And `cc-close` is the only writer that
 *unlinks* a projected path, so it locks both the source it removes and the destination it
 installs.
 
@@ -112,6 +119,12 @@ uv run pytest tests/shared/test_task_note_lock.py::test_contention_on_one_task_d
 
 # No hold-and-wait: opposite acquisition orders, concurrently, must both complete.
 uv run pytest tests/shared/test_task_note_lock.py::test_no_lock_is_held_while_another_is_wanted -q
+
+# The composition with the role lock: note-then-role is refused before the role lock is opened.
+uv run pytest tests/shared/test_task_note_lock.py::test_the_role_lock_refuses_while_this_thread_holds_a_projected_path_lock -q
+
+# The gate's 5s bound actually reaches the interpreter (asked, not read from the source).
+uv run pytest tests/shared/test_projected_path_writer_lock_coverage.py::test_the_gate_s_lock_bound_reaches_the_interpreter -q
 
 # A real lifecycle transition cannot enter a writer's window.
 uv run pytest "tests/shared/test_projected_path_writer_lock_coverage.py::test_a_real_lifecycle_transition_cannot_enter_a_writer_s_window" -q

@@ -1052,15 +1052,25 @@ is_nullish() {
 _stamp_frontmatter_field() {
   local note="$1" key="$2" value="$3" repo_root
   repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)" || return 1
-  # A short bound: this runs inside a tool-call hook, so waiting out a wedged transition
-  # would hang the session. Refusing to stamp is safe; the caller reports it.
-  HAPAX_TASK_NOTE_LOCK_TIMEOUT="${HAPAX_TASK_NOTE_LOCK_TIMEOUT:-5}" \
   # Propagate the interpreter's exit code verbatim. `|| return 1` collapsed the 3 that
   # means "the projection lock is held" into the 1 that means "something else broke", so
   # the caller's contention branch could never fire and every failure was recorded as
   # refused_error — the mirror image of the defect these exit codes were added to fix. A
   # boundary that flattens a distinction both sides agreed on is as bad as never making it.
   local _stamp_py_rc=0
+  # A short bound: this runs inside a tool-call hook, so waiting out a wedged transition
+  # would hang the session. Refusing to stamp is safe; the caller reports it.
+  #
+  # The env prefix and the command are ONE logical line with nothing between them, on
+  # purpose. Bash removes a backslash-newline before it tokenizes, so a comment placed after
+  # the continuation is joined onto the assignment and its `#` ends the command right there:
+  # the bound became a plain, unexported shell variable, the interpreter never saw it, and
+  # the gate waited task_note_lock's 30s default inside a tool-call hook while this comment
+  # said 5s (round 5: gemini-1 critical, claude-1 major — measured with a stand-in
+  # interpreter that printed what it inherited: nothing). Pinned by
+  # test_the_gate_s_lock_bound_reaches_the_interpreter, which asks the interpreter, not the
+  # source.
+  HAPAX_TASK_NOTE_LOCK_TIMEOUT="${HAPAX_TASK_NOTE_LOCK_TIMEOUT:-5}" \
   PYTHONPATH="$repo_root:${PYTHONPATH:-}" python3 - "$note" "$key" "$value" <<'PYEOF' || _stamp_py_rc=$?
 import sys
 from pathlib import Path

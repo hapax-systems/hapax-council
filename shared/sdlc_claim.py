@@ -63,7 +63,7 @@ from shared.sdlc_task_store import (
     load_claim_dispatch_binding,
     resolve_task_note,
 )
-from shared.task_note_lock import projected_path_lock
+from shared.task_note_lock import held_by_current_thread, projected_path_lock
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -2432,6 +2432,21 @@ def _claim_publication_lock(
     *,
     lock_root: Path | None,
 ) -> Iterator[None]:
+    # Direction, checked at the moment of use. This lock takes a projected-path lock INSIDE
+    # it, so a caller that already holds one and asks for this is hold-and-wait across two
+    # lock domains: it would sit on the role lock while a publisher on the other side sits on
+    # its note. Both waits are bounded, so the failure is mutual refusal rather than a wedge —
+    # but "bounded" is not "safe", and a count of acquisition sites cannot see this shape at
+    # all, because it needs no new site: an existing note-holder calling onward into claim
+    # publication is enough. Refuse before opening anything.
+    held = held_by_current_thread()
+    if held:
+        raise ClaimPublicationError(
+            "claim_publication_lock_order_inversion",
+            "release the projected-path lock before publishing a claim; the role lock is "
+            "taken first and the note lock inside it, never the reverse",
+            ", ".join(f"{lock_root_}:{name}" for lock_root_, name in held),
+        )
     root = _lock_root(lock_root)
     _ensure_claim_private_directory(root)
     digest = _claim_publication_role_lock_digest(intent.role)
@@ -2482,11 +2497,10 @@ def _claim_publication_lock(
         # _apply_projections calls — which take no lock of their own — could land between a
         # transition's preimage pin and its atomic install. Take the projection lock too.
         #
-        # Order is role-then-note, always, and that is the whole deadlock argument: the role
-        # lock is acquired in exactly three places, all of them here, and nothing in the estate
-        # takes a projected-path lock and then asks for a role lock. One direction only means
-        # no cycle. Asserted in tests/shared/test_task_note_lock.py so a second acquisition site
-        # cannot appear silently.
+        # Order is role-then-note, always. One direction only means no cycle — and the
+        # direction is enforced at the top of this function, not inferred from the number of
+        # places the role lock is taken: the guard refuses when the calling thread already holds
+        # any projected-path lock. tests/shared/test_task_note_lock.py drives both orders.
         with projected_path_lock(intent.task_id, (intent.note_path,)):
             yield
     finally:

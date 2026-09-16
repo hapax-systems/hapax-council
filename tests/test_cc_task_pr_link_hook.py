@@ -699,3 +699,137 @@ class TestPrUrlParsing:
         text = note.read_text(encoding="utf-8")
         # No PR URL pattern matched, so no rewrite.
         assert "pr: null" in text
+
+
+def _lock_holder(note: Path, root: Path, *, hold: float, marker: str | None) -> subprocess.Popen:
+    """A second process that holds the note's projection lock, optionally changes the note
+    while holding it, and releases after ``hold`` seconds. Prints HELD, then RELEASED."""
+
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        f"""
+        import sys, time
+        sys.path.insert(0, {str(REPO_ROOT)!r})
+        from pathlib import Path
+        from shared import task_note_lock as tnl
+        note = Path({str(note)!r})
+        with tnl.projected_path_lock(None, (note,), root=Path({str(root)!r}), timeout=30.0):
+            print("HELD", flush=True)
+            time.sleep({hold!r})
+            marker = {marker!r}
+            if marker:
+                text = note.read_text(encoding="utf-8")
+                assert text.startswith("---\\n"), text[:20]
+                note.write_text("---\\n" + marker + "\\n" + text[4:], encoding="utf-8")
+        print("RELEASED", flush=True)
+        """
+    )
+    return subprocess.Popen([sys.executable, "-c", script], stdout=subprocess.PIPE, text=True)
+
+
+#: The hook resolves its role from the ambient agent identity before CLAUDE_ROLE
+#: (HAPAX_AGENT_NAME, HAPAX_AGENT_ROLE, HAPAX_WORKTREE_ROLE all outrank it), so a test run
+#: from inside a lane inherits that lane's role and looks for the wrong claim file. Pin every
+#: candidate to the fixture's role rather than depend on where the suite happens to run.
+_PINNED_ROLE = {
+    "HAPAX_AGENT_NAME": "beta",
+    "HAPAX_AGENT_ROLE": "beta",
+    "HAPAX_WORKTREE_ROLE": "beta",
+    "CODEX_ROLE": "beta",
+    "CLAUDE_ROLE": "beta",
+}
+
+
+class TestProjectionLock:
+    """The link is a read-modify-write of a projected path, so it takes the projection lock.
+
+    Two behaviours, driven rather than grepped for: under contention the hook refuses and says
+    exactly what that leaves behind; after waiting, its read is inside the lock, so a change
+    made while it waited survives.
+    """
+
+    def test_contention_names_the_outcome_and_a_recovery(self, tmp_path: Path) -> None:
+        """A refused link is not "skipped". It is a PR that exists while its row says pr: null.
+
+        This hook fires once, after ``gh pr create``, and nothing retries it — so the message is
+        the only place the outcome is ever stated, and the review dispatch and autoqueue key on
+        the field it failed to write. It must name the PR, the task, the reason (distinct from a
+        malformed note: the reason code is the distinction, since the exit status cannot carry
+        it), and a recovery that is a command, not advice. And it must exit 0: the codex adapter
+        aborts every hook queued behind a non-zero PostToolUse hook, which would trade one
+        unlinked row for a silent run of skipped hooks (round 5, claude-1 minor).
+        """
+
+        _vault, note = _make_vault(tmp_path, task_id="lock-row", pr=None, status="in_progress")
+        _write_claim(tmp_path, "beta", "lock-row")
+        coord = tmp_path / "coord"
+        holder = _lock_holder(note, coord / "task-locks", hold=4.0, marker=None)
+        try:
+            assert holder.stdout is not None
+            assert holder.stdout.readline().strip() == "HELD"
+            result = _run_hook(
+                bash_cmd="gh pr create",
+                bash_output="https://github.com/ryanklee/hapax-council/pull/4673\n",
+                home=tmp_path,
+                extra_env={
+                    **_PINNED_ROLE,
+                    "HAPAX_COORD_DIR": str(coord),
+                    "HAPAX_TASK_NOTE_LOCK_TIMEOUT": "1",
+                },
+            )
+        finally:
+            holder.wait(timeout=30)
+
+        assert result.returncode == 0, (
+            "a PostToolUse hook must not fail the turn — the codex adapter aborts the rest of "
+            f"its chain on non-zero: {result.stderr!r}"
+        )
+        err = result.stderr
+        assert "NOT LINKED" in err and "PR #4673" in err and "'lock-row'" in err, err
+        assert "reason=task_note_lock_contended" in err, err
+        assert "link skipped" not in err, "the outcome is an unlinked row, not a skipped step"
+        # A recovery the operator can paste: this hook, this payload, resolved path.
+        assert str(HOOK.resolve()) in err and "printf" in err and "pull/4673" in err, err
+        text = note.read_text(encoding="utf-8")
+        assert "pr: null" in text and "pr: 4673" not in text, "the refused link still wrote"
+
+    def test_the_link_does_not_clobber_a_change_made_while_it_waited(self, tmp_path: Path) -> None:
+        """The read is inside the lock. A change landed while the hook waited must survive.
+
+        The membership conformance in tests/shared/test_projected_path_writer_lock_coverage.py
+        cannot tell a writer that locks its whole read-modify-write from one that locks only
+        the write; this is the behavioural half for the hook, which that suite cannot drive
+        because it takes PostToolUse JSON on stdin rather than argv.
+        """
+
+        _vault, note = _make_vault(tmp_path, task_id="lock-row", pr=None, status="in_progress")
+        _write_claim(tmp_path, "beta", "lock-row")
+        coord = tmp_path / "coord"
+        marker = "witness_field: survived-the-wait"
+        holder = _lock_holder(note, coord / "task-locks", hold=3.0, marker=marker)
+        try:
+            assert holder.stdout is not None
+            assert holder.stdout.readline().strip() == "HELD"
+            result = _run_hook(
+                bash_cmd="gh pr create",
+                bash_output="https://github.com/ryanklee/hapax-council/pull/4673\n",
+                home=tmp_path,
+                extra_env={
+                    **_PINNED_ROLE,
+                    "HAPAX_COORD_DIR": str(coord),
+                    "HAPAX_TASK_NOTE_LOCK_TIMEOUT": "30",
+                },
+            )
+        finally:
+            out, _ = holder.communicate(timeout=60)
+
+        assert "RELEASED" in out, out
+        assert result.returncode == 0, result.stderr
+        text = note.read_text(encoding="utf-8")
+        assert marker in text, (
+            "cc-task-pr-link clobbered a change made while it waited for the lock — its read "
+            f"happened before the lock, not inside it.\nstderr={result.stderr!r}\n{text}"
+        )
+        assert "pr: 4673" in text, f"the hook waited, then did not link:\n{result.stderr}\n{text}"

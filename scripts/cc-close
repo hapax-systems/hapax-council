@@ -230,7 +230,7 @@ fi
 # the transition takes. cc-close holds no other lock, so there is no ordering to reconcile.
 _cc_close_repo_root="$(cd "$SCRIPT_DIR/.." && pwd)" || exit 1
 PYTHONPATH="$_cc_close_repo_root:${PYTHONPATH:-}" \
-python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" <<'PYEOF'
+python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" "$vault_root" <<'PYEOF'
 import re
 import sys
 from datetime import datetime, timezone
@@ -238,7 +238,7 @@ from pathlib import Path
 
 from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
-path, task_id, final_status, pr, role = (Path(sys.argv[1]), *sys.argv[2:])
+path, task_id, final_status, pr, role, vault_root = (Path(sys.argv[1]), *sys.argv[2:])
 closed_dir = path.parent.parent / "closed"
 new_path = closed_dir / path.name
 
@@ -267,10 +267,14 @@ try:
                 file=sys.stderr,
             )
             sys.exit(0)
+        # The recovery command names the root this tool actually resolved (shared/cc_task_root,
+        # via the shell above), not a literal: under a redirected root — the coverage tests, a
+        # moved work plane — a hardcoded path is confidently wrong in the one message an
+        # operator reaches when a note is genuinely lost (round 5, claude-1).
         print(
             f"cc-close: REFUSED — '{task_id}' is in neither active/ nor closed/; it moved "
             "while acquiring its lock. Locate it with "
-            f"`ls ~/Documents/Personal/20-projects/hapax-cc-tasks/*/{task_id}*` before retrying",
+            f"`ls {vault_root}/*/{task_id}*` before retrying",
             file=sys.stderr,
         )
         sys.exit(1)

@@ -6317,10 +6317,12 @@ def _transition_locks(
     ``HAPAX_GATE0B_CLAIM_PUBLICATION_OFF`` fallback. None of them can land between this
     transition's preimage pin and its install.
 
-    The claim path nests this lock *inside* a role-keyed lock, and the ordering argument is that
-    role-then-note is the only direction taken anywhere: the role lock is acquired in exactly
-    three places, all inside ``_claim_publication_lock``, and nothing takes a projected-path lock
-    and then asks for a role lock. A test fails if a fourth acquisition site appears.
+    The claim path nests this lock *inside* a role-keyed lock, so across the two domains the
+    guarantee is an acquisition order — role-then-note — and it is enforced where it can be
+    violated: ``_claim_publication_lock`` refuses (``claim_publication_lock_order_inversion``)
+    when the calling thread already holds any projected-path lock
+    (``shared.task_note_lock.held_by_current_thread``). A count of acquisition sites would not
+    catch the inversion that matters, which needs no new site.
 
     **Which are still outside it.** Daemons, reconcilers and one-shot migrations — the
     ``cc-pr-*`` watchers, ``protected-lane-revive-reconcile``, the ``refused_lifecycle`` tools,

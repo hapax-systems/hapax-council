@@ -288,19 +288,22 @@ set +e
 _pr_link_repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)" || exit 1
 HAPAX_TASK_NOTE_LOCK_TIMEOUT="${HAPAX_TASK_NOTE_LOCK_TIMEOUT:-5}" \
 PYTHONPATH="$_pr_link_repo_root:${PYTHONPATH:-}" \
-python3 - "$note_path" "$pr_number" "$branch_name" "$role" "$pr_url" "$pr_repo" <<'PYEOF'
+python3 - "$note_path" "$pr_number" "$branch_name" "$role" "$pr_url" "$pr_repo" \
+  "$(readlink -f "${BASH_SOURCE[0]}")" "$task_id" <<'PYEOF'
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-note_path, pr_number, branch_name, role, pr_url, pr_repo = (
+note_path, pr_number, branch_name, role, pr_url, pr_repo, hook_path, task_id = (
     Path(sys.argv[1]),
     sys.argv[2],
     sys.argv[3],
     sys.argv[4],
     sys.argv[5],
     sys.argv[6],
+    sys.argv[7],
+    sys.argv[8],
 )
 from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
@@ -308,8 +311,30 @@ try:
     _lock = projected_path_lock(None, (note_path,))
     _lock.__enter__()
 except TaskNoteLockError as exc:
-    print(f"cc-task-pr-link: link skipped — {exc}", file=sys.stderr)
-    sys.exit(1)
+    # This hook fires once, after `gh pr create`; nothing retries it. So the outcome of a
+    # refusal here is not "skipped" — it is a PR that exists while the row it belongs to still
+    # says `pr: null`, and the review dispatch and autoqueue key on that field. Say that, name
+    # the reason separately from a malformed note (the reason code is the distinction; the
+    # exit status cannot carry it — a PostToolUse hook must exit 0 or the codex adapter aborts
+    # every hook queued behind it), and name the recovery: the same hook, same payload, by hand.
+    import json as _json
+    import shlex as _shlex
+
+    _payload = _json.dumps(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "gh pr create"},
+            "tool_response": {"output": pr_url},
+        }
+    )
+    print(
+        f"cc-task-pr-link: NOT LINKED — PR #{pr_number} exists but task '{task_id}' "
+        f"({note_path.name}) still has pr: null (reason=task_note_lock_contended: {exc}). "
+        f"Recover by re-running this hook with the same payload once the lock clears:\n"
+        f"  printf '%s' {_shlex.quote(_payload)} | {_shlex.quote(hook_path)}",
+        file=sys.stderr,
+    )
+    sys.exit(0)
 try:
     text = note_path.read_text(encoding="utf-8")
 

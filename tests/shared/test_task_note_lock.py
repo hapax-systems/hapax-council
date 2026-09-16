@@ -859,13 +859,15 @@ def test_a_forked_child_does_not_inherit_the_parents_locks(tmp_path: Path) -> No
 
 
 def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> None:
-    """The deadlock argument for nesting the projection lock inside the role lock.
+    """Containment: the projection lock is taken inside the role lock and nowhere else here.
 
     ``sdlc_claim``'s role lock is acquired in exactly three places, all inside
     ``_claim_publication_lock``, and the projection lock is taken inside it — so the order is
-    always role-then-note. A cycle would need something that holds a projected-path lock and
-    then asks for a role lock; nothing does, and this fails if a second role-lock acquisition
-    site appears where that could change.
+    always role-then-note. This is a containment check, not the enforcement: the inversion that
+    matters (a note-holder calling onward into claim publication) needs no new acquisition site,
+    so a site count cannot see it (round 5, claude-1). The direction itself is asserted at the
+    moment of use and driven by
+    :func:`test_the_role_lock_refuses_while_this_thread_holds_a_projected_path_lock`.
     """
 
     import re
@@ -900,3 +902,56 @@ def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> 
         f"sdlc_claim takes the projection lock in {uses} places, {inside} of them inside the "
         "role lock — any acquisition outside it could invert the order"
     )
+
+
+def test_the_role_lock_refuses_while_this_thread_holds_a_projected_path_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The direction, asserted at the moment of use — not inferred from a count of sites.
+
+    Claim publication nests the projection lock inside its role-keyed lock, so role-then-note is
+    the only safe order across the two domains. The reverse is hold-and-wait: a note-holder
+    sitting on the role lock while a publisher on the other side sits on that note. Both waits
+    are bounded, so the failure is mutual refusal rather than a wedge — and it needs no new
+    acquisition site to occur, which is why the site count above cannot see it. The role lock
+    refuses instead, before it opens anything. Both orders are driven here: the estate's shape
+    must work, the inversion must be refused with a typed reason, and the refusal must name what
+    was held so the caller can release the right thing.
+    """
+
+    from types import SimpleNamespace
+
+    from shared import sdlc_claim
+    from shared.sdlc_claim import ClaimPublicationError
+
+    # The nested projected_path_lock inside the role lock uses the estate's default root; point
+    # it into tmp so the test holds and checks the same namespace the guard would see.
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    assert tnl.default_lock_root() == tmp_path / "coord" / "task-locks"
+    note = tmp_path / "vault" / "active" / "t-1.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("---\ntask_id: t-1\n---\n", encoding="utf-8")
+    # _claim_publication_lock reads three attributes of the intent. The rest of a real
+    # ClaimPublicationIntent — dispatch binding, note bytes, epoch — has no bearing on lock order.
+    intent = SimpleNamespace(task_id="t-1", role="theta-test", note_path=note)
+    claim_root = tmp_path / "claim-locks"
+
+    # Role-then-note: the shape the estate takes. It must work, and it must actually take the
+    # projection lock inside — otherwise the guard would be guarding nothing.
+    with sdlc_claim._claim_publication_lock(intent, lock_root=claim_root):
+        assert tnl.held_by_current_thread(), "the role lock did not take the projection lock"
+    assert not tnl.held_by_current_thread(), "the projection lock leaked past the role lock"
+
+    # Note-then-role: the inversion. Refused before the role lock is touched.
+    with tnl.projected_path_lock("t-1", (note,)):
+        with pytest.raises(ClaimPublicationError) as refused:
+            with sdlc_claim._claim_publication_lock(intent, lock_root=claim_root):
+                raise AssertionError(
+                    "the role lock was taken while this thread held a projected-path lock"
+                )
+    assert refused.value.reason_code == "claim_publication_lock_order_inversion"
+    held_names = tnl.lock_names("t-1", (note,))
+    assert all(name in str(refused.value) for name in held_names), (
+        f"the refusal does not name what was held: {refused.value}"
+    )
+    assert not tnl.held_by_current_thread()

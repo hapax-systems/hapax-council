@@ -40,13 +40,23 @@ and the lock is released only when the outermost acquisition exits.
 **Totally ordered.** Lock names are sorted before acquisition, so two callers naming overlapping
 key sets in different argument orders cannot each hold one and wait for the other.
 
-**Never hold-and-wait.** A participant that cannot take every key it needs releases the keys it
-did take, waits, and starts the whole attempt over. No lock is ever held while another is wanted,
-so no wait cycle can form — a stronger property than an acquisition order, because it does not
-depend on every participant agreeing about the order. The one shape it cannot cover is a nested
+**Never hold-and-wait — within this primitive.** A participant that cannot take every key it
+needs releases the keys it did take, waits, and starts the whole attempt over. Among
+projected-path locks no lock is ever held while another is wanted, so no wait cycle can form
+among them — a stronger property than an acquisition order, because it does not depend on
+every participant agreeing about the order. The one shape it cannot cover is a nested
 acquisition that *adds* a key, since the outer frame's keys cannot be released to break a cycle;
 that is refused (``task_note_lock_expansion_under_hold``) rather than supported, and the remedy
 is to name every key in the outermost call.
+
+**Composed with a foreign lock, the property is an acquisition order, and it is enforced.**
+Claim publication (``shared.sdlc_claim._claim_publication_lock``) holds a role-keyed lock under
+a different root and takes this lock *inside* it. A projected-path lock held across that role
+acquisition would be hold-and-wait, so the permitted direction is role-then-note only, and the
+role lock refuses (``claim_publication_lock_order_inversion``) when the calling thread already
+holds any projected-path lock — see :func:`held_by_current_thread`. That is a runtime check on
+the direction, not a count of acquisition sites: the inversion that matters needs no new site,
+only an existing note-holder calling onward into claim publication.
 
 **The lock root is shared, and that is a contract.** Acquirers take the root ``LOCK_SH``, so they
 do not exclude one another — an earlier draft took it ``LOCK_EX`` and polled contended keys while
@@ -108,6 +118,7 @@ __all__ = [
     "configured_timeout",
     "TaskNoteLockError",
     "default_lock_root",
+    "held_by_current_thread",
     "lock_names",
     "projected_path_lock",
 ]
@@ -340,6 +351,25 @@ def _thread_holds_any(root_key: str, thread_id: int) -> bool:
     return any(rk == root_key and tid == thread_id for (rk, _name, tid) in _HELD)
 
 
+def held_by_current_thread() -> tuple[tuple[str, str], ...]:
+    """Every projected-path lock this thread holds right now, as ``(lock_root, name)`` pairs.
+
+    For a foreign lock that composes with this one to assert its acquisition direction at the
+    moment of use: ``shared.sdlc_claim._claim_publication_lock`` refuses to take the role lock
+    while this returns anything, because the role lock takes a projected-path lock inside it and
+    the reverse order would be hold-and-wait. Across every root, deliberately — a caller holding
+    a note under a redirected root is still a holder, and a direction rule that only sees one
+    root is a rule with a hole in it.
+    """
+
+    thread_id = threading.get_ident()
+    return tuple(
+        sorted(
+            (rk, name) for (rk, name, tid), depth in _HELD.items() if tid == thread_id and depth > 0
+        )
+    )
+
+
 def _release_attempt(
     _root_key: str,
     opened: list[tuple[str, int]],
@@ -387,10 +417,12 @@ def _try_flock(handle: int, operation: int) -> bool:
     """One non-blocking ``flock``. ``False`` means contended, never "gave up and continued".
 
     Nothing in this module ever *waits* while holding a lock. That is the whole deadlock
-    argument: a participant that cannot take every key it needs releases the keys it did take
-    and starts over, so there is no hold-and-wait edge for a cycle to form on. It is a stronger
-    property than an acquisition order, because it does not depend on every participant
-    agreeing about the order — and an earlier draft of this module proved why that matters, by
+    argument among projected-path locks: a participant that cannot take every key it needs
+    releases the keys it did take and starts over, so there is no hold-and-wait edge for a cycle
+    to form on. Within the primitive it is a stronger property than an acquisition order, because
+    it does not depend on every participant agreeing about the order (the composition with the
+    claim path's role lock is the exception, and there the direction is enforced — see the
+    module docstring) — and an earlier draft of this module proved why that matters, by
     polling a contended key while holding the root exclusively and turning a per-task lock into
     an estate-wide one (reproduced 2026-09-16: an unrelated task was refused after 3s purely
     because a different task was contended).

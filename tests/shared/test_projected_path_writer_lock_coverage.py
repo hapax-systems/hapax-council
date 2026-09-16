@@ -26,8 +26,12 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -191,6 +195,126 @@ def test_two_tools_writing_one_note_concurrently_lose_no_copy(
     final = note.read_text(encoding="utf-8")
     assert "stage: S7_RELEASE" in final, f"the stage advance's copy was lost:\n{final}"
     assert "shared/coord_projection.py" in final, f"the scope widen's copy was lost:\n{final}"
+
+
+def _gate_stamp_source() -> str:
+    """The gate's stamp function, sourced alone.
+
+    The impl script is a gate, not a library: sourcing the whole of it would run the gate's own
+    logic, and an earlier draft did exactly that in a prelude that was then overwritten eight
+    lines later — dead, and misleading about what was being exercised.
+    """
+
+    body = (REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh").read_text(encoding="utf-8")
+    match = re.search(r"^_stamp_frontmatter_field\(\) \{.*?^\}", body, re.M | re.S)
+    assert match, "the gate's stamp function was renamed; update this test with it"
+    return f"SCRIPT_DIR={str(REPO_ROOT / 'hooks' / 'scripts')!r}\n{match.group(0)}\n"
+
+
+def test_the_gate_s_lock_bound_reaches_the_interpreter(tmp_path: Path) -> None:
+    """Ask the interpreter what it inherited; do not read the source.
+
+    Round 5 (gemini-1 critical, claude-1 major): the gate's 5s bound was an env prefix on a
+    backslash-continued line with a comment after the continuation. Bash removes the
+    backslash-newline before it tokenizes, so the comment was joined onto the assignment and its
+    ``#`` ended the command there — the prefix became a plain, unexported shell variable, the
+    interpreter never saw it, and the gate waited task_note_lock's 30s default inside a
+    tool-call hook, which is the hang the 5s exists to prevent. Every existing test passed: each
+    set the variable explicitly, which is the operator-override path, and the override survived
+    the defect. This one runs the function with the variable UNSET, with a stand-in ``python3``
+    first on PATH that prints what it inherited.
+    """
+
+    stand_in = tmp_path / "bin"
+    stand_in.mkdir()
+    (stand_in / "python3").write_text(
+        '#!/usr/bin/env bash\necho "SEEN=${HAPAX_TASK_NOTE_LOCK_TIMEOUT:-unset}"\n',
+        encoding="utf-8",
+    )
+    (stand_in / "python3").chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k != "HAPAX_TASK_NOTE_LOCK_TIMEOUT"}
+    env["PATH"] = f"{stand_in}:{env.get('PATH', '')}"
+    script = f"{_gate_stamp_source()}\n_stamp_frontmatter_field /dev/null stage S9_DONE"
+
+    default = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, env=env, timeout=30
+    )
+    assert "SEEN=5" in default.stdout, (
+        "the gate's 5s bound never reached the interpreter — the env prefix and the python3 "
+        "command must be one logical line with nothing between them.\n"
+        f"stdout={default.stdout!r}\nstderr={default.stderr!r}"
+    )
+    override = subprocess.run(
+        ["bash", "-c", script],
+        capture_output=True,
+        text=True,
+        env={**env, "HAPAX_TASK_NOTE_LOCK_TIMEOUT": "1"},
+        timeout=30,
+    )
+    assert "SEEN=1" in override.stdout, override.stdout
+
+
+def test_the_gate_s_effective_bound_is_seconds_not_tens_of_seconds(
+    probe: tuple[Path, Path, dict[str, str]],
+) -> None:
+    """The effect of the bound, with the real interpreter and the variable unset.
+
+    A holder keeps the lock for longer than the 5s bound. A gate whose bound reaches the
+    interpreter refuses at ~5s with exit 3. A gate on the 30s default outlives the holder,
+    then stamps successfully — a different exit code AND a different note, so the mutant cannot
+    pass by timing alone.
+    """
+
+    home, note, env = probe
+    env = {k: v for k, v in env.items() if k != "HAPAX_TASK_NOTE_LOCK_TIMEOUT"}
+    root = home / "coord" / "task-locks"
+    before = note.read_text(encoding="utf-8")
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(
+                f"""
+                import sys, time
+                sys.path.insert(0, {str(REPO_ROOT)!r})
+                from pathlib import Path
+                from shared import task_note_lock as tnl
+                with tnl.projected_path_lock(None, (Path({str(note)!r}),),
+                                             root=Path({str(root)!r}), timeout=30.0):
+                    print("HELD", flush=True)
+                    time.sleep(10)
+                """
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "HELD"
+        started = time.monotonic()
+        done = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'{_gate_stamp_source()}\n_stamp_frontmatter_field "{note}" stage S9_DONE',
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+        waited = time.monotonic() - started
+    finally:
+        holder.wait(timeout=30)
+
+    assert done.returncode == 3, (
+        f"expected the contention exit (3) at the 5s bound, got {done.returncode} after "
+        f"{waited:.1f}s: {done.stderr!r}"
+    )
+    assert waited < 8.5, f"the gate waited {waited:.1f}s — the 5s bound is not in effect"
+    assert note.read_text(encoding="utf-8") == before, "the refused stamp still wrote"
 
 
 def test_the_gate_stamp_refuses_rather_than_racing_a_held_lock(
@@ -528,50 +652,144 @@ with tnl.projected_path_lock(None, (note,), root=Path(%(root)r), timeout=30.0):
     print("HELD", flush=True)
     time.sleep(3)
     text = note.read_text(encoding="utf-8")
-    note.write_text(
-        text.replace(
-            "stage: S6_IMPLEMENTATION",
-            "stage: S6_IMPLEMENTATION\\n%(marker)s",
-            1,
-        ),
-        encoding="utf-8",
-    )
+    # The marker goes in as the first frontmatter key, so the same first writer serves every
+    # note shape the parametrized race uses — not only the one with a stage line.
+    assert text.startswith("---\\n"), text[:20]
+    note.write_text("---\\n%(marker)s\\n" + text[4:], encoding="utf-8")
 print("RELEASED", flush=True)
 """
 
 
-@pytest.mark.parametrize(
-    ("tool", "argv_tail", "evidence"),
-    [
-        ("cc-stage-advance", ["lock-probe-1", "S7_RELEASE"], "stage: S7_RELEASE"),
-        (
-            "cc-scope-widen",
-            ["lock-probe-1", "--add", "shared/coord_projection.py"],
-            "shared/coord_projection.py",
-        ),
-    ],
-)
-def test_a_writer_does_not_clobber_a_change_made_while_it_waited(
-    probe: tuple[Path, Path, dict[str, str]], tool: str, argv_tail: list[str], evidence: str
-) -> None:
-    """The property `test_every_converted_writer_actually_takes_the_lock` cannot reach.
+def _prepare_repair(home: Path, note: Path) -> Path:
+    """Remove a scaffolding field so repair has something to write."""
 
-    That test keys on the FILE — an import and a ``with`` in the source — so it cannot tell a
-    writer that locks its whole read-modify-write from one that locks only the write. The
-    difference is invisible to it and fatal in production, and it is exactly how round 4's
-    critical survived round 3: ``cc-claim`` was in ``UNDER_LOCK``, passed the membership check,
-    and was still deriving its bytes from a read taken ~800 lines before the lock.
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("route_metadata_schema: 1\n", ""),
+        encoding="utf-8",
+    )
+    return note
 
-    This reaches it behaviourally. Another writer takes the lock first, changes the note, and
-    releases; the tool under test is already blocked on that lock when the change lands. If its
-    read happened before the lock, it overwrites the change with a stale snapshot and nothing
-    reports anything. If the read is inside, the change survives.
+
+def _prepare_offer_ready(home: Path, note: Path) -> Path:
+    """The state that drives the promotion, so the tool reaches its lock instead of refusing
+    early for an unrelated reason and returning in 0.03s."""
+
+    note.write_text(
+        note.read_text(encoding="utf-8")
+        .replace("status: claimed", "status: ready")
+        .replace("assigned_to: theta", "assigned_to: unassigned"),
+        encoding="utf-8",
+    )
+    return note
+
+
+def _prepare_cascade(home: Path, note: Path) -> Path:
+    """A blocked sibling whose dependency is satisfied; the race is on the sibling."""
+
+    vault = note.parent
+    (vault.parent / "closed").mkdir(exist_ok=True)
+    (vault.parent / "closed" / "dep-1.md").write_text(
+        "---\ntask_id: dep-1\nstatus: done\n---\n", encoding="utf-8"
+    )
+    blocked = vault / "blocked-1.md"
+    blocked.write_text(
+        "---\ntask_id: blocked-1\nstatus: blocked\nblocked_reason: waiting\n"
+        "depends_on:\n  - dep-1\n---\n\n## Session log\n",
+        encoding="utf-8",
+    )
+    return blocked
+
+
+def _prepare_close(home: Path, note: Path) -> Path:
+    """cc-close's outcome gate refuses without its durable sink root under HOME."""
+
+    (home / ".cache" / "hapax" / "stage0-durable-sink").mkdir(parents=True, exist_ok=True)
+    return note
+
+
+def _prepare_claim(home: Path, note: Path) -> Path:
+    """An offered, claimable note.
+
+    cc-claim's admitted path installs its Gate-0B root under HOME on first use, so the real
+    publication machinery runs against this note — the role lock, the projection lock inside
+    it, and ``_locked_preflight`` — with no killswitch and no legacy writer. That is also what
+    drives ``shared/sdlc_claim.py``'s entry in the inventory.
     """
 
-    home, note, env = probe
+    (home / ".cache" / "hapax").mkdir(parents=True, exist_ok=True)
+    note.write_text(
+        note.read_text(encoding="utf-8")
+        .replace("status: claimed", "status: offered\nclaimable: true")
+        .replace("assigned_to: theta", "assigned_to: unassigned"),
+        encoding="utf-8",
+    )
+    return note
+
+
+#: Every converted writer the race below can drive on argv, keyed by its UNDER_LOCK entry:
+#: (prepare, argv tail, evidence that the tool's own change landed — checked only when it
+#: exits 0, since a refusal on a moved note is also a correct outcome).
+ANTI_CLOBBER_CASES = {
+    "scripts/cc-stage-advance": (None, ["lock-probe-1", "S7_RELEASE"], "stage: S7_RELEASE"),
+    "scripts/cc-scope-widen": (
+        None,
+        ["lock-probe-1", "--add", "shared/coord_projection.py"],
+        "shared/coord_projection.py",
+    ),
+    "scripts/cc-task-repair": (_prepare_repair, ["lock-probe-1"], "route_metadata_schema"),
+    "scripts/cc-task-offer-ready": (_prepare_offer_ready, ["lock-probe-1"], "status: offered"),
+    "scripts/cc-cascade-unblock": (_prepare_cascade, [], None),
+    "scripts/cc-close": (_prepare_close, ["lock-probe-1"], "status: done"),
+    "scripts/cc-claim": (_prepare_claim, ["lock-probe-1"], "status: claimed"),
+}
+
+#: UNDER_LOCK entries the race cannot reach on argv, each with the test that drives the same
+#: property for it. A bare "covered elsewhere" is not a reason; the reason names the test.
+ANTI_CLOBBER_DRIVEN_ELSEWHERE = {
+    "hooks/scripts/cc-task-gate.impl.sh": (
+        "test_the_gate_stamp_does_not_clobber_a_change_made_while_it_waited — the stamp is a "
+        "sourced function, raced below with the same first writer"
+    ),
+    "hooks/scripts/cc-task-pr-link.sh": (
+        "tests/test_cc_task_pr_link_hook.py::TestProjectionLock::"
+        "test_the_link_does_not_clobber_a_change_made_while_it_waited — PostToolUse JSON on stdin"
+    ),
+    "shared/sdlc_claim.py": (
+        "the scripts/cc-claim case: its admitted publication IS this module, and the change "
+        "lands against _locked_preflight inside _claim_publication_lock"
+    ),
+}
+
+
+def test_every_converted_writer_is_driven_through_the_anti_clobber_race() -> None:
+    """Membership in UNDER_LOCK is not coverage.
+
+    Each entry is either raced here or named with the test that races it, and a writer added
+    to UNDER_LOCK fails this until it is one or the other. Round 5 (claude-1): the race covered
+    two of nine converted writers, and membership is exactly what round 4's critical passed
+    while its read sat ~800 lines above the lock.
+    """
+
+    driven = set(ANTI_CLOBBER_CASES) | set(ANTI_CLOBBER_DRIVEN_ELSEWHERE)
+    assert driven == set(UNDER_LOCK), (
+        "UNDER_LOCK and the anti-clobber drive disagree: "
+        f"undriven={sorted(set(UNDER_LOCK) - driven)} "
+        f"not_under_lock={sorted(driven - set(UNDER_LOCK))}"
+    )
+    assert not set(ANTI_CLOBBER_CASES) & set(ANTI_CLOBBER_DRIVEN_ELSEWHERE)
+
+
+def _race_a_writer_against_a_change(
+    home: Path,
+    target: Path,
+    env: dict[str, str],
+    run: Callable[[dict[str, str]], subprocess.CompletedProcess[str]],
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    """Hold the lock on ``target``, change it while ``run`` waits, release; return the result
+    and the note's final text (from ``closed/`` if the writer relocated it)."""
+
     root = home / "coord" / "task-locks"
     marker = "witness_field: survived-the-wait"
-
     first = subprocess.Popen(
         [
             sys.executable,
@@ -581,7 +799,7 @@ def test_a_writer_does_not_clobber_a_change_made_while_it_waited(
                 # str(), not the Path: %r on a Path renders PosixPath(...), which the child
                 # cannot evaluate without the import.
                 "repo": str(REPO_ROOT),
-                "note": str(note),
+                "note": str(target),
                 "root": str(root),
                 "marker": marker,
             },
@@ -599,8 +817,124 @@ def test_a_writer_does_not_clobber_a_change_made_while_it_waited(
                 f"the first writer never took the lock: {held!r}; "
                 f"stderr={first.stderr.read() if first.stderr else ''!r}"
             )
+        started = time.monotonic()
+        done = run({**env, "HAPAX_TASK_NOTE_LOCK_TIMEOUT": "30"})
+        waited = time.monotonic() - started
+    finally:
+        out, err = first.communicate(timeout=60)
+
+    assert "RELEASED" in out, f"the first writer did not finish: {out!r} {err!r}"
+    # The writer must have reached the lock: the first writer holds it for 3s, so a run that
+    # returned sooner refused for some unrelated reason before ever contending — and a
+    # surviving marker would then say nothing about its read. This is the assertion that keeps
+    # the race from passing vacuously (the first draft of one contention test here "passed" in
+    # 0.03s that way).
+    assert waited > 2.0, (
+        f"the writer returned in {waited:.2f}s without contending for the lock: "
+        f"stdout={done.stdout!r} stderr={done.stderr!r}"
+    )
+    landed = target if target.exists() else target.parent.parent / "closed" / target.name
+    assert landed.exists(), (
+        f"no note at either name after the race: stdout={done.stdout!r} stderr={done.stderr!r}"
+    )
+    final = landed.read_text(encoding="utf-8")
+    # Either the writer applied its change on top of the other writer's, or it refused because
+    # the note changed under it. What it must not do is silently drop the other writer's bytes.
+    assert marker in final, (
+        "the writer clobbered a change made while it waited for the lock — its read happened "
+        f"before the lock, not inside it.\nstdout={done.stdout!r}\nstderr={done.stderr!r}\n"
+        f"note:\n{final}"
+    )
+    return done, final
+
+
+@pytest.mark.parametrize("rel", sorted(ANTI_CLOBBER_CASES))
+def test_a_writer_does_not_clobber_a_change_made_while_it_waited(
+    probe: tuple[Path, Path, dict[str, str]], rel: str
+) -> None:
+    """The property `test_every_converted_writer_actually_takes_the_lock` cannot reach.
+
+    That test keys on the FILE — an import and a ``with`` in the source — so it cannot tell a
+    writer that locks its whole read-modify-write from one that locks only the write. The
+    difference is invisible to it and fatal in production, and it is exactly how round 4's
+    critical survived round 3: ``cc-claim`` was in ``UNDER_LOCK``, passed the membership check,
+    and was still deriving its bytes from a read taken ~800 lines before the lock.
+
+    This reaches it behaviourally, for every converted writer that runs on argv. Another
+    writer takes the lock first, changes the note, and releases; the tool under test is
+    already blocked on that lock when the change lands. If its read happened before the lock,
+    it overwrites the change with a stale snapshot and nothing reports anything. If the read
+    is inside, the change survives.
+    """
+
+    home, note, env = probe
+    prepare, argv_tail, evidence = ANTI_CLOBBER_CASES[rel]
+    target = prepare(home, note) if prepare else note
+    done, final = _race_a_writer_against_a_change(
+        home,
+        target,
+        env,
+        lambda run_env: subprocess.run(
+            [str(REPO_ROOT / rel), *argv_tail],
+            capture_output=True,
+            text=True,
+            env=run_env,
+            timeout=120,
+        ),
+    )
+    if done.returncode == 0 and evidence is not None:
+        assert evidence in final, f"{rel} reported success but its own change is absent:\n{final}"
+
+
+#: A first writer that RELOCATES the note out of both projected names while holding the lock —
+#: the one shape that reaches cc-close's "neither active/ nor closed/" refusal.
+_MOVING_WRITER = """\
+import sys, time
+sys.path.insert(0, %(repo)r)
+from pathlib import Path
+from shared import task_note_lock as tnl
+note = Path(%(note)r)
+away = note.parent.parent / "_lineage" / note.name
+with tnl.projected_path_lock(None, (note,), root=Path(%(root)r), timeout=30.0):
+    print("HELD", flush=True)
+    time.sleep(3)
+    away.parent.mkdir(parents=True, exist_ok=True)
+    note.rename(away)
+print("RELEASED", flush=True)
+"""
+
+
+def test_cc_close_s_lost_note_refusal_names_the_root_it_actually_resolved(
+    probe: tuple[Path, Path, dict[str, str]],
+) -> None:
+    """The recovery command in the one message an operator reaches when a note is lost.
+
+    It used to hardcode ``~/Documents/Personal/20-projects/hapax-cc-tasks`` while every other
+    path in the tool came from ``shared/cc_task_root`` — so under a redirected root (this
+    suite's HOME, a moved work plane) the command it named looked in the wrong place, exactly
+    when it mattered (round 5, claude-1). The note is moved out from under the close while the
+    close waits on the lock; the refusal must name the root the tool resolved, not a literal.
+    """
+
+    home, note, env = probe
+    _prepare_close(home, note)
+    vault_root = note.parent.parent
+    root = home / "coord" / "task-locks"
+    first = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _MOVING_WRITER % {"repo": str(REPO_ROOT), "note": str(note), "root": str(root)},
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert first.stdout is not None
+        assert first.stdout.readline().strip() == "HELD"
         done = subprocess.run(
-            [str(REPO_ROOT / "scripts" / tool), *argv_tail],
+            [str(REPO_ROOT / "scripts" / "cc-close"), "lock-probe-1"],
             capture_output=True,
             text=True,
             env={**env, "HAPAX_TASK_NOTE_LOCK_TIMEOUT": "30"},
@@ -609,18 +943,39 @@ def test_a_writer_does_not_clobber_a_change_made_while_it_waited(
     finally:
         out, err = first.communicate(timeout=60)
 
-    assert "RELEASED" in out, f"the first writer did not finish: {out!r} {err!r}"
-    final = note.read_text(encoding="utf-8")
-
-    # Either the tool applied its change on top of the other writer's, or it refused because
-    # the note moved under it. What it must not do is silently drop the other writer's bytes.
-    assert marker in final, (
-        f"{tool} clobbered a change made while it waited for the lock — its read happened "
-        f"before the lock, not inside it.\nstdout={done.stdout!r}\nstderr={done.stderr!r}\n"
-        f"note:\n{final}"
+    assert "RELEASED" in out, f"the moving writer did not finish: {out!r} {err!r}"
+    assert done.returncode != 0, f"cc-close closed a note that had left active/: {done.stderr!r}"
+    assert "neither active/ nor closed/" in done.stderr, done.stderr
+    assert f"ls {vault_root}/*/lock-probe-1*" in done.stderr, (
+        f"the recovery command does not name the resolved root {vault_root}:\n{done.stderr}"
     )
-    if done.returncode == 0:
-        assert evidence in final, f"{tool} reported success but its own change is absent:\n{final}"
+    assert "~/Documents/Personal" not in done.stderr, done.stderr
+
+
+def test_the_gate_stamp_does_not_clobber_a_change_made_while_it_waited(
+    probe: tuple[Path, Path, dict[str, str]],
+) -> None:
+    """The same race for the gate's stamp, which is a sourced function rather than a CLI."""
+
+    home, note, env = probe
+    done, final = _race_a_writer_against_a_change(
+        home,
+        note,
+        env,
+        lambda run_env: subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'{_gate_stamp_source()}\n_stamp_frontmatter_field "{note}" stage S9_DONE',
+            ],
+            capture_output=True,
+            text=True,
+            env=run_env,
+            timeout=120,
+        ),
+    )
+    assert done.returncode == 0, f"the stamp did not land after waiting: {done.stderr!r}"
+    assert "stage: S9_DONE" in final, final
 
 
 # ───────────────────────────────────────────────────────────── conformance: the inventory
