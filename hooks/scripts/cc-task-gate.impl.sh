@@ -1055,7 +1055,13 @@ _stamp_frontmatter_field() {
   # A short bound: this runs inside a tool-call hook, so waiting out a wedged transition
   # would hang the session. Refusing to stamp is safe; the caller reports it.
   HAPAX_TASK_NOTE_LOCK_TIMEOUT="${HAPAX_TASK_NOTE_LOCK_TIMEOUT:-5}" \
-  PYTHONPATH="$repo_root:${PYTHONPATH:-}" python3 - "$note" "$key" "$value" <<'PYEOF' || return 1
+  # Propagate the interpreter's exit code verbatim. `|| return 1` collapsed the 3 that
+  # means "the projection lock is held" into the 1 that means "something else broke", so
+  # the caller's contention branch could never fire and every failure was recorded as
+  # refused_error — the mirror image of the defect these exit codes were added to fix. A
+  # boundary that flattens a distinction both sides agreed on is as bad as never making it.
+  local _stamp_py_rc=0
+  PYTHONPATH="$repo_root:${PYTHONPATH:-}" python3 - "$note" "$key" "$value" <<'PYEOF' || _stamp_py_rc=$?
 import sys
 from pathlib import Path
 
@@ -1108,6 +1114,7 @@ try:
 finally:
     lock.__exit__(None, None, None)
 PYEOF
+  return "$_stamp_py_rc"
 }
 
 # authority_case and parent_spec remain HARD requirements: they are the verified

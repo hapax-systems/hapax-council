@@ -6307,26 +6307,37 @@ def _transition_locks(
     This is :func:`shared.task_note_lock.projected_path_lock`, not a second implementation of
     it.
 
-    **Which writers are inside this domain, exactly.** ``cc-stage-advance``, ``cc-scope-widen``,
-    ``cc-task-repair``, ``cc-task-offer-ready``, ``cc-cascade-unblock``, the gate's
-    ``_stamp_frontmatter_field`` and ``cc-task-pr-link`` take this same primitive around their
-    read-modify-write, so none of them can land between this transition's preimage pin and its
-    install.
+    **Which writers are inside this domain.** Every writer a session actually runs:
+    ``cc-stage-advance``, ``cc-scope-widen``, ``cc-task-repair``, ``cc-task-offer-ready``,
+    ``cc-cascade-unblock``, ``cc-task-gate``'s ``_stamp_frontmatter_field``, ``cc-task-pr-link``,
+    ``cc-close`` (which locks both the name it unlinks and the name it installs — it is the only
+    writer that *removes* a projected path), and claim publication, which takes this primitive
+    inside ``shared/sdlc_claim._claim_publication_lock`` and so covers ``cc-claim`` and the
+    ``_apply_projections`` calls beneath it, plus ``cc-claim``'s documented
+    ``HAPAX_GATE0B_CLAIM_PUBLICATION_OFF`` fallback. None of them can land between this
+    transition's preimage pin and its install.
 
-    **Which are still outside it, and this is the load-bearing half of the sentence.**
-    ``cc-claim`` and ``cc-close`` — the estate's two highest-frequency note writers — are NOT in
-    this domain. Claim publication holds a lock keyed by the *role* under a different root
-    (``shared/sdlc_claim.py``) and calls :func:`_apply_projections` directly, which takes no lock
-    of its own; the live close moves and unlinks the note without any lock, while the correctly
-    locked ``shared/sdlc_close.py`` has no production caller. So the fail-open hazard beta
-    measured on 2026-09-13, and codex-1 reproduced as C1 on PR #4667, is closed **for writers
-    that take this primitive and open for those two**, tracked in
-    ``tests/shared/test_projected_path_writer_lock_coverage.py::KNOWN_UNCONVERTED`` and rowed as
-    ``claim-close-writers-outside-the-projection-lock-domain-20260916``.
+    The claim path nests this lock *inside* a role-keyed lock, and the ordering argument is that
+    role-then-note is the only direction taken anywhere: the role lock is acquired in exactly
+    three places, all inside ``_claim_publication_lock``, and nothing takes a projected-path lock
+    and then asks for a role lock. A test fails if a fourth acquisition site appears.
 
-    Stating only the first half here would reproduce this row's own hazard class — failure
-    invisible from both sides — at the human layer, in the one in-code statement of the
-    concurrency contract that #4667's rebase and its C1 disposition are read against.
+    **Which are still outside it.** Daemons, reconcilers and one-shot migrations — the
+    ``cc-pr-*`` watchers, ``protected-lane-revive-reconcile``, the ``refused_lifecycle`` tools,
+    the coordinator and triage agents, ``recovery_governor``, ``cc-migration-capability``. They
+    are enumerated in ``tests/shared/test_projected_path_writer_lock_coverage.py`` under
+    ``KNOWN_UNCONVERTED``, each with a named owner, and a new writer that is in none of the three
+    lists fails CI.
+
+    So the fail-open hazard beta measured on 2026-09-13, and codex-1 reproduced as C1 on PR
+    #4667, is closed **for writers that take this primitive** — which is every interactive writer
+    — and open for that daemon remainder.
+
+    This paragraph is the single in-code statement of the concurrency contract, and #4667's
+    rebase and its C1 disposition are read against it. It has been wrong twice: once claiming
+    writers took the lock that did not, and once — after they were converted — still saying they
+    did not. Both directions mislead, so it is checked: the test above asserts the delegation,
+    and a docstring-vs-inventory test asserts this list matches ``UNDER_LOCK``.
 
     Two implementations that merely agreed on the root, the key spelling and the digest would
     serialize nothing the day they stopped agreeing, and nothing would detect it. One

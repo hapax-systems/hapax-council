@@ -731,3 +731,37 @@ def test_the_transition_and_the_writers_share_one_lock_implementation() -> None:
     assert "fcntl.flock" not in body.group(0), (
         "_transition_locks took a flock of its own; the primitive is shared/task_note_lock.py"
     )
+
+
+def test_the_contract_docstring_matches_the_inventory() -> None:
+    """The in-code concurrency contract must name exactly the writers that are converted.
+
+    `_transition_locks`'s docstring is the single in-code statement of this contract, and
+    #4667's rebase and its C1 disposition are read against it. It has now been wrong in both
+    directions: once claiming writers took the lock that did not, and once — after they were
+    converted — still saying they did not, which three reviewer families filed independently.
+    A prose claim that no test reads will drift again, so this reads it.
+    """
+
+    source = (REPO_ROOT / "shared" / "coord_projection.py").read_text(encoding="utf-8")
+    body = re.search(
+        r"^@contextmanager\ndef _transition_locks\(.*?\n    \"\"\"(.*?)\"\"\"", source, re.M | re.S
+    )
+    assert body, "_transition_locks docstring not found in the expected shape"
+    contract = body.group(1)
+
+    inside = contract.split("**Which are still outside it.**")[0]
+    for rel in UNDER_LOCK:
+        name = Path(rel).name.removesuffix(".impl.sh").removesuffix(".sh").removesuffix(".py")
+        assert name in inside, (
+            f"{rel} is in UNDER_LOCK but the contract docstring does not name it as inside the "
+            "domain — the in-code contract understates what this PR ships"
+        )
+
+    outside = contract.split("**Which are still outside it.**")[-1]
+    for rel in UNDER_LOCK:
+        name = Path(rel).name.removesuffix(".impl.sh").removesuffix(".sh").removesuffix(".py")
+        assert f"``{name}``" not in outside.split("So the fail-open hazard")[0], (
+            f"{rel} is converted but the contract docstring still lists it as outside the "
+            "domain — this is the direction that misled three reviewer families"
+        )
