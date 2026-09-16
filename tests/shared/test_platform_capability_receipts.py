@@ -2417,3 +2417,202 @@ class TestQuotaIsPerRouteAndLedgerBacked:
         module = self._module(tmp_path, ledger=None)
         path = module["launcher_command_path"](_WrapperRoute("x.y", "scripts/hapax-claude --x"))
         assert path is not None and path.name == "hapax-claude"
+
+
+class TestRetiredPlatformReceiptLifecycle:
+    """`--all` refreshes only platforms that still have a route, so a receipt whose platform
+    was retired from the registry is never touched again.
+
+    Measured 2026-09-16 on this estate: `gemini.json` (observed 2026-06-30T17:05:59Z),
+    `antigrav.json` (2026-07-04T19:21:10Z) and `grok.json` (2026-07-09T08:20:42Z) all sat in
+    the live receipt directory carrying `stale_after: 24h`, 68-78 days past expiry, while
+    `--all` wrote six other platforms and skipped these three entirely.
+
+    They are not currently misread as live surface -- `receipt_is_fresh` filters them at read
+    time and their platforms have no registry route -- but nothing in the directory says they
+    are retired, so the only thing standing between them and a reader is one freshness check.
+    Retirement is made an observed, dated fact instead of an absence.
+    """
+
+    def _receipt_payload(self, platform: str, observed_at: str, routes: list[str]) -> dict:
+        return {
+            "capability": {
+                "evidence_refs": [f"local:{platform}:cli-version:1.0"],
+                "observed_at": observed_at,
+                "reason_codes": [],
+                "source": "local_receipt_probe",
+                "stale_after": "24h",
+                "status": "observed",
+            },
+            "cli": {"available": True, "binary": platform, "error": None, "version": "1.0"},
+            "config_refs": [],
+            "known_unknowns": [],
+            "mcp_status": [],
+            "observed_at": observed_at,
+            "platform": platform,
+            "provider_docs": {
+                "fetch_status": "observed",
+                "fetched_at": observed_at,
+                "refs": ["official:https://example.invalid/docs"],
+                "stale_after": "30d",
+            },
+            "quota": {
+                "evidence_refs": [],
+                "observed_at": observed_at,
+                "reason_codes": ["account_live_quota_receipt_absent"],
+                "source": "local_receipt_probe",
+                "stale_after": "15m",
+                "status": "unobservable",
+            },
+            "receipt_id": f"{platform}-{observed_at.replace(':', '').replace('-', '')}",
+            "receipt_schema": "hapax.platform-capability-receipt.v1",
+            "resource": {
+                "evidence_refs": [f"local:/usr/bin/{platform}:present"],
+                "observed_at": observed_at,
+                "reason_codes": [],
+                "source": "local_receipt_probe",
+                "stale_after": "24h",
+                "status": "observed",
+            },
+            "route_wrappers": {},
+            "routes": routes,
+            "stale_after": "24h",
+            "tool_state": [],
+            "wrapper": {
+                "path": f"scripts/hapax-{platform}",
+                "exists": True,
+                "executable": True,
+                "sha256": "0" * 64,
+            },
+        }
+
+    def _seed(self, receipt_dir: Path, platform: str, observed_at: str) -> Path:
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        path = receipt_dir / f"{platform}.json"
+        path.write_text(
+            json.dumps(
+                self._receipt_payload(platform, observed_at, [f"{platform}.headless.full"]),
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_retired_receipt_is_archived_with_a_record_not_left_in_place(
+        self, tmp_path: Path
+    ) -> None:
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        stale = self._seed(receipt_dir, "gemini", "2026-06-30T17:05:59Z")
+        before = stale.read_text(encoding="utf-8")
+
+        retired = module["retire_receipts_without_routes"](
+            receipt_dir=receipt_dir,
+            live_platforms={"claude", "codex"},
+            observed_at=datetime(2026, 9, 16, 1, 30, 0, tzinfo=UTC),
+        )
+
+        assert [entry["platform"] for entry in retired] == ["gemini"]
+        assert not stale.exists(), "a retired receipt must leave the live directory"
+        archived = receipt_dir / "retired" / "gemini.json"
+        assert archived.exists()
+        assert archived.read_text(encoding="utf-8") == before, (
+            "the observation is preserved byte-exact"
+        )
+
+        record = json.loads((receipt_dir / "retired" / "gemini.retirement.json").read_text())
+        assert record["platform"] == "gemini"
+        assert record["reason"] == "no_registry_route_declares_this_platform"
+        assert record["receipt_observed_at"] == "2026-06-30T17:05:59Z"
+        assert record["retired_at"] == "2026-09-16T01:30:00Z"
+        assert record["archived_from"].endswith("gemini.json")
+
+    def test_a_live_platform_receipt_is_never_retired(self, tmp_path: Path) -> None:
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        live = self._seed(receipt_dir, "claude", "2026-09-16T00:50:43Z")
+
+        retired = module["retire_receipts_without_routes"](
+            receipt_dir=receipt_dir,
+            live_platforms={"claude", "codex"},
+            observed_at=datetime(2026, 9, 16, 1, 30, 0, tzinfo=UTC),
+        )
+
+        assert retired == []
+        assert live.exists()
+        assert not (receipt_dir / "retired").exists()
+
+    def test_a_fresh_receipt_for_a_retired_platform_is_still_retired(self, tmp_path: Path) -> None:
+        """Freshness is not the predicate. A platform with no route has no live surface no
+        matter how recently something observed its CLI, and leaving a FRESH receipt for it in
+        the live directory is the case that actually could be misread."""
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        fresh = self._seed(receipt_dir, "grok", "2026-09-16T01:29:00Z")
+
+        retired = module["retire_receipts_without_routes"](
+            receipt_dir=receipt_dir,
+            live_platforms={"claude"},
+            observed_at=datetime(2026, 9, 16, 1, 30, 0, tzinfo=UTC),
+        )
+
+        assert [entry["platform"] for entry in retired] == ["grok"]
+        assert not fresh.exists()
+        assert (receipt_dir / "retired" / "grok.json").exists()
+
+    def test_retirement_never_destroys_an_earlier_archive(self, tmp_path: Path) -> None:
+        """A second retirement of the same platform must not overwrite the first observation."""
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        self._seed(receipt_dir, "gemini", "2026-06-30T17:05:59Z")
+        module["retire_receipts_without_routes"](
+            receipt_dir=receipt_dir,
+            live_platforms=set(),
+            observed_at=datetime(2026, 9, 16, 1, 30, 0, tzinfo=UTC),
+        )
+        first = (receipt_dir / "retired" / "gemini.json").read_text(encoding="utf-8")
+
+        self._seed(receipt_dir, "gemini", "2026-09-16T01:31:00Z")
+        module["retire_receipts_without_routes"](
+            receipt_dir=receipt_dir,
+            live_platforms=set(),
+            observed_at=datetime(2026, 9, 16, 1, 32, 0, tzinfo=UTC),
+        )
+
+        assert (receipt_dir / "retired" / "gemini.json").read_text(encoding="utf-8") == first
+        superseded = sorted((receipt_dir / "retired").glob("gemini.*.json"))
+        assert superseded, "the later observation is kept under a distinct name"
+
+    def test_retirement_ignores_subdirectories_and_unreadable_files(self, tmp_path: Path) -> None:
+        """`bare-host-cli/`, `route-authority/` and friends live in the same directory and are
+        not platform receipts; a corrupt file is left alone rather than aborting the sweep."""
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        receipt_dir.mkdir(parents=True)
+        (receipt_dir / "route-authority").mkdir()
+        (receipt_dir / "route-authority" / "codex.json").write_text("{}", encoding="utf-8")
+        corrupt = receipt_dir / "broken.json"
+        corrupt.write_text("{not json", encoding="utf-8")
+        self._seed(receipt_dir, "gemini", "2026-06-30T17:05:59Z")
+
+        retired = module["retire_receipts_without_routes"](
+            receipt_dir=receipt_dir,
+            live_platforms={"claude"},
+            observed_at=datetime(2026, 9, 16, 1, 30, 0, tzinfo=UTC),
+        )
+
+        assert [entry["platform"] for entry in retired] == ["gemini"]
+        assert corrupt.exists()
+        assert (receipt_dir / "route-authority" / "codex.json").exists()
+
+    def test_a_missing_receipt_dir_is_not_an_error(self, tmp_path: Path) -> None:
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        assert (
+            module["retire_receipts_without_routes"](
+                receipt_dir=tmp_path / "absent",
+                live_platforms={"claude"},
+                observed_at=datetime(2026, 9, 16, 1, 30, 0, tzinfo=UTC),
+            )
+            == []
+        )

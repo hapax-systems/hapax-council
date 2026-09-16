@@ -912,6 +912,80 @@ def write_receipt(receipt: PlatformCapabilityReceipt, receipt_dir: Path) -> Path
     return path
 
 
+RETIRED_RECEIPT_DIRNAME = "retired"
+
+
+def retire_receipts_without_routes(
+    *,
+    receipt_dir: Path,
+    live_platforms: set[str],
+    observed_at: datetime,
+) -> list[dict[str, str]]:
+    """Archive receipts whose platform no longer has a route, with a dated record.
+
+    `--all` refreshes only the platforms the registry still declares routes for, so a
+    receipt written before its platform was excised is never touched again. Measured
+    2026-09-16 on this estate: `gemini.json` (observed 2026-06-30T17:05:59Z),
+    `antigrav.json` (2026-07-04) and `grok.json` (2026-07-09) were sitting in the live
+    receipt directory carrying `stale_after: 24h`, 68-78 days past their own expiry, while
+    the same `--all` run wrote six other platforms.
+
+    **Retire-with-record, not skip and not delete.** Skipping is what produced the lingering
+    files. Deleting would destroy an observation, and this estate does not delete evidence.
+    Archiving moves the receipt out of the directory every reader globs, so it cannot be
+    read as live surface by any future reader regardless of that reader's freshness logic,
+    and writes a retirement record so the retirement itself is an observed, dated fact
+    rather than an absence.
+
+    Freshness is deliberately NOT the predicate: a platform with no declared route has no
+    live surface however recently something observed its CLI, and a FRESH receipt for a
+    retired platform is the case that could actually be misread. `receipt_is_fresh` stays
+    exactly as it is on the read path -- this is a second, independent reason the file is
+    gone, not a replacement for expiry.
+
+    Never overwrites an existing archive: a later observation of an
+    already-retired platform is kept beside the first under a timestamped name.
+    """
+
+    if not receipt_dir.is_dir():
+        return []
+    retired: list[dict[str, str]] = []
+    archive_dir = receipt_dir / RETIRED_RECEIPT_DIRNAME
+    stamp = observed_at.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    for path in sorted(receipt_dir.glob("*.json")):
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # One corrupt file does not abort the sweep and is not silently discarded:
+            # it is left exactly where it is for a human to look at.
+            continue
+        if not isinstance(payload, dict):
+            continue
+        platform = str(payload.get("platform") or "").strip()
+        if not platform or platform in live_platforms:
+            continue
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        destination = archive_dir / f"{platform}.json"
+        if destination.exists():
+            destination = archive_dir / f"{platform}.{stamp.replace(':', '')}.json"
+        record = {
+            "archived_from": str(path),
+            "archived_to": str(destination),
+            "platform": platform,
+            "reason": "no_registry_route_declares_this_platform",
+            "receipt_observed_at": str(payload.get("observed_at") or ""),
+            "record_schema": "hapax.platform-capability-receipt-retirement.v1",
+            "retired_at": stamp,
+        }
+        path.replace(destination)
+        record_path = archive_dir / f"{destination.stem}.retirement.json"
+        record_path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+        retired.append(record)
+    return retired
+
+
 def positive_float_env_default(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -1049,12 +1123,23 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
 
+    # Only --all knows the whole live set. A --platform run observed a subset and must not
+    # conclude that everything it did not name is retired.
+    retired_receipts: list[dict[str, str]] = []
+    if args.all and not args.dry_run:
+        retired_receipts = retire_receipts_without_routes(
+            receipt_dir=args.receipt_dir,
+            live_platforms=set(routes_by_platform),
+            observed_at=observed_at,
+        )
+
     payload = {
         "ok": True,
         "observed_at": iso_z(observed_at),
         "receipt_dir": str(args.receipt_dir),
         "dry_run": args.dry_run,
         "receipts": outputs,
+        "retired_receipts": retired_receipts,
     }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -1065,6 +1150,12 @@ def main(argv: list[str] | None = None) -> int:
                 f"{item['platform']}: wrote {target} "
                 f"cli={item['cli_available']} wrapper={item['wrapper_exists']} "
                 f"quota={item['quota_status']}"
+            )
+        for item in retired_receipts:
+            print(
+                f"{item['platform']}: retired {item['archived_from']} -> "
+                f"{item['archived_to']} (observed {item['receipt_observed_at']}, "
+                f"{item['reason']})"
             )
     return 0
 
