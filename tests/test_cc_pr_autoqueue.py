@@ -11079,3 +11079,100 @@ def test_graphql_malformed_references_refuse_governance_without_rest(
     assert governance.reason == f"auto_merge_method_unverified:{reason}"
     assert governance.method is None
     assert not any(cmd[:4] == ["gh", "api", "--method", "GET"] for cmd in calls)
+
+
+# --- Transient rulesets-fetch transport window: HOLD a queued entry, never dequeue ---------- #
+# Regression: cc-pr-autoqueue dequeued accepted PR #4672 repeatedly on 2026-09-16 because its
+# own rulesets fetch was rate-limited (a 403 secondary/burst limit), and it treated the
+# unreadable merge-method as a dequeue-worthy blocker — acting on evidence it could not read.
+# A transient transport window (rate-limit / 429 / 5xx) says nothing about the PR: a queued
+# entry must be HELD (not dequeued) and NO failure admission status may be written (that fails
+# the required hapax/autoqueue-admission check and makes GitHub drop the queue entry).
+
+
+def test_queued_pr_holds_on_transient_rate_limited_rulesets_fetch(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queued-rulesets-rate-limited", pr=80)
+    runner = _FakeRunner()
+    runner.queued_prs = {80}
+    runner.open_prs = [_pr(80, auto_merge=True)]
+    runner.rulesets_error = "API rate limit exceeded for user ID 418460"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["action"] == "hold"
+    assert report["counts"]["dequeue"] == 0
+    assert report["counts"]["disable_auto_merge"] == 0
+    assert decision["reasons"] == [
+        "auto_merge_method_unverified:transient_transport:source=rulesets_fetch_failed:"
+        "API rate limit exceeded for user ID 418460"
+    ]
+    # No dequeue mutation.
+    assert not any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+    # No admission-status write — the failure write is what drops the queue entry.
+    assert not any(
+        call[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in call[4] for call in runner.calls
+    )
+
+
+def test_queued_pr_holds_on_transient_unavailable_rulesets_fetch(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queued-rulesets-5xx", pr=81)
+    runner = _FakeRunner()
+    runner.queued_prs = {81}
+    runner.open_prs = [_pr(81, auto_merge=True)]
+    runner.rulesets_error = "gh api failed: HTTP 502 Bad Gateway"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["action"] == "hold"
+    assert report["counts"]["dequeue"] == 0
+    assert decision["reasons"][0].startswith(
+        "auto_merge_method_unverified:transient_transport:source=rulesets_fetch_failed:"
+    )
+    assert not any(
+        call[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in call[4] for call in runner.calls
+    )
+
+
+def test_non_queued_pr_blocks_not_dequeues_on_transient_rulesets_fetch(tmp_path: Path) -> None:
+    # Armed but NOT in the queue: nothing to hold in a queue, so the transient blocker keeps the
+    # PR blocked (fail-closed) — never a dequeue, and still no failure admission status.
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="non-queued-rulesets-rate-limited", pr=82)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(82, auto_merge=True)]
+    runner.rulesets_error = "API rate limit exceeded for user ID 418460"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["action"] == "blocked"
+    assert report["counts"]["dequeue"] == 0
+    assert report["counts"]["disable_auto_merge"] == 0
+    assert decision["reasons"][0].startswith(
+        "auto_merge_method_unverified:transient_transport:source=rulesets_fetch_failed:"
+    )
