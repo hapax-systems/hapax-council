@@ -39,7 +39,7 @@ from typing import Any
 from shared.secrets import SecretUnavailable, get_secret
 
 DEFAULT_GRAFANA_URL = os.environ.get("HAPAX_GRAFANA_URL", "http://localhost:3001")
-DEFAULT_SECRET_NAME = "grafana/api-key"
+DEFAULT_SECRET_NAME = "grafana/api-key"  # pragma: allowlist secret
 
 
 def _resolve_api_key(cli_key: str | None) -> str | None:

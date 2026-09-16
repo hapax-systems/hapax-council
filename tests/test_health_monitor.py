@@ -617,7 +617,7 @@ class TestCredentialChecks:
             ),
             patch(
                 "agents.health_monitor.checks.credentials.secret_store_root",
-                return_value=Path("/home/test/.local/share/reins/secrets"),
+                return_value=Path("/srv/reins-test/secrets"),
             ),
         ):
             results = await check_secret_store()

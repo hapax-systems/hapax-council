@@ -24,7 +24,7 @@ LIGHTNING_ALBY_KEY = "lightning/alby-access-token"
 NOSTR_NSEC_KEY = "nostr/nsec-hex"
 NOSTR_NPUB_KEY = "nostr/npub-hex"
 LIBERAPAY_USERNAME_KEY = "liberapay/username"
-LIBERAPAY_PASSWORD_KEY = "liberapay/password"
+LIBERAPAY_PASSWORD_KEY = "liberapay/password"  # pragma: allowlist secret
 
 
 def _credential_ref(key: str) -> str:
@@ -33,7 +33,7 @@ def _credential_ref(key: str) -> str:
         NOSTR_NSEC_KEY: "secret-ref:nostr-private-credential",
         NOSTR_NPUB_KEY: "secret-ref:nostr-public-key",
         LIBERAPAY_USERNAME_KEY: "secret-ref:liberapay-username",
-        LIBERAPAY_PASSWORD_KEY: "secret-ref:liberapay-credential",
+        LIBERAPAY_PASSWORD_KEY: "secret-ref:liberapay-credential",  # pragma: allowlist secret
     }
     return refs.get(key, "secret-ref:redacted")
 
