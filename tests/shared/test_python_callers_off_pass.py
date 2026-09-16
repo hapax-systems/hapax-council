@@ -25,6 +25,14 @@ CALLERS = (
     "shared/config.py",
     "agents/_config.py",
     "agents/introspect.py",
+    "agents/mail_monitor/oauth.py",
+    "agents/mail_monitor/pubsub_bootstrap.py",
+    "agents/mail_monitor/watch_renewal.py",
+    "agents/mail_monitor/webhook_gmail.py",
+    "agents/payment_processors/secrets.py",
+    "agents/payment_processors/lightning_receiver.py",
+    "agents/payment_processors/liberapay_receiver.py",
+    "agents/payment_processors/usdc_receiver.py",
 )
 
 FORBIDDEN = (
