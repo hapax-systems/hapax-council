@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import errno
 import hashlib
@@ -4241,6 +4242,61 @@ def _replace_atomically(directory: Path, name: str, payload: bytes) -> None:
     os.rename(scratch, directory / name)
 
 
+# --- unlink-site census (claude-1 round-32: residual completeness, recheckable) ---
+
+_UNLINK_SITE_CENSUS: dict[str, int] = {
+    # Every os.unlink call site in shared/coord_projection.py, by enclosing function.
+    # This is the module's destroy surface: adding an entry is a review event, not a
+    # mechanical update — each one must justify why its removal cannot take a foreign
+    # writer's only copy, and the disclosed conditional (_retire_scratch) carries its
+    # residual assignment to the projection-lock row.
+    "_relocate_to_scratch": 1,
+    "_move_aside_atomically": 1,
+    "_retire_scratch": 1,
+    "_unlink_exact_entry": 1,
+}
+
+
+def test_every_unlink_site_is_census_pinned() -> None:
+    """The residual list's completeness must be recheckable, not re-asserted.
+
+    claude-1 round-32: the review could not verify that the disclosed unlink-site
+    list was complete — completeness lived in prose. This enumerates the module's
+    os.unlink call sites with `ast` against the documented census above, so an added
+    removal site fails here until it is consciously entered with its justification,
+    and a removed site fails until the census shrinks. Drift goes red.
+    """
+
+    counts: dict[str, int] = {}
+    stack: list[str] = []
+
+    class _Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            stack.append(node.name)
+            self.generic_visit(node)
+            stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            stack.append(node.name)
+            self.generic_visit(node)
+            stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            function = node.func
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "unlink"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "os"
+            ):
+                owner = stack[-1] if stack else "<module>"
+                counts[owner] = counts.get(owner, 0) + 1
+            self.generic_visit(node)
+
+    _Visitor().visit(ast.parse(Path(cp.__file__).read_text(encoding="utf-8")))
+    assert counts == _UNLINK_SITE_CENSUS
+
+
 def _race_after_link(
     directory: Path,
     name: str,
@@ -4843,6 +4899,100 @@ def test_a_displaced_entry_stranded_by_a_live_sibling_replacement_survives_c1(
     assert not (tmp_path / staged).exists()
     assert cp._SCRATCH_ABANDONED in caplog.text
     assert "PRESERVED" in caplog.text
+
+
+def test_c1_disclosed_residual_c_after_the_final_count_loses_b_at_caller_level(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """DISCLOSED RESIDUAL, pinned at the caller: writer C between the safety dance's
+    final link count and its unlink loses writer B's restored entry.
+
+    Round-32's C1 replay pins the writer that arrives BEFORE the count — the dance
+    finds nlink 1 at the safety name and PRESERVES the entry there. The codex round-32
+    review correctly observed the other half was unpinned: driven through the whole
+    delete leg (displace → stale-displacement restore → link publish → retire), writer
+    C can replace the live name AFTER the count has read nlink 2 {live, safety} and
+    BEFORE the licensed unlink. The unlink then takes B's last name, and the nlink>1
+    branch returns True having logged nothing — the exact window the dance's own code
+    comment discloses and assigns to
+    `projection-lock-coverage-projected-path-writers-20260913`.
+
+    Asserted AS DISCLOSED — B's bytes are lost, C owns the live name — because a
+    boundary pinned is a boundary that flips loudly the day the lock row closes it.
+    REVERSE with that row: B must then survive under its own preserved name, and these
+    loss assertions become survival assertions.
+    """
+
+    log = _log(tmp_path)
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    note = vault / "task-1.md"
+    note.write_bytes(b"stage: S6\n")
+    projection = cp.FileProjection.capture(note, after=None)
+    real_primitive = cp._renameat2_primitive
+    real_unlink = os.unlink
+    b_landed = False
+    c_fired = False
+
+    def writer_b_then_unsupported_mount(
+        src_dir_fd: int, src_name: str, dst_dir_fd: int, dst_name: str, flags: int
+    ) -> int:
+        # The first NOREPLACE call with the live name as source is the delete leg's
+        # displace. B replaces the live name after `_cas_project` snapshotted
+        # `current` and before the displacement, so the displace carries B's entry
+        # aside; the mount then refuses the flag and the leg rebuilds, exactly as
+        # the NFS vault does.
+        nonlocal b_landed
+        if not b_landed and flags == cp._RENAME_NOREPLACE and src_name == note.name:
+            b_landed = True
+            _replace_atomically(vault, note.name, b"writer-B replacement\n")
+        if flags in (cp._RENAME_EXCHANGE, cp._RENAME_NOREPLACE):
+            if flags == cp._RENAME_NOREPLACE and _exists_at(dst_dir_fd, dst_name):
+                return errno.EEXIST
+            return errno.EINVAL
+        return real_primitive(src_dir_fd, src_name, dst_dir_fd, dst_name, flags)
+
+    def writer_c_at_the_guarded_unlink(*args: object, **kwargs: object) -> None:
+        # The dance's unlink of the withdrawn safety name is the only removal that
+        # runs while B still holds a second name. C replaces the live sibling first,
+        # so B's entry drops to the safety name alone and the licensed unlink takes
+        # its last copy.
+        nonlocal c_fired
+        # The delete leg's own scratch is `.{name}.{sha}.transition-scratch`, so its
+        # dance-stacked safety name ends `.transition-scratch.transition-safety` —
+        # narrowing past bare `.transition-safety` matters: the transaction's lock
+        # staging also retires scratch adornments BEFORE the legs run, and a bare
+        # suffix match fires writer C there, replacing the live preimage and refusing
+        # the transition at the preimage check before the delete leg ever runs.
+        if not c_fired and args and str(args[0]).endswith(".transition-scratch.transition-safety"):
+            c_fired = True
+            _replace_atomically(vault, note.name, b"writer-C replacement\n")
+        real_unlink(*args, **kwargs)  # type: ignore[arg-type]
+
+    with mock.patch.object(cp, "_renameat2_primitive", side_effect=writer_b_then_unsupported_mount):
+        with mock.patch.object(os, "unlink", side_effect=writer_c_at_the_guarded_unlink):
+            with caplog.at_level("WARNING"):
+                with pytest.raises(cp.LifecycleTransitionError) as raised:
+                    cp.execute_lifecycle_transition(
+                        event_log=log,
+                        intent=_intent(),
+                        projections=[projection],
+                        transaction_root=tmp_path / "transactions",
+                        lock_root=tmp_path / "locks",
+                    )
+
+    assert b_landed and c_fired
+    assert raised.value.reason_code == "transition_precondition_changed"
+    # C owns the live name; nothing of B survives anywhere in the transaction's tree —
+    # the disclosed loss, asserted so the row that closes it has a red test to flip.
+    assert note.read_bytes() == b"writer-C replacement\n"
+    assert os.stat(note).st_nlink == 1
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert path.read_bytes() != b"writer-B replacement\n", path
+    assert _fallback_remnants(tmp_path) == []
+    # The nlink>1 branch completes silently — the preservation branch was never taken.
+    assert "PRESERVED" not in caplog.text
 
 
 def test_an_entry_removed_after_publication_is_a_refusal_not_a_crash(tmp_path: Path) -> None:
@@ -6079,6 +6229,70 @@ def test_a_reservation_whose_identity_cannot_be_established_is_refused_not_stran
     assert holding in caplog.text
     assert "clear it by hand" in str(caught.value)
     assert "will not clear this name" in str(caught.value)
+
+
+def test_a_refused_withdrawal_reports_the_reservation_it_leaves(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """codex round-32 major: `_release_scratch_reservation` ignored the withdrawal's
+    False return, so a failed release left the placeholder holding the operand with
+    nothing logged and no next action — a wedge invisible until every later attempt
+    on that operand refused at the vacancy check. The caller now reports it through
+    `_wedged`: the original reservation named, the refusal consequence spelled out,
+    the manual remedy attached.
+    """
+
+    name = ".task.md.scratch-reservation"
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        handle = os.open(
+            name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC, 0o600, dir_fd=dir_fd
+        )
+        placeholder = os.fstat(handle)
+        os.close(handle)
+        monkeypatch.setattr(cp, "_move_aside_atomically", lambda *args: False)
+        with caplog.at_level("WARNING"):
+            cp._release_scratch_reservation(dir_fd, name, placeholder)
+    finally:
+        os.close(dir_fd)
+
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert name in caplog.text
+    assert "transition_projection_scratch_exists" in caplog.text
+    # The refusal it reports is real: the reservation is still holding the name.
+    assert (tmp_path / name).exists()
+
+
+def test_an_occupied_withdrawal_target_still_names_the_original_reservation(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The same report on the real refusal path, not a stubbed one.
+
+    A pre-occupied `.transition-withdrawn` target makes `_move_aside_atomically`
+    return False at its reserve step — it wedges about the TARGET it could not take,
+    and before round 33 that is where the reporting stopped, leaving the reservation
+    at the operand unmentioned. Both names must reach the operator now.
+    """
+
+    name = ".task.md.scratch-reservation"
+    (tmp_path / f"{name}.transition-withdrawn").write_bytes(b"prior remnant\n")
+    dir_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        handle = os.open(
+            name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_CLOEXEC, 0o600, dir_fd=dir_fd
+        )
+        placeholder = os.fstat(handle)
+        os.close(handle)
+        with caplog.at_level("WARNING"):
+            cp._release_scratch_reservation(dir_fd, name, placeholder)
+    finally:
+        os.close(dir_fd)
+
+    # The helper's report about the target it could not reserve...
+    assert f"{name}.transition-withdrawn" in caplog.text
+    # ...and the caller's report that the reservation at the operand survives.
+    assert cp._SCRATCH_ABANDONED in caplog.text
+    assert (tmp_path / name).exists()
 
 
 def test_move_aside_reports_and_returns_false_when_identity_cannot_be_established(

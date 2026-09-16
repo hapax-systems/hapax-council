@@ -4226,7 +4226,14 @@ def _release_scratch_reservation(
         # and the name stays taken, which blocks retries, so it is reported as a stuck state.
         _wedged(name, "the name now holds an entry this attempt did not create")
         return
-    _move_aside_atomically(dir_fd, name, f"{_dotted_stem(name)}.transition-withdrawn")
+    if not _move_aside_atomically(dir_fd, name, f"{_dotted_stem(name)}.transition-withdrawn"):
+        # The helper reports its own reservation and examination refusals, but its
+        # rename-failure leg can return unheard too: the reserved target vanished
+        # before its post-failure lstat, or the placeholder was released cleanly.
+        # Either way the withdrawal did not happen, the reservation is still at
+        # `name`, and every later attempt on the operand will refuse — the wedge
+        # `_wedged` exists to name (codex round-32 major: it was invisible).
+        _wedged(name, "the withdrawal onto .transition-withdrawn refused")
 
 
 def _wedged(name: str, cause: object) -> None:
