@@ -6305,11 +6305,28 @@ def _transition_locks(
     """Hold the projection lock for one transition.
 
     This is :func:`shared.task_note_lock.projected_path_lock`, not a second implementation of
-    it. Routine task-note writers (``cc-stage-advance``, ``cc-scope-widen``, ``cc-task-repair``,
-    the gate's ``_stamp_frontmatter_field``, ``cc-claim``, ``cc-close``, ``cc-task-pr-link``)
-    take that same primitive around their read-modify-write, so a writer can no longer land
-    between this transition's preimage pin and its install — the fail-open hazard beta measured
-    on 2026-09-13 and codex-1 reproduced as C1 on PR #4667.
+    it.
+
+    **Which writers are inside this domain, exactly.** ``cc-stage-advance``, ``cc-scope-widen``,
+    ``cc-task-repair``, ``cc-task-offer-ready``, ``cc-cascade-unblock``, the gate's
+    ``_stamp_frontmatter_field`` and ``cc-task-pr-link`` take this same primitive around their
+    read-modify-write, so none of them can land between this transition's preimage pin and its
+    install.
+
+    **Which are still outside it, and this is the load-bearing half of the sentence.**
+    ``cc-claim`` and ``cc-close`` — the estate's two highest-frequency note writers — are NOT in
+    this domain. Claim publication holds a lock keyed by the *role* under a different root
+    (``shared/sdlc_claim.py``) and calls :func:`_apply_projections` directly, which takes no lock
+    of its own; the live close moves and unlinks the note without any lock, while the correctly
+    locked ``shared/sdlc_close.py`` has no production caller. So the fail-open hazard beta
+    measured on 2026-09-13, and codex-1 reproduced as C1 on PR #4667, is closed **for writers
+    that take this primitive and open for those two**, tracked in
+    ``tests/shared/test_projected_path_writer_lock_coverage.py::KNOWN_UNCONVERTED`` and rowed as
+    ``claim-close-writers-outside-the-projection-lock-domain-20260916``.
+
+    Stating only the first half here would reproduce this row's own hazard class — failure
+    invisible from both sides — at the human layer, in the one in-code statement of the
+    concurrency contract that #4667's rebase and its C1 disposition are read against.
 
     Two implementations that merely agreed on the root, the key spelling and the digest would
     serialize nothing the day they stopped agreeing, and nothing would detect it. One
@@ -6326,21 +6343,32 @@ def _transition_locks(
             yield tuple(str(root / name) for name in names)
     except task_note_lock.TaskNoteLockError as exc:
         raise LifecycleTransitionError(
-            _TRANSITION_LOCK_REASONS.get(exc.reason_code, "transition_lock_identity_changed"),
+            _TRANSITION_LOCK_REASONS.get(exc.reason_code, "transition_lock_unclassified"),
             exc.repair_action,
-            exc.detail,
+            f"{exc.reason_code}: {exc.detail}",
         ) from exc
 
 
 #: The primitive refuses in its own vocabulary; transitions refuse in theirs. Mapped rather than
 #: renamed at the source, because the primitive is shared and its reason codes are not a
 #: transition's to define.
+#:
+#: An unmapped code becomes ``transition_lock_unclassified`` and carries the primitive's own code
+#: in the detail. It must NOT default to any specific failure: this map used to fall back to
+#: ``transition_lock_identity_changed``, so a refusal the map had not learned yet would be
+#: reported to operators, pins and dossiers as a lock file whose inode was swapped — a failure
+#: that did not occur, sending the reader to inspect the lock root instead of the real cause. The
+#: primitive is owned by another module and is expected to grow new codes, so the map is asserted
+#: total against it in tests/shared/test_task_note_lock.py.
 _TRANSITION_LOCK_REASONS = {
     "task_note_lock_file_unsafe": "transition_lock_file_unsafe",
     "task_note_lock_identity_changed": "transition_lock_identity_changed",
     "task_note_lock_timeout": "transition_lock_contended",
     "task_note_lock_root_unavailable": "transition_lock_root_unavailable",
+    "task_note_lock_root_unsafe": "transition_lock_root_unsafe",
     "task_note_lock_no_keys": "transition_lock_no_keys",
+    "task_note_lock_unavailable": "transition_lock_root_unavailable",
+    "task_note_lock_expansion_under_hold": "transition_lock_expansion_under_hold",
 }
 
 

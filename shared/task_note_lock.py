@@ -40,17 +40,47 @@ and the lock is released only when the outermost acquisition exits.
 **Totally ordered.** Lock names are sorted before acquisition, so two callers naming overlapping
 key sets in different argument orders cannot each hold one and wait for the other.
 
+**Never hold-and-wait.** A participant that cannot take every key it needs releases the keys it
+did take, waits, and starts the whole attempt over. No lock is ever held while another is wanted,
+so no wait cycle can form — a stronger property than an acquisition order, because it does not
+depend on every participant agreeing about the order. The one shape it cannot cover is a nested
+acquisition that *adds* a key, since the outer frame's keys cannot be released to break a cycle;
+that is refused (``task_note_lock_expansion_under_hold``) rather than supported, and the remedy
+is to name every key in the outermost call.
+
+**The lock root is shared, and that is a contract.** Acquirers take the root ``LOCK_SH``, so they
+do not exclude one another — an earlier draft took it ``LOCK_EX`` and polled contended keys while
+holding it, which made one contended task refuse every unrelated task in the estate (reproduced
+2026-09-16: an unrelated task refused after 3s). The root exists for a different party:
+:func:`_verify_identity` protects an *acquirer* at acquisition, not an *incumbent* for the
+duration, so a lock file unlinked mid-section would let a second acquirer create a fresh inode,
+flock it, verify against it and enter alongside. **Anything that removes files from the lock root
+— a cache sweep over ``coord_base_dir()``, a recovery reaper, a hand-run ``rm`` — must take the
+root ``LOCK_EX`` first**, and will then wait for every in-flight critical section. Nothing in this
+estate removes them today; the contract is written here so that the day something does, it has a
+protocol to follow rather than an assumption to violate.
+
 **Bounded.** Acquisition has a timeout and refuses with a typed error naming its next action.
 Blocking a writer forever behind a transition wedged on a slow NFS mount would hang the session;
 failing open would restore the exact race this closes. A refusal that names its own remedy is the
 third option and the only sound one. The bound is a deadline over non-blocking ``flock`` rather
 than ``SIGALRM``, so it holds on every thread and collides with no caller's own timers.
+
+**No bypass, deliberately.** ``HAPAX_TASK_NOTE_LOCK_TIMEOUT`` tunes the wait; it is not a
+killswitch, and ``0`` refuses sooner rather than admitting. The estate documents per-invocation
+bypasses for comparable machinery (``HAPAX_GATE0B_CLAIM_PUBLICATION_OFF``), and this module
+deliberately has none: a bypass here would write a task note *while a transition holds it*, which
+is the exact fail-open this module exists to close — a killswitch may do less than the primary
+path, never something else instead. If the lock root becomes unavailable, every converted writer
+refuses with ``task_note_lock_root_unavailable`` and a next action, which is a legible estate-wide
+stop rather than a silent estate-wide corruption. Repair the root; do not route around it.
 """
 
 from __future__ import annotations
 
 import errno
 import fcntl
+import math
 import os
 import stat
 import threading
@@ -101,7 +131,12 @@ def configured_timeout() -> float:
         value = float(raw)
     except ValueError:
         return DEFAULT_TIMEOUT_SECONDS
-    return value if value >= 0 else DEFAULT_TIMEOUT_SECONDS
+    # `inf` and `nan` both parse, and `inf >= 0` is True — a bare float() check would let
+    # HAPAX_TASK_NOTE_LOCK_TIMEOUT=inf produce precisely the unbounded wait this fallback
+    # exists to make unreachable, wedging every converted writer behind one stuck holder.
+    if not math.isfinite(value) or value < 0:
+        return DEFAULT_TIMEOUT_SECONDS
+    return value
 
 
 #: Backoff bounds for the acquisition poll. The floor keeps an uncontended handoff quick;
@@ -171,18 +206,42 @@ def lock_names(task_id: str | None, paths: Iterable[Path] = ()) -> tuple[str, ..
 # other's flock as their own. Depth is tracked per (root, name, thread).
 
 _REGISTRY_GUARD = threading.Lock()
+#: One re-entrant guard per lock name. Interned rather than made per acquisition, because two
+#: threads must reach the *same* object for it to exclude anything — and reference-counted so a
+#: long-lived writer touching many task notes does not accumulate one guard per note forever.
 _THREAD_LOCKS: dict[tuple[str, str], threading.RLock] = {}
+_THREAD_LOCK_USERS: dict[tuple[str, str], int] = {}
 _HELD: dict[tuple[str, str, int], int] = {}
-_HANDLES: dict[tuple[str, str], int] = {}
 
 
 def _thread_lock(key: tuple[str, str]) -> threading.RLock:
+    """Intern the guard for one lock name and register interest in it."""
+
     with _REGISTRY_GUARD:
         existing = _THREAD_LOCKS.get(key)
         if existing is None:
             existing = threading.RLock()
             _THREAD_LOCKS[key] = existing
+        _THREAD_LOCK_USERS[key] = _THREAD_LOCK_USERS.get(key, 0) + 1
         return existing
+
+
+def _drop_thread_lock(key: tuple[str, str]) -> None:
+    """Withdraw interest in a guard, forgetting it once nobody holds or wants it.
+
+    The count is of *interest*, not of lock depth: incremented when a caller obtains the object
+    and decremented when that caller is finished with it, whether or not it managed to acquire.
+    Dropping the entry while another thread still referenced it would hand the next caller a
+    fresh object, and two threads holding two different objects exclude nothing.
+    """
+
+    with _REGISTRY_GUARD:
+        remaining = _THREAD_LOCK_USERS.get(key, 1) - 1
+        if remaining > 0:
+            _THREAD_LOCK_USERS[key] = remaining
+        else:
+            _THREAD_LOCK_USERS.pop(key, None)
+            _THREAD_LOCKS.pop(key, None)
 
 
 def _enter_depth(root_key: str, names: tuple[str, ...], thread_id: int) -> None:
@@ -208,62 +267,138 @@ def _exit_depth(root_key: str, names: tuple[str, ...], thread_id: int) -> None:
             _HELD.pop(key, None)
 
 
+def _thread_held(root_key: str, thread_id: int) -> set[str]:
+    return {name for (rk, name, tid) in _HELD if rk == root_key and tid == thread_id}
+
+
+def _thread_holds_any(root_key: str, thread_id: int) -> bool:
+    return any(rk == root_key and tid == thread_id for (rk, _name, tid) in _HELD)
+
+
+def _release_attempt(
+    _root_key: str,
+    opened: list[tuple[str, int]],
+    guards: list[tuple[tuple[str, str], threading.RLock]],
+    root_fd: int | None,
+) -> None:
+    """Undo one acquisition attempt completely, in reverse order.
+
+    Called both on the retry path and in the final ``finally``; it must be exact either way,
+    because a half-released attempt would leave this thread holding a key it believes it does
+    not, and the depth bookkeeping would then disagree with the filesystem.
+    """
+
+    for _name, handle in reversed(opened):
+        try:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+        except OSError:  # pragma: no cover - defensive
+            pass
+        try:
+            os.close(handle)
+        except OSError:  # pragma: no cover - defensive
+            pass
+    if root_fd is not None:
+        try:
+            fcntl.flock(root_fd, fcntl.LOCK_UN)
+        except OSError:  # pragma: no cover - defensive
+            pass
+        try:
+            os.close(root_fd)
+        except OSError:  # pragma: no cover - defensive
+            pass
+    for key, guard in reversed(guards):
+        guard.release()
+        _drop_thread_lock(key)
+
+
 def _deadline(timeout: float | None) -> float | None:
     """Absolute monotonic deadline, or ``None`` for an unbounded wait."""
 
     return None if timeout is None else time.monotonic() + max(timeout, 0.0)
 
 
-def _flock_until(handle: int, deadline: float | None, *, what: str, root: Path) -> None:
-    """Take ``LOCK_EX`` on ``handle``, giving up at ``deadline``.
+def _try_flock(handle: int, operation: int) -> bool:
+    """One non-blocking ``flock``. ``False`` means contended, never "gave up and continued".
 
-    Non-blocking ``flock`` plus a deadline rather than ``SIGALRM``: the signal is process-wide,
-    single-slot and deliverable only on the main thread, so bounding a wait with it needs one
-    guard for the thread and another for a caller's pending alarm — two mitigations for one
-    hazard, which is the estate's signal that the shape is wrong rather than the guards
-    insufficient. A poll loop is bounded on every thread, disturbs no global state, and leaves
-    nothing for a daemon's own timers to collide with.
+    Nothing in this module ever *waits* while holding a lock. That is the whole deadlock
+    argument: a participant that cannot take every key it needs releases the keys it did take
+    and starts over, so there is no hold-and-wait edge for a cycle to form on. It is a stronger
+    property than an acquisition order, because it does not depend on every participant
+    agreeing about the order — and an earlier draft of this module proved why that matters, by
+    polling a contended key while holding the root exclusively and turning a per-task lock into
+    an estate-wide one (reproduced 2026-09-16: an unrelated task was refused after 3s purely
+    because a different task was contended).
     """
 
-    delay = _POLL_MIN_SECONDS
-    while True:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return
-        except OSError as exc:
-            if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN):
-                raise
-        if deadline is not None and time.monotonic() >= deadline:
-            raise TaskNoteLockError(
-                "task_note_lock_timeout",
-                "retry once the in-flight transition or writer for this task releases; "
-                f"identify the holder with `fuser -v {root / what}`",
-                str(root / what),
-            )
-        remaining = None if deadline is None else max(deadline - time.monotonic(), 0.0)
-        time.sleep(delay if remaining is None else min(delay, remaining))
-        delay = min(delay * 2, _POLL_MAX_SECONDS)
+    try:
+        fcntl.flock(handle, operation | fcntl.LOCK_NB)
+        return True
+    except OSError as exc:
+        if exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN):
+            return False
+        raise TaskNoteLockError(
+            "task_note_lock_unavailable",
+            "make the lock root flock-able on this filesystem, then retry",
+            str(exc),
+        ) from exc
 
 
 def _ensure_root(root: Path) -> int:
-    """Open the lock root, creating it private. Returns an ``O_DIRECTORY`` fd."""
+    """Open the lock root, creating it private, refusing anything that is not.
 
+    Component-by-component with ``O_NOFOLLOW``, and the final directory must be a real
+    directory owned by this euid at mode 0700 — the same validation
+    ``coord_projection._ensure_private_directory_fd`` has always applied to this path.
+
+    ``mkdir(parents=True, exist_ok=True)`` plus one open is NOT equivalent and an earlier draft
+    of this module used it: it accepts a symlinked ancestor, and it accepts an existing
+    world-writable root (it accepted ``/tmp``). A lock directory other users can write is not an
+    exclusion primitive — anyone can unlink a lock pathname and recreate it, which is precisely
+    the substitution :func:`_verify_identity` exists to catch, made trivially available.
+    """
+
+    normalized = _normalized(root)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    fd = os.open("/", flags)
     try:
-        root.mkdir(parents=True, mode=_ROOT_MODE, exist_ok=True)
+        for component in normalized.parts[1:]:
+            try:
+                next_fd = os.open(component, flags, dir_fd=fd)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(component, _ROOT_MODE, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                next_fd = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        metadata = os.fstat(fd)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_mode & 0o777 != _ROOT_MODE
+        ):
+            raise TaskNoteLockError(
+                "task_note_lock_root_unsafe",
+                f"use one euid-owned mode-0700 real directory at {normalized} "
+                "(a shared or world-writable lock root excludes nothing)",
+                str(normalized),
+            )
+        return fd
+    except TaskNoteLockError:
+        os.close(fd)
+        raise
     except OSError as exc:
+        os.close(fd)
         raise TaskNoteLockError(
             "task_note_lock_root_unavailable",
-            f"create {root} as a private directory the task writers can share",
+            f"make every component of {normalized} a real euid-owned directory "
+            "(no symlinked ancestor), then retry",
             str(exc),
         ) from exc
-    try:
-        return os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
-    except OSError as exc:
-        raise TaskNoteLockError(
-            "task_note_lock_root_unavailable",
-            f"make {root} a real directory (not a symlink) readable by this euid",
-            str(exc),
-        ) from exc
+    except Exception:
+        os.close(fd)
+        raise
 
 
 def _open_verified(root_fd: int, name: str, root: Path) -> int:
@@ -275,9 +410,23 @@ def _open_verified(root_fd: int, name: str, root: Path) -> int:
     fallback.
     """
 
-    handle = os.open(
-        name, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW, _LOCK_MODE, dir_fd=root_fd
-    )
+    try:
+        handle = os.open(
+            name,
+            os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+            _LOCK_MODE,
+            dir_fd=root_fd,
+        )
+    except OSError as exc:
+        # A symlink at the lock pathname lands here via ELOOP. Callers are promised a typed
+        # refusal with a next action; an ordinary OSError escaping would reach
+        # coord_projection's translator, which catches only TaskNoteLockError, and surface
+        # with no reason code at all.
+        raise TaskNoteLockError(
+            "task_note_lock_file_unsafe",
+            "replace the lock pathname with one euid-owned single-link mode-0600 regular file",
+            f"{root / name}: {exc}",
+        ) from exc
     try:
         metadata = os.fstat(handle)
         if (
@@ -301,8 +450,17 @@ def _open_verified(root_fd: int, name: str, root: Path) -> int:
 def _verify_identity(handle: int, root_fd: int, name: str, root: Path) -> None:
     """The pathname must still name the inode we hold, after the flock as well as before."""
 
-    held = os.fstat(handle)
-    named = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+    try:
+        held = os.fstat(handle)
+        named = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+    except OSError as exc:
+        # The canonical pathname disappearing between the flock and this stat is exactly the
+        # substitution this check exists to catch — report it as such, not as a raw OSError.
+        raise TaskNoteLockError(
+            "task_note_lock_identity_changed",
+            "hold until the canonical lock pathname names the inode under flock",
+            f"{root / name}: {exc}",
+        ) from exc
     if held.st_nlink != 1 or held.st_dev != named.st_dev or held.st_ino != named.st_ino:
         raise TaskNoteLockError(
             "task_note_lock_identity_changed",
@@ -333,7 +491,8 @@ def projected_path_lock(
     if isinstance(timeout, _Default):
         timeout = configured_timeout()
     deadline = _deadline(timeout)
-    fresh = [name for name in names if _HELD.get((root_key, name, thread_id), 0) == 0]
+
+    fresh = tuple(name for name in names if _HELD.get((root_key, name, thread_id), 0) == 0)
 
     if not fresh:
         # Fully re-entrant: this thread already holds every name. Bump depth, take nothing.
@@ -344,84 +503,76 @@ def projected_path_lock(
             _exit_depth(root_key, names, thread_id)
         return
 
-    thread_locks = [_thread_lock((root_key, name)) for name in fresh]
-    acquired_thread_locks: list[threading.RLock] = []
+    if _thread_holds_any(root_key, thread_id):
+        # Expansion under a held lock: this thread holds some keys and is asking for one it
+        # does not. Refused rather than supported, because it is the one shape the all-or-
+        # nothing acquisition below cannot make deadlock-free: the outer frame's keys cannot
+        # be released to break a cycle, so two threads expanding into each other's held keys
+        # wait until their deadlines. Taking every key in one outermost call costs the caller
+        # one argument and removes the cycle entirely.
+        raise TaskNoteLockError(
+            "task_note_lock_expansion_under_hold",
+            "acquire every key this operation needs in one outermost projected_path_lock() "
+            "call; a nested acquisition may repeat keys already held but may not add new ones",
+            f"{lock_root}: already holding {sorted(_thread_held(root_key, thread_id))}, "
+            f"asked to add {sorted(fresh)}",
+        )
+
+    entered = False
     root_fd: int | None = None
     opened: list[tuple[str, int]] = []
-    entered = False
+    guards: list[tuple[tuple[str, str], threading.RLock]] = []
+    delay = _POLL_MIN_SECONDS
     try:
-        for name, guard in zip(fresh, thread_locks, strict=True):
-            remaining = None if deadline is None else max(deadline - time.monotonic(), 0.0)
-            got = guard.acquire(timeout=-1 if remaining is None else remaining)
-            if not got:
+        while True:
+            # One full attempt. Anything not obtained is released before we wait, so this
+            # process never holds a lock while wanting another — no hold-and-wait, hence no
+            # cycle, independent of what any other participant does.
+            root_fd = _ensure_root(lock_root)
+            # SHARED, not exclusive. Acquirers do not exclude each other here; the root is a
+            # gate against whoever would *remove* lock files, who must take it exclusively and
+            # will therefore wait for every in-flight critical section (see the module
+            # docstring's reaper contract). Held exclusively, as an earlier draft did, it made
+            # every task note in the estate serialize behind every other one.
+            if _try_flock(root_fd, fcntl.LOCK_SH):
+                for name in fresh:
+                    guard_key = (root_key, name)
+                    guard = _thread_lock(guard_key)
+                    if not guard.acquire(blocking=False):
+                        _drop_thread_lock(guard_key)
+                        break
+                    guards.append((guard_key, guard))
+                    handle = _open_verified(root_fd, name, lock_root)
+                    try:
+                        if not _try_flock(handle, fcntl.LOCK_EX):
+                            os.close(handle)
+                            break
+                        _verify_identity(handle, root_fd, name, lock_root)
+                    except Exception:
+                        os.close(handle)
+                        raise
+                    opened.append((name, handle))
+                else:
+                    break  # every key taken
+
+            _release_attempt(root_key, opened, guards, root_fd)
+            opened, guards, root_fd = [], [], None
+
+            if deadline is not None and time.monotonic() >= deadline:
                 raise TaskNoteLockError(
                     "task_note_lock_timeout",
-                    "retry once the concurrent writer for this task in this process releases; "
-                    f"another thread holds {lock_root / name}",
-                    f"{lock_root / name}",
+                    "retry once the in-flight transition or writer for this task releases; "
+                    f"identify the holder with `fuser -v {lock_root}/<lock>`",
+                    f"{lock_root}: {sorted(fresh)}",
                 )
-            acquired_thread_locks.append(guard)
-
-        root_fd = _ensure_root(lock_root)
-        # The root flock makes "create the lock file and flock it" indivisible against a
-        # concurrent unlink of that same file; it is the ordering that lets the per-key locks
-        # below be taken safely, and coord_projection has always held it this way.
-        try:
-            _flock_until(root_fd, deadline, what="", root=lock_root)
-        except OSError as exc:  # pragma: no cover - defensive
-            raise TaskNoteLockError(
-                "task_note_lock_root_unavailable",
-                f"make {lock_root} flock-able on this filesystem",
-                str(exc),
-            ) from exc
-
-        for name in fresh:
-            handle = _open_verified(root_fd, name, lock_root)
-            try:
-                _flock_until(handle, deadline, what=name, root=lock_root)
-                _verify_identity(handle, root_fd, name, lock_root)
-            except Exception:
-                os.close(handle)
-                raise
-            opened.append((name, handle))
-            _HANDLES[(root_key, name)] = handle
-
-        # Acquisition is complete; drop the root. Holding it across the critical section would
-        # make every task note in the estate serialize behind every other one — a global mutex
-        # wearing a per-task lock's name, and the reason the per-key locks below were inert
-        # (removing them changed no observable behaviour: measured 2026-09-16, mutation M5).
-        #
-        # It is safe to drop because the hazard it guards — someone unlinking a lock file
-        # between our open and our flock — is already caught by _verify_identity above, which
-        # compares the inode we hold against the inode the pathname now names, *after* the
-        # flock. That check is machine-checkable at the moment of use; the root flock was a
-        # second mitigation for the same hazard, and two is the signal to change the shape.
-        fcntl.flock(root_fd, fcntl.LOCK_UN)
-        os.close(root_fd)
-        root_fd = None
+            remaining = None if deadline is None else max(deadline - time.monotonic(), 0.0)
+            time.sleep(delay if remaining is None else min(delay, remaining))
+            delay = min(delay * 2, _POLL_MAX_SECONDS)
 
         _enter_depth(root_key, names, thread_id)
         entered = True
-
         yield names
     finally:
         if entered:
             _exit_depth(root_key, names, thread_id)
-        for name, handle in reversed(opened):
-            try:
-                fcntl.flock(handle, fcntl.LOCK_UN)
-            except OSError:  # pragma: no cover - defensive
-                pass
-            _HANDLES.pop((root_key, name), None)
-            try:
-                os.close(handle)
-            except OSError:  # pragma: no cover - defensive
-                pass
-        if root_fd is not None:
-            try:
-                fcntl.flock(root_fd, fcntl.LOCK_UN)
-            except OSError:  # pragma: no cover - defensive
-                pass
-            os.close(root_fd)
-        for guard in reversed(acquired_thread_locks):
-            guard.release()
+        _release_attempt(root_key, opened, guards, root_fd)

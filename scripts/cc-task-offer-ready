@@ -284,6 +284,31 @@ def rewrite_note(
     task_id: str,
     dry_run: bool,
 ) -> None:
+    from shared.task_note_lock import projected_path_lock
+
+    # Read and write together under the projection lock: this note is a path
+    # coord_projection relocates transactionally, and a promotion landing between its
+    # preimage pin and its install is counted by the safety check and then destroyed.
+    with projected_path_lock(task_id, (path,)):
+        _rewrite_note_locked(
+            path=path,
+            status=status,
+            route_changes=route_changes,
+            timestamp=timestamp,
+            dry_run=dry_run,
+        )
+
+
+def _rewrite_note_locked(
+    *,
+    path: Path,
+    status: str,
+    route_changes: dict[str, str],
+    timestamp: str,
+    dry_run: bool,
+) -> None:
+    """The read-modify-write itself. Called only with the projection lock held."""
+
     text = path.read_text(encoding="utf-8")
     lines, suffix = split_frontmatter(text)
     replace_or_insert_scalar(lines, "status", status)

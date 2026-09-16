@@ -493,3 +493,333 @@ def test_a_worker_thread_gets_the_same_bound_as_the_main_thread(tmp_path: Path) 
         assert outcome == ["task_note_lock_timeout"], outcome
     finally:
         holder.wait(timeout=30)
+
+
+# ─────────────────────────────────────── the review-round criticals, pinned
+
+
+def test_contention_on_one_task_does_not_stall_an_unrelated_task(tmp_path: Path) -> None:
+    """gemini-1 critical, reproduced 2026-09-16 and fixed.
+
+    An earlier draft polled a contended key while holding the lock root EXCLUSIVELY. Every
+    other acquirer needs the root, so any one contended task refused every unrelated task in
+    the estate for the whole of its timeout — a global mutex wearing a per-task lock's name.
+    The measured shape: unrelated task T2 refused with ``task_note_lock_timeout`` after 3.02s
+    purely because T1 was contended.
+
+    The earlier granularity test missed it because it probed the *held* case, not the
+    *contended* case: with a lock merely held the root was already released, so an unrelated
+    task sailed through. The defect lived entirely in the window where somebody is waiting.
+    """
+
+    root = tmp_path / "locks"
+    holder = _child(
+        """
+        root = Path(sys.argv[1])
+        with tnl.projected_path_lock("T1", (), root=root, timeout=30.0):
+            print("HELD", flush=True)
+            time.sleep(6)
+        """,
+        str(root),
+    )
+    waiter = None
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "HELD"
+
+        # This one must WAIT on T1 — it is the process that used to camp on the root.
+        waiter = _child(
+            """
+            root = Path(sys.argv[1])
+            try:
+                with tnl.projected_path_lock("T1", (), root=root, timeout=20.0):
+                    print("W-ACQUIRED", flush=True)
+            except tnl.TaskNoteLockError as exc:
+                print("W-REFUSED", exc.reason_code, flush=True)
+            """,
+            str(root),
+        )
+        time.sleep(1.5)
+
+        started = time.monotonic()
+        other = _child(
+            """
+            root = Path(sys.argv[1])
+            try:
+                with tnl.projected_path_lock("T2", (), root=root, timeout=3.0):
+                    print("T2-ACQUIRED", flush=True)
+            except tnl.TaskNoteLockError as exc:
+                print("T2-REFUSED", exc.reason_code, flush=True)
+            """,
+            str(root),
+        )
+        out, err = other.communicate(timeout=60)
+        elapsed = time.monotonic() - started
+    finally:
+        for proc in (holder, waiter):
+            if proc is not None:
+                try:
+                    proc.communicate(timeout=60)
+                except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+                    proc.kill()
+
+    assert "T2-ACQUIRED" in out, (
+        f"an unrelated task was blocked by T1's contention: {out!r} {err!r}"
+    )
+    assert elapsed < 2.0, f"unrelated task waited {elapsed:.2f}s behind a contended sibling"
+
+
+def test_no_lock_is_held_while_another_is_wanted(tmp_path: Path) -> None:
+    """The deadlock argument, as a property rather than an ordering claim.
+
+    Two participants each want both keys, in opposite argument orders, concurrently. With
+    hold-and-wait they can take one each and block; the all-or-nothing acquisition releases
+    whatever it got before waiting, so one of them always completes. Sorting alone would not
+    save the pair that an earlier draft created, where a nesting thread waited on the root
+    while the root holder waited on its key.
+    """
+
+    root = tmp_path / "locks"
+    a, b = tmp_path / "a.md", tmp_path / "b.md"
+    for path in (a, b):
+        path.write_text("x\n", encoding="utf-8")
+
+    body = """
+        root, first, second = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+        import time as _t
+        deadline = _t.monotonic() + 25
+        wins = 0
+        while _t.monotonic() < deadline and wins < 5:
+            try:
+                with tnl.projected_path_lock(None, (first, second), root=root, timeout=8.0):
+                    wins += 1
+                    _t.sleep(0.05)
+            except tnl.TaskNoteLockError as exc:
+                print("REFUSED", exc.reason_code, flush=True)
+                break
+        print("WINS", wins, flush=True)
+    """
+    one = _child(body, str(root), str(a), str(b))
+    two = _child(body, str(root), str(b), str(a))
+    outs = []
+    for proc in (one, two):
+        out, err = proc.communicate(timeout=120)
+        outs.append(out)
+        assert "REFUSED" not in out, f"deadlocked into a refusal: {out!r} {err!r}"
+    for out in outs:
+        wins = int(out.strip().split("WINS")[1])
+        assert wins == 5, f"a participant starved or blocked: {out!r}"
+
+
+def test_expanding_the_key_set_under_a_held_lock_is_refused(tmp_path: Path) -> None:
+    """The one shape all-or-nothing cannot make safe is refused, not silently supported.
+
+    An outer frame's keys cannot be released to break a cycle, so a nested acquisition that
+    ADDS a key is the single remaining hold-and-wait edge. Refusing it makes deadlock-freedom
+    structural instead of resting on a deadline, and the refusal names the remedy: take every
+    key in the outermost call.
+    """
+
+    root = tmp_path / "locks"
+    a, b = tmp_path / "a.md", tmp_path / "b.md"
+    for path in (a, b):
+        path.write_text("x\n", encoding="utf-8")
+
+    with tnl.projected_path_lock("task-1", (a,), root=root, timeout=5.0):
+        # Repeating held keys stays legal — that is ordinary re-entrancy.
+        with tnl.projected_path_lock("task-1", (a,), root=root, timeout=5.0):
+            pass
+        with pytest.raises(tnl.TaskNoteLockError) as excinfo:
+            with tnl.projected_path_lock("task-1", (a, b), root=root, timeout=5.0):
+                pytest.fail("expanded the key set under a held lock")
+    assert excinfo.value.reason_code == "task_note_lock_expansion_under_hold"
+    assert "outermost" in excinfo.value.repair_action
+
+
+def test_an_unsafe_lock_root_is_refused(tmp_path: Path) -> None:
+    """codex-1 major: the validated traversal must not be traded for mkdir(exist_ok=True).
+
+    A lock directory other users can write is not an exclusion primitive — anyone may unlink a
+    lock pathname and recreate it, handing out the very substitution ``_verify_identity``
+    exists to catch. An earlier draft accepted ``/tmp``.
+    """
+
+    shared = tmp_path / "shared-root"
+    shared.mkdir(mode=0o777)
+    with pytest.raises(tnl.TaskNoteLockError) as excinfo:
+        with tnl.projected_path_lock("task-1", (), root=shared, timeout=5.0):
+            pytest.fail("entered with a world-writable lock root")
+    assert excinfo.value.reason_code == "task_note_lock_root_unsafe"
+
+    # And the real /tmp, which the earlier helper accepted.
+    with pytest.raises(tnl.TaskNoteLockError):
+        with tnl.projected_path_lock("task-1", (), root=Path("/tmp"), timeout=5.0):
+            pytest.fail("entered with /tmp as the lock root")
+
+
+def test_a_symlinked_ancestor_of_the_lock_root_is_refused(tmp_path: Path) -> None:
+    """O_NOFOLLOW component-by-component: a symlinked ancestor redirects the whole domain."""
+
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    with pytest.raises(tnl.TaskNoteLockError) as excinfo:
+        with tnl.projected_path_lock("task-1", (), root=link / "locks", timeout=5.0):
+            pytest.fail("traversed a symlinked ancestor")
+    assert excinfo.value.reason_code == "task_note_lock_root_unavailable"
+
+
+def test_configured_timeout_falls_back_rather_than_wedging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """claude-1 minor: the documented fallback behaviour of the knob had no test.
+
+    A malformed value must not be able to wedge every task-note writer in the estate, so it
+    falls back to the default rather than refusing; ``0`` means do not wait at all.
+    """
+
+    monkeypatch.delenv(tnl.TIMEOUT_ENV, raising=False)
+    assert tnl.configured_timeout() == tnl.DEFAULT_TIMEOUT_SECONDS
+    # `inf` and `nan` are the sharp cases: both parse as floats and `inf >= 0` is True, so a
+    # bare float()/sign check would let the knob produce the unbounded wait it promises to make
+    # unreachable — every converted writer wedged behind one stuck holder, with no refusal.
+    for bad in ("", "   ", "garbage", "-1", "nan-ish", "inf", "-inf", "nan", "Infinity"):
+        monkeypatch.setenv(tnl.TIMEOUT_ENV, bad)
+        assert tnl.configured_timeout() == tnl.DEFAULT_TIMEOUT_SECONDS, bad
+    monkeypatch.setenv(tnl.TIMEOUT_ENV, "0")
+    assert tnl.configured_timeout() == 0.0
+    monkeypatch.setenv(tnl.TIMEOUT_ENV, "2.5")
+    assert tnl.configured_timeout() == 2.5
+
+
+def test_naming_no_keys_at_all_is_refused(tmp_path: Path) -> None:
+    """claude-1 minor: a typed refusal with a repair action and no coverage."""
+
+    with pytest.raises(tnl.TaskNoteLockError) as excinfo:
+        tnl.lock_names(None, ())
+    assert excinfo.value.reason_code == "task_note_lock_no_keys"
+    assert excinfo.value.repair_action
+
+
+def test_every_primitive_reason_code_is_mapped_by_the_transition_taxonomy() -> None:
+    """The map from this module's refusals to the transition's must be total.
+
+    It used to default an unknown code to ``transition_lock_identity_changed`` — reporting a
+    refusal the map had not learned yet as a lock file whose inode was swapped, a failure that
+    did not occur, sending the operator to inspect the lock root instead of the real cause.
+    The default is now ``transition_lock_unclassified`` carrying the real code, and this
+    asserts the map is total so the default stays unreachable in practice.
+    """
+
+    import re
+
+    from shared import coord_projection as cp
+
+    source = Path(tnl.__file__).read_text(encoding="utf-8")
+    raised = set(re.findall(r'"(task_note_lock_[a-z_]+)"', source))
+    assert raised, "no reason codes found; the extraction is broken, not the map"
+    unmapped = sorted(raised - set(cp._TRANSITION_LOCK_REASONS))
+    assert not unmapped, (
+        "these primitive reason codes have no transition mapping and would surface as "
+        f"transition_lock_unclassified: {unmapped}"
+    )
+
+
+def test_the_transition_and_the_writers_default_to_the_same_lock_root() -> None:
+    """The one binding the PR did not eliminate, pinned.
+
+    Converted writers and the gate stamp default to ``default_lock_root()``; the transition
+    takes its root from ``coord_projection._lock_root``. Those are two places holding one
+    agreement about a directory — the PR's own argument against two lock implementations
+    applies verbatim: an agreement that serializes nothing the day it stops agreeing, with
+    nothing to detect it. So it is detected here.
+    """
+
+    from shared import coord_projection as cp
+
+    assert cp._lock_root(None) == tnl.default_lock_root()
+
+
+def test_an_override_root_is_honoured_by_both_sides(tmp_path: Path) -> None:
+    """And the agreement must survive the environment knob that moves one of them.
+
+    Run in a subprocess: ``HAPAX_COORD_DIR`` is read at import time, so checking it in-process
+    would mean reloading ``coord_event_log`` and ``coord_projection``, and a reload replaces the
+    module objects every other test in the session already holds references to — it broke 54
+    unrelated projection tests when tried. A test that damages its neighbours is not a test.
+    """
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(
+                f"""
+                import sys
+                sys.path.insert(0, {str(REPO_ROOT)!r})
+                from shared import coord_projection as cp
+                from shared import task_note_lock as tnl
+                a, b = cp._lock_root(None), tnl.default_lock_root()
+                print("SAME" if a == b else f"DIFFER {{a}} != {{b}}")
+                print("UNDER_OVERRIDE" if str(a).startswith(sys.argv[1]) else f"OUTSIDE {{a}}")
+                """
+            ),
+            str(tmp_path / "coord"),
+        ],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HAPAX_COORD_DIR": str(tmp_path / "coord")},
+        timeout=120,
+    )
+    assert "SAME" in result.stdout, f"{result.stdout!r} {result.stderr!r}"
+    assert "UNDER_OVERRIDE" in result.stdout, f"{result.stdout!r} {result.stderr!r}"
+
+
+def test_guard_registry_does_not_grow_without_bound(tmp_path: Path) -> None:
+    """A long-lived writer must not accumulate one thread guard per task note it ever touched.
+
+    The guards are interned so two threads reach the same object; interning without a matching
+    release is a leak, and a daemon that stamps thousands of notes over a run would hold a guard
+    for every one of them forever.
+    """
+
+    root = tmp_path / "locks"
+    before = len(tnl._THREAD_LOCKS)
+    for index in range(40):
+        with tnl.projected_path_lock(f"task-{index}", (), root=root, timeout=5.0):
+            pass
+    assert len(tnl._THREAD_LOCKS) == before, (
+        f"the guard registry grew from {before} to {len(tnl._THREAD_LOCKS)} entries"
+    )
+    assert not tnl._THREAD_LOCK_USERS, tnl._THREAD_LOCK_USERS
+
+
+def test_a_held_guard_is_not_forgotten_while_another_caller_wants_it(tmp_path: Path) -> None:
+    """Pruning must count interest, not depth.
+
+    Dropping the entry while a second thread still referenced it would hand that thread a fresh
+    object, and two threads holding two different objects exclude nothing — a leak traded for a
+    correctness hole.
+    """
+
+    root = tmp_path / "locks"
+    entered = threading.Event()
+    release = threading.Event()
+    observed: list[int] = []
+
+    def holder() -> None:
+        with tnl.projected_path_lock("task-1", (), root=root, timeout=10.0):
+            entered.set()
+            release.wait(timeout=10)
+
+    worker = threading.Thread(target=holder, daemon=True)
+    worker.start()
+    entered.wait(timeout=10)
+    try:
+        key = (str(tnl._normalized(root)), tnl.lock_names("task-1", ())[0])
+        observed.append(tnl._THREAD_LOCK_USERS.get(key, 0))
+    finally:
+        release.set()
+        worker.join(timeout=10)
+    assert observed == [1], f"a held guard was not tracked as in use: {observed}"

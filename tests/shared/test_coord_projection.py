@@ -1360,11 +1360,14 @@ def test_lock_inode_replacement_is_detected_after_flock(tmp_path: Path) -> None:
 
     The lock primitive moved to shared/task_note_lock.py and takes ``LOCK_EX | LOCK_NB`` against
     a deadline rather than a blocking ``LOCK_EX``, so this probe matches the exclusive *bit*
-    instead of the exact operation value. The invariant it pins is unchanged, and it is now the
-    only thing standing between a swapped lock file and a critical section entered on an
-    orphaned inode: the redundant second verification sweep is gone, because while the lock root
-    is flocked no other participant can unlink or recreate a lock file, and two mitigations for
-    one hazard is the estate's signal to change the shape rather than keep both.
+    instead of the exact operation value — and the *first* such call is now the lock file's,
+    because the root is taken ``LOCK_SH``.
+
+    This check is the only thing standing between a swapped lock pathname and a critical
+    section entered on an orphaned inode. It is not, however, a guard against a lock file
+    unlinked while a section is already held: it protects the acquirer at acquisition, not the
+    incumbent for the duration. That residual is named in the module docstring's reaper
+    contract, and is why the root is still held (shared) across the section.
     """
 
     root = tmp_path / "locks"
@@ -1377,7 +1380,7 @@ def test_lock_inode_replacement_is_detected_after_flock(tmp_path: Path) -> None:
         if not operation & cp.fcntl.LOCK_EX:
             return
         exclusive_calls += 1
-        if exclusive_calls != 2:
+        if exclusive_calls != 1:
             return
         names = [name for name in os.listdir(root) if name.endswith(".lock")]
         assert len(names) == 1

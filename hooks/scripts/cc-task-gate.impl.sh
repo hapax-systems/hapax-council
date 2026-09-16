@@ -1056,7 +1056,6 @@ _stamp_frontmatter_field() {
   # would hang the session. Refusing to stamp is safe; the caller reports it.
   HAPAX_TASK_NOTE_LOCK_TIMEOUT="${HAPAX_TASK_NOTE_LOCK_TIMEOUT:-5}" \
   PYTHONPATH="$repo_root:${PYTHONPATH:-}" python3 - "$note" "$key" "$value" <<'PYEOF' || return 1
-import os
 import sys
 from pathlib import Path
 
@@ -1067,7 +1066,7 @@ try:
     lock = projected_path_lock(None, (path,))
     lock.__enter__()
 except Exception as exc:  # noqa: BLE001 — the gate reports; it does not stamp regardless.
-    print(f"cc-task-gate: stage stamp skipped — {exc}", file=sys.stderr)
+    print(f"cc-task-gate: {key} stamp skipped — {exc}", file=sys.stderr)
     sys.exit(1)
 try:
     text = path.read_text(encoding="utf-8")
@@ -1088,10 +1087,12 @@ try:
     if not found:
         out.append(f"{key}: {value}")
     rendered = "---\n" + "\n".join(out) + body
-    # A scratch name unique to this writer: a fixed '.tmp' sibling is one shared mailbox
-    # that two stampers would each install over the other, and the lock cannot serialize a
-    # writer that reaches this note by another route.
-    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.stamp.tmp")
+    # One fixed scratch sibling, deliberately: the projection lock above serializes every
+    # stamper, so a per-process name would only add a scratch class the recovery sweep does
+    # not discover — which the row pre-registers as a hazard in its own right
+    # (2026-09-13T23:24:07Z: discovery coverage for ALL scratch classes). A crash between
+    # write and replace leaves this one reusable slot, exactly as before this change.
+    tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         tmp.write_text(rendered, encoding="utf-8")
         tmp.replace(path)
@@ -1183,15 +1184,37 @@ fi
 if [[ "$_is_docs_edit" != "true" && -z "$_stage_num" && "$impl_authorized" == "true" ]] \
    && ! is_nullish "$authority_case" && ! is_nullish "$parent_spec"; then
   _orig_stage="${case_stage:-<blank>}"
-  case_stage="S6_IMPLEMENTATION"
-  _stage_num=6
-  _stamp_frontmatter_field "$note_path" "stage" "S6_IMPLEMENTATION" || true
   _stage_ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
   mkdir -p "$(dirname "$_stage_ledger")" 2>/dev/null || true
-  printf '{"ts":"%s","kind":"stage_derived","role":"%s","task":"%s","case":"%s","from":"%s","to":"S6_IMPLEMENTATION"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$_orig_stage" \
+  # The stamp can now REFUSE (another writer or a transition holds the note's projection
+  # lock). Its result decides what follows: deriving the stage in memory and reporting
+  # "stamped" while the note is unchanged would admit the mutation on the strength of a write
+  # that did not happen, and every retry would append another derivation record for it.
+  if _stamp_frontmatter_field "$note_path" "stage" "S6_IMPLEMENTATION"; then
+    case_stage="S6_IMPLEMENTATION"
+    _stage_num=6
+    _stage_outcome="stamped"
+    echo "cc-task-gate: blank stage on authorized task — derived + stamped S6_IMPLEMENTATION (logged)." >&2
+  else
+    _stage_outcome="refused_locked"
+    _emit_block <<EOF
+cc-task-gate: BLOCKED — task '$task_id' has a blank stage and the note is locked.
+
+  Task: $note_path
+  The stage stamp needs the projection lock for this note; a transition or another writer
+  holds it, so the note was NOT modified and the stage was NOT derived.
+
+  Next action: retry in a moment. If it persists, find the holder with
+    fuser -v "${HAPAX_COORD_DIR:-$HOME/.cache/hapax/coord}/task-locks"/*.lock
+EOF
+    printf '{"ts":"%s","kind":"stage_derive_refused","role":"%s","task":"%s","case":"%s","from":"%s","reason":"projection_lock_held"}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$_orig_stage" \
+      >> "$_stage_ledger" 2>/dev/null || true
+    exit 2
+  fi
+  printf '{"ts":"%s","kind":"stage_derived","role":"%s","task":"%s","case":"%s","from":"%s","to":"S6_IMPLEMENTATION","outcome":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$_orig_stage" "$_stage_outcome" \
     >> "$_stage_ledger" 2>/dev/null || true
-  echo "cc-task-gate: blank stage on authorized task — derived + stamped S6_IMPLEMENTATION (logged)." >&2
 fi
 if [[ "$_is_docs_edit" != "true" && ( -z "$_stage_num" || "$_stage_num" -lt 6 ) ]]; then
   _emit_block <<EOF

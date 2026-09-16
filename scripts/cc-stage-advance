@@ -157,6 +157,19 @@ def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
     # preimage pin and its install is counted by the safety check and then destroyed, with the
     # transition still recorded applied. Locking only the write would serialize the wrong half.
     with projected_path_lock(task_id, (note,)):
+        # Re-resolve under the lock. The path above was found before the lock existed, and a
+        # transition relocating this note (active/ -> closed/) in that window would leave us
+        # holding a lock on a name that no longer refers to it — and the write would then
+        # recreate a stale copy at the old name, which is the very outcome this lock exists to
+        # prevent. Locking a stale path is not locking the note.
+        current = _find_note(task_id)
+        if current is None or current != note:
+            print(
+                f"cc-stage-advance: '{task_id}' moved while acquiring its lock "
+                f"({note} -> {current}); rerun to act on its current position",
+                file=sys.stderr,
+            )
+            return ERROR
         return _advance_locked(task_id, note, new_stage, allow_backward)
 
 

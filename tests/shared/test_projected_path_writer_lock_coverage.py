@@ -51,6 +51,14 @@ assigned_to: theta
 authority_case: CASE-CAPACITY-ROUTING-001
 parent_spec: 30-areas/probe.md
 route_metadata_schema: 1
+priority: p2
+wsjf: 1.0
+quality_floor: deterministic_ok
+mutation_surface: source
+authority_level: support_non_authoritative
+effort_class: small
+risk_tier: T1
+kind: engineering
 stage: S6_IMPLEMENTATION
 mutation_scope_refs:
   - shared/task_note_lock.py
@@ -118,13 +126,21 @@ def test_cc_stage_advance_waits_for_a_held_projection_lock(
         assert holder.stdout is not None
         assert holder.stdout.readline().strip() == "HELD"
         started = time.monotonic()
-        done = subprocess.run(
-            [str(REPO_ROOT / "scripts" / "cc-stage-advance"), "lock-probe-1", "S7_RELEASE"],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=90,
-        )
+        try:
+            done = subprocess.run(
+                [str(REPO_ROOT / "scripts" / "cc-stage-advance"), "lock-probe-1", "S7_RELEASE"],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=90,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # Bind the failure here. Referencing `done` in the assertion below after a timeout
+            # would raise NameError and hide the actual result, which is that the writer never
+            # returned at all.
+            raise AssertionError(
+                f"cc-stage-advance never returned while the lock was held: {exc}"
+            ) from exc
         waited = time.monotonic() - started
     finally:
         holder.wait(timeout=30)
@@ -191,13 +207,10 @@ def test_the_gate_stamp_refuses_rather_than_racing_a_held_lock(
     root = home / "coord" / "task-locks"
     before = note.read_text(encoding="utf-8")
 
-    stamp = textwrap.dedent(
-        f"""
-        SCRIPT_DIR={str(REPO_ROOT / "hooks" / "scripts")!r}
-        . {str(REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh")!r} 2>/dev/null || true
-        """
-    )
-    # Source only the function under test; the impl script is a gate, not a library.
+    # Source only the function under test. The impl script is a gate, not a library: sourcing
+    # the whole of it would run the gate's own logic, and an earlier draft did exactly that in a
+    # prelude that was then overwritten eight lines later — dead, and misleading about what was
+    # being exercised.
     body = (REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh").read_text(encoding="utf-8")
     match = re.search(r"^_stamp_frontmatter_field\(\) \{.*?^\}", body, re.M | re.S)
     assert match, "the gate's stamp function was renamed; update this test with it"
@@ -242,6 +255,185 @@ def test_the_gate_stamp_refuses_rather_than_racing_a_held_lock(
     assert "stamp skipped" in done.stderr, done.stderr
 
 
+def _waits_for_a_held_lock(
+    argv: list[str], note: Path, home: Path, env: dict[str, str], hold: float = 4.0
+) -> float:
+    """Run a writer against a lock a second process holds; return how long it waited.
+
+    The difference between taking a lock and mentioning one. Starting two CLIs and hoping their
+    read-modify-write windows overlap does not establish anything — the race may simply not
+    happen — so the contention is constructed instead of hoped for.
+    """
+
+    root = home / "coord" / "task-locks"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(
+                f"""
+                import sys, time
+                sys.path.insert(0, {str(REPO_ROOT)!r})
+                from pathlib import Path
+                from shared import task_note_lock as tnl
+                with tnl.projected_path_lock(None, (Path({str(note)!r}),),
+                                             root=Path({str(root)!r}), timeout=30.0):
+                    print("HELD", flush=True)
+                    time.sleep({hold})
+                """
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "HELD"
+        started = time.monotonic()
+        done = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=120)
+        waited = time.monotonic() - started
+    finally:
+        holder.wait(timeout=60)
+    assert done.returncode == 0, f"writer failed: {done.stdout!r} {done.stderr!r}"
+    return waited
+
+
+def test_cc_task_repair_waits_for_a_held_projection_lock(
+    probe: tuple[Path, Path, dict[str, str]],
+) -> None:
+    """cc-task-repair under real contention, not a regex over its own source.
+
+    Of the converted writers this was the one whose only evidence was
+    ``test_every_converted_writer_actually_takes_the_lock`` — a grep for an import and a
+    ``with``. That assertion cannot tell locking the right note from locking the wrong path, a
+    mismatched task id, or a lock around a section that does not cover the read. It is an
+    implementation echo, and an echo is not a witness.
+    """
+
+    home, note, env = probe
+    # Remove a scaffolding field so repair has something to write.
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("route_metadata_schema: 1\n", ""),
+        encoding="utf-8",
+    )
+    waited = _waits_for_a_held_lock(
+        [str(REPO_ROOT / "scripts" / "cc-task-repair"), "lock-probe-1"], note, home, env
+    )
+    assert waited > 2.0, f"cc-task-repair did not wait for the projection lock ({waited:.2f}s)"
+    assert "route_metadata_schema" in note.read_text(encoding="utf-8")
+
+
+def test_cc_scope_widen_waits_for_a_held_projection_lock(
+    probe: tuple[Path, Path, dict[str, str]],
+) -> None:
+    """The same constructed contention for scope-widen.
+
+    Its other coverage is the two-CLI race, which can pass without effective locking whenever
+    the two windows happen not to overlap.
+    """
+
+    home, note, env = probe
+    waited = _waits_for_a_held_lock(
+        [
+            str(REPO_ROOT / "scripts" / "cc-scope-widen"),
+            "lock-probe-1",
+            "--add",
+            "shared/coord_projection.py",
+        ],
+        note,
+        home,
+        env,
+    )
+    assert waited > 2.0, f"cc-scope-widen did not wait for the projection lock ({waited:.2f}s)"
+    assert "shared/coord_projection.py" in note.read_text(encoding="utf-8")
+
+
+def test_a_real_transition_cannot_enter_a_writer_s_window(tmp_path: Path) -> None:
+    """The witness the row asks for, run against the real transition machinery.
+
+    A converted writer holds the projection lock across its read-modify-write. The real
+    ``execute_lifecycle_transition`` — which pins a preimage and then atomically installs a
+    postimage over the same note — is started while that writer holds it, and must NOT proceed:
+    landing between the pin and the install is exactly the fail-open this row closes.
+
+    Deterministic by construction rather than by hoping two windows overlap: the writer's lock
+    is held for the whole of the transition's attempt.
+    """
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    note = vault / "task-1.md"
+    note.write_bytes(b"stage: S6\n")
+    root = tmp_path / "locks"
+
+    writer = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(
+                f"""
+                import sys, time
+                sys.path.insert(0, {str(REPO_ROOT)!r})
+                from pathlib import Path
+                from shared.task_note_lock import projected_path_lock
+                note = Path({str(note)!r})
+                with projected_path_lock("task-1", (note,),
+                                         root=Path({str(root)!r}), timeout=60.0):
+                    print("HELD", flush=True)
+                    time.sleep(5)
+                    note.write_bytes(note.read_bytes() + b"writer-line\\n")
+                print("WROTE", flush=True)
+                """
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert writer.stdout is not None
+        assert writer.stdout.readline().strip() == "HELD"
+
+        transition = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                textwrap.dedent(
+                    f"""
+                    import sys
+                    sys.path.insert(0, {str(REPO_ROOT)!r})
+                    from pathlib import Path
+                    from shared import coord_projection as cp
+                    from shared.coord_event_log import CoordEventLog, CoordWriter
+                    cp._LIFECYCLE_EFFECT_ACTIVATION = True
+                    note = Path({str(note)!r})
+                    projection = cp.FileProjection.capture(note, after=b"stage: S7\\n")
+                    try:
+                        cp._transition_locks(
+                            "task-1", (note,), Path({str(root)!r}), timeout=1.0
+                        ).__enter__()
+                        print("TRANSITION-ENTERED", flush=True)
+                    except cp.LifecycleTransitionError as exc:
+                        print("TRANSITION-REFUSED", exc.args[0], flush=True)
+                    """
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    finally:
+        out, err = writer.communicate(timeout=120)
+    assert "WROTE" in out, f"{out!r} {err!r}"
+
+    assert "TRANSITION-REFUSED" in transition.stdout, (
+        "a transition entered a writer's critical section: "
+        f"{transition.stdout!r} {transition.stderr!r}"
+    )
+    assert b"writer-line" in note.read_bytes(), "the writer's bytes were lost"
+
+
 # ───────────────────────────────────────────────────────────── conformance: the inventory
 
 #: Writers converted to take the projection lock. Each must still take it.
@@ -250,12 +442,43 @@ UNDER_LOCK = (
     "scripts/cc-scope-widen",
     "scripts/cc-task-repair",
     "hooks/scripts/cc-task-gate.impl.sh",
+    "hooks/scripts/cc-task-pr-link.sh",
+    "scripts/cc-task-offer-ready",
+    "scripts/cc-cascade-unblock",
 )
 
 #: Files that name the vault and write, but are NOT task-note writers — each with the reason
 #: it is out of scope. A bare "not a writer" is not a reason; the reason has to say what it
 #: writes instead, so the next person can check it rather than trust it.
 NOT_A_TASK_NOTE_WRITER = {
+    "shared/task_note_lock.py": "the lock primitive itself",
+    "shared/coord_projection.py": "owns the transition; takes the lock by construction",
+    "agents/studio_compositor/durf_source.py": "reads notes for overlay copy",
+    "agents/operator_current_state/collector.py": "reads notes",
+    "agents/drift_detector/probes_executive.py": "reads notes",
+    "agents/deliberative_council/capability_admission.py": "reads notes",
+    "agents/coordination_tui/data.py": "read-only TUI data",
+    "agents/coordination_tui/app.py": "read-only TUI",
+    "agents/content_id_watcher/__init__.py": "reads notes",
+    "shared/task_graph_tree_effect_scorer.py": "reads notes",
+    "shared/public_gate_receipts.py": "writes receipts, not notes",
+    "shared/github_public_surface.py": "reads notes for the public surface",
+    "shared/scheduler_readiness_reconciler.py": "reads notes; writes no note",
+    "shared/sdlc_invariants.py": "read-only invariant monitor",
+    "shared/cc_task_root.py": "resolver only",
+    "hooks/scripts/sense_reissue_capture.py": "writes its own capture JSONL",
+    "hooks/scripts/cc-task-root.sh": "resolver only",
+    "hooks/scripts/session-context.sh": "read-only session banner",
+    "hooks/scripts/pr-release-gate.sh": "read-only release precheck",
+    "hooks/scripts/authorization-packet-validator.sh": "read-only validator",
+    "hooks/scripts/work-resolution-gate.sh": "read-only branch/PR gate",
+    "hooks/scripts/cc-task-closure-gate.sh": "read-only closure gate",
+    "scripts/cc-hygiene-dashboard-renderer.py": "renders the dashboard, not a note",
+    "scripts/cc-hygiene-sweeper.py": "read-only sweep plus ntfy",
+    "scripts/cc-close-sibling-check.py": "read-only check",
+    "scripts/check-peer-glob-coherence.py": "read-only check",
+    "scripts/check-audio-authority-case.py": "read-only check",
+    "scripts/cc-task-lint": "read-only lint over the vault",
     "scripts/cc_hygiene/dashboard.py": "writes the _dashboard/ markdown, never a task note",
     "scripts/cc_hygiene/ntfy.py": "writes its own notification state JSON",
     "scripts/cc-pr-review-dispatch.py": "writes review dossiers under _evidence/, not notes",
@@ -270,9 +493,15 @@ NOT_A_TASK_NOTE_WRITER = {
     "scripts/scheduler-readiness-unblock-reconcile.py": "writes no note (reconcile report only)",
 }
 
-#: Task-note writers the sweep found that this change does NOT yet route through the lock.
-#: They are listed rather than forgotten: an entry here is an open hazard with a named owner,
-#: and the test below fails the moment a NEW writer appears that is in neither list.
+#: Task-note writers the sweep found that this change does NOT route through the lock.
+#:
+#: Every entry is an OPEN HAZARD with a named owner — nothing read-only belongs here, and
+#: nothing already under the lock belongs here. An earlier revision used it as a catch-all
+#: for anything the sweep matched, which made the one artefact meant to say "these files are
+#: unprotected" unable to say it: read-only linters sat beside real writers, the lock module
+#: itself was filed as a hazard, and nine keys differed from a real entry only by trailing
+#: whitespace (so they matched nothing — _candidate_files() strips every line) and were
+#: reasoned "duplicate guard". A list that cannot be read is not a safeguard.
 KNOWN_UNCONVERTED = {
     # MEASURED 2026-09-16, and worse than "own lock root" suggests. Claim publication holds
     # shared/sdlc_claim.py::_claim_publication_lock, which is keyed by the ROLE digest and
@@ -295,8 +524,6 @@ KNOWN_UNCONVERTED = {
     # only writer here that UNLINKS a projected path, so a transition holding that note's
     # preimage can have its subject removed underneath it.
     "scripts/cc-close": "live closer moves+unlinks unserialized; sdlc_close is correct but unwired — own row",
-    "scripts/cc-cascade-unblock": "batch unblocker; convert with the batch-writer pass",
-    "scripts/cc-task-offer-ready": "offer-readiness stamper; convert with the batch-writer pass",
     "scripts/cc-migration-capability": "migration tool, run by hand",
     "scripts/cc-pr-merge-watcher.py": "daemon writer; convert with the daemon pass",
     "scripts/cc-pr-autoqueue.py": "daemon writer; convert with the daemon pass",
@@ -311,26 +538,7 @@ KNOWN_UNCONVERTED = {
     "scripts/velocity_report_evidence_snapshot.py": "writes an evidence snapshot",
     "scripts/rag_documents_v2_shadow.py": "writes a shadow index",
     "scripts/cc-task-backfill-nogo": "backfill tool, run by hand",
-    "scripts/cc-task-lint": "read-only lint",
-    "scripts/cc-task-offer-ready ": "duplicate guard",
-    "scripts/refused_lifecycle_migrate_schema.py ": "duplicate guard",
-    "scripts/check-audio-authority-case.py": "read-only check",
-    "scripts/check-peer-glob-coherence.py": "read-only check",
-    "scripts/protected-lane-revive-reconcile.py ": "duplicate guard",
-    "scripts/cc-close-sibling-check.py": "read-only check",
-    "scripts/cc-hygiene-sweeper.py": "read-only sweep + ntfy",
-    "scripts/cc-hygiene-dashboard-renderer.py": "renders the dashboard",
-    "scripts/migrate_native_tasks_to_vault.py ": "duplicate guard",
-    "scripts/refused_lifecycle_migrate_schema.py  ": "duplicate guard",
-    "hooks/scripts/cc-task-pr-link.sh": "stamps pr:/pr_repo:; convert with the hook pass",
     "hooks/scripts/cc-task-gate-bootstrap.py": "creates a new note; no transition can exist yet",
-    "hooks/scripts/cc-task-closure-gate.sh": "read-only closure gate",
-    "hooks/scripts/work-resolution-gate.sh": "read-only branch/PR gate",
-    "hooks/scripts/authorization-packet-validator.sh": "read-only validator",
-    "hooks/scripts/pr-release-gate.sh": "read-only release precheck",
-    "hooks/scripts/session-context.sh": "read-only session banner",
-    "hooks/scripts/sense_reissue_capture.py": "writes its own capture JSONL",
-    "hooks/scripts/cc-task-root.sh": "resolver only",
     "agents/coordinator/core.py": "coordinator note writer; convert with the daemon pass",
     "agents/triage_officer/core.py": "triage writer; convert with the daemon pass",
     "agents/refused_lifecycle/runner.py": "refused/ lifecycle; convert with the daemon pass",
@@ -340,32 +548,14 @@ KNOWN_UNCONVERTED = {
     "agents/request_decomposer/writer.py": "creates new request notes",
     "agents/jr_spark_auto_consumer/consumer.py": "creates new notes from spark items",
     "agents/interview_compass.py": "writes its own compass file",
-    "agents/content_id_watcher/__init__.py": "reads notes",
-    "agents/coordination_tui/app.py": "read-only TUI",
-    "agents/coordination_tui/data.py": "read-only TUI data",
-    "agents/deliberative_council/capability_admission.py": "reads notes",
-    "agents/drift_detector/probes_executive.py": "reads notes",
-    "agents/operator_current_state/collector.py": "reads notes",
     "agents/publication_bus/refusal_brief_daemon.py": "writes refusal briefs",
     "agents/playwright_grant_submission_runner/__init__.py": "grant runner; reads notes",
     "agents/playwright_grant_submission_runner/package.py": "grant packaging",
-    "agents/studio_compositor/durf_source.py": "reads notes for overlay copy",
     "shared/gate0b_claim_publication_install.py": "installs the claim-publication machinery",
     "shared/p0_incident_intake.py": "creates new incident notes",
     "shared/recovery_governor.py": "recovery writer; convert with the daemon pass",
     "shared/sdlc_close.py": "correctly takes the transition lock, but has no production caller — own row",
-    "shared/sdlc_invariants.py": "read-only invariant monitor",
-    "shared/scheduler_readiness_reconciler.py": "reconciler; reads notes",
-    "shared/github_public_surface.py": "reads notes for the public surface",
-    "shared/public_gate_receipts.py": "writes receipts",
-    "shared/task_graph_tree_effect_scorer.py": "reads notes",
-    "shared/cc_task_root.py": "resolver only",
-    "shared/coord_projection.py": "owns the transition; takes the lock by construction",
-    "shared/task_note_lock.py": "the lock itself",
     "shared/sdlc_claim.py": "role-keyed lock, different root; see the cc-claim note — own row",
-    "scripts/cc-migration-capability ": "duplicate guard",
-    "scripts/refused_lifecycle_classify.py ": "duplicate guard",
-    "scripts/downstream_contribution_ledger_v0.py ": "duplicate guard",
 }
 
 
@@ -424,8 +614,23 @@ def test_the_writer_inventory_has_no_unclassified_file() -> None:
     one of: converted, not-a-note-writer, or known-unconverted-with-a-reason.
     """
 
+    candidates = _candidate_files()
+    # A sweep that finds nothing would make every assertion below vacuously true — a broken
+    # grep, a wrong cwd or a renamed directory would read as "no unclassified writers" and this
+    # test, the PR's durable safeguard, would pass while guarding nothing. Assert the sweep
+    # worked before trusting its silence.
+    assert len(candidates) > 40, (
+        f"the writer sweep found only {len(candidates)} candidates; it is broken, and its "
+        "silence is a fact about the search rather than about the estate"
+    )
+    for anchor in UNDER_LOCK:
+        assert anchor in candidates, (
+            f"the sweep no longer finds {anchor}, a file this test knows is a writer — "
+            "the search shapes in _candidate_files() have stopped matching"
+        )
+
     classified = set(UNDER_LOCK) | set(NOT_A_TASK_NOTE_WRITER) | set(KNOWN_UNCONVERTED)
-    unclassified = sorted(rel for rel in _candidate_files() if rel not in classified)
+    unclassified = sorted(rel for rel in candidates if rel not in classified)
     assert not unclassified, (
         "these files reach the cc-task vault and are in no inventory list:\n  "
         + "\n  ".join(unclassified)
