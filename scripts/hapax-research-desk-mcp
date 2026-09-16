@@ -67,7 +67,9 @@ from shared.research_desk import (
 
 LOG = logging.getLogger("hapax-research-desk")
 
-SECRET_NAME = "research-desk-connector-key"  # pragma: allowlist secret — a FileStore NAME, not a value
+SECRET_NAME = (
+    "research-desk-connector-key"  # pragma: allowlist secret — a FileStore NAME, not a value
+)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8790
 MCP_PATH = "/mcp"
@@ -484,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
                     "requests_dir": str(config.requests_dir),
                     "delivery_dir": str(config.lanebus_dir),
                     "ledger": str(ledger_path),
+                    "ledger_rows": len(ledger.read_records(ledger_path)),
                     "key_present": True,
                 },
                 indent=2,

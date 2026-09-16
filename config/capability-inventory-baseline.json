@@ -1,5 +1,5 @@
 {
-  "count": 191,
+  "count": 192,
   "records": {
     "agy.review.direct": {
       "fingerprint": "4ea797143ee0282ae82de6de2fa3a874990802f455005825b9eaf48a87da9e68",
@@ -503,6 +503,10 @@
     },
     "orchestrator.multi_agent_surface": {
       "fingerprint": "47542a33f6cca296e7146b649faf51c99bde3d03964a532644e077a8805c5327",
+      "inventory_disposition": "evidence_only_non_supply"
+    },
+    "perplexity.computer.desk": {
+      "fingerprint": "a4e8113b8c1a58f605beae3494140794604fc1cc145334b66031231650c8ff0d",
       "inventory_disposition": "evidence_only_non_supply"
     },
     "perplexity_search_or_sonar": {
