@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 UNITS = Path(__file__).resolve().parents[2] / "systemd" / "units"
 MCP = UNITS / "hapax-research-desk-mcp.service"
@@ -141,8 +142,17 @@ def test_the_shipped_ingress_template_matches_what_the_unit_gates_on() -> None:
         / "research-desk-tunnel.example.yml"
     )
     assert template.is_file()
-    body = template.read_text(encoding="utf-8")
-    assert "http://127.0.0.1:8790" in body
-    assert "desk.hapaxrnd.com" in body
-    assert "/run/user/1000/cloudflared/research-desk.json" in body
-    assert "REPLACE-WITH-TUNNEL-UUID" in body, "a template must not carry a real tunnel id"
+    # Parsed, not grepped. A substring check would assert that a hostname appears
+    # SOMEWHERE in the file, which is both weaker than checking the ingress rule and
+    # what CodeQL's py/incomplete-url-substring-sanitization heuristic flags.
+    spec = yaml.safe_load(template.read_text(encoding="utf-8"))
+    assert spec["tunnel"] == "REPLACE-WITH-TUNNEL-UUID", "a template must carry no real tunnel id"
+    assert spec["credentials-file"] == "/run/user/1000/cloudflared/research-desk.json", (
+        "the credentials path must match what the unit's ExecStartPre materialises"
+    )
+    ingress = spec["ingress"]
+    assert ingress[0] == {
+        "hostname": "desk.hapaxrnd.com",
+        "service": "http://127.0.0.1:8790",
+    }, "the template must route the published hostname at the loopback bind"
+    assert ingress[-1] == {"service": "http_status:404"}, "the catch-all must not be a proxy"
