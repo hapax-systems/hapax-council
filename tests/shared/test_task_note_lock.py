@@ -15,6 +15,7 @@ already assumes actually holds.
 
 from __future__ import annotations
 
+import inspect
 import os
 import subprocess
 import sys
@@ -320,10 +321,10 @@ def test_writer_lock_and_transition_lock_are_one_domain(tmp_path: Path) -> None:
     note.write_text("x\n", encoding="utf-8")
     root = tmp_path / "locks"
 
-    # Same keys must hash to the same lock file names on both sides.
-    assert tuple(tnl.lock_names("task-1", (note,))) == tuple(
-        cp._transition_lock_names("task-1", (note,))
-    )
+    # There is no second name derivation to compare against: coord_projection does not have
+    # one any more. An alias kept for symmetry would itself be a thing that could drift, so
+    # what is asserted is the delegation and its observable consequence, below.
+    assert "task_note_lock.projected_path_lock" in inspect.getsource(cp._transition_locks)
 
     # And a writer holding the lock really does keep a transition out.
     with tnl.projected_path_lock("task-1", (note,), root=root, timeout=5.0):

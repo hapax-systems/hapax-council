@@ -6294,17 +6294,6 @@ def _lifecycle_estate_lock(root: Path):
         os.close(handle)
 
 
-def _transition_lock_names(task_id: str, paths: Sequence[Path]) -> tuple[str, ...]:
-    """The canonical lock names for one transition, in the order they must be taken.
-
-    Exposed so the coverage conformance test can assert that a task-note writer and the
-    transition over that same note name *the same* lock files — the property the whole
-    projection-lock row exists to establish.
-    """
-
-    return task_note_lock.lock_names(task_id, paths)
-
-
 @contextmanager
 def _transition_locks(
     task_id: str,
