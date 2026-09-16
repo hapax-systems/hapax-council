@@ -236,7 +236,7 @@ live_codex_session_exists() {
     fi
   fi
 
-  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$tmux_name" 2>/dev/null; then
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "=$tmux_name" 2>/dev/null; then
     return 0
   fi
 
@@ -1173,7 +1173,7 @@ case "$TERMINAL" in
       echo "hapax-codex: tmux not found" >&2
       exit 10
     fi
-    if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
+    if "$TMUX_BIN" has-session -t "=$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
       echo "hapax-codex: tmux session already exists: $TMUX_NAME" >&2
       exit 11
     fi
@@ -1189,7 +1189,7 @@ case "$TERMINAL" in
       echo "hapax-codex: tmux not found; visible Codex sessions require tmux backing" >&2
       exit 10
     fi
-    if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
+    if "$TMUX_BIN" has-session -t "=$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
       echo "hapax-codex: tmux session already exists: $TMUX_NAME" >&2
       exit 11
     fi
@@ -1585,16 +1585,19 @@ chmod 700 "$RUNNER"
 # into ~/.cache/hapax/tmux-pane-exits/ and then kills the session so this launcher can
 # run again. The two ship together; neither is correct alone.
 #
-# `-t "$TMUX_NAME"` carries no window index on purpose: `"$TMUX_NAME":1` is correct
-# only where base-index is 1, and tmux's default is 0 (measured: `no such window`).
-# A session fresh from `new-session -d` has exactly one window, so the session target
-# resolves to it whatever base-index is set to.
+# `-t "=$TMUX_NAME:"` — anchored, and no window index. `=` pins the EXACT session name:
+# a bare target falls back to prefix and then fnmatch matching, and lane names nest
+# (`cx-cap` / `cx-cap-money`). The trailing `:` makes it a window target resolving to
+# that session's current window — the one window a fresh `new-session -d` has —
+# whatever base-index is. `"$TMUX_NAME":1` is correct only where base-index is 1, and
+# tmux's default is 0 (measured: `no such window`); a bare `=$TMUX_NAME` is refused as a
+# window target (measured on 3.7c: `no such window: =...`).
 tmux_new_lane_session() {
   "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER" || return $?
   # Fail open and say so: losing the forensics option is bad, refusing to launch the
   # lane over it is worse, and a silent loss is how the original gap survived.
-  "$TMUX_BIN" set-option -w -t "$TMUX_NAME" remain-on-exit failed 2>/dev/null ||
-    echo "hapax-codex: could not set remain-on-exit on $TMUX_NAME (tmux < 3.2?); a bad death will leave no pane to inspect" >&2
+  "$TMUX_BIN" set-option -w -t "=$TMUX_NAME:" remain-on-exit failed 2>/dev/null ||
+    echo "hapax-codex: could not set remain-on-exit on $TMUX_NAME; the lane is running but a bad death will leave no pane to inspect. next: check \`tmux -V\` (remain-on-exit=failed needs tmux >= 3.2), then \`tmux show-options -w -t =$TMUX_NAME: remain-on-exit\`" >&2
 }
 
 case "$TERMINAL" in
@@ -1610,7 +1613,7 @@ case "$TERMINAL" in
     printf '%s\n' "$TMUX_NAME"
     ;;
   foot)
-    if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
+    if ! "$TMUX_BIN" has-session -t "=$TMUX_NAME" 2>/dev/null; then
       tmux_new_lane_session
     fi
     if [ -n "$DISPATCH_HOST_REQUESTED" ] || [ -n "$DISPATCH_HOST" ] || [ -n "$DISPATCH_FALLBACK_REASON" ]; then

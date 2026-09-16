@@ -58,44 +58,108 @@ def _write_recorder(path: Path, log: Path) -> None:
 
 #: A scriptable fake tmux. Every invocation is appended to ``$TMUX_CALL_LOG`` so a
 #: test can assert not just WHICH tmux commands ran but in what ORDER — which is
-#: the only way to pin "capture before kill". ``list-panes`` answers according to
-#: its own ``-F`` format, because the supervisor asks it three different questions.
-_FAKE_TMUX = """
+#: the only way to pin "capture before kill".
+#:
+#: It models three things real tmux does that a naive stub would hide:
+#:
+#: * Target resolution. ``=name`` is exact; a BARE name also prefix-matches, so a
+#:   bare target for a missing lane resolves to a sibling whose name extends it
+#:   (measured on tmux 3.7c: with only ``hapax-claude-delta-2`` running,
+#:   ``has-session -t hapax-claude-delta`` succeeded and a bare ``kill-session``
+#:   killed the sibling). The sibling exists when ``FAKE_TMUX_SIBLING_EXISTS=1``.
+#: * ``list-panes -a`` lists EVERY session's panes; without ``-a`` only one window's.
+#:   The sibling's pane is live unless ``FAKE_TMUX_SIBLING_PANE_DEAD`` says otherwise,
+#:   so a supervisor that forgets to filter on the exact session name reads a dead
+#:   lane as alive on the strength of its neighbour.
+#: * ``FAKE_TMUX_FAIL="display-message capture-pane"`` makes those commands fail, to
+#:   exercise the fallback strings in the forensics log.
+_FAKE_TMUX = r"""
 #!/usr/bin/env bash
-printf '%s\\n' "$*" >> "$TMUX_CALL_LOG"
+printf '%s\n' "$*" >> "$TMUX_CALL_LOG"
 cmd="${1:-}"; shift || true
+lane="${FAKE_TMUX_SESSION_NAME:-hapax-claude-delta}"
+sibling="$lane-2"
+fail_on() { case " ${FAKE_TMUX_FAIL:-} " in *" $1 "*) return 0 ;; esac; return 1; }
+target_of() { while [ "$#" -gt 0 ]; do case "$1" in -t) printf '%s\n' "${2:-}"; return 0 ;; esac; shift; done; return 1; }
+resolve() {  # <target> -> session name on stdout, or non-zero
+  case "$1" in
+    "=$lane"|"=$lane:")
+      [ "${FAKE_TMUX_SESSION_EXISTS:-0}" = "1" ] && { printf '%s\n' "$lane"; return 0; }; return 1 ;;
+    "$lane"|"$lane:")
+      [ "${FAKE_TMUX_SESSION_EXISTS:-0}" = "1" ] && { printf '%s\n' "$lane"; return 0; }
+      [ "${FAKE_TMUX_SIBLING_EXISTS:-0}" = "1" ] && { printf '%s\n' "$sibling"; return 0; }
+      return 1 ;;
+    "=$sibling"|"$sibling"|"=$sibling:"|"$sibling:")
+      [ "${FAKE_TMUX_SIBLING_EXISTS:-0}" = "1" ] && { printf '%s\n' "$sibling"; return 0; }; return 1 ;;
+    *) return 1 ;;
+  esac
+}
 case "$cmd" in
   has-session)
-    [ "${FAKE_TMUX_SESSION_EXISTS:-0}" = "1" ] && exit 0
+    resolve "$(target_of "$@")" >/dev/null && exit 0
     exit 1
     ;;
+  kill-session)
+    r="$(resolve "$(target_of "$@")")" || exit 1
+    printf 'killed %s\n' "$r" >> "$TMUX_CALL_LOG"
+    exit 0
+    ;;
   list-panes)
-    fmt=""; all_windows=0
+    fmt=""; all=0; tgt=""
     while [ "$#" -gt 0 ]; do
       case "$1" in
         -F) fmt="${2:-}"; shift 2 ;;
-        -s) all_windows=1; shift ;;
+        -a) all=1; shift ;;
+        -t) tgt="${2:-}"; shift 2 ;;
         *) shift ;;
       esac
     done
-    # Honour -s the way tmux does: without it, only the CURRENT window's panes are
-    # listed. Dropping -s is a real regression (a lane whose active window died would
-    # read as alive on the strength of another window), so the fake must be able to
-    # show it rather than papering over it.
-    emit() { if [ "$all_windows" = "1" ]; then printf '%s\\n' "$@"; else printf '%s\\n' "${1-}"; fi; }
-    case "$fmt" in
-      *'#{pane_dead}'*) emit ${FAKE_TMUX_PANE_DEAD-} ;;
-      *'#{pane_id}'*)   emit ${FAKE_TMUX_PANE_IDS-} ;;
-      *)                printf 'status= signal=9\\n' ;;
-    esac
+    row() { case "$fmt" in *'#{session_name}'*) printf '%s\t%s\n' "$1" "$2" ;; *) printf '%s\n' "$2" ;; esac; }
+    lane_values() {
+      case "$fmt" in
+        *'#{pane_dead}'*) printf '%s\n' ${FAKE_TMUX_PANE_DEAD-} ;;
+        *'#{pane_id}'*)   printf '%s\n' ${FAKE_TMUX_PANE_IDS-} ;;
+        *)                printf 'status= signal=9\n' ;;
+      esac
+    }
+    sibling_value() {
+      case "$fmt" in
+        *'#{pane_dead}'*) printf '%s\n' "${FAKE_TMUX_SIBLING_PANE_DEAD:-0}" ;;
+        *'#{pane_id}'*)   printf '%%9\n' ;;
+        *)                printf 'status= signal=\n' ;;
+      esac
+    }
+    if [ "$all" = "1" ]; then
+      if [ "${FAKE_TMUX_SESSION_EXISTS:-0}" = "1" ]; then
+        while IFS= read -r v; do [ -n "$v" ] && row "$lane" "$v"; done <<< "$(lane_values)"
+      fi
+      if [ "${FAKE_TMUX_SIBLING_EXISTS:-0}" = "1" ]; then
+        row "$sibling" "$(sibling_value)"
+      fi
+      exit 0
+    fi
+    # Without -a tmux reports ONE window's panes (the target's current window).
+    # Reading only that is a real regression — a lane whose active window died
+    # would read as alive on the strength of another — so the fake shows it.
+    r="$(resolve "$tgt")" || exit 1
+    if [ "$r" = "$lane" ]; then
+      v="$(lane_values | head -1)"; [ -n "$v" ] && row "$lane" "$v"
+    else
+      row "$sibling" "$(sibling_value)"
+    fi
     exit 0
     ;;
   display-message)
+    fail_on display-message && exit 1
     printf 'pane: %%0 pane_dead=1 pane_dead_status= pane_dead_signal=9'
-    printf ' pane_dead_time=1789532946 pane_start_command="fake-runner"\\n'
+    printf ' pane_dead_time=1789532946 pane_start_command="fake-runner"\n'
     exit 0
     ;;
-  capture-pane) printf 'FAKE-SCROLLBACK-LINE\\n'; exit 0 ;;
+  capture-pane)
+    fail_on capture-pane && exit 1
+    printf 'FAKE-SCROLLBACK-LINE\n'
+    exit 0
+    ;;
   *) exit 0 ;;
 esac
 """
@@ -152,6 +216,9 @@ def _base(tmp_path: Path, **overrides: str) -> dict[str, object]:
             "FAKE_TMUX_SESSION_EXISTS": "0",
             "FAKE_TMUX_PANE_DEAD": "",
             "FAKE_TMUX_PANE_IDS": "%0",
+            "FAKE_TMUX_SIBLING_EXISTS": "0",
+            "FAKE_TMUX_SIBLING_PANE_DEAD": "0",
+            "FAKE_TMUX_FAIL": "",
         }
     )
     env.update(overrides)
@@ -177,6 +244,96 @@ def _tmux_calls(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
 
+def _killed_sessions(path: Path) -> list[str]:
+    """Which sessions the fake tmux actually killed — AFTER target resolution, so
+    a bare target that prefix-matched a sibling shows up as the sibling's name."""
+    return [c.split(" ", 1)[1] for c in _tmux_calls(path) if c.startswith("killed ")]
+
+
+#: A recording tmux for driving the REAL launchers end to end. Every invocation is
+#: one ``--``-delimited block in ``$TMUX_CALL_LOG``; ``new-session`` and
+#: ``set-option`` exit with the status the test asks for, so the launcher's own
+#: failure handling is what gets exercised, not a stub's.
+_LAUNCHER_FAKE_TMUX = r"""
+#!/usr/bin/env bash
+{ printf -- '--\n'; printf '%s\n' "$@"; } >> "$TMUX_CALL_LOG"
+case "${1:-}" in
+  has-session) exit 1 ;;
+  new-session) exit "${FAKE_TMUX_NEW_SESSION_RC:-0}" ;;
+  set-option)  exit "${FAKE_TMUX_SET_OPTION_RC:-0}" ;;
+  *) exit 0 ;;
+esac
+"""
+
+
+def _launcher_invocations(log: Path) -> list[list[str]]:
+    blocks: list[list[str]] = []
+    for line in log.read_text(encoding="utf-8").splitlines() if log.exists() else []:
+        if line == "--":
+            blocks.append([])
+        elif blocks:
+            blocks[-1].append(line)
+    return blocks
+
+
+def _claude_launcher_env(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path]:
+    """Enough environment for ``scripts/hapax-claude`` to reach its terminal branch
+    with every external it touches faked: ``claude``, ``tmux``, ``footclient``."""
+    home = tmp_path / "home"
+    bin_dir = tmp_path / "launcher-bin"
+    workdir = tmp_path / "worktree"
+    for d in (home, bin_dir, workdir):
+        d.mkdir(parents=True, exist_ok=True)
+    log = tmp_path / "launcher-tmux-calls.txt"
+    _write_executable(bin_dir / "claude", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(bin_dir / "footclient", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(bin_dir / "tmux", _LAUNCHER_FAKE_TMUX)
+    env = os.environ.copy()
+    for leaky in ("CLAUDE_ROLE", "HAPAX_AGENT_NAME", "HAPAX_AGENT_ROLE", "TMUX", "TMUX_PANE"):
+        env.pop(leaky, None)
+    env.update(
+        {
+            "HOME": str(home),
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+            "HAPAX_CLAUDE_TERMINAL": "none",
+            "TMUX_CALL_LOG": str(log),
+        }
+    )
+    env.update(overrides)
+    return env, log
+
+
+def _run_claude_launcher(env: dict[str, str], terminal: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(CLAUDE_LAUNCHER),
+            "--role",
+            "delta",
+            "--cd",
+            str(Path(env["HOME"]).parent / "worktree"),
+            "--terminal",
+            terminal,
+            "--readonly",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+_REMAIN_ON_EXIT_CALL = [
+    "set-option",
+    "-w",
+    "-t",
+    "=hapax-claude-delta:",
+    "remain-on-exit",
+    "failed",
+]
+
+
 # ── liveness: a retained corpse is not a live lane ───────────────────────────
 
 
@@ -197,9 +354,10 @@ def test_one_live_pane_keeps_the_lane_alive(tmp_path: Path) -> None:
     """A lane with a dead window and a live one is still a lane. It must not be
     respawned on top of itself, and its session must not be killed.
 
-    The dead window is listed first on purpose: this also pins ``list-panes -s``.
-    Without ``-s`` tmux reports only the session's CURRENT window, so a supervisor
-    that dropped the flag would see just the corpse and respawn over a live lane.
+    The dead window is listed first on purpose: this also pins the server-wide
+    ``list-panes -a`` read. Without ``-a`` tmux reports only ONE window's panes, so a
+    supervisor that dropped the flag would see just the corpse and respawn over a
+    live lane.
     """
     b = _base(tmp_path, FAKE_TMUX_SESSION_EXISTS="1", FAKE_TMUX_PANE_DEAD="1 0")
     res = _run(b["env"])
@@ -224,7 +382,7 @@ def test_unreadable_pane_list_fails_open(tmp_path: Path) -> None:
 
 def test_forensics_log_is_written_with_the_four_fields(tmp_path: Path) -> None:
     b = _base(tmp_path, FAKE_TMUX_SESSION_EXISTS="1", FAKE_TMUX_PANE_DEAD="1")
-    _run(b["env"])
+    res = _run(b["env"])
     logs = sorted(Path(b["pane_logs"]).glob("*.log"))
     assert len(logs) == 1, f"expected one forensics log, got {[p.name for p in logs]}"
     assert re.fullmatch(r"\d{8}T\d{6}Z-delta\.log", logs[0].name), logs[0].name
@@ -238,6 +396,9 @@ def test_forensics_log_is_written_with_the_four_fields(tmp_path: Path) -> None:
         assert field in text, f"{field} missing from the forensics log:\n{text}"
     assert "FAKE-SCROLLBACK-LINE" in text, f"scrollback not captured:\n{text}"
     assert "session: hapax-claude-delta" in text
+    assert f"forensics in {logs[0]}" in res.stdout + res.stderr, (
+        "the supervisor did not tell the operator where the evidence is"
+    )
 
 
 def test_capture_precedes_kill_session(tmp_path: Path) -> None:
@@ -310,11 +471,165 @@ def test_codex_lane_captures_its_own_session_name(tmp_path: Path) -> None:
         FAKE_TMUX_PANE_DEAD="1",
         HAPAX_SUPERVISOR_CLAUDE_LANES="",
         HAPAX_SUPERVISOR_CODEX_LANES="delta",
+        # The fake resolves targets by exact name, so it has to know the codex
+        # lane's session is the one that exists.
+        FAKE_TMUX_SESSION_NAME="hapax-codex-delta",
     )
     _run(b["env"])
     logs = sorted(Path(b["pane_logs"]).glob("*.log"))
     assert len(logs) == 1, [p.name for p in logs]
     assert "session: hapax-codex-delta" in logs[0].read_text(encoding="utf-8")
+
+
+# ── exact names: a sibling whose name extends the lane's is not the lane ──────
+
+
+def test_a_dead_prefix_named_sibling_is_neither_captured_nor_killed(tmp_path: Path) -> None:
+    """Lane ``delta`` is MISSING; ``hapax-claude-delta-2`` exists with only dead panes.
+
+    tmux resolves a bare target by exact name, then prefix, then fnmatch (measured on
+    3.7c), so an unanchored ``has-session``/``kill-session`` would find the sibling,
+    read its corpse as ``delta``'s, write ``delta``'s certificate from the wrong
+    session and kill a session the supervisor does not own. Every target must be
+    ``=name``: delta is simply absent, so it is relaunched and nothing is killed.
+    """
+    b = _base(
+        tmp_path,
+        FAKE_TMUX_SESSION_EXISTS="0",
+        FAKE_TMUX_SIBLING_EXISTS="1",
+        FAKE_TMUX_SIBLING_PANE_DEAD="1",
+    )
+    res = _run(b["env"])
+    assert res.returncode == 0, res.stderr
+    assert _respawned(b["calls"]), "a missing lane was not relaunched: " + res.stderr
+    assert _killed_sessions(b["tmux_calls"]) == [], (
+        "a bare tmux target prefix-matched the sibling: " + str(_tmux_calls(b["tmux_calls"]))
+    )
+    assert not list(Path(b["pane_logs"]).glob("*.log")), "wrote delta's certificate from a sibling"
+
+
+def test_a_live_sibling_does_not_stand_in_for_a_dead_lane(tmp_path: Path) -> None:
+    """Lane ``delta`` is a corpse; ``hapax-claude-delta-2`` is alive next to it.
+
+    ``=name`` does not anchor ``list-panes`` (measured: ``-s -t =name`` still reported
+    the sibling), so the pane list is read server-wide and filtered on the EXACT
+    session name. Drop the filter and the sibling's live pane makes the corpse read
+    as alive: never respawned, never captured.
+    """
+    b = _base(
+        tmp_path,
+        FAKE_TMUX_SESSION_EXISTS="1",
+        FAKE_TMUX_PANE_DEAD="1",
+        FAKE_TMUX_SIBLING_EXISTS="1",
+        FAKE_TMUX_SIBLING_PANE_DEAD="0",
+    )
+    res = _run(b["env"])
+    assert res.returncode == 0, res.stderr
+    assert _respawned(b["calls"]), "the sibling's live pane was counted as the lane's"
+    assert _killed_sessions(b["tmux_calls"]) == ["hapax-claude-delta"]
+    logs = list(Path(b["pane_logs"]).glob("*-delta.log"))
+    assert len(logs) == 1 and "%9" not in logs[0].read_text(encoding="utf-8"), (
+        "the sibling's pane was captured into delta's certificate"
+    )
+
+
+# ── failure paths inside the capture ─────────────────────────────────────────
+
+
+def test_inspection_failures_are_recorded_and_never_block_the_kill(tmp_path: Path) -> None:
+    """``display-message`` and ``capture-pane`` can fail (a pane torn down between the
+    listing and the read). The log says so in place of the missing fields, and the
+    corpse is still cleared so the lane can relaunch."""
+    b = _base(
+        tmp_path,
+        FAKE_TMUX_SESSION_EXISTS="1",
+        FAKE_TMUX_PANE_DEAD="1",
+        FAKE_TMUX_FAIL="display-message capture-pane",
+    )
+    res = _run(b["env"])
+    assert res.returncode == 0, res.stderr
+    logs = sorted(Path(b["pane_logs"]).glob("*-delta.log"))
+    assert len(logs) == 1, [p.name for p in logs]
+    text = logs[0].read_text(encoding="utf-8")
+    assert "<display-message failed>" in text, text
+    assert "<capture-pane failed>" in text, text
+    assert _killed_sessions(b["tmux_calls"]) == ["hapax-claude-delta"]
+    assert _respawned(b["calls"])
+
+
+def test_unwritable_log_dir_is_reported_not_asserted(tmp_path: Path) -> None:
+    """The capture is best-effort by design, so the message that follows it may not
+    claim a file it did not verify. With the log directory unusable the supervisor
+    must say the forensics were NOT written, name the next action, and still clear
+    the corpse — a respawn is never blocked by forensics failing."""
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("", encoding="utf-8")
+    b = _base(
+        tmp_path,
+        FAKE_TMUX_SESSION_EXISTS="1",
+        FAKE_TMUX_PANE_DEAD="1",
+        HAPAX_PANE_EXIT_LOG_DIR=str(blocked),
+    )
+    res = _run(b["env"])
+    out = res.stdout + res.stderr
+    assert res.returncode == 0, res.stderr
+    assert "forensics NOT written" in out, out
+    assert "next:" in out, out
+    assert "forensics in " not in out, "claimed a certificate that was never written: " + out
+    assert _killed_sessions(b["tmux_calls"]) == ["hapax-claude-delta"]
+    assert _respawned(b["calls"])
+
+
+# ── the launchers' CALL SITES, not just the helper body ──────────────────────
+
+
+@pytest.mark.parametrize("terminal", ["tmux", "foot"])
+def test_hapax_claude_launcher_sets_remain_on_exit_after_new_session(
+    tmp_path: Path, terminal: str
+) -> None:
+    """Drive the real ``hapax-claude`` to its ``tmux)`` and ``foot)`` branches with
+    ``claude``, ``tmux`` and ``footclient`` faked. The helper is proven against a real
+    server elsewhere; this pins that each branch actually CALLS it — reverting the
+    call sites to an inline ``new-session`` leaves the helper defined-but-unused and
+    would otherwise be caught by nothing."""
+    env, log = _claude_launcher_env(tmp_path)
+    res = _run_claude_launcher(env, terminal)
+    assert res.returncode == 0, res.stderr
+    blocks = _launcher_invocations(log)
+    new_session = [
+        i
+        for i, b in enumerate(blocks)
+        if b[:4] == ["new-session", "-d", "-s", "hapax-claude-delta"]
+    ]
+    assert new_session, f"{terminal}: no new-session recorded: {blocks}"
+    assert _REMAIN_ON_EXIT_CALL in blocks[new_session[0] + 1 :], (
+        f"{terminal}: the launcher never set remain-on-exit after new-session: {blocks}"
+    )
+    if terminal == "tmux":
+        assert res.stdout.strip() == "hapax-claude-delta"
+
+
+def test_hapax_claude_launcher_fails_open_when_set_option_fails(tmp_path: Path) -> None:
+    """Losing the forensics option is bad; refusing to launch the lane over it is
+    worse; losing it SILENTLY is how the original gap survived. So: exit 0, the
+    session name still printed, and a warning that names the next action."""
+    env, log = _claude_launcher_env(tmp_path, FAKE_TMUX_SET_OPTION_RC="1")
+    res = _run_claude_launcher(env, "tmux")
+    assert res.returncode == 0, res.stderr
+    assert res.stdout.strip() == "hapax-claude-delta"
+    assert "could not set remain-on-exit on hapax-claude-delta" in res.stderr, res.stderr
+    assert "next:" in res.stderr and "tmux -V" in res.stderr, res.stderr
+    assert _REMAIN_ON_EXIT_CALL in _launcher_invocations(log)
+
+
+def test_hapax_claude_launcher_propagates_new_session_failure(tmp_path: Path) -> None:
+    """A failed ``new-session`` must fail the launch with its own status and must not
+    go on to set options on a session that does not exist."""
+    env, log = _claude_launcher_env(tmp_path, FAKE_TMUX_NEW_SESSION_RC="7")
+    res = _run_claude_launcher(env, "tmux")
+    assert res.returncode != 0, "a failed new-session was reported as a successful launch"
+    assert res.stdout.strip() != "hapax-claude-delta"
+    assert not any(b[:1] == ["set-option"] for b in _launcher_invocations(log))
 
 
 # ── real tmux, private socket ────────────────────────────────────────────────
@@ -330,10 +645,19 @@ def _tmux_version() -> tuple[int, int] | None:
 
 
 _TMUX_VERSION = _tmux_version()
-requires_tmux_32 = pytest.mark.skipif(
-    _TMUX_VERSION is None or _TMUX_VERSION < (3, 2),
-    reason="needs tmux >= 3.2 for `remain-on-exit failed`",
-)
+
+
+def _require_real_tmux() -> None:
+    """Skip without tmux >= 3.2 — unless ``HAPAX_TEST_REQUIRE_TMUX=1``, in which case
+    FAIL. The real-tmux cases are the durable witness for the task's exit predicate;
+    a run that silently skipped them would report green on fake-tmux stubs alone and
+    be indistinguishable from one that exercised a real server."""
+    if _TMUX_VERSION is not None and _TMUX_VERSION >= (3, 2):
+        return
+    reason = f"needs tmux >= 3.2 for `remain-on-exit failed` (found {_TMUX_VERSION})"
+    if os.environ.get("HAPAX_TEST_REQUIRE_TMUX") == "1":
+        pytest.fail("HAPAX_TEST_REQUIRE_TMUX=1 but the real-tmux witness cannot run: " + reason)
+    pytest.skip(reason)
 
 
 class ProbeServer:
@@ -369,6 +693,7 @@ class ProbeServer:
 
 @pytest.fixture()
 def probe(tmp_path: Path):
+    _require_real_tmux()
     server = ProbeServer(tmp_path)
     try:
         yield server
@@ -385,7 +710,6 @@ def _wait_for(predicate, timeout: float = 10.0, interval: float = 0.1) -> bool:
     return False
 
 
-@requires_tmux_32
 def test_launcher_helper_retains_a_sigkilled_pane(tmp_path: Path, probe: ProbeServer) -> None:
     """Run the launcher's OWN ``tmux_new_lane_session`` body — extracted from the
     shipped script, not reimplemented — and SIGKILL what it started.
@@ -439,7 +763,6 @@ def test_launcher_helper_retains_a_sigkilled_pane(tmp_path: Path, probe: ProbeSe
         assert marker in probe("capture-pane", "-p", "-S", "-60", "-t", session).stdout
 
 
-@requires_tmux_32
 def test_clean_exit_is_not_mistaken_for_a_death(tmp_path: Path, probe: ProbeServer) -> None:
     """``failed``, not ``on``. An orderly stop must still close its pane, or every
     normal shutdown would leave a corpse for the supervisor to respawn over."""
@@ -461,7 +784,6 @@ def test_clean_exit_is_not_mistaken_for_a_death(tmp_path: Path, probe: ProbeServ
     )
 
 
-@requires_tmux_32
 def test_supervisor_reads_a_real_corpse_then_relaunches_it(
     tmp_path: Path, probe: ProbeServer
 ) -> None:
@@ -505,7 +827,6 @@ def test_supervisor_reads_a_real_corpse_then_relaunches_it(
     assert _respawned(b["calls"]), "the lane was never relaunched after its corpse was cleared"
 
 
-@requires_tmux_32
 def test_capture_refuses_a_session_that_came_back_to_life(
     tmp_path: Path, probe: ProbeServer
 ) -> None:
@@ -550,3 +871,36 @@ def test_capture_refuses_a_session_that_came_back_to_life(
         "capture_dead_pane killed a session that had a LIVE pane"
     )
     assert not list(out_dir.glob("*.log")), "wrote a death certificate for a living lane"
+
+
+def test_supervisor_never_kills_a_prefix_named_sibling(tmp_path: Path, probe: ProbeServer) -> None:
+    """Real tmux: ``hapax-claude-delta-2`` is a retained corpse and ``hapax-claude-delta``
+    does not exist. A bare ``-t hapax-claude-delta`` resolves to the sibling by
+    prefix (measured on 3.7c); the anchored targets must leave it alone, write no
+    certificate for delta, and relaunch delta because it is simply missing."""
+    b = _base(tmp_path)
+    env = dict(b["env"])
+    env["PATH"] = f"{probe.bin_dir}:{env['PATH']}"
+    env.pop("TMUX_CALL_LOG", None)
+
+    sibling = "hapax-claude-delta-2"
+    probe("new-session", "-d", "-s", sibling, "sleep 300", check=True)
+    probe("set-option", "-w", "-t", f"={sibling}:", "remain-on-exit", "failed", check=True)
+    pid = int(probe("list-panes", "-t", sibling, "-F", "#{pane_pid}").stdout.strip())
+    os.kill(pid, 9)
+    assert _wait_for(
+        lambda: probe("list-panes", "-t", sibling, "-F", "#{pane_dead}").stdout.strip() == "1"
+    )
+    # The hazard, stated as a precondition: a bare target finds the sibling.
+    assert probe("has-session", "-t", "hapax-claude-delta").returncode == 0
+
+    res = _run(env)
+    assert res.returncode == 0, res.stderr
+
+    assert probe("has-session", "-t", f"={sibling}").returncode == 0, (
+        "the supervisor killed a session whose name merely extends the lane's"
+    )
+    assert not list(Path(b["pane_logs"]).glob("*.log")), (
+        "wrote delta's certificate from the sibling"
+    )
+    assert _respawned(b["calls"]), "a missing lane was not relaunched"

@@ -2034,6 +2034,118 @@ def _new_session_args(tmux_args: Path) -> list[str]:
     raise AssertionError(f"no new-session invocation recorded: {tmux_args.read_text()!r}")
 
 
+_REMAIN_ON_EXIT_CALL = [
+    "set-option",
+    "-w",
+    "-t",
+    "=hapax-codex-cx-amber:",
+    "remain-on-exit",
+    "failed",
+]
+
+
+def _assert_remain_on_exit_set_after_new_session(tmux_args: Path) -> None:
+    blocks = _tmux_invocations(tmux_args)
+    starts = [
+        i
+        for i, b in enumerate(blocks)
+        if b[:4] == ["new-session", "-d", "-s", "hapax-codex-cx-amber"]
+    ]
+    assert starts, f"no new-session recorded: {blocks}"
+    assert _REMAIN_ON_EXIT_CALL in blocks[starts[0] + 1 :], (
+        f"remain-on-exit was not set after new-session: {blocks}"
+    )
+
+
+def _recording_tmux(tmp_path: Path, tmux_args: Path) -> None:
+    """A tmux that records every invocation and exits with the status the test
+    injects for ``new-session`` / ``set-option``, so the launcher's own handling of
+    those failures is what runs."""
+    fake_tmux = tmp_path / "bin" / "tmux"
+    fake_tmux.write_text(
+        f"""#!/usr/bin/env bash
+printf '%s\\n' -- "$@" >> {tmux_args}
+case "${{1:-}}" in
+  has-session) exit 1 ;;
+  new-session) exit "${{FAKE_TMUX_NEW_SESSION_RC:-0}}" ;;
+  set-option)  exit "${{FAKE_TMUX_SET_OPTION_RC:-0}}" ;;
+  *) exit 0 ;;
+esac
+"""
+    )
+    fake_tmux.chmod(0o755)
+
+
+def _run_terminal_launch(env: dict[str, str], terminal: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            str(LAUNCHER),
+            "--session",
+            "cx-amber",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--task",
+            "demo-task",
+            "--terminal",
+            terminal,
+            "--force",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+
+def test_terminal_foot_sets_remain_on_exit_after_new_session(tmp_path: Path) -> None:
+    """The ``foot)`` branch creates the session through the same helper as ``tmux)``
+    and must set remain-on-exit too; ``foot`` itself is faked."""
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_active_task(env, "demo-task")
+    tmux_args = tmp_path / "tmux-args.txt"
+    _recording_tmux(tmp_path, tmux_args)
+    fake_foot = tmp_path / "bin" / "foot"
+    fake_foot.write_text("#!/usr/bin/env bash\nexit 0\n")
+    fake_foot.chmod(0o755)
+    result = _run_terminal_launch(env, "foot")
+    assert result.returncode == 0, result.stderr
+    _assert_remain_on_exit_set_after_new_session(tmux_args)
+
+
+def test_terminal_tmux_fails_open_when_set_option_fails(tmp_path: Path) -> None:
+    """Losing the forensics option must not refuse the launch, and must not be
+    silent: exit 0, the session name still printed, a warning naming the next
+    action on stderr."""
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_active_task(env, "demo-task")
+    tmux_args = tmp_path / "tmux-args.txt"
+    _recording_tmux(tmp_path, tmux_args)
+    env["FAKE_TMUX_SET_OPTION_RC"] = "1"
+    result = _run_terminal_launch(env, "tmux")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "hapax-codex-cx-amber"
+    assert "could not set remain-on-exit on hapax-codex-cx-amber" in result.stderr, result.stderr
+    assert "next:" in result.stderr and "tmux -V" in result.stderr, result.stderr
+
+
+def test_terminal_tmux_propagates_new_session_failure(tmp_path: Path) -> None:
+    """A failed ``new-session`` fails the launch with a non-zero status and never
+    goes on to set options on a session that does not exist."""
+    env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
+    _write_active_task(env, "demo-task")
+    tmux_args = tmp_path / "tmux-args.txt"
+    _recording_tmux(tmp_path, tmux_args)
+    env["FAKE_TMUX_NEW_SESSION_RC"] = "7"
+    result = _run_terminal_launch(env, "tmux")
+    assert result.returncode != 0, "a failed new-session was reported as a successful launch"
+    assert result.stdout.strip() != "hapax-codex-cx-amber"
+    assert not any(b[:1] == ["set-option"] for b in _tmux_invocations(tmux_args)), (
+        tmux_args.read_text()
+    )
+
+
 def test_terminal_tmux_starts_codex_runner_without_parent_claim(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
     _write_active_task(env, "demo-task")
@@ -2083,6 +2195,11 @@ printf '%s\\n' -- "$@" >> {tmux_args}
     assert "--force" in runner_text
     assert "--task demo-task" in runner_text
     assert "--no-claim" not in runner_text
+    # The CALL SITE, not just the helper: the tmux branch must set remain-on-exit
+    # on the session it just created, so a bad death keeps its pane for
+    # hapax-lane-supervisor to read. Reverting the branch to an inline new-session
+    # leaves the helper defined-but-unused, and this is what catches that.
+    _assert_remain_on_exit_set_after_new_session(tmux_args)
 
 
 def test_terminal_tmux_can_be_podium_thin_client_for_appendix_codex(tmp_path: Path) -> None:
@@ -2482,7 +2599,9 @@ esac
     assert "--working-directory" in args
     assert "tmux\nattach-session\n-t\nhapax-codex-cx-violet" in args
     tmux_text = tmux_log.read_text()
-    assert "has-session -t hapax-codex-cx-violet" in tmux_text
+    # Anchored: a bare target would prefix-match a session whose name merely
+    # extends this one (measured on tmux 3.7c), and attach the operator to it.
+    assert "has-session -t =hapax-codex-cx-violet" in tmux_text
     assert "new-session -d -s hapax-codex-cx-violet" in tmux_text
     assert "dispatch movetoworkspacesilent name:1,address:0xabc" in hyprctl_args.read_text()
 
