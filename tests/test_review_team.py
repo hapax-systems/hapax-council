@@ -4353,3 +4353,61 @@ class TestRouteBlockGenerationEscape:
             admission_time="2026-06-11T19:20:00+00:00",
         )
         assert "review_dossier_route_block_degradation_unwitnessed:claude" in blockers
+
+
+class TestTaskScopedEarlyReturnsObserve:
+    """Every early return in `task_scoped_paid_review_route_blocked_families` goes through
+    `_observe_effective`, which reads `now_dt` — so `now_dt` must be resolved FIRST. Assigned
+    after the early returns, the closure raised NameError on the no-glmcp, ledger-unavailable
+    and non-live-ledger paths; PR-head CI never reached them, the merge group's full suite did
+    (six merge-group removals of PR 4672 on 2026-09-16)."""
+
+    def test_no_glmcp_family_path_observes_and_returns(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(rt, "review_family_route_ids", lambda _registry: {})
+        witness = tmp_path / "interval.json"
+
+        blocked = rt.task_scoped_paid_review_route_blocked_families(
+            rt.load_lens_registry(),
+            {"gemini": ("route_specific_quota_receipt_absent",)},
+            ("task-x",),
+            now="2026-06-11T20:30:00+00:00",
+            observe=True,
+            interval_state_path=witness,
+        )
+
+        assert blocked == {"gemini": ("route_specific_quota_receipt_absent",)}
+        assert witness.exists()
+
+    def test_ledger_unavailable_path_observes_and_returns(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setattr(
+            rt,
+            "review_family_route_ids",
+            lambda _registry: {"glmcp": rt.GLMCP_PAYG_BUDGET_ROUTE_ID},
+        )
+
+        def unreachable() -> None:
+            raise OSError("ledger unreachable")
+
+        monkeypatch.setattr(rt, "load_quota_spend_ledger_resolved", unreachable)
+        witness = tmp_path / "interval.json"
+
+        blocked = rt.task_scoped_paid_review_route_blocked_families(
+            rt.load_lens_registry(),
+            {},
+            ("task-x",),
+            now="2026-06-11T20:30:00+00:00",
+            observe=True,
+            interval_state_path=witness,
+        )
+
+        assert any(
+            "task_scoped_paid_spend_ledger_unavailable:OSError" in reason
+            for reason in blocked.get("glmcp", ())
+        )
+        assert witness.exists()

@@ -1141,6 +1141,15 @@ def task_scoped_paid_review_route_blocked_families(
     reasons against that task-scoped witness, not only the global route state.
     """
 
+    # Resolved FIRST: every early return below goes through `_observe_effective`, which reads
+    # it. Assigned any later, the closure raised NameError on the no-glmcp, ledger-unavailable
+    # and non-live-ledger paths — reached by the full suite in the merge group, never by the
+    # PR-head shards (measured 2026-09-16: six merge-group removals of PR 4672).
+    try:
+        now_dt = _coerce_datetime(now, reference=datetime.now(UTC))
+    except ValueError:
+        now_dt = datetime.now(UTC)
+
     def _observe_effective(effective: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
         """Fold the EFFECTIVE blocked set, so a task-scoped degradation gets a witness too.
 
@@ -1191,10 +1200,6 @@ def task_scoped_paid_review_route_blocked_families(
             _add_route_blocker(blocked, family, (reason,))
         return _observe_effective(blocked)
 
-    try:
-        now_dt = _coerce_datetime(now, reference=datetime.now(UTC))
-    except ValueError:
-        now_dt = datetime.now(UTC)
     _state, evidence_refs = subscription_quota_state_for_route(
         resolved.ledger,
         GLMCP_PAYG_BUDGET_ROUTE_ID,

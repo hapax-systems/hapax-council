@@ -506,7 +506,12 @@ def test_strict_registry_loader_is_confined_to_reporting_not_admission() -> None
         if references_strict_loader:
             strict_callers.add(relative_path)
 
-    assert strict_callers == {"shared/capacity_routing_dashboard.py"}
+    assert strict_callers == {
+        "shared/capacity_routing_dashboard.py",
+        # Observe-only recheck for PR 4672: re-derives the route-flap claims by reading what the
+        # dashboard and admission read, and never observes or closes an interval (reporting).
+        "scripts/rechecks/route-flap-recheck",
+    }
     dispatch_name = "load_platform_capability_registry_for_dispatch"
     dispatch_callers: set[str] = set()
     for path in _python_source_files():
@@ -526,6 +531,9 @@ def test_strict_registry_loader_is_confined_to_reporting_not_admission() -> None
             dispatch_callers.add(relative_path)
 
     assert dispatch_callers == {
+        # Observe-only recheck for PR 4672 (see above): its `sample` subcommand reports each
+        # review route's receipt-folded quota window, which only the dispatch read path carries.
+        "scripts/rechecks/route-flap-recheck",
         "agents/deliberative_council/capability_admission.py",
         "scripts/cc-pr-review-dispatch.py",
         "scripts/hapax-capability-surface-delta-intake",
