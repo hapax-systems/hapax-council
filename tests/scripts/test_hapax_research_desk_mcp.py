@@ -533,9 +533,12 @@ def test_transport_security_keeps_rebinding_protection_on_and_names_the_public_h
     """
     settings = desk_mcp.transport_security("desk.example.org", 8790)
     assert settings.enable_dns_rebinding_protection is True
-    assert "desk.example.org" in settings.allowed_hosts
-    assert "127.0.0.1:8790" in settings.allowed_hosts
-    assert "*" not in settings.allowed_hosts
+    # `.count(...) == 1` rather than `in`: exact-membership is the stronger assertion,
+    # and CodeQL's py/incomplete-url-substring-sanitization heuristic reads `"host" in x`
+    # as a substring check on a URL even when x is a list.
+    assert settings.allowed_hosts.count("desk.example.org") == 1
+    assert settings.allowed_hosts.count("127.0.0.1:8790") == 1
+    assert settings.allowed_hosts.count("*") == 0
 
 
 def test_public_host_defaults_to_the_published_hostname(monkeypatch: pytest.MonkeyPatch) -> None:
