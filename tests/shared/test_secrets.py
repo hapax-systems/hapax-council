@@ -19,6 +19,10 @@ from shared.secrets import (
     SecretIntegrityFailed,
     SecretUnavailable,
     get_secret,
+    has_secret,
+    list_secret_names,
+    put_instruction,
+    put_secret,
     reins_api_path,
     secret_store_name,
 )
@@ -325,3 +329,89 @@ class TestIntegrityFailureIsNotAbsence:
         store("demo/normal", b"ok")
         assert get_secret("demo/normal") == "ok"
         assert isinstance(secrets._integrity_error_types(), tuple)
+
+
+class TestPresenceWriteAndListing:
+    """`has_secret`, `put_secret`, `list_secret_names`, `put_instruction` — the verbs the
+    consumers need beyond reading: presence probes, bootstrap/consent writes, inventories,
+    and the one operator instruction that replaced every `pass insert <name>` string."""
+
+    def test_has_secret_is_presence_without_a_read(self, store) -> None:
+        assert has_secret("demo/present") is False
+        store("demo/present", b"synthetic")
+        assert has_secret("demo/present") is True
+
+    def test_put_secret_round_trips_through_the_one_mapping(self, store) -> None:
+        put_secret("demo/written", b"synthetic-value")
+        assert get_secret("demo/written") == "synthetic-value"
+        assert secret_store_name("demo/written") in list_secret_names()
+
+    def test_put_secret_takes_bytes_only(self, store) -> None:
+        with pytest.raises(TypeError):
+            put_secret("demo/typed", "not-bytes")  # type: ignore[arg-type]
+
+    def test_put_secret_refuses_a_non_file_backend(self, store, monkeypatch) -> None:
+        import shared.secrets as secrets
+
+        class _PassLike:
+            backend_id = "pass"
+
+            def put(self, name, value):  # pragma: no cover - must never be called
+                raise AssertionError("the resolver must not write a pass backend")
+
+        monkeypatch.setattr(secrets, "_file_store", lambda: _PassLike())
+        with pytest.raises(SecretUnavailable):
+            put_secret("demo/alpha", b"synthetic")
+
+    def test_put_secret_has_no_cli_leg(self, tmp_path, monkeypatch) -> None:
+        """Without the module a put REFUSES. It never pipes a value into a subprocess — the
+        CLI's put is an operator TTY dialogue, and a fallback that reaches further than the
+        primary is the shape this module exists to forbid."""
+        import shared.secrets as secrets
+
+        marker = tmp_path / "cli-was-invoked"
+        fake = tmp_path / "hapax-secret"
+        fake.write_text(f"#!/usr/bin/env bash\ntouch '{marker}'\nexit 0\n", encoding="utf-8")
+        fake.chmod(0o755)
+        monkeypatch.setattr(secrets, "_file_store", lambda: None)
+        monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+        with pytest.raises(SecretUnavailable):
+            put_secret("demo/alpha", b"synthetic")
+        assert not marker.exists()
+
+    def test_has_secret_shells_out_where_the_module_is_absent(self, tmp_path, monkeypatch) -> None:
+        import shared.secrets as secrets
+
+        fake = tmp_path / "hapax-secret"
+        fake.write_text(
+            '#!/usr/bin/env bash\n[ "$1" = "--where" ] && [ "$2" = "demo/x" ] && exit 0\nexit 1\n',
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        monkeypatch.setattr(secrets, "_file_store", lambda: None)
+        monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+        assert has_secret("demo/x") is True
+        assert has_secret("demo/y") is False
+
+    def test_list_secret_names_is_names_only_and_sorted(self, store) -> None:
+        store("demo/b", b"VALUE-SENTINEL-B")
+        store("demo/a", b"VALUE-SENTINEL-A")
+        names = list_secret_names()
+        assert names == tuple(sorted(names))
+        assert "demo-a" in names
+        assert "demo-b" in names
+        assert not any("SENTINEL" in name for name in names)
+
+    def test_list_secret_names_degrades_to_empty_not_a_crash(self, tmp_path, monkeypatch) -> None:
+        import shared.secrets as secrets
+
+        monkeypatch.setattr(secrets, "_file_store", lambda: None)
+        monkeypatch.setenv("PATH", str(tmp_path))  # no hapax-secret anywhere on PATH
+        assert list_secret_names() == ()
+
+    def test_put_instruction_names_the_cli_and_the_mapped_name_never_pass(self) -> None:
+        text = put_instruction("demo/alpha")
+        assert text.startswith("hapax-secret")
+        assert "demo-alpha" in text
+        assert "pass insert" not in text
+        assert "gopass" not in text

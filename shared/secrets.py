@@ -49,6 +49,10 @@ __all__ = [
     "SecretIntegrityFailed",
     "SecretUnavailable",
     "get_secret",
+    "has_secret",
+    "list_secret_names",
+    "put_instruction",
+    "put_secret",
     "reins_api_path",
     "secret_store_name",
 ]
@@ -168,19 +172,30 @@ def _file_store() -> Any | None:
     return default_store()
 
 
-def _from_store(name: str) -> str | None:
+def _file_backend_store(name: str) -> Any | None:
+    """The FileStore, ``None`` without the module, and a typed refusal for any other backend.
+
+    Not a fallthrough. If the default store is ever the pass backend, reading or writing it
+    would quietly reinstate the dependency this row exists to remove.
+    """
+
     store = _file_store()
     if store is None:
         return None
     backend = getattr(store, "backend_id", "")
     if backend != "file":
-        # Not a fallthrough. If the default store is ever the pass backend, reading it would
-        # quietly reinstate the dependency this row exists to remove.
         raise SecretUnavailable(
             name,
             f"the reins default store is {backend!r}, not 'file'; point it at the FileStore "
-            "— this resolver will not read a pass backend",
+            "— this resolver will not touch a pass backend",
         )
+    return store
+
+
+def _from_store(name: str) -> str | None:
+    store = _file_backend_store(name)
+    if store is None:
+        return None
     mapped = secret_store_name(name)
     try:
         value = store.get(mapped)
@@ -249,3 +264,90 @@ def get_secret(name: str, *, env: str | None = None, required: bool = True) -> s
         f"put it with `{_HAPAX_SECRET_CLI}` (TTY dialogue via reins)"
         + (f", or export {env}" if env else ""),
     )
+
+
+def put_instruction(name: str) -> str:
+    """The one operator next-action for a secret that is missing: how to put ``name``.
+
+    Every remediation string, refusal detail and unblocker row that used to read
+    ``pass insert <name>`` reads this instead, so the estate has exactly one place that knows
+    how a secret is put. The CLI's put is a TTY dialogue (name, secret, confirm — through reins),
+    so the instruction is the bare command plus the name the operator will type into it.
+    """
+
+    return f"{_HAPAX_SECRET_CLI}   # TTY put dialogue via reins; name: {secret_store_name(name)}"
+
+
+def has_secret(name: str) -> bool:
+    """Whether ``name`` is present, without ever reading its value.
+
+    FileStore ``has`` where the module is installed; ``hapax-secret --where <name>`` elsewhere
+    (exit 0 is presence). A backend that is not the FileStore refuses, as in :func:`get_secret`.
+    """
+
+    store = _file_backend_store(name)
+    if store is not None:
+        return bool(store.has(secret_store_name(name)))
+    try:
+        completed = subprocess.run(
+            [_HAPAX_SECRET_CLI, "--where", name],
+            capture_output=True,
+            timeout=_CLI_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def put_secret(name: str, value: bytes) -> None:
+    """Write ``value`` under ``name`` through the FileStore. Bootstrap and consent flows only.
+
+    There is deliberately no CLI leg: ``hapax-secret``'s put is an operator TTY dialogue, and a
+    daemon that cannot reach the FileStore must say so rather than pipe a credential into a
+    subprocess. Values never appear in the exception.
+    """
+
+    if not isinstance(value, bytes | bytearray):
+        raise TypeError("put_secret takes bytes; encode the value at the call site")
+    store = _file_backend_store(name)
+    if store is None:
+        raise SecretUnavailable(
+            name,
+            "install the reins API on this host — a non-interactive put has no CLI path; "
+            f"an operator can put it interactively with `{_HAPAX_SECRET_CLI}`",
+        )
+    store.put(secret_store_name(name), bytes(value))
+
+
+def list_secret_names() -> tuple[str, ...]:
+    """The blob names present in the FileStore (mapped form, e.g. ``api-anthropic``), sorted.
+
+    Names only, never values. The listing reads the store's own layout (``<root>/<name>.bin``,
+    the same rule ``hapax-secret --list`` applies) where the module is installed, and the CLI
+    elsewhere. An unreachable store lists as empty rather than raising: callers are inventories
+    and health checks, which must degrade to "nothing present" instead of crashing.
+    """
+
+    try:
+        store = _file_backend_store("<list>")
+    except SecretUnavailable:
+        return ()
+    if store is not None:
+        root = Path(getattr(store, "root", ""))
+        if not root.is_dir():
+            return ()
+        return tuple(sorted(path.stem for path in root.glob("*.bin")))
+    try:
+        completed = subprocess.run(
+            [_HAPAX_SECRET_CLI, "--list"],
+            capture_output=True,
+            timeout=_CLI_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ()
+    if completed.returncode != 0:
+        return ()
+    text = completed.stdout.decode("utf-8", errors="strict")
+    return tuple(sorted(line.strip() for line in text.splitlines() if line.strip()))
