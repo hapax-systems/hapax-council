@@ -377,9 +377,15 @@ tmux_session_alive() { tmux_has_live_pane "$1"; }
 # it away. Writing the log is therefore a precondition of the kill, not a courtesy
 # after it: kill first and the evidence is gone exactly as before.
 #
-# A `pane-exited` hook cannot do this job — measured 2026-09-16: `#{hook_pane}` and
-# `#{pane_dead_status}` do not resolve in that hook, and the pane is already gone by
-# the time `run-shell` runs.
+# A tmux hook could capture this and deliberately does not. Measured 2026-09-16:
+# `pane-exited` never fires when `remain-on-exit` retains the pane (nothing exited —
+# the pane went dead), but `pane-died` does, and `#{hook_pane}`, `#{pane_dead_status}`,
+# `#{pane_dead_signal}` and `#{pane_start_command}` all resolve correctly inside it.
+# It is still the wrong home for this: the corpse must also be KILLED or the launcher
+# cannot start, the capture and the kill have to be one ordered unit owned by whoever
+# does the respawn, and a hook set at launch covers only sessions created after this
+# change — not one left by an older launcher or started by hand. Splitting the record
+# across a hook and this function would be two writers for one log.
 PANE_EXIT_LOG_DIR="${HAPAX_PANE_EXIT_LOG_DIR:-$HOME/.cache/hapax/tmux-pane-exits}"
 PANE_EXIT_RETENTION_DAYS="${HAPAX_PANE_EXIT_RETENTION_DAYS:-30}"
 
