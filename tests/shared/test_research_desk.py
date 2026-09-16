@@ -15,6 +15,7 @@ import pytest
 
 from shared.frontmatter import parse_frontmatter_with_diagnostics
 from shared.research_desk import (
+    ALLOWED_URI_SCHEMES,
     MAX_CITATIONS,
     MAX_LIST_LIMIT,
     MAX_MARKDOWN_BYTES,
@@ -24,6 +25,7 @@ from shared.research_desk import (
     deliver_result,
     get_request,
     list_open_requests,
+    neutralize_markdown,
     normalize_citations,
     render_drop,
     stamp_request_row,
@@ -447,3 +449,144 @@ def test_render_drop_addresses_the_configured_lane(desk: ResearchDeskConfig) -> 
         delivered_at="2026-09-16T00:00:00Z",
     )
     assert parse_frontmatter_with_diagnostics(body).frontmatter["to"] == "theta"
+
+
+# --------------------------------------------------------------------------- #
+# Active content in the delivered body (review finding, 2026-09-16)
+# --------------------------------------------------------------------------- #
+
+
+def test_images_are_demoted_to_links_so_nothing_auto_loads() -> None:
+    """An image target auto-loads when the drop is opened — no click required.
+
+    That turns any URL the external agent picks into a read receipt on the operator's
+    vault. Demotion removes the auto-load and keeps the reference.
+    """
+    result = neutralize_markdown("before ![a beacon](https://tracker.example/p.gif) after")
+    assert result.images == 1
+    assert "![" not in result.markdown
+    assert "[image withheld — a beacon](https://tracker.example/p.gif)" in result.markdown
+
+
+def test_raw_html_images_are_defanged_too() -> None:
+    result = neutralize_markdown('text <img src="http://tracker.example/p.gif"> more')
+    assert result.images == 1
+    assert '`<img src="http://tracker.example/p.gif">`' in result.markdown
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,<b>x", "vbscript:x"],
+)
+def test_links_with_a_disallowed_scheme_are_defanged_to_inert_text(target: str) -> None:
+    result = neutralize_markdown(f"see [click me]({target}) here")
+    assert result.links == 1
+    assert f"]({target})" not in result.markdown
+    assert "link withheld" in result.markdown
+    assert target in result.markdown, "the original is shown, just not as a live link"
+
+
+def test_http_links_survive_untouched() -> None:
+    body = "see [the source](https://example.org/a) and [another](http://example.org/b)"
+    result = neutralize_markdown(body)
+    assert result.links == 0
+    assert result.markdown == body
+
+
+def test_relative_and_fragment_links_survive() -> None:
+    body = "see [here](#section) and [there](./notes.md)"
+    result = neutralize_markdown(body)
+    assert result.links == 0
+    assert result.markdown == body
+
+
+def test_autolinks_with_a_disallowed_scheme_are_defanged() -> None:
+    result = neutralize_markdown("raw <file:///etc/passwd> here and <https://ok.example> there")
+    assert result.links == 1
+    assert "`[link withheld — file:///etc/passwd]`" in result.markdown
+    assert "<https://ok.example>" in result.markdown
+
+
+def test_neutralisation_is_total_on_ordinary_prose() -> None:
+    body = "# Heading\n\nJust prose, a `code span`, and a list:\n\n- one\n- two\n"
+    result = neutralize_markdown(body)
+    assert result.markdown == body
+    assert result.total == 0
+
+
+def test_delivery_neutralises_the_body_and_records_the_counts(desk: ResearchDeskConfig) -> None:
+    write_request(desk, "req-active")
+    receipt = deliver_result(
+        desk,
+        request_id="req-active",
+        markdown=(
+            "Findings.\n\n"
+            "![beacon](https://tracker.example/p.gif)\n\n"
+            "[payload](javascript:alert(1))\n\n"
+            "[legitimate](https://example.org/source)\n"
+        ),
+        model_notes="notes with [a file link](file:///tmp/x)",
+    )
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+
+    assert drop.ok
+    assert drop.frontmatter["withheld_images"] == 1
+    assert drop.frontmatter["withheld_links"] == 2, "one in the body, one in the model notes"
+    body = drop.body
+    assert "![" not in body
+    assert "](javascript:" not in body
+    assert "](file://" not in body
+    assert "[legitimate](https://example.org/source)" in body
+    assert "Active content removed:" in body
+
+
+def test_a_clean_answer_carries_zero_withheld_counts_and_no_banner(
+    desk: ResearchDeskConfig,
+) -> None:
+    write_request(desk, "req-clean")
+    receipt = deliver_result(
+        desk, request_id="req-clean", markdown="Plain prose with [a source](https://example.org)."
+    )
+    drop = parse_frontmatter_with_diagnostics(receipt.drop_path)
+    assert drop.frontmatter["withheld_images"] == 0
+    assert drop.frontmatter["withheld_links"] == 0
+    assert "Active content removed:" not in drop.body
+
+
+def test_the_citation_allowlist_and_the_body_allowlist_are_the_same_set() -> None:
+    """One allowlist for every URI the desk writes, wherever it appears."""
+    assert frozenset({"http", "https"}) == ALLOWED_URI_SCHEMES
+    with pytest.raises(ResearchDeskError):
+        normalize_citations(["ftp://example.org/x"])
+    assert neutralize_markdown("[x](ftp://example.org/x)").links == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[x]( javascript:alert(1) )",
+        "[x](\tjavascript:alert(1))",
+        "[x](javascript:alert(1))",
+        '[x](javascript:alert(1) "title")',
+        "[x](<javascript:alert(1)>)",
+    ],
+)
+def test_no_commonmark_destination_spelling_smuggles_a_live_scheme(body: str) -> None:
+    """Found by the parametrised defang test, not by reading the regex.
+
+    CommonMark allows whitespace between ``(`` and the destination, a title after it,
+    and angle-bracket destinations. A target pattern that stops at the first ``)`` or
+    that does not skip leading whitespace reads the destination as empty — which
+    scores as "no scheme" and passes a live ``javascript:`` link straight through.
+    """
+    result = neutralize_markdown(body)
+    assert result.links == 1, f"{body!r} was not recognised as a link at all"
+    assert "](javascript:" not in result.markdown
+    assert "]( javascript:" not in result.markdown
+    assert "link withheld" in result.markdown
+
+
+def test_a_destination_with_balanced_parens_is_not_truncated() -> None:
+    result = neutralize_markdown("[wiki](https://en.wikipedia.org/wiki/Foo_(bar))")
+    assert result.links == 0
+    assert result.markdown == "[wiki](https://en.wikipedia.org/wiki/Foo_(bar))"

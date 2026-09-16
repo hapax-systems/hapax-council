@@ -77,13 +77,15 @@ def test_append_and_read_round_trip(tmp_path: Path) -> None:
             ),
             path=path,
         )
-    rows = ledger.read_records(path)
+    rows = ledger.read_records(path).records
     assert [row["request_id"] for row in rows] == ["req-0", "req-1", "req-2"]
     assert all(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
 
 
 def test_read_of_an_absent_ledger_is_empty(tmp_path: Path) -> None:
-    assert ledger.read_records(tmp_path / "nothing.jsonl") == []
+    read = ledger.read_records(tmp_path / "nothing.jsonl")
+    assert read.records == []
+    assert read.ok
 
 
 def test_append_raises_rather_than_dropping_a_receipt(tmp_path: Path) -> None:
@@ -106,3 +108,54 @@ def test_ledger_path_honours_the_environment_override(monkeypatch: pytest.Monkey
     assert ledger.ledger_path_from_env() == Path("/tmp/desk-ledger.jsonl")
     monkeypatch.setenv("HAPAX_RESEARCH_DESK_LEDGER", "  ")
     assert ledger.ledger_path_from_env() == ledger.DEFAULT_LEDGER_PATH
+
+
+# --------------------------------------------------------------------------- #
+# Torn lines — the ExecStartPre path
+# --------------------------------------------------------------------------- #
+
+
+def test_a_torn_line_is_counted_and_skipped_not_raised(tmp_path: Path) -> None:
+    """Review finding 2026-09-16: `--check` is this unit's ExecStartPre.
+
+    A bare JSONDecodeError on one partial line — an append interrupted by a kill, a
+    hand edit — would wedge service start permanently with a stack trace carrying no
+    next action. The ledger is a receipt surface; a receipt that cannot be read is a
+    reason to say so, not a reason to refuse to serve.
+    """
+    path = tmp_path / "ledger.jsonl"
+    good = ledger.build_record(tool="fetch_request", outcome="ok", caller_ip=None, request_id="a")
+    ledger.append(good, path=path)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"tool": "deliver_result", "outcom\n')  # interrupted mid-write
+    ledger.append(
+        ledger.build_record(tool="fetch_request", outcome="ok", caller_ip=None, request_id="b"),
+        path=path,
+    )
+
+    read = ledger.read_records(path)
+
+    assert [row["request_id"] for row in read.records] == ["a", "b"]
+    assert read.malformed_lines == (2,)
+    assert read.ok is False
+    assert str(path) in read.repair_action(path)
+    assert "2" in read.repair_action(path)
+
+
+def test_a_json_line_that_is_not_an_object_is_malformed(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.jsonl"
+    path.write_text('["not", "a", "record"]\n', encoding="utf-8")
+    read = ledger.read_records(path)
+    assert read.records == []
+    assert read.malformed_lines == (1,)
+
+
+def test_a_clean_ledger_reports_no_malformed_lines(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.jsonl"
+    ledger.append(
+        ledger.build_record(tool="deliver_result", outcome="ok", caller_ip=None), path=path
+    )
+    read = ledger.read_records(path)
+    assert read.ok
+    assert len(read) == 1
+    assert read.malformed_lines == ()

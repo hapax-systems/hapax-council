@@ -26,12 +26,17 @@ bytes and outcomes and nothing that could authenticate anyone.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from shared.jsonl_append import append_jsonl
+
+LOG = logging.getLogger("hapax-research-desk.ledger")
 
 LEDGER_SCHEMA = 1
 
@@ -111,17 +116,65 @@ def append(record: dict[str, Any], *, path: Path | None = None) -> None:
     append_jsonl(target, record, sort_keys=True, raising=True)
 
 
-def read_records(path: Path | None = None) -> list[dict[str, Any]]:
-    """Read every well-formed row. Used by tests and by the measurement pass."""
-    import json
+@dataclass(frozen=True)
+class LedgerRead:
+    """Every well-formed row, plus the line numbers of the ones that were not.
 
+    Malformed lines are **counted and named**, never silently dropped and never
+    raised past the caller. The reason is the call site: ``--check`` runs as the
+    server unit's ``ExecStartPre``, so a bare ``JSONDecodeError`` on one torn line
+    — an append interrupted by a kill, a hand edit — would wedge service start
+    permanently with a stack trace carrying no next action. A receipt ledger that
+    cannot be read is a reason to say so, not a reason to refuse to serve.
+    """
+
+    records: list[dict[str, Any]]
+    malformed_lines: tuple[int, ...]
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    @property
+    def ok(self) -> bool:
+        return not self.malformed_lines
+
+    def repair_action(self, path: Path) -> str:
+        return (
+            f"inspect line(s) {', '.join(str(n) for n in self.malformed_lines)} of {path}; "
+            "a torn line is usually an append interrupted mid-write — delete or repair it"
+        )
+
+
+def read_records(path: Path | None = None) -> LedgerRead:
+    """Read the ledger, separating well-formed rows from unparseable lines."""
     target = path or ledger_path_from_env()
     if not target.exists():
-        return []
+        return LedgerRead(records=[], malformed_lines=())
     rows: list[dict[str, Any]] = []
-    for line in target.read_text(encoding="utf-8").splitlines():
+    malformed: list[int] = []
+    for number, line in enumerate(target.read_text(encoding="utf-8").splitlines(), start=1):
         stripped = line.strip()
         if not stripped:
             continue
-        rows.append(json.loads(stripped))
-    return rows
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            malformed.append(number)
+            LOG.warning(
+                "research desk ledger: line %d of %s is not JSON; skipping it. "
+                "Next action: delete or repair that line",
+                number,
+                target,
+            )
+            continue
+        if not isinstance(parsed, dict):
+            malformed.append(number)
+            LOG.warning(
+                "research desk ledger: line %d of %s is not a JSON object; skipping it. "
+                "Next action: delete or repair that line",
+                number,
+                target,
+            )
+            continue
+        rows.append(parsed)
+    return LedgerRead(records=rows, malformed_lines=tuple(malformed))

@@ -77,6 +77,14 @@ HEALTH_PATH = "/healthz"
 LOOPBACK_HOSTS = frozenset(("127.0.0.1", "::1", "localhost"))
 MIN_KEY_CHARS = 24
 
+#: The cloudflared ingress config the tunnel unit gates on
+#: (``ConditionPathExists=``). The desk does not read it and does not need it to
+#: serve — but a missing file means the tunnel is condition-skipped, which is
+#: ``inactive``, not ``failed``: ``OnFailure=`` never fires, the ledger stays empty,
+#: and the only symptom is an external agent failing where nobody in this estate
+#: looks. So the desk names it at startup and in ``--check``.
+TUNNEL_INGRESS_CONFIG = Path.home() / ".cloudflared" / "research-desk.yml"
+
 #: The public hostname the tunnel publishes. It reaches the origin in the ``Host``
 #: header, and the MCP SDK's DNS-rebinding protection rejects (421) every Host it was
 #: not told about — an empty allowlist rejects everything, which is what a
@@ -106,12 +114,18 @@ def _hapax_secret_bin() -> str:
 def load_connector_key(secret_name: str = SECRET_NAME) -> str:
     """Read the bearer key from the reins FileStore. Never logged, never echoed.
 
-    A direct env override exists for tests only and is deliberately named so it
-    cannot be mistaken for a production path.
+    **There is exactly one path to the credential**, and it is this one. An earlier
+    draft carried an ``HAPAX_RESEARCH_DESK_KEY_FOR_TESTS`` env override that returned
+    before the FileStore read and before the length floor; it was deleted rather than
+    guarded. Review finding, 2026-09-16: anything able to set the unit environment
+    could have replaced the bearer credential of a publicly tunnelled server with a
+    one-character key — past the very floor whose error text calls the key "the only
+    thing between the public tunnel and the vault". Naming a variable "for tests" is
+    not a precondition, and a fallback that makes the process accept MORE than the
+    primary does is unsound by construction. No test needed it: the suite injects the
+    key directly into ``build_app(key=…)`` and points ``HAPAX_SECRET`` at a stub
+    binary, which exercises the real branch instead of bypassing it.
     """
-    injected = os.environ.get("HAPAX_RESEARCH_DESK_KEY_FOR_TESTS", "")
-    if injected:
-        return injected.strip()
     argv = [_hapax_secret_bin(), secret_name]
     try:
         result = subprocess.run(argv, capture_output=True, text=True, timeout=15.0, check=False)
@@ -150,24 +164,33 @@ def public_host(env: dict[str, str] | None = None) -> str:
 
 
 def transport_security(host: str, port: int = DEFAULT_PORT) -> TransportSecuritySettings:
-    """The Host/Origin allowlist: loopback plus the one published hostname.
+    """The Host/Origin allowlist: loopback at the ACTUAL bind, plus the published name.
 
-    DNS-rebinding protection stays ON. This is a narrow allowlist, not a disable:
-    a request arriving with any other ``Host`` still gets a 421, which is the whole
-    point of the control. Only the hostname we deliberately published is added.
+    DNS-rebinding protection stays ON. This is a narrow allowlist, not a disable: any
+    other ``Host`` still gets a 421, which is the whole point of the control.
+
+    The published name is allowed bare **and** with any port (``<host>:*``). A client
+    or proxy that spells the default port explicitly — ``desk.example:443`` — sends a
+    different ``Host`` string than the bare name, and rejecting it would be the same
+    421 this server already paid for once. The hostname is the boundary here; the
+    port in a Host header is not, because nothing can reach the origin except through
+    the loopback bind.
     """
     hosts = [
         host,
+        f"{host}:*",
+        f"{host}:443",
         f"127.0.0.1:{port}",
         f"localhost:{port}",
         "127.0.0.1:*",
         "localhost:*",
     ]
+    concrete = [h for h in hosts if not h.endswith(":*")]
     return TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=sorted(set(hosts)),
         allowed_origins=sorted(
-            {f"https://{host}", *(f"http://{h}" for h in hosts if ":*" not in h)}
+            {f"https://{host}", f"https://{host}:443", *(f"http://{h}" for h in concrete)}
         ),
     )
 
@@ -191,8 +214,20 @@ def uvicorn_kwargs(host: str, port: int) -> dict[str, Any]:
     }
 
 
-def build_server(config: ResearchDeskConfig, *, ledger_path: Path) -> FastMCP:
-    """Construct the FastMCP server with the three desk tools bound to ``config``."""
+def build_server(
+    config: ResearchDeskConfig,
+    *,
+    ledger_path: Path,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+) -> FastMCP:
+    """Construct the FastMCP server with the three desk tools bound to ``config``.
+
+    ``host``/``port`` are the RESOLVED bind, threaded in rather than re-derived from
+    the defaults: the CLI accepts ``--host``/``--port``, and a server whose transport
+    settings describe a different socket than the one it listens on is the shape that
+    produced the 421.
+    """
 
     mcp = FastMCP(
         "hapax-research-desk",
@@ -203,12 +238,12 @@ def build_server(config: ResearchDeskConfig, *, ledger_path: Path) -> FastMCP:
             "source as a citation. Delivery is idempotent: calling it twice for the same "
             "request returns the first receipt and files nothing new."
         ),
-        host=DEFAULT_HOST,
-        port=DEFAULT_PORT,
+        host=host,
+        port=port,
         streamable_http_path=MCP_PATH,
         stateless_http=True,
         json_response=os.environ.get("HAPAX_RESEARCH_DESK_JSON_RESPONSE", "").strip() == "1",
-        transport_security=transport_security(public_host(), DEFAULT_PORT),
+        transport_security=transport_security(public_host(), port),
     )
 
     def _record(
@@ -465,6 +500,19 @@ def main(argv: list[str] | None = None) -> int:
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     config.lock_dir.mkdir(parents=True, exist_ok=True)
 
+    tunnel_config_present = TUNNEL_INGRESS_CONFIG.is_file()
+    if not tunnel_config_present:
+        LOG.warning(
+            "research desk: %s is absent, so hapax-research-desk-tunnel.service is "
+            "condition-skipped and https://%s%s will not answer. The desk itself is fine. "
+            "Next action: author that ingress file (template: "
+            "docs/architecture/research-desk-connector.md) and `systemctl --user start "
+            "hapax-research-desk-tunnel.service`",
+            TUNNEL_INGRESS_CONFIG,
+            public_host(),
+            MCP_PATH,
+        )
+
     if args.check:
         missing = [
             str(path) for path in (config.requests_dir, config.lanebus_dir) if not path.is_dir()
@@ -477,27 +525,36 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        print(
-            json.dumps(
-                {
-                    "ok": True,
-                    "bind": f"{host}:{args.port}{MCP_PATH}",
-                    "public_url": f"https://{public_host()}{MCP_PATH}",
-                    "requests_dir": str(config.requests_dir),
-                    "delivery_dir": str(config.lanebus_dir),
-                    "ledger": str(ledger_path),
-                    "ledger_rows": len(ledger.read_records(ledger_path)),
-                    "key_present": True,
-                },
-                indent=2,
-                sort_keys=True,
+        read = ledger.read_records(ledger_path)
+        report: dict[str, Any] = {
+            "ok": True,
+            "bind": f"{host}:{args.port}{MCP_PATH}",
+            "public_url": f"https://{public_host()}{MCP_PATH}",
+            "requests_dir": str(config.requests_dir),
+            "delivery_dir": str(config.lanebus_dir),
+            "ledger": str(ledger_path),
+            "ledger_rows": len(read),
+            "ledger_malformed_lines": list(read.malformed_lines),
+            "tunnel_ingress_config": str(TUNNEL_INGRESS_CONFIG),
+            "tunnel_ingress_config_present": tunnel_config_present,
+            "key_present": True,
+        }
+        if not read.ok:
+            # Reported, never fatal: --check is this unit's ExecStartPre, and a torn
+            # ledger line is a reason to say so, not a reason to refuse to serve.
+            report["ledger_next_action"] = read.repair_action(ledger_path)
+        if not tunnel_config_present:
+            report["tunnel_next_action"] = (
+                f"author {TUNNEL_INGRESS_CONFIG} (template in "
+                "docs/architecture/research-desk-connector.md), then "
+                "`systemctl --user start hapax-research-desk-tunnel.service`"
             )
-        )
+        print(json.dumps(report, indent=2, sort_keys=True))
         return 0
 
     import uvicorn
 
-    server = build_server(config, ledger_path=ledger_path)
+    server = build_server(config, ledger_path=ledger_path, host=host, port=args.port)
     app = build_app(server.streamable_http_app(), key=key)
     LOG.info(
         "research desk listening on http://%s:%d%s as https://%s%s (queue=%s, delivery=%s)",

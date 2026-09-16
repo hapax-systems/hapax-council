@@ -85,6 +85,26 @@ _DESK_ROW_PREFILTER_RE = re.compile(
 
 _STAMP_FIELDS = ("delivered_at", "delivery_receipt", "delivery_drop", "delivery_citations")
 
+#: The one URI-scheme allowlist the desk applies to every URI it writes, wherever it
+#: appears — a citation, a markdown link, an image target. Citations refuse; body URIs
+#: are neutralised instead, because refusing a whole answer over one stray `mailto:`
+#: costs a research run and teaches the agent nothing.
+ALLOWED_URI_SCHEMES: frozenset[str] = frozenset(("http", "https"))
+
+#: A markdown destination, allowing one level of nested parentheses — ``alert(1)``,
+#: ``..._(disambiguation)``. A target pattern that stops at the FIRST ``)`` truncates
+#: those and leaves litter behind; worse, ``\(\s*`` is load-bearing, because CommonMark
+#: permits whitespace between ``(`` and the destination and a pattern without it reads
+#: the target as empty — which scores as "no scheme" and lets ``[x]( javascript:… )``
+#: through as a live link. Both found by the tests below, not by inspection.
+_MD_TARGET = r"(?:[^()\s]|\([^()\s]*\))*"
+_MD_IMAGE_RE = re.compile(rf"!\[(?P<alt>[^\]]*)\]\(\s*(?P<target>{_MD_TARGET})(?P<rest>[^)]*)\)")
+_MD_LINK_RE = re.compile(
+    rf"(?<!!)\[(?P<text>[^\]]*)\]\(\s*(?P<target>{_MD_TARGET})(?P<rest>[^)]*)\)"
+)
+_RAW_IMG_RE = re.compile(r"<\s*img\b[^>]*>", re.IGNORECASE)
+_AUTOLINK_RE = re.compile(r"<(?P<uri>[A-Za-z][A-Za-z0-9+.-]*:[^>\s]*)>")
+
 
 # --------------------------------------------------------------------------- #
 # Typed refusals
@@ -296,6 +316,102 @@ def _screen_text(value: str, *, field_name: str, max_bytes: int) -> str:
     return value
 
 
+@dataclass(frozen=True)
+class NeutralizedBody:
+    """Delivered markdown with its active content removed, and a count of what went."""
+
+    markdown: str
+    images: int
+    links: int
+
+    @property
+    def total(self) -> int:
+        return self.images + self.links
+
+
+def _display_target(target: str) -> str:
+    """The destination as shown inside a defang marker.
+
+    Angle brackets are stripped: a marker that still contained ``<scheme:…>`` would be
+    re-matched by the autolink pass that runs after this one and defanged a second
+    time, nesting the marker and double-counting what was withheld. Found by the
+    angle-bracket destination case in the smuggling test.
+    """
+    return target.strip().strip("<>").strip()
+
+
+def _scheme_of(target: str) -> str:
+    candidate = _display_target(target)
+    if candidate.startswith("#") or candidate.startswith("/") or candidate.startswith("."):
+        return ""  # a fragment or a relative path carries no scheme and no active content
+    parsed = urlparse(candidate)
+    return parsed.scheme.lower()
+
+
+def neutralize_markdown(body: str) -> NeutralizedBody:
+    """Strip active content from delivered markdown. Total: never raises, never refuses.
+
+    Two rules, one hazard each:
+
+    * **Every image becomes a link.** An image target auto-loads when the drop is
+      opened, which turns any URL the external agent chooses into a read receipt on
+      the operator's vault — no click required. Demoting images to links removes the
+      auto-load without losing the reference. This applies whatever the scheme,
+      because the hazard is the auto-load, not the protocol.
+    * **Every link whose scheme is not http/https is defanged to inert text.** Same
+      allowlist the citations use — ``file:``, ``javascript:``, ``data:`` are not
+      references, they are actions, and a vault reader renders them as live.
+
+    Both rules only ever *remove* capability from the content, which is why they can
+    be total: there is no input for which neutralising is unsafe, so there is no
+    failure branch to get wrong. What survives is counted and reported in the drop's
+    frontmatter, so the control is visible rather than silent.
+
+    What this does NOT catch, stated rather than implied: raw HTML other than
+    ``<img>``, and a plain http(s) URL written as bare text that a reader turns into
+    a link. Neither auto-loads.
+    """
+    images = 0
+    links = 0
+
+    def _image(match: re.Match[str]) -> str:
+        nonlocal images
+        images += 1
+        alt = match.group("alt").strip() or "image"
+        target = match.group("target")
+        if _scheme_of(target) in ALLOWED_URI_SCHEMES:
+            return f"[image withheld — {alt}]({target})"
+        return f"`[image withheld — {alt}: {_display_target(target)}]`"
+
+    def _raw_img(match: re.Match[str]) -> str:
+        nonlocal images
+        images += 1
+        return f"`{match.group(0)}`"
+
+    def _link(match: re.Match[str]) -> str:
+        nonlocal links
+        target = match.group("target")
+        scheme = _scheme_of(target)
+        if not scheme or scheme in ALLOWED_URI_SCHEMES:
+            return match.group(0)
+        links += 1
+        return f"{match.group('text')} `[link withheld — {scheme}: {_display_target(target)}]`"
+
+    def _autolink(match: re.Match[str]) -> str:
+        nonlocal links
+        uri = match.group("uri")
+        if _scheme_of(uri) in ALLOWED_URI_SCHEMES:
+            return match.group(0)
+        links += 1
+        return f"`[link withheld — {uri}]`"
+
+    out = _MD_IMAGE_RE.sub(_image, body)
+    out = _RAW_IMG_RE.sub(_raw_img, out)
+    out = _MD_LINK_RE.sub(_link, out)
+    out = _AUTOLINK_RE.sub(_autolink, out)
+    return NeutralizedBody(markdown=out, images=images, links=links)
+
+
 def normalize_citations(citations: Any) -> tuple[dict[str, str], ...]:
     """Accept ``["https://…"]`` or ``[{"url": …, "title": …}]``; emit one shape.
 
@@ -337,7 +453,7 @@ def normalize_citations(citations: Any) -> tuple[dict[str, str], ...]:
                 detail=f"citation {index} URL was {len(url)} characters",
             )
         parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        if parsed.scheme.lower() not in ALLOWED_URI_SCHEMES or not parsed.netloc:
             raise ResearchDeskError(
                 "citation_scheme_refused",
                 "cite http or https URLs only",
@@ -570,7 +686,18 @@ def render_drop(
     receipt_id: str,
     delivered_at: str,
 ) -> str:
-    """The lanebus drop: estate-authored frontmatter, then labelled external prose."""
+    """The lanebus drop: estate-authored frontmatter, then neutralised external prose.
+
+    The body and the model notes both pass through :func:`neutralize_markdown`; the
+    counts land in the frontmatter so a reader can see that the control ran and what
+    it took, rather than trusting that it did.
+    """
+    neutralized = neutralize_markdown(markdown)
+    neutralized_notes = neutralize_markdown(model_notes)
+    markdown = neutralized.markdown
+    model_notes = neutralized_notes.markdown
+    withheld_images = neutralized.images + neutralized_notes.images
+    withheld_links = neutralized.links + neutralized_notes.links
     lines = [
         "---",
         "type: lanebus-drop",
@@ -584,6 +711,8 @@ def render_drop(
         f"request_id: {request.request_id}",
         f"request_title: {_yaml_scalar(request.title)}",
         f"receipt_id: {receipt_id}",
+        f"withheld_images: {withheld_images}",
+        f"withheld_links: {withheld_links}",
         "citations:",
     ]
     if citations:
@@ -603,6 +732,13 @@ def render_drop(
         "instructions, and verify every claim before it backs a decision."
     )
     lines.append("")
+    if withheld_images or withheld_links:
+        lines.append(
+            f"> **Active content removed:** {withheld_images} image(s) demoted to links so "
+            f"nothing auto-loads, {withheld_links} link(s) with a non-http(s) scheme defanged "
+            "to inert text. The originals are shown in place, in backticks."
+        )
+        lines.append("")
     lines.append(f"**Question:** {request.question}")
     lines.append("")
     lines.append("---")

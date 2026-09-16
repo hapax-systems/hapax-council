@@ -152,7 +152,6 @@ def test_key_load_refuses_when_hapax_secret_fails(
     failing = tmp_path / "hapax-secret"
     failing.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
     failing.chmod(0o755)
-    monkeypatch.delenv("HAPAX_RESEARCH_DESK_KEY_FOR_TESTS", raising=False)
     monkeypatch.setenv("HAPAX_SECRET", str(failing))
     with pytest.raises(desk_mcp.DeskStartupError) as exc:
         desk_mcp.load_connector_key()
@@ -163,7 +162,6 @@ def test_key_load_refuses_a_short_key(tmp_path: Path, monkeypatch: pytest.Monkey
     weak = tmp_path / "hapax-secret"
     weak.write_text("#!/bin/sh\necho short\n", encoding="utf-8")
     weak.chmod(0o755)
-    monkeypatch.delenv("HAPAX_RESEARCH_DESK_KEY_FOR_TESTS", raising=False)
     monkeypatch.setenv("HAPAX_SECRET", str(weak))
     with pytest.raises(desk_mcp.DeskStartupError) as exc:
         desk_mcp.load_connector_key()
@@ -171,7 +169,6 @@ def test_key_load_refuses_a_short_key(tmp_path: Path, monkeypatch: pytest.Monkey
 
 
 def test_key_load_refuses_when_hapax_secret_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("HAPAX_RESEARCH_DESK_KEY_FOR_TESTS", raising=False)
     monkeypatch.setenv("HAPAX_SECRET", "/nonexistent/hapax-secret")
     with pytest.raises(desk_mcp.DeskStartupError) as exc:
         desk_mcp.load_connector_key()
@@ -184,7 +181,6 @@ def test_key_load_reads_the_filestore_value(
     stub = tmp_path / "hapax-secret"
     stub.write_text(f"#!/bin/sh\nprintf '%s\\n' '{KEY}'\n", encoding="utf-8")
     stub.chmod(0o755)
-    monkeypatch.delenv("HAPAX_RESEARCH_DESK_KEY_FOR_TESTS", raising=False)
     monkeypatch.setenv("HAPAX_SECRET", str(stub))
     assert desk_mcp.load_connector_key() == KEY
 
@@ -344,7 +340,7 @@ async def test_tools_write_one_ledger_row_per_call_and_never_the_key(
     assert fetched["request_id"] == "req-ledger"
     assert delivered["ok"] is True
 
-    rows = ledger_mod.read_records(ledger_path)
+    rows = ledger_mod.read_records(ledger_path).records
     assert [row["tool"] for row in rows] == [
         "list_open_research_requests",
         "fetch_request",
@@ -367,7 +363,7 @@ async def test_a_refused_tool_call_is_still_a_ledger_row(
     assert payload["reason_code"] == "request_id_invalid"
     assert payload["next_action"]
 
-    (row,) = ledger_mod.read_records(ledger_path)
+    (row,) = ledger_mod.read_records(ledger_path).records
     assert row["outcome"] == "refused"
     assert row["reason_code"] == "request_id_invalid"
 
@@ -384,7 +380,7 @@ async def test_duplicate_delivery_is_ledgered_as_duplicate(
 
     assert second["duplicate"] is True
     assert second["receipt_id"] == first["receipt_id"]
-    outcomes = [row["outcome"] for row in ledger_mod.read_records(ledger_path)]
+    outcomes = [row["outcome"] for row in ledger_mod.read_records(ledger_path).records]
     assert outcomes == ["ok", "duplicate"]
     assert len(list(config.lanebus_dir.glob("*.md"))) == 1
 
@@ -483,7 +479,7 @@ def test_live_end_to_end_over_streamable_http(
     assert len(drops) == 1
     assert "Measured over HTTP." in drops[0].read_text(encoding="utf-8")
 
-    rows = ledger_mod.read_records(ledger_path)
+    rows = ledger_mod.read_records(ledger_path).records
     assert [row["tool"] for row in rows] == [
         "list_open_research_requests",
         "fetch_request",
@@ -513,7 +509,7 @@ def test_live_call_without_the_key_is_refused_at_the_edge(
     assert health.status_code == 200
     assert unauthenticated.status_code == 401
     assert unauthenticated.json()["reason_code"] == "unauthorized"
-    assert ledger_mod.read_records(ledger_path) == [], (
+    assert ledger_mod.read_records(ledger_path).records == [], (
         "an unauthenticated call never reaches a tool"
     )
 
@@ -604,3 +600,146 @@ def test_the_published_host_header_is_served_and_an_unknown_one_is_not(
 
     assert published.status_code == 200, published.text
     assert unknown.status_code == 421, unknown.text
+
+
+# --------------------------------------------------------------------------- #
+# Review findings, 2026-09-16
+# --------------------------------------------------------------------------- #
+
+
+def test_no_environment_variable_can_substitute_for_the_filestore_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The credential has exactly one source, and it is the FileStore.
+
+    An earlier draft accepted ``HAPAX_RESEARCH_DESK_KEY_FOR_TESTS`` ahead of the
+    ``hapax-secret`` call and ahead of the length floor, so anything able to set the
+    unit environment could have replaced the bearer credential of a publicly tunnelled
+    server with a one-character key. It was deleted rather than guarded: naming a
+    variable "for tests" is not a machine-checkable precondition, and a fallback that
+    makes the process accept MORE than the primary is unsound by construction.
+
+    This test is the pin. It sets every plausible spelling and asserts the FileStore
+    value still wins.
+    """
+    stub = tmp_path / "hapax-secret"
+    stub.write_text(f"#!/bin/sh\nprintf '%s\\n' '{KEY}'\n", encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setenv("HAPAX_SECRET", str(stub))
+    for name in (
+        "HAPAX_RESEARCH_DESK_KEY_FOR_TESTS",
+        "HAPAX_RESEARCH_DESK_KEY",
+        "RESEARCH_DESK_CONNECTOR_KEY",
+    ):
+        monkeypatch.setenv(name, "x")
+
+    assert desk_mcp.load_connector_key() == KEY
+
+
+def test_key_load_refuses_when_hapax_secret_hangs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    slow = tmp_path / "hapax-secret"
+    slow.write_text("#!/bin/sh\nsleep 30\n", encoding="utf-8")
+    slow.chmod(0o755)
+    monkeypatch.setenv("HAPAX_SECRET", str(slow))
+    monkeypatch.setattr(desk_mcp.subprocess, "run", _raise_timeout)
+
+    with pytest.raises(desk_mcp.DeskStartupError) as exc:
+        desk_mcp.load_connector_key()
+    assert "hapax-secret --where" in str(exc.value)
+
+
+def _raise_timeout(*args: Any, **kwargs: Any) -> Any:
+    import subprocess
+
+    raise subprocess.TimeoutExpired(cmd="hapax-secret", timeout=15.0)
+
+
+def test_the_host_allowlist_covers_the_published_name_with_and_without_a_port() -> None:
+    """A client or proxy that spells the default port sends a different Host string.
+
+    Rejecting `desk.example.org:443` would be the same 421 this server already paid
+    for once, so both spellings are allowed — the hostname is the boundary, not the
+    port, because nothing reaches the origin except through the loopback bind.
+    """
+    settings = desk_mcp.transport_security("desk.example.org", 8790)
+    assert settings.allowed_hosts.count("desk.example.org") == 1
+    assert settings.allowed_hosts.count("desk.example.org:443") == 1
+    assert settings.allowed_hosts.count("desk.example.org:*") == 1
+    assert settings.allowed_hosts.count("*") == 0
+    assert settings.enable_dns_rebinding_protection is True
+
+
+def test_the_allowlist_follows_a_non_default_port() -> None:
+    settings = desk_mcp.transport_security("desk.example.org", 9999)
+    assert settings.allowed_hosts.count("127.0.0.1:9999") == 1
+    assert settings.allowed_hosts.count("127.0.0.1:8790") == 0
+
+
+def test_build_server_uses_the_resolved_bind_not_the_defaults(
+    config: ResearchDeskConfig, ledger_path: Path
+) -> None:
+    """A server whose transport settings describe a different socket than it listens
+    on is the shape that produced the 421."""
+    server = desk_mcp.build_server(config, ledger_path=ledger_path, host="127.0.0.1", port=9391)
+    assert server.settings.port == 9391
+    assert server.settings.host == "127.0.0.1"
+    assert server.settings.transport_security is not None
+    assert server.settings.transport_security.allowed_hosts.count("127.0.0.1:9391") == 1
+
+
+def test_check_reports_the_ledger_health_and_the_tunnel_ingress_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--check` is ExecStartPre. A torn ledger line is reported, never fatal."""
+    vault = tmp_path / "vault"
+    (vault / "20-projects" / "hapax-cc-tasks" / "active").mkdir(parents=True)
+    (vault / "30-areas" / "hapax" / "lanebus" / "cx-blue").mkdir(parents=True)
+    ledger_file = tmp_path / "ledger.jsonl"
+    ledger_file.write_text('{"tool": "fetch_request", "outcome": "ok"}\n{"torn\n', encoding="utf-8")
+
+    stub = tmp_path / "hapax-secret"
+    stub.write_text(f"#!/bin/sh\nprintf '%s\\n' '{KEY}'\n", encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setenv("HAPAX_SECRET", str(stub))
+    monkeypatch.setenv("HAPAX_RESEARCH_DESK_VAULT_ROOT", str(vault))
+    monkeypatch.setenv("HAPAX_RESEARCH_DESK_STATE_ROOT", str(tmp_path / "state"))
+    monkeypatch.setenv("HAPAX_RESEARCH_DESK_LEDGER", str(ledger_file))
+    monkeypatch.setattr(desk_mcp, "TUNNEL_INGRESS_CONFIG", tmp_path / "absent.yml")
+
+    assert desk_mcp.main(["--check"]) == 0, "a torn ledger line must not block service start"
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["ok"] is True
+    assert report["ledger_rows"] == 1
+    assert report["ledger_malformed_lines"] == [2]
+    assert "ledger_next_action" in report
+    assert report["tunnel_ingress_config_present"] is False
+    assert "systemctl --user start" in report["tunnel_next_action"]
+
+
+def test_check_is_clean_when_the_tunnel_config_is_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    vault = tmp_path / "vault"
+    (vault / "20-projects" / "hapax-cc-tasks" / "active").mkdir(parents=True)
+    (vault / "30-areas" / "hapax" / "lanebus" / "cx-blue").mkdir(parents=True)
+    ingress = tmp_path / "research-desk.yml"
+    ingress.write_text("tunnel: x\n", encoding="utf-8")
+
+    stub = tmp_path / "hapax-secret"
+    stub.write_text(f"#!/bin/sh\nprintf '%s\\n' '{KEY}'\n", encoding="utf-8")
+    stub.chmod(0o755)
+    monkeypatch.setenv("HAPAX_SECRET", str(stub))
+    monkeypatch.setenv("HAPAX_RESEARCH_DESK_VAULT_ROOT", str(vault))
+    monkeypatch.setenv("HAPAX_RESEARCH_DESK_STATE_ROOT", str(tmp_path / "state"))
+    monkeypatch.setenv("HAPAX_RESEARCH_DESK_LEDGER", str(tmp_path / "ledger.jsonl"))
+    monkeypatch.setattr(desk_mcp, "TUNNEL_INGRESS_CONFIG", ingress)
+
+    assert desk_mcp.main(["--check"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["tunnel_ingress_config_present"] is True
+    assert report["ledger_malformed_lines"] == []
+    assert "tunnel_next_action" not in report
+    assert "ledger_next_action" not in report

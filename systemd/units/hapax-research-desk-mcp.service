@@ -1,6 +1,7 @@
 [Unit]
 Description=Hapax research desk — MCP server (Streamable HTTP) for the Perplexity custom remote connector
-Documentation=file:///home/hapax/projects/hapax-council/docs/architecture/research-desk-connector.md
+Documentation=file:///home/hapax/.cache/hapax/source-activation/worktree/docs/architecture/research-desk-connector.md
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/docs/architecture/research-desk-connector.md
 # The credential comes from the reins FileStore, so the secrets chain must be up first.
 After=network-online.target hapax-secrets.service
 Wants=network-online.target
@@ -29,7 +30,19 @@ CPUQuota=25%
 # no business anywhere else on the filesystem.
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/Documents/Personal/20-projects/hapax-cc-tasks/active %h/Documents/Personal/30-areas/hapax/lanebus %h/.cache/hapax/research-desk
+# CacheDirectory, not ReadWritePaths, for the ledger + lock root: systemd CREATES
+# %h/.cache/hapax/research-desk before the unit runs. A ReadWritePaths= entry that
+# does not exist fails mount-namespace setup, and namespace setup happens BEFORE
+# ExecStartPre — so the code's own mkdir can never rescue it, and a host that has
+# never run the desk would fail to start with a namespace error carrying no next
+# action. (Review finding, 2026-09-16; `systemd-analyze verify` does not exercise it.)
+CacheDirectory=hapax/research-desk
+CacheDirectoryMode=0700
+# These two are the vault and are NOT prefixed with '-' on purpose: if the vault is
+# absent the desk has no queue and no dominator to deliver to, and failing loudly at
+# namespace setup with the path named beats starting and discovering EROFS inside a
+# tool call an external agent is waiting on.
+ReadWritePaths=%h/Documents/Personal/20-projects/hapax-cc-tasks/active %h/Documents/Personal/30-areas/hapax/lanebus
 PrivateTmp=true
 NoNewPrivileges=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
