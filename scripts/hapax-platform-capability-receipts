@@ -11,7 +11,6 @@ import os
 import re
 import shlex
 import shutil
-import socket
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -26,6 +25,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.agentic_trust_boundary import (
     is_syntactically_typed_policy_evidence_reference,  # noqa: E402
+)
+from shared.capability_availability_guarantor import (  # noqa: E402
+    configured_exec_auth_host,
+    local_exec_auth_host,
+    normalize_exec_auth_host,
+    resolve_exec_auth_host,
 )
 from shared.platform_capability_receipts import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
@@ -71,7 +76,7 @@ VERSION_ARGS_BY_PLATFORM = {
     "vibe": ["--version"],
 }
 CODEX_EXEC_AUTH_SENTINEL = "HAPAX_CODEX_EXEC_AUTH_OK"
-HOST_ALIASES = {"appendix": "hapax-appendix", "podium": "hapax-podium"}
+
 CONFIG_REFS_BY_PLATFORM = {
     "agy": [
         "~/.gemini/antigravity-cli/builtin/skills/antigravity_guide/references/cli.md",
@@ -299,25 +304,24 @@ def assistant_content_text(content: Any) -> str:
     return "\n".join(parts)
 
 
-def normalize_host(value: str) -> str:
-    return HOST_ALIASES.get(value.strip(), value.strip())
-
-
-def current_host() -> str:
-    return normalize_host(socket.gethostname().split(".", 1)[0])
+# Host identity comes from the shared resolver, not a local copy of the derivation. The
+# producer stamps `host:<host>:codex:exec:auth:saved-login:observed` and two readers decide
+# whether that host is the one they expect; each side used to derive it independently from its
+# own ambient environment, so the same observation on the same machine was spelled
+# `host:local:...` under `HAPAX_DISPATCH_HOST=local` and `host:hapax-appendix:...` under the
+# systemd unit, and the readers refused one of them.
+normalize_host = normalize_exec_auth_host
+current_host = local_exec_auth_host
 
 
 def codex_exec_auth_host() -> str:
-    explicit = os.environ.get("HAPAX_CODEX_EXEC_AUTH_HOST", "").strip()
-    if explicit:
-        return explicit
-    dispatch_host = os.environ.get("HAPAX_DISPATCH_HOST", "").strip()
-    if dispatch_host:
-        return dispatch_host
-    default_host = os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST", "").strip()
-    if default_host:
-        return default_host
-    return "appendix"
+    """The host identity this environment's exec-auth observation carries.
+
+    Every spelling of "this machine" resolves to this machine's own name, so the stamp does
+    not depend on which process ran the producer. A remote target stays remote.
+    """
+
+    return resolve_exec_auth_host(configured_exec_auth_host())
 
 
 def codex_exec_auth_command(*, codex_bin: str, cwd: Path) -> list[str]:

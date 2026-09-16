@@ -109,6 +109,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.capability_availability_guarantor import (  # noqa: E402
+    exec_auth_host_token_variants,
+    expected_exec_auth_hosts,
+)
 from shared.platform_capability_receipts import (  # noqa: E402
     DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
     PLATFORM_CAPABILITY_RECEIPT_DIR_ENV,
@@ -999,26 +1003,12 @@ def codex_exec_auth_ref_attested(
     return ref[1:-6] in expected_hosts
 
 
-def expected_codex_exec_auth_hosts() -> frozenset[tuple[str, ...]]:
-    dispatch_host = (
-        os.environ.get("HAPAX_CODEX_EXEC_AUTH_HOST")
-        or os.environ.get("HAPAX_DISPATCH_HOST")
-        or os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST")
-        or ""
-    ).strip()
-    if dispatch_host:
-        return host_token_variants(dispatch_host)
-    return host_token_variants("appendix")
-
-
-def host_token_variants(host: str) -> frozenset[tuple[str, ...]]:
-    tokens = _ref_tokens(host)
-    variants = {tokens} if tokens else set()
-    if len(tokens) == 1 and tokens[0] not in {"local", "localhost"}:
-        variants.add(("hapax", tokens[0]))
-    if len(tokens) == 2 and tokens[0] == "hapax":
-        variants.add((tokens[1],))
-    return frozenset(variants)
+# Host identity comes from the shared resolver, not a second copy of the derivation. Two
+# byte-identical copies of this logic (here and in capability_availability_guarantor) WERE the
+# defect: each process re-derived the expected host from its own ambient environment, so a
+# receipt produced under one environment was refused under another.
+expected_codex_exec_auth_hosts = expected_exec_auth_hosts
+host_token_variants = exec_auth_host_token_variants
 
 
 def _ref_tokens(evidence_ref: str) -> tuple[str, ...]:

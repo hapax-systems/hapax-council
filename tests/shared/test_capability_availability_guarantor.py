@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from datetime import UTC, datetime
+from pathlib import Path
 
 import shared.capability_availability_guarantor as guarantor
 from shared.dispatcher_policy import _capability_state
@@ -18,6 +19,7 @@ from shared.platform_capability_registry import (
 )
 
 NOW = datetime(2026, 5, 9, 21, 0, tzinfo=UTC)
+REPO_ROOT = Path(__file__).resolve().parents[2]
 CLAUDE_ADMISSION_EVIDENCE_REF = (
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:"
     "witness:claude-subscription-headroom-observed-20260708t1400z:"
@@ -198,12 +200,24 @@ def test_codex_oauth_subscription_route_accepts_current_session_and_exec_auth_wi
 def test_codex_oauth_subscription_route_accepts_explicit_local_exec_auth_witness(
     monkeypatch,
 ) -> None:
+    """CONTRACT CHANGE (2026-09-16, exec-auth host SSOT): `HAPAX_CODEX_EXEC_AUTH_HOST=local`
+    is attested by a witness naming THIS MACHINE, not by the literal token `local`.
+
+    `local` names no machine: a reader cannot tell which box a `host:local:...` ref was
+    produced on, which is why the same token was accepted here and refused by
+    `..._rejects_local_exec_auth_witness_without_dispatch_host` purely on an env difference.
+    The producer now resolves every spelling of "this machine" to the machine's own identity
+    before stamping, so both pins hold for the same reason instead of opposite ones. Receipts
+    carrying the old spelling are replaced by the 10-minute producer timer.
+    """
     monkeypatch.setenv("HAPAX_CODEX_EXEC_AUTH_HOST", "local")
     payload = _payload()
     route_payload = _route_payload(payload, "codex.headless.full")
     _mark_fresh(route_payload)
     _mark_current_codex_session_usable(route_payload)
-    _mark_local_codex_exec_auth_observed(route_payload)
+    route_payload["freshness"]["evidence"]["capability"]["evidence_refs"].append(
+        f"host:{guarantor.local_exec_auth_host()}:codex:exec:auth:saved-login:observed"
+    )
     route_payload["freshness"]["evidence"]["quota"]["evidence_refs"] = [
         "local:codex:quota-probe:unobservable",
         "platform-capability-receipt:codex:test-codex-receipt",
@@ -1319,3 +1333,111 @@ def test_subscription_strategy_does_not_attest_from_lane_presence() -> None:
     assert receipt.predicate.account_live_quota_attested is False
     assert "account_live_quota_evidence_absent" in receipt.reason_codes
     assert receipt.refresh_status is guarantor.RefreshStatus.DEFERRED
+
+
+class TestExecAuthHostSingleSourceOfTruth:
+    """The producer stamps a host into the exec-auth ref and two consumers independently
+    re-derive what host to expect, each from the same env chain. Those derivations disagree
+    whenever the ambient environment differs between the process that observed and the
+    process that reads.
+
+    Reproduced live 2026-09-16 on this estate: the systemd receipt producer carries no
+    `HAPAX_DISPATCH_HOST` and wrote
+    `host:hapax-appendix:codex:exec:auth:saved-login:observed` into `codex.json`, while a lane
+    shell carrying `HAPAX_DISPATCH_HOST=local` derives `{("local",)}` -- `host_token_variants`
+    deliberately adds no `hapax-` variant for `local`/`localhost` -- and therefore refuses the
+    estate's own, correct, locally-produced evidence. `HAPAX_CODEX_EXEC_AUTH_HOST` was the
+    live workaround for exactly this.
+
+    One resolver, used by the stamper and by both readers: `local` is not a host name, it is a
+    way of saying "this machine", and it must resolve to this machine's identity on both
+    sides of the evidence.
+    """
+
+    def test_local_aliases_resolve_to_this_machine(self) -> None:
+        local = guarantor.local_exec_auth_host()
+        assert local and local == guarantor.normalize_exec_auth_host(local)
+        for alias in ("", "   ", "local", "LOCAL", "localhost"):
+            assert guarantor.resolve_exec_auth_host(alias) == local
+
+    def test_the_machines_own_name_and_its_alias_resolve_to_the_same_identity(self) -> None:
+        local = guarantor.local_exec_auth_host()
+        assert guarantor.resolve_exec_auth_host(local) == local
+        # `appendix` is the estate's short alias for `hapax-appendix`.
+        assert guarantor.normalize_exec_auth_host("appendix") == "hapax-appendix"
+        assert guarantor.normalize_exec_auth_host("podium") == "hapax-podium"
+
+    def test_a_remote_target_is_not_collapsed_to_local(self) -> None:
+        """Not a relaxation: an exec-auth observation for THIS machine must not satisfy a
+        dispatch that will run somewhere else."""
+        assert guarantor.resolve_exec_auth_host("hapax-podium") == "hapax-podium"
+        assert guarantor.resolve_exec_auth_host("podium") == "hapax-podium"
+        assert guarantor.resolve_exec_auth_host("some-other-box") == "some-other-box"
+
+    def test_dispatch_host_local_expects_this_machines_identity(self, monkeypatch) -> None:
+        """The exact live divergence: `HAPAX_DISPATCH_HOST=local` must expect the host the
+        local probe actually stamps, not the literal token `local`."""
+        monkeypatch.delenv("HAPAX_CODEX_EXEC_AUTH_HOST", raising=False)
+        monkeypatch.delenv("HAPAX_DEFAULT_DISPATCH_HOST", raising=False)
+        monkeypatch.setenv("HAPAX_DISPATCH_HOST", "local")
+        expected = guarantor.expected_exec_auth_hosts()
+        local_tokens = guarantor.exec_auth_host_token_variants(guarantor.local_exec_auth_host())
+        assert local_tokens <= expected
+
+    def test_dispatch_host_unset_still_defaults_to_appendix(self, monkeypatch) -> None:
+        monkeypatch.delenv("HAPAX_CODEX_EXEC_AUTH_HOST", raising=False)
+        monkeypatch.delenv("HAPAX_DISPATCH_HOST", raising=False)
+        monkeypatch.delenv("HAPAX_DEFAULT_DISPATCH_HOST", raising=False)
+        assert ("hapax", "appendix") in guarantor.expected_exec_auth_hosts()
+
+    def test_a_remote_dispatch_host_does_not_admit_this_machine(self, monkeypatch) -> None:
+        """The anti-relaxation floor. Pointing the estate at another box must NOT make a
+        locally-observed saved login count."""
+        monkeypatch.delenv("HAPAX_CODEX_EXEC_AUTH_HOST", raising=False)
+        monkeypatch.delenv("HAPAX_DEFAULT_DISPATCH_HOST", raising=False)
+        monkeypatch.setenv("HAPAX_DISPATCH_HOST", "some-other-box")
+        expected = guarantor.expected_exec_auth_hosts()
+        # `_ref_tokens` splits on `-`, so a multi-word host is one multi-token tuple.
+        assert ("some", "other", "box") in expected
+        local_tokens = guarantor.exec_auth_host_token_variants(guarantor.local_exec_auth_host())
+        assert not (local_tokens & expected), "a remote target must not admit the local machine"
+
+    def test_the_guarantor_accepts_a_local_witness_when_dispatch_host_is_local(
+        self, monkeypatch
+    ) -> None:
+        """End to end through the real predicate, with the ref the local probe now stamps."""
+        monkeypatch.delenv("HAPAX_CODEX_EXEC_AUTH_HOST", raising=False)
+        monkeypatch.delenv("HAPAX_DEFAULT_DISPATCH_HOST", raising=False)
+        monkeypatch.setenv("HAPAX_DISPATCH_HOST", "local")
+        payload = _payload()
+        route_payload = _route_payload(payload, "codex.headless.full")
+        _mark_fresh(route_payload)
+        _mark_current_codex_session_usable(route_payload)
+        route_payload["freshness"]["evidence"]["capability"]["evidence_refs"].append(
+            f"host:{guarantor.local_exec_auth_host()}:codex:exec:auth:saved-login:observed"
+        )
+        registry = PlatformCapabilityRegistry.model_validate(payload)
+        route = registry.require("codex.headless.full")
+        freshness = check_registry_freshness(registry, route_ids=[route.route_id], now=NOW).routes[
+            0
+        ]
+
+        receipt = guarantor.evaluate_route_availability(
+            route,
+            freshness,
+            refresh_strategies=guarantor.RefreshStrategyRegistry(()),
+            now=NOW,
+        )
+
+        assert receipt.predicate.exec_auth_attested is True
+
+    def test_the_telemetry_writer_consumes_the_same_resolver(self) -> None:
+        """Two byte-identical copies of this derivation WERE the defect. The writer must not
+        carry its own."""
+        import runpy
+
+        writer = runpy.run_path(
+            str(REPO_ROOT / "scripts" / "hapax-quota-telemetry-writer"), run_name="__test__"
+        )
+        assert writer["expected_codex_exec_auth_hosts"] is guarantor.expected_exec_auth_hosts
+        assert writer["host_token_variants"] is guarantor.exec_auth_host_token_variants

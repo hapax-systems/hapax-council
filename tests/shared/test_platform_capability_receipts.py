@@ -2616,3 +2616,58 @@ class TestRetiredPlatformReceiptLifecycle:
             )
             == []
         )
+
+
+class TestExecAuthStampUsesTheSharedResolver:
+    """The producer must stamp the host a LOCAL probe actually observed, so the ref does not
+    change spelling with the ambient environment of whoever ran the producer.
+
+    Before: `HAPAX_DISPATCH_HOST=local` stamped `host:local:...` while an unset environment
+    stamped `host:hapax-appendix:...` — two different refs for the identical observation on
+    the identical machine, and the readers refused one of them.
+    """
+
+    def test_every_local_alias_stamps_this_machines_identity(self, monkeypatch) -> None:
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        local = module["local_exec_auth_host"]()
+        for alias in ("local", "localhost", ""):
+            monkeypatch.setenv("HAPAX_CODEX_EXEC_AUTH_HOST", alias)
+            assert module["codex_exec_auth_host"]() == local, alias
+
+    def test_an_unset_environment_still_resolves_to_the_estate_default(self, monkeypatch) -> None:
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        monkeypatch.delenv("HAPAX_CODEX_EXEC_AUTH_HOST", raising=False)
+        monkeypatch.delenv("HAPAX_DISPATCH_HOST", raising=False)
+        monkeypatch.delenv("HAPAX_DEFAULT_DISPATCH_HOST", raising=False)
+        assert module["codex_exec_auth_host"]() == module["normalize_host"]("appendix")
+
+    def test_a_remote_target_is_still_remote(self, monkeypatch) -> None:
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        monkeypatch.setenv("HAPAX_CODEX_EXEC_AUTH_HOST", "podium")
+        assert module["codex_exec_auth_host"]() == "hapax-podium"
+
+    def test_the_producer_consumes_the_shared_resolver(self) -> None:
+        """One resolver. `normalize_host` and `current_host` must not be a second copy."""
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        from shared.capability_availability_guarantor import (
+            local_exec_auth_host,
+            normalize_exec_auth_host,
+        )
+
+        assert module["normalize_host"] is normalize_exec_auth_host
+        assert module["current_host"] is local_exec_auth_host
+
+    def test_the_stamped_ref_is_attested_by_the_guarantor(self, monkeypatch) -> None:
+        """End to end: what the producer stamps for a local probe is what the reader expects,
+        under the environment that used to break it."""
+        import shared.capability_availability_guarantor as guarantor
+
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        monkeypatch.delenv("HAPAX_CODEX_EXEC_AUTH_HOST", raising=False)
+        monkeypatch.delenv("HAPAX_DEFAULT_DISPATCH_HOST", raising=False)
+        monkeypatch.setenv("HAPAX_DISPATCH_HOST", "local")
+        stamped = f"host:{module['codex_exec_auth_host']()}:codex:exec:auth:saved-login:observed"
+        assert guarantor._exec_auth_ref_attested(
+            guarantor._ref_tokens(stamped),
+            expected_hosts=guarantor.expected_exec_auth_hosts(),
+        )
