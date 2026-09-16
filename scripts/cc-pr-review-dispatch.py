@@ -356,8 +356,9 @@ def _sign_public_gate_authority_evidence(data: dict[str, Any]) -> None:
     if not secret:
         LOG.warning(
             "public-gate authority evidence left unsigned; signing credential is unset; "
-            "next action: restore the public-gate authority signing credential from pass "
-            "before relying on public-gate receipts",
+            "next action: restore the public-gate authority signing credential from the "
+            "FileStore (hapax-public-gate-authority-hmac-key) before relying on public-gate "
+            "receipts",
         )
         return
     data["authority_issuer"] = _review_team_authority_issuer(

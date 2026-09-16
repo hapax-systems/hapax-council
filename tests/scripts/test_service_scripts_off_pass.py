@@ -27,8 +27,24 @@ SHELL_SCRIPTS = (
     "mediamtx-start.sh",
     "hapax-vibe",
     "hapax-codex-headless",
+    "hapax-tailscale-cleanup",
+    "configure-orcid.sh",
 )
-PYTHON_SCRIPTS = ("reverb-inventory-sync",)
+PYTHON_SCRIPTS = (
+    "reverb-inventory-sync",
+    "grafana-panel-import-runner.py",
+    "bootstrap_cred_tokens.py",
+    "gh-sponsors-bootstrap-runner.py",
+    "stripe-bootstrap-runner.py",
+    "chat-monitor.py",
+    "album-identifier.py",
+    "youtube-player.py",
+    "gap-validate.py",
+    "mint-google-token.py",
+    "enroll_speaker.py",
+    "smoke-litellm-gemini-3.py",
+    "secret_env_from_filestore.py",
+)
 ALL_SCRIPTS = SHELL_SCRIPTS + PYTHON_SCRIPTS
 
 FORBIDDEN = (
@@ -209,6 +225,7 @@ SOURCING_SCRIPTS = (
     "hapax-codex",
     "hapax-backup-watchdog",
     "hapax-backup-gdrive-critical",
+    "hapax-tailscale-cleanup",
 )
 SOURCING_IDIOM = (
     '_hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null'

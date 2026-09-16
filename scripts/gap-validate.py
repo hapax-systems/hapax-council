@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import re
 import subprocess
 import sys
@@ -29,6 +28,8 @@ from urllib.parse import urljoin
 
 import httpx
 import yaml
+
+from shared.secrets import SecretUnavailable, get_secret
 
 logger = logging.getLogger("gap-validate")
 
@@ -133,26 +134,13 @@ def _source_urls(items: list[dict]) -> list[str]:
 
 
 def _resolve_ieee_xplore_api_key() -> tuple[str | None, str | None]:
-    """Resolve the IEEE Xplore key from pass, then hapax-secrets exported env."""
+    """Resolve the IEEE Xplore key: the exported env var first, then the FileStore (never pass)."""
     try:
-        result = subprocess.run(
-            ["pass", "show", IEEE_XPLORE_PASS_PATH],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-        if result.returncode == 0:
-            key = result.stdout.strip().splitlines()[0]
-            if key:
-                return key, None
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    env_key = os.environ.get(IEEE_XPLORE_API_KEY_ENV, "").strip()
-    if env_key:
-        return env_key, None
-
+        key = get_secret(IEEE_XPLORE_PASS_PATH, env=IEEE_XPLORE_API_KEY_ENV, required=False)
+    except SecretUnavailable:
+        key = None
+    if key and key.strip():
+        return key.strip().splitlines()[0], None
     return None, f"ieee_xplore:missing_api_key:{IEEE_XPLORE_PASS_PATH}|${IEEE_XPLORE_API_KEY_ENV}"
 
 

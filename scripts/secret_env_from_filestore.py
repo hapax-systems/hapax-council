@@ -74,6 +74,7 @@ OPTIONAL: dict[str, str] = {
     "HAPAX_ZENODO_TOKEN": "zenodo-api-token",
     "HAPAX_OPERATOR_ORCID": "orcid-orcid",
     "KO_FI_WEBHOOK_VERIFICATION_TOKEN": "kofi-verification-token",
+    "HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY": "hapax-public-gate-authority-hmac-key",
 }
 LITERALS: dict[str, str] = {
     "LITELLM_BASE_URL": _LITELLM,

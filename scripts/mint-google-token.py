@@ -94,7 +94,7 @@ def main() -> int:
     )
 
     _save_token(creds, pass_key=args.pass_key)
-    log.info("Token saved to pass entry: %s", args.pass_key)
+    log.info("Token saved to the FileStore as secret: %s", args.pass_key)
 
     # Verify which channel we actually got.
     yt = discovery_build("youtube", "v3", credentials=creds, cache_discovery=False)

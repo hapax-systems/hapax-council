@@ -6,7 +6,6 @@ import importlib.machinery
 import importlib.util
 import io
 import json
-import subprocess
 import sys
 import threading
 import urllib.error
@@ -2126,7 +2125,7 @@ def test_rejects_secret_entry_override_without_gate(monkeypatch: pytest.MonkeyPa
     _clean_env(monkeypatch)
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_SECRET_ENTRY", "glmcp/alt-key")
 
-    with pytest.raises(module.ConfigError, match="refusing pass entry"):
+    with pytest.raises(module.ConfigError, match="refusing secret name"):
         module.load_config()
 
 
@@ -2138,7 +2137,7 @@ def test_rejects_secret_entry_override_with_payg_fallback_enabled(
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_SECRET_ENTRY", "glmcp/alt-key")
     monkeypatch.setenv("HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE", "1")
 
-    with pytest.raises(module.ConfigError, match="PAYG fallback requires the default pass entry"):
+    with pytest.raises(module.ConfigError, match="PAYG fallback requires the default secret name"):
         module.load_config()
 
 
@@ -2292,69 +2291,68 @@ def test_rejects_payg_base_url_override_without_gate(monkeypatch: pytest.MonkeyP
         module.load_config()
 
 
-def test_read_secret_takes_first_pass_line(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_read_secret_returns_the_resolved_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The reviewer reads through shared.secrets.get_secret (env, FileStore, CLI) — never pass."""
+    import shared.secrets as secrets
+
     module = _load_module()
-    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/pass")
+    seen: list[str] = []
 
-    def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            ["pass", "show", "glmcp/api-key"],
-            0,
-            stdout="test-secret-token\nmetadata\n",
-            stderr="",
-        )
+    def fake(name: str, *, env: str | None = None, required: bool = True) -> str:
+        seen.append(name)
+        return "test-secret-token"
 
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
-
+    monkeypatch.setattr(secrets, "get_secret", fake)
     assert module.read_secret("glmcp/api-key") == "test-secret-token"
+    assert seen == ["glmcp/api-key"]
 
 
-def test_read_secret_missing_pass_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_read_secret_absent_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    import shared.secrets as secrets
+
     module = _load_module()
-    monkeypatch.setattr(module.shutil, "which", lambda name: None)
 
-    with pytest.raises(module.ConfigError, match="install pass or add it to PATH"):
-        module.read_secret("glmcp/api-key")
+    def absent(name: str, *, env: str | None = None, required: bool = True) -> str:
+        raise secrets.SecretUnavailable(name, "put it with `hapax-secret` (TTY dialogue via reins)")
 
-
-def test_read_secret_pass_failure_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = _load_module()
-    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/pass")
-
-    def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        return subprocess.CompletedProcess(
-            ["pass", "show", "glmcp/api-key"],
-            1,
-            stdout="",
-            stderr="gpg: decryption failed\n",
-        )
-
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
-
+    monkeypatch.setattr(secrets, "get_secret", absent)
     with pytest.raises(module.ConfigError) as excinfo:
         module.read_secret("glmcp/api-key")
     message = str(excinfo.value)
-    assert "check: pass show 'glmcp/api-key' >/dev/null" in message
-    assert "run: pass show 'glmcp/api-key'" not in message
-    assert "pass stderr suppressed" in message
-    assert "gpg: decryption failed" not in message
+    assert "no secret for 'glmcp/api-key'" in message
+    assert "Next action: put it with `hapax-secret`" in message
+    assert "pass show" not in message
 
 
-def test_read_secret_pass_timeout_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_read_secret_integrity_failure_is_not_absence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A blob that is present but will not verify is tampering or corruption; the next action
+    is the audit, and the message must not present it as a missing secret."""
+    import shared.secrets as secrets
+
     module = _load_module()
-    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/pass")
 
-    def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        raise subprocess.TimeoutExpired(["pass", "show", "glmcp/api-key"], 20)
+    def corrupt(name: str, *, env: str | None = None, required: bool = True) -> str:
+        raise secrets.SecretIntegrityFailed(name)
 
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
-
+    monkeypatch.setattr(secrets, "get_secret", corrupt)
     with pytest.raises(module.ConfigError) as excinfo:
         module.read_secret("glmcp/api-key")
     message = str(excinfo.value)
-    assert "failed to run pass show 'glmcp/api-key'" in message
-    assert "check: pass show 'glmcp/api-key' >/dev/null" in message
-    assert "run: pass show 'glmcp/api-key'" not in message
+    assert "failed its integrity check" in message
+    assert "hapax-secret --audit" in message
+    assert "no secret for" not in message
+
+
+def test_read_secret_empty_value_has_next_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    import shared.secrets as secrets
+
+    module = _load_module()
+    monkeypatch.setattr(secrets, "get_secret", lambda name, *, env=None, required=True: "")
+    with pytest.raises(module.ConfigError) as excinfo:
+        module.read_secret("glmcp/api-key")
+    message = str(excinfo.value)
+    assert "is empty" in message
+    assert "hapax-secret glmcp/api-key" in message
 
 
 def test_main_empty_stdin_reports_next_action(
