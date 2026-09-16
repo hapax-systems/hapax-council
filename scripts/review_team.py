@@ -830,6 +830,42 @@ def _route_block_reason_notes(
     return {family: tuple(reasons) for family, reasons in out.items()}, tuple(malformed)
 
 
+_VOLATILE_OBSERVATION_FIELD_RE = re.compile(
+    r"\s*\b(?:checked_at|observed_at|fetched_at|stale_after)=\S+"
+)
+
+
+def _route_block_reason_class(reason: str) -> str:
+    """The stable degradation class of a route-block reason.
+
+    A route-block reason carries WHAT degraded and WHEN it was last observed. Only the
+    first half is a property of the degradation; the second is a property of the last
+    producer run. ``_timestamp_errors`` emits
+    ``<route_id>: <surface> stale; checked_at=<iso> stale_after=<spec>`` and BOTH embedded
+    values move: ``checked_at`` is re-stamped by ``hapax-quota-telemetry.timer`` on a
+    10-minute cadence, and ``stale_after`` is a remainder recomputed against the
+    underlying relay receipt on every run.
+
+    Measured 2026-09-16T00:54:07Z-01:01:28Z on this estate: the live route-blocked family
+    set took four distinct values in 7m21s (``claude,glm`` -> ``claude,gemini,glm`` ->
+    ``gemini,glm`` -> ``glm``) and ``claude.review.opus``'s quota ``stale_after`` moved
+    ``14s`` -> ``1068s`` -> ``1051s`` with no change to any PR or dossier. Comparing
+    observation instants therefore invalidated every degraded dossier older than one tick,
+    which is why no dossier that degraded a route-backed family could be admitted by a
+    40-minute autoqueue pass.
+
+    The class keeps the route id, the surface, and the kind of degradation and drops only
+    the observation fields, so ``recorded <= live`` stays the anti-forge predicate it
+    always was -- a dossier still may not claim a degradation class that is not live -- and
+    is merely evaluated on the part of the reason that does not move. A quota block does
+    not witness a capability block, and a freshness block does not witness a seat-receipt
+    block; only re-observation of the same degradation is forgiven.
+    """
+
+    stripped = _VOLATILE_OBSERVATION_FIELD_RE.sub("", str(reason))
+    return stripped.rstrip(" ;,").strip()
+
+
 def _route_reason_code(value: str) -> str:
     normalized = re.sub(r"[^a-z0-9_.:-]+", "_", value.strip().lower()).strip("_")
     return normalized or "unknown"
@@ -1947,13 +1983,17 @@ def _dossier_validity_blockers(
                 recorded = _note_route_block_reasons.get(family, ())
                 recorded_route_ids = {route_id for route_id, _ in recorded}
                 expected_route_id = route_ids.get(family)
-                recorded_reasons = {reason for _, reason in recorded}
+                # CLASS, not observation instant (see _route_block_reason_class): a route
+                # that stayed continuously blocked for the same reason re-reports that
+                # reason with a fresh checked_at/stale_after on every producer run, and
+                # comparing the raw strings made the dossier unmergeable on the next tick.
+                recorded_reasons = {_route_block_reason_class(reason) for _, reason in recorded}
                 live_reasons = set()
                 for reason in live_route_blocked.get(family, ()):
                     normalized_reason = str(reason).strip()
                     if expected_route_id and normalized_reason.startswith(f"{expected_route_id}:"):
                         normalized_reason = normalized_reason[len(expected_route_id) + 1 :]
-                    live_reasons.add(normalized_reason)
+                    live_reasons.add(_route_block_reason_class(normalized_reason))
                 if (
                     not expected_route_id
                     or recorded_route_ids != {expected_route_id}

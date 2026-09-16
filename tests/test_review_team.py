@@ -1371,6 +1371,100 @@ class TestVerdictBlockers:
 
         assert "review_dossier_route_block_degradation_reason_mismatch:glm" in blockers
 
+    def _freshness_stale_dossier(self, rt, checked_at: str) -> dict:
+        """A dossier whose recorded route-block reason is the SHAPE production emits.
+
+        ``_timestamp_errors`` writes ``<route_id>: <surface> stale; checked_at=<iso>
+        stale_after=<spec>``; ``_route_review_admission_reasons`` prefixes it with
+        ``freshness_check:``. Both embedded values are re-observed on the estate's
+        10-minute quota-telemetry cadence, so a synthetic reason string without them
+        cannot reproduce the production inequality.
+        """
+        notes = (
+            "degraded_family_route_blocked:claude",
+            "route_blocked_family_reason:claude:claude.review.opus:"
+            "freshness_check:claude.review.opus: quota stale; "
+            f"checked_at={checked_at} stale_after=14s",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        return _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("glm-1", "glm", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+
+    def test_route_block_reason_reobservation_does_not_mismatch(self, tmp_path: Path) -> None:
+        """Measured 2026-09-16T00:54-01:01Z: the same continuously-blocked route reported
+        four different reason strings in 7m21s because ``checked_at``/``stale_after`` are
+        re-stamped by ``hapax-quota-telemetry.timer`` every 10 minutes. Comparing observation
+        instants made every degraded dossier older than one tick permanently inadmissible.
+        """
+        rt = _load_review_team_module()
+        note = _write_dossier(
+            tmp_path,
+            "task-x",
+            self._freshness_stale_dossier(rt, "2026-09-16T00:50:43+00:00"),
+        )
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            # Same route, same surface, same degradation class — only the observation
+            # instant and the computed remainder moved.
+            route_blocked_families={
+                "claude": (
+                    "freshness_check:claude.review.opus: quota stale; "
+                    "checked_at=2026-09-16T01:00:43+00:00 stale_after=1051s",
+                )
+            },
+        )
+        assert blockers == ()
+
+    def test_route_block_reason_class_change_still_mismatches(self, tmp_path: Path) -> None:
+        """Anti-forge floor: class comparison is not class erasure. A dossier that recorded a
+        STALE quota surface may not ride a live block of a different class."""
+        rt = _load_review_team_module()
+        note = _write_dossier(
+            tmp_path,
+            "task-x",
+            self._freshness_stale_dossier(rt, "2026-09-16T00:50:43+00:00"),
+        )
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"claude": ("claude_review_seat_receipt_admission_required",)},
+        )
+        assert "review_dossier_route_block_degradation_reason_mismatch:claude" in blockers
+
+    def test_route_block_reason_class_keeps_surface_identity(self, tmp_path: Path) -> None:
+        """A stale QUOTA surface is not witnessed by a stale CAPABILITY surface: the class
+        keeps route id and surface, it only drops the observation instant."""
+        rt = _load_review_team_module()
+        note = _write_dossier(
+            tmp_path,
+            "task-x",
+            self._freshness_stale_dossier(rt, "2026-09-16T00:50:43+00:00"),
+        )
+        blockers = rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={
+                "claude": (
+                    "freshness_check:claude.review.opus: capability stale; "
+                    "checked_at=2026-09-16T01:00:43+00:00 stale_after=24h",
+                )
+            },
+        )
+        assert "review_dossier_route_block_degradation_reason_mismatch:claude" in blockers
+
     def test_recovered_route_block_invalidates_pending_degraded_admission(
         self, tmp_path: Path
     ) -> None:
