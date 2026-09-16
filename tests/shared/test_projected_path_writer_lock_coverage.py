@@ -274,8 +274,20 @@ NOT_A_TASK_NOTE_WRITER = {
 #: They are listed rather than forgotten: an entry here is an open hazard with a named owner,
 #: and the test below fails the moment a NEW writer appears that is in neither list.
 KNOWN_UNCONVERTED = {
-    "scripts/cc-claim": "drives claim publication through sdlc_claim; own lock root — see row",
-    "scripts/cc-close": "drives the terminal transition through sdlc_close; same",
+    # MEASURED 2026-09-16, and worse than "own lock root" suggests. Claim publication holds
+    # shared/sdlc_claim.py::_claim_publication_lock, which is keyed by the ROLE digest and
+    # lives under ~/.cache/hapax/task-locks, while a transition over the same note is keyed
+    # by task id + path under coord_base_dir()/task-locks. Different root AND different key
+    # space, so neither excludes the other — and sdlc_claim calls _apply_projections (which
+    # takes no lock of its own) directly. This is the row's hazard in the estate's highest
+    # frequency note writer, reached through the projection machinery itself.
+    #
+    # Not fixed here on purpose: the role lock is doing a different, legitimate job, so the
+    # fix is to take BOTH — and a second lock outside this primitive's total order is a
+    # lock-order inversion waiting to happen. It needs its own row and its own deadlock
+    # argument, not a rider on a p0.
+    "scripts/cc-claim": "role-keyed lock in a different root; see the note above — own row",
+    "scripts/cc-close": "same as cc-claim: terminal transition via sdlc_close — own row",
     "scripts/cc-cascade-unblock": "batch unblocker; convert with the batch-writer pass",
     "scripts/cc-task-offer-ready": "offer-readiness stamper; convert with the batch-writer pass",
     "scripts/cc-migration-capability": "migration tool, run by hand",
@@ -343,7 +355,7 @@ KNOWN_UNCONVERTED = {
     "shared/cc_task_root.py": "resolver only",
     "shared/coord_projection.py": "owns the transition; takes the lock by construction",
     "shared/task_note_lock.py": "the lock itself",
-    "shared/sdlc_claim.py": "claim publication; own lock root — see row",
+    "shared/sdlc_claim.py": "role-keyed lock, different root; see the cc-claim note — own row",
     "scripts/cc-migration-capability ": "duplicate guard",
     "scripts/refused_lifecycle_classify.py ": "duplicate guard",
     "scripts/downstream_contribution_ledger_v0.py ": "duplicate guard",
