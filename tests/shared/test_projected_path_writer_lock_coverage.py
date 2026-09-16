@@ -287,7 +287,14 @@ KNOWN_UNCONVERTED = {
     # lock-order inversion waiting to happen. It needs its own row and its own deadlock
     # argument, not a rider on a p0.
     "scripts/cc-claim": "role-keyed lock in a different root; see the note above — own row",
-    "scripts/cc-close": "same as cc-claim: terminal transition via sdlc_close — own row",
+    # NOT the same as cc-claim, and the earlier reason string here said it was. Measured
+    # 2026-09-16: shared/sdlc_close.py DOES reach _transition_locks with the canonical root
+    # — it is correct — but three search shapes find no caller outside tests. The live close
+    # is scripts/cc-close doing the active/ -> closed/ move itself: read, mutate,
+    # tmp.replace(new_path), then path.unlink() on the active note, unserialized. It is the
+    # only writer here that UNLINKS a projected path, so a transition holding that note's
+    # preimage can have its subject removed underneath it.
+    "scripts/cc-close": "live closer moves+unlinks unserialized; sdlc_close is correct but unwired — own row",
     "scripts/cc-cascade-unblock": "batch unblocker; convert with the batch-writer pass",
     "scripts/cc-task-offer-ready": "offer-readiness stamper; convert with the batch-writer pass",
     "scripts/cc-migration-capability": "migration tool, run by hand",
@@ -346,7 +353,7 @@ KNOWN_UNCONVERTED = {
     "shared/gate0b_claim_publication_install.py": "installs the claim-publication machinery",
     "shared/p0_incident_intake.py": "creates new incident notes",
     "shared/recovery_governor.py": "recovery writer; convert with the daemon pass",
-    "shared/sdlc_close.py": "drives the terminal transition (already under the lock)",
+    "shared/sdlc_close.py": "correctly takes the transition lock, but has no production caller — own row",
     "shared/sdlc_invariants.py": "read-only invariant monitor",
     "shared/scheduler_readiness_reconciler.py": "reconciler; reads notes",
     "shared/github_public_surface.py": "reads notes for the public surface",
