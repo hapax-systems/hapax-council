@@ -2010,6 +2010,30 @@ def test_current_session_relay_retirement_blocks_without_force(tmp_path: Path) -
     assert "relay 'cx-red' is retired/wound-down" in result.stderr
 
 
+def _tmux_invocations(tmux_args: Path) -> list[list[str]]:
+    """Split the fake-tmux recorder's log into one argument list per invocation.
+
+    The launcher calls tmux more than once per lane — ``new-session`` and then
+    ``set-option ... remain-on-exit failed``, which keeps a badly-dead pane for
+    hapax-lane-supervisor to autopsy — so neither "the file" nor "its last line"
+    identifies a single call any more. Each invocation is delimited by ``--``.
+    """
+    blocks: list[list[str]] = []
+    for line in tmux_args.read_text().splitlines():
+        if line == "--":
+            blocks.append([])
+        elif blocks:
+            blocks[-1].append(line)
+    return blocks
+
+
+def _new_session_args(tmux_args: Path) -> list[str]:
+    for block in _tmux_invocations(tmux_args):
+        if block and block[0] == "new-session":
+            return block
+    raise AssertionError(f"no new-session invocation recorded: {tmux_args.read_text()!r}")
+
+
 def test_terminal_tmux_starts_codex_runner_without_parent_claim(tmp_path: Path) -> None:
     env, _args_file, _env_file = _env_with_fake_codex(tmp_path)
     _write_active_task(env, "demo-task")
@@ -2020,7 +2044,7 @@ def test_terminal_tmux_starts_codex_runner_without_parent_claim(tmp_path: Path) 
 if [ "$1" = "has-session" ]; then
   exit 1
 fi
-printf '%s\\n' "$@" > {tmux_args}
+printf '%s\\n' -- "$@" >> {tmux_args}
 """
     )
     fake_tmux.chmod(0o755)
@@ -2052,7 +2076,7 @@ printf '%s\\n' "$@" > {tmux_args}
     assert "new-session" in args
     assert "hapax-codex-cx-amber" in args
 
-    runner = Path(args.strip().splitlines()[-1])
+    runner = Path(_new_session_args(tmux_args)[-1])
     runner_text = runner.read_text()
     assert "hapax-codex" in runner_text
     assert "--session cx-amber" in runner_text
@@ -2081,7 +2105,7 @@ case "$1" in
     printf '%s\\n' 4321
     ;;
   new-session)
-    printf '%s\\n' "$@" > {tmux_args}
+    printf '%s\\n' -- "$@" >> {tmux_args}
     ;;
 esac
 """,
@@ -2115,9 +2139,9 @@ esac
     assert "status: claimed" in task_text
     assert "assigned_to: cx-amber" in task_text
     assert result.stdout.strip() == "hapax-codex-cx-amber"
-    tmux_lines = tmux_args.read_text(encoding="utf-8").splitlines()
-    assert tmux_lines[:4] == ["new-session", "-d", "-s", "hapax-codex-cx-amber"]
-    runner = Path(tmux_lines[-1])
+    new_session = _new_session_args(tmux_args)
+    assert new_session[:4] == ["new-session", "-d", "-s", "hapax-codex-cx-amber"]
+    runner = Path(new_session[-1])
     runner_text = runner.read_text(encoding="utf-8")
     assert "\nssh " in runner_text
     assert "bash" in runner_text
@@ -2221,7 +2245,7 @@ case "$1" in
     printf '%s\\n' 4321
     ;;
   new-session)
-    printf '%s\\n' "$@" > {tmux_args}
+    printf '%s\\n' -- "$@" >> {tmux_args}
     ;;
 esac
 """,
@@ -2251,7 +2275,7 @@ esac
     )
 
     assert result.returncode == 0, result.stderr
-    runner = Path(tmux_args.read_text(encoding="utf-8").splitlines()[-1])
+    runner = Path(_new_session_args(tmux_args)[-1])
     try:
         runner_result = subprocess.run(
             [str(runner)],
@@ -2286,7 +2310,7 @@ def test_terminal_tmux_allows_assigned_ready_state_task(tmp_path: Path) -> None:
 if [ "$1" = "has-session" ]; then
   exit 1
 fi
-printf '%s\\n' "$@" > {tmux_args}
+printf '%s\\n' -- "$@" >> {tmux_args}
 """
     )
     fake_tmux.chmod(0o755)
@@ -2314,7 +2338,7 @@ printf '%s\\n' "$@" > {tmux_args}
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "hapax-codex-cx-amber"
-    runner = Path(tmux_args.read_text().strip().splitlines()[-1])
+    runner = Path(_new_session_args(tmux_args)[-1])
     runner_text = runner.read_text()
     assert "--session cx-amber" in runner_text
     assert "--task demo-task" in runner_text

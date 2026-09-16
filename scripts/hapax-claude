@@ -385,9 +385,38 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
 } >"$RUNNER"
 chmod 700 "$RUNNER"
 
+# Create the lane's detached tmux session and KEEP its pane when the runner dies badly.
+#
+# Why `remain-on-exit failed` rather than tmux's default: when a lane's process died,
+# tmux tore the pane down with it, taking the exit status, the death signal and the
+# whole scrollback. The dev lane's death at 2026-09-16T01:19:34Z left no coredump, no
+# kernel line, no oomd record, no killer — and no pane left to ask, so the cause was
+# not merely unknown but unmeasurable. `failed` retains the pane on a non-zero exit or
+# a signal (measured on tmux 3.6b: SIGKILL -> pane_dead_signal=9, `exit 42` ->
+# pane_dead_status=42) while a CLEAN exit still closes it, so an orderly stop is never
+# mistaken for a death.
+#
+# This is half a change. A retained pane keeps the SESSION, and this launcher refuses
+# to start when its session already exists — so `remain-on-exit` alone would wedge the
+# lane it makes legible. hapax-lane-supervisor's capture_dead_pane reads the corpse
+# into ~/.cache/hapax/tmux-pane-exits/ and then kills the session so this launcher can
+# run again. The two ship together; neither is correct alone.
+#
+# `-t "$TMUX_NAME"` carries no window index on purpose: `"$TMUX_NAME":1` is correct
+# only where base-index is 1, and tmux's default is 0 (measured: `no such window`).
+# A session fresh from `new-session -d` has exactly one window, so the session target
+# resolves to it whatever base-index is set to.
+tmux_new_lane_session() {
+  "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER" || return $?
+  # Fail open and say so: losing the forensics option is bad, refusing to launch the
+  # lane over it is worse, and a silent loss is how the original gap survived.
+  "$TMUX_BIN" set-option -w -t "$TMUX_NAME" remain-on-exit failed 2>/dev/null ||
+    echo "hapax-claude: could not set remain-on-exit on $TMUX_NAME (tmux < 3.2?); a bad death will leave no pane to inspect" >&2
+}
+
 case "$TERMINAL" in
   tmux)
-    "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    tmux_new_lane_session
     printf '%s\n' "$TMUX_NAME"
     ;;
   foot)
@@ -397,7 +426,7 @@ case "$TERMINAL" in
       exit 10
     fi
     if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
-      "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+      tmux_new_lane_session
     fi
     case "$(basename "$FOOT_BIN")" in
       footclient)
