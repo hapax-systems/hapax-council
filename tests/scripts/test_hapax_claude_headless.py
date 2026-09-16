@@ -1184,7 +1184,10 @@ def test_terminal_check_epoch_bypass_still_reaps_merged_pr(tmp_path: Path) -> No
 
 
 def test_terminal_check_reaps_when_cache_repointed(tmp_path: Path) -> None:
-    """Cache naming a DIFFERENT task is the definitive moved-on signal."""
+    """A cache naming a DIFFERENT task is claim_moved, never terminal by
+    itself (2026-09-16 claim-hop fix): the launcher re-binds and evaluates the
+    NEW task's own row. Here the hop target is claimed by another role —
+    definitive terminal (two lanes never own one task)."""
     rc = _run_task_is_terminal(
         tmp_path,
         cache_task="a-different-task",

@@ -153,15 +153,73 @@ printf '%s\n' "$$" > "$LAUNCHER_PIDFILE"
 STDIN_PIPE="$PIPE_DIR/$ROLE.stdin"
 PID_FILE="$PIPE_DIR/$ROLE.pid"
 SELF_REAP_FLAG="$PIPE_DIR/$ROLE.self-reap"
+# The task the launcher is CURRENTLY bound to. Seeded with the dispatch task
+# and rewritten by task_is_terminal on a claim_moved hop, so the detached
+# watchdog subshell and the post-exit check both follow the lane's claim onto
+# the new row (2026-09-16 gamma claim-hop kill). CLAIM_FILE/SESSION_CLAIM_FILE
+# are role- and session-keyed paths — task-independent; what binds them to a
+# task is their CONTENT, which task_is_terminal re-reads every poll.
+CURRENT_TASK_FILE="$PIPE_DIR/$ROLE.current-task"
 LOG_FILE="$LOG_DIR/output.jsonl"
+# Durable claim-hop record: the teardown watchdog runs detached (its stderr is
+# /dev/null by design), so claim_moved events are appended here as well.
+HOPS_LOG_FILE="$LOG_DIR/task-hops.log"
 
 [[ -p "$STDIN_PIPE" ]] && rm -f "$STDIN_PIPE"
 mkfifo "$STDIN_PIPE"
 
 RELAY_RETIRE="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}/scripts/hapax-relay-retire"
+# Teardown truthfulness (2026-09-16 gamma claim-hop): the relay record must
+# carry the REAL exit reason. LAST_KILL_REASON is set when the out-of-band
+# watchdog SIGTERMd the child (the typed terminality verdict carried in the
+# self-reap flag); LAST_CHILD_EXIT_CODE is the reaped wait status of the most
+# recent claude.
+LAST_KILL_REASON=""
+LAST_CHILD_EXIT_CODE=""
+
+last_log_line() {
+  # Last non-empty line of claude's combined log (stdout+stderr both append to
+  # LOG_FILE), sanitized to a single-line YAML-plain-scalar fragment.
+  [[ -r "$LOG_FILE" ]] || return 0
+  awk 'NF { line = $0 } END { if (line) print line }' "$LOG_FILE" 2>/dev/null \
+    | sed -E 's/:[[:space:]]+/:/g; s/[[:space:]]+#/ /g' \
+    | cut -c1-120
+}
+
+compute_retire_reason() {
+  # $1 = the launcher's own pending exit status (used only when no child ever
+  # ran). 'clean exit (headless)' is reserved for a child that exited 0 on its
+  # own with a result event in LOG_FILE; a watchdog SIGTERM is self_reap:<why>.
+  local launcher_rc="$1" last_line=""
+  if [[ -n "$LAST_KILL_REASON" ]]; then
+    last_line="$(last_log_line)"
+    printf 'self_reap:%s;exit_code=%s' "$LAST_KILL_REASON" "${LAST_CHILD_EXIT_CODE:-unknown}"
+    [[ -n "$last_line" ]] && printf ';last_log=%s' "$last_line"
+    printf '\n'
+    return 0
+  fi
+  if [[ -e "$DISABLE_FILE" ]]; then
+    printf 'disabled_by_latch;launcher_rc=%s\n' "$launcher_rc"
+    return 0
+  fi
+  if [[ "$LAST_CHILD_EXIT_CODE" == "0" ]] && grep -q '"type":"result"' "$LOG_FILE" 2>/dev/null; then
+    printf 'clean exit (headless)\n'
+    return 0
+  fi
+  if [[ -n "$LAST_CHILD_EXIT_CODE" ]]; then
+    last_line="$(last_log_line)"
+    printf 'own_exit:code_%s' "$LAST_CHILD_EXIT_CODE"
+    [[ -n "$last_line" ]] && printf ';last_log=%s' "$last_line"
+    printf '\n'
+    return 0
+  fi
+  printf 'launcher_exit:rc_%s\n' "$launcher_rc"
+}
+
 cleanup() {
-  rm -f "$STDIN_PIPE" "$PID_FILE" "$LAUNCHER_PIDFILE" "$SELF_REAP_FLAG"
-  "$RELAY_RETIRE" "$ROLE" --reason "clean exit (headless)" 2>/dev/null || true
+  local rc=$?
+  rm -f "$STDIN_PIPE" "$PID_FILE" "$LAUNCHER_PIDFILE" "$SELF_REAP_FLAG" "$CURRENT_TASK_FILE"
+  "$RELAY_RETIRE" "$ROLE" --reason "$(compute_retire_reason "$rc")" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -244,6 +302,9 @@ if [[ -z "$CLAIMED_TASK" ]]; then
   (cd "$WORKDIR" && "$WORKDIR/scripts/cc-claim" "$CLAUDE_TASK")
 fi
 export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
+# Seed the launcher's current-task binding with the dispatch task. A later
+# claim_moved hop rewrites it inside task_is_terminal.
+printf '%s\n' "$CLAUDE_TASK" > "$CURRENT_TASK_FILE"
 
 SDLC_PREAMBLE="SDLC DISCIPLINE (MANDATORY):
 1. Work only on the task named in this dispatch.
@@ -275,7 +336,25 @@ cd "$WORKDIR"
 # and stacked zombies). task_is_terminal decides, before each respawn, whether
 # the task is closed (claim cleared / note left active/ / terminal status) or
 # its PR has merged.
+# v3 (2026-09-16 gamma claim-hop kill): a claim file naming a DIFFERENT task is
+# claim_moved, NEVER terminal — the launcher logs the hop, re-binds its
+# current-task file to the new task, and keeps polling THAT row. Only a
+# measurably closed row or a merged PR may kill a lane; a missing claim stays
+# indeterminate.
 CC_TASK_ACTIVE="${HAPAX_CC_TASK_ROOT:-$HOME/Documents/Personal/20-projects/hapax-cc-tasks}/active"
+
+current_bound_task() {
+  # The task the launcher is bound to RIGHT NOW: the current-task file
+  # (rewritten by task_is_terminal on a claim_moved hop), falling back to the
+  # dispatch task when the file is absent or empty.
+  local bound=""
+  bound="$(head -n1 "$CURRENT_TASK_FILE" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ -n "$bound" ]]; then
+    printf '%s' "$bound"
+  else
+    printf '%s' "$CLAUDE_TASK"
+  fi
+}
 
 find_active_note() {
   local task="$1" note=""
@@ -296,8 +375,22 @@ task_is_terminal() {
   # lanes (delta, zeta) when their caches vanished mid-run with no journaled
   # actor.  Now: if the claim file is absent, fall through to note + PR checks
   # and also consult the session-keyed claim file as a secondary source.
+  #
+  # v3 fix (2026-09-16 gamma claim-hop kill): terminality is a property of the
+  # TASK, never of the claim file's current target. A claim file naming a
+  # DIFFERENT task is claim_moved — the estate's own re-point convention (a
+  # lane with a pr_open row picks up the next row). The v2 code still returned
+  # 0 for that shape and the watchdog SIGTERMd gamma mid-turn with PR 4674
+  # unmerged. Now the hop is logged, the launcher's current-task file is
+  # re-bound to the new task, and the NEW row's own note/PR state decides.
+  # Only a measurably closed row or a merged PR may kill a lane.
   local task="$1"
   [[ -n "$task" ]] || return 1   # no task binding -> legacy always-on behavior
+
+  # Typed terminality verdict, read by the teardown watchdog after a 0 return
+  # so the relay record can name the real kill reason. Deliberately NOT local:
+  # the watchdog calls this function in its own (sub)shell and reads it there.
+  TERMINAL_REASON=""
 
   local claimed="" claim_source="primary" claim_file_used=""
   local primary_claimed="" primary_claim_file_used=""
@@ -384,21 +477,41 @@ task_is_terminal() {
     # Log the anomaly for forensic tracing.
     printf 'hapax-claude-headless[%s]: task_is_terminal: claim cache MISSING for role=%s task=%s — treating as indeterminate (fail-open)\n' "$$" "$ROLE" "$task" >&2
   elif [[ "$claimed" != "$task" ]]; then
-    # cc-close clears the claim file; a re-point means the lane moved on.
-    # This is a DEFINITIVE terminal signal (the file exists and names a
-    # different task).
-    return 0
+    # claim_moved (v3): the lane re-pointed its claim to a DIFFERENT task
+    # while the launch row is still live. The claim file's current target is
+    # NEVER a terminality signal — only a measurably closed row or a merged
+    # PR may kill a lane. Log the hop (stderr reaches the launcher log only
+    # when the PARENT runs this check; the detached watchdog's copy lands in
+    # the hops log), re-bind the launcher's current-task file so the watchdog
+    # and the post-exit check poll the NEW row from here on, then fall through
+    # to evaluate THAT row's own note/PR state.
+    printf 'hapax-claude-headless[%s]: task_is_terminal: claim_moved:%s:%s for role=%s (source=%s) — re-binding launcher to the new task; the hop itself is not terminal\n' \
+      "$$" "$task" "$claimed" "$ROLE" "$claim_source" >&2
+    if [[ -n "${HOPS_LOG_FILE:-}" ]]; then
+      printf '%s claim_moved:%s:%s role=%s source=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$task" "$claimed" "$ROLE" "$claim_source" \
+        >>"$HOPS_LOG_FILE" 2>/dev/null || true
+    fi
+    if [[ -n "${CURRENT_TASK_FILE:-}" ]]; then
+      printf '%s\n' "$claimed" >"$CURRENT_TASK_FILE" 2>/dev/null || true
+    fi
+    task="$claimed"
   fi
-  # claimed == task  OR  claimed is missing (indeterminate) — verify via note.
+  # claimed == task  OR  claim cache missing (indeterminate)  OR  claim moved
+  # (re-bound above) — verify via the (possibly new) task's own note.
 
   local note=""
   note="$(find_active_note "$task")"
-  [[ -n "$note" ]] || return 0   # note left active/ (moved to closed/) -> closed
+  if [[ -z "$note" ]]; then
+    # note left active/ (moved to closed/) -> closed
+    TERMINAL_REASON="row_left_active"
+    return 0
+  fi
   local status=""
   status="$(grep -oP '^status:\s*\K\S+' "$note" 2>/dev/null | head -n1 || true)"
   case "$status" in
     # Definitively terminal lifecycle states -> the lane's work is over.
-    done | completed | closed | withdrawn | superseded | abandoned) return 0 ;;
+    done | completed | closed | withdrawn | superseded | abandoned) TERMINAL_REASON="row_status_$status"; return 0 ;;
     # Everything else (claimed/in_progress/pr_open/blocked/unknown) is NOT
     # terminal on status alone: fall through to the assigned + PR-state reality
     # checks below. A live open-PR lane (status: pr_open) must NEVER be killed
@@ -435,6 +548,7 @@ task_is_terminal() {
     #   fresh (HAPAX_CLAIM_STAMP_GRACE_S, default 600s): a lane sitting on a
     #   long-unassigned task should have re-claimed; reap it.
     if [[ "$note_assigned" != "unassigned" ]]; then
+      TERMINAL_REASON="reassigned_to_$note_assigned"
       return 0
     fi
     # Freshness must be HEARTBEAT-IMMUNE: the gate touches the claim file
@@ -472,16 +586,21 @@ task_is_terminal() {
         printf 'hapax-claude-headless[%s]: task_is_terminal: HAPAX_CLAIM_EPOCH_CHECK_BYPASS=1 for role=%s task=%s with %s claim cache — treating claim-epoch age as indeterminate and continuing to note/PR terminal checks; next action: repair the writer or recreate cc-claim-epoch sidecar, then unset the bypass\n' "$$" "$ROLE" "$task" "$claim_source" >&2
       elif [[ "$claimed" == "$task" ]]; then
         if [[ -z "$claim_file_used" ]]; then
+          TERMINAL_REASON="unassigned_claim_path_unavailable"
           printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but matching claim cache path unavailable for role=%s task=%s — treating as terminal (cannot verify claim epoch); next action: rerun cc-claim or the launcher materializer to recreate the claim cache and epoch sidecar\n' "$$" "$ROLE" "$task" >&2
         elif [[ ! "$_claim_epoch" =~ ^[0-9]+$ ]]; then
+          TERMINAL_REASON="unassigned_claim_no_epoch_sidecar"
           printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim cache has no valid task-bound epoch sidecar for task=%s — treating as terminal (non-conforming writer); next action: repair the writer or recreate cc-claim-epoch sidecar, then retry the lane\n' "$$" "$claim_source" "$task" >&2
         elif [[ "$_epoch_task" != "$task" ]]; then
+          TERMINAL_REASON="unassigned_claim_stale_sidecar"
           printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim epoch sidecar names task=%s, not task=%s — treating as terminal (stale sidecar); next action: remove the stale cc-claim-epoch sidecar and re-run cc-claim\n' "$$" "$claim_source" "${_epoch_task:-<empty>}" "$task" >&2
         else
+          TERMINAL_REASON="unassigned_claim_stale"
           printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned but %s claim cache age=%ss exceeds grace=%ss for task=%s — treating as terminal (stale unassigned claim); next action: re-run cc-claim to refresh ownership or clear the stale claim\n' "$$" "$claim_source" "$_cache_age" "$_stamp_grace" "$task" >&2
         fi
         return 0
       else
+        TERMINAL_REASON="unassigned_no_claim"
         printf 'hapax-claude-headless[%s]: task_is_terminal: note unassigned and no matching claim cache for role=%s task=%s — treating as terminal (claim cleared or task reoffered); next action: rerun cc-claim before relaunching this lane\n' "$$" "$ROLE" "$task" >&2
         return 0
       fi
@@ -495,7 +614,10 @@ task_is_terminal() {
     local state="" repo="${HAPAX_GH_REPO:-${GH_REPO:-hapax-systems/hapax-council}}"
     state="$(gh api --method GET -H 'Accept: application/vnd.github+json' "repos/${repo}/pulls/${pr}" \
       --jq 'if .state == "closed" and (.merged == true or .merged_at != null) then "MERGED" elif .state == "closed" then "CLOSED" elif .state == "open" then "OPEN" else "" end' 2>/dev/null || true)"
-    [[ "$state" == "MERGED" ]] && return 0
+    if [[ "$state" == "MERGED" ]]; then
+      TERMINAL_REASON="pr_merged_$pr"
+      return 0
+    fi
   fi
   return 1
 }
@@ -727,8 +849,10 @@ while true; do
     while kill -0 "$CLAUDE_PID" 2>/dev/null; do
       sleep "$TERMINAL_POLL_S"
       kill -0 "$CLAUDE_PID" 2>/dev/null || break
-      if task_is_terminal "$CLAUDE_TASK"; then
-        : > "$SELF_REAP_FLAG"
+      if task_is_terminal "$(current_bound_task)"; then
+        # The flag carries the typed terminality verdict (row_status_closed,
+        # pr_merged_N, ...) so the relay record names the real kill reason.
+        printf '%s\n' "${TERMINAL_REASON:-task_terminal}" > "$SELF_REAP_FLAG"
         kill -TERM "$CLAUDE_PID" 2>/dev/null || true
         break
       fi
@@ -741,23 +865,26 @@ while true; do
   else
     EXIT_CODE=$?
   fi
+  LAST_CHILD_EXIT_CODE="$EXIT_CODE"
   # claude has exited (on its own or via the watchdog's SIGTERM). Stop the
   # watchdog subshell and reap it so it leaves no zombie. (Any poll `sleep` it
   # orphaned is detached to /dev/null and harmless — it is not waited on here.)
   kill "$TEARDOWN_WATCHDOG_PID" 2>/dev/null || true
   wait "$TEARDOWN_WATCHDOG_PID" 2>/dev/null || true
   if [[ -e "$SELF_REAP_FLAG" ]]; then
-    echo "hapax-claude-headless: task $CLAUDE_TASK closed/merged — self-reaping live claude (SIGTERM pid=$CLAUDE_PID)"
+    LAST_KILL_REASON="$(head -n1 "$SELF_REAP_FLAG" 2>/dev/null | tr -d '[:space:]' || true)"
+    echo "hapax-claude-headless: task $(current_bound_task) closed/merged (${LAST_KILL_REASON:-task_terminal}) — self-reaping live claude (SIGTERM pid=$CLAUDE_PID)"
     rm -f "$SELF_REAP_FLAG"
   fi
   RESTART_COUNT=$((RESTART_COUNT + 1))
 
-  # Merge-aware teardown: stop respawning once the dispatched task is closed or
-  # its PR merged. The cleanup trap (EXIT) reaps the pipe + launcher lock; the
-  # lane-supervisor then brings the lane back read-only into idle-await on its
-  # next tick — not a forever-respawn zombie.
-  if task_is_terminal "$CLAUDE_TASK"; then
-    echo "hapax-claude-headless: task $CLAUDE_TASK closed/merged — stopping respawn loop"
+  # Merge-aware teardown: stop respawning once the CURRENTLY BOUND task is
+  # closed or its PR merged (the binding follows claim_moved hops). The
+  # cleanup trap (EXIT) reaps the pipe + launcher lock; the lane-supervisor
+  # then brings the lane back read-only into idle-await on its next tick —
+  # not a forever-respawn zombie.
+  if task_is_terminal "$(current_bound_task)"; then
+    echo "hapax-claude-headless: task $(current_bound_task) closed/merged — stopping respawn loop"
     break
   fi
 
