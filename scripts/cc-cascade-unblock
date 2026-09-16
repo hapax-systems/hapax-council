@@ -352,13 +352,23 @@ def _still_blocked_with_same_deps(expected_deps: list[str]) -> Callable[[str], s
     return check
 
 
-def _still_unclaimed_with_same_deps(expected_deps: list[str]) -> Callable[[str], str | None]:
-    """Stand down if the note was claimed, or its dependencies moved, under the lock."""
+def _still_withdrawable_with_same_deps(
+    expected_deps: list[str], expected_status: str
+) -> Callable[[str], str | None]:
+    """Re-derive the withdrawal verdict from the text read under the lock.
+
+    Deliberately re-checks only what the pre-lock decision consulted — the status and the
+    dependency list. An earlier draft also stood down when ``assigned_to`` named anyone, which
+    the original decision never looked at: that is a new policy smuggled in under cover of a
+    lock fix, and a re-validator that decides more than the decision it re-derives is its own
+    unreviewed behaviour change.
+    """
 
     def check(text: str) -> str | None:
-        assignee = re.search(r"^assigned_to:\s*(\S+)", text, re.M)
-        if assignee and assignee.group(1) not in ("unassigned", "null", "~"):
-            return f"claimed by {assignee.group(1)} under the lock"
+        status = re.search(r"^status:\s*(\S+)", text, re.M)
+        current = status.group(1) if status else "(none)"
+        if current != expected_status:
+            return f"status changed to {current} under the lock"
         if _parse_depends(text) != expected_deps:
             return "depends_on changed under the lock"
         return None
@@ -409,7 +419,9 @@ def cascade_withdraw() -> int:
                 flags=re.M,
             )
 
-        if not _rewrite_under_lock(f, _to_withdrawn, _still_unclaimed_with_same_deps(deps)):
+        if not _rewrite_under_lock(
+            f, _to_withdrawn, _still_withdrawable_with_same_deps(deps, status_m.group(1))
+        ):
             continue
         withdrawn += 1
         print(f"cc-cascade-unblock: {f.stem} -> withdrawn (all deps non-fulfilling)")

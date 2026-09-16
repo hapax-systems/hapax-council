@@ -253,12 +253,24 @@ except TaskNoteLockError as exc:
     sys.exit(1)
 try:
     if not path.is_file():
-        # Re-checked under the lock: the note may have been relocated between the shell's
-        # resolution above and this acquisition. Closing a path that no longer names the
-        # task would recreate a stale copy at the old name.
+        # Re-checked under the lock: the note may have moved between the shell's resolution
+        # above and this acquisition. Closing a path that no longer names the task would
+        # recreate a stale copy at the old name.
+        #
+        # The overwhelmingly common way to land here is a second cc-close on a note that is
+        # already closed — and for that, "rerun" is a next action that fails identically
+        # forever. An error must name an action that can actually clear it.
+        if new_path.is_file():
+            print(
+                f"cc-close: '{task_id}' is already closed (it is in closed/). "
+                "Nothing to do; no action needed.",
+                file=sys.stderr,
+            )
+            sys.exit(0)
         print(
-            f"cc-close: REFUSED — '{task_id}' moved while acquiring its lock; "
-            "rerun to act on its current position",
+            f"cc-close: REFUSED — '{task_id}' is in neither active/ nor closed/; it moved "
+            "while acquiring its lock. Locate it with "
+            f"`ls ~/Documents/Personal/20-projects/hapax-cc-tasks/*/{task_id}*` before retrying",
             file=sys.stderr,
         )
         sys.exit(1)
