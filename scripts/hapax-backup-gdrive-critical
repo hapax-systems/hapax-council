@@ -3,9 +3,13 @@ set -euo pipefail
 
 # Secrets come from the FileStore through the one shared helper, never from pass.
 # Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
-# Pure parameter expansion: resolving this with `dirname`/`cd` made sourcing depend on
-# PATH, and a caller with a restricted PATH got `/lib/secret.sh: No such file`.
-. "${BASH_SOURCE[0]%/*}/lib/secret.sh"
+# The installed entry points are ~/.local/bin symlinks into the release tree, and BASH_SOURCE is
+# the symlink path — so the lib lives beside the TARGET and must be resolved first (measured:
+# invoked through the symlink, `${BASH_SOURCE[0]%/*}/lib` was ~/.local/bin/lib, absent, rc=1).
+# /usr/bin/readlink by absolute path keeps this independent of PATH; the fallback keeps a host
+# without coreutils on the direct-invocation behaviour rather than dying here.
+_hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+. "${_hapax_self%/*}/lib/secret.sh"
 
 # Bounded critical-artifact offsite backup while broad Tier 2 B2 is blocked.
 # This script does not create live database dumps, create Qdrant snapshots,

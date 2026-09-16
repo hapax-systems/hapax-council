@@ -197,3 +197,57 @@ class TestBackupWatchdogResticPassword:
         assert "rc=1" in result.stdout
         assert "is empty" in result.stdout, result.stdout
         assert "cannot read" not in result.stdout, result.stdout
+
+
+SOURCING_SCRIPTS = (
+    "hapax-github-mcp",
+    "hapax-context7-mcp",
+    "hapax-tavily-mcp",
+    "hapax-velocity-report",
+    "mediamtx-start.sh",
+    "hapax-glmcp-claude",
+    "hapax-codex",
+    "hapax-backup-watchdog",
+    "hapax-backup-gdrive-critical",
+)
+SOURCING_IDIOM = (
+    '_hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null'
+    ' || printf \'%s\' "${BASH_SOURCE[0]}")"\n'
+    '. "${_hapax_self%/*}/lib/secret.sh"\n'
+)
+
+
+class TestSourcingSurvivesTheInstalledSymlink:
+    """~/.local/bin holds symlinks into the release tree; BASH_SOURCE is the symlink path.
+
+    Measured on this branch before the fix: hapax-velocity-report invoked through such a symlink
+    died at its source line with `.../bin/lib/secret.sh: No such file or directory` (rc=1), while
+    the same script invoked directly ran. Six of the nine sourcing scripts are installed exactly
+    that way (the three MCP wrappers, the glmcp launcher, the backup watchdog, the velocity
+    report), so the idiom that finds the lib must resolve the symlink first — and must do so
+    without depending on PATH, which is the hazard the previous idiom was avoiding.
+    """
+
+    @pytest.mark.parametrize("name", SOURCING_SCRIPTS)
+    def test_every_sourcing_script_uses_the_one_resolving_idiom(self, name: str) -> None:
+        text = (REPO_ROOT / "scripts" / name).read_text(encoding="utf-8")
+        assert SOURCING_IDIOM in text, f"{name}: lib/secret.sh is not resolved through the symlink"
+        assert '. "${BASH_SOURCE[0]%/*}/lib/secret.sh"' not in text, name
+
+    def test_a_real_script_runs_through_a_symlink_with_a_minimal_path(self, tmp_path: Path) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        link = bin_dir / "hapax-velocity-report"
+        link.symlink_to(REPO_ROOT / "scripts" / "hapax-velocity-report")
+        # Minimal PATH (no ~/.local/bin, no venv) and a HOME with no FileStore: the script must
+        # still get PAST its source line. It then starts its real work and stops for lack of
+        # a token — that later exit is not the property under test, so only the sourcing
+        # outcome is asserted: no "No such file" for the lib, and the script's own banner
+        # (printed after sourcing) present.
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)}
+        result = subprocess.run(
+            [BASH, str(link)], capture_output=True, text=True, env=env, cwd=tmp_path, timeout=60
+        )
+        assert "lib/secret.sh: No such file" not in result.stderr, result.stderr
+        assert "secret.sh" not in result.stderr, result.stderr
+        assert "Collecting velocity metrics" in result.stdout, (result.stdout, result.stderr)
