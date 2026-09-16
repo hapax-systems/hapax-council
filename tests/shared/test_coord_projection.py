@@ -1356,6 +1356,17 @@ def test_atomic_private_install_preserves_fifo_exchange_race_for_recovery(
 
 
 def test_lock_inode_replacement_is_detected_after_flock(tmp_path: Path) -> None:
+    """The post-flock identity check, exercised through the transition's own entry point.
+
+    The lock primitive moved to shared/task_note_lock.py and takes ``LOCK_EX | LOCK_NB`` against
+    a deadline rather than a blocking ``LOCK_EX``, so this probe matches the exclusive *bit*
+    instead of the exact operation value. The invariant it pins is unchanged, and it is now the
+    only thing standing between a swapped lock file and a critical section entered on an
+    orphaned inode: the redundant second verification sweep is gone, because while the lock root
+    is flocked no other participant can unlink or recreate a lock file, and two mitigations for
+    one hazard is the estate's signal to change the shape rather than keep both.
+    """
+
     root = tmp_path / "locks"
     original_flock = cp.fcntl.flock
     exclusive_calls = 0
@@ -1363,7 +1374,7 @@ def test_lock_inode_replacement_is_detected_after_flock(tmp_path: Path) -> None:
     def replace_lock(handle: int, operation: int) -> None:
         nonlocal exclusive_calls
         original_flock(handle, operation)
-        if operation != cp.fcntl.LOCK_EX:
+        if not operation & cp.fcntl.LOCK_EX:
             return
         exclusive_calls += 1
         if exclusive_calls != 2:

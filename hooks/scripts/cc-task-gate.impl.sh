@@ -1040,34 +1040,66 @@ is_nullish() {
 # if present, else insert it before the closing '---'. Atomic (tmp + rename).
 # Used to stamp a derived/defaulted field durably so downstream release/packet
 # checks read it consistently. Best-effort: returns non-zero on any failure.
+# Stamp one frontmatter field, under the projection lock.
+#
+# This note is a path shared/coord_projection.py relocates transactionally. A stamp landing
+# between its preimage pin and its atomic install is counted by the transition's safety
+# check and then destroyed, while the transition is still recorded applied — fail-open, and
+# invisible from either side (beta 2026-09-13T22:10Z; codex-1 C1 on PR #4667).
+#
+# Refuses rather than stamping if the lock cannot be taken. Failing open here would restore
+# exactly the race this closes; the caller reports the refusal instead.
 _stamp_frontmatter_field() {
-  local note="$1" key="$2" value="$3"
-  python3 - "$note" "$key" "$value" <<'PYEOF' 2>/dev/null || return 1
+  local note="$1" key="$2" value="$3" repo_root
+  repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)" || return 1
+  # A short bound: this runs inside a tool-call hook, so waiting out a wedged transition
+  # would hang the session. Refusing to stamp is safe; the caller reports it.
+  HAPAX_TASK_NOTE_LOCK_TIMEOUT="${HAPAX_TASK_NOTE_LOCK_TIMEOUT:-5}" \
+  PYTHONPATH="$repo_root:${PYTHONPATH:-}" python3 - "$note" "$key" "$value" <<'PYEOF' || return 1
+import os
 import sys
 from pathlib import Path
 
+from shared.task_note_lock import projected_path_lock
+
 path, key, value = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-text = path.read_text(encoding="utf-8")
-if not text.startswith("---"):
+try:
+    lock = projected_path_lock(None, (path,))
+    lock.__enter__()
+except Exception as exc:  # noqa: BLE001 — the gate reports; it does not stamp regardless.
+    print(f"cc-task-gate: stage stamp skipped — {exc}", file=sys.stderr)
     sys.exit(1)
-end = text.find("\n---", 4)
-if end < 0:
-    sys.exit(1)
-front, body = text[4:end], text[end:]
-out, found = [], False
-for line in front.splitlines():
-    stripped = line.strip()
-    if stripped.startswith(f"{key}:") or stripped.startswith(f"{key} :"):
+try:
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        sys.exit(1)
+    end = text.find("\n---", 4)
+    if end < 0:
+        sys.exit(1)
+    front, body = text[4:end], text[end:]
+    out, found = [], False
+    for line in front.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{key}:") or stripped.startswith(f"{key} :"):
+            out.append(f"{key}: {value}")
+            found = True
+        else:
+            out.append(line)
+    if not found:
         out.append(f"{key}: {value}")
-        found = True
-    else:
-        out.append(line)
-if not found:
-    out.append(f"{key}: {value}")
-new = "---\n" + "\n".join(out) + body
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text(new, encoding="utf-8")
-tmp.replace(path)
+    rendered = "---\n" + "\n".join(out) + body
+    # A scratch name unique to this writer: a fixed '.tmp' sibling is one shared mailbox
+    # that two stampers would each install over the other, and the lock cannot serialize a
+    # writer that reaches this note by another route.
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.stamp.tmp")
+    try:
+        tmp.write_text(rendered, encoding="utf-8")
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+finally:
+    lock.__exit__(None, None, None)
 PYEOF
 }
 

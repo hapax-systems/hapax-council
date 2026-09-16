@@ -106,6 +106,21 @@ def widen(task_id: str, additions: list[str], removals: list[str] | None = None)
         if not _surface_ok(item):
             return _refuse(f"path '{item}' has no existing surface under {REPO_ROOT}")
 
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from shared.task_note_lock import projected_path_lock
+
+    # Read and write together under the projection lock — see cc-stage-advance for why the
+    # read has to be inside it.
+    with projected_path_lock(task_id, (note,)):
+        return _widen_locked(task_id, note, additions, removals)
+
+
+def _widen_locked(
+    task_id: str, note: Path, additions: list[str], removals: list[str]
+) -> int:
+    """The read-modify-write itself. Called only with the projection lock held."""
+
     text = note.read_text(encoding="utf-8")
     if not text.startswith("---"):
         print("cc-scope-widen: note has no frontmatter", file=sys.stderr)

@@ -52,6 +52,7 @@ from hapax.context_canon import (
     build_coord_replay_snapshot,
 )
 
+from shared import task_note_lock
 from shared.coord_event_log import (
     AppendReceipt,
     CoordEvent,
@@ -6293,80 +6294,65 @@ def _lifecycle_estate_lock(root: Path):
         os.close(handle)
 
 
+def _transition_lock_names(task_id: str, paths: Sequence[Path]) -> tuple[str, ...]:
+    """The canonical lock names for one transition, in the order they must be taken.
+
+    Exposed so the coverage conformance test can assert that a task-note writer and the
+    transition over that same note name *the same* lock files — the property the whole
+    projection-lock row exists to establish.
+    """
+
+    return task_note_lock.lock_names(task_id, paths)
+
+
 @contextmanager
-def _transition_locks(task_id: str, paths: Sequence[Path], root: Path):
-    keys = {f"task:{task_id}", *(f"path:{_normalized_path(path)}" for path in paths)}
-    root_fd = _ensure_private_directory_fd(root)
-    root_locked = False
+def _transition_locks(
+    task_id: str,
+    paths: Sequence[Path],
+    root: Path,
+    *,
+    timeout: float | None | task_note_lock._Default = task_note_lock.DEFAULT,
+):
+    """Hold the projection lock for one transition.
+
+    This is :func:`shared.task_note_lock.projected_path_lock`, not a second implementation of
+    it. Routine task-note writers (``cc-stage-advance``, ``cc-scope-widen``, ``cc-task-repair``,
+    the gate's ``_stamp_frontmatter_field``, ``cc-claim``, ``cc-close``, ``cc-task-pr-link``)
+    take that same primitive around their read-modify-write, so a writer can no longer land
+    between this transition's preimage pin and its install — the fail-open hazard beta measured
+    on 2026-09-13 and codex-1 reproduced as C1 on PR #4667.
+
+    Two implementations that merely agreed on the root, the key spelling and the digest would
+    serialize nothing the day they stopped agreeing, and nothing would detect it. One
+    implementation cannot stop agreeing with itself.
+
+    The refusal taxonomy stays ``transition_lock_*``: callers and their pins name transitions,
+    not the primitive underneath.
+    """
+
     try:
-        fcntl.flock(root_fd, fcntl.LOCK_EX)
-        root_locked = True
-        handles: list[tuple[str, int]] = []
-        try:
-            for key in sorted(keys):
-                name = f"{_sha256(key.encode('utf-8'))}.lock"
-                handle = os.open(
-                    name,
-                    os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
-                    0o600,
-                    dir_fd=root_fd,
-                )
-                try:
-                    metadata = os.fstat(handle)
-                    if (
-                        not stat.S_ISREG(metadata.st_mode)
-                        or metadata.st_uid != os.geteuid()
-                        or metadata.st_nlink != 1
-                        or metadata.st_mode & 0o777 != 0o600
-                        or metadata.st_size != 0
-                    ):
-                        raise LifecycleTransitionError(
-                            "transition_lock_file_unsafe",
-                            "use one euid-owned single-link empty mode-0600 lock file",
-                            str(root / name),
-                        )
-                    fcntl.flock(handle, fcntl.LOCK_EX)
-                    locked_metadata = os.fstat(handle)
-                    named_metadata = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
-                    if (
-                        locked_metadata.st_nlink != 1
-                        or locked_metadata.st_dev != named_metadata.st_dev
-                        or locked_metadata.st_ino != named_metadata.st_ino
-                    ):
-                        raise LifecycleTransitionError(
-                            "transition_lock_identity_changed",
-                            "hold until the canonical lock pathname names the inode under flock",
-                            str(root / name),
-                        )
-                except Exception:
-                    os.close(handle)
-                    raise
-                handles.append((name, handle))
-            for name, handle in handles:
-                metadata = os.fstat(handle)
-                named = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
-                if (
-                    metadata.st_nlink != 1
-                    or metadata.st_dev != named.st_dev
-                    or metadata.st_ino != named.st_ino
-                ):
-                    raise LifecycleTransitionError(
-                        "transition_lock_identity_changed",
-                        "hold until every canonical lock pathname names its inode under flock",
-                        str(root / name),
-                    )
-            yield tuple(str(root / name) for name, _handle in handles)
-        finally:
-            for _name, handle in reversed(handles):
-                try:
-                    fcntl.flock(handle, fcntl.LOCK_UN)
-                    os.close(handle)
-                except OSError:
-                    pass
-    finally:
-        if root_locked:
-            fcntl.flock(root_fd, fcntl.LOCK_UN)
-        os.close(root_fd)
+        with task_note_lock.projected_path_lock(
+            task_id, paths, root=root, timeout=timeout
+        ) as names:
+            yield tuple(str(root / name) for name in names)
+    except task_note_lock.TaskNoteLockError as exc:
+        raise LifecycleTransitionError(
+            _TRANSITION_LOCK_REASONS.get(exc.reason_code, "transition_lock_identity_changed"),
+            exc.repair_action,
+            exc.detail,
+        ) from exc
+
+
+#: The primitive refuses in its own vocabulary; transitions refuse in theirs. Mapped rather than
+#: renamed at the source, because the primitive is shared and its reason codes are not a
+#: transition's to define.
+_TRANSITION_LOCK_REASONS = {
+    "task_note_lock_file_unsafe": "transition_lock_file_unsafe",
+    "task_note_lock_identity_changed": "transition_lock_identity_changed",
+    "task_note_lock_timeout": "transition_lock_contended",
+    "task_note_lock_root_unavailable": "transition_lock_root_unavailable",
+    "task_note_lock_no_keys": "transition_lock_no_keys",
+}
 
 
 def _write_manifest(
