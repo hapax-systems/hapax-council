@@ -16,7 +16,7 @@ architecture; everything below is a binding, and each is swappable:
 | binding | today |
 |---|---|
 | exclusion mechanism | `flock` on one lock file per key |
-| key namespace | `task:<id>`, `path:<absolute note path>` |
+| key namespace | `task:<id>` and/or `path:<absolute note path>` — a writer may take either or both |
 | digest | SHA-256 of the key, `.lock` suffix |
 | lock root | `coord_base_dir()/task-locks` (moves with `HAPAX_COORD_DIR`) |
 
@@ -38,22 +38,30 @@ architecture; everything below is a binding, and each is swappable:
 
 ## What it does NOT cover
 
-**`cc-claim` and `cc-close` are outside this domain.** They are the two highest-frequency note
-writers in the estate:
-
-- claim publication holds a lock keyed by the *role*, under a different root
-  (`shared/sdlc_claim.py`), and calls `coord_projection._apply_projections` directly — which takes
-  no lock of its own;
-- the live close is `scripts/cc-close` moving `active/ → closed/` itself, unserialized, ending in
-  `path.unlink()` on the active note. The correctly locked `shared/sdlc_close.py` has no
-  production caller.
+**Daemon and one-shot writers listed in `KNOWN_UNCONVERTED`.** The nine writers a session
+actually runs are inside the domain — `cc-stage-advance`, `cc-scope-widen`, `cc-task-repair`,
+`cc-task-offer-ready`, `cc-cascade-unblock`, the gate stamp, `cc-task-pr-link`, `cc-close`, and
+claim publication (`cc-claim` via `shared/sdlc_claim.py`, plus its documented legacy fallback).
+What remains are daemons, reconcilers and one-shot migrations.
 
 The full inventory is machine-checked in
-`tests/shared/test_projected_path_writer_lock_coverage.py`: every file the sweep reaches must be
-classified as under the lock, not a note writer, or a known-unconverted hazard with a named owner.
-Adding a writer without classifying it fails CI.
+`tests/shared/test_projected_path_writer_lock_coverage.py`: every file the three search shapes
+reach must be classified as under the lock, not a note writer, or unconverted with a named owner.
+Adding a writer without classifying it fails CI, and the sweep asserts it still finds its own
+known writers so it cannot pass by finding nothing.
 
-Owner of the remainder: `claim-close-writers-outside-the-projection-lock-domain-20260916`.
+**Two notes on how `cc-claim` and `cc-close` got here**, because the shape matters more than the
+outcome. Claim publication holds a lock keyed by the *role*, under a different root; the
+projection lock is taken **inside** it, so the order is always role-then-note. That is the whole
+deadlock argument: the role lock is acquired in exactly three places, all inside
+`_claim_publication_lock`, and nothing takes a projected-path lock and then asks for a role lock.
+A test fails if a fourth acquisition site appears. And `cc-close` is the only writer that
+*unlinks* a projected path, so it locks both the source it removes and the destination it
+installs.
+
+`shared/sdlc_close.py` still has no production caller — it is correct and unwired, while
+`scripts/cc-close` is the live closer. That, and the remaining daemon writers, are owned by
+`claim-close-writers-outside-the-projection-lock-domain-20260916`.
 
 **A lock file removed while a section is held.** `_verify_identity` protects an *acquirer* at
 acquisition, not an *incumbent* for the duration. So:
@@ -63,19 +71,74 @@ acquisition, not an *incumbent* for the duration. So:
 Acquirers hold the root `LOCK_SH`, so a reaper taking it exclusively waits for every in-flight
 critical section. Nothing in the estate removes lock files today; the protocol is written down so
 that the day something does — a cache sweep over `coord_base_dir()`, a recovery reaper, a hand-run
-`rm` — it has a rule to follow rather than an assumption to break.
+`rm` — it has a rule to follow rather than an assumption to break. The recheck section below has
+a pasteable probe that demonstrates the exclusion actually holds.
 
-## There is no bypass, deliberately
+## The bypass is `HAPAX_COORD_DIR` — and it is the dangerous one
 
-`HAPAX_TASK_NOTE_LOCK_TIMEOUT=0` refuses sooner; it does not admit. The estate documents
-per-invocation bypasses for comparable machinery (`HAPAX_GATE0B_CLAIM_PUBLICATION_OFF`), and this
-one has none on purpose: a bypass here would write a task note *while a transition holds it*,
-which is the exact fail-open the lock exists to close. A failure path may do less than the
-primary; it may not do something else instead.
+An earlier draft of this runbook said there was deliberately no bypass. That was wrong in the
+dangerous direction. The lock root is `coord_base_dir()/task-locks`, and **`HAPAX_COORD_DIR`
+moves it**: a writer invoked with a different value takes a *different* lock and excludes
+nothing, silently. An undocumented escape hatch is worse than a documented one, because the
+people who trip it are not the people who chose it.
 
-If the lock root is unavailable, every converted writer refuses with
-`task_note_lock_root_unavailable` or `task_note_lock_root_unsafe` and a next action. That is a
-legible estate-wide stop rather than a silent estate-wide corruption. Repair the root.
+- **`HAPAX_COORD_DIR` splits the lock domain.** Every participant that must exclude the others —
+  each converted writer, the gate stamp, claim publication, every lifecycle transition — has to
+  resolve the *same* root. It is the emergency route out of a wedged or unusable lock root, and
+  its hazard is exactly the fail-open this lock exists to close.
+- **`HAPAX_TASK_NOTE_LOCK_TIMEOUT` is not a killswitch.** It tunes the wait; `0` refuses sooner,
+  it never admits. A malformed, negative, `inf` or `nan` value falls back to the 30s default
+  **and says so on stderr**, so nobody reasons about a timeout that was never in effect.
+
+Order of preference when the root is unusable:
+
+1. Repair the root (`chmod 700`, fix the mount, remove a foreign-owned directory).
+2. If it cannot be repaired, move `HAPAX_COORD_DIR` **for the whole estate at once** — never for
+   a single writer, which is what silently splits the domain.
+
+```bash
+# Is the domain whole right now? Both must print the same path.
+uv run python -c "from shared.coord_projection import _lock_root; print(_lock_root(None))"
+uv run python -c "from shared.task_note_lock import default_lock_root; print(default_lock_root())"
+```
+
+## Recheck commands
+
+Every claim above is pinned by a test. These are the commands, not the test names:
+
+```bash
+# Per-task granularity: one contended task must not delay an unrelated one.
+uv run pytest tests/shared/test_task_note_lock.py::test_contention_on_one_task_does_not_stall_an_unrelated_task -q
+
+# No hold-and-wait: opposite acquisition orders, concurrently, must both complete.
+uv run pytest tests/shared/test_task_note_lock.py::test_no_lock_is_held_while_another_is_wanted -q
+
+# A real lifecycle transition cannot enter a writer's window.
+uv run pytest "tests/shared/test_projected_path_writer_lock_coverage.py::test_a_real_lifecycle_transition_cannot_enter_a_writer_s_window" -q
+
+# The inventory: every writer the sweep reaches is classified, and the sweep still works.
+uv run pytest tests/shared/test_projected_path_writer_lock_coverage.py -q
+
+# The whole domain, including the transition mapping and the role/note ordering.
+uv run pytest tests/shared/test_task_note_lock.py tests/shared/test_projected_path_writer_lock_coverage.py -q
+
+# The reaper contract, by hand: hold a lock in one shell, then confirm an exclusive
+# root acquisition blocks until it is released.
+uv run python - <<'EOF'
+from pathlib import Path
+from shared.task_note_lock import default_lock_root, projected_path_lock
+import fcntl, os, time
+with projected_path_lock("probe-task", (), timeout=5.0):
+    fd = os.open(default_lock_root(), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        print("REAPER GOT THE ROOT WHILE A SECTION WAS HELD — contract broken")
+    except BlockingIOError:
+        print("ok: a reaper taking LOCK_EX waits for the in-flight section")
+    finally:
+        os.close(fd)
+EOF
+```
 
 ## When a writer refuses
 

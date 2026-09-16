@@ -823,3 +823,80 @@ def test_a_held_guard_is_not_forgotten_while_another_caller_wants_it(tmp_path: P
         release.set()
         worker.join(timeout=10)
     assert observed == [1], f"a held guard was not tracked as in use: {observed}"
+
+
+def test_a_forked_child_does_not_inherit_the_parents_locks(tmp_path: Path) -> None:
+    """``fork`` copies the bookkeeping; the child must not act on it.
+
+    Without the at-fork handler the child starts believing it holds everything the parent held
+    — ``_HELD`` is process-global and the child's main thread reuses the parent's thread id —
+    so it would either re-enter a lock it does not own or, because a different key set counts
+    as an expansion, be refused for a lock nobody in the child ever took. The estate's
+    claim-publication test forks exactly this way and is what surfaced it.
+    """
+
+    import multiprocessing as mp
+
+    root = tmp_path / "locks"
+    ctx = mp.get_context("fork")
+    result: mp.Queue = ctx.Queue()
+
+    def child(out: mp.Queue) -> None:  # pragma: no cover - runs in the forked child
+        try:
+            with tnl.projected_path_lock("task-beta", (), root=root, timeout=5.0):
+                out.put(("ok", len(tnl._HELD)))
+        except tnl.TaskNoteLockError as exc:
+            out.put(("refused", exc.reason_code))
+
+    with tnl.projected_path_lock("task-alpha", (), root=root, timeout=5.0):
+        assert tnl._HELD, "the parent should be holding something"
+        proc = ctx.Process(target=child, args=(result,))
+        proc.start()
+        outcome = result.get(timeout=30)
+        proc.join(timeout=30)
+
+    assert outcome[0] == "ok", f"the forked child inherited the parent's hold: {outcome}"
+
+
+def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> None:
+    """The deadlock argument for nesting the projection lock inside the role lock.
+
+    ``sdlc_claim``'s role lock is acquired in exactly three places, all inside
+    ``_claim_publication_lock``, and the projection lock is taken inside it — so the order is
+    always role-then-note. A cycle would need something that holds a projected-path lock and
+    then asks for a role lock; nothing does, and this fails if a second role-lock acquisition
+    site appears where that could change.
+    """
+
+    import re
+
+    from shared import sdlc_claim
+
+    source = Path(sdlc_claim.__file__).read_text(encoding="utf-8")
+    stripped = "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in source.splitlines())
+
+    takers = re.findall(r"with _claim_publication_lock\(", stripped)
+    assert len(takers) == 3, (
+        f"the role lock is now taken in {len(takers)} places, not 3 — re-derive the ordering "
+        "argument before assuming role-then-note is still the only direction"
+    )
+
+    body = re.search(
+        r"def _claim_publication_lock\(.*?(?=\ndef |\n@contextmanager)", stripped, re.S
+    )
+    assert body, "_claim_publication_lock was renamed"
+    assert "with projected_path_lock(" in body.group(0), (
+        "claim publication no longer takes the projection lock, so its _apply_projections "
+        "calls can land inside a transition's pin/install window again"
+    )
+
+    # And nothing in this module may take the projection lock anywhere BUT inside the role
+    # lock's body — that containment is what makes role-then-note the only direction. (File
+    # offset is not lock order: the acquisition inside _claim_publication_lock necessarily
+    # appears earlier in the file than its own call sites.)
+    uses = len(re.findall(r"with projected_path_lock\(", stripped))
+    inside = len(re.findall(r"with projected_path_lock\(", body.group(0)))
+    assert uses == inside == 1, (
+        f"sdlc_claim takes the projection lock in {uses} places, {inside} of them inside the "
+        "role lock — any acquisition outside it could invert the order"
+    )

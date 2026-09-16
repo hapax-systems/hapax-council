@@ -66,14 +66,25 @@ failing open would restore the exact race this closes. A refusal that names its 
 third option and the only sound one. The bound is a deadline over non-blocking ``flock`` rather
 than ``SIGALRM``, so it holds on every thread and collides with no caller's own timers.
 
-**No bypass, deliberately.** ``HAPAX_TASK_NOTE_LOCK_TIMEOUT`` tunes the wait; it is not a
-killswitch, and ``0`` refuses sooner rather than admitting. The estate documents per-invocation
-bypasses for comparable machinery (``HAPAX_GATE0B_CLAIM_PUBLICATION_OFF``), and this module
-deliberately has none: a bypass here would write a task note *while a transition holds it*, which
-is the exact fail-open this module exists to close — a killswitch may do less than the primary
-path, never something else instead. If the lock root becomes unavailable, every converted writer
-refuses with ``task_note_lock_root_unavailable`` and a next action, which is a legible estate-wide
-stop rather than a silent estate-wide corruption. Repair the root; do not route around it.
+**The bypass is ``HAPAX_COORD_DIR``, and pretending otherwise was the mistake.** An earlier
+revision of this docstring claimed there was deliberately no bypass. That was wrong in the
+dangerous direction: the lock root is ``coord_base_dir()/task-locks``, and ``HAPAX_COORD_DIR``
+moves it — so a writer invoked with a different value takes a *different* lock and excludes
+nothing, silently. An undocumented escape hatch that nobody is warned about is worse than a
+documented one, because the people who trip it are not the people who chose it.
+
+So it is named here as what it is:
+
+* ``HAPAX_COORD_DIR`` **splits the lock domain.** Every participant that must exclude one another
+  — every converted writer, the gate stamp, claim publication, and every lifecycle transition —
+  has to resolve the *same* root. Setting it per-invocation is the emergency route out of a
+  wedged or broken lock root, and its hazard is exactly the fail-open this module exists to
+  close: a note written while a transition holds it, with no refusal anywhere.
+* ``HAPAX_TASK_NOTE_LOCK_TIMEOUT`` only tunes the wait. ``0`` refuses sooner; it never admits.
+
+Preferred order when the root is unusable: repair the root; if it cannot be repaired, move
+``HAPAX_COORD_DIR`` **for the whole estate at once**, never for one writer. See
+``docs/runbooks/projection-lock-domain.md``.
 """
 
 from __future__ import annotations
@@ -83,6 +94,7 @@ import fcntl
 import math
 import os
 import stat
+import sys
 import threading
 import time
 from collections.abc import Iterable, Iterator
@@ -123,6 +135,23 @@ class _Default:
 DEFAULT = _Default()
 
 
+def _discarded(raw: str) -> float:
+    """Fall back to the default, and say so.
+
+    Silently discarding the operator's value is how they end up reasoning about a timeout that
+    was never in effect: they set 2, saw a 30s wait, and concluded the lock was wedged. The
+    fallback itself is right — a malformed knob must not wedge every writer in the estate — but
+    it owes them a line on stderr.
+    """
+
+    print(
+        f"task_note_lock: {TIMEOUT_ENV}={raw!r} is not a finite non-negative number; "
+        f"using the {DEFAULT_TIMEOUT_SECONDS}s default",
+        file=sys.stderr,
+    )
+    return DEFAULT_TIMEOUT_SECONDS
+
+
 def configured_timeout() -> float:
     raw = os.environ.get(TIMEOUT_ENV, "").strip()
     if not raw:
@@ -130,12 +159,12 @@ def configured_timeout() -> float:
     try:
         value = float(raw)
     except ValueError:
-        return DEFAULT_TIMEOUT_SECONDS
+        return _discarded(raw)
     # `inf` and `nan` both parse, and `inf >= 0` is True — a bare float() check would let
     # HAPAX_TASK_NOTE_LOCK_TIMEOUT=inf produce precisely the unbounded wait this fallback
     # exists to make unreachable, wedging every converted writer behind one stuck holder.
     if not math.isfinite(value) or value < 0:
-        return DEFAULT_TIMEOUT_SECONDS
+        return _discarded(raw)
     return value
 
 
@@ -212,6 +241,11 @@ _REGISTRY_GUARD = threading.Lock()
 _THREAD_LOCKS: dict[tuple[str, str], threading.RLock] = {}
 _THREAD_LOCK_USERS: dict[tuple[str, str], int] = {}
 _HELD: dict[tuple[str, str, int], int] = {}
+#: Open lock descriptors, so a forked child can disown what it inherited. Not bookkeeping for
+#: release — the acquisition frame owns that — and an earlier revision deleted this map as dead
+#: state, correctly observing it had no reader. It had no reader because its consumer was
+#: missing, not because it was unnecessary: see _forget_inherited_locks.
+_OPEN_HANDLES: dict[int, None] = {}
 
 
 def _thread_lock(key: tuple[str, str]) -> threading.RLock:
@@ -267,6 +301,37 @@ def _exit_depth(root_key: str, names: tuple[str, ...], thread_id: int) -> None:
             _HELD.pop(key, None)
 
 
+def _forget_inherited_locks() -> None:
+    """Disown every lock this process inherited across ``fork``.
+
+    ``fork`` copies the whole address space, so a child starts life believing it holds every
+    lock the parent held: ``_HELD`` is process-global, and the child's main thread reuses the
+    parent's thread id. The child would then either re-enter a lock it does not own, or — since
+    a key set that differs from the inherited one is an expansion — be refused outright for a
+    lock nobody in the child ever took. The estate's own claim-publication test forks exactly
+    this way and caught it.
+
+    The inherited *descriptors* are closed too. ``flock`` is released only when every descriptor
+    referring to the open file description is closed, so the parent keeps its lock; all this
+    does is stop the child from silently extending the parent's hold for as long as it lives.
+    ``O_CLOEXEC`` already covers fork+exec, which is how every shell caller reaches this module;
+    this covers bare ``fork``, which multiprocessing uses.
+    """
+
+    for handle in list(_OPEN_HANDLES):
+        try:
+            os.close(handle)
+        except OSError:  # pragma: no cover - defensive
+            pass
+    _OPEN_HANDLES.clear()
+    _HELD.clear()
+    _THREAD_LOCKS.clear()
+    _THREAD_LOCK_USERS.clear()
+
+
+os.register_at_fork(after_in_child=_forget_inherited_locks)
+
+
 def _thread_held(root_key: str, thread_id: int) -> set[str]:
     return {name for (rk, name, tid) in _HELD if rk == root_key and tid == thread_id}
 
@@ -293,6 +358,7 @@ def _release_attempt(
             fcntl.flock(handle, fcntl.LOCK_UN)
         except OSError:  # pragma: no cover - defensive
             pass
+        _OPEN_HANDLES.pop(handle, None)
         try:
             os.close(handle)
         except OSError:  # pragma: no cover - defensive
@@ -552,6 +618,7 @@ def projected_path_lock(
                         os.close(handle)
                         raise
                     opened.append((name, handle))
+                    _OPEN_HANDLES[handle] = None
                 else:
                     break  # every key taken
 

@@ -284,12 +284,60 @@ def rewrite_note(
     task_id: str,
     dry_run: bool,
 ) -> None:
-    from shared.task_note_lock import projected_path_lock
+    from shared.task_note_lock import TaskNoteLockError
 
     # Read and write together under the projection lock: this note is a path
     # coord_projection relocates transactionally, and a promotion landing between its
     # preimage pin and its install is counted by the safety check and then destroyed.
+    try:
+        _promote_under_lock(
+            path=path,
+            status=status,
+            route_changes=route_changes,
+            timestamp=timestamp,
+            task_id=task_id,
+            dry_run=dry_run,
+        )
+    except TaskNoteLockError as exc:
+        # An operator-facing refusal, not a crash: executive_function requires the message
+        # to carry its own next action, and a traceback carries the stack instead.
+        print(f"cc-task-offer-ready: REFUSED — {exc}", file=sys.stderr)
+
+
+def _promote_under_lock(
+    *,
+    path: Path,
+    status: str,
+    route_changes: dict[str, str],
+    timestamp: str,
+    task_id: str,
+    dry_run: bool,
+) -> None:
+    from shared.task_note_lock import projected_path_lock
+
     with projected_path_lock(task_id, (path,)):
+        # The readiness verdict was computed from a scan taken before this lock existed.
+        # Re-derive the part of it that another writer can invalidate: a note claimed in that
+        # window would otherwise be overwritten back to offered/unassigned by a stale verdict,
+        # which is the lost update the lock exists to prevent, moved up from the bytes to the
+        # decision about them. Locking only the write does not reach it.
+        current = path.read_text(encoding="utf-8")
+        assignee = re.search(r"^assigned_to:\s*(\S+)", current, re.M)
+        if assignee and not is_claimable_assignee(assignee.group(1)):
+            print(
+                f"cc-task-offer-ready: '{task_id}' was claimed by {assignee.group(1)} while "
+                "acquiring its lock — not promoting; rerun once it is unassigned",
+                file=sys.stderr,
+            )
+            return
+        status_now = re.search(r"^status:\s*(\S+)", current, re.M)
+        if status_now and status_now.group(1) not in ("ready", status):
+            print(
+                f"cc-task-offer-ready: '{task_id}' moved to status "
+                f"{status_now.group(1)} while acquiring its lock — not promoting",
+                file=sys.stderr,
+            )
+            return
         _rewrite_note_locked(
             path=path,
             status=status,

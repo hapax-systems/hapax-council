@@ -63,6 +63,7 @@ from shared.sdlc_task_store import (
     load_claim_dispatch_binding,
     resolve_task_note,
 )
+from shared.task_note_lock import projected_path_lock
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -2475,7 +2476,19 @@ def _claim_publication_lock(
                         str(path),
                     ) from exc
                 time.sleep(_CLAIM_PUBLICATION_LOCK_RETRY_SECONDS)
-        yield
+        # The role lock above serializes one role's publications against each other. It does
+        # NOT exclude a lifecycle transition over this task's note: it is keyed by the role,
+        # not by the note, and it lives under a different root. So the publication's
+        # _apply_projections calls — which take no lock of their own — could land between a
+        # transition's preimage pin and its atomic install. Take the projection lock too.
+        #
+        # Order is role-then-note, always, and that is the whole deadlock argument: the role
+        # lock is acquired in exactly three places, all of them here, and nothing in the estate
+        # takes a projected-path lock and then asks for a role lock. One direction only means
+        # no cycle. Asserted in tests/shared/test_task_note_lock.py so a second acquisition site
+        # cannot appear silently.
+        with projected_path_lock(intent.task_id, (intent.note_path,)):
+            yield
     finally:
         if locked:
             try:

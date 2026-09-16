@@ -281,7 +281,9 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
                     reasons.append(f"{dep} (not found or not closure-valid)")
             blocked_reason = "waiting_for_closure_valid_dependencies: " + "; ".join(reasons)
             _rewrite_under_lock(
-                f, lambda t, r=blocked_reason: _set_frontmatter_scalar(t, "blocked_reason", r)
+                f,
+                lambda t, r=blocked_reason: _set_frontmatter_scalar(t, "blocked_reason", r),
+                _still_blocked_with_same_deps(deps),
             )
             continue
 
@@ -289,7 +291,7 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
             t = re.sub(r"^status: blocked", "status: offered", t, count=1, flags=re.M)
             return _set_frontmatter_scalar(t, "blocked_reason", "null")
 
-        if not _rewrite_under_lock(f, _to_offered):
+        if not _rewrite_under_lock(f, _to_offered, _still_blocked_with_same_deps(deps)):
             continue
         unblocked += 1
         print(f"cc-cascade-unblock: {f.stem} -> offered (all deps satisfied)")
@@ -297,29 +299,71 @@ def cascade_unblock(trigger_task_id: str | None = None) -> int:
     return unblocked
 
 
-def _rewrite_under_lock(path: Path, mutate: Callable[[str], str]) -> bool:
-    """Re-read, mutate and write one task note with the projection lock held.
+def _rewrite_under_lock(
+    path: Path,
+    mutate: Callable[[str], str],
+    revalidate: Callable[[str], str | None],
+) -> bool:
+    """Re-read, RE-VALIDATE, mutate and write one task note under the projection lock.
 
-    The candidate scan above reads every note without the lock, which is fine — it only
-    decides *whether* to act. The decision's write must not reuse that stale text: this note
-    is a path coord_projection relocates transactionally, and text read before the lock may
-    already have been replaced by the transition or another writer. So the read happens again
-    here, inside the lock, and ``mutate`` is applied to that.
+    Re-reading the bytes is not enough, and an earlier revision of this helper did only that:
+    it applied a verdict computed from the pre-lock scan to freshly read text. A note whose
+    dependency changed, or which was claimed, between the scan and the acquisition was still
+    rewritten to ``offered`` / ``unassigned`` — the stale verdict won, silently. That is the
+    same lost update the lock exists to prevent, moved one level up from the bytes to the
+    decision about them, and locking the write does not reach it.
 
-    Returns True when the note changed.
+    ``revalidate`` re-derives the verdict from the text read *under* the lock and returns a
+    reason to stand down, or ``None`` to proceed. Returns True when the note changed.
     """
 
-    from shared.task_note_lock import projected_path_lock
+    from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
-    with projected_path_lock(None, (path,)):
-        current = _safe_read_text(path)
-        if current is None:
-            return False
-        updated = mutate(current)
-        if updated == current:
-            return False
-        path.write_text(updated, encoding="utf-8")
-        return True
+    try:
+        with projected_path_lock(None, (path,)):
+            current = _safe_read_text(path)
+            if current is None:
+                return False
+            refusal = revalidate(current)
+            if refusal is not None:
+                print(f"cc-cascade-unblock: {path.stem} skipped — {refusal}", file=sys.stderr)
+                return False
+            updated = mutate(current)
+            if updated == current:
+                return False
+            path.write_text(updated, encoding="utf-8")
+            return True
+    except TaskNoteLockError as exc:
+        print(f"cc-cascade-unblock: {path.stem} skipped — {exc}", file=sys.stderr)
+        return False
+
+
+def _still_blocked_with_same_deps(expected_deps: list[str]) -> Callable[[str], str | None]:
+    """Stand down unless the note is still blocked on exactly the dependencies we judged."""
+
+    def check(text: str) -> str | None:
+        status = re.search(r"^status:\s*(\S+)", text, re.M)
+        if not status or status.group(1) != "blocked":
+            return f"status changed to {status.group(1) if status else '(none)'} under the lock"
+        if _parse_depends(text) != expected_deps:
+            return "depends_on changed under the lock"
+        return None
+
+    return check
+
+
+def _still_unclaimed_with_same_deps(expected_deps: list[str]) -> Callable[[str], str | None]:
+    """Stand down if the note was claimed, or its dependencies moved, under the lock."""
+
+    def check(text: str) -> str | None:
+        assignee = re.search(r"^assigned_to:\s*(\S+)", text, re.M)
+        if assignee and assignee.group(1) not in ("unassigned", "null", "~"):
+            return f"claimed by {assignee.group(1)} under the lock"
+        if _parse_depends(text) != expected_deps:
+            return "depends_on changed under the lock"
+        return None
+
+    return check
 
 
 def _dep_status(task_id: str) -> str:
@@ -365,7 +409,7 @@ def cascade_withdraw() -> int:
                 flags=re.M,
             )
 
-        if not _rewrite_under_lock(f, _to_withdrawn):
+        if not _rewrite_under_lock(f, _to_withdrawn, _still_unclaimed_with_same_deps(deps)):
             continue
         withdrawn += 1
         print(f"cc-cascade-unblock: {f.stem} -> withdrawn (all deps non-fulfilling)")

@@ -1059,14 +1059,20 @@ _stamp_frontmatter_field() {
 import sys
 from pathlib import Path
 
-from shared.task_note_lock import projected_path_lock
+from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
 path, key, value = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 try:
     lock = projected_path_lock(None, (path,))
     lock.__enter__()
-except Exception as exc:  # noqa: BLE001 — the gate reports; it does not stamp regardless.
+except TaskNoteLockError as exc:
     print(f"cc-task-gate: {key} stamp skipped — {exc}", file=sys.stderr)
+    # Exit 3 means specifically 'another writer or a transition holds this note'. Every
+    # other failure keeps exit 1, so the caller can record the cause it actually saw
+    # rather than filing an unsafe root or malformed frontmatter as contention.
+    sys.exit(3)
+except Exception as exc:  # noqa: BLE001 — the gate reports; it does not stamp regardless.
+    print(f"cc-task-gate: {key} stamp failed — {exc}", file=sys.stderr)
     sys.exit(1)
 try:
     text = path.read_text(encoding="utf-8")
@@ -1196,19 +1202,35 @@ if [[ "$_is_docs_edit" != "true" && -z "$_stage_num" && "$impl_authorized" == "t
     _stage_outcome="stamped"
     echo "cc-task-gate: blank stage on authorized task — derived + stamped S6_IMPLEMENTATION (logged)." >&2
   else
-    _stage_outcome="refused_locked"
-    _emit_block <<EOF
-cc-task-gate: BLOCKED — task '$task_id' has a blank stage and the note is locked.
-
-  Task: $note_path
-  The stage stamp needs the projection lock for this note; a transition or another writer
-  holds it, so the note was NOT modified and the stage was NOT derived.
+    # 3 is specifically "the projection lock is held"; anything else is a different failure
+    # and must not be filed as contention — a receipt that says projection_lock_held for a
+    # malformed note sends the operator to look for a holder that was never there.
+    _stamp_rc=$?
+    if [[ "$_stamp_rc" -eq 3 ]]; then
+      _stage_outcome="refused_locked"
+      _stage_reason="projection_lock_held"
+      _stage_detail="A transition or another writer holds this note's projection lock, so the note was NOT modified and the stage was NOT derived.
 
   Next action: retry in a moment. If it persists, find the holder with
-    fuser -v "${HAPAX_COORD_DIR:-$HOME/.cache/hapax/coord}/task-locks"/*.lock
+    fuser -v \"\${HAPAX_COORD_DIR:-\$HOME/.cache/hapax/coord}/task-locks\"/*.lock"
+    else
+      _stage_outcome="refused_error"
+      _stage_reason="stamp_failed"
+      _stage_detail="The stage stamp failed for a reason other than lock contention (see the
+  cc-task-gate message above: an unsafe or unavailable lock root, malformed frontmatter, a
+  missing note, or a write error). The note was NOT modified.
+
+  Next action: fix the cause named above, then retry."
+    fi
+    _emit_block <<EOF
+cc-task-gate: BLOCKED — task '$task_id' has a blank stage and it could not be stamped.
+
+  Task: $note_path
+  $_stage_detail
 EOF
-    printf '{"ts":"%s","kind":"stage_derive_refused","role":"%s","task":"%s","case":"%s","from":"%s","reason":"projection_lock_held"}\n' \
+    printf '{"ts":"%s","kind":"stage_derive_refused","role":"%s","task":"%s","case":"%s","from":"%s","reason":"%s","stamp_rc":%s}\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$_orig_stage" \
+      "$_stage_reason" "$_stamp_rc" \
       >> "$_stage_ledger" 2>/dev/null || true
     exit 2
   fi

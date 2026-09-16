@@ -256,7 +256,13 @@ def test_the_gate_stamp_refuses_rather_than_racing_a_held_lock(
 
 
 def _waits_for_a_held_lock(
-    argv: list[str], note: Path, home: Path, env: dict[str, str], hold: float = 4.0
+    argv: list[str],
+    note: Path,
+    home: Path,
+    env: dict[str, str],
+    hold: float = 4.0,
+    *,
+    expect_success: bool = True,
 ) -> float:
     """Run a writer against a lock a second process holds; return how long it waited.
 
@@ -295,7 +301,8 @@ def _waits_for_a_held_lock(
         waited = time.monotonic() - started
     finally:
         holder.wait(timeout=60)
-    assert done.returncode == 0, f"writer failed: {done.stdout!r} {done.stderr!r}"
+    if expect_success:
+        assert done.returncode == 0, f"writer failed: {done.stdout!r} {done.stderr!r}"
     return waited
 
 
@@ -349,17 +356,46 @@ def test_cc_scope_widen_waits_for_a_held_projection_lock(
     assert "shared/coord_projection.py" in note.read_text(encoding="utf-8")
 
 
-def test_a_real_transition_cannot_enter_a_writer_s_window(tmp_path: Path) -> None:
-    """The witness the row asks for, run against the real transition machinery.
+def test_a_real_lifecycle_transition_cannot_enter_a_writer_s_window(tmp_path: Path) -> None:
+    """A real ``execute_lifecycle_transition``, not just its lock.
 
-    A converted writer holds the projection lock across its read-modify-write. The real
-    ``execute_lifecycle_transition`` — which pins a preimage and then atomically installs a
-    postimage over the same note — is started while that writer holds it, and must NOT proceed:
-    landing between the pin and the install is exactly the fail-open this row closes.
+    An earlier draft of this test entered ``_transition_locks`` directly and never used the
+    ``FileProjection`` it captured — so it would have stayed green if the real lifecycle entry
+    point had stopped acquiring its lock at all, which is precisely the regression it claims to
+    guard. This runs the actual transition: preimage pin, atomic install, applied receipt.
 
-    Deterministic by construction rather than by hoping two windows overlap: the writer's lock
-    is held for the whole of the transition's attempt.
+    A converted writer holds the projection lock for the note across the attempt. The
+    transition must refuse rather than proceed, and the writer's bytes must survive.
     """
+
+    # Build the intent and the event log with the projection suite's own helpers rather than
+    # by hand: LifecycleTransitionIntent carries eleven required fields, and a hand-rolled one
+    # drifts from the real shape the moment any of them changes.
+    transition = textwrap.dedent(
+        f"""
+        import sys
+        sys.path.insert(0, {str(REPO_ROOT)!r})
+        from pathlib import Path
+        from shared import coord_projection as cp
+        from tests.shared.test_coord_projection import _intent, _log
+        cp._LIFECYCLE_EFFECT_ACTIVATION = True
+
+        note = Path(sys.argv[1])
+        root = Path(sys.argv[2])
+        projection = cp.FileProjection.capture(note, after=b"stage: S7\\n")
+        try:
+            cp.execute_lifecycle_transition(
+                event_log=_log(Path(sys.argv[3])),
+                intent=_intent(),
+                projections=[projection],
+                transaction_root=Path(sys.argv[4]),
+                lock_root=root,
+            )
+            print("TRANSITION-APPLIED", flush=True)
+        except cp.LifecycleTransitionError as exc:
+            print("TRANSITION-REFUSED", exc.args[0], flush=True)
+        """
+    )
 
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -381,7 +417,7 @@ def test_a_real_transition_cannot_enter_a_writer_s_window(tmp_path: Path) -> Non
                 with projected_path_lock("task-1", (note,),
                                          root=Path({str(root)!r}), timeout=60.0):
                     print("HELD", flush=True)
-                    time.sleep(5)
+                    time.sleep(6)
                     note.write_bytes(note.read_bytes() + b"writer-line\\n")
                 print("WROTE", flush=True)
                 """
@@ -394,44 +430,87 @@ def test_a_real_transition_cannot_enter_a_writer_s_window(tmp_path: Path) -> Non
     try:
         assert writer.stdout is not None
         assert writer.stdout.readline().strip() == "HELD"
-
-        transition = subprocess.run(
+        result = subprocess.run(
             [
                 sys.executable,
                 "-c",
-                textwrap.dedent(
-                    f"""
-                    import sys
-                    sys.path.insert(0, {str(REPO_ROOT)!r})
-                    from pathlib import Path
-                    from shared import coord_projection as cp
-                    from shared.coord_event_log import CoordEventLog, CoordWriter
-                    cp._LIFECYCLE_EFFECT_ACTIVATION = True
-                    note = Path({str(note)!r})
-                    projection = cp.FileProjection.capture(note, after=b"stage: S7\\n")
-                    try:
-                        cp._transition_locks(
-                            "task-1", (note,), Path({str(root)!r}), timeout=1.0
-                        ).__enter__()
-                        print("TRANSITION-ENTERED", flush=True)
-                    except cp.LifecycleTransitionError as exc:
-                        print("TRANSITION-REFUSED", exc.args[0], flush=True)
-                    """
-                ),
+                transition,
+                str(note),
+                str(root),
+                str(tmp_path / "events"),
+                str(tmp_path / "transactions"),
             ],
             capture_output=True,
             text=True,
             timeout=120,
+            env={**os.environ, "HAPAX_TASK_NOTE_LOCK_TIMEOUT": "2"},
         )
     finally:
         out, err = writer.communicate(timeout=120)
-    assert "WROTE" in out, f"{out!r} {err!r}"
 
-    assert "TRANSITION-REFUSED" in transition.stdout, (
-        "a transition entered a writer's critical section: "
-        f"{transition.stdout!r} {transition.stderr!r}"
+    assert "WROTE" in out, f"{out!r} {err!r}"
+    assert "TRANSITION-REFUSED" in result.stdout, (
+        "a real lifecycle transition entered a writer's critical section: "
+        f"{result.stdout!r} {result.stderr!r}"
     )
     assert b"writer-line" in note.read_bytes(), "the writer's bytes were lost"
+
+
+def test_cc_task_offer_ready_waits_for_a_held_projection_lock(
+    probe: tuple[Path, Path, dict[str, str]],
+) -> None:
+    """Contention for a writer converted in this round, not a regex over its source.
+
+    The suite's own standard, from `test_cc_task_repair_waits_for_a_held_projection_lock`: a
+    grep for an import and a ``with`` is an implementation echo, and an echo is not a witness.
+    The note is put into the state that actually drives the promotion, so the tool reaches its
+    lock rather than refusing earlier for an unrelated reason and returning instantly — which
+    is how the first draft of this test "passed" in 0.03s.
+    """
+
+    home, note, env = probe
+    note.write_text(
+        note.read_text(encoding="utf-8")
+        .replace("status: claimed", "status: ready")
+        .replace("assigned_to: theta", "assigned_to: unassigned"),
+        encoding="utf-8",
+    )
+    waited = _waits_for_a_held_lock(
+        [str(REPO_ROOT / "scripts" / "cc-task-offer-ready"), "lock-probe-1"],
+        note,
+        home,
+        env,
+        expect_success=False,
+    )
+    assert waited > 1.5, f"cc-task-offer-ready did not wait for the lock ({waited:.2f}s)"
+    assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+def test_cc_cascade_unblock_waits_for_a_held_projection_lock(
+    probe: tuple[Path, Path, dict[str, str]],
+) -> None:
+    """Same, for the cascade unblocker — with a blocked note whose dependency is satisfied."""
+
+    home, note, env = probe
+    vault = note.parent
+    (vault.parent / "closed").mkdir(exist_ok=True)
+    (vault.parent / "closed" / "dep-1.md").write_text(
+        "---\ntask_id: dep-1\nstatus: done\n---\n", encoding="utf-8"
+    )
+    blocked = vault / "blocked-1.md"
+    blocked.write_text(
+        "---\ntask_id: blocked-1\nstatus: blocked\nblocked_reason: waiting\n"
+        "depends_on:\n  - dep-1\n---\n\n## Session log\n",
+        encoding="utf-8",
+    )
+    waited = _waits_for_a_held_lock(
+        [str(REPO_ROOT / "scripts" / "cc-cascade-unblock")],
+        blocked,
+        home,
+        env,
+        expect_success=False,
+    )
+    assert waited > 1.5, f"cc-cascade-unblock did not wait for the lock ({waited:.2f}s)"
 
 
 # ───────────────────────────────────────────────────────────── conformance: the inventory
@@ -445,6 +524,9 @@ UNDER_LOCK = (
     "hooks/scripts/cc-task-pr-link.sh",
     "scripts/cc-task-offer-ready",
     "scripts/cc-cascade-unblock",
+    "scripts/cc-close",
+    "scripts/cc-claim",
+    "shared/sdlc_claim.py",
 )
 
 #: Files that name the vault and write, but are NOT task-note writers — each with the reason
@@ -503,27 +585,6 @@ NOT_A_TASK_NOTE_WRITER = {
 #: whitespace (so they matched nothing — _candidate_files() strips every line) and were
 #: reasoned "duplicate guard". A list that cannot be read is not a safeguard.
 KNOWN_UNCONVERTED = {
-    # MEASURED 2026-09-16, and worse than "own lock root" suggests. Claim publication holds
-    # shared/sdlc_claim.py::_claim_publication_lock, which is keyed by the ROLE digest and
-    # lives under ~/.cache/hapax/task-locks, while a transition over the same note is keyed
-    # by task id + path under coord_base_dir()/task-locks. Different root AND different key
-    # space, so neither excludes the other — and sdlc_claim calls _apply_projections (which
-    # takes no lock of its own) directly. This is the row's hazard in the estate's highest
-    # frequency note writer, reached through the projection machinery itself.
-    #
-    # Not fixed here on purpose: the role lock is doing a different, legitimate job, so the
-    # fix is to take BOTH — and a second lock outside this primitive's total order is a
-    # lock-order inversion waiting to happen. It needs its own row and its own deadlock
-    # argument, not a rider on a p0.
-    "scripts/cc-claim": "role-keyed lock in a different root; see the note above — own row",
-    # NOT the same as cc-claim, and the earlier reason string here said it was. Measured
-    # 2026-09-16: shared/sdlc_close.py DOES reach _transition_locks with the canonical root
-    # — it is correct — but three search shapes find no caller outside tests. The live close
-    # is scripts/cc-close doing the active/ -> closed/ move itself: read, mutate,
-    # tmp.replace(new_path), then path.unlink() on the active note, unserialized. It is the
-    # only writer here that UNLINKS a projected path, so a transition holding that note's
-    # preimage can have its subject removed underneath it.
-    "scripts/cc-close": "live closer moves+unlinks unserialized; sdlc_close is correct but unwired — own row",
     "scripts/cc-migration-capability": "migration tool, run by hand",
     "scripts/cc-pr-merge-watcher.py": "daemon writer; convert with the daemon pass",
     "scripts/cc-pr-autoqueue.py": "daemon writer; convert with the daemon pass",
@@ -554,16 +615,28 @@ KNOWN_UNCONVERTED = {
     "shared/gate0b_claim_publication_install.py": "installs the claim-publication machinery",
     "shared/p0_incident_intake.py": "creates new incident notes",
     "shared/recovery_governor.py": "recovery writer; convert with the daemon pass",
-    "shared/sdlc_close.py": "correctly takes the transition lock, but has no production caller — own row",
-    "shared/sdlc_claim.py": "role-keyed lock, different root; see the cc-claim note — own row",
+    "shared/sdlc_close.py": "correct but has no production caller; scripts/cc-close is the live closer and is now under the lock",
 }
+
+
+#: The search shapes, unioned. One grep's silence is a fact about the grep, and this list has
+#: grown once per lesson: shape A (the literal vault path) could not see the callers of the
+#: cc_task_root resolver, which is how cc-claim, cc-close and cc-task-pr-link went unlisted in
+#: the row's floor of four; shape C could not see shared/sdlc_claim.py, which names neither the
+#: vault nor the resolver and reaches projected paths through coord_projection's own projection
+#: helpers. Adding a shape is cheaper than trusting a silence.
+SEARCH_SHAPES = (
+    "hapax-cc-tasks",
+    r"cc_task_root|cc-task-root|CC_TASK_ROOT",
+    r"_apply_projections|FileProjection|_cas_project",
+)
 
 
 def _candidate_files() -> set[str]:
     """Union of the search shapes. One grep's silence is a fact about the grep."""
 
     found: set[str] = set()
-    for pattern in ("hapax-cc-tasks", r"cc_task_root|cc-task-root|CC_TASK_ROOT"):
+    for pattern in SEARCH_SHAPES:
         out = subprocess.run(
             [
                 "grep",

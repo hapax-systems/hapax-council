@@ -1224,9 +1224,28 @@ text = re.sub(
 text = _insert_session_log(text, log_line)
 
 if not canon_enforced:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    # The legacy writer, reached only via HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1. The admitted
+    # path takes the projection lock inside shared/sdlc_claim._claim_publication_lock; this
+    # fallback must too, or the documented emergency route would be the one way to write a task
+    # note while a transition holds it — a killswitch that does something *else* rather than
+    # less, which is the shape this estate refuses.
+    from shared.task_note_lock import TaskNoteLockError, projected_path_lock
+
+    try:
+        with projected_path_lock(task_id, (path,)):
+            if not path.is_file():
+                print(
+                    f"cc-claim: REFUSED — '{task_id}' moved while acquiring its lock; "
+                    "rerun to act on its current position",
+                    file=sys.stderr,
+                )
+                sys.exit(3)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(path)
+    except TaskNoteLockError as exc:
+        print(f"cc-claim: REFUSED — {exc}", file=sys.stderr)
+        sys.exit(3)
     cache_dir.mkdir(parents=True, exist_ok=True)
     # The `cc-claim-epoch-*` SIDECAR records the claim time out-of-band:
     # several consumers read the claim file's FULL content as the task id, so
