@@ -35,6 +35,29 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 DEFAULT_REPORT = Path.home() / ".cache/hapax/orchestration/cc-pr-autoqueue-report.json"
+
+#: Every blocker the route-block gate can emit. The first cut matched only
+#: `route_block_degradation`, so a report containing ONLY the newer
+#: `review_dossier_route_block_recovery_generation_stale` /
+#: `..._witness_unavailable` replayed zero dossiers and exited successfully — a recheck that
+#: reports "nothing to see" precisely when the new gate is what is blocking the field.
+ROUTE_BLOCK_BLOCKER_PREFIXES = (
+    "review_dossier_route_block_degradation_unwitnessed",
+    "review_dossier_route_block_degradation_reason_mismatch",
+    "review_dossier_route_block_recovery_generation_stale",
+    "review_dossier_route_block_witness_unavailable",
+    "review_dossier_degradation_unwitnessed",
+    "review_dossier_degradation_flags_inconsistent",
+    "review_dossier_route_gate_unavailable",
+)
+
+
+def _is_route_block_blocker(blocker: str) -> bool:
+    text = str(blocker)
+    # `task_blocker:<task>:<inner>` wraps a dependency's blocker; match anywhere in the line.
+    return any(prefix in text for prefix in ROUTE_BLOCK_BLOCKER_PREFIXES)
+
+
 VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
 
 
@@ -123,6 +146,44 @@ def cmd_receipts(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_intervals(args: argparse.Namespace) -> int:
+    """Show the route-block interval witness admission now depends on.
+
+    The witness lives in an evictable cache and has no producer of its own — every caller of
+    `review_route_blocked_families` folds its reading in. Losing it turns every admissible
+    degraded dossier into a refusal until one dispatcher or autoqueue pass re-observes, which
+    is the right direction but needs to be INSPECTABLE to be operable.
+    """
+
+    rt = _gate()
+    state = args.state or rt["ROUTE_BLOCK_INTERVAL_STATE"]
+    now = datetime.now(UTC)
+    print(f"witness: {state}")
+    print(f"ttl:     {rt['ROUTE_BLOCK_INTERVAL_TTL_S']}s")
+    print(f"now:     {now.isoformat()}")
+    try:
+        raw = json.loads(Path(state).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(
+            f"unreadable ({type(exc).__name__}) — every degraded dossier will be refused "
+            f"with review_dossier_route_block_witness_unavailable until a pass re-observes"
+        )
+        return 0
+    live = rt["load_route_block_intervals"](Path(state), now=now)
+    if not isinstance(raw, dict) or not raw:
+        print("empty — no family is currently recorded as route-blocked")
+        return 0
+    for family, entry in sorted(raw.items()):
+        observed = entry.get("observed_at") if isinstance(entry, dict) else None
+        since = entry.get("blocked_since") if isinstance(entry, dict) else entry
+        status = "LIVE" if family in live else "EXPIRED (older than the TTL)"
+        print(f"  {family:10s} blocked_since={since} observed_at={observed}  [{status}]")
+    print("\nTo reset: delete the file. The next dispatcher or autoqueue pass reopens every")
+    print("interval it observes; dossiers constituted in the OLD intervals then need a")
+    print("re-review, which is the same obligation a real recovery would create.")
+    return 0
+
+
 def cmd_replay(args: argparse.Namespace) -> int:
     import yaml
 
@@ -136,7 +197,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
     cleared = considered = 0
     for record in report.get("per_pr_admission") or []:
         blockers = [str(b) for b in record.get("blockers") or []]
-        if not any("route_block_degradation" in b for b in blockers):
+        if not any(_is_route_block_blocker(b) for b in blockers):
             continue
         task_id = record.get("task_id")
         if not task_id:
@@ -159,7 +220,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
             pr_head_sha=str(dossier.get("head_sha") or "a" * 40),
             route_blocked_families=live,
         )
-        route_blockers = [b for b in now_blockers if "route_block" in b or "degradation" in b]
+        route_blockers = [b for b in now_blockers if _is_route_block_blocker(b)]
         if not route_blockers:
             cleared += 1
         print(f"{record['pr']:>5}  constituted={dossier.get('constituted_at')}")
@@ -184,6 +245,9 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("receipts")
     r.add_argument("--receipt-dir", type=Path, default=None)
     r.set_defaults(func=cmd_receipts)
+    i = sub.add_parser("intervals")
+    i.add_argument("--state", type=Path, default=None)
+    i.set_defaults(func=cmd_intervals)
     p = sub.add_parser("replay")
     p.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     p.set_defaults(func=cmd_replay)

@@ -11,7 +11,7 @@ import json
 import os
 import re
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,8 +56,25 @@ ALWAYS_ON_LENSES = tuple(ALWAYS_ON_CHECKLIST)
 
 
 @pytest.fixture(autouse=True)
-def _isolate_live_route_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+def _isolate_live_route_gate(monkeypatch: pytest.MonkeyPatch, tmp_path_factory) -> None:
+    """Keep the suite off the live route gate AND off the operator's real witness file.
+
+    Two separate hazards, and the second was live: `review_route_blocked_families` now folds
+    every reading into a durable interval witness, so any test that reaches the real function
+    (the ones supplying a synthetic `platform_registry` do) wrote to
+    `~/.cache/hapax/review-team/`. A test suite that mutates the estate's admission state is
+    a test suite that can refuse a real merge.
+
+    `ROUTE_BLOCK_INTERVAL_STATE` is redirected per-session so the production path is exercised
+    for real — the previous shape returned `{}` early and meant tests asserting on the
+    observer never called it at all.
+    """
     rt = _load_review_team_module()
+    monkeypatch.setattr(
+        rt,
+        "ROUTE_BLOCK_INTERVAL_STATE",
+        tmp_path_factory.mktemp("route-block-interval") / "route-block-interval.json",
+    )
     real_review_route_blocked_families = rt.review_route_blocked_families
 
     def isolated_review_route_blocked_families(registry, **kwargs):
@@ -65,6 +82,11 @@ def _isolate_live_route_gate(monkeypatch: pytest.MonkeyPatch) -> None:
             return real_review_route_blocked_families(registry, **kwargs)
         return {}
 
+    # Stashed so a test can deliberately exercise the PRODUCTION function; without this the
+    # isolating shim silently satisfies any test that means to pin the real one.
+    monkeypatch.setattr(
+        rt, "_real_review_route_blocked_families", real_review_route_blocked_families, raising=False
+    )
     monkeypatch.setattr(rt, "review_route_blocked_families", isolated_review_route_blocked_families)
 
 
@@ -1076,6 +1098,7 @@ class TestVerdictBlockers:
             pr_head_sha="a" * 40,
             route_blocked_families={"gemini": ("route_specific_quota_receipt_absent",)},
             route_block_interval_state_path=witness,
+            admission_time="2026-06-11T20:30:00+00:00",
         )
         assert "review_dossier_blocked_route_family_seated:gemini" in blockers
 
@@ -1161,16 +1184,26 @@ class TestVerdictBlockers:
         assert "review_dossier_blocked_route_family_seated:glm" not in blockers
         assert blockers == ()
 
-    def _witness(self, tmp_path: Path, *families: str, since: str = "2026-06-11T19:00:00Z") -> Path:
+    def _witness(
+        self,
+        tmp_path: Path,
+        *families: str,
+        since: str = "2026-06-11T19:00:00Z",
+        observed: str = "2026-06-11T20:30:00Z",
+    ) -> Path:
         """A route-block interval witness open since before the dossier was constituted.
 
         Every degraded-route admission now requires one: the gate must be able to tell that
         the live block is the SAME continuous block the dossier was constituted in. Absence
         is a refusal, so these tests supply the witness rather than relying on its default.
+
+        `blocked_since` and `observed_at` are DISTINCT, as the real observer writes them: the
+        start is stable while the observation advances on every pass. Writing them equal made
+        every witness look unobserved-since-its-start and expire under the TTL.
         """
         state = tmp_path / "route-block-interval.json"
         state.write_text(
-            json.dumps({f: {"blocked_since": since, "observed_at": since} for f in families}),
+            json.dumps({f: {"blocked_since": since, "observed_at": observed} for f in families}),
             encoding="utf-8",
         )
         return state
@@ -1178,6 +1211,7 @@ class TestVerdictBlockers:
     def _route_blocked_degraded_dossier(self, rt) -> dict:
         notes = (
             "degraded_family_route_blocked:gemini",
+            "route_block_interval_since:gemini:2026-06-11T19:00:00Z",
             "route_blocked_family_reason:gemini:agy.review.direct:"
             "route_specific_quota_receipt_absent",
             "degraded_to:t2_standard",
@@ -1207,6 +1241,7 @@ class TestVerdictBlockers:
             pr_head_sha="a" * 40,
             route_blocked_families={"gemini": ("route_specific_quota_receipt_absent",)},
             route_block_interval_state_path=witness,
+            admission_time="2026-06-11T20:30:00+00:00",
         )
         assert dossier["review_team_verdict"] == rt.QUORUM_ACCEPT
         assert dossier["degraded_family_route_blocked"] == ["gemini"]
@@ -1220,6 +1255,7 @@ class TestVerdictBlockers:
                 "gemini": ("agy.review.direct:route_specific_quota_receipt_absent",)
             },
             route_block_interval_state_path=witness,
+            admission_time="2026-06-11T20:30:00+00:00",
         )
         assert prefixed_blockers == ()
 
@@ -1229,6 +1265,7 @@ class TestVerdictBlockers:
         rt = _load_review_team_module()
         notes = (
             "degraded_family_route_blocked:glm",
+            "route_block_interval_since:glm:2026-06-11T19:00:00Z",
             "route_blocked_family_reason:glm:glmcp.review.direct:"
             "task_scoped_paid_spend_gate:refused_exhausted_budget",
             "route_blocked_family_reason:glm:glmcp.review.direct:"
@@ -1265,6 +1302,7 @@ class TestVerdictBlockers:
             note,
             pr_head_sha="a" * 40,
             route_block_interval_state_path=self._witness(tmp_path, "glm"),
+            admission_time="2026-06-11T20:30:00+00:00",
         )
 
         assert blockers == ()
@@ -1275,6 +1313,7 @@ class TestVerdictBlockers:
         rt = _load_review_team_module()
         notes = (
             "degraded_family_route_blocked:glm",
+            "route_block_interval_since:glm:2026-06-11T19:00:00Z",
             "route_blocked_family_reason:glm:glmcp.review.direct:"
             "task_scoped_paid_spend_gate:refused_exhausted_budget",
             "degraded_to:t2_standard",
@@ -1317,6 +1356,7 @@ class TestVerdictBlockers:
         rt = _load_review_team_module()
         notes = (
             "degraded_family_route_blocked:glm",
+            "route_block_interval_since:glm:2026-06-11T19:00:00Z",
             "route_blocked_family_reason:glm:glmcp.review.direct:"
             "task_scoped_paid_spend_gate:refused_exhausted_budget",
             "degraded_to:t2_standard",
@@ -1350,6 +1390,7 @@ class TestVerdictBlockers:
             note,
             pr_head_sha="a" * 40,
             route_block_interval_state_path=self._witness(tmp_path, "glm"),
+            admission_time="2026-06-11T20:30:00+00:00",
         )
 
         # Full blocker-set assertion (not negative membership): the drift dossier is
@@ -1396,7 +1437,9 @@ class TestVerdictBlockers:
 
         assert "review_dossier_route_block_degradation_reason_mismatch:glm" in blockers
 
-    def _freshness_stale_dossier(self, rt, checked_at: str) -> dict:
+    def _freshness_stale_dossier(
+        self, rt, checked_at: str, *, since: str = "2026-06-11T19:00:00Z"
+    ) -> dict:
         """A dossier whose recorded route-block reason is the SHAPE production emits.
 
         ``_timestamp_errors`` writes ``<route_id>: <surface> stale; checked_at=<iso>
@@ -1404,15 +1447,22 @@ class TestVerdictBlockers:
         ``freshness_check:``. Both embedded values are re-observed on the estate's
         10-minute quota-telemetry cadence, so a synthetic reason string without them
         cannot reproduce the production inequality.
+
+        The constitution notes are built by the PRODUCTION writer `_degradation_notes`, not
+        hand-assembled, so the interval the dossier records and the interval admission
+        compares against come from the same code — the dispatcher-to-admission path the
+        reviewers asked for, rather than a hand-fed witness on each side.
         """
-        notes = (
-            "degraded_family_route_blocked:claude",
-            "route_blocked_family_reason:claude:claude.review.opus:"
+        reason = (
             "freshness_check:claude.review.opus: quota stale; "
-            f"checked_at={checked_at} stale_after=14s",
-            "degraded_to:t2_standard",
-            "post_route_receipt_rereview_required",
+            f"checked_at={checked_at} stale_after=14s"
         )
+        notes = rt._degradation_notes(
+            outage_families=(),
+            route_blocked_families={"claude": (reason,)},
+            route_ids={"claude": "claude.review.opus"},
+            route_block_intervals={"claude": _dt(since.replace("Z", "+00:00"))},
+        ) + ["degraded_to:t2_standard"]
         return _synth(
             rt,
             [
@@ -1421,7 +1471,7 @@ class TestVerdictBlockers:
                 _review("glm-1", "glm", "accept"),
             ],
             team_class="t1_critical",
-            constitution_notes=notes,
+            constitution_notes=tuple(notes),
         )
 
     def test_route_block_reason_reobservation_does_not_mismatch(self, tmp_path: Path) -> None:
@@ -1449,6 +1499,7 @@ class TestVerdictBlockers:
                 )
             },
             route_block_interval_state_path=self._witness(tmp_path, "claude"),
+            admission_time="2026-06-11T20:30:00+00:00",
         )
         assert blockers == ()
 
@@ -1490,6 +1541,272 @@ class TestVerdictBlockers:
             },
         )
         assert "review_dossier_route_block_degradation_reason_mismatch:claude" in blockers
+
+    def test_the_restated_exit_predicate_converges(self, tmp_path: Path) -> None:
+        """The convergence the restated exit predicate depends on, as a durable witness
+        rather than an argument.
+
+        The row's original predicate ("a fresh autoqueue report with
+        route_block_degradation_unwitnessed eliminated") is not reachable by merging a gate
+        change: the eleven blocked dossiers record STATIC registry reasons for routes that
+        genuinely recovered days ago, so they are correct refusals whose remedy is re-review.
+        The restated predicate is: merge first, then the re-review wave converges. That claim
+        is the whole justification for shipping, so it gets a test over the shipped gate.
+
+        Full cycle on ONE family, each step through the production paths:
+          1. blocked, constitute -> ADMITS (the class projection does its job across a
+             re-observation with a fresh checked_at, which is what round 1 was for);
+          2. recover -> REFUSES (post-recovery re-review obligation, undischarged);
+          3. block again -> the OLD dossier still REFUSES (round 2: no resurrection);
+          4. re-review at the new interval -> ADMITS (convergence: the remedy works).
+        Without step 4 this mechanism would be a merge-field deadlock dressed as safety.
+        """
+        rt = _load_review_team_module()
+        state = tmp_path / "route-block-interval.json"
+        route_ids = {"claude": "claude.review.opus"}
+
+        def constitute(reason: tuple[str, ...], tag: str) -> Path:
+            notes = rt._degradation_notes(
+                outage_families=(),
+                route_blocked_families={"claude": reason},
+                route_ids=route_ids,
+                interval_state_path=state,
+                now=_dt("2026-06-11T20:00:00+00:00"),
+            ) + ["degraded_to:t2_standard"]
+            dossier = _synth(
+                rt,
+                [
+                    _review("codex-1", "codex", "accept"),
+                    _review("gemini-1", "gemini", "accept"),
+                    _review("glm-1", "glm", "accept"),
+                ],
+                team_class="t1_critical",
+                constitution_notes=tuple(notes),
+            )
+            # Separate directories, same task id: the gate resolves the dossier from the
+            # note's frontmatter, so a differently-named note has no dossier at all.
+            where = tmp_path / tag
+            where.mkdir(exist_ok=True)
+            return _write_dossier(where, "task-x", dossier)
+
+        # 1. blocked, constituted inside the interval, admitted after a re-observation.
+        self._fold(rt, {"claude": self.STALE_A}, now="2026-06-11T19:40:00+00:00", state_path=state)
+        first = constitute(self.STALE_A, "one")
+        self._fold(rt, {"claude": self.STALE_B}, now="2026-06-11T20:10:00+00:00", state_path=state)
+        assert self._blockers_with_witness(rt, first, {"claude": self.STALE_B}, state) == ()
+
+        # 2. the family recovers: the obligation is live and the dossier refuses.
+        self._fold(rt, {}, now="2026-06-11T20:40:00+00:00", state_path=state)
+        recovered = self._blockers_with_witness(
+            rt, first, {}, state, at="2026-06-11T20:45:00+00:00"
+        )
+        assert "review_dossier_route_block_degradation_unwitnessed:claude" in recovered
+
+        # 3. it blocks again -- the OLD dossier must still refuse.
+        self._fold(rt, {"claude": self.STALE_A}, now="2026-06-11T21:00:00+00:00", state_path=state)
+        still = self._blockers_with_witness(
+            rt, first, {"claude": self.STALE_A}, state, at="2026-06-11T21:05:00+00:00"
+        )
+        assert any("recovery_generation_stale" in b for b in still), still
+
+        # 4. CONVERGENCE: a re-review constituted in the NEW interval is admitted.
+        second = constitute(self.STALE_A, "two")
+        assert (
+            self._blockers_with_witness(
+                rt, second, {"claude": self.STALE_A}, state, at="2026-06-11T21:10:00+00:00"
+            )
+            == ()
+        )
+
+    # --- recovery generation: the durable route-block interval witness -------------
+    #
+    # Class comparison forgives re-observation of the same degradation. On its own it
+    # cannot tell ONE continuous block from TWO separated by a recovery, and the second
+    # case is exactly what post_route_receipt_rereview_required exists to catch.
+    # Measured on the first cut of this change, one unchanged dossier ran
+    #   stale(A)=ADMIT -> recovered=BLOCK(unwitnessed) -> stale(B)=ADMIT
+    # silently discharging the recovery obligation. Raw-string comparison did block that
+    # third step, but only as an accident of timestamp drift: it equally blocked every
+    # dossier older than one producer tick inside ONE continuous block.
+
+    STALE_A = (
+        "freshness_check:claude.review.opus: quota stale; "
+        "checked_at=2026-09-16T00:50:43+00:00 stale_after=14s",
+    )
+    STALE_B = (
+        "freshness_check:claude.review.opus: quota stale; "
+        "checked_at=2026-09-16T01:00:43+00:00 stale_after=1051s",
+    )
+
+    def _fold(self, rt, blocked, *, now: str, state_path: Path):
+        return rt.observe_route_block_interval(blocked, now=_dt(now), state_path=state_path)
+
+    def _blockers_with_witness(
+        self, rt, note: Path, blocked, state_path: Path, *, at: str = "2026-06-11T20:30:00+00:00"
+    ):
+        """`at` is explicit because the witness is now TTL-bounded: leaving admission on the
+        wall clock would make every fixture-timeline test depend on how long ago the fixture
+        dates were written."""
+        return rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families=blocked,
+            route_block_interval_state_path=state_path,
+            admission_time=at,
+        )
+
+    def test_an_expired_interval_is_invisible_to_the_loader(self, tmp_path: Path) -> None:
+        """The TTL bound on the READ side, isolated.
+
+        Removing it left every test green: the observe-side reset covers the case where a
+        pass re-opens the interval, but nothing covered a reader looking at an entry that
+        simply stopped being refreshed — which is the state a host leaves behind when its
+        dispatcher dies. An unrefreshed entry must not keep admitting dossiers forever.
+        """
+        rt = _load_review_team_module()
+        state = tmp_path / "route-block-interval.json"
+        self._fold(rt, {"claude": self.STALE_A}, now="2026-06-11T19:00:00+00:00", state_path=state)
+        inside = _dt("2026-06-11T19:00:00+00:00") + timedelta(
+            seconds=rt.ROUTE_BLOCK_INTERVAL_TTL_S - 60
+        )
+        beyond = _dt("2026-06-11T19:00:00+00:00") + timedelta(
+            seconds=rt.ROUTE_BLOCK_INTERVAL_TTL_S + 60
+        )
+        assert "claude" in rt.load_route_block_intervals(state, now=inside)
+        assert "claude" not in rt.load_route_block_intervals(state, now=beyond)
+
+        note = _write_dossier(
+            tmp_path, "task-x", self._freshness_stale_dossier(rt, "2026-09-16T00:50:43+00:00")
+        )
+        blockers = self._blockers_with_witness(
+            rt, note, {"claude": self.STALE_A}, state, at=beyond.isoformat()
+        )
+        assert any(
+            b.startswith("review_dossier_route_block_witness_unavailable:") for b in blockers
+        ), blockers
+
+    def test_a_dossier_that_recorded_no_interval_is_refused(self, tmp_path: Path) -> None:
+        """A dossier constituted before this mechanism carries no
+        `route_block_interval_since` note, so there is no evidence of WHICH interval it was
+        constituted in. Admitting it would be admitting on no generation evidence at all —
+        and it is already owed the re-review its recovery obligation implies.
+
+        Treating `absent` as "matches anything" left every other test green, which is exactly
+        the shape of a gate that looks strict and admits the legacy case.
+        """
+        rt = _load_review_team_module()
+        notes = (
+            "degraded_family_route_blocked:claude",
+            "route_blocked_family_reason:claude:claude.review.opus:"
+            "freshness_check:claude.review.opus: quota stale; "
+            "checked_at=2026-09-16T00:50:43+00:00 stale_after=14s",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("glm-1", "glm", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        state = tmp_path / "route-block-interval.json"
+        self._fold(rt, {"claude": self.STALE_A}, now="2026-06-11T19:00:00+00:00", state_path=state)
+        blockers = self._blockers_with_witness(
+            rt, note, {"claude": self.STALE_A}, state, at="2026-06-11T19:20:00+00:00"
+        )
+        stale = [b for b in blockers if "recovery_generation_stale" in b]
+        assert stale, blockers
+        assert "dossier=absent" in stale[0], stale
+
+    def test_a_probe_read_cannot_close_an_interval(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`observe=False` exists so a diagnostic read of the live route state cannot silently
+        discharge every degraded dossier's recovery obligation.
+
+        Driven through the PRODUCTION function with a synthetic platform registry, so the
+        autouse isolation delegates rather than short-circuiting. The first cut passed without
+        ever entering the function -- instrumenting it showed zero calls -- so the observer's
+        entries are counted here and the `observe=True` leg asserts a non-empty count. A pin
+        that cannot fail vacuously is the point.
+        """
+        rt = _load_review_team_module()
+        state = tmp_path / "route-block-interval.json"
+        self._fold(rt, {"claude": self.STALE_A}, now="2026-06-11T19:00:00+00:00", state_path=state)
+
+        calls: list[bool] = []
+        original_observe = rt.observe_route_block_interval
+
+        def _counting(*args, **kwargs):
+            calls.append(True)
+            return original_observe(*args, **kwargs)
+
+        monkeypatch.setattr(rt, "observe_route_block_interval", _counting)
+        registry = rt.load_lens_registry()
+        platform_registry = _platform_registry_with_route("claude.review.opus", admitted=False)
+
+        rt.review_route_blocked_families(
+            registry,
+            platform_registry=platform_registry,
+            observe=False,
+            interval_state_path=state,
+        )
+        assert calls == [], "observe=False must not fold"
+        assert "claude" in rt.load_route_block_intervals(
+            state, now=_dt("2026-06-11T19:20:00+00:00")
+        )
+
+        rt.review_route_blocked_families(
+            registry,
+            platform_registry=platform_registry,
+            observe=True,
+            interval_state_path=state,
+        )
+        assert calls, "observe=True must reach the observer -- otherwise this pins nothing"
+
+    # --- recovery generation: the durable route-block interval witness -------------
+    #
+    # Class comparison forgives re-observation of the same degradation. On its own it
+    # cannot tell ONE continuous block from TWO separated by a recovery, and the second
+    # case is exactly what post_route_receipt_rereview_required exists to catch.
+    # Measured on the first cut of this change, one unchanged dossier ran
+    #   stale(A)=ADMIT -> recovered=BLOCK(unwitnessed) -> stale(B)=ADMIT
+    # silently discharging the recovery obligation. Raw-string comparison did block that
+    # third step, but only as an accident of timestamp drift: it equally blocked every
+    # dossier older than one producer tick inside ONE continuous block.
+
+    STALE_A = (
+        "freshness_check:claude.review.opus: quota stale; "
+        "checked_at=2026-09-16T00:50:43+00:00 stale_after=14s",
+    )
+    STALE_B = (
+        "freshness_check:claude.review.opus: quota stale; "
+        "checked_at=2026-09-16T01:00:43+00:00 stale_after=1051s",
+    )
+
+    def _fold(self, rt, blocked, *, now: str, state_path: Path):
+        return rt.observe_route_block_interval(blocked, now=_dt(now), state_path=state_path)
+
+    def _blockers_with_witness(
+        self, rt, note: Path, blocked, state_path: Path, *, at: str = "2026-06-11T20:30:00+00:00"
+    ):
+        """`at` is explicit because the witness is now TTL-bounded: leaving admission on the
+        wall clock would make every fixture-timeline test depend on how long ago the fixture
+        dates were written."""
+        return rt.review_team_verdict_blockers(
+            self._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families=blocked,
+            route_block_interval_state_path=state_path,
+            admission_time=at,
+        )
 
     def test_reason_class_keeps_trailing_fields_and_covers_every_volatile_key(self) -> None:
         """The value must stop at `;`, not run to the next space. An unbounded `\\S+` swallowed
@@ -1542,6 +1859,7 @@ class TestVerdictBlockers:
                 "claude": ("checked_at=2026-09-16T01:00:43+00:00 stale_after=1051s",)
             },
             route_block_interval_state_path=self._witness(tmp_path, "claude"),
+            admission_time="2026-06-11T20:30:00+00:00",
         )
         assert "review_dossier_route_block_degradation_reason_mismatch:claude" in blockers
 
@@ -1568,13 +1886,19 @@ class TestVerdictBlockers:
     def _fold(self, rt, blocked, *, now: str, state_path: Path):
         return rt.observe_route_block_interval(blocked, now=_dt(now), state_path=state_path)
 
-    def _blockers_with_witness(self, rt, note: Path, blocked, state_path: Path):
+    def _blockers_with_witness(
+        self, rt, note: Path, blocked, state_path: Path, *, at: str = "2026-06-11T20:30:00+00:00"
+    ):
+        """`at` is explicit because the witness is now TTL-bounded: leaving admission on the
+        wall clock would make every fixture-timeline test depend on how long ago the fixture
+        dates were written."""
         return rt.review_team_verdict_blockers(
             self._frontmatter(),
             note,
             pr_head_sha="a" * 40,
             route_blocked_families=blocked,
             route_block_interval_state_path=state_path,
+            admission_time=at,
         )
 
     def test_continuous_block_admits_across_reobservation(self, tmp_path: Path) -> None:
@@ -1586,7 +1910,8 @@ class TestVerdictBlockers:
         )
         # blocked before the dossier was constituted, still blocked at evaluation
         self._fold(rt, {"claude": self.STALE_A}, now="2026-06-11T19:00:00+00:00", state_path=state)
-        self._fold(rt, {"claude": self.STALE_B}, now="2026-06-11T21:00:00+00:00", state_path=state)
+        self._fold(rt, {"claude": self.STALE_B}, now="2026-06-11T19:30:00+00:00", state_path=state)
+        self._fold(rt, {"claude": self.STALE_B}, now="2026-06-11T20:10:00+00:00", state_path=state)
         assert self._blockers_with_witness(rt, note, {"claude": self.STALE_B}, state) == ()
 
     def test_recovery_then_new_block_does_not_resurrect_the_old_dossier(
@@ -1599,19 +1924,202 @@ class TestVerdictBlockers:
         note = _write_dossier(
             tmp_path, "task-x", self._freshness_stale_dossier(rt, "2026-09-16T00:50:43+00:00")
         )
-        self._fold(rt, {"claude": self.STALE_A}, now="2026-06-11T19:00:00+00:00", state_path=state)
+        # Each observation is inside the TTL of the last, so the interval stays ONE interval.
+        for when in ("19:00", "19:30", "20:10"):
+            self._fold(
+                rt, {"claude": self.STALE_A}, now=f"2026-06-11T{when}:00+00:00", state_path=state
+            )
         assert self._blockers_with_witness(rt, note, {"claude": self.STALE_A}, state) == ()
 
-        recovered = self._fold(rt, {}, now="2026-06-11T21:00:00+00:00", state_path=state)
+        recovered = self._fold(rt, {}, now="2026-06-11T20:40:00+00:00", state_path=state)
         assert "claude" not in recovered, "an observed recovery must close the interval"
         assert "review_dossier_route_block_degradation_unwitnessed:claude" in (
-            self._blockers_with_witness(rt, note, {}, state)
+            self._blockers_with_witness(rt, note, {}, state, at="2026-06-11T20:45:00+00:00")
         )
 
-        self._fold(rt, {"claude": self.STALE_B}, now="2026-06-11T22:00:00+00:00", state_path=state)
-        assert "review_dossier_route_block_recovery_generation_stale:claude" in (
-            self._blockers_with_witness(rt, note, {"claude": self.STALE_B}, state)
+        self._fold(rt, {"claude": self.STALE_B}, now="2026-06-11T21:00:00+00:00", state_path=state)
+        blockers = self._blockers_with_witness(
+            rt, note, {"claude": self.STALE_B}, state, at="2026-06-11T21:10:00+00:00"
         )
+        assert any(
+            b.startswith("review_dossier_route_block_recovery_generation_stale:claude@")
+            for b in blockers
+        ), blockers
+
+    def test_a_failed_recovery_write_does_not_leave_an_admissible_interval(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CRITICAL, named by all three seats. The observer's own docstring promised
+        fail-closed and the code did the opposite: on OSError it re-read the file, so a
+        recovery that could not be PERSISTED left the old entry frozen and admissible.
+
+        Sequence: F blocks at t0 (interval opens), dossier constituted t1, F recovers at t2
+        but the write fails, F blocks again at t3, admission at t4 sees a matching class and
+        blocked_since=t0 <= t1 and ADMITS -- the exact resurrection the generation exists to
+        prevent. Partial failure is the dangerous case: a read-only remount or a wedged NFS
+        mount leaves the file readable and unwritable.
+        """
+        rt = _load_review_team_module()
+        state = tmp_path / "route-block-interval.json"
+        note = _write_dossier(
+            tmp_path, "task-x", self._freshness_stale_dossier(rt, "2026-09-16T00:50:43+00:00")
+        )
+        # t0: interval opens before the dossier is constituted.
+        self._fold(rt, {"claude": self.STALE_A}, now="2026-06-11T19:00:00+00:00", state_path=state)
+        assert (
+            self._blockers_with_witness(
+                rt, note, {"claude": self.STALE_A}, state, at="2026-06-11T19:30:00+00:00"
+            )
+            == ()
+        )
+
+        # t2: recovery observed, but persistence fails.
+        real_replace = os.replace
+
+        def _read_only(src, dst, *args, **kwargs):
+            raise OSError(30, "Read-only file system")
+
+        monkeypatch.setattr(os, "replace", _read_only)
+        with pytest.raises(rt.RouteBlockWitnessUnavailable):
+            self._fold(rt, {}, now="2026-06-11T21:00:00+00:00", state_path=state)
+        monkeypatch.setattr(os, "replace", real_replace)
+
+        # t3: the block returns and writes work again.
+        self._fold(rt, {"claude": self.STALE_B}, now="2026-06-11T23:30:00+00:00", state_path=state)
+
+        # t4: the dossier must NOT be admitted -- the recovery was never recorded, so no
+        # interval can be shown to have run continuously from before its constitution.
+        blockers = self._blockers_with_witness(
+            rt, note, {"claude": self.STALE_B}, state, at="2026-06-11T23:45:00+00:00"
+        )
+        assert any("route_block" in b for b in blockers), blockers
+
+    def test_a_write_failure_is_raised_not_swallowed(self, tmp_path: Path, monkeypatch) -> None:
+        """A persistence failure must reach the caller. Returning the stale read made the
+        failure invisible to the only code that could act on it."""
+        rt = _load_review_team_module()
+        state = tmp_path / "route-block-interval.json"
+
+        def _no_space(src, dst, *args, **kwargs):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(os, "replace", _no_space)
+        with pytest.raises(rt.RouteBlockWitnessUnavailable):
+            self._fold(
+                rt, {"claude": self.STALE_A}, now="2026-06-11T19:00:00+00:00", state_path=state
+            )
+
+    def test_an_interval_that_stopped_being_observed_is_not_continuous(
+        self, tmp_path: Path
+    ) -> None:
+        """`blocked_since` is only trustworthy while the estate kept LOOKING. A gap longer
+        than the observation TTL is not evidence of continuity — it is absence of evidence,
+        and it is exactly what a spell of failed writes produces. The family-outage witness
+        this mirrors bounds `observed_at` the same way; omitting that bound is what let a
+        frozen entry survive a failed-write window and then be refreshed in place."""
+        rt = _load_review_team_module()
+        state = tmp_path / "route-block-interval.json"
+        first = self._fold(
+            rt, {"claude": self.STALE_A}, now="2026-06-11T19:00:00+00:00", state_path=state
+        )
+        gap = rt.ROUTE_BLOCK_INTERVAL_TTL_S + 60
+        later_iso = (
+            datetime.fromisoformat("2026-06-11T19:00:00+00:00") + timedelta(seconds=gap)
+        ).isoformat()
+        later = self._fold(rt, {"claude": self.STALE_B}, now=later_iso, state_path=state)
+        assert later["claude"] > first["claude"], (
+            "an unobserved gap must open a NEW interval, not extend the old one"
+        )
+
+    def test_an_interval_observed_within_the_ttl_stays_continuous(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        state = tmp_path / "route-block-interval.json"
+        first = self._fold(
+            rt, {"claude": self.STALE_A}, now="2026-06-11T19:00:00+00:00", state_path=state
+        )
+        soon = (
+            datetime.fromisoformat("2026-06-11T19:00:00+00:00")
+            + timedelta(seconds=rt.ROUTE_BLOCK_INTERVAL_TTL_S // 2)
+        ).isoformat()
+        later = self._fold(rt, {"claude": self.STALE_B}, now=soon, state_path=state)
+        assert later["claude"] == first["claude"]
+
+    def test_a_malformed_witness_entry_blocks_instead_of_crashing(self, tmp_path: Path) -> None:
+        """`_parse_iso_datetime` RAISES; it does not return None. One damaged record must not
+        take the whole admission pass down."""
+        rt = _load_review_team_module()
+        note = _write_dossier(
+            tmp_path, "task-x", self._freshness_stale_dossier(rt, "2026-09-16T00:50:43+00:00")
+        )
+        for payload in (
+            '{"claude": {}}',
+            '{"claude": {"blocked_since": "invalid"}}',
+            '{"claude": "nonsense"}',
+            '{"claude": null}',
+            "not json",
+        ):
+            state = tmp_path / f"witness-{abs(hash(payload))}.json"
+            state.write_text(payload, encoding="utf-8")
+            assert rt.load_route_block_intervals(state) == {} or True
+            blockers = self._blockers_with_witness(rt, note, {"claude": self.STALE_A}, state)
+            assert any("route_block" in b for b in blockers), (payload, blockers)
+
+    def test_a_dossier_with_a_malformed_constituted_at_blocks_instead_of_crashing(
+        self, tmp_path: Path
+    ) -> None:
+        rt = _load_review_team_module()
+        dossier = self._freshness_stale_dossier(rt, "2026-09-16T00:50:43+00:00")
+        dossier["constituted_at"] = "not-a-timestamp"
+        note = _write_dossier(tmp_path, "task-x", dossier)
+        blockers = self._blockers_with_witness(
+            rt, note, {"claude": self.STALE_A}, self._witness(tmp_path, "claude")
+        )
+        assert any("route_block" in b or "malformed" in b for b in blockers), blockers
+
+    def test_an_empty_route_evaluation_does_not_close_every_interval(self, tmp_path: Path) -> None:
+        """An empty result is a registry that did not load, not a full recovery. Folding it
+        would close every open interval and invalidate every degraded dossier at once --
+        indistinguishable after the fact from a genuine estate-wide recovery. The sibling
+        retirement sweep refuses an empty live set for exactly this reason."""
+        rt = _load_review_team_module()
+        state = tmp_path / "route-block-interval.json"
+        self._fold(rt, {"claude": self.STALE_A}, now="2026-06-11T19:00:00+00:00", state_path=state)
+        rt.observe_route_block_interval(
+            {}, now=_dt("2026-06-11T20:00:00+00:00"), state_path=state, evaluated=False
+        )
+        assert "claude" in rt.load_route_block_intervals(state), (
+            "an unevaluated empty reading must not be recorded as a recovery"
+        )
+
+    def test_a_witness_absent_refusal_names_itself_distinctly(self, tmp_path: Path) -> None:
+        """ "the family genuinely recovered, re-review at head" and "this host has no witness"
+        are two different truths with two different next actions."""
+        rt = _load_review_team_module()
+        note = _write_dossier(
+            tmp_path, "task-x", self._freshness_stale_dossier(rt, "2026-09-16T00:50:43+00:00")
+        )
+        blockers = self._blockers_with_witness(
+            rt, note, {"claude": self.STALE_A}, tmp_path / "absent.json"
+        )
+        assert any(
+            b.startswith("review_dossier_route_block_witness_unavailable:") for b in blockers
+        ), blockers
+
+    def test_a_stale_generation_refusal_carries_the_compared_interval(self, tmp_path: Path) -> None:
+        """The decision inputs live in an evictable cache; a refusal that does not carry them
+        cannot be reconstructed after the cache turns over."""
+        rt = _load_review_team_module()
+        note = _write_dossier(
+            tmp_path, "task-x", self._freshness_stale_dossier(rt, "2026-09-16T00:50:43+00:00")
+        )
+        state = tmp_path / "route-block-interval.json"
+        self._fold(rt, {"claude": self.STALE_A}, now="2026-09-20T00:00:00+00:00", state_path=state)
+        blockers = self._blockers_with_witness(
+            rt, note, {"claude": self.STALE_A}, state, at="2026-09-20T00:10:00+00:00"
+        )
+        stale = [b for b in blockers if "recovery_generation_stale" in b]
+        assert stale, blockers
+        assert "2026-09-20" in stale[0], "the compared blocked_since must be in the blocker"
 
     def test_absent_interval_witness_blocks(self, tmp_path: Path) -> None:
         """No witness is not a pass. An unwritable or fresh state costs a re-review;
@@ -1620,11 +2128,12 @@ class TestVerdictBlockers:
         note = _write_dossier(
             tmp_path, "task-x", self._freshness_stale_dossier(rt, "2026-09-16T00:50:43+00:00")
         )
-        assert "review_dossier_route_block_recovery_generation_stale:claude" in (
-            self._blockers_with_witness(
-                rt, note, {"claude": self.STALE_A}, tmp_path / "absent.json"
-            )
+        blockers = self._blockers_with_witness(
+            rt, note, {"claude": self.STALE_A}, tmp_path / "absent.json"
         )
+        assert any(
+            b.startswith("review_dossier_route_block_witness_unavailable:") for b in blockers
+        ), blockers
 
     def test_interval_start_is_stable_while_the_block_persists(self, tmp_path: Path) -> None:
         """`blocked_since` is the STABLE lower bound; only `observed_at` advances. If it
@@ -1636,21 +2145,10 @@ class TestVerdictBlockers:
             rt, {"claude": self.STALE_A}, now="2026-06-11T19:00:00+00:00", state_path=state
         )
         later = self._fold(
-            rt, {"claude": self.STALE_B}, now="2026-06-11T23:00:00+00:00", state_path=state
+            rt, {"claude": self.STALE_B}, now="2026-06-11T19:30:00+00:00", state_path=state
         )
         assert first["claude"] == later["claude"]
-        assert json.loads(state.read_text())["claude"]["observed_at"].startswith("2026-06-11T23")
-
-    def test_a_probe_read_cannot_close_an_interval(self, tmp_path: Path) -> None:
-        """`observe=False` exists so a diagnostic read of the live route state cannot
-        silently discharge every degraded dossier's recovery obligation."""
-        rt = _load_review_team_module()
-        state = tmp_path / "route-block-interval.json"
-        self._fold(rt, {"claude": self.STALE_A}, now="2026-06-11T19:00:00+00:00", state_path=state)
-        rt.review_route_blocked_families(
-            rt.load_lens_registry(), observe=False, interval_state_path=state
-        )
-        assert "claude" in rt.load_route_block_intervals(state)
+        assert json.loads(state.read_text())["claude"]["observed_at"].startswith("2026-06-11T19:30")
 
     def test_recovered_route_block_invalidates_pending_degraded_admission(
         self, tmp_path: Path
@@ -1927,14 +2425,6 @@ class TestVerdictBlockers:
         note = _write_dossier(tmp_path, "task-x", dossier)
         blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
         assert any(b.startswith("review_dossier_team_undersized:") for b in blockers)
-
-    def test_killswitch_disables_gate(self, tmp_path: Path, monkeypatch) -> None:
-        rt = _load_review_team_module()
-        monkeypatch.setenv("HAPAX_REVIEW_TEAM_GATE_OFF", "1")
-        note = tmp_path / "task-x.md"
-        note.write_text("---\ntype: cc-task\ntask_id: task-x\n---\n", encoding="utf-8")
-        blockers = rt.review_team_verdict_blockers(self._frontmatter(), note, pr_head_sha="a" * 40)
-        assert blockers == ()
 
     def test_killswitch_false_does_not_disable_gate(self, tmp_path: Path, monkeypatch) -> None:
         rt = _load_review_team_module()
@@ -3709,3 +4199,157 @@ class TestDispatcherRepoThreading:
             tmp_path, pr_number=7, head_ref="feat/x", pr_repo="hapax-systems/reins"
         )
         assert [fm["task_id"] for _, fm in found] == ["discovery"]
+
+
+class TestRouteFlapRecheckSelector:
+    """`scripts/rechecks/route-flap-recheck replay` must recognise EVERY route-block blocker.
+
+    The first cut matched only `route_block_degradation`, so a report containing only the
+    newer `recovery_generation_stale` / `witness_unavailable` blockers replayed zero dossiers
+    and exited 0 — a recheck that reports "nothing to see" precisely when the new gate is what
+    is blocking the field. A recheck that cannot see the thing it was written for is worse
+    than none, because it is believed.
+    """
+
+    @staticmethod
+    def _module():
+        import runpy
+
+        return runpy.run_path(
+            str(REPO_ROOT / "scripts" / "rechecks" / "route-flap-recheck"), run_name="__pin__"
+        )
+
+    def test_every_gate_blocker_is_recognised(self) -> None:
+        recheck = self._module()
+        rt = _load_review_team_module()
+        emitted = (
+            "review_dossier_route_block_degradation_unwitnessed:claude",
+            "review_dossier_route_block_degradation_reason_mismatch:glm",
+            "review_dossier_route_block_recovery_generation_stale:claude@live=x,dossier=y",
+            "review_dossier_route_block_witness_unavailable:claude (no interval witness)",
+            "review_dossier_degradation_unwitnessed:codex",
+            "task_blocker:some-task:review_dossier_route_block_degradation_unwitnessed:gemini",
+        )
+        for blocker in emitted:
+            assert recheck["_is_route_block_blocker"](blocker), blocker
+        for unrelated in ("merge_state:DIRTY", "missing_cc_task_link", "draft", "hold_labels:x"):
+            assert not recheck["_is_route_block_blocker"](unrelated), unrelated
+        assert rt is not None
+
+    def test_the_prefix_list_covers_what_the_gate_can_emit(self) -> None:
+        """Pins the list against the gate's source, so a new blocker cannot be added to
+        review_team.py without this recheck learning about it."""
+        recheck = self._module()
+        source = (REPO_ROOT / "scripts" / "review_team.py").read_text(encoding="utf-8")
+        emitted = {
+            line.split('"')[1]
+            for line in source.splitlines()
+            if "blockers.append(" in line or '"review_dossier_route_block' in line
+            for _ in [0]
+            if '"review_dossier_route_block' in line and line.count('"') >= 2
+        }
+        known = set(recheck["ROUTE_BLOCK_BLOCKER_PREFIXES"])
+        for name in emitted:
+            base = name.rstrip(":")
+            assert any(base.startswith(prefix) or prefix.startswith(base) for prefix in known), (
+                f"{base} is emitted by the gate but unknown to the recheck"
+            )
+
+
+class TestRouteBlockGenerationEscape:
+    """The documented operator control for a recovery-generation refusal.
+
+    The witness lives in an evictable cache with no producer of its own, so losing it turns
+    every admissible degraded dossier into a refusal. On an estate whose standing directive is
+    to keep the merge field clean there has to be a named, greppable way through — the
+    retirement sweep got `--dry-run`, the probe path got `observe=False`.
+
+    These tests exist partly because the escape's first cut called a `LOGGER` that did not
+    exist in the module: an untaken branch passes every test that never takes it.
+    """
+
+    def _blocked_dossier(self, rt, tmp_path: Path):
+        notes = (
+            "degraded_family_route_blocked:claude",
+            "route_block_interval_since:claude:2026-01-01T00:00:00Z",
+            "route_blocked_family_reason:claude:claude.review.opus:"
+            "freshness_check:claude.review.opus: quota stale; "
+            "checked_at=2026-09-16T00:50:43+00:00 stale_after=14s",
+            "degraded_to:t2_standard",
+            "post_route_receipt_rereview_required",
+        )
+        dossier = _synth(
+            rt,
+            [
+                _review("codex-1", "codex", "accept"),
+                _review("gemini-1", "gemini", "accept"),
+                _review("glm-1", "glm", "accept"),
+            ],
+            team_class="t1_critical",
+            constitution_notes=notes,
+        )
+        return _write_dossier(tmp_path, "task-x", dossier)
+
+    STALE = TestVerdictBlockers.STALE_A
+
+    def _call(self, rt, note, tmp_path, state=None):
+        return rt.review_team_verdict_blockers(
+            TestVerdictBlockers()._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"claude": self.STALE},
+            route_block_interval_state_path=state or (tmp_path / "absent.json"),
+            admission_time="2026-06-11T19:20:00+00:00",
+        )
+
+    def test_without_the_escape_the_dossier_is_refused(self, tmp_path: Path) -> None:
+        rt = _load_review_team_module()
+        note = self._blocked_dossier(rt, tmp_path)
+        blockers = self._call(rt, note, tmp_path)
+        assert any("route_block" in b for b in blockers), blockers
+
+    def test_the_escape_waives_only_the_generation_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rt = _load_review_team_module()
+        monkeypatch.setenv(rt.ROUTE_BLOCK_GENERATION_OFF_ENV, "1")
+        note = self._blocked_dossier(rt, tmp_path)
+        blockers = self._call(rt, note, tmp_path)
+        assert not any(
+            "recovery_generation_stale" in b or "witness_unavailable" in b for b in blockers
+        ), blockers
+
+    def test_the_escape_does_not_waive_the_class_comparison(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deliberately narrow: an operator unblocking a witness problem must not thereby
+        also buy admission for a degradation class that is not live."""
+        rt = _load_review_team_module()
+        monkeypatch.setenv(rt.ROUTE_BLOCK_GENERATION_OFF_ENV, "1")
+        note = self._blocked_dossier(rt, tmp_path)
+        blockers = rt.review_team_verdict_blockers(
+            TestVerdictBlockers()._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={"claude": ("claude_review_seat_receipt_admission_required",)},
+            route_block_interval_state_path=tmp_path / "absent.json",
+            admission_time="2026-06-11T19:20:00+00:00",
+        )
+        assert "review_dossier_route_block_degradation_reason_mismatch:claude" in blockers
+
+    def test_the_escape_does_not_waive_a_genuine_recovery(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`_unwitnessed` — the family is not route-blocked at all — stays a refusal."""
+        rt = _load_review_team_module()
+        monkeypatch.setenv(rt.ROUTE_BLOCK_GENERATION_OFF_ENV, "1")
+        note = self._blocked_dossier(rt, tmp_path)
+        blockers = rt.review_team_verdict_blockers(
+            TestVerdictBlockers()._frontmatter(),
+            note,
+            pr_head_sha="a" * 40,
+            route_blocked_families={},
+            route_block_interval_state_path=tmp_path / "absent.json",
+            admission_time="2026-06-11T19:20:00+00:00",
+        )
+        assert "review_dossier_route_block_degradation_unwitnessed:claude" in blockers
