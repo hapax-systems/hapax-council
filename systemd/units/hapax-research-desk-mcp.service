@@ -1,0 +1,41 @@
+[Unit]
+Description=Hapax research desk — MCP server (Streamable HTTP) for the Perplexity custom remote connector
+Documentation=file:///home/hapax/projects/hapax-council/docs/architecture/research-desk-connector.md
+# The credential comes from the reins FileStore, so the secrets chain must be up first.
+After=network-online.target hapax-secrets.service
+Wants=network-online.target
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+# Refuse to start on a release tree that predates the desk rather than serving a
+# stale binary behind a public tunnel.
+ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file scripts/hapax-research-desk-mcp
+# Validates the FileStore credential, the queue directory and the delivery
+# directory, then exits 0. A desk that cannot authenticate never binds.
+ExecStartPre=%h/.local/bin/uv run --directory %h/.cache/hapax/source-activation/worktree scripts/hapax-research-desk-mcp --check
+ExecStart=%h/.local/bin/uv run --directory %h/.cache/hapax/source-activation/worktree scripts/hapax-research-desk-mcp --host 127.0.0.1 --port 8790
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+Environment=HOME=%h
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=10s
+MemoryMax=512M
+CPUQuota=25%
+# The desk reads the vault queue and writes one lanebus drop per delivery; it has
+# no business anywhere else on the filesystem.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/Documents/Personal/20-projects/hapax-cc-tasks/active %h/Documents/Personal/30-areas/hapax/lanebus %h/.cache/hapax/research-desk
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-research-desk-mcp
+
+[Install]
+WantedBy=default.target

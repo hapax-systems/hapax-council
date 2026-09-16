@@ -1,0 +1,514 @@
+#!/usr/bin/env python3
+"""Perplexity research desk — an MCP server over Streamable HTTP.
+
+The estate does not drive Perplexity's UI (its ToS §5.2(d)/(i) forbid that).
+Perplexity ships the inverse as a product feature: a Pro/Max account registers a
+**custom remote connector** — an HTTPS MCP server URL with API-key auth — and a
+**Scheduled Task in Computer** runs a fresh agent against it on a cadence. So the
+subscription's agent becomes the *client* of this server.
+
+    Perplexity Computer (scheduled task)
+        -> https://desk.<zone>/mcp        (cloudflared tunnel, Cloudflare edge)
+        -> http://127.0.0.1:8790/mcp      (this process, loopback only)
+        -> shared.research_desk           (vault queue + lanebus delivery)
+
+Three tools, no more:
+
+* ``list_open_research_requests(limit)`` — the open queue.
+* ``fetch_request(request_id)`` — one full brief.
+* ``deliver_result(request_id, markdown, citations, model_notes)`` — file the answer
+  at the lanebus dominator and stamp the request row. Idempotent on request id.
+
+Posture:
+
+* **Fail closed on the credential.** No key in the FileStore means the process
+  refuses to start; there is no unauthenticated mode and no anonymous fallback.
+* **Loopback only.** A non-loopback bind is refused outright. Public exposure is
+  the tunnel's job, and the tunnel is a separate unit with a separate failure
+  domain.
+* **Every call is a ledger row.** A ledger that cannot be written fails the call
+  rather than serving it unrecorded — the desk's receipt surface is the only thing
+  that counts a subscription entitlement the estate cannot meter directly.
+
+Run: ``uv run scripts/hapax-research-desk-mcp``  (``--check`` validates and exits).
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextvars
+import hmac
+import json
+import logging
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
+
+from shared import research_desk_ledger as ledger
+from shared.research_desk import (
+    DEFAULT_LIST_LIMIT,
+    ResearchDeskConfig,
+    ResearchDeskError,
+)
+from shared.research_desk import (
+    deliver_result as _deliver_result,
+)
+from shared.research_desk import (
+    get_request as _get_request,
+)
+from shared.research_desk import (
+    list_open_requests as _list_open_requests,
+)
+
+LOG = logging.getLogger("hapax-research-desk")
+
+SECRET_NAME = "research-desk-connector-key"  # pragma: allowlist secret — a FileStore NAME, not a value
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8790
+MCP_PATH = "/mcp"
+HEALTH_PATH = "/healthz"
+LOOPBACK_HOSTS = frozenset(("127.0.0.1", "::1", "localhost"))
+MIN_KEY_CHARS = 24
+
+#: The public hostname the tunnel publishes. It reaches the origin in the ``Host``
+#: header, and the MCP SDK's DNS-rebinding protection rejects (421) every Host it was
+#: not told about — an empty allowlist rejects everything, which is what a
+#: loopback-only integration test cannot see and a live call through the tunnel can.
+DEFAULT_PUBLIC_HOST = "desk.hapaxrnd.com"
+
+#: Set per request by the auth edge; read by the tools when they write ledger rows.
+_CALLER_IP: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "research_desk_caller_ip", default=None
+)
+
+
+class DeskStartupError(RuntimeError):
+    """Refusal to start. Message carries the next action."""
+
+
+# --------------------------------------------------------------------------- #
+# Credential
+# --------------------------------------------------------------------------- #
+
+
+def _hapax_secret_bin() -> str:
+    override = (os.environ.get("HAPAX_SECRET") or "").strip()
+    return override or str(Path.home() / ".local" / "bin" / "hapax-secret")
+
+
+def load_connector_key(secret_name: str = SECRET_NAME) -> str:
+    """Read the bearer key from the reins FileStore. Never logged, never echoed.
+
+    A direct env override exists for tests only and is deliberately named so it
+    cannot be mistaken for a production path.
+    """
+    injected = os.environ.get("HAPAX_RESEARCH_DESK_KEY_FOR_TESTS", "")
+    if injected:
+        return injected.strip()
+    argv = [_hapax_secret_bin(), secret_name]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=15.0, check=False)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        raise DeskStartupError(
+            f"cannot reach hapax-secret ({exc}). Next action: run "
+            f"`hapax-secret --where {secret_name}` and confirm the FileStore is readable here"
+        ) from exc
+    if result.returncode != 0:
+        raise DeskStartupError(
+            f"hapax-secret exited {result.returncode} for {secret_name}. Next action: mint it with "
+            f"`hapax-secret` (PUT is a TTY ritual) or check `hapax-secret --where {secret_name}`"
+        )
+    key = result.stdout.strip()
+    if len(key) < MIN_KEY_CHARS:
+        raise DeskStartupError(
+            f"the {secret_name} value is shorter than {MIN_KEY_CHARS} characters. Next action: "
+            "re-mint it with at least 32 bytes of entropy; this key is the only thing between "
+            "the public tunnel and the vault"
+        )
+    return key
+
+
+# --------------------------------------------------------------------------- #
+# Tools
+# --------------------------------------------------------------------------- #
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, indent=2, sort_keys=True)
+
+
+def public_host(env: dict[str, str] | None = None) -> str:
+    source = os.environ if env is None else env
+    return (source.get("HAPAX_RESEARCH_DESK_PUBLIC_HOST") or "").strip() or DEFAULT_PUBLIC_HOST
+
+
+def transport_security(host: str, port: int = DEFAULT_PORT) -> TransportSecuritySettings:
+    """The Host/Origin allowlist: loopback plus the one published hostname.
+
+    DNS-rebinding protection stays ON. This is a narrow allowlist, not a disable:
+    a request arriving with any other ``Host`` still gets a 421, which is the whole
+    point of the control. Only the hostname we deliberately published is added.
+    """
+    hosts = [
+        host,
+        f"127.0.0.1:{port}",
+        f"localhost:{port}",
+        "127.0.0.1:*",
+        "localhost:*",
+    ]
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=sorted(set(hosts)),
+        allowed_origins=sorted(
+            {f"https://{host}", *(f"http://{h}" for h in hosts if ":*" not in h)}
+        ),
+    )
+
+
+def uvicorn_kwargs(host: str, port: int) -> dict[str, Any]:
+    """Server kwargs, extracted so the trust boundary is assertable.
+
+    ``proxy_headers`` is ON and ``forwarded_allow_ips`` is loopback ONLY. cloudflared
+    reaches the origin over loopback and forwards the real client address, so the
+    ledger's ``caller_ip`` is the actual caller rather than a constant 127.0.0.1 —
+    but only a loopback peer is ever believed about it, and the desk binds loopback,
+    so the tunnel is the only thing that can speak.
+    """
+    return {
+        "host": host,
+        "port": port,
+        "log_level": "info",
+        "access_log": True,
+        "proxy_headers": True,
+        "forwarded_allow_ips": "127.0.0.1",
+    }
+
+
+def build_server(config: ResearchDeskConfig, *, ledger_path: Path) -> FastMCP:
+    """Construct the FastMCP server with the three desk tools bound to ``config``."""
+
+    mcp = FastMCP(
+        "hapax-research-desk",
+        instructions=(
+            "The Hapax research desk. Call list_open_research_requests to see what the "
+            "operator's estate needs researched, fetch_request for the full brief, then "
+            "deliver_result exactly once per request with your answer in markdown and every "
+            "source as a citation. Delivery is idempotent: calling it twice for the same "
+            "request returns the first receipt and files nothing new."
+        ),
+        host=DEFAULT_HOST,
+        port=DEFAULT_PORT,
+        streamable_http_path=MCP_PATH,
+        stateless_http=True,
+        json_response=os.environ.get("HAPAX_RESEARCH_DESK_JSON_RESPONSE", "").strip() == "1",
+        transport_security=transport_security(public_host(), DEFAULT_PORT),
+    )
+
+    def _record(
+        tool: str,
+        outcome: str,
+        *,
+        request_id: str | None = None,
+        bytes_out: int = 0,
+        bytes_in: int = 0,
+        reason_code: str | None = None,
+        receipt_id: str | None = None,
+        result_count: int | None = None,
+    ) -> None:
+        ledger.append(
+            ledger.build_record(
+                tool=tool,
+                outcome=outcome,
+                caller_ip=_CALLER_IP.get(),
+                request_id=request_id,
+                bytes_out=bytes_out,
+                bytes_in=bytes_in,
+                reason_code=reason_code,
+                receipt_id=receipt_id,
+                result_count=result_count,
+            ),
+            path=ledger_path,
+        )
+
+    @mcp.tool()
+    def list_open_research_requests(limit: int = DEFAULT_LIST_LIMIT) -> str:
+        """List the research requests the estate currently wants answered."""
+        try:
+            requests, malformed = _list_open_requests(config, limit)
+        except ResearchDeskError as exc:
+            _record("list_open_research_requests", "refused", reason_code=exc.reason_code)
+            return _json(exc.to_payload())
+        payload = {
+            "ok": True,
+            "count": len(requests),
+            "requests": [request.summary() for request in requests],
+            "malformed": [row.to_payload() for row in malformed],
+        }
+        text = _json(payload)
+        _record(
+            "list_open_research_requests",
+            "ok",
+            bytes_out=len(text.encode("utf-8")),
+            result_count=len(requests),
+        )
+        return text
+
+    @mcp.tool()
+    def fetch_request(request_id: str) -> str:
+        """Fetch one research request in full: question, constraints, deadline, brief."""
+        try:
+            request = _get_request(config, request_id)
+        except ResearchDeskError as exc:
+            _record(
+                "fetch_request",
+                "refused",
+                request_id=request_id[:128],
+                reason_code=exc.reason_code,
+            )
+            return _json(exc.to_payload())
+        text = _json({"ok": True, **request.full()})
+        _record(
+            "fetch_request",
+            "ok",
+            request_id=request.request_id,
+            bytes_out=len(text.encode("utf-8")),
+        )
+        return text
+
+    @mcp.tool()
+    def deliver_result(
+        request_id: str,
+        markdown: str,
+        citations: list[str | dict[str, str]] | None = None,
+        model_notes: str = "",
+    ) -> str:
+        """Deliver the answer to one research request. Safe to retry: idempotent on request_id.
+
+        ``citations`` takes bare URL strings or ``{"url": …, "title": …}`` objects. The
+        union is in the ANNOTATION and not only in the parser: FastMCP derives the
+        tool's JSON schema from these hints, so a shape the annotation omits is
+        rejected at the transport and never reaches the code that would accept it.
+        """
+        bytes_in = len((markdown or "").encode("utf-8")) + len((model_notes or "").encode("utf-8"))
+        try:
+            receipt = _deliver_result(
+                config,
+                request_id=request_id,
+                markdown=markdown,
+                citations=citations,
+                model_notes=model_notes,
+            )
+        except ResearchDeskError as exc:
+            _record(
+                "deliver_result",
+                "refused",
+                request_id=request_id[:128],
+                bytes_in=bytes_in,
+                reason_code=exc.reason_code,
+            )
+            return _json(exc.to_payload())
+        text = _json(receipt.to_payload(vault_root=config.vault_root))
+        _record(
+            "deliver_result",
+            "duplicate" if receipt.duplicate else "ok",
+            request_id=receipt.request_id,
+            bytes_in=bytes_in,
+            bytes_out=receipt.bytes_written,
+            receipt_id=receipt.receipt_id,
+        )
+        return text
+
+    return mcp
+
+
+# --------------------------------------------------------------------------- #
+# HTTP edge: health, then bearer auth, then the MCP app
+# --------------------------------------------------------------------------- #
+
+
+def _header(scope: dict[str, Any], name: bytes) -> str:
+    for key, value in scope.get("headers") or ():
+        if key.lower() == name:
+            return value.decode("latin-1")
+    return ""
+
+
+def presented_key(scope: dict[str, Any]) -> str:
+    """The key the caller offered: ``Authorization: Bearer …`` or ``X-API-Key: …``.
+
+    Two spellings because a connector registration form that asks for a header
+    name and value is common, and a caller that can only send ``Authorization``
+    is equally common. Both are the same credential and the same comparison; this
+    is one authentication path with two accepted spellings, not a fallback.
+    """
+    authorization = _header(scope, b"authorization")
+    if authorization[:7].lower() == "bearer ":
+        return authorization[7:].strip()
+    return _header(scope, b"x-api-key").strip()
+
+
+async def _send_json(
+    send: Any,
+    status: int,
+    payload: dict[str, Any],
+    headers: list[tuple[bytes, bytes]] | None = None,
+) -> None:
+    body = json.dumps(payload).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode("ascii")),
+                *(headers or []),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
+def build_app(inner: Any, *, key: str) -> Any:
+    """Wrap the MCP ASGI app with the unauthenticated health path and bearer auth."""
+
+    async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] == "lifespan":
+            await inner(scope, receive, send)
+            return
+        if scope["type"] == "websocket":
+            # The desk speaks Streamable HTTP and nothing else. Refuse in the
+            # protocol's own vocabulary rather than raising into the server loop.
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        if scope["type"] != "http":
+            LOG.warning("research desk: ignoring ASGI scope type %r", scope["type"])
+            return
+        client = scope.get("client") or ()
+        _CALLER_IP.set(str(client[0]) if client else None)
+        if scope.get("path") == HEALTH_PATH:
+            await _send_json(send, 200, {"ok": True, "service": "hapax-research-desk"})
+            return
+        offered = presented_key(scope)
+        if not offered or not hmac.compare_digest(offered, key):
+            LOG.warning(
+                "research desk: rejected an unauthenticated %s %s from %s",
+                scope.get("method"),
+                scope.get("path"),
+                (client[0] if client else "unknown"),
+            )
+            await _send_json(
+                send,
+                401,
+                {
+                    "ok": False,
+                    "reason_code": "unauthorized",
+                    "next_action": (
+                        "send the connector API key as `Authorization: Bearer <key>` "
+                        "or `X-API-Key: <key>`"
+                    ),
+                },
+                headers=[(b"www-authenticate", b'Bearer realm="hapax-research-desk"')],
+            )
+            return
+        await inner(scope, receive, send)
+
+    return app
+
+
+# --------------------------------------------------------------------------- #
+# Entrypoint
+# --------------------------------------------------------------------------- #
+
+
+def _require_loopback(host: str) -> str:
+    if host not in LOOPBACK_HOSTS:
+        raise DeskStartupError(
+            f"refusing to bind {host}: the research desk listens on loopback only. "
+            "Next action: leave --host at 127.0.0.1 and publish it with "
+            "hapax-research-desk-tunnel.service (cloudflared), which is the only "
+            "supported exposure path"
+        )
+    return host
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Hapax research desk MCP server")
+    parser.add_argument("--host", default=DEFAULT_HOST, help="bind address (loopback only)")
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="bind port")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="validate the credential, the queue directory and the ledger, then exit",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    args = parse_args(argv)
+    try:
+        host = _require_loopback(args.host)
+        key = load_connector_key()
+        config = ResearchDeskConfig.from_env()
+    except (DeskStartupError, ResearchDeskError) as exc:
+        print(f"hapax-research-desk: {exc}", file=sys.stderr)
+        return 2
+
+    ledger_path = ledger.ledger_path_from_env()
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    config.lock_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.check:
+        missing = [
+            str(path) for path in (config.requests_dir, config.lanebus_dir) if not path.is_dir()
+        ]
+        if missing:
+            print(
+                "hapax-research-desk: missing directories "
+                f"{missing}. Next action: create them or set "
+                "HAPAX_RESEARCH_DESK_VAULT_ROOT / HAPAX_RESEARCH_DESK_LANE",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "bind": f"{host}:{args.port}{MCP_PATH}",
+                    "public_url": f"https://{public_host()}{MCP_PATH}",
+                    "requests_dir": str(config.requests_dir),
+                    "delivery_dir": str(config.lanebus_dir),
+                    "ledger": str(ledger_path),
+                    "key_present": True,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    import uvicorn
+
+    server = build_server(config, ledger_path=ledger_path)
+    app = build_app(server.streamable_http_app(), key=key)
+    LOG.info(
+        "research desk listening on http://%s:%d%s as https://%s%s (queue=%s, delivery=%s)",
+        host,
+        args.port,
+        MCP_PATH,
+        public_host(),
+        MCP_PATH,
+        config.requests_dir,
+        config.lanebus_dir,
+    )
+    uvicorn.run(app, **uvicorn_kwargs(host, args.port))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
