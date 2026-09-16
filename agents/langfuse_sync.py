@@ -19,7 +19,6 @@ import base64
 import json
 import logging
 import os
-import subprocess
 import time
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
@@ -28,6 +27,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from pydantic import BaseModel, Field
+
+from shared.secrets import SecretUnavailable, get_secret
 
 try:
     from agents import _langfuse_config  # noqa: F401
@@ -95,23 +96,12 @@ class LangfuseSyncState(BaseModel):
 # ── Credentials ──────────────────────────────────────────────────────────────
 
 
-def _get_credential(env_var: str, pass_key: str) -> str:
-    """Read a credential from env var, falling back to pass store."""
-    val = os.environ.get(env_var, "")
-    if val:
-        return val
+def _get_credential(env_var: str, secret_name: str) -> str:
+    """The env var when set, else the FileStore through ``shared.secrets``; ``""`` if absent."""
     try:
-        result = subprocess.run(
-            ["pass", "show", pass_key],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return ""
+        return get_secret(secret_name, env=env_var, required=False) or ""
+    except SecretUnavailable:
+        return ""
 
 
 def _langfuse_auth_header() -> str:

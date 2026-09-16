@@ -402,6 +402,22 @@ class TestPresenceWriteAndListing:
         assert "demo-b" in names
         assert not any("SENTINEL" in name for name in names)
 
+    def test_list_secret_names_over_an_explicit_root_needs_no_module(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        import shared.secrets as secrets
+
+        root = tmp_path / "store"
+        root.mkdir()
+        (root / "demo-b.bin").write_bytes(b"VALUE-SENTINEL")
+        (root / "demo-a.bin").write_bytes(b"VALUE-SENTINEL")
+        (root / "not-a-blob.txt").write_bytes(b"x")
+        (root / "nested").mkdir()
+        (root / "nested" / "demo-c.bin").write_bytes(b"x")
+        monkeypatch.setattr(secrets, "_file_store", lambda: None)
+        assert list_secret_names(root) == ("demo-a", "demo-b")
+        assert list_secret_names(tmp_path / "absent") == ()
+
     def test_list_secret_names_degrades_to_empty_not_a_crash(self, tmp_path, monkeypatch) -> None:
         import shared.secrets as secrets
 
@@ -409,9 +425,13 @@ class TestPresenceWriteAndListing:
         monkeypatch.setenv("PATH", str(tmp_path))  # no hapax-secret anywhere on PATH
         assert list_secret_names() == ()
 
-    def test_put_instruction_names_the_cli_and_the_mapped_name_never_pass(self) -> None:
+    def test_put_instruction_names_the_cli_and_the_name_never_pass(self, monkeypatch) -> None:
+        import shared.secrets as secrets
+
+        # Must render on a host with no reins module at all (CI): no name mapping is consulted.
+        monkeypatch.setattr(secrets, "reins_api_path", lambda: None)
         text = put_instruction("demo/alpha")
         assert text.startswith("hapax-secret")
-        assert "demo-alpha" in text
+        assert "demo/alpha" in text
         assert "pass insert" not in text
         assert "gopass" not in text

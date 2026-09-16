@@ -55,6 +55,7 @@ __all__ = [
     "put_secret",
     "reins_api_path",
     "secret_store_name",
+    "secret_store_root",
 ]
 
 #: Where ``hapax-secret`` looks for the reins API, in its order.
@@ -272,10 +273,12 @@ def put_instruction(name: str) -> str:
     Every remediation string, refusal detail and unblocker row that used to read
     ``pass insert <name>`` reads this instead, so the estate has exactly one place that knows
     how a secret is put. The CLI's put is a TTY dialogue (name, secret, confirm — through reins),
-    so the instruction is the bare command plus the name the operator will type into it.
+    so the instruction is the bare command plus the name the operator will type into it. The
+    name is rendered as given: the dialogue applies the one name mapping itself, and this must
+    stay importable on hosts (CI runners) that carry no reins module.
     """
 
-    return f"{_HAPAX_SECRET_CLI}   # TTY put dialogue via reins; name: {secret_store_name(name)}"
+    return f"{_HAPAX_SECRET_CLI}   # TTY put dialogue via reins; name: {name}"
 
 
 def has_secret(name: str) -> bool:
@@ -320,24 +323,45 @@ def put_secret(name: str, value: bytes) -> None:
     store.put(secret_store_name(name), bytes(value))
 
 
-def list_secret_names() -> tuple[str, ...]:
+def secret_store_root() -> Path | None:
+    """The FileStore's directory on this host, or ``None`` where the module is absent."""
+
+    try:
+        store = _file_backend_store("<root>")
+    except SecretUnavailable:
+        return None
+    if store is None:
+        return None
+    root = getattr(store, "root", None)
+    return Path(root) if root else None
+
+
+def _names_in(root: Path) -> tuple[str, ...]:
+    """Blob names under ``root``: ``<name>.bin`` stems, the layout ``hapax-secret --list`` reads."""
+
+    if not root.is_dir():
+        return ()
+    return tuple(sorted(path.stem for path in root.glob("*.bin")))
+
+
+def list_secret_names(root: Path | None = None) -> tuple[str, ...]:
     """The blob names present in the FileStore (mapped form, e.g. ``api-anthropic``), sorted.
 
-    Names only, never values. The listing reads the store's own layout (``<root>/<name>.bin``,
-    the same rule ``hapax-secret --list`` applies) where the module is installed, and the CLI
-    elsewhere. An unreachable store lists as empty rather than raising: callers are inventories
-    and health checks, which must degrade to "nothing present" instead of crashing.
+    Names only, never values. ``root`` lists an explicit store directory (inventories over a
+    given root, tests); otherwise the default FileStore where the module is installed, and
+    ``hapax-secret --list`` elsewhere. An unreachable store lists as empty rather than raising:
+    callers are inventories and health checks, which must degrade to "nothing present" instead
+    of crashing.
     """
 
+    if root is not None:
+        return _names_in(root)
     try:
         store = _file_backend_store("<list>")
     except SecretUnavailable:
         return ()
     if store is not None:
-        root = Path(getattr(store, "root", ""))
-        if not root.is_dir():
-            return ()
-        return tuple(sorted(path.stem for path in root.glob("*.bin")))
+        return _names_in(Path(getattr(store, "root", "")))
     try:
         completed = subprocess.run(
             [_HAPAX_SECRET_CLI, "--list"],

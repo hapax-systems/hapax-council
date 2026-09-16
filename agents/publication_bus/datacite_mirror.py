@@ -193,7 +193,7 @@ def _citation_count(work: dict[str, Any]) -> int:
 def main() -> int:
     """Entry for ``python -m agents.publication_bus.datacite_mirror``.
 
-    Reads the operator's ORCID iD from ``pass show orcid/orcid`` via
+    Reads the operator's ORCID iD (env, then the FileStore) via
     ``shared.orcid.operator_orcid`` and exits 0 when unavailable
     (daemon-friendly no-op).
     """
