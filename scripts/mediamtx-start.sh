@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Launch MediaMTX with the YouTube stream key loaded from pass at runtime.
+# Launch MediaMTX with the YouTube stream key loaded from the FileStore at runtime.
 # Used by systemd/units/mediamtx.service.
 #
 # Phase 5 of the camera 24/7 resilience epic.
 # See docs/superpowers/specs/2026-04-12-native-rtmp-delivery-design.md
 set -euo pipefail
+
+# Secrets come from the FileStore through the one shared helper, never from pass.
+# Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/secret.sh"
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG_SRC="${REPO_DIR}/config/mediamtx.yml"
@@ -26,10 +30,10 @@ if ! command -v ffmpeg &>/dev/null; then
     exit 1
 fi
 
-# Load the YouTube stream key from pass.
-if ! HAPAX_YOUTUBE_STREAM_KEY=$(pass show streaming/youtube-stream-key 2>/dev/null); then
-    echo "ERROR: pass show streaming/youtube-stream-key failed" >&2
-    echo "       store with: pass insert streaming/youtube-stream-key" >&2
+# Load the YouTube stream key from the FileStore.
+if ! HAPAX_YOUTUBE_STREAM_KEY=$(hapax_secret_get streaming/youtube-stream-key); then
+    echo "ERROR: could not read streaming/youtube-stream-key from the FileStore. Next action: put it with \`hapax-secret streaming/youtube-stream-key\`." >&2
+    echo "       store with: hapax-secret streaming/youtube-stream-key" >&2
     exit 1
 fi
 export HAPAX_YOUTUBE_STREAM_KEY

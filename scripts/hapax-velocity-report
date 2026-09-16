@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Secrets come from the FileStore through the one shared helper, never from pass.
+# Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/secret.sh"
+
 # hapax-velocity-report — Daily development velocity and quality metrics
 #
 # Collects PR, commit, test, and quality metrics from GitHub API and local
@@ -19,7 +23,7 @@ mkdir -p "$REPORT_DIR"
 
 # GitHub auth
 export GITHUB_TOKEN
-GITHUB_TOKEN="${GITHUB_TOKEN:-$(pass show github/token 2>/dev/null || echo '')}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-$(hapax_secret_get github/token || echo '')}"
 if [[ -z "$GITHUB_TOKEN" ]]; then
     echo "WARN: No GITHUB_TOKEN, using unauthenticated API (rate limited)"
 fi
