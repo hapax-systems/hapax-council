@@ -179,6 +179,39 @@ def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
         )
 
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Adoptability tooth (ADOPTABILITY-DETERMINATION-20260916 §7, A2): a garage-door
+    # row cannot leave S1 without a prior-art receipt and a demand receipt. BACKED-
+    # and-usable prior art converts the row to kind: contribution and then proceeds;
+    # any other refusal stops the advance with its typed reason.
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from shared.adoptability_gate import (
+        ROW_CONVERTED_CONTRIBUTION,
+        convert_to_contribution,
+        stage_advance_refusals,
+    )
+    from shared.frontmatter import parse_frontmatter
+
+    frontmatter, _ = parse_frontmatter(front + body)
+    refusals = stage_advance_refusals(frontmatter, to_stage=new_stage) if frontmatter else []
+    hard = [reason for reason in refusals if reason != ROW_CONVERTED_CONTRIBUTION]
+    if hard:
+        for reason in hard:
+            print(f"cc-stage-advance: REFUSED — {reason}", file=sys.stderr)
+        print(
+            "Next action: file the missing receipt under the row's adoptability: block "
+            "(prior_art_receipt with two named search shapes and a BACKED/UNBACKED verdict; "
+            "demand_receipt naming who asked), then rerun cc-stage-advance.",
+            file=sys.stderr,
+        )
+        return REFUSED
+    if ROW_CONVERTED_CONTRIBUTION in refusals:
+        converted = convert_to_contribution(front + body, actor=_role(), now=now)
+        split = converted.find("\n---", 4)
+        front, body = converted[: split + 1], converted[split + 1 :]
+        print(f"cc-stage-advance: {ROW_CONVERTED_CONTRIBUTION} ({task_id})", file=sys.stderr)
+
     if re.search(r"(?m)^stage:", front):
         front = re.sub(r"(?m)^stage:\s*.*$", f"stage: {new_stage}", front)
     else:

@@ -19,6 +19,7 @@ from agents.studio_compositor.layout_safety import (
 )
 from agents.visual_pool.repository import VisualPoolSidecar
 from logos.api.routes.studio import studio_audio_safe_for_broadcast, studio_egress_state
+from shared.adoptability_gate import convert_to_contribution as _convert_to_contribution
 from shared.aperture_registry import (
     ApertureRegistryFixtureSet,
     ApertureRegistryRecord,
@@ -5132,3 +5133,7 @@ from agents.deliberative_council.models import (
 
 _PhaseOneResult._populate_dossier_sections
 _CouncilVerdict._populate_dossier_sections
+
+# scripts/cc-stage-advance (extensionless; vulture cannot parse it) is the static caller —
+# ADOPTABILITY-DETERMINATION-20260916 §7, row_converted:contribution.
+_convert_to_contribution

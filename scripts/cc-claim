@@ -1142,6 +1142,42 @@ if unmet:
     sys.exit(5)
 
 if claim_mode == "claim":
+    # Adoptability tooth (ADOPTABILITY-DETERMINATION-20260916 §7, A2). A claim is the
+    # first step out of `offered`; a garage-door row takes it only with a prior-art
+    # receipt (two named search shapes, BACKED/UNBACKED) and a demand receipt naming
+    # who asked, both referenced from its adoptability: block. The predicate is the
+    # same one cc-stage-advance and the cc-task-gate hook call.
+    from shared.adoptability_gate import (  # noqa: E402
+        ROW_CONVERTED_CONTRIBUTION,
+        stage_advance_refusals,
+    )
+
+    _teeth = stage_advance_refusals(frontmatter, to_status="claimed")
+    if _teeth:
+        print(
+            f"cc-claim: REFUSED — garage-door row '{task_id}' cannot leave offered:",
+            file=sys.stderr,
+        )
+        for _reason in _teeth:
+            print(f"  - {_reason}", file=sys.stderr)
+        if ROW_CONVERTED_CONTRIBUTION in _teeth:
+            print(
+                "Next action: the prior-art receipt is BACKED and usable, so this row is a "
+                "contribution to the existing artifact — set `kind: contribution` on the row "
+                "(cc-stage-advance applies the same conversion on advance), then rerun cc-claim.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "Next action: file the prior-art receipt (two differently-shaped searches, "
+                "verdict BACKED or UNBACKED) and the demand receipt (who asked) and reference "
+                "them from the row's adoptability: block, then rerun cc-claim. See "
+                "docs/governance/adoptability-teeth.md.",
+                file=sys.stderr,
+            )
+        sys.exit(7)
+
+if claim_mode == "claim":
     # A note authored without the full claim key set makes plain re.sub
     # stamps silent no-ops: the claim lands as `status: claimed` with
     # claimed_at absent — exactly the cc-hygiene H1 ghost predicate — and H1

@@ -518,6 +518,75 @@ if [[ "${HAPAX_METHODOLOGY_EMERGENCY:-0}" == "1" ]]; then
   exit 0
 fi
 
+# --- 3a. Adoptability stage tooth (ADOPTABILITY-DETERMINATION-20260916 §7, A2) ---
+# A row tagged `garage-door` cannot leave `offered`/S1 by hand-edit without its prior-art
+# and demand receipts, and cannot shed the tag to escape. The predicate lives in
+# shared/adoptability_gate.py (the same one cc-claim and cc-stage-advance call); this
+# hook only judges Edit/Write/MultiEdit on cc-task rows that carry the tag (either the
+# file on disk or the proposed content — a Write that creates a garage-door row past
+# S1 is judged too). Non-garage-door rows never reach the predicate. If the predicate
+# cannot run for a garage-door row, the edit is refused with a next action — a tooth
+# that fails open when its own machinery breaks is representation, not a gate.
+# Placed AFTER section 3 so the gate's own ledgered incident bypasses
+# (HAPAX_CC_TASK_GATE_OFF, HAPAX_METHODOLOGY_EMERGENCY) cover it — a tooth the charter's
+# killswitch cannot reach is a composition defect (review finding, PR 4676) — and BEFORE
+# the 3b bootstrap allowance so an unclaimed Write of a garage-door row past S1 is still
+# judged. The predicate honours its own HAPAX_ADOPTABILITY_TEETH_OFF=1 (ledgered) too.
+case "$tool_name" in
+  Edit|Write|MultiEdit)
+    case "$edit_path" in
+      "$HOME"/Documents/Personal/20-projects/hapax-cc-tasks/active/*.md \
+        | "$HOME"/Documents/Personal/20-projects/hapax-cc-tasks/closed/*.md)
+        _teeth_tagged=false
+        if [[ -f "$edit_path" ]] && grep -q -- 'garage-door' "$edit_path" 2>/dev/null; then
+          _teeth_tagged=true
+        elif printf '%s' "$input" | grep -q -- 'garage-door'; then
+          _teeth_tagged=true
+        fi
+        if [[ "$_teeth_tagged" == "true" ]]; then
+          _teeth_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+          if ! command -v python3 >/dev/null 2>&1; then
+            _emit_block <<EOF
+cc-task-gate: BLOCKED — python3 missing; cannot judge the garage-door row edit: $edit_path
+  Next action: restore python3 on PATH or repair the lane environment, then retry.
+EOF
+            exit 2
+          fi
+          set +e
+          _teeth_out="$(printf '%s' "$input" | PYTHONPATH="$_teeth_root:${PYTHONPATH:-}" \
+            python3 -m shared.adoptability_gate hook-edit "$edit_path" 2>&1)"
+          _teeth_rc=$?
+          set -e
+          case "$_teeth_rc" in
+            0) ;;
+            2)
+              _emit_block <<EOF
+cc-task-gate: BLOCKED — adoptability teeth refuse this garage-door row edit.
+$_teeth_out
+  A garage-door row leaves offered only with a prior-art receipt (two named search
+  shapes, BACKED/UNBACKED) and a demand receipt naming who asked, both referenced from
+  its adoptability: block; BACKED-and-usable prior art means the row must read
+  kind: contribution first. Removing the garage-door tag is not a transition.
+  Next action: file the receipts under the row's adoptability: block (or set
+  kind: contribution), then retry; see docs/governance/adoptability-teeth.md.
+EOF
+              exit 2
+              ;;
+            *)
+              _emit_block <<EOF
+cc-task-gate: BLOCKED — adoptability predicate failed (rc=$_teeth_rc) for garage-door row: $edit_path
+$_teeth_out
+  Next action: repair shared/adoptability_gate.py (PYTHONPATH=$_teeth_root python3 -m shared.adoptability_gate hook-edit <row>), then retry.
+EOF
+              exit 2
+              ;;
+          esac
+        fi
+        ;;
+    esac
+    ;;
+esac
+
 # --- 3b. Unclaimed governance-intake bootstrap allowance ---
 # The task gate must not deadlock the lifecycle it enforces. A session without
 # a claim may create a new request or offered cc-task note, but only through a

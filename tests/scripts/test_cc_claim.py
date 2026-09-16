@@ -1661,3 +1661,95 @@ def test_claim_refuses_note_without_closing_frontmatter(tmp_path: Path) -> None:
     cache_dir = home / ".cache" / "hapax"
     leaked = list(cache_dir.glob("cc-active-task-*")) if cache_dir.exists() else []
     assert leaked == [], f"claim caches must not be written on a failed stamp: {leaked}"
+
+
+# ── adoptability teeth (ADOPTABILITY-DETERMINATION-20260916 §7, A2) ──────────
+
+
+def _garage_door_task(home: Path, task_id: str) -> Path:
+    note = _write_task(home, "active", task_id, tags=["cc-task", "garage-door"])
+    block = textwrap.dedent(
+        """\
+        adoptability:
+          prior_art_receipt: receipts/prior-art.yaml
+          demand_receipt: receipts/demand.yaml
+          install_line: "curl -fsSL https://example.org/tool/install.sh | sh"
+          platforms: [linux]
+          zero_config: true
+          ttfv_seconds: 30
+          replaces_nothing: true
+          api: cli
+          licence: Apache-2.0
+          repo_open: acme/tool
+          release_notes: https://github.com/acme/tool/releases
+          compare_page: https://example.org/compare
+          operator_voice_post: https://example.org/post
+        """
+    )
+    text = note.read_text(encoding="utf-8")
+    text = text.replace("\nclaimed_at: null\n---\n", "\nclaimed_at: null\n" + block + "---\n", 1)
+    note.write_text(text, encoding="utf-8")
+    return note
+
+
+def _garage_door_receipts(home: Path, *, verdict: str = "UNBACKED") -> None:
+    receipts = home / "receipts"
+    receipts.mkdir(parents=True, exist_ok=True)
+    prior_art = {
+        "search_shapes": [
+            {"shape": "github_code_search", "query": "lifecycle hooks idle working blocked"},
+            {"shape": "package_registry", "query": "claude status reporter"},
+        ],
+        "verdict": verdict,
+    }
+    if verdict == "BACKED":
+        prior_art.update(
+            {"tier": "1", "source": "daocoding/herdr-claude-lifecycle", "usable": True}
+        )
+    (receipts / "prior-art.yaml").write_text(json.dumps(prior_art), encoding="utf-8")
+    (receipts / "demand.yaml").write_text(json.dumps({"asked_by": ["issue #12"]}), encoding="utf-8")
+
+
+def test_garage_door_row_without_receipts_cannot_be_claimed(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _garage_door_task(home, "gd-claim-1")
+    result = _claim(
+        home, "gd-claim-1", legacy=True, extra_env={"HAPAX_ADOPTABILITY_RECEIPT_ROOTS": str(home)}
+    )
+    assert result.returncode == 7, result.stderr
+    assert "stage_refused:prior_art_receipt_absent" in result.stderr
+    assert "stage_refused:demand_receipt_absent" in result.stderr
+    assert "status: offered" in note.read_text(encoding="utf-8")
+    assert not list((home / ".cache" / "hapax").glob("cc-active-task-cx-test*"))
+
+
+def test_garage_door_row_with_receipts_is_claimed(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    note = _garage_door_task(home, "gd-claim-2")
+    _garage_door_receipts(home)
+    result = _claim(
+        home, "gd-claim-2", legacy=True, extra_env={"HAPAX_ADOPTABILITY_RECEIPT_ROOTS": str(home)}
+    )
+    assert result.returncode == 0, result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
+
+
+def test_garage_door_row_with_backed_usable_prior_art_must_be_a_contribution(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    note = _garage_door_task(home, "gd-claim-3")
+    _garage_door_receipts(home, verdict="BACKED")
+    result = _claim(
+        home, "gd-claim-3", legacy=True, extra_env={"HAPAX_ADOPTABILITY_RECEIPT_ROOTS": str(home)}
+    )
+    assert result.returncode == 7, result.stderr
+    assert "row_converted:contribution" in result.stderr
+    assert "kind: contribution" in result.stderr
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("kind: build", "kind: contribution", 1)
+    )
+    result = _claim(
+        home, "gd-claim-3", legacy=True, extra_env={"HAPAX_ADOPTABILITY_RECEIPT_ROOTS": str(home)}
+    )
+    assert result.returncode == 0, result.stderr

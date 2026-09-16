@@ -7,6 +7,8 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
+
 if TYPE_CHECKING:
     import pytest
 
@@ -174,3 +176,35 @@ def test_widen_ledgers_the_change(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert ledger.exists()
     body = ledger.read_text(encoding="utf-8")
     assert "scope_widen" in body and "shared/coord_projection.py" in body
+
+
+def test_widen_quotes_items_that_would_not_round_trip_as_scalars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unquoted `key: value` accident: `- config/ (row schema: adoptability block)` parses
+    as a one-key mapping and the autoqueue skips the row. This tool read such items with
+    their quotes stripped and wrote them back bare, re-introducing the accident on every
+    widen (measured 2026-09-16 on adoptability-teeth-gates-20260916). Now it quotes on write."""
+    note, _ = _setup(tmp_path, monkeypatch, "quote-task")
+    text = note.read_text(encoding="utf-8").replace(
+        "  - scripts/\n", '  - "config/ (row schema: adoptability block)"\n  - scripts/\n', 1
+    )
+    note.write_text(text, encoding="utf-8")
+    (tmp_path / "repo" / "config").mkdir()
+
+    rc = cc_scope_widen.widen("quote-task", ["shared/ (see: the runbook)"])
+
+    assert rc == cc_scope_widen.OK
+    new_text = note.read_text(encoding="utf-8")
+    assert '  - "config/ (row schema: adoptability block)"' in new_text
+    assert '  - "shared/ (see: the runbook)"' in new_text
+    assert "  - scripts/" in new_text
+    front = yaml.safe_load(new_text.split("\n---\n", 1)[0][4:])
+    refs = front["mutation_scope_refs"]
+    assert all(isinstance(item, str) for item in refs), refs
+    assert "config/ (row schema: adoptability block)" in refs
+    assert "shared/ (see: the runbook)" in refs
+    # Idempotent under the new writer: a second widen with nothing new changes nothing.
+    rc = cc_scope_widen.widen("quote-task", ["shared/ (see: the runbook)"])
+    assert rc == cc_scope_widen.OK
+    assert note.read_text(encoding="utf-8") == new_text

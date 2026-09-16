@@ -1,0 +1,434 @@
+#!/usr/bin/env python3
+"""hapax-adoptability-receipt — measure an artifact's adoptability and sign the receipt.
+
+ADOPTABILITY-DETERMINATION-20260916 §7, A3: adoptability is an acceptance criterion,
+measured, not a hope. This producer runs an artifact's install line in a BARE
+container (no estate mounts, no estate environment), witnesses zero-config detection,
+times first value, and checks the repository facts a stranger meets (licence, open
+repo with issues, a release with notes, a compare page). It writes one signed receipt
+that ``shared.adoptability_gate.release_refusals`` reads; the release gate refuses
+without it, with it stale, with it unsigned, or with any check failed.
+
+Usage:
+    hapax-adoptability-receipt --manifest artifact.yaml [--out receipt.json]
+                               [--runtime podman|docker] [--ttl-seconds 86400]
+
+Manifest (YAML):
+    artifact_id: tool
+    repo: acme/tool                      # GitHub owner/name
+    install_line: "curl -fsSL https://example.org/tool/install.sh | sh"
+    zero_config_command: "tool status"   # no flags, no config file, must detect a harness
+    zero_config_pattern: "detected"
+    first_value_command: "tool status --json"
+    first_value_pattern: '"state"'
+    ttfv_budget_seconds: 60
+    image: docker.io/library/debian:stable-slim
+    compare: v0.1.0...v0.2.0             # GitHub compare basehead — or compare_page: <url>
+
+Exit codes: 0 receipt written, outcome pass · 1 receipt written, outcome fail ·
+2 refused (typed reason, nothing written) · 3 error.
+
+Refusals: receipt_refused:container_runtime_absent · receipt_refused:signing_credential_absent
+· receipt_refused:manifest_invalid:<field>
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.adoptability_gate import (  # noqa: E402
+    ADOPTABILITY_GATE_NAME,
+    install_line_digest,
+)
+from shared.public_gate_receipts import (  # noqa: E402
+    PUBLIC_GATE_AUTHORITY_SECRET_ENV,
+    public_gate_authority_signature,
+)
+
+EXIT_PASS = 0
+EXIT_FAIL = 1
+EXIT_REFUSED = 2
+EXIT_ERROR = 3
+
+RUNTIMES: tuple[str, ...] = ("podman", "docker")
+DEFAULT_IMAGE = "docker.io/library/debian:stable-slim"
+DEFAULT_TTL_SECONDS = 24 * 3600
+DEFAULT_TTFV_BUDGET_SECONDS = 60
+CONTAINER_TIMEOUT_SECONDS = 900
+ACCEPTED_LICENCES = frozenset({"Apache-2.0", "MIT"})
+AUTHORITY_ISSUER = "review-team:hapax-adoptability-receipt"
+DEFAULT_OUT_DIR = (
+    Path.home()
+    / "Documents"
+    / "Personal"
+    / "20-projects"
+    / "hapax-cc-tasks"
+    / "_evidence"
+    / "adoptability"
+)
+REQUIRED_MANIFEST_FIELDS: tuple[str, ...] = (
+    "artifact_id",
+    "repo",
+    "install_line",
+    "zero_config_command",
+    "zero_config_pattern",
+    "first_value_command",
+    "first_value_pattern",
+)
+
+REFUSED_RUNTIME_ABSENT = "receipt_refused:container_runtime_absent"
+REFUSED_SIGNING_ABSENT = "receipt_refused:signing_credential_absent"
+REFUSED_MANIFEST_INVALID = "receipt_refused:manifest_invalid"
+
+Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+class Refused(Exception):
+    """A typed refusal; nothing is written."""
+
+
+def _default_runner(cmd: list[str], *, timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def load_manifest(path: Path) -> dict[str, Any]:
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise Refused(f"{REFUSED_MANIFEST_INVALID}:unreadable:{exc.__class__.__name__}") from exc
+    if not isinstance(data, Mapping):
+        raise Refused(f"{REFUSED_MANIFEST_INVALID}:not_a_mapping")
+    for field in REQUIRED_MANIFEST_FIELDS:
+        value = data.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise Refused(f"{REFUSED_MANIFEST_INVALID}:{field}")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", str(data["repo"])):
+        raise Refused(f"{REFUSED_MANIFEST_INVALID}:repo")
+    return dict(data)
+
+
+def detect_runtime(
+    preferred: str | None, *, which: Callable[[str], str | None] | None = None
+) -> str:
+    """podman first, docker second; a named ``--runtime`` must exist. Neither → refusal.
+
+    The precondition is machine-checkable at the moment of use (``which``), which is
+    what lets docker stand in for podman without being a fallback that widens.
+    """
+    resolve = which or shutil.which  # resolved at call time so a test can stub shutil.which
+    candidates = (preferred,) if preferred else RUNTIMES
+    for name in candidates:
+        if name and resolve(name):
+            return name
+    raise Refused(REFUSED_RUNTIME_ABSENT)
+
+
+def _container_script(manifest: Mapping[str, Any]) -> str:
+    return "\n".join(
+        [
+            "set -u",
+            "T0=$(date +%s%N)",
+            f"if ! ( {manifest['install_line']} ) >/tmp/install.log 2>&1; then echo INSTALL_RC=$?; exit 0; fi",
+            "echo INSTALL_RC=0",
+            f"( {manifest['zero_config_command']} ) >/tmp/zc.out 2>&1; echo ZC_RC=$?",
+            f"( {manifest['first_value_command']} ) >/tmp/fv.out 2>&1; echo FV_RC=$?",
+            "T1=$(date +%s%N)",
+            'echo "TTFV_NS=$((T1-T0))"',
+            "echo ZC_BEGIN; cat /tmp/zc.out; echo ZC_END",
+            "echo FV_BEGIN; cat /tmp/fv.out; echo FV_END",
+        ]
+    )
+
+
+def container_command(runtime: str, image: str, manifest: Mapping[str, Any]) -> list[str]:
+    """A bare container: no volumes, no estate environment, one shell script."""
+    return [
+        runtime,
+        "run",
+        "--rm",
+        "--network=host",
+        "--env",
+        "HOME=/root",
+        "--workdir",
+        "/root",
+        image,
+        "sh",
+        "-c",
+        _container_script(manifest),
+    ]
+
+
+def _between(text: str, begin: str, end: str) -> str:
+    match = re.search(re.escape(begin) + r"\n(.*?)\n?" + re.escape(end), text, re.DOTALL)
+    return match.group(1) if match else ""
+
+
+def _int_after(text: str, key: str) -> int | None:
+    match = re.search(rf"^{re.escape(key)}=(-?\d+)$", text, re.MULTILINE)
+    return int(match.group(1)) if match else None
+
+
+def container_checks(
+    runtime: str, image: str, manifest: Mapping[str, Any], *, runner: Runner = _default_runner
+) -> dict[str, dict[str, Any]]:
+    """Run the bare-container leg and derive install / zero_config / first_value / ttfv."""
+    budget = int(manifest.get("ttfv_budget_seconds") or DEFAULT_TTFV_BUDGET_SECONDS)
+    try:
+        result = runner(
+            container_command(runtime, image, manifest), timeout=CONTAINER_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "install": {
+                "passed": False,
+                "detail": f"container run exceeded {CONTAINER_TIMEOUT_SECONDS}s",
+            },
+            "zero_config": {"passed": False, "detail": "not reached"},
+            "first_value": {"passed": False, "detail": "not reached"},
+            "ttfv": {"passed": False, "detail": "not reached"},
+        }
+    out = result.stdout or ""
+    if result.returncode != 0 and "INSTALL_RC=" not in out:
+        detail = (result.stderr or out).strip()[-400:]
+        return {
+            "install": {
+                "passed": False,
+                "detail": f"container runtime rc={result.returncode}: {detail}",
+            },
+            "zero_config": {"passed": False, "detail": "not reached"},
+            "first_value": {"passed": False, "detail": "not reached"},
+            "ttfv": {"passed": False, "detail": "not reached"},
+        }
+    install_rc = _int_after(out, "INSTALL_RC")
+    zc_rc = _int_after(out, "ZC_RC")
+    fv_rc = _int_after(out, "FV_RC")
+    ttfv_ns = _int_after(out, "TTFV_NS")
+    zc_out = _between(out, "ZC_BEGIN", "ZC_END")
+    fv_out = _between(out, "FV_BEGIN", "FV_END")
+    checks: dict[str, dict[str, Any]] = {
+        "install": {"passed": install_rc == 0, "detail": f"install_line rc={install_rc}"}
+    }
+    if install_rc != 0:
+        for name in ("zero_config", "first_value", "ttfv"):
+            checks[name] = {"passed": False, "detail": "install failed"}
+        return checks
+    zc_ok = zc_rc == 0 and re.search(str(manifest["zero_config_pattern"]), zc_out) is not None
+    checks["zero_config"] = {
+        "passed": zc_ok,
+        "detail": f"rc={zc_rc}; pattern {manifest['zero_config_pattern']!r} "
+        + ("matched" if zc_ok else "not matched"),
+    }
+    fv_ok = fv_rc == 0 and re.search(str(manifest["first_value_pattern"]), fv_out) is not None
+    checks["first_value"] = {
+        "passed": fv_ok,
+        "detail": f"rc={fv_rc}; pattern {manifest['first_value_pattern']!r} "
+        + ("matched" if fv_ok else "not matched"),
+    }
+    seconds = round(ttfv_ns / 1e9, 3) if ttfv_ns is not None else None
+    checks["ttfv"] = {
+        "passed": fv_ok and seconds is not None and seconds <= budget,
+        "seconds": seconds,
+        "budget_seconds": budget,
+        "detail": f"{seconds}s against a {budget}s budget"
+        if seconds is not None
+        else "not measured",
+    }
+    return checks
+
+
+def _gh_json(runner: Runner, endpoint: str) -> Any | None:
+    result = runner(["gh", "api", endpoint], timeout=60)
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout or "null")
+    except json.JSONDecodeError:
+        return None
+
+
+def repository_checks(
+    manifest: Mapping[str, Any], *, runner: Runner = _default_runner
+) -> dict[str, dict[str, Any]]:
+    """licence / repo_open / issues_open / not_archived / release_notes / compare_page via gh."""
+    repo = str(manifest["repo"])
+    info = _gh_json(runner, f"repos/{repo}")
+    checks: dict[str, dict[str, Any]] = {}
+    if not isinstance(info, Mapping):
+        for name in ("licence", "repo_open", "issues_open", "not_archived"):
+            checks[name] = {"passed": False, "detail": f"gh api repos/{repo} failed"}
+    else:
+        licence = info.get("license") or {}
+        spdx = str(licence.get("spdx_id", "")) if isinstance(licence, Mapping) else ""
+        checks["licence"] = {"passed": spdx in ACCEPTED_LICENCES, "detail": spdx or "none"}
+        checks["repo_open"] = {
+            "passed": info.get("private") is False and info.get("visibility", "public") == "public",
+            "detail": str(info.get("visibility", "unknown")),
+        }
+        checks["issues_open"] = {"passed": info.get("has_issues") is True, "detail": "has_issues"}
+        checks["not_archived"] = {
+            "passed": info.get("archived") is False,
+            "detail": "archived flag",
+        }
+    release = _gh_json(runner, f"repos/{repo}/releases/latest")
+    if isinstance(release, Mapping) and str(release.get("body", "")).strip():
+        checks["release_notes"] = {"passed": True, "detail": str(release.get("tag_name", ""))}
+    else:
+        checks["release_notes"] = {
+            "passed": False,
+            "detail": "no latest release with a non-empty body",
+        }
+    compare = manifest.get("compare")
+    compare_page = manifest.get("compare_page")
+    if isinstance(compare, str) and compare.strip():
+        ok = _gh_json(runner, f"repos/{repo}/compare/{compare.strip()}") is not None
+        checks["compare_page"] = {"passed": ok, "detail": f"compare/{compare.strip()}"}
+    elif isinstance(compare_page, str) and compare_page.strip():
+        result = runner(["curl", "-fsSIL", "--max-time", "30", compare_page.strip()], timeout=60)
+        checks["compare_page"] = {"passed": result.returncode == 0, "detail": compare_page.strip()}
+    else:
+        checks["compare_page"] = {
+            "passed": False,
+            "detail": "manifest names neither compare nor compare_page",
+        }
+    return checks
+
+
+def build_receipt(
+    manifest: Mapping[str, Any],
+    checks: Mapping[str, Mapping[str, Any]],
+    *,
+    runtime: str,
+    image: str,
+    now: datetime,
+    ttl_seconds: int,
+    secret: str,
+) -> dict[str, Any]:
+    receipt: dict[str, Any] = {
+        "gate": ADOPTABILITY_GATE_NAME,
+        "artifact_id": str(manifest["artifact_id"]),
+        "repo": str(manifest["repo"]),
+        "install_line": str(manifest["install_line"]),
+        "install_line_sha256": install_line_digest(manifest["install_line"]),
+        "runtime": runtime,
+        "image": image,
+        "observed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "stale_after": (now + timedelta(seconds=ttl_seconds)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "checks": {name: dict(check) for name, check in checks.items()},
+        "outcome": "pass"
+        if all(check.get("passed") is True for check in checks.values())
+        else "fail",
+        "producer": "scripts/hapax-adoptability-receipt",
+        "authority_issuer": AUTHORITY_ISSUER,
+    }
+    receipt["authority_signature"] = public_gate_authority_signature(receipt, secret)
+    return receipt
+
+
+def produce(
+    manifest_path: Path,
+    *,
+    out: Path | None,
+    runtime_arg: str | None,
+    ttl_seconds: int,
+    runner: Runner = _default_runner,
+    which: Callable[[str], str | None] | None = None,
+    secret: str | None = None,
+    now: datetime | None = None,
+) -> tuple[int, Path | None, dict[str, Any] | None]:
+    manifest = load_manifest(manifest_path)
+    authority_secret = (
+        secret
+        if secret is not None
+        else os.environ.get(PUBLIC_GATE_AUTHORITY_SECRET_ENV, "").strip()
+    )
+    if not authority_secret:
+        raise Refused(REFUSED_SIGNING_ABSENT)
+    runtime = detect_runtime(runtime_arg, which=which)
+    image = str(manifest.get("image") or DEFAULT_IMAGE)
+    checks = container_checks(runtime, image, manifest, runner=runner)
+    checks.update(repository_checks(manifest, runner=runner))
+    timestamp = now or datetime.now(UTC)
+    receipt = build_receipt(
+        manifest,
+        checks,
+        runtime=runtime,
+        image=image,
+        now=timestamp,
+        ttl_seconds=ttl_seconds,
+        secret=authority_secret,
+    )
+    target = out or (
+        DEFAULT_OUT_DIR / f"{receipt['artifact_id']}-{timestamp.strftime('%Y%m%dT%H%M%SZ')}.json"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return (EXIT_PASS if receipt["outcome"] == "pass" else EXIT_FAIL), target, receipt
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--out", type=Path)
+    parser.add_argument("--runtime", choices=RUNTIMES)
+    parser.add_argument("--ttl-seconds", type=int, default=DEFAULT_TTL_SECONDS)
+    args = parser.parse_args(argv)
+    try:
+        rc, target, receipt = produce(
+            args.manifest, out=args.out, runtime_arg=args.runtime, ttl_seconds=args.ttl_seconds
+        )
+    except Refused as exc:
+        print(f"hapax-adoptability-receipt: REFUSED — {exc}", file=sys.stderr)
+        if str(exc) == REFUSED_RUNTIME_ABSENT:
+            print("  Next action: install podman (or docker) and rerun.", file=sys.stderr)
+        elif str(exc) == REFUSED_SIGNING_ABSENT:
+            # The variable is named in a literal on purpose: interpolating the constant that
+            # holds its NAME trips CodeQL's by-name sensitive-data classifier (the identifier
+            # contains SECRET) even though no value is ever printed.
+            print(
+                "  Next action: export the public-gate authority HMAC key into the environment "
+                "variable named in shared/public_gate_receipts.py (PUBLIC_GATE_AUTHORITY_SECRET_ENV; "
+                "hapax-public-gate-env.service provides it to the gates), then rerun.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                "  Next action: repair the manifest field named above and rerun.", file=sys.stderr
+            )
+        return EXIT_REFUSED
+    except (OSError, ValueError) as exc:
+        print(f"hapax-adoptability-receipt: error: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    assert receipt is not None and target is not None
+    failed = [name for name, check in receipt["checks"].items() if check.get("passed") is not True]
+    print(f"hapax-adoptability-receipt: outcome={receipt['outcome']} receipt={target}")
+    for name in failed:
+        print(
+            f"  release_refused:adoptability_failed:{name} — {receipt['checks'][name].get('detail')}"
+        )
+    if failed:
+        print("  Reference it as adoptability.receipt on the row only after the checks above pass.")
+    print(f"  Row reference: adoptability.receipt: {shlex.quote(str(target))}")
+    return rc
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
