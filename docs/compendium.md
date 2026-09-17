@@ -885,7 +885,7 @@ hapax-secrets.service          (oneshot) Load all credentials from pass store
 
 **Resource isolation**: Each service has its own cgroup with explicit MemoryMax, OOMScoreAdjust, Nice, and CPUWeight. Priority tiers:
 - Tier 0 (real-time): studio-compositor (CPUWeight=500)
-- Tier 1 (interactive): hapax-daimonion (Nice=-10, OOMScoreAdjust=-500, MemoryMax=8G)
+- Tier 1 (interactive): hapax-daimonion (Nice=-10, OOMScoreAdjust=100, effective MemoryHigh=12G, MemoryMax=16G; recheck with `systemctl --user show hapax-daimonion.service -p MemoryHigh -p MemoryMax`)
 - Tier 2 (background): studio-fx-output (Nice=10)
 
 **Recovery**: Kernel panic auto-reboots in 10s. Hardware watchdog (SP5100 TCO) forces reset if systemd hangs. greetd autologin + lingering ensures all services restart without human intervention.

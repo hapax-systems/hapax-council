@@ -1,14 +1,16 @@
 [Unit]
 # Hapax-Install-Scope: system
-Description=Apply live Hapax OOM scores that require root authority
+Description=Retired Hapax root-to-user OOM score bridge sentinel
 Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
-OnFailure=hapax-root-failure-intake@%n.service
 StartLimitIntervalSec=0
-After=user@1000.service
+RefuseManualStart=yes
+# RefuseManualStart does not block dependency activation. This impossible
+# condition keeps the retired root bridge inert through every start path.
+ConditionPathExists=!/
 
 [Service]
 Type=oneshot
-TimeoutStartSec=25s
+TimeoutStartSec=5s
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/local/sbin/hapax-oom-score-enforce --apply
 SyslogIdentifier=hapax-oom-score-enforce

@@ -7,6 +7,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-container-cleanup"
 SERVICE = REPO_ROOT / "systemd" / "units" / "hapax-container-cleanup.service"
 TIMER = REPO_ROOT / "systemd" / "units" / "hapax-container-cleanup.timer"
+PRESET = REPO_ROOT / "systemd" / "user-preset.d" / "hapax.preset"
 
 
 def _parse_unit(path):
@@ -33,11 +34,30 @@ class TestCleanupScript:
     def test_strict_mode(self):
         assert "set -euo pipefail" in SCRIPT.read_text()
 
-    def test_stale_hours_configurable(self):
-        assert "HAPAX_CONTAINER_STALE_HOURS" in SCRIPT.read_text()
+    def test_retired_cleanup_has_no_container_mutation_surface(self):
+        body = SCRIPT.read_text()
+        assert "docker" not in body
+        assert "HAPAX_CONTAINER_STALE_HOURS" not in body
+        assert "launcher owns lifecycle reconciliation" in body
+        assert body.rstrip().endswith("exit 0")
 
-    def test_targets_known_patterns(self):
-        assert "hapax-github-mcp" in SCRIPT.read_text()
+    def test_running_retired_cleanup_never_executes_a_docker_client(self, tmp_path):
+        docker_marker = tmp_path / "docker-called"
+        docker = tmp_path / "docker"
+        docker.write_text(f"#!/bin/sh\ntouch {docker_marker}\nexit 99\n")
+        docker.chmod(0o755)
+
+        result = subprocess.run(
+            [str(SCRIPT)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"PATH": f"{tmp_path}:/usr/bin:/bin"},
+        )
+
+        assert result.returncode == 0
+        assert not docker_marker.exists()
+        assert "no container mutation performed" in result.stdout
 
     def test_bash_syntax_valid(self):
         result = subprocess.run(
@@ -56,11 +76,20 @@ class TestCleanupSystemdUnits:
     def test_service_has_memory_limit(self):
         assert "MemoryMax" in _parse_unit(SERVICE)["Service"]
 
-    def test_timer_is_hourly(self):
-        assert _parse_unit(TIMER)["Timer"]["OnCalendar"] == ["hourly"]
+    def test_service_runs_sentinel_from_source_activation(self):
+        service = _parse_unit(SERVICE)["Service"]
+        activation = "%h/.cache/hapax/source-activation/worktree"
+        assert service["WorkingDirectory"] == [activation]
+        assert service["ExecStart"] == [f"{activation}/scripts/hapax-container-cleanup"]
+        assert "projects/hapax-council" not in SERVICE.read_text()
+
+    def test_timer_is_parked(self):
+        assert "# Hapax-Parked: true" in TIMER.read_text()
 
     def test_timer_is_persistent(self):
         assert _parse_unit(TIMER)["Timer"]["Persistent"] == ["true"]
 
-    def test_timer_has_install(self):
-        assert "Install" in _parse_unit(TIMER)
+    def test_preset_disables_retired_timer(self):
+        preset = PRESET.read_text().splitlines()
+        assert "disable hapax-container-cleanup.timer" in preset
+        assert "enable hapax-container-cleanup.timer" not in preset
