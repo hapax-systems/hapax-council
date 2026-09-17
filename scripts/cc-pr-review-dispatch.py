@@ -570,6 +570,25 @@ def _parse_aware_datetime(value: str) -> datetime | None:
     return parsed
 
 
+def _copy_until_note(existing: Any, entry: dict[str, Any]) -> None:
+    """Preserve operator-authored until/note; never invent until."""
+    if not isinstance(existing, dict):
+        return
+    if "until" in existing:
+        entry["until"] = existing["until"]
+    if "note" in existing:
+        entry["note"] = existing["note"]
+
+
+def _family_until_still_active(existing: Any, now_iso: str) -> bool:
+    """True when a dict entry has parseable until and now < until."""
+    if not isinstance(existing, dict):
+        return False
+    until_dt = _parse_aware_datetime(str(existing.get("until") or ""))
+    now_aware = _parse_aware_datetime(now_iso)
+    return until_dt is not None and now_aware is not None and now_aware < until_dt
+
+
 def _route_admission_observed_at(ref: str) -> datetime | None:
     match = ROUTE_ADMISSION_OBSERVED_AT_RE.search(ref)
     if match is None:
@@ -705,9 +724,10 @@ def update_family_outage(
 ) -> frozenset[str]:
     """Fold a round's seat verdicts into the outage state.
 
-    All seats of a family walled -> family OUT (stamped now). Any parseable
-    verdict or invalid-output from a family -> family back (cleared), because
-    the family is responding even if its reply is unusable.
+    All seats of a family walled -> family OUT (stamped now). Restamp
+    preserves operator-authored until/note and never invents until. A
+    parseable verdict or invalid-output clears the family only when until
+    is absent or now >= until; a still-future until keeps the family OUT.
     """
 
     state_path = state_path or FAMILY_OUTAGE_STATE
@@ -738,13 +758,13 @@ def update_family_outage(
                         "observed_at": now_iso,
                         "outage_started_at": started,
                     }
-                    if isinstance(existing, dict):
-                        if "until" in existing:
-                            entry["until"] = existing["until"]
-                        if "note" in existing:
-                            entry["note"] = existing["note"]
+                    _copy_until_note(existing, entry)
                     state[family] = entry
                 elif any(v in available_verdicts for v in verdicts):
+                    existing = state.get(family)
+                    if _family_until_still_active(existing, now_iso):
+                        # Stay OUT until operator until. Do not pop until/note.
+                        continue
                     state.pop(family, None)
             with tempfile.NamedTemporaryFile(
                 "w",

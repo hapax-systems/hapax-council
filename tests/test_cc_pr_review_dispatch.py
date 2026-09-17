@@ -4570,6 +4570,77 @@ payg_fallback: false
         later = "2026-06-12T23:30:00+00:00"
         assert dispatch.load_family_outage(later, state) == frozenset({"claude"})
 
+    def test_invalid_output_with_future_until_keeps_family_out(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """A seated invalid-output must not pop an operator until still in the future."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        entry = {
+            "observed_at": "2026-06-12T18:00:00+00:00",
+            "outage_started_at": "2026-06-12T12:00:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        state.write_text(json.dumps({"claude": entry}), encoding="utf-8")
+        now = "2026-06-12T21:00:00+00:00"
+        out = dispatch.update_family_outage(
+            [{"family": "claude", "verdict": "invalid-output"}],
+            now,
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded["claude"] == entry
+        assert out == frozenset({"claude"})
+        assert dispatch.load_family_outage(now, state) == frozenset({"claude"})
+
+    def test_invalid_output_with_past_until_clears_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Expired until yields to clear-on-verdict."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-12T18:00:00+00:00",
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                        "until": "2026-06-12T20:00:00Z",
+                        "note": "weekly reset",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        dispatch.update_family_outage(
+            [{"family": "claude", "verdict": "invalid-output"}],
+            "2026-06-12T21:00:00+00:00",
+            state,
+        )
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
+    def test_valid_verdict_without_until_clears_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """No until: a parseable verdict still clears the family."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-12T20:00:00+00:00",
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        dispatch.update_family_outage(
+            [{"family": "claude", "verdict": "accept"}],
+            "2026-06-12T21:00:00+00:00",
+            state,
+        )
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
     def test_family_offline_simulation_degrades_and_flows(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
