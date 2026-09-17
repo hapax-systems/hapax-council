@@ -9,6 +9,49 @@ SYSTEMD_ROOT = REPO_ROOT / "systemd"
 UNITS_DIR = SYSTEMD_ROOT / "units"
 PRESET = SYSTEMD_ROOT / "user-preset.d" / "hapax.preset"
 README = SYSTEMD_ROOT / "README.md"
+AUTHORITY_ENV_FILE = "-/run/user/%U/hapax-public-gate-authority.env"
+
+
+def _unit_values(name: str, section: str, directive: str) -> list[str]:
+    values = []
+    current_section = ""
+    for raw in (UNITS_DIR / name).read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            current_section = line.strip("[]")
+        elif current_section == section and line.startswith(directive + "="):
+            values.append(line.split("=", 1)[1])
+    return values
+
+
+def test_review_dispatch_loads_only_optional_authority_file() -> None:
+    assert _unit_values("hapax-pr-review-dispatch.service", "Service", "EnvironmentFile") == [
+        AUTHORITY_ENV_FILE
+    ]
+
+
+def test_review_dispatch_wants_and_orders_secrets_producer() -> None:
+    for directive in ("Wants", "After"):
+        dependencies = " ".join(
+            _unit_values("hapax-pr-review-dispatch.service", "Unit", directive)
+        ).split()
+        assert "hapax-secrets.service" in dependencies, directive
+        assert "network-online.target" in dependencies, directive
+
+
+def test_publish_orchestrator_loads_both_optional_environment_files() -> None:
+    assert _unit_values("hapax-publish-orchestrator.service", "Service", "EnvironmentFile") == [
+        "-/run/user/1000/hapax-secrets.env",
+        AUTHORITY_ENV_FILE,
+    ]
+
+
+def test_review_dispatch_environment_has_no_provider_routing_variables() -> None:
+    lines = _unit_values("hapax-pr-review-dispatch.service", "Service", "Environment")
+    lines += _unit_values("hapax-pr-review-dispatch.service", "Service", "EnvironmentFile")
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
+        assert all(name not in line for line in lines)
+    assert all("hapax-secrets.env" not in line for line in lines)
 
 
 def test_pr_review_dispatch_units_are_install_visible() -> None:
