@@ -244,6 +244,14 @@ def _tmux_calls(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
 
 
+def _target_in(argv: list[str]) -> str | None:
+    """The value of the invocation's ``-t``, or None when it carries no target."""
+    for i, tok in enumerate(argv):
+        if tok == "-t" and i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
 def _killed_sessions(path: Path) -> list[str]:
     """Which sessions the fake tmux actually killed — AFTER target resolution, so
     a bare target that prefix-matched a sibling shows up as the sibling's name."""
@@ -530,6 +538,93 @@ def test_a_live_sibling_does_not_stand_in_for_a_dead_lane(tmp_path: Path) -> Non
     logs = list(Path(b["pane_logs"]).glob("*-delta.log"))
     assert len(logs) == 1 and "%9" not in logs[0].read_text(encoding="utf-8"), (
         "the sibling's pane was captured into delta's certificate"
+    )
+
+
+def test_every_session_target_the_supervisor_emits_is_exact_matched(tmp_path: Path) -> None:
+    """The anchor stated as a PROPERTY of the run, not as one more scenario.
+
+    The two scenarios above pin the anchors that happen to be load-bearing today:
+    drop either ``has-session`` anchor or the pane-list filter and one of them reds.
+    ``kill-session`` is not among them — it is reached only after an anchored
+    ``has-session`` has already confirmed the exact session exists, so reverting it
+    to a bare target is behaviour-preserving against a fake and reds nothing
+    (measured: the whole file stays green). That leaves the destructive write the
+    review's critical is actually about resting on an unpinned comment, and a later
+    edit could unanchor it silently — the anchors would then be one TOCTOU window
+    (session dies between the check and the kill) away from killing a sibling.
+
+    So assert the shape of every target the supervisor emits, which no single
+    scenario can: session-scoped subcommands are always ``=name``, and ``list-panes``
+    is never given a session target at all, because ``=`` does NOT anchor it
+    (measured on 3.7c: ``-s -t =name`` still reported the sibling's panes).
+    A new unanchored call site reds here even if no scenario reaches it.
+    """
+    b = _base(
+        tmp_path,
+        FAKE_TMUX_SESSION_EXISTS="1",
+        FAKE_TMUX_PANE_DEAD="1",
+        FAKE_TMUX_SIBLING_EXISTS="1",
+        FAKE_TMUX_SIBLING_PANE_DEAD="0",
+    )
+    res = _run(b["env"])
+    assert res.returncode == 0, res.stderr
+
+    anchored = {"has-session", "kill-session"}
+    seen: set[str] = set()
+    for call in _tmux_calls(b["tmux_calls"]):
+        argv = call.split()
+        if not argv:
+            continue
+        sub, target = argv[0], _target_in(argv)
+        if sub in anchored:
+            seen.add(sub)
+            assert target is not None and target.startswith("="), (
+                f"{sub} used the bare target {target!r}; tmux resolves a bare target by "
+                f"exact name, then PREFIX, then fnmatch, so this can act on a sibling "
+                f'session the supervisor does not own. Use -t "=$session". Call: {call}'
+            )
+        if sub == "list-panes":
+            assert target is None, (
+                "list-panes was given a session target; `=` does not anchor it "
+                f"(measured), so it must read server-wide with -a and filter on the "
+                f"exact session name. Call: {call}"
+            )
+
+    # Guard the guard: a run that emitted neither would pass vacuously.
+    assert seen == anchored, f"scenario did not exercise {anchored - seen}"
+
+
+def test_every_supervised_kind_has_its_corpse_cleared() -> None:
+    """Liveness was broadened for every kind; corpse-clearing must not lag behind it.
+
+    ``tmux_session_alive`` now means "has a LIVE pane", so a session of only dead
+    panes reads DEAD on every tick. That is only safe for a kind whose corpse is also
+    KILLED — the launchers refuse to start over an existing session, so a kind with
+    the new predicate and no ``capture_dead_pane`` arm would fail to respawn forever.
+
+    Measured today, the asymmetry the review flagged is not reachable: ``guard`` is
+    invoked with exactly ``claude`` and ``codex`` (the P0 drain appends to
+    ``CODEX_LANES``, still kind ``codex``), and ``HAPAX_SUPERVISOR_ANTIGRAV_LANES`` is
+    force-cleared with a refusal on stderr, so the third kind named in the review does
+    not exist. This pins the invariant rather than the count, so adding a kind without
+    an arm reds here instead of looping in production.
+    """
+    src = "\n".join(
+        line
+        for line in SUPERVISOR.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    guarded = set(re.findall(r'\bguard\s+"\$lane"\s+(\w+)', src))
+    cleared = set(re.findall(r'\bcapture_dead_pane\s+"\$lane"\s+"hapax-(\w+)-\$lane"', src))
+
+    assert guarded, "found no guard invocations — the parse, not the script, is wrong"
+    assert guarded <= cleared, (
+        f"supervised kind(s) {sorted(guarded - cleared)} get the pane-dead liveness "
+        f"predicate but no capture_dead_pane arm: their sessions would read DEAD every "
+        f"tick with nothing clearing the corpse, and the launcher refuses to start over "
+        f"an existing session — a permanent respawn-failure loop. Add the arm in guard, "
+        f"or keep that kind off tmux_session_alive."
     )
 
 
