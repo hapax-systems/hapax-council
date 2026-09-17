@@ -782,7 +782,13 @@ write_local_dispatch_proof() {
   [ -n "$proof_file" ] || return 0
   mkdir -p "$(dirname "$proof_file")" 2>/dev/null || return 0
   if [ -n "${TMUX_BIN:-}" ] && [ -n "${TMUX_NAME:-}" ]; then
-    pane_pid="$("$TMUX_BIN" list-panes -t "$TMUX_NAME" -F '#{pane_pid}' 2>/dev/null | sed -n '1p' || true)"
+    # Server-wide listing filtered on the EXACT name, never `-t "$TMUX_NAME"`: a bare
+    # target prefix-matches a longer-named session, and `=` does not anchor list-panes
+    # (measured on 3.7c — `-s -t =name` still reported the sibling's panes). This pid
+    # goes into a dispatch PROOF, so reading a sibling's pane would name the wrong
+    # process in the evidence.
+    pane_pid="$("$TMUX_BIN" list-panes -a -F '#{session_name} #{pane_pid}' 2>/dev/null |
+      awk -v s="$TMUX_NAME" '$1 == s { print $2; exit }' || true)"
   fi
   cgroup="$(cat /proc/self/cgroup 2>/dev/null || true)"
   python3 - "$proof_file" "$SESSION" "${TASK_ID:-}" "${DISPATCH_HOST_REQUESTED:-}" \
@@ -1623,6 +1629,12 @@ case "$TERMINAL" in
         write_local_dispatch_proof "$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf local)" "0" "" "$RUNNER"
       fi
     fi
+    # `=`: attach the operator to THIS lane and refuse otherwise. Measured on 3.7c with
+    # only `hapax-probe-delta-2` running: `attach-session -t hapax-probe-delta` resolved
+    # to the sibling (it got as far as "open terminal failed"), while
+    # `-t =hapax-probe-delta` said "can't find session". An unanchored attach puts the
+    # operator's own keystrokes into another lane's pane whenever this lane's session is
+    # gone and a longer-named one is not.
     case "$(basename "$FOOT_BIN")" in
       footclient)
         "$FOOT_BIN" -E -N -H \
@@ -1630,7 +1642,7 @@ case "$TERMINAL" in
           --app-id "hapax-codex-$SESSION" \
           --title "$SESSION" \
           --working-directory "$WORKDIR" \
-          "$TMUX_BIN" attach-session -t "$TMUX_NAME"
+          "$TMUX_BIN" attach-session -t "=$TMUX_NAME"
         move_foot_window_to_workspace "$SESSION" "$FOOT_TARGET_WORKSPACE"
         ;;
       *)
@@ -1639,7 +1651,7 @@ case "$TERMINAL" in
           --app-id "hapax-codex-$SESSION" \
           --title "$SESSION" \
           --working-directory "$WORKDIR" \
-          "$TMUX_BIN" attach-session -t "$TMUX_NAME" >/dev/null 2>&1
+          "$TMUX_BIN" attach-session -t "=$TMUX_NAME" >/dev/null 2>&1
         move_foot_window_to_workspace "$SESSION" "$FOOT_TARGET_WORKSPACE"
         ;;
     esac

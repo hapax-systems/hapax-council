@@ -431,20 +431,26 @@ case "$TERMINAL" in
     if ! "$TMUX_BIN" has-session -t "=$TMUX_NAME" 2>/dev/null; then
       tmux_new_lane_session
     fi
+    # `=`: attach the operator to THIS lane and refuse otherwise. Measured on 3.7c with
+    # only `hapax-probe-delta-2` running: `attach-session -t hapax-probe-delta` resolved
+    # to the sibling (it got as far as "open terminal failed"), while
+    # `-t =hapax-probe-delta` said "can't find session". An unanchored attach puts the
+    # operator's own keystrokes into another lane's pane whenever this lane's session is
+    # gone and a longer-named one is not.
     case "$(basename "$FOOT_BIN")" in
       footclient)
         "$FOOT_BIN" -E -N \
           --app-id "hapax-claude-$ROLE" \
           --title "$ROLE" \
           --working-directory "$WORKDIR" \
-          "$TMUX_BIN" attach-session -t "$TMUX_NAME"
+          "$TMUX_BIN" attach-session -t "=$TMUX_NAME"
         ;;
       *)
         setsid -f "$FOOT_BIN" \
           --app-id "hapax-claude-$ROLE" \
           --title "$ROLE" \
           --working-directory "$WORKDIR" \
-          "$TMUX_BIN" attach-session -t "$TMUX_NAME" >/dev/null 2>&1
+          "$TMUX_BIN" attach-session -t "=$TMUX_NAME" >/dev/null 2>&1
         ;;
     esac
     ;;

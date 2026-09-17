@@ -628,6 +628,39 @@ def test_every_supervised_kind_has_its_corpse_cleared() -> None:
     )
 
 
+@pytest.mark.parametrize("launcher", ["hapax-claude", "hapax-codex"])
+def test_launchers_never_target_a_session_by_bare_name(launcher: str) -> None:
+    """The same anchor invariant on the launcher side, where one target carries the operator.
+
+    ``attach-session`` was the call site the first pass missed: it is what a foot launch
+    hands the human. Measured on 3.7c with only ``hapax-probe-delta-2`` running,
+    ``attach-session -t hapax-probe-delta`` resolved to the sibling (it reached
+    "open terminal failed") while ``-t =hapax-probe-delta`` said "can't find session" —
+    so an unanchored attach types the operator's keystrokes into another lane's pane
+    whenever this lane's session is gone and a longer-named one is not.
+
+    ``list-panes`` is excluded on purpose and asserted separately: ``=`` does NOT anchor
+    it, so the correct form is a server-wide listing filtered on the exact name, and an
+    anchored ``-t`` there would be a false reassurance.
+    """
+    src = "\n".join(
+        line
+        for line in (REPO_ROOT / "scripts" / launcher).read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    bare = re.findall(r'(\S+)\s+-t\s+"\$TMUX_NAME"', src)
+    assert not bare, (
+        f"{launcher}: {sorted(set(bare))} target the session by BARE name. tmux resolves a "
+        f'bare target by exact name, then PREFIX, then fnmatch. Use -t "=$TMUX_NAME" '
+        f'(or "=$TMUX_NAME:" for a window option); for list-panes, where `=` does not '
+        f"anchor, read server-wide with -a and filter on the exact session name."
+    )
+    assert re.search(r"list-panes\s+-a\b", src) or "list-panes" not in src, (
+        f"{launcher}: list-panes must read server-wide with -a and filter on the exact "
+        f"session name — `=` does not anchor it (measured)."
+    )
+
+
 # ── failure paths inside the capture ─────────────────────────────────────────
 
 

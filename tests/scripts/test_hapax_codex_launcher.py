@@ -2597,7 +2597,12 @@ esac
     assert "--app-id\nhapax-codex-cx-violet" in args
     assert "--title\ncx-violet" in args
     assert "--working-directory" in args
-    assert "tmux\nattach-session\n-t\nhapax-codex-cx-violet" in args
+    # Anchored, and this is the one that carries the OPERATOR: measured on 3.7c with only
+    # `hapax-probe-delta-2` running, `attach-session -t hapax-probe-delta` resolved to the
+    # sibling (it reached "open terminal failed") where `-t =hapax-probe-delta` said
+    # "can't find session". Unanchored, a lane whose session is gone next to a
+    # longer-named one attaches the operator's keystrokes to the wrong lane's pane.
+    assert "tmux\nattach-session\n-t\n=hapax-codex-cx-violet" in args
     tmux_text = tmux_log.read_text()
     # Anchored: a bare target would prefix-match a session whose name merely
     # extends this one (measured on tmux 3.7c), and attach the operator to it.
