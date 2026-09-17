@@ -76,11 +76,13 @@ updated_at: 2026-09-16T00:00:00Z
 
 
 def _tool_env(home: Path) -> dict[str, str]:
+    """Env for driving converted writers. cc-claim requires HAPAX_SESSION_ID."""
     return {
         **os.environ,
         "HOME": str(home),
         "HAPAX_COORD_DIR": str(home / "coord"),
         "HAPAX_AGENT_ROLE": "theta-test",
+        "HAPAX_SESSION_ID": "lock-probe-session",
         "PYTHONPATH": f"{REPO_ROOT}:{os.environ.get('PYTHONPATH', '')}",
     }
 
@@ -1208,6 +1210,12 @@ SCRATCH_RECOVERY_DISCOVERED: dict[str, str] = {
     "transition-scratch": (
         "current ``_scratch_for`` suffix; leftover assertions glob ``.*.transition-scratch``"
     ),
+    "transition-tmp": "transient sibling of transition-scratch in _TRANSIENT_SCRATCH_SUFFIXES",
+    "transition-abandoned": "foreign scratch moved aside by _move_aside_atomically",
+    "transition-consumed": "consumed operand named inside a scratch constructor",
+    "transition-safety": "safety-copy operand named inside a scratch constructor",
+    "transition-staged": "staged operand named inside a scratch constructor",
+    "transition-withdrawn": "withdrawn operand named inside a scratch constructor",
 }
 
 
