@@ -524,8 +524,9 @@ PARSEABLE_VERDICTS = {"accept", "accept-with-findings", "block"}
 
 #: Family quota-wall state (postmortem 2026-06-12, failure class #1): a
 #: family whose seats ALL hit a provider wall in a round is OUT for the next
-#: constitutions until a seat answers again or the TTL lapses. The TTL keeps
-#: a stale outage from degrading reviews after a quiet recovery.
+#: constitutions until a seat answers again, an explicit ``until`` lapses, or
+#: (when ``until`` is absent) the TTL lapses. An explicit ``until`` is
+#: authoritative; TTL is the re-probe interval, not recovery.
 FAMILY_OUTAGE_STATE = review_team.FAMILY_OUTAGE_STATE  # canonical path lives with the validator
 DEGRADED_MERGES_LEDGER = Path.home() / ".cache" / "hapax" / "review-team" / "degraded-merges.jsonl"
 FAMILY_OUTAGE_TTL_S = review_team.FAMILY_OUTAGE_TTL_S
@@ -634,7 +635,14 @@ def _route_post_outage_admission_witness_result(
 
 
 def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> dict[str, str]:
-    """TTL-live outage witness timestamps by family."""
+    """Live outage witness timestamps by family.
+
+    An explicit parseable ``until`` on a dict entry is authoritative: the family
+    stays OUT while ``now < until``, even if ``observed_at`` is older than
+    ``FAMILY_OUTAGE_TTL_S``. Once ``now >= until``, the family is IN — TTL does
+    not revive an expired ``until``. When ``until`` is absent, TTL is the
+    re-probe interval (not recovery).
+    """
 
     state_path = state_path or FAMILY_OUTAGE_STATE
     try:
@@ -644,8 +652,19 @@ def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> 
     if not isinstance(state, dict):
         return {}
     now = datetime.fromisoformat(now_iso)
+    now_aware = _parse_aware_datetime(now_iso)
+    if now_aware is None:
+        now_aware = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
     out: dict[str, str] = {}
     for family, observed in state.items():
+        if isinstance(observed, dict):
+            until_dt = _parse_aware_datetime(str(observed.get("until") or ""))
+            if until_dt is not None:
+                if now_aware < until_dt:
+                    observed_iso = _witness_observed_at(observed)
+                    if observed_iso is not None:
+                        out[str(family)] = observed_iso
+                continue
         observed_iso = _witness_observed_at(observed)
         if observed_iso is None:
             continue
@@ -673,7 +692,7 @@ def send_session_for_lane(lane: str) -> str:
 
 
 def load_family_outage(now_iso: str, state_path: Path | None = None) -> frozenset[str]:
-    """Families currently out on an observed quota wall (TTL-bounded)."""
+    """Families currently out on an observed quota wall (until- or TTL-bounded)."""
 
     return frozenset(load_family_outage_witness(now_iso, state_path))
 
@@ -711,8 +730,19 @@ def update_family_outage(
                     # Sustained outage: preserve the STABLE outage_started_at (set when this
                     # outage began) and only advance observed_at. Legacy str entries seed
                     # started == the old timestamp; a brand-new outage seeds started == now.
-                    started = _outage_started_at(state.get(family), now_iso)
-                    state[family] = {"observed_at": now_iso, "outage_started_at": started}
+                    # Preserve operator-authored until/note on restamp; never invent until.
+                    existing = state.get(family)
+                    started = _outage_started_at(existing, now_iso)
+                    entry: dict[str, Any] = {
+                        "observed_at": now_iso,
+                        "outage_started_at": started,
+                    }
+                    if isinstance(existing, dict):
+                        if "until" in existing:
+                            entry["until"] = existing["until"]
+                        if "note" in existing:
+                            entry["note"] = existing["note"]
+                    state[family] = entry
                 elif any(v in available_verdicts for v in verdicts):
                     state.pop(family, None)
             with tempfile.NamedTemporaryFile(
