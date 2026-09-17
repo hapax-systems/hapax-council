@@ -175,6 +175,41 @@
       "ledger_owner": "cx-convergence-coord",
       "dashboard_visibility": "required",
       "lifecycle_state": "active"
+    },
+    {
+      "budget_schema": 1,
+      "budget_id": "tb-20260916-zai-glmcp-payg-breakglass",
+      "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+      "approved_by": "operator",
+      "created_at": "2026-09-17T07:09:57Z",
+      "expires_at": "2026-09-24T07:09:57Z",
+      "capacity_pool": "api_paid_spend",
+      "providers_allowed": [
+        "z_ai"
+      ],
+      "profiles_allowed": [
+        "glmcp-review-direct"
+      ],
+      "task_classes_allowed": [
+        "independent-review"
+      ],
+      "quality_floors_allowed": [
+        "frontier_review_required"
+      ],
+      "total_cap_usd": "78.81",
+      "per_task_cap_usd": "2.00",
+      "daily_cap_usd": "20.00",
+      "auto_top_up_allowed": false,
+      "subscription_path_checked_at": "2026-09-17T07:09:57Z",
+      "reason_subscription_path_not_used": "Coding Plan exhausted until 2026-09-20; operator authorized USD 78.81 PAYG review-team break-glass 2026-09-16; re-minted after telemetry writer dropped it",
+      "steady_state_replacement": {
+        "target_route_id": null,
+        "blocker_to_remove": null,
+        "exit_criterion": null
+      },
+      "ledger_owner": "cx-convergence-coord",
+      "dashboard_visibility": "required",
+      "lifecycle_state": "active"
     }
   ],
   "spend_receipts": [

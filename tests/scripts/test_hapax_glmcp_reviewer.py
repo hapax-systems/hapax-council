@@ -531,6 +531,8 @@ def test_call_glm_failed_live_ledger_reservation_leaves_no_spend_receipt(
                 (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
             )
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
     ledger_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
     monkeypatch.setenv(
@@ -707,6 +709,8 @@ def test_call_glm_real_reservation_blocks_second_payg_when_daily_cap_used(
             )
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
             budget["daily_cap_usd"] = "0.05"
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
     ledger_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(ledger_path))
     monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
@@ -796,6 +800,8 @@ def test_call_glm_real_gate_blocks_second_payg_when_per_task_cap_used(
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
             budget["per_task_cap_usd"] = "0.05"
             budget["daily_cap_usd"] = "20.00"
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
     ledger_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(ledger_path))
     monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
@@ -883,6 +889,8 @@ def test_require_payg_spend_gate_reloads_live_ledger_and_rejects_existing_task_s
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
             budget["per_task_cap_usd"] = "0.05"
             budget["daily_cap_usd"] = "20.00"
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
     payload["spend_receipts"].append(
         _payg_reservation(module).spend_receipt.model_dump(mode="json")
     )
@@ -919,6 +927,8 @@ def test_call_glm_failed_payg_fallback_reconciles_failed_reservations(
                 (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
             )
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
     ledger_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(ledger_path))
     monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
@@ -1015,6 +1025,8 @@ def test_call_glm_repeated_successful_payg_uses_new_reconciled_spend_receipt(
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
             budget["per_task_cap_usd"] = "2.00"
             budget["daily_cap_usd"] = "20.00"
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
     ledger_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(ledger_path))
     monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
@@ -1103,6 +1115,8 @@ def test_payg_spend_reservation_suffix_survives_same_ledger_snapshot(
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
             budget["per_task_cap_usd"] = "2.00"
             budget["daily_cap_usd"] = "20.00"
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
     ledger_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
     monkeypatch.setenv(
@@ -1188,6 +1202,8 @@ def test_payg_spend_reservation_does_not_reuse_existing_pending_receipt(
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
             budget["per_task_cap_usd"] = "2.00"
             budget["daily_cap_usd"] = "20.00"
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
     ledger_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
     monkeypatch.setenv(
@@ -1270,6 +1286,8 @@ def test_call_glm_malformed_payg_response_keeps_spend_pending(
                 (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
             )
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
     ledger_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(ledger_path))
     monkeypatch.setenv("HAPAX_RELAY_RECEIPT_DIR", str(receipt_dir))
@@ -1353,6 +1371,8 @@ def test_payg_spend_receipt_omits_secret_prompt_and_output(
                 (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
             )
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
     ledger_path.write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setenv(
         "HAPAX_GLMCP_REVIEW_TASK_ID",
@@ -1433,6 +1453,8 @@ def test_payg_spend_reservation_rolls_back_ledger_on_receipt_write_crash(
                 (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
             )
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
     ledger_path.write_text(json.dumps(payload), encoding="utf-8")
     before_ids = {
         receipt.spend_id for receipt in module.load_quota_spend_ledger(ledger_path).spend_receipts
@@ -1544,6 +1566,8 @@ def test_payg_spend_receipt_write_error_has_next_action(
                 (now + module.timedelta(days=1)).isoformat().replace("+00:00", "Z")
             )
             budget["subscription_path_checked_at"] = now.isoformat().replace("+00:00", "Z")
+        elif "glmcp-review-direct" in budget.get("profiles_allowed", []):
+            budget["lifecycle_state"] = "retired"
     ledger_path.write_text(json.dumps(payload), encoding="utf-8")
 
     def fail_mkstemp(*_args: object, **_kwargs: object) -> object:
