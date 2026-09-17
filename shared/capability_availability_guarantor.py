@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import subprocess
 from collections.abc import Iterable
 from datetime import UTC, datetime
@@ -696,19 +697,67 @@ def _exec_auth_ref_attested(
     return ref[1:-6] in expected_hosts
 
 
-def _expected_exec_auth_hosts() -> frozenset[tuple[str, ...]]:
-    dispatch_host = (
+# --- exec-auth host identity: ONE resolver, used by the stamper and by every reader ---
+#
+# The producer stamps a host into `host:<host>:codex:exec:auth:saved-login:observed` and the
+# readers decide whether that host is the one they expect. Both sides used to derive the host
+# independently from the same env chain, so they disagreed whenever the ambient environment of
+# the process that OBSERVED differed from the process that READ.
+#
+# Reproduced live 2026-09-16 on this estate: the systemd receipt producer carries no
+# `HAPAX_DISPATCH_HOST`, so it stamped `host:hapax-appendix:...` into `codex.json`; a lane shell
+# carrying `HAPAX_DISPATCH_HOST=local` derived `{("local",)}` and refused the estate's own,
+# correct, locally-produced evidence. `HAPAX_CODEX_EXEC_AUTH_HOST` was the live workaround.
+#
+# The fix is not a wider expectation, it is a shared one: `local` is not a host name, it is a way
+# of saying "this machine", and it must resolve to this machine's identity on BOTH sides. A
+# remote target still resolves to that remote host and a locally-observed saved login still does
+# not satisfy it.
+HOST_ALIASES = {"appendix": "hapax-appendix", "podium": "hapax-podium"}
+LOCAL_HOST_ALIASES = frozenset({"", "local", "localhost"})
+
+
+def normalize_exec_auth_host(value: str) -> str:
+    """The estate's canonical spelling of a host name (short alias -> full name)."""
+
+    cleaned = str(value).strip().lower()
+    return HOST_ALIASES.get(cleaned, cleaned)
+
+
+def local_exec_auth_host() -> str:
+    """This machine's canonical host identity — the host a LOCAL probe actually observes."""
+
+    return normalize_exec_auth_host(socket.gethostname().split(".", 1)[0])
+
+
+def resolve_exec_auth_host(target: str) -> str:
+    """The host identity an exec-auth observation aimed at ``target`` carries.
+
+    Every spelling of "this machine" collapses to this machine's own name, so the stamper and
+    the reader cannot disagree about what `local` meant. Anything else is a real remote host
+    and is only normalised, never collapsed.
+    """
+
+    normalized = normalize_exec_auth_host(target)
+    if normalized in LOCAL_HOST_ALIASES or normalized == local_exec_auth_host():
+        return local_exec_auth_host()
+    return normalized
+
+
+def configured_exec_auth_host() -> str:
+    """The dispatch target this environment names, before resolution."""
+
+    return (
         os.environ.get("HAPAX_CODEX_EXEC_AUTH_HOST")
         or os.environ.get("HAPAX_DISPATCH_HOST")
         or os.environ.get("HAPAX_DEFAULT_DISPATCH_HOST")
-        or ""
-    ).strip()
-    if dispatch_host:
-        return _host_token_variants(dispatch_host)
-    return _host_token_variants("appendix")
+        or "appendix"
+    ).strip() or "appendix"
 
 
-def _host_token_variants(host: str) -> frozenset[tuple[str, ...]]:
+def exec_auth_host_token_variants(host: str) -> frozenset[tuple[str, ...]]:
+    """Token tuples that name the same host (`appendix` <-> `hapax-appendix`)."""
+
     tokens = _ref_tokens(host)
     variants = {tokens} if tokens else set()
     if len(tokens) == 1 and tokens[0] not in {"local", "localhost"}:
@@ -716,6 +765,17 @@ def _host_token_variants(host: str) -> frozenset[tuple[str, ...]]:
     if len(tokens) == 2 and tokens[0] == "hapax":
         variants.add((tokens[1],))
     return frozenset(variants)
+
+
+def expected_exec_auth_hosts() -> frozenset[tuple[str, ...]]:
+    """Host tokens whose exec-auth witness satisfies this environment's dispatch target."""
+
+    return exec_auth_host_token_variants(resolve_exec_auth_host(configured_exec_auth_host()))
+
+
+# Retained names: the module's own call sites and its tests use the private spellings.
+_expected_exec_auth_hosts = expected_exec_auth_hosts
+_host_token_variants = exec_auth_host_token_variants
 
 
 def _ref_tokens(ref: str) -> tuple[str, ...]:

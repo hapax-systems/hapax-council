@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Re-derive the empirical claims behind capability-surface-route-flap-reconciliation-20260912.
+
+Every number in PR #4672 came from a one-off transcript; a reader who cannot re-run them has
+to take them on trust. This is the recheck. It observes only -- `observe=False` everywhere, so
+running it can never close a route-block interval and discharge a dossier's recovery
+obligation.
+
+    uv run python scripts/rechecks/route-flap-recheck sample  --seconds 600
+    uv run python scripts/rechecks/route-flap-recheck receipts
+    uv run python scripts/rechecks/route-flap-recheck replay  --report <autoqueue-report.json>
+
+sample   : the live route-blocked family set at a cadence, with each route's quota window.
+           The PR's claim is that this set changes with no PR or dossier change.
+receipts : every receipt in the live directory whose platform has no registry route, with how
+           far past its own stale_after it is.
+replay   : for each PR an autoqueue report shows blocked on a route-block predicate, run the
+           SHIPPED gate over that task's real dossier and print the blocker. The PR's claim is
+           that these do not clear, because they record static registry reasons rather than the
+           timestamped freshness reasons this change addresses.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import runpy
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+DEFAULT_REPORT = Path.home() / ".cache/hapax/orchestration/cc-pr-autoqueue-report.json"
+
+#: Every blocker the route-block gate can emit. The first cut matched only
+#: `route_block_degradation`, so a report containing ONLY the newer
+#: `review_dossier_route_block_recovery_generation_stale` /
+#: `..._witness_unavailable` replayed zero dossiers and exited successfully — a recheck that
+#: reports "nothing to see" precisely when the new gate is what is blocking the field.
+ROUTE_BLOCK_BLOCKER_PREFIXES = (
+    "review_dossier_route_block_degradation_unwitnessed",
+    "review_dossier_route_block_degradation_reason_mismatch",
+    "review_dossier_route_block_recovery_generation_stale",
+    "review_dossier_route_block_witness_unavailable",
+    "review_dossier_degradation_unwitnessed",
+    "review_dossier_degradation_flags_inconsistent",
+    "review_dossier_route_gate_unavailable",
+)
+
+
+def _is_route_block_blocker(blocker: str) -> bool:
+    text = str(blocker)
+    # `task_blocker:<task>:<inner>` wraps a dependency's blocker; match anywhere in the line.
+    return any(prefix in text for prefix in ROUTE_BLOCK_BLOCKER_PREFIXES)
+
+
+VAULT = Path.home() / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+
+
+def _gate():
+    return runpy.run_path(str(REPO_ROOT / "scripts" / "review_team.py"), run_name="__recheck__")
+
+
+def _live(rt) -> dict[str, list[str]]:
+    blocked = rt["review_route_blocked_families"](rt["load_lens_registry"](), observe=False)
+    return {family: list(reasons) for family, reasons in blocked.items()}
+
+
+def cmd_sample(args: argparse.Namespace) -> int:
+    rt = _gate()
+    from shared.platform_capability_receipts import DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+    from shared.platform_capability_registry import (
+        ensure_utc,
+        load_platform_capability_registry_for_dispatch,
+        parse_duration_spec,
+    )
+
+    end = time.monotonic() + args.seconds
+    previous: dict[str, list[str]] | None = None
+    transitions = 0
+    while time.monotonic() < end:
+        now = datetime.now(UTC)
+        blocked = _live(rt)
+        if blocked != previous:
+            transitions += 1
+            registry, _ = load_platform_capability_registry_for_dispatch(
+                receipt_dir=DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+            )
+            windows = []
+            for route_id, route in sorted(registry.route_map().items()):
+                if not route_id.endswith(".review.opus") and ".review." not in route_id:
+                    continue
+                checked = route.freshness.quota_checked_at
+                spec = route.freshness.quota_stale_after
+                left = (
+                    (ensure_utc(checked) + parse_duration_spec(spec) - now).total_seconds()
+                    if checked
+                    else None
+                )
+                windows.append(f"{route_id} stale_after={spec} left={left}")
+            print(
+                f"{now.isoformat()}  blocked={','.join(sorted(blocked)) or '(none)'}\n"
+                + "".join(f"    {w}\n" for w in windows),
+                flush=True,
+            )
+            previous = blocked
+        time.sleep(args.interval)
+    print(f"distinct live route-blocked sets in {args.seconds}s: {transitions}")
+    return 0
+
+
+def cmd_receipts(args: argparse.Namespace) -> int:
+    from shared.platform_capability_receipts import (
+        DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR,
+        parse_duration_spec,
+    )
+    from shared.platform_capability_registry import load_platform_capability_registry
+
+    declared = {route.platform.value for route in load_platform_capability_registry().routes}
+    receipt_dir = args.receipt_dir or DEFAULT_PLATFORM_CAPABILITY_RECEIPT_DIR
+    now = datetime.now(UTC)
+    rows = 0
+    for path in sorted(Path(receipt_dir).glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"{path.name:16s} UNPARSEABLE {type(exc).__name__}")
+            continue
+        platform = str(payload.get("platform") or "")
+        if platform in declared:
+            continue
+        observed = payload.get("observed_at")
+        spec = str(payload.get("stale_after") or "")
+        try:
+            expiry = datetime.fromisoformat(str(observed).replace("Z", "+00:00"))
+            overdue = (now - (expiry + parse_duration_spec(spec))).days
+        except (TypeError, ValueError):
+            overdue = None
+        print(f"{path.name:16s} observed={observed} stale_after={spec} days_past_expiry={overdue}")
+        rows += 1
+    print(f"receipts with no registry route: {rows}")
+    return 0
+
+
+def cmd_intervals(args: argparse.Namespace) -> int:
+    """Show the route-block interval witness admission now depends on.
+
+    The witness lives in an evictable cache and has no producer of its own — every caller of
+    `review_route_blocked_families` folds its reading in. Losing it turns every admissible
+    degraded dossier into a refusal until one dispatcher or autoqueue pass re-observes, which
+    is the right direction but needs to be INSPECTABLE to be operable.
+    """
+
+    rt = _gate()
+    state = args.state or rt["ROUTE_BLOCK_INTERVAL_STATE"]
+    now = datetime.now(UTC)
+    print(f"witness: {state}")
+    print(f"ttl:     {rt['ROUTE_BLOCK_INTERVAL_TTL_S']}s")
+    print(f"now:     {now.isoformat()}")
+    try:
+        raw = json.loads(Path(state).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        print(
+            f"unreadable ({type(exc).__name__}) — every degraded dossier will be refused "
+            f"with review_dossier_route_block_witness_unavailable until a pass re-observes"
+        )
+        return 0
+    live = rt["load_route_block_intervals"](Path(state), now=now)
+    if not isinstance(raw, dict) or not raw:
+        print("empty — no family is currently recorded as route-blocked")
+        return 0
+    for family, entry in sorted(raw.items()):
+        observed = entry.get("observed_at") if isinstance(entry, dict) else None
+        since = entry.get("blocked_since") if isinstance(entry, dict) else entry
+        status = "LIVE" if family in live else "EXPIRED (older than the TTL)"
+        print(f"  {family:10s} blocked_since={since} observed_at={observed}  [{status}]")
+    print("\nTo reset: delete the file. The next dispatcher or autoqueue pass reopens every")
+    print("interval it observes; dossiers constituted in the OLD intervals then need a")
+    print("re-review, which is the same obligation a real recovery would create.")
+    return 0
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    import yaml
+
+    from shared.frontmatter import parse_frontmatter
+
+    rt = _gate()
+    report = json.loads(Path(args.report).read_text(encoding="utf-8"))
+    print(f"autoqueue report generated_at={report.get('generated_at')}")
+    live = _live(rt)
+    print(f"live route-blocked: {live}\n")
+    cleared = considered = 0
+    for record in report.get("per_pr_admission") or []:
+        blockers = [str(b) for b in record.get("blockers") or []]
+        if not any(_is_route_block_blocker(b) for b in blockers):
+            continue
+        task_id = record.get("task_id")
+        if not task_id:
+            print(f"{record['pr']:>5}  (no task link)")
+            continue
+        notes = [c for c in sorted(VAULT.glob(f"{task_id}*.md")) if "review-dossier" not in c.name]
+        dossier_path = VAULT / f"{task_id}.review-dossier.yaml"
+        if not notes or not dossier_path.exists():
+            print(f"{record['pr']:>5}  (dossier not on disk for {task_id})")
+            continue
+        considered += 1
+        dossier = yaml.safe_load(dossier_path.read_text(encoding="utf-8"))
+        frontmatter, _ = parse_frontmatter(notes[0].read_text(encoding="utf-8"))
+        recorded, _ = rt["_route_block_reason_notes"](
+            [str(n) for n in (dossier.get("constitution_notes") or [])]
+        )
+        now_blockers = rt["review_team_verdict_blockers"](
+            frontmatter,
+            notes[0],
+            pr_head_sha=str(dossier.get("head_sha") or "a" * 40),
+            route_blocked_families=live,
+        )
+        route_blockers = [b for b in now_blockers if _is_route_block_blocker(b)]
+        if not route_blockers:
+            cleared += 1
+        print(f"{record['pr']:>5}  constituted={dossier.get('constituted_at')}")
+        for family, entries in sorted(recorded.items()):
+            for route_id, reason in entries:
+                print(
+                    f"        recorded {family} [{route_id}] class="
+                    f"{rt['_route_block_reason_class'](reason)!r}"
+                )
+        print(f"        now: {','.join(route_blockers) or 'CLEAR'}")
+    print(f"\nroute-block blocked PRs replayed: {considered}; clear on the shipped gate: {cleared}")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    s = sub.add_parser("sample")
+    s.add_argument("--seconds", type=float, default=600.0)
+    s.add_argument("--interval", type=float, default=10.0)
+    s.set_defaults(func=cmd_sample)
+    r = sub.add_parser("receipts")
+    r.add_argument("--receipt-dir", type=Path, default=None)
+    r.set_defaults(func=cmd_receipts)
+    i = sub.add_parser("intervals")
+    i.add_argument("--state", type=Path, default=None)
+    i.set_defaults(func=cmd_intervals)
+    p = sub.add_parser("replay")
+    p.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    p.set_defaults(func=cmd_replay)
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

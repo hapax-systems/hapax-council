@@ -519,10 +519,18 @@ def test_codex_snapshot_fresh_for_default_appendix_saved_login_witness(
 def test_codex_snapshot_fresh_for_explicit_local_saved_login_witness(
     tmp_path: Path,
 ) -> None:
+    """CONTRACT CHANGE (2026-09-16, exec-auth host SSOT): under
+    `HAPAX_CODEX_EXEC_AUTH_HOST=local` the witness that attests is the one naming THIS
+    MACHINE — which is exactly what the producer now stamps for a local probe — not the
+    literal token `local`, which names no machine."""
+    from shared.capability_availability_guarantor import local_exec_auth_host
+
     platform_receipts = tmp_path / "platform-receipts"
     _codex_platform_receipt(
         platform_receipts,
-        evidence_refs_override=["host:local:codex:exec:auth:saved-login:observed"],
+        evidence_refs_override=[
+            f"host:{local_exec_auth_host()}:codex:exec:auth:saved-login:observed"
+        ],
     )
 
     result, out = _run_writer(

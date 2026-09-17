@@ -12,9 +12,9 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from shared.dispatcher_policy import (
@@ -42,9 +42,6 @@ NOW_DT = datetime.fromisoformat(NOW.replace("Z", "+00:00"))
 API_NOW = "2026-06-04T16:00:00Z"
 API_NOW_DT = datetime.fromisoformat(API_NOW.replace("Z", "+00:00"))
 SECRET = "sk-live-secret-value"
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def _run_receipts(
@@ -2417,3 +2414,475 @@ class TestQuotaIsPerRouteAndLedgerBacked:
         module = self._module(tmp_path, ledger=None)
         path = module["launcher_command_path"](_WrapperRoute("x.y", "scripts/hapax-claude --x"))
         assert path is not None and path.name == "hapax-claude"
+
+
+class TestRetiredPlatformReceiptLifecycle:
+    """`--all` refreshes only platforms that still have a route, so a receipt whose platform
+    was retired from the registry is never touched again.
+
+    Measured 2026-09-16 on this estate: `gemini.json` (observed 2026-06-30T17:05:59Z),
+    `antigrav.json` (2026-07-04T19:21:10Z) and `grok.json` (2026-07-09T08:20:42Z) all sat in
+    the live receipt directory carrying `stale_after: 24h`, 68-78 days past expiry, while
+    `--all` wrote six other platforms and skipped these three entirely.
+
+    Recheck: `uv run pytest tests/shared/test_platform_capability_receipts.py -k Retired`.
+    """
+
+    def _receipt_payload(self, platform: str, observed_at: str, routes: list[str]) -> dict:
+        return {
+            "capability": {
+                "evidence_refs": [f"local:{platform}:cli-version:1.0"],
+                "observed_at": observed_at,
+                "reason_codes": [],
+                "source": "local_receipt_probe",
+                "stale_after": "24h",
+                "status": "observed",
+            },
+            "cli": {"available": True, "binary": platform, "error": None, "version": "1.0"},
+            "config_refs": [],
+            "known_unknowns": [],
+            "mcp_status": [],
+            "observed_at": observed_at,
+            "platform": platform,
+            "provider_docs": {
+                "fetch_status": "observed",
+                "fetched_at": observed_at,
+                "refs": ["official:https://example.invalid/docs"],
+                "stale_after": "30d",
+            },
+            "quota": {
+                "evidence_refs": [],
+                "observed_at": observed_at,
+                "reason_codes": ["account_live_quota_receipt_absent"],
+                "source": "local_receipt_probe",
+                "stale_after": "15m",
+                "status": "unobservable",
+            },
+            "receipt_id": f"{platform}-{observed_at.replace(':', '').replace('-', '')}",
+            "receipt_schema": 1,
+            "resource": {
+                "evidence_refs": [f"local:/usr/bin/{platform}:present"],
+                "observed_at": observed_at,
+                "reason_codes": [],
+                "source": "local_receipt_probe",
+                "stale_after": "24h",
+                "status": "observed",
+            },
+            "route_wrappers": {},
+            "routes": routes,
+            "stale_after": "24h",
+            "tool_state": [],
+            "wrapper": {
+                "path": f"scripts/hapax-{platform}",
+                "exists": True,
+                "executable": True,
+                "sha256": "0" * 64,
+            },
+        }
+
+    def _seed(
+        self, receipt_dir: Path, platform: str, observed_at: str, *, filename: str | None = None
+    ) -> Path:
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        path = receipt_dir / (filename or f"{platform}.json")
+        path.write_text(
+            json.dumps(
+                self._receipt_payload(platform, observed_at, [f"{platform}.headless.full"]),
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    @staticmethod
+    def _retire(module, receipt_dir: Path, live: set[str], *, at: str = "2026-09-16T01:30:00Z"):
+        return module["retire_receipts_without_routes"](
+            receipt_dir=receipt_dir,
+            live_platforms=live,
+            observed_at=datetime.fromisoformat(at.replace("Z", "+00:00")),
+        )
+
+    def test_retired_receipt_is_archived_with_a_record_not_left_in_place(
+        self, tmp_path: Path
+    ) -> None:
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        stale = self._seed(receipt_dir, "gemini", "2026-06-30T17:05:59Z")
+        before = stale.read_text(encoding="utf-8")
+
+        retired, skipped = self._retire(module, receipt_dir, {"claude", "codex"})
+
+        assert [entry["platform"] for entry in retired] == ["gemini"]
+        assert skipped == []
+        assert not stale.exists(), "a retired receipt must leave the live directory"
+        archived = receipt_dir / "retired" / "gemini.json"
+        assert archived.read_text(encoding="utf-8") == before, "observation preserved byte-exact"
+
+        record = json.loads((receipt_dir / "retired" / "gemini.retirement.json").read_text())
+        assert record["platform"] == "gemini"
+        assert record["reason"] == "no_registry_route_declares_this_platform"
+        assert record["receipt_observed_at"] == "2026-06-30T17:05:59Z"
+        assert record["retired_at"] == "2026-09-16T01:30:00Z"
+
+    def test_a_live_platform_receipt_is_never_retired(self, tmp_path: Path) -> None:
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        live = self._seed(receipt_dir, "claude", "2026-09-16T00:50:43Z")
+
+        retired, skipped = self._retire(module, receipt_dir, {"claude", "codex"})
+
+        assert (retired, skipped) == ([], [])
+        assert live.exists()
+        assert not (receipt_dir / "retired").exists()
+
+    def test_a_fresh_receipt_for_a_retired_platform_is_still_retired(self, tmp_path: Path) -> None:
+        """Freshness is not the predicate. A platform with no route has no live surface no
+        matter how recently something observed its CLI, and leaving a FRESH receipt for it in
+        the live directory is the case that actually could be misread."""
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        fresh = self._seed(receipt_dir, "grok", "2026-09-16T01:29:00Z")
+
+        retired, _ = self._retire(module, receipt_dir, {"claude"})
+
+        assert [entry["platform"] for entry in retired] == ["grok"]
+        assert not fresh.exists()
+        assert (receipt_dir / "retired" / "grok.json").exists()
+
+    def test_an_empty_live_platform_set_refuses_to_sweep(self, tmp_path: Path) -> None:
+        """An empty live set is a registry that did not load, never a true statement that
+        every platform retired. Sweeping on it would move the WHOLE live directory into
+        retired/ and stamp every record with a false reason -- leaving every reader with no
+        capability receipts at all, the maximal form of the route-blocking this reduces."""
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        kept = self._seed(receipt_dir, "claude", "2026-09-16T00:50:43Z")
+        from shared.platform_capability_receipts import PlatformCapabilityReceiptError
+
+        with pytest.raises(PlatformCapabilityReceiptError):
+            self._retire(module, receipt_dir, set())
+
+        assert kept.exists()
+        assert not (receipt_dir / "retired").exists()
+
+    def test_a_platform_that_escapes_the_archive_is_refused_not_moved(self, tmp_path: Path) -> None:
+        """A receipt's `platform` becomes a filename. `../rogue` would move the file to
+        <receipt_dir>/rogue.json and REPORT a successful retirement while leaving it inside
+        the live reader glob; an absolute value escapes the receipt directory entirely."""
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        for hostile, name in (
+            ("../rogue", "a.json"),
+            ("/etc/rogue", "b.json"),
+            ("..", "c.json"),
+            ("with space", "d.json"),
+            ("", "e.json"),
+        ):
+            self._seed(receipt_dir, hostile, "2026-06-30T17:05:59Z", filename=name)
+
+        retired, skipped = self._retire(module, receipt_dir, {"claude"})
+
+        assert retired == []
+        assert {entry["reason"] for entry in skipped} == {
+            "receipt_platform_identifier_unsafe_left_in_place"
+        }
+        assert len(skipped) == 5
+        assert sorted(p.name for p in receipt_dir.glob("*.json")) == [
+            "a.json",
+            "b.json",
+            "c.json",
+            "d.json",
+            "e.json",
+        ], "every hostile receipt stays exactly where it was"
+        assert not (receipt_dir / "retired").exists()
+        assert not (tmp_path / "rogue.json").exists()
+
+    def test_three_receipts_for_one_platform_all_survive(self, tmp_path: Path) -> None:
+        """The never-overwrite guarantee, at the collision the first cut lost. A stamp
+        computed once per sweep gave the SAME fallback path to the second and third
+        receipts, so observation one and its record were destroyed with no trace."""
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        bodies = {}
+        for name, observed in (
+            ("a.json", "2026-06-30T17:05:59Z"),
+            ("b.json", "2026-07-01T17:05:59Z"),
+            ("c.json", "2026-07-02T17:05:59Z"),
+        ):
+            bodies[observed] = self._seed(receipt_dir, "gemini", observed, filename=name).read_text(
+                encoding="utf-8"
+            )
+
+        retired, skipped = self._retire(module, receipt_dir, {"claude"})
+
+        assert len(retired) == 3 and skipped == []
+        archive = receipt_dir / "retired"
+        # Assert on the ARCHIVED PAYLOADS, not on a glob: `gemini.*.json` also matches the
+        # `gemini.retirement.json` record, so a glob-count assertion passes even when no
+        # superseded copy was kept.
+        archived_bodies = {
+            path.read_text(encoding="utf-8")
+            for path in archive.glob("*.json")
+            if "retirement" not in path.name
+        }
+        assert archived_bodies == set(bodies.values()), "every observation survives"
+        assert len({entry["archived_to"] for entry in retired}) == 3
+        for entry in retired:
+            stem = Path(entry["archived_to"]).stem
+            assert (archive / f"{stem}.retirement.json").exists(), "each keeps its own record"
+
+    def test_a_second_sweep_in_the_same_second_does_not_overwrite(self, tmp_path: Path) -> None:
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        self._seed(receipt_dir, "gemini", "2026-06-30T17:05:59Z")
+        self._retire(module, receipt_dir, {"claude"}, at="2026-09-16T01:30:00Z")
+        first = (receipt_dir / "retired" / "gemini.json").read_text(encoding="utf-8")
+
+        self._seed(receipt_dir, "gemini", "2026-09-16T01:31:00Z")
+        self._retire(module, receipt_dir, {"claude"}, at="2026-09-16T01:30:00Z")
+        self._seed(receipt_dir, "gemini", "2026-09-16T01:32:00Z")
+        self._retire(module, receipt_dir, {"claude"}, at="2026-09-16T01:30:00Z")
+
+        assert (receipt_dir / "retired" / "gemini.json").read_text(encoding="utf-8") == first
+        bodies = {
+            path.read_text(encoding="utf-8")
+            for path in (receipt_dir / "retired").glob("*.json")
+            if "retirement" not in path.name
+        }
+        assert len(bodies) == 3, "three distinct observations, three distinct archives"
+
+    def test_an_unparseable_receipt_is_reported_not_silently_skipped(self, tmp_path: Path) -> None:
+        """A file the sweep cannot read is a capability surface whose retire-or-keep decision
+        was NOT made. Leaving it in place is right; saying nothing is not."""
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        receipt_dir.mkdir(parents=True)
+        corrupt = receipt_dir / "broken.json"
+        corrupt.write_text("{not json", encoding="utf-8")
+        listish = receipt_dir / "listish.json"
+        listish.write_text("[1, 2, 3]", encoding="utf-8")
+        self._seed(receipt_dir, "gemini", "2026-06-30T17:05:59Z")
+
+        retired, skipped = self._retire(module, receipt_dir, {"claude"})
+
+        assert [entry["platform"] for entry in retired] == ["gemini"]
+        by_path = {entry["path"]: entry for entry in skipped}
+        assert by_path[str(corrupt)]["reason"] == "receipt_unparseable_left_in_place"
+        assert by_path[str(listish)]["reason"] == "receipt_not_a_json_object_left_in_place"
+        for entry in skipped:
+            assert entry["next_action"]
+        assert corrupt.exists() and listish.exists()
+
+    def test_retirement_ignores_subdirectories(self, tmp_path: Path) -> None:
+        """`bare-host-cli/`, `route-authority/` and friends share the directory and are not
+        platform receipts."""
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        receipt_dir.mkdir(parents=True)
+        (receipt_dir / "route-authority").mkdir()
+        (receipt_dir / "route-authority" / "codex.json").write_text("{}", encoding="utf-8")
+        self._seed(receipt_dir, "gemini", "2026-06-30T17:05:59Z")
+
+        retired, skipped = self._retire(module, receipt_dir, {"claude"})
+
+        assert [entry["platform"] for entry in retired] == ["gemini"]
+        assert skipped == []
+        assert (receipt_dir / "route-authority" / "codex.json").exists()
+
+    def test_a_missing_receipt_dir_is_not_an_error(self, tmp_path: Path) -> None:
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        assert self._retire(module, tmp_path / "absent", {"claude"}) == ([], [])
+
+    def test_an_archived_receipt_is_invisible_to_the_real_loader(self, tmp_path: Path) -> None:
+        """The whole justification for MOVING rather than skipping is that no future reader
+        can pick the file up. Every other test here asserts on filesystem layout; this one
+        goes through `load_platform_capability_receipts` itself, so a reader that ever
+        switched to `rglob` or `**/*.json` would turn this change into a no-op and go red."""
+        from shared.platform_capability_receipts import load_platform_capability_receipts
+
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        now = datetime(2026, 9, 16, 1, 30, tzinfo=UTC)
+        self._seed(
+            receipt_dir, "gemini", "2026-09-16T01:29:00Z"
+        )  # FRESH, so only the move hides it
+        self._seed(receipt_dir, "claude", "2026-09-16T01:29:00Z")
+
+        assert set(load_platform_capability_receipts(receipt_dir, now=now)) == {
+            "gemini",
+            "claude",
+        }, "precondition: both are readable before the sweep"
+
+        self._retire(module, receipt_dir, {"claude"})
+
+        assert (receipt_dir / "retired" / "gemini.json").exists()
+        assert set(load_platform_capability_receipts(receipt_dir, now=now)) == {"claude"}
+
+
+class TestRetirementSweepScoping:
+    """The two conditions that stop a `--platform` run from concluding that everything it did
+    not name is retired are `args.all` and `not args.dry_run`. Nothing exercised `main`, so
+    both were unwitnessed by any pin -- and they guard the failure mode the empty-set refusal
+    is the backstop for."""
+
+    @staticmethod
+    def _run(tmp_path: Path, *argv: str):
+        receipt_dir = tmp_path / "platform-capability-receipts"
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        (receipt_dir / "gemini.json").write_text(
+            json.dumps(
+                TestRetiredPlatformReceiptLifecycle()._receipt_payload(
+                    "gemini", "2026-06-30T17:05:59Z", ["gemini.headless.full"]
+                )
+            ),
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--receipt-dir", str(receipt_dir), "--json", *argv],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        return result, receipt_dir
+
+    def test_a_platform_run_never_retires(self, tmp_path: Path) -> None:
+        result, receipt_dir = self._run(tmp_path, "--platform", "claude")
+        assert result.returncode == 0, result.stderr[-2000:]
+        assert json.loads(result.stdout)["retired_receipts"] == []
+        assert (receipt_dir / "gemini.json").exists()
+        assert not (receipt_dir / "retired").exists()
+
+    def test_all_with_dry_run_never_retires(self, tmp_path: Path) -> None:
+        result, receipt_dir = self._run(tmp_path, "--all", "--dry-run")
+        assert result.returncode == 0, result.stderr[-2000:]
+        assert json.loads(result.stdout)["retired_receipts"] == []
+        assert (receipt_dir / "gemini.json").exists()
+        assert not (receipt_dir / "retired").exists()
+
+    def test_all_retires_and_reports_it_in_the_payload(self, tmp_path: Path) -> None:
+        result, receipt_dir = self._run(tmp_path, "--all")
+        assert result.returncode == 0, result.stderr[-2000:]
+        payload = json.loads(result.stdout)
+        assert [e["platform"] for e in payload["retired_receipts"]] == ["gemini"]
+        assert payload["skipped_receipts"] == []
+        assert not (receipt_dir / "gemini.json").exists()
+        assert (receipt_dir / "retired" / "gemini.json").exists()
+
+    def test_a_declared_route_without_probe_support_is_protected(self, tmp_path: Path) -> None:
+        """`local_tool` has a declared registry route (`local_tool.local.worker`) but is not
+        in BINARY_BY_PLATFORM, so a protection set derived from the PROBE map would archive
+        it under `no_registry_route_declares_this_platform` -- a reason that is false."""
+        result, receipt_dir = self._run(tmp_path, "--all")
+        assert result.returncode == 0, result.stderr[-2000:]
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        from shared.platform_capability_registry import load_platform_capability_registry
+
+        declared = {r.platform.value for r in load_platform_capability_registry().routes}
+        assert "local_tool" in declared
+        assert "local_tool" not in module["BINARY_BY_PLATFORM"]
+        # and the sweep protects it
+        rd = tmp_path / "second"
+        rd.mkdir()
+        TestRetiredPlatformReceiptLifecycle()._seed(rd, "local_tool", "2026-06-30T17:05:59Z")
+        retired, _ = TestRetiredPlatformReceiptLifecycle()._retire(module, rd, declared)
+        assert retired == []
+
+
+class TestExecAuthStampUsesTheSharedResolver:
+    """The producer must stamp the host a LOCAL probe actually observed, so the ref does not
+    change spelling with the ambient environment of whoever ran the producer.
+
+    Before: `HAPAX_DISPATCH_HOST=local` stamped `host:local:...` while an unset environment
+    stamped `host:hapax-appendix:...` -- two different refs for the identical observation on
+    the identical machine, and the readers refused one of them.
+
+    DESTINATION and IDENTITY are two different things and are two functions:
+    `codex_exec_auth_host()` is an ssh(1) destination and stays verbatim (`podium` is an
+    ssh_config alias; `hapax-podium` need not resolve), while
+    `codex_exec_auth_witness_host()` is what gets stamped into the ref.
+
+    Every test here pins the hostname and isolates all three host variables, so the suite
+    does not depend on being run on Appendix.
+    """
+
+    @staticmethod
+    def _isolated(monkeypatch, *, hostname: str, **env: str | None):
+        for name in (
+            "HAPAX_CODEX_EXEC_AUTH_HOST",
+            "HAPAX_DISPATCH_HOST",
+            "HAPAX_DEFAULT_DISPATCH_HOST",
+        ):
+            value = env.get(name)
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        monkeypatch.setattr(
+            "shared.capability_availability_guarantor.socket.gethostname",
+            lambda: hostname,
+        )
+        return runpy.run_path(str(SCRIPT), run_name="__test__")
+
+    def test_every_local_alias_stamps_this_machines_identity(self, monkeypatch) -> None:
+        for alias in ("local", "localhost", "LOCAL", "hapax-appendix", "appendix"):
+            module = self._isolated(
+                monkeypatch,
+                hostname="hapax-appendix",
+                HAPAX_CODEX_EXEC_AUTH_HOST=alias,
+            )
+            assert module["codex_exec_auth_witness_host"]() == "hapax-appendix", alias
+            assert module["codex_exec_auth_is_local"](module["codex_exec_auth_host"]()), alias
+
+    def test_the_stamp_does_not_depend_on_which_machine_runs_the_producer(
+        self, monkeypatch
+    ) -> None:
+        """Same environment, different box: the stamp names the box, never the token."""
+        for hostname in ("hapax-appendix", "hapax-podium", "ci-runner-7"):
+            module = self._isolated(monkeypatch, hostname=hostname, HAPAX_DISPATCH_HOST="local")
+            assert module["codex_exec_auth_witness_host"]() == (
+                "hapax-appendix" if hostname == "hapax-appendix" else hostname
+            )
+
+    def test_an_unset_environment_still_resolves_to_the_estate_default(self, monkeypatch) -> None:
+        module = self._isolated(monkeypatch, hostname="ci-runner-7")
+        assert module["codex_exec_auth_host"]() == "appendix"
+        assert module["codex_exec_auth_witness_host"]() == "hapax-appendix"
+        assert module["codex_exec_auth_is_local"]("appendix") is False
+
+    def test_a_remote_destination_stays_verbatim_but_its_identity_is_canonical(
+        self, monkeypatch
+    ) -> None:
+        """`podium` is an ssh_config alias. Canonicalising the DESTINATION broke the remote
+        probe in the first cut of this change; only the IDENTITY is canonicalised."""
+        module = self._isolated(
+            monkeypatch, hostname="hapax-appendix", HAPAX_CODEX_EXEC_AUTH_HOST="podium"
+        )
+        assert module["codex_exec_auth_host"]() == "podium"
+        assert module["codex_exec_auth_witness_host"]() == "hapax-podium"
+        assert module["codex_exec_auth_is_local"]("podium") is False
+
+    def test_the_producer_consumes_the_shared_resolver(self) -> None:
+        """One resolver. `normalize_host` and `current_host` must not be a second copy."""
+        module = runpy.run_path(str(SCRIPT), run_name="__test__")
+        from shared.capability_availability_guarantor import (
+            local_exec_auth_host,
+            normalize_exec_auth_host,
+        )
+
+        assert module["normalize_host"] is normalize_exec_auth_host
+        assert module["current_host"] is local_exec_auth_host
+
+    def test_the_stamped_ref_is_attested_by_the_guarantor(self, monkeypatch) -> None:
+        """End to end: what the producer stamps for a local probe is what the reader expects,
+        under the environment that used to break it."""
+        import shared.capability_availability_guarantor as guarantor
+
+        module = self._isolated(monkeypatch, hostname="hapax-appendix", HAPAX_DISPATCH_HOST="local")
+        stamped = (
+            f"host:{module['codex_exec_auth_witness_host']()}:codex:exec:auth:saved-login:observed"
+        )
+        assert guarantor._exec_auth_ref_attested(
+            guarantor._ref_tokens(stamped),
+            expected_hosts=guarantor.expected_exec_auth_hosts(),
+        )
