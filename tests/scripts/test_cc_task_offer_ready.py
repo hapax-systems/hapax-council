@@ -19,11 +19,7 @@ def _preferred_platforms_yaml(preferred: str | None, *, nested: bool) -> str:
     if preferred is None:
         return ""
     if nested:
-        return (
-            "route_metadata:\n"
-            "  route_constraints:\n"
-            f"    preferred_platforms: {preferred}\n"
-        )
+        return f"route_metadata:\n  route_constraints:\n    preferred_platforms: {preferred}\n"
     return f"route_constraints:\n  preferred_platforms: {preferred}\n"
 
 
@@ -37,9 +33,7 @@ def _task_frontmatter(
     preferred_platforms: str | None = None,
     nested_preferred_platforms: bool = False,
 ) -> str:
-    extra = _preferred_platforms_yaml(
-        preferred_platforms, nested=nested_preferred_platforms
-    )
+    extra = _preferred_platforms_yaml(preferred_platforms, nested=nested_preferred_platforms)
     return f"""\
 ---
 type: cc-task
