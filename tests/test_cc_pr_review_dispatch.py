@@ -52,6 +52,9 @@ dispatch = _load("cc_pr_review_dispatch", "cc-pr-review-dispatch.py")
 def _isolate_outage_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(dispatch, "FAMILY_OUTAGE_STATE", tmp_path / "family-outage.json")
     monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", tmp_path / "degraded-merges.jsonl")
+    receipts = tmp_path / "relay-receipts"
+    receipts.mkdir(exist_ok=True)
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPTS", str(receipts))
 
 
 def _make_vault(tmp_path: Path) -> Path:
@@ -4636,6 +4639,129 @@ payg_fallback: false
         now = "2026-06-12T21:00:00+00:00"
         assert dispatch.load_family_outage(now, state) == frozenset({"claude"})
         assert dispatch.load_family_outage_witness(now, state) == {"claude": observed}
+
+    @staticmethod
+    def _write_wall_receipt(
+        path: Path,
+        *,
+        resets_at: str,
+        observed_at: str,
+        status: str = "quota_blocked",
+        role: str = "claude-subscription-weekly-limit",
+        schema: str = "hapax.claude_quota_hold.v1",
+        provider: str = "anthropic-claude-subscription",
+        route_id: str = "claude.headless.full",
+        billing_mode: str = "operator_session_subscription",
+    ) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\n".join(
+                [
+                    f"schema: {schema}",
+                    f"status: {status}",
+                    f"role: {role}",
+                    f"provider: {provider}",
+                    f"route_id: {route_id}",
+                    f"billing_mode: {billing_mode}",
+                    f'observed_at: "{observed_at}"',
+                    f'resets_at: "{resets_at}"',
+                    "secret_value_persisted: false",
+                    "prompt_or_output_persisted: false",
+                    "positive_admission: false",
+                    "payg_fallback: false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_claude_wall_receipt_marks_out_when_json_missing(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Json missing claude; weekly-limit wall resets_at in the future → claude OUT."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        wall = tmp_path / "relay-receipts" / "claude-subscription-weekly-limit-quota-wall.yaml"
+        observed = "2026-09-17T19:40:00Z"
+        self._write_wall_receipt(
+            wall,
+            resets_at="2026-09-18T22:00:00Z",
+            observed_at=observed,
+        )
+        now = "2026-09-17T20:00:00+00:00"
+        assert dispatch.load_family_outage(now, state, wall_receipt_path=wall) == frozenset(
+            {"claude"}
+        )
+        assert dispatch.load_family_outage_witness(now, state, wall_receipt_path=wall) == {
+            "claude": observed
+        }
+
+    def test_expired_json_until_fills_claude_from_wall_receipt(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Json until in the past; receipt resets_at in the future → claude OUT from receipt."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-09-17T10:00:00+00:00",
+                        "outage_started_at": "2026-09-17T10:00:00+00:00",
+                        "until": "2026-09-17T12:00:00Z",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        wall = tmp_path / "relay-receipts" / "claude-subscription-weekly-limit-quota-wall.yaml"
+        observed = "2026-09-17T19:40:00Z"
+        self._write_wall_receipt(
+            wall,
+            resets_at="2026-09-18T22:00:00Z",
+            observed_at=observed,
+        )
+        now = "2026-09-17T20:00:00+00:00"
+        assert dispatch.load_family_outage(now, state, wall_receipt_path=wall) == frozenset(
+            {"claude"}
+        )
+        assert dispatch.load_family_outage_witness(now, state, wall_receipt_path=wall) == {
+            "claude": observed
+        }
+
+    def test_past_wall_receipt_does_not_force_claude_out(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Receipt resets_at in the past → claude is not forced OUT by the receipt."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        wall = tmp_path / "relay-receipts" / "claude-subscription-weekly-limit-quota-wall.yaml"
+        self._write_wall_receipt(
+            wall,
+            resets_at="2026-09-16T22:00:00Z",
+            observed_at="2026-09-16T19:40:00Z",
+        )
+        now = "2026-09-17T20:00:00+00:00"
+        assert dispatch.load_family_outage(now, state, wall_receipt_path=wall) == frozenset()
+        assert dispatch.load_family_outage_witness(now, state, wall_receipt_path=wall) == {}
+
+    def test_glm_coding_plan_wall_does_not_add_glm(self, monkeypatch: Any, tmp_path: Path) -> None:
+        """A glm coding-plan wall is not glm-family death (PAYG is the live glm route)."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        wall = tmp_path / "relay-receipts" / "glm-coding-plan-weekly-limit-quota-wall.yaml"
+        self._write_wall_receipt(
+            wall,
+            resets_at="2026-09-20T11:37:24Z",
+            observed_at="2026-09-17T04:51:46Z",
+            role="glm-coding-plan-weekly-limit",
+            schema="hapax.glmcp_quota_hold.v1",
+            provider="z_ai-glm-coding-plan",
+            route_id="glmcp.review.direct",
+            billing_mode="coding_plan_subscription",
+        )
+        now = "2026-09-17T20:00:00+00:00"
+        assert dispatch.load_family_outage(now, state, wall_receipt_path=wall) == frozenset()
+        witness = dispatch.load_family_outage_witness(now, state, wall_receipt_path=wall)
+        assert "glm" not in witness
+        assert "claude" not in witness
 
     def test_family_outage_restamp_preserves_until_and_note(
         self, monkeypatch: Any, tmp_path: Path

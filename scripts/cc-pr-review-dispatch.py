@@ -657,7 +657,99 @@ def _route_post_outage_admission_witness_result(
     return False, "post_outage_observed_at_not_after_outage"
 
 
-def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> dict[str, str]:
+CLAUDE_SUBSCRIPTION_WEEKLY_LIMIT_WALL_NAME = "claude-subscription-weekly-limit-quota-wall.yaml"
+GLM_CODING_PLAN_WEEKLY_LIMIT_WALL_NAME = "glm-coding-plan-weekly-limit-quota-wall.yaml"
+
+
+def _relay_receipts_dir() -> Path:
+    """Receipts dir used by glmcp/claude walls: HAPAX_RELAY_RECEIPTS, else HAPAX_RELAY_RECEIPT_DIR."""
+
+    raw = os.environ.get("HAPAX_RELAY_RECEIPTS") or os.environ.get("HAPAX_RELAY_RECEIPT_DIR")
+    if raw and str(raw).strip():
+        return Path(str(raw).strip())
+    return Path.home() / ".cache" / "hapax" / "relay" / "receipts"
+
+
+def _claude_subscription_weekly_limit_wall_path() -> Path:
+    return _relay_receipts_dir() / CLAUDE_SUBSCRIPTION_WEEKLY_LIMIT_WALL_NAME
+
+
+def _receipt_iso_text(value: Any) -> str | None:
+    """Stringify a wall-receipt timestamp (PyYAML may load unquoted ISO as datetime)."""
+
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        iso = dt.isoformat()
+        if iso.endswith("+00:00"):
+            return f"{iso[:-6]}Z"
+        return iso
+    text = str(value).strip()
+    return text or None
+
+
+def _is_glm_coding_plan_wall(path: Path, receipt: dict[str, Any]) -> bool:
+    """True when the receipt is a glm Coding Plan wall (not claude family death)."""
+
+    if path.name == GLM_CODING_PLAN_WEEKLY_LIMIT_WALL_NAME:
+        return True
+    role = str(receipt.get("role") or "")
+    schema = str(receipt.get("schema") or "")
+    route_id = str(receipt.get("route_id") or "")
+    provider = str(receipt.get("provider") or "")
+    billing = str(receipt.get("billing_mode") or "")
+    if role == "glm-coding-plan-weekly-limit" or "glm-coding-plan" in role:
+        return True
+    if "glmcp_quota_hold" in schema:
+        return True
+    if route_id.startswith("glmcp."):
+        return True
+    if "glm-coding-plan" in provider:
+        return True
+    return billing == "coding_plan_subscription"
+
+
+def _claude_weekly_limit_wall_hold(
+    now_aware: datetime,
+    wall_receipt_path: Path | None = None,
+) -> tuple[datetime, str] | None:
+    """Return (resets_at, observed_iso) when the claude weekly-limit wall is active.
+
+    Reads one receipt path (no directory scrape). A glm coding-plan wall is never
+    treated as family death — PAYG is the live glm review route.
+    """
+
+    path = wall_receipt_path or _claude_subscription_weekly_limit_wall_path()
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    if _is_glm_coding_plan_wall(path, loaded):
+        return None
+    if str(loaded.get("status") or "").strip() != "quota_blocked":
+        return None
+    resets_at = _parse_aware_datetime(_receipt_iso_text(loaded.get("resets_at")) or "")
+    if resets_at is None or now_aware >= resets_at:
+        return None
+    observed_iso = _receipt_iso_text(loaded.get("observed_at")) or _receipt_iso_text(
+        loaded.get("detected_at")
+    )
+    if not observed_iso:
+        observed_iso = _receipt_iso_text(loaded.get("resets_at"))
+    if not observed_iso:
+        return None
+    return resets_at, observed_iso
+
+
+def load_family_outage_witness(
+    now_iso: str,
+    state_path: Path | None = None,
+    *,
+    wall_receipt_path: Path | None = None,
+) -> dict[str, str]:
     """Live outage witness timestamps by family.
 
     An explicit parseable ``until`` on a dict entry is authoritative: the family
@@ -665,28 +757,40 @@ def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> 
     ``FAMILY_OUTAGE_TTL_S``. Once ``now >= until``, the family is IN — TTL does
     not revive an expired ``until``. When ``until`` is absent, TTL is the
     re-probe interval (not recovery).
+
+    A claude-subscription weekly-limit wall receipt (``status: quota_blocked``
+    and parseable future ``resets_at``) fills claude when json ``until`` is
+    missing or expired. Json ``until`` later than the receipt still wins. Do
+    not require the json key. A glm coding-plan wall is not glm-family death
+    and is never applied here.
     """
 
     state_path = state_path or FAMILY_OUTAGE_STATE
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        state = {}
     if not isinstance(state, dict):
-        return {}
+        state = {}
     now = datetime.fromisoformat(now_iso)
     now_aware = _parse_aware_datetime(now_iso)
     if now_aware is None:
         now_aware = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
     out: dict[str, str] = {}
+    claude_json_until: datetime | None = None
     for family, observed in state.items():
+        family_key = str(family)
+        if family_key == "claude" and isinstance(observed, dict):
+            parsed_until = _parse_aware_datetime(str(observed.get("until") or ""))
+            if parsed_until is not None:
+                claude_json_until = parsed_until
         if isinstance(observed, dict):
             until_dt = _parse_aware_datetime(str(observed.get("until") or ""))
             if until_dt is not None:
                 if now_aware < until_dt:
                     observed_iso = _witness_observed_at(observed)
                     if observed_iso is not None:
-                        out[str(family)] = observed_iso
+                        out[family_key] = observed_iso
                 continue
         observed_iso = _witness_observed_at(observed)
         if observed_iso is None:
@@ -702,7 +806,19 @@ def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> 
         except (TypeError, ValueError):
             continue
         if 0 <= age <= FAMILY_OUTAGE_TTL_S:
-            out[str(family)] = observed_iso
+            out[family_key] = observed_iso
+    json_until_active = claude_json_until is not None and now_aware < claude_json_until
+    hold = _claude_weekly_limit_wall_hold(now_aware, wall_receipt_path)
+    if hold is not None:
+        resets_at, receipt_observed = hold
+        # Json until later than the receipt still wins; receipt fills when json
+        # until is missing or expired. A still-future json until already has
+        # claude OUT, so keep json observed_at.
+        json_until_wins = json_until_active and (
+            (claude_json_until is not None and claude_json_until >= resets_at) or "claude" in out
+        )
+        if not json_until_wins:
+            out["claude"] = receipt_observed
     return out
 
 
@@ -714,10 +830,17 @@ def send_session_for_lane(lane: str) -> str:
     return SEND_SESSION_ALIASES.get(lane, lane)
 
 
-def load_family_outage(now_iso: str, state_path: Path | None = None) -> frozenset[str]:
+def load_family_outage(
+    now_iso: str,
+    state_path: Path | None = None,
+    *,
+    wall_receipt_path: Path | None = None,
+) -> frozenset[str]:
     """Families currently out on an observed quota wall (until- or TTL-bounded)."""
 
-    return frozenset(load_family_outage_witness(now_iso, state_path))
+    return frozenset(
+        load_family_outage_witness(now_iso, state_path, wall_receipt_path=wall_receipt_path)
+    )
 
 
 def _family_outage_entry_has_until(existing: Any) -> bool:
