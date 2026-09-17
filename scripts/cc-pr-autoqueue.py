@@ -72,6 +72,7 @@ from github_pr_status import (  # noqa: E402
     run_graphql_rate_aware,
 )
 
+from shared.adoptability_gate import adoptability_release_blockers  # noqa: E402
 from shared.merge_queue_lineage import (  # noqa: E402
     DEFAULT_LEDGER_PATH,
     DEFAULT_QUARANTINE_PATH,
@@ -1876,6 +1877,9 @@ def _task_blockers(
 
     avsdlc_gate = evaluate_avsdlc_release_gate(task.frontmatter)
     blockers.extend(f"avsdlc_release_gate:{blocker}" for blocker in avsdlc_gate.blockers)
+    # Adoptability teeth (ADOPTABILITY-DETERMINATION-20260916 §7) — the timer is the
+    # dominator for merges, so the same predicate the keystroke precheck runs runs here.
+    blockers.extend(adoptability_release_blockers(task.frontmatter))
     return blockers
 
 

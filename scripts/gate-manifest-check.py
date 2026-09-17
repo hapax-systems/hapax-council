@@ -16,6 +16,11 @@ from typing import Any
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.adoptability_gate import lint_row  # noqa: E402
+
 DEFAULT_MANIFEST = REPO_ROOT / "hooks" / "gate-manifest.yaml"
 DEFAULT_CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 
@@ -283,6 +288,24 @@ def check_ci(runtime: dict[str, Any], *, workflow_path: Path) -> list[str]:
     return errors
 
 
+def check_rows(rows_dirs: list[Path], *, require_rows: bool) -> list[str]:
+    """Lint cc-task rows: parseable frontmatter, scalar list items, and the
+    ``adoptability:`` block on every ``garage-door`` row (ADOPTABILITY-DETERMINATION
+    §7, A5). Each refusal is printed as ``<row>: <typed reason>``; a missing directory
+    is an error only with ``--require-rows`` (CI has no vault)."""
+    errors: list[str] = []
+    for rows_dir in rows_dirs:
+        if not rows_dir.is_dir():
+            if require_rows:
+                errors.append(f"rows dir missing: {rows_dir}")
+            else:
+                print(f"SKIP rows dir not found: {rows_dir}")
+            continue
+        for row in sorted(rows_dir.glob("*.md")):
+            errors.extend(f"{row}: {reason}" for reason in lint_row(row))
+    return errors
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
@@ -295,6 +318,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--codex-config", type=Path)
     parser.add_argument("--vibe-launcher", type=Path)
     parser.add_argument("--ci-workflow", type=Path)
+    parser.add_argument(
+        "--rows-dir",
+        type=Path,
+        action="append",
+        default=[],
+        help="cc-task rows directory to lint (repeatable); a garage-door row without its "
+        "adoptability block, an unparseable row, or a list field with non-scalar items is refused",
+    )
+    parser.add_argument("--require-rows", action="store_true")
     return parser
 
 
@@ -345,6 +377,13 @@ def main(argv: list[str] | None = None) -> int:
                 args.ci_workflow,
                 str(_as_mapping(runtimes.get("ci"), "manifest runtimes.ci").get("workflow")),
             ),
+        )
+    )
+
+    errors.extend(
+        check_rows(
+            [d if d.is_absolute() else repo_root / d for d in args.rows_dir],
+            require_rows=args.require_rows,
         )
     )
 

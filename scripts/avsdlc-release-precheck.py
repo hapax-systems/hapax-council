@@ -63,6 +63,7 @@ def main(argv: list[str]) -> int:
 
         # Lazy imports so a broken venv degrades to exit 3 (advisory) rather
         # than crashing with an opaque traceback at module load.
+        from shared.adoptability_gate import adoptability_release_blockers
         from shared.frontmatter import parse_frontmatter
         from shared.release_gate import evaluate_avsdlc_release_gate
 
@@ -89,6 +90,11 @@ def main(argv: list[str]) -> int:
         # AVSDLC evidence gate — canonical function, reused verbatim.
         avsdlc = evaluate_avsdlc_release_gate(frontmatter)
         blockers.extend(f"avsdlc_release_gate:{b}" for b in avsdlc.blockers)
+
+        # Adoptability teeth (ADOPTABILITY-DETERMINATION-20260916 §7): a garage-door row
+        # releases only on a fresh, signed, passing adoptability receipt and never with an
+        # install surface that binds an estate noun. Empty for every other row.
+        blockers.extend(adoptability_release_blockers(frontmatter))
 
         # A merge IS a release. Require explicit release authorization.
         if is_merge and not _is_true(frontmatter.get("release_authorized")):

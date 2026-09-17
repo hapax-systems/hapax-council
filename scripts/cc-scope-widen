@@ -28,6 +28,7 @@ Coordination reform Phase 4 (CASE-SDLC-REFORM-001; master design section 8).
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from datetime import UTC, datetime
@@ -76,6 +77,32 @@ def _list_item(line: str) -> str | None:
     if not stripped.startswith("- "):
         return None
     return stripped[2:].strip().strip('"').strip("'")
+
+
+_YAML_INDICATORS = ("[", "{", "&", "*", "!", "|", ">", "'", '"', "%", "@", "`", "-", "?", ":")
+
+
+def _emit_item(value: str) -> str:
+    """Render one list item so it reads back as the same scalar.
+
+    A plain ``- config/ (row schema: adoptability block)`` parses as a one-key mapping
+    (``{"config/ (row schema": "adoptability block)"}``) and the autoqueue then skips
+    the row as unparseable — the accident this tool used to re-introduce on every
+    widen, because it strips quotes on read and never restored them on write. Anything
+    with ``: ``, a trailing ``:``, a `` #`` comment start, a leading YAML indicator,
+    or surrounding whitespace is emitted as a JSON string, which is a valid YAML
+    double-quoted scalar. Plain paths stay plain.
+    """
+    needs_quotes = (
+        ": " in value
+        or value.endswith(":")
+        or " #" in value
+        or "\t#" in value
+        or value != value.strip()
+        or value.startswith(_YAML_INDICATORS)
+        or value == ""
+    )
+    return json.dumps(value) if needs_quotes else value
 
 
 def _surface_ok(item: str) -> bool:
@@ -148,7 +175,7 @@ def widen(task_id: str, additions: list[str], removals: list[str] | None = None)
         print(f"cc-scope-widen: '{task_id}' already as requested (no changes)")
         return OK
 
-    lines[key_idx + 1 : block_end] = [f"  - {path}" for path in new_items]
+    lines[key_idx + 1 : block_end] = [f"  - {_emit_item(path)}" for path in new_items]
 
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [f"updated_at: {now}" if line.startswith("updated_at:") else line for line in lines]

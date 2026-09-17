@@ -212,3 +212,55 @@ def test_ci_job_drift_fails(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "ci jobs drift" in result.stderr
+
+
+# ── row lint (ADOPTABILITY-DETERMINATION-20260916 §7, A5) ────────────────────
+
+_GARAGE_DOOR_ROW = """---
+type: cc-task
+task_id: gd-1
+status: offered
+tags: [cc-task, garage-door]
+---
+body
+"""
+
+
+def test_rows_dir_lint_passes_clean_rows(tmp_path: Path) -> None:
+    rows = tmp_path / "rows"
+    rows.mkdir()
+    (rows / "plain.md").write_text(
+        "---\ntype: cc-task\nstatus: offered\ntags: [cc-task]\n---\nbody\n"
+    )
+    result = _run("--skip-claude-settings", "--rows-dir", rows)
+    assert result.returncode == 0, result.stderr
+
+
+def test_rows_dir_lint_refuses_garage_door_row_without_block(tmp_path: Path) -> None:
+    rows = tmp_path / "rows"
+    rows.mkdir()
+    (rows / "gd.md").write_text(_GARAGE_DOOR_ROW)
+    result = _run("--skip-claude-settings", "--rows-dir", rows)
+    assert result.returncode == 1
+    assert "gd.md: row_refused:adoptability_block_missing" in result.stderr
+
+
+def test_rows_dir_lint_refuses_unquoted_key_value_list_item(tmp_path: Path) -> None:
+    rows = tmp_path / "rows"
+    rows.mkdir()
+    (rows / "row.md").write_text(
+        "---\ntype: cc-task\nstatus: offered\nmutation_scope_refs:\n  - scripts/x\n  - config/: row schema\n---\nbody\n"
+    )
+    result = _run("--skip-claude-settings", "--rows-dir", rows)
+    assert result.returncode == 1
+    assert "row_refused:frontmatter_unparseable:mutation_scope_refs" in result.stderr
+
+
+def test_rows_dir_missing_is_skip_unless_required(tmp_path: Path) -> None:
+    missing = tmp_path / "absent"
+    result = _run("--skip-claude-settings", "--rows-dir", missing)
+    assert result.returncode == 0, result.stderr
+    assert "SKIP rows dir not found" in result.stdout
+    result = _run("--skip-claude-settings", "--rows-dir", missing, "--require-rows")
+    assert result.returncode == 1
+    assert "rows dir missing" in result.stderr
