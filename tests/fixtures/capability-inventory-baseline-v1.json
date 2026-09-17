@@ -1,5 +1,5 @@
 {
-  "count": 179,
+  "count": 180,
   "fingerprints": {
     "agy.review.direct": "623fdb606d2fa7c7f92b969e951a1367fe58d06a46c57c29ac91402457eeaa6b",
     "anthropic_web_search": "4a84a85c58c98dd5a2a4f10dea7886e399d98ed37b8822b7f956e9577c9d3db0",
@@ -91,6 +91,7 @@
     "hapax.query": "da4cd98ea9d984cc67c44feec03edb65229d178b9e2961ff1328b1e9f725a1b5",
     "hapax.scout_decide": "934e8b1b15563035043cf06af1bc49b94926f2920ff19e939cd0b012fa5aefe4",
     "hapax.working_mode_set": "54be32550b962a9fc2f75946e3b9b6ad75f51645d733bd24affc0287c05e1de4",
+    "kimi.interactive.lane": "6cf186a02aa4a4c4f6a30d0fbdd29cb835069b069c0be2a1172f6665606ae859",
     "litellm.appendix-fast": "d22514d523ac34dcac730380506726047c651f514a7000f201f36854312a18f4",
     "litellm.balanced": "26daa9826e54a94452467d2673eea3619dc41ca5fd7a42f456460eadcd3610b9",
     "litellm.coding": "3be0dcaf556c3160e8a5ce3d5eeca56d910ab916492c0f29fb06f57185bfbe59",

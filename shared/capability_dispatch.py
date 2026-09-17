@@ -51,6 +51,7 @@ LAUNCHABLE_PATHS: frozenset[tuple[str, str]] = frozenset(
         ("claude", "headless"),
         ("claude", "interactive"),
         ("codex", "headless"),
+        ("kimi", "interactive"),
         ("vibe", "headless"),
     }
 )

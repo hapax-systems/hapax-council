@@ -265,6 +265,7 @@ class ModelId(StrEnum):
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
+    KIMI_K3 = "kimi-code/k3"
     UNKNOWN = "unknown"
 
 
