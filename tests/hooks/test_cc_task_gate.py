@@ -428,6 +428,39 @@ class TestConnectorClassifierDeployedLayout:
         assert result.returncode == 2
         assert "connector classifier failed" in result.stderr
 
+    def _fake_rebuild_worktree(self, tmp_path: Path) -> None:
+        """A stable-checkout candidate that actually carries the classifier:
+        $XDG_CACHE_HOME/hapax/rebuild/worktree with a stub module honouring the
+        is-side-effecting CLI contract (exit 0 mutating, exit 10 read-only)."""
+        shared = tmp_path / "xdg-cache" / "hapax" / "rebuild" / "worktree" / "shared"
+        shared.mkdir(parents=True)
+        (shared / "__init__.py").write_text("")
+        (shared / "mcp_connector_policy.py").write_text(
+            "import sys\n"
+            "if sys.argv[1:2] == ['is-side-effecting']:\n"
+            "    sys.exit(0 if 'github' in sys.argv[2] else 10)\n"
+            "sys.exit(2)\n"
+        )
+
+    def test_stable_checkout_fallback_classifies_readonly(self, tmp_path: Path) -> None:
+        # Positive branch: the fallback candidate HAS the module, so a
+        # read-only connector classifies cleanly with no override set.
+        self._fake_rebuild_worktree(tmp_path)
+        gate = self._deploy(tmp_path)
+        result = self._run_deployed(gate, "mcp__context7__query-docs", tmp_path)
+        assert result.returncode == 0, result.stderr
+
+    def test_stable_checkout_fallback_gates_mutating(self, tmp_path: Path) -> None:
+        # Positive branch, mutating side: classification succeeds via the
+        # fallback and the claim requirement still binds.
+        self._fake_rebuild_worktree(tmp_path)
+        gate = self._deploy(tmp_path)
+        result = self._run_deployed(
+            gate, "mcp__github__create_pull_request", tmp_path
+        )
+        assert result.returncode == 2
+        assert "no claimed task" in result.stderr.lower()
+
     def test_stale_checkout_without_module_is_skipped(self, tmp_path: Path) -> None:
         # A shared/ directory that lacks the classifier module (the stale
         # rebuild-worktree shape) must not be selected as the repo root.
