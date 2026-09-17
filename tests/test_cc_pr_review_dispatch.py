@@ -3386,6 +3386,11 @@ class TestFamilyOutageDegradation:
         ledger = tmp_path / "degraded-merges.jsonl"
         monkeypatch.setattr(dispatch, "FAMILY_OUTAGE_STATE", state)
         monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", ledger)
+        monkeypatch.setattr(
+            dispatch,
+            "_glmcp_payg_review_route_eligible",
+            lambda _now_iso: False,
+        )
         return state, ledger
 
     @staticmethod
@@ -4672,6 +4677,186 @@ payg_fallback: false
         # After restamp, observed_at can age past TTL while until is still future.
         later = "2026-06-12T23:30:00+00:00"
         assert dispatch.load_family_outage(later, state) == frozenset({"claude"})
+
+    def test_glm_quota_wall_does_not_stamp_family_outage_when_payg_eligible(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Coding Plan walls are not glm-family death while PAYG is the live route."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            dispatch,
+            "_glmcp_payg_review_route_eligible",
+            lambda _now_iso: True,
+        )
+        state.write_text(
+            json.dumps(
+                {
+                    "glm": {
+                        "observed_at": "2026-09-17T17:00:00+00:00",
+                        "outage_started_at": "2026-09-17T16:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        out = dispatch.update_family_outage(
+            [
+                {"family": "glm", "verdict": "quota-wall"},
+                {"family": "glm", "verdict": "quota-wall"},
+            ],
+            "2026-09-17T18:05:45+00:00",
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert "glm" not in recorded
+        assert out == frozenset()
+
+    def test_glm_quota_wall_stamps_family_outage_when_payg_ineligible(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Without PAYG, Coding Plan is the only glm path and the family is OUT."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-09-17T18:13:26+00:00"
+        out = dispatch.update_family_outage(
+            [
+                {"family": "glm", "verdict": "quota-wall"},
+                {"family": "glm", "verdict": "quota-wall"},
+            ],
+            now,
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {
+            "glm": {
+                "observed_at": now,
+                "outage_started_at": now,
+            }
+        }
+        assert out == frozenset({"glm"})
+
+    def test_glm_payg_eligible_preserves_claude_until(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """PAYG recovery pops no-until glm and must not pop claude until/note."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            dispatch,
+            "_glmcp_payg_review_route_eligible",
+            lambda _now_iso: True,
+        )
+        claude_entry = {
+            "observed_at": "2026-06-12T18:00:00+00:00",
+            "outage_started_at": "2026-06-12T12:00:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": claude_entry,
+                    "codex": {
+                        "observed_at": "2026-06-12T20:00:00+00:00",
+                        "outage_started_at": "2026-06-12T19:00:00+00:00",
+                    },
+                    "glm": {
+                        "observed_at": "2026-09-17T17:00:00+00:00",
+                        "outage_started_at": "2026-09-17T16:00:00+00:00",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        now = "2026-06-12T21:00:00+00:00"
+        dispatch.update_family_outage(
+            [
+                {"family": "claude", "verdict": "quota-wall"},
+                {"family": "glm", "verdict": "quota-wall"},
+            ],
+            now,
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded["claude"] == {
+            "observed_at": now,
+            "outage_started_at": "2026-06-12T12:00:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        assert recorded["codex"] == {
+            "observed_at": "2026-06-12T20:00:00+00:00",
+            "outage_started_at": "2026-06-12T19:00:00+00:00",
+        }
+        assert "glm" not in recorded
+
+    def test_glmcp_payg_review_route_eligible_with_live_transition_budget(
+        self, monkeypatch: Any
+    ) -> None:
+        class Budget:
+            providers_allowed = ("z_ai",)
+            profiles_allowed = ("glmcp-review-direct",)
+
+        class Ledger:
+            def active_paid_budgets(self, now: Any = None) -> tuple[Any, ...]:
+                return (Budget(),)
+
+        class Resolved:
+            source = "live"
+            ledger = Ledger()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch,
+            "_glmcp_review_direct_quota_admission_fresh",
+            lambda _now: False,
+        )
+        assert dispatch._glmcp_payg_review_route_eligible("2026-09-17T18:05:45+00:00") is True
+
+    def test_glmcp_payg_review_route_eligible_when_route_admission_fresh(
+        self, monkeypatch: Any
+    ) -> None:
+        class Resolved:
+            source = "fixtures"
+            ledger = None
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch,
+            "_route_specific_quota_admission_fresh",
+            lambda _payload, *, now: (
+                True,
+                ("spend-gate:glmcp.review.direct:eligible_active_budget",),
+            ),
+        )
+        assert dispatch._glmcp_payg_review_route_eligible("2026-09-17T18:05:45+00:00") is True
+
+    def test_glmcp_payg_review_route_ineligible_without_live_payg(self, monkeypatch: Any) -> None:
+        class Ledger:
+            def active_paid_budgets(self, now: Any = None) -> tuple[Any, ...]:
+                return ()
+
+        class Resolved:
+            source = "live"
+            ledger = Ledger()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch,
+            "_route_specific_quota_admission_fresh",
+            lambda _payload, *, now: (False, ()),
+        )
+        assert dispatch._glmcp_payg_review_route_eligible("2026-09-17T18:13:26+00:00") is False
 
     def test_invalid_output_with_future_until_keeps_family_out(
         self, monkeypatch: Any, tmp_path: Path
