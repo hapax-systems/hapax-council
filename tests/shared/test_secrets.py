@@ -393,6 +393,24 @@ class TestPresenceWriteAndListing:
         assert has_secret("demo/x") is True
         assert has_secret("demo/y") is False
 
+    def test_put_secret_on_a_read_only_store_is_a_typed_refusal(self, store, tmp_path) -> None:
+        """A container mounts the FileStore read-only (the sync pipeline): a put there must refuse
+        with the name and the host-side next action, not escape as an OSError."""
+        import os
+
+        if os.geteuid() == 0:  # pragma: no cover - root ignores mode bits
+            pytest.skip("root can write a mode-500 directory")
+        store("demo/present", b"synthetic")  # materialises the root
+        root = tmp_path / "secrets"
+        root.chmod(0o500)
+        try:
+            with pytest.raises(SecretUnavailable) as excinfo:
+                put_secret("demo/written", b"synthetic")
+        finally:
+            root.chmod(0o700)
+        assert "not writable" in str(excinfo.value)
+        assert "synthetic" not in str(excinfo.value)
+
     def test_list_secret_names_is_names_only_and_sorted(self, store) -> None:
         store("demo/b", b"VALUE-SENTINEL-B")
         store("demo/a", b"VALUE-SENTINEL-A")

@@ -320,7 +320,14 @@ def put_secret(name: str, value: bytes) -> None:
             "install the reins API on this host — a non-interactive put has no CLI path; "
             f"an operator can put it interactively with `{_HAPAX_SECRET_CLI}`",
         )
-    store.put(secret_store_name(name), bytes(value))
+    try:
+        store.put(secret_store_name(name), bytes(value))
+    except OSError as exc:
+        raise SecretUnavailable(
+            name,
+            f"the FileStore is not writable from this process ({type(exc).__name__}); "
+            f"put it from the host with `{_HAPAX_SECRET_CLI}`",
+        ) from exc
 
 
 def secret_store_root() -> Path | None:
