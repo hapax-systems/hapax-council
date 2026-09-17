@@ -14,7 +14,9 @@ over the callers of :mod:`shared.cc_task_root` finds ``cc-claim``, ``cc-close``,
 ``cc-cascade-unblock`` and ``cc-task-pr-link.sh``, none of which spell the vault themselves.
 A list that was assembled by grep will be re-assembled by grep the next time someone adds a
 writer, so it is pinned here instead: a file that writes a task note and is not in the
-converted set has to be added to one list or the other, with a reason.
+converted set has to be added to one list or the other, with a reason. Scratch classes
+are a fourth classified set: a crashed-transition scratch is not a note writer, and
+leaving it unnamed made work item 1's recovery-sweep half silently absent.
 """
 
 from __future__ import annotations
@@ -944,12 +946,105 @@ def test_cc_close_s_lost_note_refusal_names_the_root_it_actually_resolved(
         out, err = first.communicate(timeout=60)
 
     assert "RELEASED" in out, f"the moving writer did not finish: {out!r} {err!r}"
-    assert done.returncode != 0, f"cc-close closed a note that had left active/: {done.stderr!r}"
+    assert done.returncode == 1, (
+        f"a lost note must be exit 1 (lock contention is 3), got {done.returncode}: {done.stderr!r}"
+    )
     assert "neither active/ nor closed/" in done.stderr, done.stderr
     assert f"ls {vault_root}/*/lock-probe-1*" in done.stderr, (
         f"the recovery command does not name the resolved root {vault_root}:\n{done.stderr}"
     )
     assert "~/Documents/Personal" not in done.stderr, done.stderr
+
+
+def test_cc_close_lock_contention_exits_3_not_1(
+    probe: tuple[Path, Path, dict[str, str]],
+) -> None:
+    """Lock contention is exit 3; a lost note is exit 1. Flattening them is the defect.
+
+    Sibling writers (cc-claim, the gate stamp) use 3 for ``TaskNoteLockError``. cc-close
+    used 1 for both, so a wrapper could not tell a retryable wait from a genuinely
+    lost note without parsing stderr.
+    """
+
+    home, note, env = probe
+    _prepare_close(home, note)
+    root = home / "coord" / "task-locks"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(
+                f"""
+                import sys, time
+                sys.path.insert(0, {str(REPO_ROOT)!r})
+                from pathlib import Path
+                from shared import task_note_lock as tnl
+                with tnl.projected_path_lock(None, (Path({str(note)!r}),),
+                                             root=Path({str(root)!r}), timeout=30.0):
+                    print("HELD", flush=True)
+                    time.sleep(10)
+                """
+            ),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "HELD"
+        done = subprocess.run(
+            [str(REPO_ROOT / "scripts" / "cc-close"), "lock-probe-1"],
+            capture_output=True,
+            text=True,
+            env={**env, "HAPAX_TASK_NOTE_LOCK_TIMEOUT": "1"},
+            timeout=30,
+        )
+    finally:
+        holder.terminate()
+        holder.wait(timeout=30)
+    assert done.returncode == 3, (
+        f"lock contention must be exit 3, not {done.returncode}: {done.stderr!r}"
+    )
+    assert "REFUSED" in done.stderr, done.stderr
+
+
+def test_cc_task_offer_ready_refuses_when_the_note_moved_during_acquisition(
+    probe: tuple[Path, Path, dict[str, str]],
+) -> None:
+    """Re-resolve under the lock; a relocated note must not traceback FileNotFoundError."""
+
+    home, note, env = probe
+    _prepare_offer_ready(home, note)
+    root = home / "coord" / "task-locks"
+    first = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _MOVING_WRITER % {"repo": str(REPO_ROOT), "note": str(note), "root": str(root)},
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert first.stdout is not None
+        assert first.stdout.readline().strip() == "HELD"
+        done = subprocess.run(
+            [str(REPO_ROOT / "scripts" / "cc-task-offer-ready"), "lock-probe-1"],
+            capture_output=True,
+            text=True,
+            env={**env, "HAPAX_TASK_NOTE_LOCK_TIMEOUT": "30"},
+            timeout=120,
+        )
+    finally:
+        out, err = first.communicate(timeout=60)
+
+    assert "RELEASED" in out, f"{out!r} {err!r}"
+    assert done.returncode != 0, f"promoted a note that had left active/: {done.stderr!r}"
+    assert "Traceback" not in done.stderr, done.stderr
+    assert "moved while acquiring its lock" in done.stderr, done.stderr
+    assert "rerun to act on its current position" in done.stderr, done.stderr
 
 
 def test_the_gate_stamp_does_not_clobber_a_change_made_while_it_waited(
@@ -1084,6 +1179,38 @@ KNOWN_UNCONVERTED = {
 }
 
 
+#: Scratch filename classes. Work item 1 pre-registered recovery-sweep discovery of
+#: every class, not only ``scratch.path.name``. Fallback B (PR #4667) introduces
+#: pin / holding / spent with random transition names the current glob
+#: (``.*.transition-scratch``) does not discover. That half of item 1 is deferred
+#: here rather than silently absent: a class named in a scratch constructor that is
+#: in none of the classified sets fails CI.
+#:
+#: Each deferred entry is ``(reason, owner)``. The owner is the named pass that
+#: lands discovery — the NFS-fallback row that introduces the three classes.
+SCRATCH_RECOVERY_DEFERRED: dict[str, tuple[str, str]] = {
+    "pin": (
+        "fallback-B preimage pin; random transition name, recovery glob does not discover it",
+        "coord-projection-nfs-fallback-20260913",
+    ),
+    "holding": (
+        "fallback-B in-flight holding; random transition name, recovery glob does not discover it",
+        "coord-projection-nfs-fallback-20260913",
+    ),
+    "spent": (
+        "fallback-B spent/terminal; random transition name, recovery glob does not discover it",
+        "coord-projection-nfs-fallback-20260913",
+    ),
+}
+
+#: Live constructor suffix the leftover-scratch assertions already glob.
+SCRATCH_RECOVERY_DISCOVERED: dict[str, str] = {
+    "transition-scratch": (
+        "current ``_scratch_for`` suffix; leftover assertions glob ``.*.transition-scratch``"
+    ),
+}
+
+
 #: The search shapes, unioned. One grep's silence is a fact about the grep, and this list has
 #: grown once per lesson: shape A (the literal vault path) could not see the callers of the
 #: cc_task_root resolver, which is how cc-claim, cc-close and cc-task-pr-link went unlisted in
@@ -1119,7 +1246,35 @@ def _candidate_files() -> set[str]:
             capture_output=True,
             text=True,
         ).stdout
-        found |= {line.strip() for line in out.splitlines() if line.strip()}
+        found |= {
+            rel
+            for rel in (line.strip() for line in out.splitlines())
+            if rel and "__pycache__" not in Path(rel).parts and not rel.endswith((".pyc", ".pyo"))
+        }
+    return found
+
+
+def _scratch_classes_named_in_constructors() -> set[str]:
+    """Filename-class tokens used to name projection scratches.
+
+    Work item 1 required recovery-sweep discovery of *classes*, not only
+    ``scratch.path.name``. The live constructor is ``_scratch_for``
+    (``.transition-scratch``). Fallback B adds pin / holding / spent as sibling
+    suffixes. A new suffix in a ``*scratch*`` constructor that is in neither
+    ``SCRATCH_RECOVERY_DISCOVERED`` nor ``SCRATCH_RECOVERY_DEFERRED`` fails CI.
+    """
+
+    source = (REPO_ROOT / "shared" / "coord_projection.py").read_text(encoding="utf-8")
+    stripped = "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in source.splitlines())
+    found: set[str] = set()
+    for match in re.finditer(
+        r"^def (_\w*scratch\w*)\(.*?(?=\n@|\ndef |\nclass )", stripped, re.M | re.S
+    ):
+        found.update(re.findall(r'\.([A-Za-z][A-Za-z0-9_-]+)"', match.group(0)))
+    assert found, (
+        "no scratch filename class was found in coord_projection scratch constructors; "
+        "the constructor scan is broken, and its silence is a fact about the search"
+    )
     return found
 
 
@@ -1144,12 +1299,14 @@ def test_every_converted_writer_actually_takes_the_lock() -> None:
 
 
 def test_the_writer_inventory_has_no_unclassified_file() -> None:
-    """A new task-note writer must be classified, not silently added.
+    """A new task-note writer or scratch class must be classified, not silently added.
 
     This is the part that keeps the inventory a floor. The row's floor of four came from one
     search shape and missed ``cc-claim`` and ``cc-close``; the same thing happens again the
     moment the list lives only in a commit message. Anything the sweep finds must be in exactly
-    one of: converted, not-a-note-writer, or known-unconverted-with-a-reason.
+    one of: converted, not-a-note-writer, or known-unconverted-with-a-reason. Scratch classes
+    are a fourth set: a crashed-transition scratch is none of those, and work item 1's
+    recovery-sweep half is deferred here with a named owner rather than silently absent.
     """
 
     candidates = _candidate_files()
@@ -1167,7 +1324,13 @@ def test_the_writer_inventory_has_no_unclassified_file() -> None:
             "the search shapes in _candidate_files() have stopped matching"
         )
 
-    classified = set(UNDER_LOCK) | set(NOT_A_TASK_NOTE_WRITER) | set(KNOWN_UNCONVERTED)
+    classified = (
+        set(UNDER_LOCK)
+        | set(NOT_A_TASK_NOTE_WRITER)
+        | set(KNOWN_UNCONVERTED)
+        | set(SCRATCH_RECOVERY_DEFERRED)
+        | set(SCRATCH_RECOVERY_DISCOVERED)
+    )
     unclassified = sorted(rel for rel in candidates if rel not in classified)
     assert not unclassified, (
         "these files reach the cc-task vault and are in no inventory list:\n  "
@@ -1175,6 +1338,26 @@ def test_the_writer_inventory_has_no_unclassified_file() -> None:
         + "\n\nClassify each one: add it to UNDER_LOCK (and route it through "
         "projected_path_lock), to NOT_A_TASK_NOTE_WRITER with what it writes instead, or to "
         "KNOWN_UNCONVERTED with the pass that will convert it."
+    )
+
+    constructed = _scratch_classes_named_in_constructors()
+    scratch_classified = set(SCRATCH_RECOVERY_DEFERRED) | set(SCRATCH_RECOVERY_DISCOVERED)
+    assert {"pin", "holding", "spent"} <= set(SCRATCH_RECOVERY_DEFERRED), (
+        "fallback-B's three scratch classes must stay in SCRATCH_RECOVERY_DEFERRED "
+        "until a named pass lands recovery-sweep discovery"
+    )
+    overlap = set(SCRATCH_RECOVERY_DEFERRED) & set(SCRATCH_RECOVERY_DISCOVERED)
+    assert not overlap, f"scratch class listed as both discovered and deferred: {sorted(overlap)}"
+    for name, (reason, owner) in SCRATCH_RECOVERY_DEFERRED.items():
+        assert reason.strip(), f"{name} is deferred without a reason"
+        assert owner.strip(), f"{name} is deferred without a named owner"
+    unclassified_scratch = sorted(constructed - scratch_classified)
+    assert not unclassified_scratch, (
+        "these scratch classes are named in a constructor and in no inventory list:\n  "
+        + "\n  ".join(unclassified_scratch)
+        + "\n\nClassify each one: add it to SCRATCH_RECOVERY_DISCOVERED (and glob it "
+        "from the recovery sweep) or to SCRATCH_RECOVERY_DEFERRED with a reason and "
+        "a named owner pass."
     )
 
 

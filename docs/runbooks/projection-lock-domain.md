@@ -176,3 +176,12 @@ this work falsifies. That text lives only on the `coord-projection-nfs-fallback-
 projection-lock row **precedes** #4667 by the 2026-09-14T00:38Z sequencing inversion, so it cannot
 be corrected from here without inverting that. It is corrected in #4667's rebase, together with
 the re-scoped R1: *closed for writers that take the projection lock, open for those that do not.*
+
+**Scratch-class recovery-sweep discovery.** Work item 1 pre-registered recovery-sweep discovery
+of every scratch class, not only `scratch.path.name`. Fallback B (PR #4667,
+`coord-projection-nfs-fallback-20260913`) introduces three classes — pin, holding, spent — with
+random transition names the current glob (`.*.transition-scratch`) does not discover. That half
+of the inventory is deferred, not silently absent: the three classes are listed in
+`SCRATCH_RECOVERY_DEFERRED` in `tests/shared/test_projected_path_writer_lock_coverage.py`, and a
+new class without a classification fails CI. Owner: `coord-projection-nfs-fallback-20260913` on
+landing fallback B.

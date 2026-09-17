@@ -283,25 +283,28 @@ def rewrite_note(
     timestamp: str,
     task_id: str,
     dry_run: bool,
-) -> None:
+    vault_root: Path,
+) -> int:
     from shared.task_note_lock import TaskNoteLockError
 
     # Read and write together under the projection lock: this note is a path
     # coord_projection relocates transactionally, and a promotion landing between its
     # preimage pin and its install is counted by the safety check and then destroyed.
     try:
-        _promote_under_lock(
+        return _promote_under_lock(
             path=path,
             status=status,
             route_changes=route_changes,
             timestamp=timestamp,
             task_id=task_id,
             dry_run=dry_run,
+            vault_root=vault_root,
         )
     except TaskNoteLockError as exc:
         # An operator-facing refusal, not a crash: executive_function requires the message
         # to carry its own next action, and a traceback carries the stack instead.
         print(f"cc-task-offer-ready: REFUSED — {exc}", file=sys.stderr)
+        return 3
 
 
 def _promote_under_lock(
@@ -312,16 +315,38 @@ def _promote_under_lock(
     timestamp: str,
     task_id: str,
     dry_run: bool,
-) -> None:
+    vault_root: Path,
+) -> int:
     from shared.task_note_lock import projected_path_lock
 
     with projected_path_lock(task_id, (path,)):
+        # Re-resolve under the lock: the path was found before the lock existed, and a
+        # transition relocating this note in that window would leave us holding a lock
+        # on a name that no longer refers to it. Locking a stale path is not locking
+        # the note. Siblings (cc-stage-advance, cc-scope-widen, cc-task-repair) re-run
+        # _find_note here; locate_task is this writer's equivalent.
+        current_path = locate_task(vault_root, task_id)
+        if current_path is None or current_path != path:
+            print(
+                f"cc-task-offer-ready: '{task_id}' moved while acquiring its lock "
+                f"({path} -> {current_path}); rerun to act on its current position",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            current = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            print(
+                f"cc-task-offer-ready: '{task_id}' moved while acquiring its lock "
+                f"({path} -> missing); rerun to act on its current position",
+                file=sys.stderr,
+            )
+            return 2
         # The readiness verdict was computed from a scan taken before this lock existed.
         # Re-derive the part of it that another writer can invalidate: a note claimed in that
         # window would otherwise be overwritten back to offered/unassigned by a stale verdict,
         # which is the lost update the lock exists to prevent, moved up from the bytes to the
         # decision about them. Locking only the write does not reach it.
-        current = path.read_text(encoding="utf-8")
         assignee = re.search(r"^assigned_to:\s*(\S+)", current, re.M)
         if assignee and not is_claimable_assignee(assignee.group(1)):
             print(
@@ -329,7 +354,7 @@ def _promote_under_lock(
                 "acquiring its lock — not promoting; rerun once it is unassigned",
                 file=sys.stderr,
             )
-            return
+            return 4
         status_now = re.search(r"^status:\s*(\S+)", current, re.M)
         if status_now and status_now.group(1) not in ("ready", status):
             print(
@@ -337,14 +362,23 @@ def _promote_under_lock(
                 f"{status_now.group(1)} while acquiring its lock — not promoting",
                 file=sys.stderr,
             )
-            return
-        _rewrite_note_locked(
-            path=path,
-            status=status,
-            route_changes=route_changes,
-            timestamp=timestamp,
-            dry_run=dry_run,
-        )
+            return 4
+        try:
+            _rewrite_note_locked(
+                path=path,
+                status=status,
+                route_changes=route_changes,
+                timestamp=timestamp,
+                dry_run=dry_run,
+            )
+        except FileNotFoundError:
+            print(
+                f"cc-task-offer-ready: '{task_id}' moved while acquiring its lock "
+                f"({path} -> missing); rerun to act on its current position",
+                file=sys.stderr,
+            )
+            return 2
+        return 0
 
 
 def _rewrite_note_locked(
@@ -445,14 +479,17 @@ def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
         return 7
 
     timestamp = now_utc()
-    rewrite_note(
+    rc = rewrite_note(
         path=task_path,
         status="offered",
         route_changes=route_changes,
         timestamp=timestamp,
         task_id=task_id,
         dry_run=dry_run,
+        vault_root=vault_root,
     )
+    if rc != 0:
+        return rc
     normalized = ""
     if route_changes:
         fields_text = ", ".join(f"{key}={value}" for key, value in sorted(route_changes.items()))

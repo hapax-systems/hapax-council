@@ -323,6 +323,11 @@ def _rewrite_under_lock(
         with projected_path_lock(None, (path,)):
             current = _safe_read_text(path)
             if current is None:
+                print(
+                    f"cc-cascade-unblock: {path.stem} skipped — unreadable under the lock; "
+                    f"locate it with `ls {path.parent.parent}/*/{path.stem}*` before retrying",
+                    file=sys.stderr,
+                )
                 return False
             refusal = revalidate(current)
             if refusal is not None:

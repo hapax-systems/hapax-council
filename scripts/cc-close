@@ -250,7 +250,9 @@ try:
     _lock.__enter__()
 except TaskNoteLockError as exc:
     print(f"cc-close: REFUSED — {exc}", file=sys.stderr)
-    sys.exit(1)
+    # Exit 3 is lock contention, matching cc-claim and the gate stamp. Exit 1 is a
+    # lost note (neither active/ nor closed/ below). Flattening those was the defect.
+    sys.exit(3)
 try:
     if not path.is_file():
         # Re-checked under the lock: the note may have moved between the shell's resolution
