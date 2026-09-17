@@ -490,6 +490,13 @@ def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
             "place — not dequeued — and no admission status is written; the next reconciler "
             "pass re-evaluates once the window clears. No operator action is required."
         )
+    if _missing_cc_task_link_only(list(reasons)):
+        return (
+            "This PR has no matching vault cc-task note. A queued entry is held in place — "
+            "not dequeued — and hapax/autoqueue-admission stays pending until a note exists. "
+            "Add or fix the note (scripts/cc-task-lint); the next reconciler pass can then "
+            "admit."
+        )
     if any(reason.startswith(OVERRIDE_CONTRADICTION_PREFIX) for reason in reasons):
         return _merge_method_operator_next_action()
     merge_method_reason = any(
@@ -2076,6 +2083,18 @@ def _transient_transport_refusal_only(reasons: list[str]) -> bool:
     )
 
 
+def _is_missing_cc_task_link_reason(reason: str) -> bool:
+    return reason == "missing_cc_task_link" or reason.startswith("missing_cc_task_link (NOTE:")
+
+
+def _missing_cc_task_link_only(reasons: list[str]) -> bool:
+    """Every blocker is a missing vault cc-task note (exact, or the unparseable-notes
+    variant). That is a process gap, not a product defect: posting `failure` on
+    hapax/autoqueue-admission would fail the required check and make GitHub drop a
+    queued CI-green PR (overnight 2026-09-17)."""
+    return bool(reasons) and all(_is_missing_cc_task_link_reason(reason) for reason in reasons)
+
+
 def classify_pr(
     pr: PullRequest,
     *,
@@ -2267,6 +2286,10 @@ def classify_pr(
         elif _transient_transport_refusal_only(reasons):
             # Transport window says nothing about the PR: hold a queued entry (never
             # dequeue), otherwise stay blocked and re-evaluate next pass once it clears.
+            action = "hold" if queued else "blocked"
+        elif _missing_cc_task_link_only(reasons):
+            # Missing vault note is not a product defect. Hold a queued entry so GitHub
+            # and this reconciler never drop it; otherwise stay blocked until a note exists.
             action = "hold" if queued else "blocked"
         elif queued:
             action = "dequeue"
@@ -2917,6 +2940,17 @@ def _admission_status_for(decision: Decision) -> tuple[str, str] | None:
         # hapax/autoqueue-admission check and make GitHub drop the queue entry (the #4672
         # loss, 2026-09-16). Defer the write; the next pass re-evaluates once it clears.
         return None
+
+    if _missing_cc_task_link_only(list(decision.reasons or ())):
+        # A missing vault cc-task note is a process gap, not a product defect. Writing
+        # `failure` would fail the required hapax/autoqueue-admission check and make
+        # GitHub drop an already-queued CI-green PR (overnight 2026-09-17: #4680-#4686,
+        # #4673, #4665). `pending` does not fail that check: a queued entry stays queued,
+        # and a not-yet-queued PR stays unqueued until a note exists (honest: not admitted).
+        reasons = "; ".join(decision.reasons)
+        return "pending", _status_description(
+            f"cc-pr-autoqueue waiting for vault task note: {reasons}"
+        )
 
     if decision.action in {"blocked", "hold", "dequeue", "disable_auto_merge"}:
         reasons = "; ".join(decision.reasons or ("not ready for merge queue",))

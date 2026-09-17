@@ -11176,3 +11176,102 @@ def test_non_queued_pr_blocks_not_dequeues_on_transient_rulesets_fetch(tmp_path:
     assert decision["reasons"][0].startswith(
         "auto_merge_method_unverified:transient_transport:source=rulesets_fetch_failed:"
     )
+    assert not any(
+        call[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in call[4] for call in runner.calls
+    )
+
+
+# --- Missing vault note must not fail hapax/autoqueue-admission (overnight 2026-09-17) ---
+# Regression: autoqueue rewrote `failure` on CI-green PRs whose only blocker was
+# `missing_cc_task_link`. GitHub treats that required check failure as a dequeue
+# (#4680-#4686, #4673, #4665). Same shape as the #4672 transport-hold: classify
+# the missing-note-only case once, and never post failure for it. Pending does
+# not fail the required check.
+
+
+def _blocked_admission_decision(*, reasons: tuple[str, ...], action: str = "blocked") -> Any:
+    pr = autoqueue._parse_pr(_pr(50))
+    assert pr is not None
+    return autoqueue.Decision(pr=pr, action=action, reasons=reasons)
+
+
+def test_admission_status_missing_note_only_is_pending_not_failure() -> None:
+    decision = _blocked_admission_decision(reasons=("missing_cc_task_link",), action="blocked")
+    status = autoqueue._admission_status_for(decision)
+    assert status is not None
+    state, description = status
+    assert state == "pending"
+    assert state != "failure"
+    assert "missing_cc_task_link" in description
+
+
+def test_admission_status_missing_note_unparseable_variant_is_pending() -> None:
+    reason = (
+        "missing_cc_task_link (NOTE: 1 unparseable task note(s): broken.md — "
+        "fix or run scripts/cc-task-lint)"
+    )
+    decision = _blocked_admission_decision(reasons=(reason,), action="blocked")
+    status = autoqueue._admission_status_for(decision)
+    assert status is not None
+    state, description = status
+    assert state == "pending"
+    assert state != "failure"
+    assert "missing_cc_task_link" in description
+    assert "broken.md" in description
+
+
+def test_admission_status_missing_note_with_other_blocker_is_failure() -> None:
+    decision = _blocked_admission_decision(
+        reasons=("missing_cc_task_link", "unresolved_critical"),
+        action="blocked",
+    )
+    status = autoqueue._admission_status_for(decision)
+    assert status is not None
+    state, description = status
+    assert state == "failure"
+    assert "missing_cc_task_link" in description
+    assert "unresolved_critical" in description
+
+
+def test_admission_status_transport_only_still_skips_write() -> None:
+    decision = _blocked_admission_decision(
+        reasons=(
+            autoqueue.TRANSIENT_TRANSPORT_UNVERIFIED_PREFIX
+            + "source=rulesets_fetch_failed:API rate limit exceeded",
+        ),
+        action="hold",
+    )
+    assert autoqueue._admission_status_for(decision) is None
+
+
+def test_queued_pr_missing_note_only_holds_and_posts_pending(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    runner = _FakeRunner()
+    runner.queued_prs = {90}
+    runner.open_prs = [_pr(90)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["action"] == "hold"
+    assert report["counts"]["dequeue"] == 0
+    assert decision["reasons"] == ["missing_cc_task_link"]
+    assert not any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+    posts = [
+        call
+        for call in runner.calls
+        if call[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in call[4]
+    ]
+    assert posts
+    assert "state=pending" in posts[0]
+    assert "state=failure" not in posts[0]
+    assert any("vault task note" in part or "missing_cc_task_link" in part for part in posts[0])
