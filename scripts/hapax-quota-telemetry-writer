@@ -1682,7 +1682,10 @@ def active_glmcp_payg_spend_receipts(
         if fields.get("payg_fallback", "") != "true":
             reject(path, "payg_fallback must be true")
             continue
-        if fields.get("secret_source", "") != "pass:glmcp/api-key":
+        if fields.get("secret_source", "") not in {
+            "pass:glmcp/api-key",
+            "filestore:glmcp/api-key",
+        }:
             reject(path, "secret_source missing or unsupported")
             continue
         if fields.get("secret_value_persisted", "") != "false":
