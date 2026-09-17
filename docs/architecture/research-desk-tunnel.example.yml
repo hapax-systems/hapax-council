@@ -1,0 +1,19 @@
+# hapax research desk — cloudflared ingress template.
+#
+# Copy to ~/.cloudflared/research-desk.yml and fill in the tunnel id. The tunnel
+# unit gates on that path existing (ConditionPathExists=), so until it is in place
+# hapax-research-desk-tunnel.service is condition-skipped — INACTIVE, not failed.
+#
+# The credentials file is NOT authored by hand: the unit's ExecStartPre materialises
+# it 0600 from the reins FileStore name `cloudflared-research-desk-tunnel-credentials`
+# into $XDG_RUNTIME_DIR/cloudflared/, and systemd removes it on stop. Never commit it
+# and never write it under $HOME.
+#
+# Recheck after copying: uv run scripts/hapax-research-desk-probe --local
+
+tunnel: REPLACE-WITH-TUNNEL-UUID
+credentials-file: /run/user/1000/cloudflared/research-desk.json
+ingress:
+  - hostname: desk.hapaxrnd.com
+    service: http://127.0.0.1:8790
+  - service: http_status:404

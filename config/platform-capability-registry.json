@@ -329,6 +329,31 @@
       "freshness_state": "asserted_only",
       "evidence_refs": ["task:cc-task-register-omitted-demand-shape-routes-20260630"],
       "blocked_reasons": ["deprecated_antigrav_route_retired", "measured_supply_leaf_absent"]
+    },
+    {
+      "descriptor_schema": 1,
+      "shape_id": "perplexity.computer.desk",
+      "shape_class": "mcp_connector",
+      "carrier_family": "mcp",
+      "summary": "Perplexity Computer scheduled tasks calling the estate's research desk through an official custom remote connector. The inversion is the point: the subscription's agent is the CLIENT and this estate is the server, so no estate process drives a consumer UI.",
+      "harness_shape": "inbound-streamable-http-mcp-server-plus-api-key-edge-and-delivery-ledger",
+      "authority_ceiling": "support_only",
+      "shape_state": "measurement_pending",
+      "demand_eligible": false,
+      "route_ids": [],
+      "resource_semantics": ["inbound-connector-surface", "subscription-agent-as-client", "streamable-http-mcp", "cloudflared-tunnel-exposure", "loopback-origin-only"],
+      "spend_semantics": ["subscription-entitlement", "perplexity-computer-credits", "zero-estate-provider-spend", "per-run-credit-cost-unmeasured"],
+      "observability": ["research-desk-delivery-ledger", "lanebus-delivery-drop", "request-row-status-stamp", "cloudflared-tunnel-log"],
+      "failure_classes": ["connector_registration_absent", "scheduled_task_absent", "connector_key_unminted", "tunnel_origin_unreachable", "delivered_content_untrusted_external", "computer_credit_exhaustion"],
+      "measurement_plan_refs": ["capability_surface_delta:perplexity_computer_desk", "ledger:research-desk-delivery-ledger"],
+      "remediation_refs": ["task:perplexity-research-desk-connector-20260916", "require:connector-registration-and-one-scheduled-task", "require:per-run-credit-cost-measurement"],
+      "surface_delta_signal": "capability_surface_delta:perplexity_computer_desk",
+      "observation_receipt_class": null,
+      "observed_at": "2026-09-16T03:20:00Z",
+      "stale_after": "30d",
+      "freshness_state": "asserted_only",
+      "evidence_refs": ["task:perplexity-research-desk-connector-20260916", "docs/architecture/research-desk-connector.md", "tests/scripts/test_hapax_research_desk_mcp.py::test_live_end_to_end_over_streamable_http"],
+      "blocked_reasons": ["connector_registration_pending", "scheduled_task_absent", "per_run_credit_cost_unmeasured"]
     }
   ],
   "routes": [

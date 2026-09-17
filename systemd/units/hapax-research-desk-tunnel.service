@@ -1,0 +1,50 @@
+[Unit]
+Description=Hapax research desk — cloudflared tunnel publishing the desk at desk.hapaxrnd.com
+Documentation=file:///home/hapax/.cache/hapax/source-activation/worktree/docs/architecture/research-desk-connector.md
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/docs/architecture/research-desk-connector.md
+# The tunnel exists only to publish the desk. It never outlives it, and it never
+# starts without it: a live public hostname with no origin behind it is a 502 the
+# connector would learn as a dead server.
+#
+# BindsTo=, not Requires=. Requires= propagates a stop only when the origin is
+# stopped EXPLICITLY; if hapax-research-desk-mcp.service crashes and exhausts
+# Restart=on-failure, a Requires= tunnel keeps running and desk.hapaxrnd.com answers
+# 502 — exactly the state the paragraph above says must not exist. BindsTo= takes the
+# tunnel down on an unexpected origin exit too. (Review finding, 2026-09-16.)
+After=network-online.target hapax-secrets.service hapax-research-desk-mcp.service
+Wants=network-online.target
+BindsTo=hapax-research-desk-mcp.service
+# Operator/coordinator-owned input: the named tunnel's ingress config (tunnel id,
+# credentials-file, desk.hapaxrnd.com -> http://127.0.0.1:8790). Until it exists the
+# unit stays INERT rather than failed — the tunnel, its DNS record and its
+# credentials are the coordinator's acts, not this repo's.
+# Template: docs/architecture/research-desk-connector.md.
+ConditionPathExists=%h/.cloudflared/research-desk.yml
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=simple
+# The tunnel credentials never live on disk outside the runtime directory: systemd
+# creates it 0700 and removes it on stop, and the value goes straight from the
+# FileStore into the file — never onto argv, never into the journal.
+RuntimeDirectory=cloudflared
+RuntimeDirectoryMode=0700
+ExecStartPre=/usr/bin/bash -c 'umask 0077; %h/.local/bin/hapax-secret cloudflared-research-desk-tunnel-credentials > "${RUNTIME_DIRECTORY}/research-desk.json"'
+ExecStart=%h/.local/bin/cloudflared --no-autoupdate --config %h/.cloudflared/research-desk.yml tunnel run
+Environment=HOME=%h
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Restart=on-failure
+RestartSec=15s
+MemoryMax=256M
+CPUQuota=15%
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hapax-research-desk-tunnel
+
+[Install]
+WantedBy=default.target

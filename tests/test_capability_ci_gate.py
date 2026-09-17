@@ -151,7 +151,7 @@ class CapabilityCIGateTest(unittest.TestCase):
         baseline = CapabilityInventoryBaselineV2.model_validate(payload)
 
         self.assertEqual(baseline.schema_version, 2)
-        self.assertEqual(baseline.count, 191)
+        self.assertEqual(baseline.count, 192)
         evaluator = baseline.records["local_compute.agentic_trust_evaluator_surface"]
         self.assertEqual(evaluator.inventory_disposition.value, "evidence_only_non_supply")
 

@@ -5132,3 +5132,29 @@ from agents.deliberative_council.models import (
 
 _PhaseOneResult._populate_dossier_sections
 _CouncilVerdict._populate_dossier_sections
+
+
+# DETECTOR BLIND SPOT, not dead code — the second kind named above. Every production caller of
+# these three lives in `scripts/hapax-research-desk-mcp`, one of the extensionless Python files
+# in scripts/ that vulture never parses:
+#   list_open_requests -> the `list_open_research_requests` MCP tool
+#   deliver_result     -> the `deliver_result` MCP tool
+#   read_records       -> `--check`, which reports how many calls the desk has served, and the
+#                         per-run credit-cost measurement the registry shape names as its
+#                         measurement plan (`perplexity.computer.desk`).
+# All three are additionally exercised end-to-end over real HTTP by
+# tests/scripts/test_hapax_research_desk_mcp.py::test_live_end_to_end_over_streamable_http.
+#
+# Tracked under the same row as the other entries of this kind:
+# `unused-function-gate-cannot-see-149-python-scripts-20260820`.
+from shared.research_desk import deliver_result as _research_desk_deliver_result  # noqa: E402
+from shared.research_desk import (  # noqa: E402
+    list_open_requests as _research_desk_list_open_requests,
+)
+from shared.research_desk_ledger import read_records as _research_desk_read_records  # noqa: E402
+
+_ = (
+    _research_desk_deliver_result,
+    _research_desk_list_open_requests,
+    _research_desk_read_records,
+)
