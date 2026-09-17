@@ -247,7 +247,7 @@ def test_observe_success_rejects_unsafe_evidence_refs(
                 "--model",
                 "glm-5",
             ),
-            "--model must be glm-5.2",
+            "--model must be one of",
         ),
         (
             (
@@ -258,7 +258,7 @@ def test_observe_success_rejects_unsafe_evidence_refs(
                 "--model",
                 "glm-5.2[1m]",
             ),
-            "--model must be glm-5.2",
+            "--model must be one of",
         ),
     ],
 )
