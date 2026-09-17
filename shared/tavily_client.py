@@ -708,7 +708,7 @@ class TavilyClient:
     def usage(self, *, project_id: str | None = None) -> TavilyUsageResponse:
         """Return Tavily's account/key usage view without writing local ledger rows."""
         if not self.api_key:
-            raise TavilyConfigError("TAVILY_API_KEY is not set and no pass entry was found")
+            raise TavilyConfigError("TAVILY_API_KEY is not set and no FileStore secret was found")
         try:
             response = self.http_client.get(
                 f"{self.base_url}/usage",
@@ -752,7 +752,7 @@ class TavilyClient:
         cacheable: bool = True,
     ) -> tuple[dict[str, Any], TavilyUsage]:
         if not self.api_key:
-            raise TavilyConfigError("TAVILY_API_KEY is not set and no pass entry was found")
+            raise TavilyConfigError("TAVILY_API_KEY is not set and no FileStore secret was found")
         self._configured_lane_cap(lane)
 
         project = project_id or f"hapax-{lane}"

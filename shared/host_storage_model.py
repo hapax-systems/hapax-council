@@ -127,7 +127,7 @@ class NetworkFabricRecord(RegistryRecord):
 
 
 class SecretCustodyPointerRecord(RegistryRecord):
-    """Secret custody pointers only. Values remain in pass/hapax-secrets."""
+    """Secret custody pointers only. Values remain in the FileStore/hapax-secrets."""
 
     secret_id: str
     pass_path: str

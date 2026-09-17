@@ -221,7 +221,7 @@ def _tavily_search(
             )
         )
     except TavilyConfigError:
-        log.warning("TAVILY_API_KEY not set and no pass entry found — skipping web search")
+        log.warning("TAVILY_API_KEY not set and no FileStore secret found — skipping web search")
         return []
     except (TavilyBudgetExceeded, TavilyPolicyViolation, TavilyRequestError) as e:
         query_hash = hashlib.sha256(query.encode()).hexdigest()

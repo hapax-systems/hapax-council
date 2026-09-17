@@ -543,7 +543,7 @@ def run_auth() -> None:
         print(f"Authenticated as: {title}")
     else:
         print("Authenticated (no channel found)")
-    print("Token saved to pass store.")
+    print("Token saved to the FileStore.")
 
 
 def run_full_sync() -> None:
