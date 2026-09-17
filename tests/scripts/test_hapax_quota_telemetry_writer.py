@@ -2674,6 +2674,305 @@ def test_receipt_surface_maintaining_successor_survives_backup_winning_selection
     assert summary["receipt_surface_replaced_platforms"] == ["codex"]
 
 
+def test_selected_receipt_coverage_ignores_shadowed_longer_ttl() -> None:
+    """C1 (#4665, round 18), helper: unioning readable lifetimes is not
+    coverage. The older backup expires T+780; routing selects the canonical
+    (newer observed) until the outer envelope dies, so coverage ends at the
+    canonical quota death T+20."""
+    namespace = runpy.run_path(str(SCRIPT))
+    evidence = namespace["_ReceiptSurfaceEvidence"]
+    t0 = datetime(2026, 6, 10, 0, 0, 0, tzinfo=UTC)
+    canonical = evidence(
+        observed_at=t0 - timedelta(seconds=60),
+        expiry=t0 + timedelta(seconds=20),
+        routable_from=t0 - timedelta(seconds=60),
+        path=Path("codex.json"),
+        eligible_until=t0 - timedelta(seconds=60) + timedelta(hours=24),
+    )
+    backup = evidence(
+        observed_at=t0 - timedelta(seconds=120),
+        expiry=t0 + timedelta(seconds=780),
+        routable_from=t0 - timedelta(seconds=120),
+        path=Path("z-codex-backup.json"),
+        eligible_until=t0 - timedelta(seconds=120) + timedelta(hours=24),
+    )
+    intervals = namespace["_selected_receipt_coverage_intervals"]([canonical, backup])
+    assert intervals == [(canonical.routable_from, canonical.expiry)]
+    hole = namespace["_first_uncovered_run_s"](
+        intervals, t0 + timedelta(seconds=20), t0 + timedelta(seconds=60)
+    )
+    assert hole == 40.0
+
+
+def test_selected_receipt_coverage_follows_selection_transitions() -> None:
+    """C1 (#4665, round 18), helper: when a newer backup becomes eligible,
+    selection moves onto it and its quota window concatenates. Canonical
+    dies T+20; backup admitted T+40 — a 20s hole, not a 40s one."""
+    namespace = runpy.run_path(str(SCRIPT))
+    evidence = namespace["_ReceiptSurfaceEvidence"]
+    t0 = datetime(2026, 6, 10, 0, 0, 0, tzinfo=UTC)
+    canonical = evidence(
+        observed_at=t0 - timedelta(seconds=60),
+        expiry=t0 + timedelta(seconds=20),
+        routable_from=t0 - timedelta(seconds=60),
+        path=Path("codex.json"),
+        eligible_until=t0 - timedelta(seconds=60) + timedelta(hours=24),
+    )
+    backup = evidence(
+        observed_at=t0 + timedelta(seconds=100),
+        expiry=t0 + timedelta(seconds=1000),
+        routable_from=t0 + timedelta(seconds=40),
+        path=Path("z-codex-backup.json"),
+        eligible_until=t0 + timedelta(seconds=100) + timedelta(hours=24),
+    )
+    intervals = namespace["_selected_receipt_coverage_intervals"]([canonical, backup])
+    assert intervals == [
+        (canonical.routable_from, canonical.expiry),
+        (backup.routable_from, backup.expiry),
+    ]
+    hole = namespace["_first_uncovered_run_s"](
+        intervals, t0 + timedelta(seconds=20), t0 + timedelta(seconds=60)
+    )
+    assert hole == 20.0
+
+
+def test_interval_helpers_boundary_branches() -> None:
+    """D1 (#4665, round 18): direct pins for merge / covering-end / hole
+    helpers — empty, zero-width, adjacent merge, overlap, and the no-hole
+    and start-of-window hole branches."""
+    namespace = runpy.run_path(str(SCRIPT))
+    t0 = datetime(2026, 6, 10, 0, 0, 0, tzinfo=UTC)
+    merge = namespace["_merge_half_open_intervals"]
+    covering = namespace["_interval_covering_end"]
+    uncovered = namespace["_first_uncovered_run_s"]
+    assert merge([]) == []
+    assert merge([(t0, t0)]) == []
+    assert merge([(t0 + timedelta(seconds=5), t0)]) == []
+    a = (t0, t0 + timedelta(seconds=10))
+    b = (t0 + timedelta(seconds=10), t0 + timedelta(seconds=20))
+    c = (t0 + timedelta(seconds=15), t0 + timedelta(seconds=25))
+    assert merge([a, b]) == [(t0, t0 + timedelta(seconds=20))]
+    assert merge([a, c]) == [(t0, t0 + timedelta(seconds=10)), c]
+    assert covering([a], t0 + timedelta(seconds=5)) == t0 + timedelta(seconds=10)
+    assert covering([a], t0 + timedelta(seconds=10)) is None
+    assert covering([a], t0 - timedelta(seconds=1)) is None
+    assert uncovered([a, b], t0, t0 + timedelta(seconds=20)) is None
+    assert uncovered([b], t0, t0 + timedelta(seconds=20)) == 10.0
+    assert uncovered([a], t0 + timedelta(seconds=20), t0 + timedelta(seconds=10)) is None
+
+
+def test_receipt_routable_from_near_future_mtime_is_not_backdated(tmp_path: Path) -> None:
+    """C2 (#4665, round 18), unit: a landing 0.7s past a truncated scan clock
+    keeps the file stamp. Falling back to observed_at - 60s would manufacture
+    T+0 coverage across a real T+20..T+60.7 lapse."""
+    namespace = runpy.run_path(str(SCRIPT))
+    path = tmp_path / "codex.json"
+    path.write_text("{}", encoding="utf-8")
+    observed = datetime(2026, 6, 10, 0, 1, 0, tzinfo=UTC)
+    landing = observed + timedelta(microseconds=700_000)
+    checked_now = observed  # truncated T+60.0 against landing T+60.7
+    _utime_platform_receipt(tmp_path, "codex", "2026-06-10T00:01:00.700000Z")
+    routable = namespace["_receipt_routable_from"](observed, path, checked_now)
+    assert routable == landing
+    assert routable != observed - timedelta(minutes=1)
+
+
+def test_receipt_routable_from_far_future_mtime_uses_admitted_at(tmp_path: Path) -> None:
+    """C2 (#4665, round 18), unit: a months-ahead mtime is fixture residue,
+    not a near-future truncation, so routable-from stays the admissibility
+    bound — the synthetic-fixture shape the round-17 skew guard exists for."""
+    namespace = runpy.run_path(str(SCRIPT))
+    path = tmp_path / "codex.json"
+    path.write_text("{}", encoding="utf-8")
+    observed = datetime(2026, 6, 10, 0, 0, 0, tzinfo=UTC)
+    _utime_platform_receipt(tmp_path, "codex", "2026-09-10T00:00:00Z")
+    routable = namespace["_receipt_routable_from"](observed, path, observed)
+    assert routable == observed - timedelta(minutes=1)
+
+
+def test_receipt_surface_shadowed_older_backup_cannot_mask_a_quota_lapse(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """C1 (#4665, round 18), end-to-end: canonical observed T-60, quota TTL
+    80s, expires T+20; an older backup observed T-120, quota TTL 900s,
+    expires T+780; both outer envelopes last 24h. Routing keeps selecting
+    the canonical until the replacement lands T+60, leaving a 40s quota
+    lapse. Unioning readable lifetimes credited the backup (gap=-720 rc=0);
+    constructing coverage from the selected receipt reports rc=4 gap=40."""
+    t0 = datetime(2026, 6, 10, 0, 0, 0, tzinfo=UTC)
+
+    class _ScriptedClock(datetime):
+        current = t0
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current if tz is not None else cls.current.replace(tzinfo=None)
+
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    monkeypatch.setitem(main_globals, "datetime", _ScriptedClock)
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW, stale_after_seconds=3600)
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:59:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="80s",
+    )
+    _utime_platform_receipt(platform_receipts, "codex", "2026-06-09T23:59:00Z")
+    _backup_codex_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:58:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="900s",
+    )
+    states, _ = namespace["_scan_receipt_surface"](platform_receipts, now=t0)
+    assert states["codex"][0] == t0 - timedelta(seconds=60)
+    assert states["codex"][1] == t0 + timedelta(seconds=20)
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def publishing_refresh(*, timeout, receipt_dir):
+        _ScriptedClock.current = t0 + timedelta(seconds=60)
+        _codex_platform_receipt(
+            platform_receipts,
+            observed_at="2026-06-10T00:01:00Z",
+            outer_stale_after="24h",
+            quota_stale_after="15m",
+        )
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:01:00Z")
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", publishing_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 4
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_continuity_degraded"] is True
+    assert summary["receipt_continuity_gap_s"] == 40.0
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-10T00:00:20Z"
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+    assert summary["receipt_surface_publication_instants"] == {"codex": "2026-06-10T00:01:00Z"}
+
+
+def test_receipt_surface_fractional_mtime_does_not_backdate_publication(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """C2 (#4665, round 18), end-to-end WITHOUT --now: predecessor expires
+    T+20, successor observed T+60 lands T+60.7, final scan T+60.8. Truncating
+    the successor scan clock to whole seconds made landing > checked_now and
+    the skew guard replaced it with observed_at - 60s, reporting publication
+    T, gap=-20 rc=0 across the 40.7s lapse. Keeping precision reports rc=4
+    and gap=40.7."""
+    t0 = datetime(2026, 6, 10, 0, 0, 0, tzinfo=UTC)
+
+    class _ScriptedClock(datetime):
+        current = t0
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current if tz is not None else cls.current.replace(tzinfo=None)
+
+    namespace = runpy.run_path(str(SCRIPT))
+    main_globals = namespace["main"].__globals__
+    monkeypatch.setitem(main_globals, "datetime", _ScriptedClock)
+    relay = tmp_path / "relay-receipts"
+    platform_receipts = tmp_path / "platform-receipts"
+    relay.mkdir()
+    platform_receipts.mkdir()
+    _agy_admission(relay, observed_at=NOW, stale_after_seconds=3600)
+    _codex_platform_receipt(
+        platform_receipts,
+        observed_at="2026-06-09T23:59:00Z",
+        outer_stale_after="24h",
+        quota_stale_after="80s",
+    )
+    _utime_platform_receipt(platform_receipts, "codex", "2026-06-09T23:59:00Z")
+    stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+
+    def publishing_refresh(*, timeout, receipt_dir):
+        _codex_platform_receipt(
+            platform_receipts,
+            observed_at="2026-06-10T00:01:00Z",
+            outer_stale_after="24h",
+            quota_stale_after="15m",
+        )
+        _utime_platform_receipt(platform_receipts, "codex", "2026-06-10T00:01:00.700000Z")
+        _ScriptedClock.current = t0 + timedelta(seconds=60, microseconds=800_000)
+        return True
+
+    monkeypatch.setitem(
+        main_globals,
+        "pull_forward_due_producers",
+        lambda **kw: {
+            "invoked": True,
+            "forced": False,
+            "ran": [],
+            "skipped": [],
+            "ok": True,
+        },
+    )
+    monkeypatch.setitem(main_globals, "refresh_capability_receipts", publishing_refresh)
+    monkeypatch.setitem(main_globals, "monotonic_clock", lambda: 0.0)
+
+    rc = namespace["main"](
+        [
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(relay),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(stub),
+            "--json",
+        ]
+    )
+
+    assert rc == 4
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["receipt_continuity_degraded"] is True
+    assert summary["receipt_continuity_gap_s"] == 40.7
+    assert summary["receipt_surface_predecessor_expiry"] == "2026-06-10T00:00:20Z"
+    assert summary["receipt_surface_replaced_platforms"] == ["codex"]
+    assert summary["receipt_surface_publication_instants"] == {
+        "codex": "2026-06-10T00:01:00.700000Z"
+    }
+
+
 def test_receipt_surface_scan_drops_a_platform_whose_every_receipt_is_future_dated(
     tmp_path: Path,
 ) -> None:
@@ -4262,9 +4561,16 @@ def _utime_platform_receipt(receipt_dir: Path, platform: str, iso: str) -> None:
     The round-11 witness reads each replaced platform's landing instant from
     its own receipt file mtime (codex-1 M1), so tests place successors onto
     the frozen timeline instead of inheriting the real wall clock.
+    Nanosecond stamps keep fractional ISO times exact (codex-1 C2, #4665
+    round 18).
     """
-    stamp = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
-    os.utime(receipt_dir / f"{platform}.json", (stamp, stamp))
+    dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    delta = dt - epoch
+    ns = (delta.days * 86400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1_000
+    os.utime(receipt_dir / f"{platform}.json", ns=(ns, ns))
 
 
 def _glmcp_admission(

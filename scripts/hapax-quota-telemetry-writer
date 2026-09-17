@@ -168,12 +168,12 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -2869,6 +2869,93 @@ def _route_quota_surface_expiry(
 FUTURE_DATING_TOLERANCE = timedelta(minutes=1)
 
 
+class _ReceiptSurfaceEvidence(NamedTuple):
+    """One parseable receipt's quota interval plus routing's outer eligibility.
+
+    ``expiry`` is the quota surface death (receipt_surface_effective_expiry).
+    ``eligible_until`` is observed_at + outer stale_after — the closed bound
+    receipt_is_fresh uses. Routing selects among currently eligible receipts
+    by greatest observed_at; a shadowed sibling's longer quota TTL is not
+    coverage while it is not selected (codex-1 critical C1, #4665 round 18).
+    """
+
+    observed_at: datetime
+    expiry: datetime
+    routable_from: datetime
+    path: Path
+    eligible_until: datetime
+
+
+def _mtime_utc(path: Path) -> datetime:
+    """File mtime as UTC datetime, keeping microsecond precision.
+
+    ``st_mtime`` is a float and can drop sub-seconds; ``st_mtime_ns`` is the
+    stamp the scan compares against the scan clock (codex-1 critical C2,
+    #4665 round 18).
+    """
+    ns = path.stat().st_mtime_ns
+    return datetime(1970, 1, 1, tzinfo=UTC) + timedelta(microseconds=ns // 1_000)
+
+
+def _receipt_routable_from(
+    observed_at: datetime,
+    path: Path,
+    checked_now: datetime,
+) -> datetime:
+    """Instant this receipt file starts vouching at ``checked_now``.
+
+    Later of the file mtime and observed_at minus FUTURE_DATING_TOLERANCE.
+    An mtime beyond the scan clock is not a vouchable landing: far-future
+    stamps (fixture residue, severe skew) fall back to the admissibility
+    bound, but a landing only slightly past the scan — same-second
+    truncation, NFS sub-second skew — keeps the file's own mtime so dropping
+    it cannot manufacture earlier coverage (codex-1 critical C2, #4665
+    round 18: a T+60.7 landing against a truncated T+60 scan became T+0).
+    """
+    landing = _mtime_utc(path)
+    admitted_at = observed_at - FUTURE_DATING_TOLERANCE
+    if landing <= checked_now:
+        return max(landing, admitted_at)
+    if landing - checked_now <= FUTURE_DATING_TOLERANCE:
+        return max(landing, admitted_at)
+    return admitted_at
+
+
+def _receipt_is_fresh_at(
+    observed_at: datetime,
+    eligible_until: datetime,
+    instant: datetime,
+) -> bool:
+    """receipt_is_fresh inequalities without reloading the receipt."""
+    if observed_at > instant + FUTURE_DATING_TOLERANCE:
+        return False
+    return instant <= eligible_until
+
+
+def _routing_selected_receipt(
+    entries: Sequence[_ReceiptSurfaceEvidence],
+    instant: datetime,
+) -> _ReceiptSurfaceEvidence | None:
+    """Newest receipt routing would consume at ``instant``.
+
+    Mirrors load_platform_capability_receipts: receipt_is_fresh, then
+    greatest observed_at, ties keep the first file in name order.
+    """
+    eligible = [
+        entry
+        for entry in entries
+        if _receipt_is_fresh_at(entry.observed_at, entry.eligible_until, instant)
+    ]
+    if not eligible:
+        return None
+    eligible = sorted(eligible, key=lambda entry: entry.path.name)
+    selected = eligible[0]
+    for candidate in eligible[1:]:
+        if candidate.observed_at > selected.observed_at:
+            selected = candidate
+    return selected
+
+
 def _scan_receipt_surface_detailed(
     receipt_dir: Path,
     route_pools: dict[str, tuple[CapacityPool, QuotaSource]] | None = None,
@@ -2876,7 +2963,7 @@ def _scan_receipt_surface_detailed(
     now: datetime | None = None,
 ) -> tuple[
     dict[str, tuple[datetime, datetime, datetime]],
-    dict[str, list[tuple[datetime, datetime, datetime, Path]]],
+    dict[str, list[_ReceiptSurfaceEvidence]],
     set[Path],
     list[str],
 ]:
@@ -2887,13 +2974,13 @@ def _scan_receipt_surface_detailed(
     Returns ``(states, readable_by_platform, admissible_paths,
     no_named_route)``: `states` is the selected per-platform
     ``(observed_at, effective expiry, routable-from instant)`` exactly as
-    routing's loader would consume; `readable_by_platform` carries
-    ``(observed_at, effective expiry, routable-from, path)`` for EVERY
-    parseable receipt — predecessor evidence the continuity predicate
-    (round 17) must see even when selection shadows it this scan; and
-    `admissible_paths` are the paths in the selected pool (eligible, else
-    the non-future-dated fallback), the only final-scan files whose
-    intervals may witness coverage.
+    routing's loader would consume; `readable_by_platform` carries every
+    parseable receipt — the continuity predicate reconstructs routing's
+    selected receipt at each instant from this set, including selection
+    transitions, and must not union shadowed lifetimes as coverage
+    (codex-1 critical C1, #4665 round 18); and `admissible_paths` are the
+    paths in the selected pool (eligible, else the non-future-dated
+    fallback).
 
     When one platform has several receipt files in the directory, the SELECTED
     receipt is the one routing's loader would consume — the greatest
@@ -2931,13 +3018,11 @@ def _scan_receipt_surface_detailed(
     the post-refresh scan once it stopped being future-dated, and its old
     mtime fabricated gap=-140 rc=0 across a real T+80..T+140 hole). One skew
     guard: production guarantees observed_at <= mtime <= scan clock, so an
-    mtime BEYOND the scan clock is fixture residue or clock skew, never a
-    landing instant this scan can vouch for — the mtime term is dropped
-    entirely there and routable-from falls back to observed_at minus the
-    tolerance (codex-1 critical C1, #4665 round 17: synthetic fixtures carry
-    real wall mtimes against pinned June clocks, and charging them let every
-    fixture interval start in September, far past any successor the pinned
-    tests advance to).
+    mtime BEYOND the scan clock is not a landing instant this scan can
+    vouch for. Far-future stamps (fixture residue) fall back to
+    observed_at minus the tolerance; a landing only slightly past the scan
+    keeps the file stamp so dropping it cannot manufacture earlier
+    coverage (codex-1 critical C2, #4665 round 18).
 
     The second element names platforms whose receipt binds NO registry route
     (empty routes, or every named route absent from the registry): their
@@ -2949,7 +3034,7 @@ def _scan_receipt_surface_detailed(
     if route_pools is None:
         route_pools = static_registry_route_pools()
     states: dict[str, tuple[datetime, datetime, datetime]] = {}
-    readable_by_platform: dict[str, list[tuple[datetime, datetime, datetime, Path]]] = {}
+    readable_by_platform: dict[str, list[_ReceiptSurfaceEvidence]] = {}
     admissible_paths: set[Path] = set()
     no_named_route: set[str] = set()
     if not receipt_dir.is_dir():
@@ -2966,15 +3051,6 @@ def _scan_receipt_surface_detailed(
     # The future-dating window mirrors receipt_is_fresh's own rejection clause
     # (observed more than one minute ahead of the clock is not evidence).
     checked_now = ensure_utc(now or datetime.now(UTC))
-
-    def _routable_from(observed_at: datetime, path: Path) -> datetime:
-        landing = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
-        admitted_at = observed_at - FUTURE_DATING_TOLERANCE
-        if landing > checked_now:
-            # Skew guard (see docstring): an mtime beyond the scan clock is
-            # never a landing instant this scan can vouch for.
-            return admitted_at
-        return max(landing, admitted_at)
 
     for platform, platform_candidates in candidates.items():
         # Routing's temporal eligibility first; the expired fallback below
@@ -2998,16 +3074,19 @@ def _scan_receipt_surface_detailed(
             if candidate[0] <= checked_now + FUTURE_DATING_TOLERANCE
         ]
         pool = eligible or admissible_fallback
-        # Full readable evidence set first: EVERY parseable receipt keeps an
-        # interval, selected or not, because the continuity predicate (round
-        # 17) charges holes against predecessor-era coverage that selection
-        # may legitimately shadow this scan.
+        # Full readable evidence set: EVERY parseable receipt keeps an
+        # interval, selected or not, because the continuity predicate
+        # reconstructs routing's selected receipt at each instant — a
+        # currently-shadowed sibling may become selected later, but its
+        # lifetime is not coverage while it is not selected (codex-1
+        # critical C1, #4665 round 18).
         readable_by_platform[platform] = [
-            (
+            _ReceiptSurfaceEvidence(
                 observed_at,
                 receipt_surface_effective_expiry(receipt, route_pools),
-                _routable_from(observed_at, path),
+                _receipt_routable_from(observed_at, path, checked_now),
                 path,
+                observed_at + parse_duration_spec(receipt.stale_after),
             )
             for observed_at, path, receipt in platform_candidates
         ]
@@ -3038,7 +3117,7 @@ def _scan_receipt_surface_detailed(
         states[platform] = (
             observed_at,
             receipt_surface_effective_expiry(receipt, route_pools),
-            _routable_from(observed_at, path),
+            _receipt_routable_from(observed_at, path, checked_now),
         )
     return states, readable_by_platform, admissible_paths, sorted(no_named_route)
 
@@ -3103,22 +3182,58 @@ def _first_uncovered_run_s(
     return (end - cursor).total_seconds()
 
 
+def _selected_receipt_coverage_intervals(
+    entries: Sequence[_ReceiptSurfaceEvidence],
+) -> list[tuple[datetime, datetime]]:
+    """Half-open [start, end) windows where routing's selected quota is live.
+
+    At each instant the newest eligible receipt is selected, matching
+    load_platform_capability_receipts. Coverage exists only while THAT
+    receipt's quota surface is live. Selection transitions that keep a live
+    quota concatenate; a shadowed sibling's longer TTL never contributes
+    while it is not selected (codex-1 critical C1, #4665 round 18).
+    """
+    if not entries:
+        return []
+    events: set[datetime] = set()
+    for entry in entries:
+        events.add(entry.observed_at - FUTURE_DATING_TOLERANCE)
+        events.add(entry.eligible_until)
+        events.add(entry.routable_from)
+        events.add(entry.expiry)
+    ordered = sorted(events)
+    coverage: list[tuple[datetime, datetime]] = []
+    for start, end in zip(ordered, ordered[1:], strict=False):
+        if end <= start:
+            continue
+        mid = start + (end - start) / 2
+        selected = _routing_selected_receipt(entries, mid)
+        if selected is None:
+            continue
+        if selected.routable_from <= mid < selected.expiry:
+            slice_start = max(start, selected.routable_from)
+            slice_end = min(end, selected.expiry)
+            if slice_start < slice_end:
+                coverage.append((slice_start, slice_end))
+    return _merge_half_open_intervals(coverage)
+
+
 def _receipt_surface_continuity(
     tick_start: datetime,
     tick_scan: tuple[
         dict[str, tuple[datetime, datetime, datetime]],
-        dict[str, list[tuple[datetime, datetime, datetime, Path]]],
+        dict[str, list[_ReceiptSurfaceEvidence]],
         set[Path],
         list[str],
     ],
     final_scan: tuple[
         dict[str, tuple[datetime, datetime, datetime]],
-        dict[str, list[tuple[datetime, datetime, datetime, Path]]],
+        dict[str, list[_ReceiptSurfaceEvidence]],
         set[Path],
         list[str],
     ],
 ) -> dict[str, tuple[float, datetime | None, datetime | None, datetime]]:
-    """Round-17 receipt-surface continuity predicate.
+    """Receipt-surface continuity: routing's selected receipt over time.
 
     For every platform the final scan selected whose observed_at MOVED since
     the tick-start scan, charge the coverage hole (if any) between the
@@ -3129,22 +3244,23 @@ def _receipt_surface_continuity(
     the predecessor endpoint the gap is charged against (None only when the
     platform had no tick evidence at all — a cold surface asserting nothing).
 
-    The predecessor evidence is the TICK-START readable set (predecessor-era
-    files only, judged with the T0 clock), not a post-ledger rescan: the
-    ledger pass and the refresh each run for real seconds, and a mid-pass
-    rescan lets successor evidence flip eligibility BEFORE the refresh's own
-    landing, masking exactly the mid-pass holes this predicate exists to
-    charge (codex-1 critical C1, #4665 round 17: a 50s ledger pass let a
-    T+100 backup stop being future-dated, the post-ledger scan selected it,
-    and the tick read rc=0 across a real 20s hole between the canonical's
-    expiry and the backup's own coverage start). The successor landing is the
-    minimum routable-from over MOVED paths — the refresh rewrites receipt
-    files, so a path whose observed_at differs between the two scans is that
-    platform's replacement landing, and the earliest one binds (a later
-    landing would charge the platform for the refresh's tail, round 11 M1).
+    Coverage is the selected-receipt timeline of the TICK-START readable
+    set, not the union of every readable lifetime: routing selects only the
+    newest eligible receipt, so a shadowed older backup with a longer TTL
+    cannot establish continuity while the canonical receipt is still
+    selected and already lapsed (codex-1 critical C1, #4665 round 18).
+    Selection transitions ARE coverage: when the selected receipt changes
+    and the newly selected quota surface is live, the windows concatenate.
+    The predecessor evidence is the tick-start snapshot (T0 clock,
+    pre-pull), not a post-ledger rescan (round 17 C1). The successor
+    landing is the minimum routable-from over MOVED paths — the refresh
+    rewrites receipt files, so a path whose observed_at differs between
+    the two scans is that platform's replacement landing, and the earliest
+    one binds (a later landing would charge the platform for the refresh's
+    tail, round 11 M1).
     """
     tick_states, tick_readable, _tick_admissible, _tick_no_named = tick_scan
-    final_states, final_readable, final_admissible, _final_no_named = final_scan
+    final_states, final_readable, _final_admissible, _final_no_named = final_scan
     results: dict[str, tuple[float, datetime | None, datetime | None, datetime]] = {}
     for platform, (final_obs, _final_expiry, final_routable) in final_states.items():
         tick_entries = tick_readable.get(platform, [])
@@ -3160,56 +3276,53 @@ def _receipt_surface_continuity(
             continue
         else:
             tick_obs = None
-        tick_obs_by_path = {path: obs for obs, _expiry, _routable, path in tick_entries}
+        tick_obs_by_path = {entry.path: entry.observed_at for entry in tick_entries}
         moved_landings = [
-            routable
-            for obs, _expiry, routable, path in final_readable.get(platform, [])
-            if path in tick_obs_by_path and tick_obs_by_path[path] != obs
+            entry.routable_from
+            for entry in final_readable.get(platform, [])
+            if entry.path in tick_obs_by_path and tick_obs_by_path[entry.path] != entry.observed_at
         ]
         successor_routable = min(moved_landings) if moved_landings else final_routable
-        raw_tick = [(routable, expiry) for _obs, expiry, routable, _path in tick_entries]
-        merged_tick = _merge_half_open_intervals(raw_tick)
-        anchor_end = next((end for start, end in merged_tick if start <= tick_start < end), None)
+        selected_tick = _selected_receipt_coverage_intervals(tick_entries)
+        anchor_end = next(
+            (end for start, end in selected_tick if start <= tick_start < end),
+            None,
+        )
         gap_s: float
         witness_end: datetime | None
         if anchor_end is not None:
             # Sign convention: gap is successor_routable minus the covering end
             # (negative = margin); a HOLE is its positive uncovered run length,
             # which can be shorter than successor minus anchor when later
-            # evidence covers part of the window.
+            # selected evidence covers part of the window.
             if successor_routable <= anchor_end:
                 # Replacement landed inside the coverage in force at tick
                 # begin: pure margin, never a hole.
                 witness_end = anchor_end
                 gap_s = (successor_routable - anchor_end).total_seconds()
             else:
-                final_admissible_intervals = [
-                    (routable, expiry)
-                    for _obs, expiry, routable, path in final_readable.get(platform, [])
-                    if path in final_admissible
-                ]
-                coverage = list(raw_tick) + final_admissible_intervals
-                hole = _first_uncovered_run_s(coverage, anchor_end, successor_routable)
+                hole = _first_uncovered_run_s(selected_tick, anchor_end, successor_routable)
                 if hole is not None:
                     witness_end = anchor_end
                     gap_s = hole
                 else:
                     witness_end = _interval_covering_end(
-                        coverage, successor_routable - timedelta(microseconds=1)
+                        selected_tick, successor_routable - timedelta(microseconds=1)
                     )
                     if witness_end is None:
                         witness_end = anchor_end
                     gap_s = (successor_routable - witness_end).total_seconds()
         else:
-            # No coverage in force at tick begin: charge against the raw
-            # predecessor evidence nearest (and no later than) the successor
-            # landing — a covering interval means pure margin, an earlier end
-            # means a hole, and neither means the platform is fresh.
+            # No selected coverage in force at tick begin: charge against
+            # the selected predecessor evidence nearest (and no later than)
+            # the successor landing — a covering interval means pure margin,
+            # an earlier end means a hole, and neither means the platform
+            # is fresh.
             witness_end = _interval_covering_end(
-                raw_tick, successor_routable - timedelta(microseconds=1)
+                selected_tick, successor_routable - timedelta(microseconds=1)
             )
             if witness_end is None:
-                prior_ends = [end for _start, end in raw_tick if end <= successor_routable]
+                prior_ends = [end for _start, end in selected_tick if end <= successor_routable]
                 witness_end = max(prior_ends) if prior_ends else None
             gap_s = (
                 (successor_routable - witness_end).total_seconds()
@@ -3531,7 +3644,7 @@ def main(argv: list[str] | None = None) -> int:
         # stale backup selected, so the platform read as unreplaced and the
         # tick exited rc=0 across a real 60s hole). --now keeps the synthetic
         # clock fixed and the tests deterministic.
-        predecessor_scan_now = now if args.now else datetime.now(UTC).replace(microsecond=0)
+        predecessor_scan_now = now if args.now else datetime.now(UTC)
         (
             _predecessor_surface_states,
             receipt_surface_no_named_route,
@@ -3568,7 +3681,10 @@ def main(argv: list[str] | None = None) -> int:
             # #4665 rounds 11, 16, 17). Sampled AFTER the refresh: the
             # successor is judged with the clock routing samples once the
             # refresh has landed (codex-1 critical C2, #4665 round 15).
-            successor_scan_now = now if args.now else datetime.now(UTC).replace(microsecond=0)
+            # Keep sub-second precision: truncating to whole seconds made a
+            # same-second landing look future and backdated it 60s
+            # (codex-1 critical C2, #4665 round 18).
+            successor_scan_now = now if args.now else datetime.now(UTC)
             final_receipt_scan = _scan_receipt_surface_detailed(
                 args.platform_capability_receipt_dir, now=successor_scan_now
             )
