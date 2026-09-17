@@ -346,12 +346,26 @@ class TestDisconfirmationConsumerFailLoud:
         assert result["council_degraded"] is True
         assert "claim:1" in result["degraded_claims"]
 
-    def test_genuine_hung_with_real_scores_stays_contested(self) -> None:
-        # Real disagreement (HUNG WITH scores) is NOT a panel failure — it stays
-        # contested so genuine disagreement keeps its meaning.
-        result = self._apply(self._verdict(ConvergenceStatus.HUNG, {"a": 4, "b": 2}))
-        assert "claim:1" in result["contested_claims"]
-        assert "claim:1" not in result["degraded_claims"]
+    def test_genuine_hung_with_real_scores_is_insufficient(self) -> None:
+        """Previously pinned HUNG with real scores as contested and not degraded.
+
+        Genuine execution disagreement remains HUNG; the mode disposition is
+        insufficient evidence, so the segment degrades and cannot pass.
+        """
+        from agents.deliberative_council.modes.disconfirmation import (
+            DisconfirmationVerdict,
+            derive_verdict,
+        )
+
+        verdict = self._verdict(ConvergenceStatus.HUNG, {"a": 4, "b": 2})
+        assert derive_verdict(verdict) == DisconfirmationVerdict.INSUFFICIENT_EVIDENCE
+        result = self._apply(verdict)
+        assert result["contested_claims"] == []
+        assert result["survived_claims"] == []
+        assert result["refuted_claims"] == []
+        assert result["degraded_claims"] == ["claim:1"]
+        assert result["council_degraded"] is True
+        assert result["council_disconfirmation_passed"] is False
 
 
 class TestNarrativeCritiqueFailLoud:
