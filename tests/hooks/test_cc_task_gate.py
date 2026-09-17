@@ -380,6 +380,7 @@ class TestConnectorClassifierDeployedLayout:
         tool_name: str,
         tmp_path: Path,
         extra_env: dict | None = None,
+        tool_input: dict | None = None,
     ) -> subprocess.CompletedProcess:
         env = os.environ.copy()
         for key in _IDENTITY_ENV + _GATE_BYPASS_ENV:
@@ -393,7 +394,9 @@ class TestConnectorClassifierDeployedLayout:
             env.update(extra_env)
         return subprocess.run(
             ["bash", str(gate)],
-            input=json.dumps({"tool_name": tool_name, "tool_input": {}}),
+            input=json.dumps(
+                {"tool_name": tool_name, "tool_input": tool_input or {}}
+            ),
             capture_output=True,
             text=True,
             env=env,
@@ -471,6 +474,56 @@ class TestConnectorClassifierDeployedLayout:
         result = self._run_deployed(gate, "mcp__context7__query-docs", tmp_path)
         assert result.returncode == 2
         assert "connector classifier failed" in result.stderr
+
+    def test_deployed_stage_stamp_path_uses_fallback_root(self, tmp_path: Path) -> None:
+        # The FR-STAGE-S6-TRAP derive+stamp path imports shared.task_note_lock
+        # via the same repo-root resolution; a blank-stage, fully-authorized
+        # claimed task must get stamped (and the edit admitted) in the deployed
+        # layout. Pre-fix this failed closed with ModuleNotFoundError.
+        vault = (
+            tmp_path
+            / "Documents"
+            / "Personal"
+            / "20-projects"
+            / "hapax-cc-tasks"
+            / "active"
+        )
+        vault.mkdir(parents=True)
+        note = vault / "test-001-test-task.md"
+        note.write_text(
+            "---\n"
+            "type: cc-task\n"
+            "task_id: test-001\n"
+            'title: "Fixture"\n'
+            "status: claimed\n"
+            "assigned_to: alpha\n"
+            "priority: normal\n"
+            f"parent_spec: {tmp_path}/parent-spec.md\n"
+            "authority_case: CASE-TEST-001\n"
+            "implementation_authorized: true\n"
+            "source_mutation_authorized: true\n"
+            "docs_mutation_authorized: true\n"
+            "route_metadata_schema: 1\n"
+            "mutation_scope_refs:\n"
+            "  - /tmp/x\n"
+            "created_at: 2026-04-20T00:00:00Z\n"
+            "updated_at: 2026-04-20T00:00:00Z\n"
+            "---\n\n"
+            "# Fixture\n\n"
+            "## Session log\n\n"
+            "- 2026-04-20T00:00:00Z fixture\n"
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        gate = self._deploy(tmp_path)
+        result = self._run_deployed(
+            gate,
+            "Edit",
+            tmp_path,
+            extra_env={"HAPAX_COORD_REPO_ROOT": str(REPO_ROOT)},
+            tool_input={"file_path": "/tmp/x"},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "stage: S6_IMPLEMENTATION" in note.read_text()
 
 
 class TestCognitionCarveOut:
