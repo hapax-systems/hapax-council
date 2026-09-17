@@ -16,19 +16,90 @@ Tier 1 local coverage:
 
 Critical offsite safety baseline:
 
-- Timer: `hapax-backup-gdrive-critical.timer`
-- Service: `hapax-backup-gdrive-critical.service`
-- Script: `$HOME/projects/hapax-council/scripts/hapax-backup-gdrive-critical`
-- Restic repository: `rclone:gdrive:hapax-backups/restic-critical`
-- Cache: `/store/llm-data/restic-cache/gdrive-critical`
+- Timer: `hapax-backup-critical-offsite.timer`
+- Service: `hapax-backup-critical-offsite.service`
+- Script: `%h/.cache/hapax/source-activation/worktree/scripts/hapax-backup-critical-offsite`
+  (the governed activation worktree; the source is `scripts/hapax-backup-critical-offsite`)
+- Restic repository: `rclone:r2:hapax-restic-critical`
+- Cache: `/store/llm-data/restic-cache/critical-offsite`
 
-The GDrive critical lane is the bounded critical-artifact offsite baseline
-after the broad Backblaze B2 remote lane was retired by operator policy on
-2026-06-06. It backs up already-materialized Postgres PITR
-artifacts, latest Qdrant snapshot files, and selected vault evidence/SOP files.
-It does not create new Qdrant snapshots, dump databases into `/tmp`, upload live
-MinIO backing stores, or run destructive prune. Retention is
-`--retention-dry-run` only unless a later governed task changes policy.
+The critical off-site lane is the bounded critical-artifact baseline in
+Cloudflare R2. It backs up already-materialized Postgres PITR artifacts, latest
+Qdrant snapshot files, and selected vault evidence/SOP files. It does not create
+new Qdrant snapshots, dump databases into `/tmp`, upload live MinIO backing
+stores, or run destructive prune. Retention is `--retention-dry-run` only unless
+a later governed task changes policy.
+
+The broad Backblaze B2 remote backup is not part of this lane. It was retired by
+operator policy on 2026-06-06 (registry `b2-restic-offsite`: retired), and its
+return as a daily `hapax-backup-remote.timer` is a separate change,
+`backup-scripts-into-council-20260902` (#4623), which carries the timer, the unit,
+the manifest and the registry row together. The repository `b2:hapax-backups/restic`
+still holds the snapshots the retired lane wrote; restoring from it works as
+documented below, but nothing on this branch writes to it.
+
+## Cutover on podium (2026-09-02)
+
+The unit runs its script from the governed source-activation worktree
+(`~/.cache/hapax/source-activation/worktree`), never from a development
+checkout. On podium that worktree is deliberately HELD by the operator
+(`~/.cache/hapax/source-activation/HOLD`, 2026-08-18: podium source activation is
+an operator ratify-line), so it will not carry this unit's script until the hold
+is released.
+
+The rename is a fail-closed cutover, not two independent operator steps. Source
+activation installs an unmarked new timer with `enable --now`, so the old timer
+and any in-flight old service must be stopped, removed, and witnessed absent
+before removing `HOLD`. Do not remove `HOLD` separately. Run the complete block;
+any failed retirement witness exits before source activation can enable the new
+timer. The first two commands also make a partially attempted cutover safe to
+retry by stopping the new lane before inspecting the old one.
+
+`hapax-source-activate` installs every merged unit, conf and script itself as
+part of the deploy (it does not call `systemd/scripts/install-units.sh`, which
+refuses to run from anything but the primary checkout). Do not hand-create
+symlinks and do not run the installer from any worktree.
+
+```bash
+set -euo pipefail
+
+systemctl --user disable --now hapax-backup-critical-offsite.timer 2>/dev/null || true
+systemctl --user stop hapax-backup-critical-offsite.service 2>/dev/null || true
+systemctl --user disable --now hapax-backup-gdrive-critical.timer 2>/dev/null || true
+systemctl --user stop hapax-backup-gdrive-critical.service 2>/dev/null || true
+rm -rf ~/.config/systemd/user/hapax-backup-gdrive-critical.service.d ~/.config/systemd/user/hapax-backup-gdrive-critical.timer.d ~/.config/systemd/user/hapax-backup-watchdog.service.d/20-r2.conf
+rm -f ~/.config/systemd/user/hapax-backup-gdrive-critical.{service,timer}
+systemctl --user daemon-reload
+
+for unit in hapax-backup-gdrive-critical.timer hapax-backup-gdrive-critical.service; do
+    load_state="$(systemctl --user show "$unit" -p LoadState --value)"
+    active_state="$(systemctl --user show "$unit" -p ActiveState --value)"
+    if [ "$load_state" != "not-found" ] || [ "$active_state" != "inactive" ]; then
+        echo "REFUSED: $unit retirement is not witnessed (load=$load_state active=$active_state)" >&2
+        exit 1
+    fi
+done
+if systemctl --user is-enabled --quiet hapax-backup-gdrive-critical.timer; then
+    echo "REFUSED: hapax-backup-gdrive-critical.timer is still enabled" >&2
+    exit 1
+fi
+
+rm -f ~/.cache/hapax/source-activation/HOLD
+systemctl --user start hapax-source-activate.service
+git -C ~/.cache/hapax/source-activation/worktree log -1 --oneline
+systemctl --user is-enabled --quiet hapax-backup-critical-offsite.timer
+systemctl --user is-active --quiet hapax-backup-critical-offsite.timer
+systemctl --user show hapax-backup-critical-offsite.service -p FragmentPath -p ExecStart
+```
+
+Until this guarded cutover runs, the R2 lane keeps running under the secret-free
+`20-r2.conf` drop-ins that carried the 2026-09-02 switch (they name pass entries,
+never values). The cutover stops that old lane before removing the drop-ins.
+
+The `rclone:gdrive:` remote and the Drive restic repository at
+`rclone:gdrive:hapax-backups/restic-critical` are retired. Snapshots carrying
+the old `gdrive-critical` tag exist only in that dead Drive repository; the R2
+repository uses `critical-offsite` tags.
 
 Both lanes stage service-native artifacts before restic runs:
 
@@ -46,9 +117,26 @@ Both lanes stage service-native artifacts before restic runs:
 successfully, writes no backup artifacts, does not read secrets, and points at
 the Tier 1/Tier 2 lanes above.
 
-Backblaze B2 broad remote backup is retained only as historical context; no
-`hapax-backup-remote.timer` should be installed, enabled, or expected by health
-policy unless a later governed task reinstates it.
+The broad Backblaze B2 remote backup is retired on this branch (its return is
+#4623); this compatibility receipt does not invoke it.
+
+## Review-discovered mutation scope
+
+Task `critical-offsite-backend-neutral-20260902` also scopes the following
+source mutations discovered while tracing the renamed lane through its live
+consumers:
+
+- `systemd/units/hapax-backup-watchdog.service` — pin the changed watchdog's
+  consumer to the governed activation worktree.
+- `agents/manifests/backup_remote.yaml` — keep the retired B2 lane's live
+  manifest consistent with the storage registry.
+- `systemd/expected-timers.yaml` — keep the retired-timer policy commentary
+  provider-neutral.
+- `tests/systemd/test_critical_offsite_unit_root.py` — pin the activation roots
+  of every service whose script this task changes.
+
+These are repository source mutations only. This declaration does not authorize
+changes to installed units, enabled timers, or any other live runtime state.
 
 This intentionally removes the stale standalone script assumptions:
 
@@ -59,8 +147,8 @@ This intentionally removes the stale standalone script assumptions:
 
 ## Restore Path
 
-1. Restore the chosen restic snapshot from the Tier 1 local repo or the GDrive
-   critical repo into a staging directory.
+1. Restore the chosen restic snapshot from the Tier 1 local repo or the critical
+   off-site R2 repo into a staging directory.
 2. Restore `$HOME/llm-stack/` configuration from the restored filesystem tree.
 3. Restore PostgreSQL from the staged `postgres-all.sql` dump, or use the
    separately governed PITR lane when a point-in-time restore is required.
