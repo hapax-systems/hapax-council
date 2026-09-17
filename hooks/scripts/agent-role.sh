@@ -206,6 +206,199 @@ hapax_session_id() {
   return 1
 }
 
+# --- Launch identity (claims-ontology-correction) -----------------------------
+# hapax_session_id above answers "what id does THIS process carry" — the right
+# question for a reader. A LAUNCHER asks a different question: "what id does the
+# lane I am about to start carry", and the answer is almost never the one in my
+# own environment.
+#
+# The measured defect: six launch paths computed a launch identity as
+# `${HAPAX_SESSION_ID:-<mint>}`, so every lane started from one ancestor shell
+# inherited that shell's id and they all keyed the same claim file. 2026-09-13:
+# cc-active-task-{cx-glmcp,cx-p0,cx-crit}-041482e9-… — three roles, one id. The
+# session suffix disambiguated nothing while implying it did.
+#
+# "Always mint" is the wrong repair, because ONE inheritance is legitimate:
+# scripts/hapax-codex writes a tmux runner that re-execs hapax-codex itself, and
+# the inner process must keep the outer's id or it orphans the outer's
+# session-role marker and any claim the outer already wrote. So the single
+# boolean "is HAPAX_SESSION_ID set?" was standing in for two distinct conditions.
+# They are split here: inheritance requires the sender to ALSO set
+# HAPAX_SESSION_ID_PINNED, which makes the precondition a fact checkable at the
+# moment of use instead of an assumption about what an ancestor process was
+# doing. A bare ambient id is now unrepresentable as a launch identity.
+#
+# The pin's VALUE is the addressee — the launcher entitled to honour it, e.g.
+# `HAPAX_SESSION_ID_PINNED=hapax-codex`. It is not a boolean, and there is no
+# truthy form: `=1` addresses a launcher named "1", so nothing honours it. The
+# three dispositions, stated because only one of them is obvious:
+#   * value == the consuming launcher's own name  -> honoured, once
+#   * value is anything else, including 1/true/yes -> IGNORED, and the launcher mints
+#   * value absent                                 -> mints
+# An unaddressed pin is never refused, only ignored: refusing would let any
+# ancestor process break a launch by exporting a stray variable, and minting is
+# always the safe outcome. The pin is consumed either way (see below), so a value
+# nothing honours cannot linger and be honoured by something downstream.
+
+# Mint a fresh per-spawn id. uuid4, NEVER pid-derived: pids recycle and do not
+# cross hosts, so a pid-shaped id cannot distinguish two sessions and cc-claim
+# refuses to key on one (shared/session_identity.py::is_claim_keyable_session_id).
+# The last-resort branch is alpha-infixed so it stays keyable even with no uuid
+# source at all.
+hapax_mint_session_id() {
+  local id
+  id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || true)"
+  [ -n "$id" ] || id="$(uuidgen 2>/dev/null || true)"
+  [ -n "$id" ] || id="$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null || true)"
+  [ -n "$id" ] || id="$(printf 'sid%sx%s%s' "$(date +%s%N)" "${RANDOM}" "${RANDOM}")"
+  printf '%s\n' "$id"
+}
+
+# True when $1 may key a claim. Delegates to the Python SSOT so bash and Python
+# cannot drift into two predicates (tests/test_session_identity.py carries the
+# parity canary). Returns nonzero when the predicate cannot be evaluated at all —
+# the caller then mints, which is the NARROW outcome: minting can never adopt
+# another session's identity, so an unevaluable predicate costs a fresh id and
+# never a collision.
+hapax_session_id_is_claim_keyable() {
+  local candidate="${1:-}" root
+  [ -n "$candidate" ] || return 1
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || return 1
+  python3 -c '
+import sys
+sys.path.insert(0, sys.argv[2])
+from shared.session_identity import is_claim_keyable_session_id
+sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
+' "$candidate" "$root" 2>/dev/null
+}
+
+# The id a launcher must give the lane it is starting. Inherits ONLY an explicitly
+# pinned, claim-keyable id, and the pin is CONSUMED — one hop, never a standing grant.
+#
+# Sets `HAPAX_LAUNCH_SESSION_ID` in the CALLER's shell rather than printing, which
+# is the whole point: `$(...)` is a subshell, so a helper that printed could not
+# clear the pin where it matters. Review round 1 on PR #4668 found all four families
+# converging on this — the first cut exported a bare truthy pin into the
+# codex runner and never cleared it, so the pin was inherited by every process in
+# the lane's subtree. A grandchild launcher then saw pin=1 plus the outer id and
+# adopted it, reconstructing the exact
+# cc-active-task-{cx-glmcp,cx-p0,cx-crit}-041482e9-… collision this is meant to
+# repair, and regressing hapax-claude-headless and hapax-kimi, which had minted
+# unconditionally before. Reproduced, then fixed here.
+#
+# An env var is inherited transitively by construction, so "is the pin set" can
+# never express "this invocation is the re-exec my own outer invocation created".
+# Consuming it makes the grant single-use, which is the only shape that does.
+#
+# The pin is ADDRESSED as well as consumed. Its value names the launcher entitled
+# to honour it, and only `hapax-codex` ever writes one, because only hapax-codex
+# re-execs itself. A one-shot boolean was still too broad: a headless lane
+# dispatched into an environment that happened to carry pin=1 would adopt the
+# outer id, which is a net regression for hapax-claude-headless and hapax-kimi —
+# they minted unconditionally before this helper existed. Caught by this suite's
+# own behavioural test, after review round 1 predicted it.
+#
+# Usage in a launcher — never inside a command substitution:
+#     hapax_consume_launch_session_id hapax-codex
+#     SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
+# --- Session succession: REMOVED, deliberately ---------------------------------
+# A launcher-side succession helper lived here across review rounds 2-6 and is
+# gone. It cannot be made correct in a launcher, and the review team's own
+# prescriptions arrived at the same place: "governed claim rebinding", "tested
+# through claim admission", "a verifiable lifecycle mechanism".
+#
+# The proof is that its last two pairs of requirements are mutually exclusive
+# under any /proc-scan-plus-lockfile design:
+#   * a PERMANENT reservation blocks a legitimate second resume and a retry after
+#     a failed startup; a RELEASABLE one does not survive the crash it exists for.
+#   * EXCLUDING ancestors from the liveness scan misses an incumbent that is our
+#     own parent; NOT excluding them makes a launcher carrying an inherited id
+#     report itself live and never succeed.
+# Each guard added to close one hole opened the next, four rounds running.
+#
+# The root cause is structural: a launcher reasons about shared claim state it
+# does not own. The exclusivity primitive lives in cc-claim, which holds the lease
+# lock and the publication transaction — that is where succession belongs, and it
+# is rowed separately rather than approximated here.
+#
+# Removing it is NOT a regression: origin/main has no succession mechanism at all
+# and already mints on every clean relaunch (measured), so this restores exactly
+# the pre-existing behaviour while the real fix is built where it can be correct.
+
+
+# True when $1 has a shape this system's minter produces. Delegates to the Python
+# SSOT (shared/session_identity.is_minted_session_id) so the recognizer and the
+# minter cannot drift into two answers.
+hapax_session_id_is_minted() {
+  local candidate="${1:-}" root
+  [ -n "$candidate" ] || return 1
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)" || return 1
+  python3 -c '
+import sys
+sys.path.insert(0, sys.argv[2])
+from shared.session_identity import is_minted_session_id
+sys.exit(0 if is_minted_session_id(sys.argv[1]) else 1)
+' "$candidate" "$root" 2>/dev/null
+}
+
+hapax_consume_launch_session_id() {
+  local me="${1:-}"
+  local pinned="${HAPAX_SESSION_ID_PINNED:-}"
+  # Clear FIRST and unconditionally, in the caller's shell, so the grant cannot
+  # outlive this call by any path — including the early returns below and any
+  # child this shell later spawns. `unset` drops the export attribute with it.
+  unset HAPAX_SESSION_ID_PINNED
+  if [ -n "$me" ] && [ "$pinned" = "$me" ] &&
+    [ -n "${HAPAX_SESSION_ID:-}" ] &&
+    hapax_session_id_is_claim_keyable "$HAPAX_SESSION_ID"; then
+    HAPAX_LAUNCH_SESSION_ID="$HAPAX_SESSION_ID"
+    return 0
+  fi
+  HAPAX_LAUNCH_SESSION_ID="$(hapax_mint_session_id)"
+}
+
+# --- Capability descriptors: the SAME grant, for the values that say WHICH -----
+# CAPABILITY executed.
+#
+# HAPAX_CAPABILITY_ROUTE and HAPAX_CAPABILITY_MODEL are read by
+# shared.session_identity.capability_shape_from_env and land in a claim's recorded
+# condition vector. Nothing consumes them as input — they exist only to be
+# recorded — so an inherited one is a FALSE MEASUREMENT that reads as an observed
+# one, which is strictly worse than no value at all.
+#
+# They used to be cleared in hapax-methodology-dispatch and nowhere else, which
+# covers the dispatched path and only that path. Review round 12 reproduced the
+# gap: running `hapax-claude` by hand from inside a codex lane produced
+# `harness=claude, model_family=gpt-5.3-codex, route=codex.headless.full` — the
+# launcher set the harness and inherited the rest.
+#
+# Clearing them in each launcher AS WELL would be a second mitigation for one
+# hazard, and would still miss the seventh launcher. So the grant moves to the
+# shape already proven for the session id one function above: whoever sets a
+# descriptor FOR a launch also addresses HAPAX_CAPABILITY_PINNED to that launcher,
+# and a launcher that is not the addressee clears the set. Unpinned is
+# indistinguishable from inherited, so unpinned is dropped — "not recorded", never
+# a guess. Consumed like the session pin, for the same reason: an env var is
+# inherited transitively, so only single-use consumption can express "this launch".
+#
+# HAPAX_CLAUDE_MODEL is deliberately NOT in the set. It is a launcher INPUT that
+# hapax-claude-headless reads to pick `--model`, and `HAPAX_CLAUDE_MODEL=opus
+# hapax-claude-headless <lane> <prompt>` is a documented operator invocation.
+# Clearing an input in order to fix a record would break the documented path;
+# instead hapax-claude-headless publishes what it actually launched with, and the
+# recorder reads only the published value.
+hapax_consume_launch_capability_descriptors() {
+  local me="${1:-}"
+  local pinned="${HAPAX_CAPABILITY_PINNED:-}"
+  # Clear the grant FIRST and unconditionally, in the caller's shell, so it cannot
+  # outlive this call by any path — including the early return below.
+  unset HAPAX_CAPABILITY_PINNED
+  if [ -n "$me" ] && [ "$pinned" = "$me" ]; then
+    return 0
+  fi
+  unset HAPAX_CAPABILITY_ROUTE HAPAX_CAPABILITY_MODEL
+}
+
 # --- Per-session identity marker (reform-identity-coherence, cluster 11) -------
 # A WM-independent identity source keyed by the session id. Spawners write it at
 # launch (so identity resolves even where hapax-whoami's compositor query is dead

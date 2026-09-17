@@ -29,8 +29,45 @@ done
 
 KIMI_BIN="${KIMI_BIN:-$HOME/.kimi-code/bin/kimi}"
 SESSION="hapax-kimi-$ROLE"
-SESSION_UUID="$(cat /proc/sys/kernel/random/uuid)"
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+# This script's own tree first; COUNCIL_DIR's default does not exist under every HOME.
+_hk_self="${BASH_SOURCE[0]:-$0}"
+if command -v readlink >/dev/null 2>&1; then
+  _hk_self="$(readlink -f "$_hk_self" 2>/dev/null || printf '%s' "$_hk_self")"
+fi
+ROLE_HELPER="$(cd "$(dirname "$_hk_self")/.." 2>/dev/null && pwd)/hooks/scripts/agent-role.sh"
+[ -f "$ROLE_HELPER" ] || ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
+if [ -f "$ROLE_HELPER" ]; then
+  # shellcheck source=../hooks/scripts/agent-role.sh
+  # shellcheck disable=SC1091
+  . "$ROLE_HELPER"
+fi
+# Both helpers, and exit 78 (sysexits EX_CONFIG) rather than 9 — see the same
+# guard in scripts/hapax-claude for why: 8 and 9 are already
+# hapax-methodology-dispatch's own launch refusals.
+if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1 ||
+  ! declare -F hapax_consume_launch_capability_descriptors >/dev/null 2>&1; then
+  echo "hapax-kimi: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
+  echo "hapax-kimi: if this ran over SSH from hapax-methodology-dispatch, the incomplete checkout is on THIS host (${HOSTNAME:-$(uname -n)}), not the dispatcher's — repair or re-sync the council checkout there. Exit 78 is this identity refusal specifically; dispatch's own 8/9 mean launcher-not-found and no-declared-model-pin." >&2
+  exit 78
+fi
+# Already minted unconditionally before this change; routed through the shared
+# helper so all six launchers carry ONE implementation of the contract. This
+# launcher's runner execs $KIMI_BIN directly, so there is no pinned-propagation
+# case (claims-ontology-correction).
+# No addressee: the runner execs $KIMI_BIN directly and never re-enters here, so
+# this keeps its pre-existing unconditional mint.
+hapax_consume_launch_session_id
+SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
+# Session succession is NOT done here. A launcher-side helper lived here across
+# review rounds 2-6; it cannot be made correct in a launcher (see the REMOVED
+# block in hooks/scripts/agent-role.sh for the proof) and is rowed against
+# cc-claim, which owns the lease lock. This launcher mints, which is exactly what
+# origin/main does today — so nothing regresses while the real fix is built.
+# Capability descriptors: no addressee. kimi has no registry route, so nothing can
+# pin this launcher and every descriptor it can see belongs to the pane it was
+# started from.
+hapax_consume_launch_capability_descriptors
 WORKDIR="${HAPAX_KIMI_WORKDIR:-$HOME}"
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
@@ -62,6 +99,10 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf '%s\n' 'set -euo pipefail'
   printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
   printf 'cd %q\n' "$WORKDIR"
+  # Cleared here as well as in the launcher: the runner is executed by a tmux
+  # server whose environment it inherits instead of this shell's. See the same
+  # block in scripts/hapax-claude for the measured leak.
+  printf 'unset HAPAX_CAPABILITY_ROUTE HAPAX_CAPABILITY_MODEL HAPAX_CAPABILITY_PINNED HAPAX_SESSION_ID_PINNED\n'
   printf 'export HAPAX_AGENT_INTERFACE=kimi\n'
   printf 'export HAPAX_AGENT_ROLE=%q\n' "$ROLE"
   printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"

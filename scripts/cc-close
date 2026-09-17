@@ -14,7 +14,19 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve through symlinks, as cc-claim does. cc-close's own header documents
+# `ln -sf .../scripts/cc-close ~/.local/bin/cc-close`, and without this every
+# sibling it reaches for resolves against the SYMLINK's directory: for the
+# installed copy that is `~/.local`, which holds no `hooks/`, no `shared/` and no
+# `.venv`. Measured 2026-09-15: `~/.local/hooks/scripts/cc-task-root.sh` does not
+# exist, so the documented install refused at its first helper. Found while fixing
+# the interpreter resolution below — same defect class, one level up: a path
+# derived from `$0` is wrong for exactly the deployment the header recommends.
+_cc_close_self="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  _cc_close_self="$(readlink -f "$_cc_close_self" 2>/dev/null || printf '%s' "$_cc_close_self")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$_cc_close_self")" && pwd)"
 ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
 if [[ -f "$ROLE_HELPER" ]]; then
   # shellcheck source=../hooks/scripts/agent-role.sh
@@ -34,6 +46,13 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --pr) pr="$2"; shift 2 ;;
     --status) final_status="$2"; shift 2 ;;
+    # Expected CURRENT status, revalidated below immediately before mutation. A
+    # generated remediation is written from a sweep's observation and executed
+    # later by a person; without a precondition, a task that has since RESUMED is
+    # still withdrawn by the saved command (`withdrawn` skips the completion
+    # gates). This is the caller saying "only if the world still looks as I found
+    # it", which is the only thing that makes a stored command safe to run verbatim.
+    --expect-status) expect_status="$2"; shift 2 ;;
     --debt) debt_reason="$2"; shift 2 ;;
     --retroactive) retroactive=1; shift ;;
     *) echo "cc-close: unknown arg '$1'" >&2; exit 1 ;;
@@ -60,32 +79,147 @@ fi
 cc_task_root_resolve || exit $?
 vault_root="$CC_TASK_ROOT"
 note_path=""
-# Match `<task_id>-<descriptor>.md` (most tasks).
-for candidate in "$vault_root/active/$task_id-"*.md; do
-  if [[ -f "$candidate" ]]; then
-    note_path="$candidate"
-    break
+
+# ONE interpreter for every python cc-close runs, resolved like cc-claim's.
+#
+# cc-close read frontmatter with bare `python3` while the parser it imports
+# (shared/frontmatter.py) requires PyYAML. On the deployment layout where
+# dependencies live only in the repo virtualenv — the estate's own lane clones —
+# `import yaml` raised, the `|| true` swallowed it, and an empty result read as "no
+# such note": a live, valid, present task was reported as **"already closed?"**
+# (review round 27, codex-1; reproduced with a python3 that cannot import yaml).
+# Withdrawn and superseded closes previously needed only the standard library, so
+# this was a new dependency on a path that had none.
+#
+# The virtualenv is preferred and bare python3 is the fallback, because cc-close
+# must still work from an installed symlink outside any checkout. What is NOT
+# acceptable is failing quietly, so the scan below reports an unimportable
+# dependency as itself.
+CC_CLOSE_PYTHON="$SCRIPT_DIR/../.venv/bin/python"
+if [[ ! -x "$CC_CLOSE_PYTHON" ]]; then
+  CC_CLOSE_PYTHON="$(command -v python3 || true)"
+fi
+if [[ ! -x "$CC_CLOSE_PYTHON" ]]; then
+  echo "cc-close: no usable python interpreter (looked for $SCRIPT_DIR/../.venv/bin/python, then python3 on PATH). Next action: run 'uv sync' in this worktree, or install python3. Nothing was modified." >&2
+  exit 3
+fi
+# EVERY candidate that DECLARES this id must be considered, and more than one is
+# fatal. Selecting the "first" match — by any ordering — is what let
+# `cc-close t1` withdraw live work: first t1-next.md by prefix, then t1-a.md when
+# two notes declared t1 and the caller had only seen one of them. A caller cannot
+# make this safe, because a checker reasons about a FILTERED view of the vault
+# (parse_task_note drops notes missing `type: cc-task`) while cc-close mutates the
+# unfiltered filesystem. Revalidating here, at the point of mutation, is the only
+# place the whole truth is available.
+shopt -s nullglob
+_cc_candidates=("$vault_root/active/$task_id.md" "$vault_root/active/$task_id-"*.md)
+shopt -u nullglob
+# ONE interpreter start for the whole candidate list, not one per candidate. The
+# per-candidate loop was O(n) process spawns inside the close path on any vault
+# where a common id prefix matches many notes (review round 27, claude-1).
+_cc_matching=()
+_cc_scan_rc=0
+_cc_scan_out="$("$CC_CLOSE_PYTHON" -I - "$SCRIPT_DIR/.." "$task_id" ${_cc_candidates+"${_cc_candidates[@]}"} <<'PYEOF'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from pathlib import Path
+
+# The dependency is reported as itself. Swallowing this is what made a present,
+# valid note read as "already closed?" — the failure mode a guard may not have.
+try:
+    from shared.frontmatter import parse_frontmatter
+except ImportError as exc:  # pragma: no cover - exercised via subprocess
+    print(f"cc-close-dependency-unavailable: {exc}", file=sys.stderr)
+    raise SystemExit(3) from exc
+
+# Emits `<declared task_id>\t<path>` for every readable candidate, so the caller
+# can both select and EXPLAIN — "declares 'x', not 'y'" and "declares no readable
+# task_id" are different repairs, and neither needs a second interpreter start.
+for candidate in sys.argv[3:]:
+    path = Path(candidate)
+    if not path.is_file():
+        continue
+    fm, _body = parse_frontmatter(path)
+    value = (fm or {}).get("task_id")
+    print(f"{str(value).strip() if value is not None else ''}\t{candidate}")
+PYEOF
+)" || _cc_scan_rc=$?
+if [[ "$_cc_scan_rc" -eq 3 ]]; then
+  echo "cc-close: refusing — the frontmatter parser could not be imported by $CC_CLOSE_PYTHON (see the cc-close-dependency-unavailable line above). This is NOT a malformed note, and the notes were NOT inspected. Next action: run 'uv sync' in $SCRIPT_DIR/.. so the pinned interpreter exists, or install PyYAML for this python. Nothing was modified." >&2
+  exit 3
+elif [[ "$_cc_scan_rc" -ne 0 ]]; then
+  echo "cc-close: refusing — reading the candidate notes for '$task_id' failed (python exited $_cc_scan_rc). Nothing was modified. Next action: reproduce with: $CC_CLOSE_PYTHON -c 'import shared.frontmatter'" >&2
+  exit 3
+fi
+declare -A _cc_declared_for=()
+if [[ -n "$_cc_scan_out" ]]; then
+  while IFS=$'\t' read -r _cc_declared _cc_path; do
+    [[ -n "$_cc_path" ]] || continue
+    _cc_declared_for["$_cc_path"]="$_cc_declared"
+    [[ "$_cc_declared" == "$task_id" ]] && _cc_matching+=("$_cc_path")
+  done <<<"$_cc_scan_out"
+fi
+if [[ "${#_cc_matching[@]}" -gt 1 ]]; then
+  printf "cc-close: refusing — %d notes in %s/active/ declare task_id '%s':\n" \
+    "${#_cc_matching[@]}" "$vault_root" "$task_id" >&2
+  printf '  %s\n' "${_cc_matching[@]}" >&2
+  echo "Next action: resolve the duplicate identity (one note per task_id), then re-run. Nothing was modified." >&2
+  exit 2
+fi
+if [[ "${#_cc_matching[@]}" -eq 1 ]]; then
+  note_path="${_cc_matching[0]}"
+fi
+# Then `<task_id>-<descriptor>.md` (most tasks carry a descriptor suffix).
+if [[ -z "$note_path" ]]; then
+  for candidate in "$vault_root/active/$task_id-"*.md; do
+    if [[ -f "$candidate" ]]; then
+      note_path="$candidate"
+      break
+    fi
+  done
+fi
+# Whatever was selected must actually BE the task asked for. The glob can only
+# ever match a prefix, so a descriptor-suffixed neighbour of a longer id
+# (`t1-next` when asked for `t1`) is reachable; comparing the note's own
+# `task_id:` closes that without depending on filename conventions.
+if [[ -n "$note_path" ]]; then
+  # Canonical frontmatter parser, not sed. The first cut matched only an unquoted
+  # `task_id:` at column zero and ADMITTED an empty result, so `"task_id": t1-next`
+  # passed a request for t1 and a missing value passed everything — while a valid
+  # `task_id: t1 # comment` was rejected. A guard whose failure mode is "admit" is
+  # not a guard.
+  # Read from the ONE scan above, not from a second interpreter start. A second
+  # read is also a second chance to disagree with the first — and it carried the
+  # same swallowed-ImportError bug, so on a host without PyYAML it turned a valid
+  # note into "declares no readable task_id" (review round 27, codex-1).
+  selected_task_id="${_cc_declared_for[$note_path]-}"
+  if [[ -z "$selected_task_id" ]]; then
+    echo "cc-close: refusing — '$note_path' declares no readable task_id. Next action: repair the note's frontmatter (a single-line 'task_id: <id>' scalar), then re-run. Nothing was modified." >&2
+    exit 2
   fi
-done
-# Fallback: exact-match `<task_id>.md` for tasks without a descriptor
-# suffix. Mirrors the cc-claim glob; same root-cause (the literal `-`
-# in the original glob misses descriptor-less filenames).
-if [[ -z "$note_path" ]] && [[ -f "$vault_root/active/$task_id.md" ]]; then
-  note_path="$vault_root/active/$task_id.md"
+  if [[ "$selected_task_id" != "$task_id" ]]; then
+    echo "cc-close: refusing — '$note_path' declares task_id '$selected_task_id', not '$task_id'. Next action: pass the exact task id, or repair the note's filename/frontmatter so they agree. Nothing was modified." >&2
+    exit 2
+  fi
+  # The expected-state precondition is NOT checked here. It lives in the writer
+  # (the heredoc below), against the same bytes it rewrites, in the same process.
+  # A check at this point re-read the note, exited, and left a window before the
+  # writer re-read it — which is the interleaving the precondition exists to close,
+  # and it also made the writer's own check untestable by firing first.
 fi
 if [[ -z "$note_path" ]]; then
   echo "cc-close: task '$task_id' not in $vault_root/active/ (already closed?)" >&2
   exit 2
 fi
 
-if ! command -v python3 &>/dev/null; then
-  echo "cc-close: python3 missing; cannot rewrite frontmatter" >&2
-  exit 3
-fi
+# The interpreter was resolved and checked above, where every call site gets it
+# from. This second, weaker check asked whether *some* python3 is on PATH, which
+# says nothing about the one cc-close actually runs.
 
 frontmatter_task_id() {
   local file="$1"
-  python3 - "$file" <<'PYEOF'
+  "$CC_CLOSE_PYTHON" - "$file" <<'PYEOF'
 import re
 import sys
 from pathlib import Path
@@ -122,7 +256,7 @@ fi
 # Rapid-closure flag — require --retroactive for tasks closed <5min after claim.
 # Prevents the 22-second paperwork closure pattern found by CCTV disconfirmation.
 if [[ "$final_status" == "done" && -z "${retroactive:-}" && "${HAPAX_RAPID_CLOSE_OFF:-0}" != "1" ]]; then
-  claimed_at="$(python3 -c "
+  claimed_at="$("$CC_CLOSE_PYTHON" -c "
 import re, sys
 from pathlib import Path
 text = Path('$note_path').read_text()
@@ -130,7 +264,7 @@ m = re.search(r'^claimed_at:\s*(.+)$', text, re.MULTILINE)
 if m: print(m.group(1).strip().strip(\"'\").strip('\"'))
 " 2>/dev/null || true)"
   if [[ -n "$claimed_at" ]]; then
-    elapsed="$(python3 -c "
+    elapsed="$("$CC_CLOSE_PYTHON" -c "
 from datetime import datetime, timezone
 try:
     claimed = datetime.fromisoformat('$claimed_at'.replace('Z','+00:00'))
@@ -159,7 +293,7 @@ if [[ "$final_status" == "done" ]]; then
   CHECKER="$SCRIPT_DIR/cc-task-closure-check.py"
   if [[ -f "$CHECKER" ]]; then
     set +e
-    python3 "$CHECKER" "$note_path"
+    "$CC_CLOSE_PYTHON" "$CHECKER" "$note_path"
     gate_rc=$?
     set -e
     if [[ "$gate_rc" -ne 0 ]]; then
@@ -175,7 +309,7 @@ if [[ "$final_status" == "done" ]]; then
   RECEIPT_CHECKER="$SCRIPT_DIR/cc-close-acceptance-receipt-check.py"
   if [[ -f "$RECEIPT_CHECKER" ]]; then
     set +e
-    python3 "$RECEIPT_CHECKER" "$note_path"
+    "$CC_CLOSE_PYTHON" "$RECEIPT_CHECKER" "$note_path"
     receipt_rc=$?
     set -e
     if [[ "$receipt_rc" -ne 0 ]]; then
@@ -190,7 +324,7 @@ if [[ "$final_status" == "done" ]]; then
     PR_MERGE_CHECKER="$SCRIPT_DIR/cc-close-pr-merge-check.py"
     if [[ -f "$PR_MERGE_CHECKER" ]]; then
       set +e
-      python3 "$PR_MERGE_CHECKER" "$note_path" ${pr:+--pr "$pr"}
+      "$CC_CLOSE_PYTHON" "$PR_MERGE_CHECKER" "$note_path" ${pr:+--pr "$pr"}
       merge_rc=$?
       set -e
       if [[ "$merge_rc" -ne 0 ]]; then
@@ -199,14 +333,263 @@ if [[ "$final_status" == "done" ]]; then
     fi
   fi
 
-  # Artifact disposition gate
+  # The artifact-disposition gate and the sibling advisory USED TO RUN HERE, and
+  # they no longer do. The first of them MUTATES: with `--debt` it rewrites the task
+  # note and the artifact ledger. Running that before the locks meant an unprotected
+  # read/write that could overwrite a concurrent cc-claim update, and it made every
+  # later lock refusal say "Nothing was modified" when something already had been
+  # (review round 20, reproduced). They now run under both locks, below.
+  :
+fi
+
+# --- Serialize the mutating tail ----------------------------------------------
+# Everything from here to the end of lease cleanup runs under ONE exclusive lock,
+# keyed by task id (shared/cc_task_lock.py, which cc-claim takes too).
+#
+# Without it the sequence read -> validate -> write closed/ -> unlink active/ is
+# not atomic, and a concurrent resume landing after the read made cc-close write
+# its stale snapshot into closed/ and delete the resumed note. Review round 13
+# named that critical, and asked for validation "under the shared mutation lock".
+# There was none: cc-claim writes atomically (tmp + os.replace), which makes each
+# write all-or-nothing and says nothing about two writers interleaving.
+#
+# Taken HERE, not at argv parse: the gates above run `gh` and can block on the
+# network, and a lock held across a network call would stall every other writer
+# for as long as GitHub takes. Nothing above this line mutates, so nothing above
+# needs excluding. The validation that must be inside — identity and expected
+# status — is inside, in the writer, below.
+#
+# fd 9 is held by THIS shell, so the writer and the lease sweep both inherit it
+# and the kernel releases it when cc-close exits, however it exits. No staleness
+# rule, and so nothing to reap.
+# BOTH the path and the timeout come from the Python SSOT, in one call.
+#
+# A shell `case` pattern stood in for the timeout parser for one round and
+# disagreed with it: it accepted `0.00` (immediate refusal) and `1.5.0` (which
+# flock itself then rejected, while the message still blamed a lock holder), where
+# shared.cc_task_lock falls back to 30 for both. Two parsers for one knob is the
+# same shape as two derivations for one path — the runbook promised a shared
+# default the code did not implement.
+lock_facts="$("$CC_CLOSE_PYTHON" -I - "$SCRIPT_DIR/.." "$task_id" "${role:-}" <<'PYEOF' || true
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from shared.cc_task_lock import lock_path, resolved_timeout, role_lock_path
+
+print(lock_path(sys.argv[2]))
+print(f"{resolved_timeout(None):g}")
+print(role_lock_path(sys.argv[3]) if sys.argv[3] else "")
+PYEOF
+)"
+lock_path="$(printf '%s\n' "$lock_facts" | sed -n '1p')"
+lock_timeout="$(printf '%s\n' "$lock_facts" | sed -n '2p')"
+role_lock_path="$(printf '%s\n' "$lock_facts" | sed -n '3p')"
+if [[ -z "$lock_path" || -z "$lock_timeout" ]]; then
+  echo "cc-close: refusing — could not resolve the cc-task lock path for '$task_id'. Next action: run from a complete council checkout (shared/cc_task_lock.py must be importable). Nothing was modified." >&2
+  exit 2
+fi
+if ! command -v flock >/dev/null 2>&1; then
+  echo "cc-close: refusing — 'flock' not found, so this close cannot be serialized against a concurrent cc-claim. Next action: install util-linux. Nothing was modified." >&2
+  exit 2
+fi
+# Guarded, because `set -euo pipefail` is in force: an existing but unwritable lock
+# file makes `exec 9>` fail, and an unguarded redirection there kills cc-close with
+# a bare shell error before any of the explanatory handlers below can run. The
+# failure is a permissions problem with an obvious remedy; it should say so.
+if ! exec 9>"$lock_path"; then
+  echo "cc-close: refusing — cannot open the cc-task lock file '$lock_path' for writing. Next action: check ownership and permissions on it and on its directory (rm it if it is a stale root-owned file), then re-run. Nothing was modified." >&2
+  exit 2
+fi
+flock_rc=0
+flock -x -w "$lock_timeout" 9 || flock_rc=$?
+if [[ "$flock_rc" -eq 1 ]]; then
+  echo "cc-close: refusing — another process has held the cc-task lock for '$task_id' ($lock_path) for more than ${lock_timeout}s. Next action: find the holder with 'fuser -v $lock_path' and let it finish, then re-run. Nothing was modified." >&2
+  exit 2
+elif [[ "$flock_rc" -ne 0 ]]; then
+  # NOT contention. flock exits 1 when it cannot acquire and something else when
+  # it could not even try — 64 for an invalid argument, for instance. Reporting
+  # those as a held lock sent the operator to `fuser` after a holder that never
+  # existed, which is a worse failure than the refusal itself: it describes a
+  # state of the system rather than a fault in the invocation.
+  echo "cc-close: refusing — could not acquire the cc-task lock for '$task_id' ($lock_path): flock exited $flock_rc, which is not contention. Next action: check HAPAX_CC_TASK_LOCK_TIMEOUT_SECONDS ('$lock_timeout') and that $lock_path is writable. Nothing was modified." >&2
+  exit 2
+fi
+
+# --- The ROLE lease lock, taken HERE: before the closure, not after it ---------
+#
+# A SECOND lock, because there is a second resource. fd 9 is keyed by task id and
+# protects the note. The lease files are keyed by `<role>[-<session>]`, and both
+# cc-close's sweep and cc-claim's publication write that namespace — so keying
+# their exclusion by task id excludes nothing. Round 16 reproduced it: cc-close
+# closing task A read a marker naming A, and by the time it removed the file
+# cc-claim had republished it as task B under B's own, different, task lock. The
+# head check cannot save us; it is the read half of the race.
+#
+# LOCK ORDER IS TASK THEN ROLE, in both writers, and nothing takes the role lock
+# alone. That ordering is the whole reason two locks are safe rather than a
+# deadlock waiting for load.
+#
+# BEFORE the writer, because the first cut took it just before the sweep — after
+# the note had already moved to closed/. Round 17 found both consequences: a
+# timeout there returned SUCCESS with the leases retained and prescribed a re-run
+# that exits at the active-note lookup and can never reach cleanup again, and the
+# missing-path branch set a flag without clearing `role`, so the sweep ran
+# unlocked anyway. Acquiring up front makes every failure here a refusal with
+# nothing modified, which is a state the operator can actually act on.
+if [[ -n "$role" ]]; then
+  if [[ -z "$role_lock_path" ]]; then
+    echo "cc-close: refusing — could not resolve the role lease lock path for role '$role'. Retiring this role's leases without it would race a concurrent cc-claim. Next action: run from a complete council checkout (shared/cc_task_lock.py must be importable). Nothing was modified." >&2
+    exit 2
+  fi
+  if ! exec 8>"$role_lock_path"; then
+    echo "cc-close: refusing — cannot open the role lease lock file '$role_lock_path' for writing. Next action: check ownership and permissions on it and on its directory, then re-run. Nothing was modified." >&2
+    exit 2
+  fi
+  role_flock_rc=0
+  flock -x -w "$lock_timeout" 8 || role_flock_rc=$?
+  if [[ "$role_flock_rc" -eq 1 ]]; then
+    echo "cc-close: refusing — another process has held the role lease lock for '$role' ($role_lock_path) for more than ${lock_timeout}s. A hung cc-claim for ANY task of this role holds it. Next action: find the holder with 'fuser -v $role_lock_path', let it finish or kill it, then re-run. Nothing was modified." >&2
+    exit 2
+  elif [[ "$role_flock_rc" -ne 0 ]]; then
+    echo "cc-close: refusing — could not acquire the role lease lock for '$role' ($role_lock_path): flock exited $role_flock_rc, which is not contention. Next action: check that $role_lock_path is writable. Nothing was modified." >&2
+    exit 2
+  fi
+fi
+
+# --- Preconditions, BEFORE the mutating gate ----------------------------------
+#
+# Identity and --expect-status were checked only in the writer, which runs after
+# the artifact-disposition gate. So `--status done --expect-status done --debt`
+# against an in_progress task rewrote the note AND the artifact ledger, then
+# refused with "Nothing was modified" — and each repeat refreshed the debt
+# timestamps (review round 20->21, reproduced).
+#
+# Checked here as well as in the writer because a MUTATION sits between the two
+# points, not because one check was weak: this one decides whether the gate may
+# run at all, the writer's decides whether the unlink may happen against the bytes
+# it is rewriting. Both read through shared/cc_task_frontmatter.py, so there is one
+# implementation of "what does this note declare" and no second copy to drift.
+precondition_rc=0
+"$CC_CLOSE_PYTHON" -I - precondition-guard "$SCRIPT_DIR/.." "$note_path" "$task_id" "${expect_status:-}" \
+  "$final_status" "${pr:-}" <<'PYEOF' || precondition_rc=$?
+import sys
+
+sys.path.insert(0, sys.argv[2])
+from pathlib import Path
+
+from shared.cc_task_frontmatter import (
+    propose_closure_rewrite,
+    read_governed_frontmatter,
+    scalar,
+)
+from shared.frontmatter import parse_frontmatter_with_diagnostics
+
+path, task_id = Path(sys.argv[3]), sys.argv[4]
+expect_status = sys.argv[5] if len(sys.argv) > 5 else ""
+final_status = sys.argv[6] if len(sys.argv) > 6 else ""
+pr = sys.argv[7] if len(sys.argv) > 7 else ""
+reading = read_governed_frontmatter(path)
+if reading.error is not None:
+    print(
+        f"cc-close: refusing — '{path}' frontmatter is not readable ({reading.error}). "
+        "Next action: repair the note, or run cc-task-repair. Nothing was modified.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+if reading.duplicate_keys:
+    print(
+        f"cc-close: refusing — '{path}' frontmatter declares "
+        f"{', '.join(reading.duplicate_keys)} more than once, so which line is "
+        "authoritative is undecidable. Next action: remove the duplicate key(s). "
+        "Nothing was modified.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+declared = scalar(reading, "task_id")
+if declared != task_id:
+    print(
+        f"cc-close: refusing — '{path}' declares task_id '{declared}', not '{task_id}'. "
+        "Next action: pass the exact task id, or repair the note. Nothing was modified.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+if expect_status:
+    observed = scalar(reading, "status")
+    if observed != expect_status:
+        print(
+            f"cc-close: refusing — '{path}' is status '{observed}', but --expect-status "
+            f"'{expect_status}' was required. The task changed after the command was "
+            "generated. Next action: re-run the sweep and use its current "
+            "recommendation. Nothing was modified.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+# CAN this note be rewritten to the closure being reported? Asked HERE, before the
+# artifact-disposition gate, because that gate MUTATES: with `--debt` it records
+# debt in the artifact ledger. A note using explicit mapping syntax (`? status` on
+# one line, `: in_progress` on the next — valid YAML naming the same field, which
+# the line rewrite cannot match) got its debt recorded, then hit the writer's
+# output check and exited 2 saying "Nothing was modified", and every retry
+# refreshed the debt timestamps (review round 26, codex-1, reproduced: ledger
+# mutated on both runs, note untouched, rc=2 both times).
+#
+# The writer keeps its own identical check. Two checks, one predicate, because a
+# mutation sits between them — the same reason identity and --expect-status are
+# checked twice. `propose_closure_rewrite` is the single implementation both call,
+# so there is no second copy of the rewrite to drift.
+if final_status:
+    _proposed = propose_closure_rewrite(
+        reading, status=final_status, timestamp="1970-01-01T00:00:00Z", pr=pr
+    )
+    _check = parse_frontmatter_with_diagnostics(_proposed)
+    if not _check.ok or _check.frontmatter is None:
+        print(
+            f"cc-close: refusing — rewriting '{path}' to status '{final_status}' would "
+            f"produce a note that no longer parses ({_check.error_kind}: "
+            f"{_check.error_message}). Nothing was modified — checked before any gate "
+            "ran. Next action: a governed field (status, completed_at, updated_at, pr) "
+            "holds a mapping or block value rather than a scalar; repair it to a "
+            "single-line scalar and re-run.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    _would_be = str(_check.frontmatter.get("status", "")).strip()
+    if _would_be != final_status:
+        print(
+            f"cc-close: refusing — rewriting '{path}' would leave it parsing as status "
+            f"'{_would_be}', not '{final_status}'. Nothing was modified, and no debt "
+            "was recorded — this is checked before the artifact-disposition gate runs. "
+            "Next action: the note spells a governed key in a form the line rewrite "
+            "cannot match (most often explicit mapping syntax, `? status` on its own "
+            "line). Rewrite it as `status: <value>` and re-run.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+PYEOF
+if [[ "$precondition_rc" -ne 0 ]]; then
+  exit "$precondition_rc"
+fi
+
+# --- Mutating gates, now UNDER both locks -------------------------------------
+#
+# The artifact-disposition gate rewrites the task note and the artifact ledger when
+# `--debt` is given. It ran before either lock, so it could overwrite a concurrent
+# cc-claim update — and a lock refusal afterwards reported "Nothing was modified"
+# over a note that had been. Both statements are true again now that it runs here.
+#
+# It is HERE and not with the other gates because the ones above call `gh`: a lock
+# held across a network round trip stalls every other writer for as long as GitHub
+# takes. Read-only and slow stays outside; mutating stays inside. That is the whole
+# rule, and it is why this block is split off rather than the locks moved up.
+if [[ "$final_status" == "done" ]]; then
   DISP_CHECKER="$SCRIPT_DIR/cc-task-artifact-disposition-check.py"
   if [[ -f "$DISP_CHECKER" ]]; then
     set +e
     if [[ -n "${debt_reason:-}" ]]; then
-      python3 "$DISP_CHECKER" "$note_path" "$task_id" --debt "$debt_reason"
+      "$CC_CLOSE_PYTHON" "$DISP_CHECKER" "$note_path" "$task_id" --debt "$debt_reason"
     else
-      python3 "$DISP_CHECKER" "$note_path" "$task_id"
+      "$CC_CLOSE_PYTHON" "$DISP_CHECKER" "$note_path" "$task_id"
     fi
     disp_rc=$?
     set -e
@@ -217,32 +600,175 @@ if [[ "$final_status" == "done" ]]; then
 
   # Sibling-task advisory check — warns about stalled siblings under the same
   # parent request. Advisory only (exit 0), prevents the remediation execution
-  # gap found by CCTV disconfirmation (PR #3659).
+  # gap found by CCTV disconfirmation (PR #3659). Under the lock too: it reads the
+  # note, and a read outside is a fact about a file another writer may replace.
   SIBLING_CHECKER="$SCRIPT_DIR/cc-close-sibling-check.py"
   if [[ -f "$SIBLING_CHECKER" ]]; then
-    python3 "$SIBLING_CHECKER" "$note_path" || true
+    "$CC_CLOSE_PYTHON" "$SIBLING_CHECKER" "$note_path" || true
   fi
 fi
 
-python3 - "$note_path" "$task_id" "$final_status" "$pr" "$role" <<'PYEOF'
+"$CC_CLOSE_PYTHON" - "$SCRIPT_DIR/.." "$note_path" "$task_id" "$final_status" "$pr" "$role" \
+  "${expect_status:-}" <<'PYEOF'
 import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-path, task_id, final_status, pr, role = (Path(sys.argv[1]), *sys.argv[2:])
+sys.path.insert(0, sys.argv[1])
+from shared.cc_task_frontmatter import propose_closure_rewrite, read_governed_frontmatter
+from shared.frontmatter import parse_frontmatter_with_diagnostics
+
+path, task_id, final_status, pr, role = (Path(sys.argv[2]), *sys.argv[3:7])
+expect_status = sys.argv[7] if len(sys.argv) > 7 else ""
 text = path.read_text(encoding="utf-8")
+
+# --- The frontmatter BLOCK, separated once ------------------------------------
+# Every read and every write below is confined to it.
+#
+# A regex over the whole note stood here for one round and was a critical: a body
+# example line `status: withdrawn` satisfied `--expect-status withdrawn` while the
+# frontmatter said `in_progress`, so cc-close unlinked a live note and archived it
+# still reading in_progress. The same regex on the WRITE side could have rewritten
+# a body line instead of the field. And `task_id: x  # note` read as a different
+# id, refusing a legitimate close.
+#
+# Selection already used the canonical parser; the writer did not. One parser, one
+# answer — the split between them is what the defect lived in.
+if not text.startswith("---"):
+    print(
+        f"cc-close: refusing — '{path}' does not start with YAML frontmatter, so there "
+        "is no field to validate or rewrite. Next action: repair the note. Nothing was "
+        "modified.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+_end = text.find("\n---", 3)
+if _end == -1:
+    print(
+        f"cc-close: refusing — '{path}' has no frontmatter closing marker. Next action: "
+        "repair the note. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+# The block/rest split is NOT recomputed here — `read_governed_frontmatter` below
+# carries both, and the rewrite is applied to that reading. Two splits of one note
+# is two answers to "where does the frontmatter end", and only one of them can be
+# the one the parser used.
+
+# ONE reading, shared with the pre-gate guard above and with cc-hygiene's note scan
+# (shared/cc_task_frontmatter.py). The duplicate detector lived inline here for six
+# rounds and drifted from the scan's: it missed `assigned_to`, which the hygiene
+# join decides contested ownership on.
+_reading = read_governed_frontmatter(text)
+if _reading.error is not None:
+    print(
+        f"cc-close: refusing — '{path}' frontmatter is not readable ({_reading.error}). "
+        "A close is not made against a validation that did not run. Next action: "
+        "repair the note, or run cc-task-repair. Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+if _reading.duplicate_keys:
+    print(
+        f"cc-close: refusing — '{path}' frontmatter declares "
+        f"{', '.join(_reading.duplicate_keys)} more than once, so which line is "
+        "authoritative is undecidable. Next action: remove the duplicate key(s). "
+        "Nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+frontmatter = _reading.frontmatter
+
+def _scalar(key: str) -> str:
+    value = frontmatter.get(key)
+    return "" if value is None else str(value).strip()
+
+
+# Both preconditions are revalidated HERE: this process holds fd 9's exclusive
+# lock (taken by the shell above), and `text` is the same bytes this writer
+# rewrites and unlinks. Anything checked before the lock was taken is a statement
+# about a file another writer was free to change.
+#
+# Identity FIRST. The earlier bash guard resolved which note this id names; under
+# the lock we re-read what the note itself declares, because the destructive step
+# is `path.unlink()` and unlinking the wrong note is unrecoverable.
+_declared = _scalar("task_id")
+if _declared != task_id:
+    print(
+        f"cc-close: refusing — '{path}' declares task_id '{_declared}' at write time, "
+        f"not '{task_id}'. The note changed after it was selected. Next action: re-run "
+        "cc-close; nothing was modified.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+# The expected-state precondition, for a command a sweep generated and a person
+# runs later. `withdrawn` skips the completion gates, so a task that resumed
+# between generation and execution was withdrawn anyway.
+if expect_status:
+    _observed = _scalar("status")
+    if _observed != expect_status:
+        print(
+            f"cc-close: refusing — '{path}' is status '{_observed}' at write time, but "
+            f"--expect-status '{expect_status}' was required. The task changed after the "
+            "command was generated. Next action: re-run the sweep and use its current "
+            "recommendation. Nothing was modified.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
 now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-text = re.sub(r"^status:.*$", f"status: {final_status}", text, count=1, flags=re.MULTILINE)
-text = re.sub(
-    r"^completed_at:.*$", f"completed_at: {now}", text, count=1, flags=re.MULTILINE
-)
-text = re.sub(
-    r"^updated_at:.*$", f"updated_at: {now}", text, count=1, flags=re.MULTILINE
-)
-if pr:
-    text = re.sub(r"^pr:.*$", f"pr: {pr}", text, count=1, flags=re.MULTILINE)
+# Rewrites apply to `fm_text` — the frontmatter block alone — and the note is
+# reassembled from it. A substitution over the whole note could edit a body line
+# that happens to start with a governed key, which is the write-side half of the
+# same defect.
+#
+# The key may be written `k:`, `"k":` or `'k':`; YAML calls all three the same
+# field and a reader sees whichever the parser resolves. Matching only the bare
+# spelling rewrote `status:` while leaving `"status":` untouched, so a note could
+# be archived reporting `withdrawn` while its YAML still parsed as `in_progress`.
+# Line surgery keeps comments, ordering and quoting style that a full YAML
+# round-trip would destroy; it just has to recognise the same key YAML does.
+#
+# The rewrite itself now lives in shared/cc_task_frontmatter.py, because the
+# pre-gate guard has to run the SAME rewrite to answer "is this note rewritable"
+# before the artifact-disposition gate records debt. Two call sites, one
+# implementation, no copy to drift (review round 26).
+text = propose_closure_rewrite(_reading, status=final_status, timestamp=now, pr=pr)
+
+# Verify the RESULT, before anything is written or unlinked.
+#
+# Every guard above is about the input; this is the only one about the output, and
+# it is what makes the class of defect unrepresentable rather than patched. Two
+# rounds running, a key spelling the rewrite did not recognise produced a note
+# archived as `withdrawn` whose YAML still parsed as `in_progress` — a false record
+# that reads as a governed one. Whatever the substitutions did or did not match,
+# the bytes about to replace the note must parse to the closure being reported.
+_after = parse_frontmatter_with_diagnostics(text)
+if not _after.ok or _after.frontmatter is None:
+    print(
+        f"cc-close: refusing — the rewritten note for '{task_id}' no longer parses "
+        f"({_after.error_kind}: {_after.error_message}). Nothing was modified. Next "
+        "action: this is reachable when a governed field (status, completed_at, "
+        "updated_at, pr) holds a mapping or block value rather than a scalar — the "
+        "rewrite replaces the whole line. Repair that field to a single-line scalar "
+        "and re-run.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+_after_status = str(_after.frontmatter.get("status", "")).strip()
+_after_task = str(_after.frontmatter.get("task_id", "")).strip()
+if _after_status != final_status or _after_task != task_id:
+    print(
+        f"cc-close: refusing — after rewriting, '{path}' parses as task_id "
+        f"'{_after_task}' status '{_after_status}', not '{task_id}'/'{final_status}'. "
+        "The note was NOT closed and nothing was modified. Next action: inspect the "
+        "frontmatter for an unusual spelling of those keys, repair it, and re-run.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 log_line = f"- {now} {role or 'session'} closed as {final_status}"
 if pr:
     log_line += f" (PR #{pr})"
@@ -275,28 +801,130 @@ PYEOF
 # (reform finding #12/#13). Clear this session's lease forms, each only when its
 # head still names the closed task (never clobber a lease for other work).
 if [[ -n "$role" ]]; then
+  cleared_claim=0
+  # Sweep the ROLE's lease forms, not just the closing session's: the legacy
+  # shared file plus EVERY session-keyed lease this role holds. The writer
+  # already globs the role (cc-claim:99 scans cc-active-task-<role>-* for its
+  # multi-claim check); the closer swept only "$role" and the id the CLOSING
+  # session happens to carry. So a lease written by session A and closed by
+  # session B survived to its 6h TTL, and the live marker set drifted away from
+  # the vault with nothing to reconcile it — measured 2026-09-13 as
+  # cc-active-task-cx-crit naming a task the vault recorded CLOSED_DONE.
+  #
+  # A lane that restarts mid-task is the ordinary way A != B. That was rare only
+  # because sibling lanes used to INHERIT one session id; now that every launch
+  # mints its own (claims-ontology-correction), it is the common case — which is
+  # why the two changes ship together.
   session_id=""
   if declare -F hapax_session_id >/dev/null 2>&1; then
     session_id="$(hapax_session_id 2>/dev/null || true)"
   fi
-  cleared_claim=0
-  for claim_key in \
-    "$role" \
-    ${session_id:+"$role-$session_id"}; do
-    claim_file="$HOME/.cache/hapax/cc-active-task-$claim_key"
-    if [[ -f "$claim_file" ]] &&
-       [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
-      # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
-      # clear it with its claim file so a stale epoch can never mis-age a
-      # future claim. Explicit path construction — substring substitution on
-      # the full path would rewrite a parent-directory occurrence instead.
-      rm -f "$claim_file" "$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
-      echo "cc-close: cleared claim file '$claim_file' (role '$role')"
-      cleared_claim=1
+  shopt -s nullglob
+  claim_files=(
+    "$HOME/.cache/hapax/cc-active-task-$role"
+    ${session_id:+"$HOME/.cache/hapax/cc-active-task-$role-$session_id"}
+    "$HOME/.cache/hapax/cc-active-task-$role-"*
+  )
+  shopt -u nullglob
+  for claim_file in "${claim_files[@]}"; do
+    [[ -f "$claim_file" ]] || continue
+    # Only leases naming THIS task. A lease for other work is another session's
+    # live claim and is never ours to retire.
+    [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]] || continue
+    claim_base="$(basename "$claim_file")"
+    claim_key="${claim_base#cc-active-task-}"
+    # The glob is prefix-based, so closing as `cx` would also match
+    # `cc-active-task-cx-crit-<sid>` and closing as `cx-blue` would match
+    # `cc-active-task-cx-blue-shadow-<sid>`. Deleting those erases ANOTHER role's
+    # claim — and, worse, erases the contention evidence in exactly the state the
+    # hygiene check routes to operator-adjudication rather than silent deletion.
+    # The task-id guard above does not save us: two roles holding one task id is
+    # precisely the contested case.
+    #
+    # A foreign-session key is retired only when its remainder is a real session
+    # id AND names no further role. The predicate is the Python SSOT —
+    # shared.session_identity.split_claim_marker_key, the same authority the
+    # hygiene check uses — never a second hand-rolled copy here. An earlier cut
+    # matched two hardcoded id shapes with a bash regex, which would drift from
+    # the minter the first time the minter changed: exactly the "five divergent
+    # copies" failure this task exists to repair, re-introduced in the closer.
+    # The closing session's own key and the legacy file skip the check: they are
+    # this role's by construction, whatever id shape they carry.
+    if [[ "$claim_key" != "$role" && "$claim_key" != "$role-$session_id" ]]; then
+      # Bare python3 is correct here: shared/session_identity.py is stdlib-only by
+      # contract precisely so it imports under the system interpreter on every
+      # dispatch host (appendix has no PyYAML outside the uv venv).
+      # Three outcomes, not two. The predicate exits 0 (retire), 1 (not this
+      # role's — leave it), or something else entirely when it could not be
+      # EVALUATED (no python3, import failure). The first cut folded every
+      # non-zero into `continue`, so an unevaluable guard left a same-role lease
+      # behind while cc-close still reported success — and the note has already
+      # moved to closed/, so a rerun cannot reach cleanup again. Uncertainty still
+      # preserves the lease, but it is now reported rather than silent.
+      guard_rc=0
+      # `lease-guard` is a self-naming first argument, not decoration: several of
+      # cc-close's subprocesses are `python3 -I -` with a heredoc, so in `ps` — and
+      # in any test that needs to fail ONE of them — they are otherwise
+      # indistinguishable except by argument count, which changes whenever a call
+      # gains an argument. It did, in this round.
+      "$CC_CLOSE_PYTHON" -I - lease-guard "$SCRIPT_DIR/.." "$claim_key" "$role" <<'PYEOF' || guard_rc=$?
+import sys
+
+sys.path.insert(0, sys.argv[2])
+from shared.session_identity import is_minted_session_id
+
+key, role = sys.argv[3], sys.argv[4]
+# Retire only `<this role>-<an id this system minted>`. The remainder must be a
+# MINTED shape, not merely a claim-keyable one: `cx-blue-shadow-<uuid>` leaves the
+# keyable remainder `shadow-<uuid>`, so a keyable test would delete another role's
+# lease and destroy the contention evidence the hygiene check routes to
+# operator-adjudication. split_claim_marker_key resolves that correctly only when
+# given every role that exists, which a closing lane does not know.
+remainder = key[len(role) + 1 :] if key.startswith(f"{role}-") else ""
+# 0 = retire, 3 = definitely-not-ours. NOT 1: an ImportError or any other uncaught
+# exception also exits 1, and folding that into "not ours" meant an unevaluable
+# guard silently skipped cleanup while cc-close reported success — with the note
+# already moved to closed/, so a rerun could never reach it again. A distinct
+# negative code keeps "the predicate said no" separable from "the predicate did
+# not run".
+sys.exit(0 if is_minted_session_id(remainder) else 3)
+PYEOF
+      if [[ "$guard_rc" -eq 3 ]]; then
+        # The predicate ran and said no. Leave the lease alone; nothing to report.
+        continue
+      fi
+      if [[ "$guard_rc" -ne 0 ]]; then
+        # Could not EVALUATE. Preserve the lease (uncertainty never deletes) and
+        # say so with an exact remedy, because the note is about to move to
+        # closed/ and a rerun of cc-close can no longer reach this cleanup.
+        echo "cc-close: WARNING — cleanup incomplete: could not evaluate the foreign-lease guard for '$claim_file' ($CC_CLOSE_PYTHON exited $guard_rc). The lease was PRESERVED. Next action: repair that interpreter or its PYTHONPATH for this checkout, then retire it by hand once you have confirmed the closure: rm -f '$claim_file' '$HOME/.cache/hapax/cc-claim-epoch-$claim_key'" >&2
+        cleanup_incomplete=1
+        continue
+      fi
     fi
+    # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
+    # clear it with its claim file so a stale epoch can never mis-age a future
+    # claim. claim_key came from the BASENAME above with a non-greedy prefix strip
+    # — `${path##*/cc-active-task-}` over the full path would strip through a
+    # parent directory that happened to contain the same substring.
+    rm -f "$claim_file" "$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
+    echo "cc-close: cleared claim file '$claim_file' (role '$role')"
+    cleared_claim=1
   done
   if [[ "$cleared_claim" == 1 ]]; then
     systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
+  fi
+  # Partial failure reaches the EXIT STATUS. `cleanup_incomplete` was set in three
+  # places and read in none, so a close that kept a lease it could not evaluate
+  # returned 0 — indistinguishable from a clean one to anything scripting cc-close.
+  #
+  # A distinct code, not a generic failure: the closure DID happen, the note IS in
+  # closed/, and re-running cc-close cannot reach cleanup again (it exits at the
+  # active-note lookup). 3 means "closed, leases not fully retired"; the exact `rm`
+  # for each survivor was printed above.
+  if [[ "${cleanup_incomplete:-0}" == 1 ]]; then
+    echo "cc-close: task '$task_id' IS closed, but lease cleanup did not complete — exiting 3. The surviving lease paths and their removal commands are named above; retire them by hand once you have confirmed the closure. Re-running cc-close will NOT reach cleanup: the note is no longer in active/." >&2
+    exit 3
   fi
 fi
 
@@ -319,7 +947,7 @@ if [[ "$final_status" == "done" && "${HAPAX_REQUEST_RECONCILER_OFF:-0}" != "1" &
   phase_advance="$SCRIPT_DIR/cc-phase-advance.py"
   if [[ -f "$phase_advance" ]]; then
     set +e
-    python3 "$phase_advance" "$vault_root/closed/$(basename "$note_path")" "$task_id"
+    "$CC_CLOSE_PYTHON" "$phase_advance" "$vault_root/closed/$(basename "$note_path")" "$task_id"
     set -e
   fi
 

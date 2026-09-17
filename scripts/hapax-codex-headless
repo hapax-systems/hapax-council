@@ -10,11 +10,28 @@
 set -euo pipefail
 
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
-ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
+# This script's own tree first; COUNCIL_DIR's default does not exist under every
+# HOME, and the session identity below is now sourced from here rather than
+# hand-rolled, so an unfound helper must be a named refusal, not a silent limp.
+_hcxh_self="${BASH_SOURCE[0]:-$0}"
+if command -v readlink >/dev/null 2>&1; then
+  _hcxh_self="$(readlink -f "$_hcxh_self" 2>/dev/null || printf '%s' "$_hcxh_self")"
+fi
+ROLE_HELPER="$(cd "$(dirname "$_hcxh_self")/.." 2>/dev/null && pwd)/hooks/scripts/agent-role.sh"
+[ -f "$ROLE_HELPER" ] || ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
 if [ -f "$ROLE_HELPER" ]; then
   # shellcheck source=../hooks/scripts/agent-role.sh
   # shellcheck disable=SC1091
   . "$ROLE_HELPER"
+fi
+# Both helpers, and exit 78 (sysexits EX_CONFIG) rather than 9 — see the same
+# guard in scripts/hapax-claude for why: 8 and 9 are already
+# hapax-methodology-dispatch's own launch refusals.
+if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1 ||
+  ! declare -F hapax_consume_launch_capability_descriptors >/dev/null 2>&1; then
+  echo "hapax-codex-headless: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
+  echo "hapax-codex-headless: if this ran over SSH from hapax-methodology-dispatch, the incomplete checkout is on THIS host (${HOSTNAME:-$(uname -n)}), not the dispatcher's — repair or re-sync the council checkout there. Exit 78 is this identity refusal specifically; dispatch's own 8/9 mean launcher-not-found and no-declared-model-pin." >&2
+  exit 78
 fi
 if ! declare -F hapax_agent_is_codex_name >/dev/null 2>&1; then
   hapax_agent_is_codex_name() {
@@ -490,6 +507,15 @@ for name in (
     "HAPAX_CODEX_BIN_PATH",
     "NPM_CONFIG_PREFIX",
     "PASSWORD_STORE_DIR",
+    # The condition vector travels with the launch it describes. Remote exec starts
+    # `codex` directly, so no launcher runs on the exec host to re-derive these, and
+    # without them a remote lane's claims record no capability shape at all — the
+    # sibling claude-headless path forwards them for the same reason. Safe to send
+    # precisely because these are this launcher's POST-CONSUME values: anything
+    # inherited was cleared by hapax_consume_launch_capability_descriptors, so what
+    # is left is either addressed to this launcher or absent.
+    "HAPAX_CAPABILITY_ROUTE",
+    "HAPAX_CAPABILITY_MODEL",
 ):
     value = os.environ.get(name)
     if value is not None:
@@ -767,6 +793,136 @@ if [[ -z "$INITIAL_MSG" ]]; then
   exit 5
 fi
 
+# --- The model this launch actually runs, resolved once ------------------------
+#
+# Codex claims recorded no model at all: the dispatcher clears
+# HAPAX_CAPABILITY_MODEL so the launcher can publish what it really used (the
+# claude headless path does exactly that), and this launcher consumed the grant and
+# then published nothing. So `shape=(...)` on every codex claim carried harness and
+# route with a hole where the model belongs — a known component of the requested
+# capability, missing from the record of it.
+#
+# Resolved HERE, before cc-claim runs, because the claim is written at the gate
+# below and an export after that is an export nobody reads.
+#
+# A dedicated `--model`/`-m` beats every `-c model="..."` regardless of order, and
+# `-c` overrides apply in order among themselves — codex's own precedence, measured
+# rather than assumed (see the resolver's comment). So an operator's override is
+# honoured rather than ignored, and CODEX_ARGS is built from this same variable
+# further down — one source, so what is recorded and what is passed cannot drift.
+CODEX_DEFAULT_MODEL="gpt-6-astra"
+# Resolved by PARSING each `-c` value as the TOML fragment codex treats it as —
+# not by a shell pattern. The pattern version got two valid spellings wrong:
+# `model = "gpt-6-mini"` (spaces around `=`) matched nothing and silently recorded
+# the default, and `model='gpt-6-mini'` recorded the single quotes as part of the
+# name. In both cases the override still reached the harness, so the RECORD
+# disagreed with the launch — which is the one thing this field must never do.
+#
+# Last assignment wins, because codex applies `-c` in order.
+CODEX_MODEL="$(
+  python3 -I - codex-model-resolve "$CODEX_DEFAULT_MODEL" \
+    ${CODEX_EXTRA+"${CODEX_EXTRA[@]}"} <<'PYEOF' || true
+import sys
+import tomllib
+
+# EVERY form the harness accepts, in argv order, last wins:
+#   --model X / --model=X / -m X / -m=X / -mX      (the model flag)
+#   -c V / -c=V / -cV / --config V / --config=V    (config override; --config is
+#                                                   codex's documented alias for -c)
+# with V being `model="X"`, `model = "X"`, `model='X'`, or the raw `model=X`.
+#
+# The first cut recognised only a complete TOML assignment starting with `model`,
+# so `--model`, `-m` and an unquoted `-c model=gpt-6-mini` all recorded the default
+# while the override still reached codex — the record disagreeing with the launch,
+# which is the one thing this field must never do (review round 22).
+#
+# `-c` values are TOML when they parse as TOML and a raw string otherwise, which is
+# codex's own fallback; that is why the bare `model=X` branch exists rather than
+# being treated as malformed.
+def config_model(value):
+    """What a config-override value sets `model` to, or None.
+
+    TOML when it parses as TOML, raw string otherwise — codex's own fallback, which
+    is why the bare `model=X` branch exists rather than being rejected.
+    """
+    try:
+        table = tomllib.loads(value)
+    except tomllib.TOMLDecodeError:
+        return value[len("model=") :] or None if value.startswith("model=") else None
+    candidate = table.get("model") if isinstance(table, dict) else None
+    return candidate if isinstance(candidate, str) and candidate else None
+
+
+MODEL_FLAGS = ("--model", "-m")
+CONFIG_FLAGS = ("-c", "--config")
+
+# TWO results, not one — the dedicated flag and the config override are separate
+# sources and codex does NOT resolve them by position. `codex-rs` computes the
+# effective model as `model.or(cfg.model)`: `Option::or` keeps the dedicated
+# `--model` whenever it is present, so `-c model="X"` only applies when no
+# `--model` was given, no matter which came last on the line.
+#
+# Measured on this host with codex-cli 0.153.4, because a precedence claim about
+# someone else's parser is exactly the kind of thing that should not be taken on
+# reasoning: `codex exec --model gpt-6-astra -c 'model="gpt-6-mini"'` recorded
+# `"model":"gpt-6-astra"` in its own session rollout. The single-variable
+# last-wins version recorded `gpt-6-mini` while the harness ran `gpt-6-astra`
+# (review round 25, codex-1).
+#
+# Within each source, last wins: clap keeps the final `--model`, and codex applies
+# `-c` overrides in order.
+flag_model = None
+config_override = None
+
+args = sys.argv[3:]
+index = 0
+while index < len(args):
+    arg = args[index]
+    nxt = args[index + 1] if index + 1 < len(args) else None
+    taken = 1
+    if arg in MODEL_FLAGS and nxt is not None:
+        flag_model, taken = nxt, 2
+    elif arg in CONFIG_FLAGS and nxt is not None:
+        chosen = config_model(nxt)
+        taken = 2
+        if chosen:
+            config_override = chosen
+    else:
+        for flag in (*MODEL_FLAGS, *CONFIG_FLAGS):
+            attached = None
+            if arg.startswith(f"{flag}="):
+                attached = arg[len(flag) + 1 :]
+            elif len(flag) == 2 and arg.startswith(flag) and len(arg) > 2:
+                attached = arg[len(flag) :]  # clap short-option form: -cV / -mV
+            if attached is None:
+                continue
+            if flag in MODEL_FLAGS:
+                if attached:
+                    flag_model = attached
+            else:
+                chosen = config_model(attached)
+                if chosen:
+                    config_override = chosen
+            break
+    index += taken
+
+print(flag_model or config_override or sys.argv[2])
+PYEOF
+)"
+if [[ -z "$CODEX_MODEL" ]]; then
+  # The resolver could not run at all. Recording the default would be a guess about
+  # an override we could not read, so record nothing rather than something wrong —
+  # and say so, because a claim with no model is a real loss of evidence.
+  echo "hapax-codex-headless: WARNING — could not resolve the effective codex model (python3/tomllib unavailable); this lane's claims will record no model_family. Next action: repair python3 for this checkout." >&2
+  CODEX_MODEL=""
+fi
+# NOT exported here — see the publish beside the consume call further down. Exporting
+# at this point put the value in the environment BEFORE
+# hapax_consume_launch_capability_descriptors ran, and that call clears
+# HAPAX_CAPABILITY_MODEL for any launch the dispatcher did not pin. So a direct
+# headless launch executed a known model and recorded none: the publish was erased
+# by the very cleanup that exists to make publishing meaningful (review round 20).
+
 if [[ -e "$DISABLE_FILE" ]]; then
   echo "hapax-codex-headless: disabled by $DISABLE_FILE" >&2
   exit 77
@@ -814,7 +970,36 @@ strip_inherited_codex_access_token
 # claim lease (reform Phase 1, FM-2) and the hooks recover this lane's role.
 PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unknown}}"
 PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
-SESSION_UUID="$(normalize_session_uuid "${HAPAX_SESSION_ID:-}")"
+# Every headless launch is a fresh lane: MINT, never adopt the dispatcher's own
+# id. launch_codex_headless does os.environ.copy(), so inheriting here let two
+# same-role re-dispatched lanes share a claim key — the same defect
+# hapax-claude-headless fixed in #3875 and this sibling never adopted. This
+# launcher execs `codex` directly and never re-enters itself, so there is no
+# pinned-propagation case (claims-ontology-correction).
+# No addressee: this launcher execs `codex` directly and never re-enters itself,
+# so it always mints — including inside a pane whose pin is addressed to hapax-codex.
+hapax_consume_launch_session_id
+SESSION_UUID="$(normalize_session_uuid "$HAPAX_LAUNCH_SESSION_ID")"
+# Capability descriptors: ADDRESSED, because hapax-methodology-dispatch
+# .launch_codex_headless writes the route it resolved plus
+# HAPAX_CAPABILITY_PINNED=hapax-codex-headless. Anything else reaching this
+# process is inherited and is cleared — the session id and the condition vector
+# now answer "which launch is this?" the same way.
+hapax_consume_launch_capability_descriptors hapax-codex-headless
+# The model this launch runs, published AFTER the consume — the consume clears
+# HAPAX_CAPABILITY_MODEL for anything the dispatcher did not pin, so publishing
+# before it meant a direct headless launch executed a known model and recorded
+# none. Published unconditionally: the value is this launcher's own resolution
+# (CODEX_MODEL, which also builds `-c model=` below), never something inherited,
+# so it is exactly what "publish what you executed with" means — pinned or not.
+if [[ -n "$CODEX_MODEL" ]]; then
+  export HAPAX_CAPABILITY_MODEL="$CODEX_MODEL"
+fi
+# Session succession is NOT done here. A launcher-side helper lived here across
+# review rounds 2-6 and was removed: it cannot be made correct in a launcher (see
+# the REMOVED block in hooks/scripts/agent-role.sh for the proof) and is rowed
+# against cc-claim, which owns the lease lock. This launcher mints, which is what
+# origin/main does today, so nothing regressed.
 export HAPAX_PARENT_AGENT_INTERFACE="$PARENT_INTERFACE"
 export HAPAX_PARENT_AGENT_NAME="$PARENT_NAME"
 export HAPAX_AGENT_INTERFACE="codex"
@@ -1105,7 +1290,7 @@ CODEX_ARGS=(
   --skip-git-repo-check
   --json
   --cd "$WORKDIR"
-  -c 'model="gpt-6-astra"'
+  -c "model=\"${CODEX_MODEL:-$CODEX_DEFAULT_MODEL}\""
   -c 'model_reasoning_effort="xhigh"'
   -c 'approval_policy="never"'
   -c 'sandbox_mode="danger-full-access"'
