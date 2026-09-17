@@ -144,9 +144,9 @@ class InvalidChangeTokenError(RuntimeError):
 
 def _get_drive_service():
     """Build authenticated Drive API service."""
-    from agents._google_auth import build_service
+    from shared.google_auth import build_service
 
-    return build_service("drive", "v3", SCOPES)
+    return build_service("drive", "v3", SCOPES, interactive=False)
 
 
 # ── State Management ─────────────────────────────────────────────────────────
