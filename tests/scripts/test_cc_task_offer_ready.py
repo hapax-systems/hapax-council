@@ -254,3 +254,95 @@ def test_od2_preferred_platforms_gate(
 
     assert result.returncode == 0, result.stderr
     assert "status: offered" in text
+
+
+def _write_active_preferred(
+    vault: Path,
+    task_id: str,
+    *,
+    status: str = "offered",
+    preferred_platforms: str = "[kimi]",
+) -> Path:
+    return _write(
+        vault / "active" / f"{task_id}.md",
+        f"""\
+---
+type: cc-task
+task_id: {task_id}
+title: "{task_id}"
+status: {status}
+assigned_to: unassigned
+priority: p1
+wsjf: 5.0
+created_at: 2026-05-17T00:00:00Z
+updated_at: 2026-05-17T00:00:00Z
+parent_request: request.md
+authority_case: CASE-TEST-001
+parent_spec: spec.md
+quality_floor: deterministic_ok
+mutation_surface: vault_docs
+authority_level: authoritative
+route_metadata_schema: 1
+kind: planning
+route_constraints:
+  preferred_platforms: {preferred_platforms}
+---
+
+# {task_id}
+""",
+    )
+
+
+def test_concentration_cap_refuses_singleton_when_family_already_half(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_ready_task(vault, preferred_platforms="[kimi]")
+    _write_dep(vault)
+    _write_active_preferred(vault, "already-kimi", preferred_platforms="[Kimi]")
+
+    result = _run(vault)
+    text = task.read_text(encoding="utf-8")
+
+    assert result.returncode == 7, result.stderr
+    assert "route metadata is not dispatchable" in result.stderr
+    assert "CONCENTRATION_CAP_NUMERATOR" in result.stderr
+    assert "CONCENTRATION_CAP_DENOMINATOR" in result.stderr
+    assert "singleton [kimi]" in result.stderr
+    assert "glm" in result.stderr
+    assert "family-outage" in result.stderr
+    assert "status: ready" in text
+
+
+def test_concentration_cap_allows_two_element_set(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_ready_task(vault, preferred_platforms="[kimi, glm]")
+    _write_dep(vault)
+    _write_active_preferred(vault, "already-kimi", preferred_platforms="[kimi]")
+
+    result = _run(vault)
+
+    assert result.returncode == 0, result.stderr
+    assert "status: offered" in task.read_text(encoding="utf-8")
+
+
+def test_concentration_cap_allows_omitted_preferred_platforms(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_ready_task(vault)
+    _write_dep(vault)
+    _write_active_preferred(vault, "already-kimi", preferred_platforms="[kimi]")
+
+    result = _run(vault)
+
+    assert result.returncode == 0, result.stderr
+    assert "status: offered" in task.read_text(encoding="utf-8")
+
+
+def test_concentration_cap_allows_when_n_is_one(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_ready_task(vault, preferred_platforms="[kimi]")
+    _write_dep(vault)
+    _write_task(vault, "no-pref", status="offered", depends_on="dep")
+
+    result = _run(vault)
+
+    assert result.returncode == 0, result.stderr
+    assert "status: offered" in task.read_text(encoding="utf-8")

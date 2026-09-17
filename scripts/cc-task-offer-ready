@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import subprocess
 import sys
@@ -171,6 +172,10 @@ def normalized_route_fields(fields: dict[str, Any]) -> tuple[dict[str, Any], dic
 
 
 WALLED_SINGLETON_CARRIERS = frozenset({"claude"})
+CONCENTRATION_CAP_NUMERATOR = 1
+CONCENTRATION_CAP_DENOMINATOR = 2
+# Next-action classes while claude/codex remain in family-outage.
+CONCENTRATION_LIVE_CLASSES = ("kimi", "glm", "gemini")
 
 
 def _route_constraint_dicts(fields: dict[str, Any]) -> list[dict[str, Any]]:
@@ -203,7 +208,90 @@ def singleton_walled_carrier_blocker(fields: dict[str, Any]) -> str | None:
     return None
 
 
-def route_metadata_blocker(fields: dict[str, Any]) -> str | None:
+def _preferred_platforms_of(fields: dict[str, Any]) -> list[str] | None:
+    found: list[str] | None = None
+    for constraints in _route_constraint_dicts(fields):
+        if "preferred_platforms" not in constraints:
+            continue
+        found = [
+            item.strip().lower() for item in normalize_list(constraints.get("preferred_platforms"))
+        ]
+    return found
+
+
+def _is_same_task(path: Path, fields: dict[str, Any], task_id: str) -> bool:
+    other_id = strip_scalar(fields.get("task_id", path.stem))
+    return other_id == task_id or path.stem == task_id or path.stem.startswith(f"{task_id}-")
+
+
+def _concentration_next_class(family: str) -> str:
+    for candidate in CONCENTRATION_LIVE_CLASSES:
+        if candidate != family:
+            return candidate
+    return CONCENTRATION_LIVE_CLASSES[0]
+
+
+def preferred_platforms_concentration_blocker(
+    fields: dict[str, Any],
+    *,
+    vault_root: Path,
+    task_id: str,
+) -> str | None:
+    """Refuse a singleton preferred family that would take more than half the estate."""
+    preferred = _preferred_platforms_of(fields)
+    if preferred is None or len(preferred) != 1:
+        return None
+    family = preferred[0]
+    if not family:
+        return None
+
+    from shared.sdlc_lifecycle import TASK_ACTIVE_STATUSES
+
+    n = 0
+    family_count = 0
+    active_dir = vault_root / "active"
+    if active_dir.is_dir():
+        for path in active_dir.glob("*.md"):
+            try:
+                other = parse_fields(path)
+            except (ValueError, yaml.YAMLError, OSError):
+                continue
+            if _is_same_task(path, other, task_id):
+                continue
+            status = strip_scalar(other.get("status", "")).lower()
+            if status not in TASK_ACTIVE_STATUSES:
+                continue
+            other_pref = _preferred_platforms_of(other)
+            if not other_pref:
+                continue
+            n += 1
+            if len(other_pref) == 1 and other_pref[0] == family:
+                family_count += 1
+
+    n += 1
+    family_count += 1
+    if n < 2:
+        return None
+    cap = math.ceil(CONCENTRATION_CAP_NUMERATOR * n / CONCENTRATION_CAP_DENOMINATOR)
+    if family_count <= cap:
+        return None
+    alt = _concentration_next_class(family)
+    return (
+        f"preferred_platforms singleton [{family}] would be {family_count}/{n} of "
+        f"preferred active notes, exceeding concentration cap "
+        f"CONCENTRATION_CAP_NUMERATOR/CONCENTRATION_CAP_DENOMINATOR "
+        f"({CONCENTRATION_CAP_NUMERATOR}/{CONCENTRATION_CAP_DENOMINATOR}, ceil={cap}); "
+        f"next action: omit preferred_platforms or use a live class such as {alt} "
+        f"(not claude/codex while they are in family-outage)"
+    )
+
+
+def route_metadata_blocker(
+    fields: dict[str, Any],
+    *,
+    vault_root: Path | None = None,
+    task_id: str | None = None,
+) -> str | None:
     values = metadata_payload(fields)
     missing = [
         key
@@ -228,7 +316,12 @@ def route_metadata_blocker(fields: dict[str, Any]) -> str | None:
         return f"route_metadata_schema: invalid value {strip_scalar(schema)!r}"
     if quality_floor == "frontier_review_required" and authority_level == "authoritative":
         return "frontier_review_required artifacts cannot be authoritative directly"
-    return singleton_walled_carrier_blocker(fields)
+    walled = singleton_walled_carrier_blocker(fields)
+    if walled:
+        return walled
+    if vault_root is None or task_id is None:
+        return None
+    return preferred_platforms_concentration_blocker(fields, vault_root=vault_root, task_id=task_id)
 
 
 def metadata_payload(fields: dict[str, Any]) -> dict[str, Any]:
@@ -469,7 +562,7 @@ def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
         "assigned_to": "unassigned",
         "claimed_at": normalized_fields.get("claimed_at"),
     }
-    route_blocker = route_metadata_blocker(candidate_fields)
+    route_blocker = route_metadata_blocker(candidate_fields, vault_root=vault_root, task_id=task_id)
     if route_blocker:
         print(
             f"cc-task-offer-ready: refusing task '{task_id}' because route metadata is not "
