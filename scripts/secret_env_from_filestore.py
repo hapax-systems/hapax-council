@@ -34,7 +34,7 @@ store = default_store()
 if store.backend_id != "file":
     sys.stderr.write(
         f"secret_env_from_filestore: default_store backend_id={store.backend_id!r} "
-        "is not file. Next action: do not point this unit at PassStore.\n"
+        "is not file. Next action: do not point this unit at the pass backend.\n"
     )
     raise SystemExit(2)
 
