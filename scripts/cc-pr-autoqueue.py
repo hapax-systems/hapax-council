@@ -114,6 +114,7 @@ DEFAULT_ADMISSION_GOVERNOR_PATH = Path.home() / ".cache" / "hapax" / "pr-admissi
 KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 EXPECTED_MERGE_METHOD_OVERRIDE_ENV = "HAPAX_CC_PR_AUTOQUEUE_EXPECTED_MERGE_METHOD"
 OVERRIDE_CONTRADICTION_PREFIX = "auto_merge_method_override_contradicts_queue_governance:"
+TRANSIENT_TRANSPORT_UNVERIFIED_PREFIX = "auto_merge_method_unverified:transient_transport:"
 
 PASS_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 # Ordinary queue admission treats skipped/neutral as non-failing, but mitigation
@@ -482,6 +483,13 @@ def _merge_method_operator_next_action(
 
 
 def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
+    if _transient_transport_refusal_only(list(reasons)):
+        return (
+            "The merge-queue ruleset fetch hit a transient transport window (rate limit or "
+            "GitHub unavailable), which says nothing about this PR. A queued entry is held in "
+            "place — not dequeued — and no admission status is written; the next reconciler "
+            "pass re-evaluates once the window clears. No operator action is required."
+        )
     if any(reason.startswith(OVERRIDE_CONTRADICTION_PREFIX) for reason in reasons):
         return _merge_method_operator_next_action()
     merge_method_reason = any(
@@ -565,6 +573,18 @@ def _merge_method_mismatch_reason(
 
 def _expected_merge_method_unverified_reason(source: str | None) -> str:
     detail = _scalar(source) or "source_missing"
+    # A rulesets fetch that failed on a transient transport window (rate-limit / 429 / 5xx)
+    # says nothing about the PR — the same fetch succeeds at the next reset. Emit a distinct
+    # reason so the queue decision HOLDS a queued entry instead of dequeuing it, and so the
+    # admission-status writer skips the `failure` write that would drop the entry. Reuses the
+    # one canonical transport-window classifier; adds no second predicate for the same hazard.
+    if detail.startswith("rulesets_fetch_failed:"):
+        message = detail[len("rulesets_fetch_failed:") :]
+        if _admission_status_write_deferral_class(message) in {
+            "github_rate_limit",
+            "github_unavailable",
+        }:
+            return f"auto_merge_method_unverified:transient_transport:source={detail}"
     return f"auto_merge_method_unverified:expected_missing:source={detail}"
 
 
@@ -2047,6 +2067,15 @@ def _override_only_refusal(reasons: list[str]) -> bool:
     )
 
 
+def _transient_transport_refusal_only(reasons: list[str]) -> bool:
+    """Every blocker is an unverified merge-method caused solely by a transient transport
+    window (rate-limit / 429 / 5xx) on the rulesets fetch. Such a window says nothing about
+    the PR, so a queued entry is held in place rather than dequeued."""
+    return bool(reasons) and all(
+        reason.startswith(TRANSIENT_TRANSPORT_UNVERIFIED_PREFIX) for reason in reasons
+    )
+
+
 def classify_pr(
     pr: PullRequest,
     *,
@@ -2235,6 +2264,10 @@ def classify_pr(
     if reasons:
         if _override_only_refusal(reasons):
             action = "hold" if queued or pr.auto_merge_enabled else "blocked"
+        elif _transient_transport_refusal_only(reasons):
+            # Transport window says nothing about the PR: hold a queued entry (never
+            # dequeue), otherwise stay blocked and re-evaluate next pass once it clears.
+            action = "hold" if queued else "blocked"
         elif queued:
             action = "dequeue"
         elif pr.auto_merge_enabled and not expected_method_unverified:
@@ -2877,6 +2910,13 @@ def _admission_status_for(decision: Decision) -> tuple[str, str] | None:
         "already_auto_merge_enabled",
     }:
         return "success", _status_description(f"cc-pr-autoqueue admitted: {decision.action}")
+
+    if _transient_transport_refusal_only(list(decision.reasons or ())):
+        # A transient transport window (rate-limit / 429 / 5xx) on the rulesets fetch says
+        # nothing about the PR. Writing a `failure` status would fail the required
+        # hapax/autoqueue-admission check and make GitHub drop the queue entry (the #4672
+        # loss, 2026-09-16). Defer the write; the next pass re-evaluates once it clears.
+        return None
 
     if decision.action in {"blocked", "hold", "dequeue", "disable_auto_merge"}:
         reasons = "; ".join(decision.reasons or ("not ready for merge queue",))
