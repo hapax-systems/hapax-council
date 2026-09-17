@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "cc-task-offer-ready"
 
@@ -12,6 +15,18 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
+def _preferred_platforms_yaml(preferred: str | None, *, nested: bool) -> str:
+    if preferred is None:
+        return ""
+    if nested:
+        return (
+            "route_metadata:\n"
+            "  route_constraints:\n"
+            f"    preferred_platforms: {preferred}\n"
+        )
+    return f"route_constraints:\n  preferred_platforms: {preferred}\n"
+
+
 def _task_frontmatter(
     *,
     status: str = "ready",
@@ -19,7 +34,12 @@ def _task_frontmatter(
     depends_on: str = "dep",
     authority_level: str = "delegated",
     mutation_surface: str = "planning",
+    preferred_platforms: str | None = None,
+    nested_preferred_platforms: bool = False,
 ) -> str:
+    extra = _preferred_platforms_yaml(
+        preferred_platforms, nested=nested_preferred_platforms
+    )
     return f"""\
 ---
 type: cc-task
@@ -41,13 +61,13 @@ mutation_surface: {mutation_surface}
 authority_level: {authority_level}
 route_metadata_schema: 1
 kind: planning
----
+{extra}---
 
 # Ready Task
 """
 
 
-def _write_ready_task(vault: Path, **kwargs: str) -> Path:
+def _write_ready_task(vault: Path, **kwargs: Any) -> Path:
     return _write(vault / "active" / "ready-task.md", _task_frontmatter(**kwargs))
 
 
@@ -199,3 +219,44 @@ def test_reconcile_dry_run_does_not_modify(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "dry-run" in result.stdout
     assert "status: ready" in t1.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("preferred", "nested", "should_refuse"),
+    [
+        ("[claude]", False, True),
+        ("[Claude]", False, True),
+        ("[claude]", True, True),
+        (None, False, False),
+        ("[]", False, False),
+        ("[kimi]", False, False),
+        ("[claude, kimi]", False, False),
+        ("[grok]", False, False),
+        ("[gemini]", False, False),
+        ("[qwen]", False, False),
+    ],
+)
+def test_od2_preferred_platforms_gate(
+    tmp_path: Path, preferred: str | None, nested: bool, should_refuse: bool
+) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_ready_task(
+        vault,
+        preferred_platforms=preferred,
+        nested_preferred_platforms=nested,
+    )
+    _write_dep(vault)
+
+    result = _run(vault)
+    text = task.read_text(encoding="utf-8")
+
+    if should_refuse:
+        assert result.returncode == 7, result.stderr
+        assert "route metadata is not dispatchable" in result.stderr
+        assert "singleton walled carrier" in result.stderr
+        assert "OD2" in result.stderr
+        assert "status: ready" in text
+        return
+
+    assert result.returncode == 0, result.stderr
+    assert "status: offered" in text

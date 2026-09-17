@@ -170,6 +170,39 @@ def normalized_route_fields(fields: dict[str, Any]) -> tuple[dict[str, Any], dic
     return normalized, changes
 
 
+WALLED_SINGLETON_CARRIERS = frozenset({"claude"})
+
+
+def _route_constraint_dicts(fields: dict[str, Any]) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    nested = fields.get("route_metadata")
+    if isinstance(nested, dict):
+        nested_constraints = nested.get("route_constraints")
+        if isinstance(nested_constraints, dict):
+            found.append(nested_constraints)
+    top = fields.get("route_constraints")
+    if isinstance(top, dict):
+        found.append(top)
+    return found
+
+
+def singleton_walled_carrier_blocker(fields: dict[str, Any]) -> str | None:
+    """Refuse mint-time preferred_platforms:[claude] (OD2). Historical rows stay lint-clean."""
+    for constraints in _route_constraint_dicts(fields):
+        if "preferred_platforms" not in constraints:
+            continue
+        preferred = normalize_list(constraints.get("preferred_platforms"))
+        if len(preferred) != 1:
+            continue
+        only = preferred[0].strip().lower()
+        if only in WALLED_SINGLETON_CARRIERS:
+            return (
+                "preferred_platforms is a singleton walled carrier "
+                f"[{only}] (OD2); omit preferred_platforms or use a set of live classes"
+            )
+    return None
+
+
 def route_metadata_blocker(fields: dict[str, Any]) -> str | None:
     values = metadata_payload(fields)
     missing = [
@@ -195,7 +228,7 @@ def route_metadata_blocker(fields: dict[str, Any]) -> str | None:
         return f"route_metadata_schema: invalid value {strip_scalar(schema)!r}"
     if quality_floor == "frontier_review_required" and authority_level == "authoritative":
         return "frontier_review_required artifacts cannot be authoritative directly"
-    return None
+    return singleton_walled_carrier_blocker(fields)
 
 
 def metadata_payload(fields: dict[str, Any]) -> dict[str, Any]:
