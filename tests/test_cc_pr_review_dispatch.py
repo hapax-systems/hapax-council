@@ -4084,6 +4084,109 @@ class TestFamilyOutageDegradation:
         assert witness == {}
         assert json.loads(state.read_text(encoding="utf-8")) == {}
 
+    def test_route_admission_with_future_until_does_not_clear_structured_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """A post-outage route admission is not recovery while operator until is future."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        entry = {
+            "observed_at": observed,
+            "outage_started_at": "2026-06-11T20:55:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        state.write_text(json.dumps({"claude": entry}), encoding="utf-8")
+
+        class Resolved:
+            source = "live"
+            live_error = None
+            ledger = object()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "subscription_quota_state_for_route",
+            lambda _ledger, _route_id, *, now: (
+                SubscriptionQuotaState.FRESH,
+                (
+                    "relay-receipt:claude-subscription-quota-admission.yaml:"
+                    "observed_at:2026-06-11T20:56:00Z:"
+                    "fresh_until:2026-06-11T21:11:00Z",
+                ),
+            ),
+        )
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"claude": observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            now_iso="2026-06-11T21:00:00+00:00",
+            state_path=state,
+        )
+
+        assert witness == {"claude": observed}
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded["claude"] == entry
+
+    def test_route_admission_with_past_until_clears_structured_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Expired until yields to route-admission recovery."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": observed,
+                        "outage_started_at": "2026-06-11T20:55:00+00:00",
+                        "until": "2026-06-11T20:00:00Z",
+                        "note": "weekly reset",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        class Resolved:
+            source = "live"
+            live_error = None
+            ledger = object()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "subscription_quota_state_for_route",
+            lambda _ledger, _route_id, *, now: (
+                SubscriptionQuotaState.FRESH,
+                (
+                    "relay-receipt:claude-subscription-quota-admission.yaml:"
+                    "observed_at:2026-06-11T20:56:00Z:"
+                    "fresh_until:2026-06-11T21:11:00Z",
+                ),
+            ),
+        )
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"claude": observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            now_iso="2026-06-11T21:00:00+00:00",
+            state_path=state,
+        )
+
+        assert witness == {}
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
     @pytest.mark.parametrize(
         ("family", "route_id", "evidence_ref"),
         [
