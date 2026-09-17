@@ -5,13 +5,18 @@
 #   days     threshold (default 90)
 #   --dry-run  log what would be deleted, do not call DELETE
 #
-# Auth: reads ~/.password-store/tailscale/api-key (Bearer token).
+# Auth: reads tailscale/api-key from the FileStore through scripts/lib/secret.sh (Bearer token).
 # API:  https://tailscale.com/kb/1101/api  (uses GET /tailnet/-/devices then DELETE /device/{id}).
 #
 # Surfaced by 8-hour audit B3 P0-2 (script referenced by tailscale-cleanup.service was missing).
 # Service + timer at systemd/units/tailscale-cleanup.{service,timer}; timer fires Sun 03:30 weekly.
 
 set -euo pipefail
+
+# The installed entry point is a ~/.local/bin symlink into the release tree; resolve it so the
+# lib is found beside the TARGET. /usr/bin/readlink by absolute path keeps this PATH-independent.
+_hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+. "${_hapax_self%/*}/lib/secret.sh"
 
 THRESHOLD_DAYS="${1:-90}"
 DRY_RUN=0
@@ -26,14 +31,9 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "tailscale-cleanup: jq is required but missing" >&2
   exit 2
 fi
-if ! command -v pass >/dev/null 2>&1; then
-  echo "tailscale-cleanup: pass is required but missing" >&2
-  exit 2
-fi
-
-API_KEY="$(pass tailscale/api-key 2>/dev/null || true)"
+API_KEY="$(hapax_secret_get tailscale/api-key || true)"
 if [[ -z "$API_KEY" ]]; then
-  echo "tailscale-cleanup: no api-key in pass store at tailscale/api-key — aborting" >&2
+  echo "tailscale-cleanup: no api-key in the FileStore at tailscale/api-key — put it with hapax-secret; aborting" >&2
   exit 3
 fi
 

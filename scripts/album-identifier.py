@@ -32,6 +32,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+from shared.secrets import get_secret
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from shared.music.provenance import build_music_provenance_token
@@ -258,18 +260,15 @@ _track_id_lock = threading.Lock()
 
 
 def _get_litellm_key() -> str:
+    """The LiteLLM master key via shared.secrets: env LITELLM_API_KEY, then the FileStore."""
     global LITELLM_KEY
     if not LITELLM_KEY:
         try:
-            result = subprocess.run(
-                ["pass", "show", "litellm/master-key"],
-                capture_output=True,
-                text=True,
-                timeout=5,
+            LITELLM_KEY = (
+                get_secret("litellm/master-key", env="LITELLM_API_KEY", required=False) or ""
             )
-            LITELLM_KEY = result.stdout.strip()
         except Exception:
-            pass
+            LITELLM_KEY = ""
     return LITELLM_KEY
 
 

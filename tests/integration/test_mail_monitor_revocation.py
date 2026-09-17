@@ -88,7 +88,7 @@ def test_revocation_drill_renders_credentials_invalid() -> None:
     """End-to-end revocation drill against the live mail-monitor token.
 
     Pre-condition: ``mail-monitor/google-refresh-token`` is present in
-    ``pass`` and currently valid. The test fails fast with a clear
+    the FileStore and currently valid. The test fails fast with a clear
     message if the token is already missing/invalid (operator forgot to
     bootstrap, or already ran the drill).
 
@@ -103,7 +103,7 @@ def test_revocation_drill_renders_credentials_invalid() -> None:
             "`python -m agents.mail_monitor.oauth --first-consent` first."
         )
 
-    refresh_token = oauth._pass_show(oauth.REFRESH_TOKEN_PASS_KEY)
+    refresh_token = oauth._read_secret(oauth.REFRESH_TOKEN_PASS_KEY)
     assert refresh_token, "refresh token disappeared between load and read"
 
     response = requests.post(

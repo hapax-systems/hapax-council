@@ -15,7 +15,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "Issue actual butler push for each artifact. Phase 2.5 — "
-            "deferred until `pass insert itch/butler-token` lands."
+            "deferred until itch/butler-token is put with hapax-secret."
         ),
     )
     args = parser.parse_args(argv)
@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.commit:
         print(
             "ERROR: --commit path is Phase 2.5 (deferred until "
-            "`pass insert itch/butler-token` lands).",
+            "itch/butler-token is put with hapax-secret).",
             file=sys.stderr,
         )
         return 2

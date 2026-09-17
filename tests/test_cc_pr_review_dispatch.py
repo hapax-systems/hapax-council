@@ -2870,8 +2870,8 @@ public_gate_authority:
 
         assert result["status"] == "dispatched"
         assert (
-            "next action: restore the public-gate authority signing credential from pass"
-            in caplog.text
+            "next action: restore the public-gate authority signing credential from the "
+            "FileStore" in caplog.text
         )
         assert dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV not in caplog.text
 

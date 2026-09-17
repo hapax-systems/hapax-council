@@ -3605,3 +3605,50 @@ def test_no_secret_material_in_output(tmp_path: Path) -> None:
         "hapax-secrets.env",
     ):
         assert token not in text
+
+
+class TestGlmcpSecretSourceMigration:
+    """`secret_source` is a receipt DATA CONTRACT, and the reviewer and this validator cannot
+    swap in the same instant.
+
+    The reviewer now emits `filestore:glmcp/api-key` (it reads the FileStore, not pass).
+    Rejecting a `pass:`-sourced receipt that was truthful when it was written would drop real
+    spend from the ledger, so both are accepted for one receipt lifetime — admission receipts
+    carry `stale_after_seconds` <= 3600, so every legacy receipt has expired an hour after the
+    reviewer change deploys. The removal condition is stated at the constant.
+
+    This is a versioned enum during a migration, not a fallback: nothing here reaches further
+    on failure than the primary path does, and a third value is still refused.
+    """
+
+    @staticmethod
+    def _sources():
+        import runpy
+
+        module = runpy.run_path(
+            str(REPO_ROOT / "scripts" / "hapax-quota-telemetry-writer"), run_name="__pin__"
+        )
+        return module["GLMCP_ADMISSION_SECRET_SOURCES"]
+
+    def test_the_live_source_is_accepted(self) -> None:
+        assert "filestore:glmcp/api-key" in self._sources()
+
+    def test_the_legacy_source_is_still_accepted_during_the_migration(self) -> None:
+        assert "pass:glmcp/api-key" in self._sources()
+
+    def test_nothing_else_is_accepted(self) -> None:
+        for hostile in (
+            "",
+            "pass:other/key",
+            "filestore:other/key",
+            "env:GLMCP_API_KEY",
+            "operator-attestation",
+        ):
+            assert hostile not in self._sources(), hostile
+
+    def test_the_reviewer_emits_the_live_source(self) -> None:
+        """The producer and the validator must agree, or every glmcp spend receipt is
+        rejected and the PAYG ledger silently stops recording."""
+        reviewer = (REPO_ROOT / "scripts" / "hapax-glmcp-reviewer").read_text(encoding="utf-8")
+        assert '("secret_source", "filestore:glmcp/api-key")' in reviewer
+        assert '("secret_source", "pass:glmcp/api-key")' not in reviewer

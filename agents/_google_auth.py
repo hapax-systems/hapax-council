@@ -1,16 +1,18 @@
-"""Shared Google OAuth2 credential management.
+"""Shared Google OAuth2 credential management (legacy entry point).
 
-All Google service sync agents use this module for authentication.
-Credentials stored in pass(1): google/client-secret, google/token.
+All Google service sync agents use this module for authentication. Credentials live in the
+FileStore, read and written through ``shared.secrets``: ``google/client-secret`` and
+``google/token``. Never pass.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import subprocess
 
 from googleapiclient.discovery import build as discovery_build
+
+from shared.secrets import SecretIntegrityFailed, SecretUnavailable, get_secret, put_secret
 
 log = logging.getLogger(__name__)
 
@@ -28,26 +30,33 @@ ALL_SCOPES = [
 ]
 
 
-def _load_token_from_pass(scopes: list[str]):
-    """Load OAuth2 credentials from pass store. Returns Credentials or None."""
+def _load_token(scopes: list[str]):
+    """Load OAuth2 credentials from the ``google/token`` secret. Returns Credentials or None.
+
+    An integrity failure on the stored blob propagates: a token that is present but will not
+    verify is not "no token yet".
+    """
     from google.oauth2.credentials import Credentials
 
     try:
-        token_json = subprocess.check_output(
-            ["pass", "show", TOKEN_PASS_KEY],
-            stderr=subprocess.DEVNULL,
-        ).decode()
+        token_json = get_secret(TOKEN_PASS_KEY, required=False)
+    except SecretIntegrityFailed:
+        raise
+    except SecretUnavailable as exc:
+        log.debug("Could not load token: %s", type(exc).__name__)
+        return None
+    if not token_json:
+        log.debug("No existing token in the FileStore")
+        return None
+    try:
         return Credentials.from_authorized_user_info(json.loads(token_json), scopes)
-    except subprocess.CalledProcessError:
-        log.debug("No existing token in pass store")
-        return None
     except Exception as exc:
-        log.debug("Could not load token: %s", exc)
+        log.debug("Could not load token: %s", type(exc).__name__)
         return None
 
 
-def _save_token_to_pass(creds) -> None:
-    """Save OAuth token to pass store."""
+def _save_token(creds) -> None:
+    """Save the OAuth token JSON under the ``google/token`` secret (the FileStore)."""
     token_data = json.dumps(
         {
             "token": creds.token,
@@ -58,13 +67,10 @@ def _save_token_to_pass(creds) -> None:
             "scopes": list(creds.scopes or []),
         }
     )
-    proc = subprocess.run(
-        ["pass", "insert", "-m", TOKEN_PASS_KEY],
-        input=token_data.encode(),
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        log.warning("Failed to save token to pass: %s", proc.stderr.decode())
+    try:
+        put_secret(TOKEN_PASS_KEY, token_data.encode("utf-8"))
+    except SecretUnavailable as exc:
+        log.warning("Failed to save token: %s", type(exc).__name__)
 
 
 def get_google_credentials(scopes: list[str]):
@@ -75,7 +81,7 @@ def get_google_credentials(scopes: list[str]):
     """
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    creds = _load_token_from_pass(scopes)
+    creds = _load_token(scopes)
     if creds:
         if creds.valid:
             return creds
@@ -84,7 +90,7 @@ def get_google_credentials(scopes: list[str]):
 
             try:
                 creds.refresh(Request())
-                _save_token_to_pass(creds)
+                _save_token(creds)
                 return creds
             except Exception as exc:
                 log.info("Token refresh failed (scope change?): %s", exc)
@@ -92,13 +98,10 @@ def get_google_credentials(scopes: list[str]):
     # No valid token — run OAuth flow with all known scopes
     # so a single consent covers Drive, Calendar, Gmail, etc.
     all_scopes = list(set(scopes) | set(ALL_SCOPES))
-    client_json = subprocess.check_output(
-        ["pass", "show", CLIENT_SECRET_PASS_KEY],
-        stderr=subprocess.DEVNULL,
-    ).decode()
+    client_json = get_secret(CLIENT_SECRET_PASS_KEY)
     flow = InstalledAppFlow.from_client_config(json.loads(client_json), all_scopes)
     creds = flow.run_local_server(port=0)
-    _save_token_to_pass(creds)
+    _save_token(creds)
     return creds
 
 

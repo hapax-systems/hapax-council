@@ -16,8 +16,6 @@ import json
 import math
 import os
 import re
-import shutil
-import subprocess
 import sys
 import tempfile
 import urllib.error
@@ -175,7 +173,7 @@ def usage() -> str:
 Reads a blind review prompt on stdin and writes the GLM reviewer reply to stdout.
 
 Environment overrides:
-  HAPAX_GLMCP_REVIEW_SECRET_ENTRY       pass entry name (default: glmcp/api-key)
+  HAPAX_GLMCP_REVIEW_SECRET_ENTRY       FileStore secret name (default: glmcp/api-key)
   HAPAX_GLMCP_REVIEW_BASE_URL          OpenAI-compatible Coding Plan base URL
   HAPAX_GLMCP_REVIEW_MODEL             model (default: glm-5.2)
   HAPAX_GLMCP_REVIEW_TIMEOUT_SECONDS   request timeout (default: 900)
@@ -265,13 +263,13 @@ def load_config() -> ReviewConfig:
     if secret_entry != DEFAULT_SECRET_ENTRY:
         if os.environ.get("HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE") != "1":
             raise ConfigError(
-                f"refusing pass entry {secret_entry!r}; expected {DEFAULT_SECRET_ENTRY}. "
+                f"refusing secret name {secret_entry!r}; expected {DEFAULT_SECRET_ENTRY}. "
                 "Set HAPAX_GLMCP_REVIEW_ALLOW_SECRET_ENTRY_OVERRIDE=1 only after "
                 "reviewing the alternate glmcp/* entry."
             )
         if not _valid_glmcp_secret_entry(secret_entry):
             raise ConfigError(
-                "refused pass entry; this adapter only reads non-traversing glmcp/* "
+                "refused secret name; this adapter only reads non-traversing glmcp/* "
                 "secrets. Use a reviewed glmcp/* entry or a separate adapter for "
                 "other providers."
             )
@@ -318,8 +316,8 @@ def load_config() -> ReviewConfig:
     payg_fallback = _env_bool("HAPAX_GLMCP_REVIEW_PAYG_FALLBACK", payg_fallback_default)
     if payg_fallback and secret_entry != DEFAULT_SECRET_ENTRY:
         raise ConfigError(
-            "PAYG fallback requires the default pass entry so spend receipts can state "
-            "secret_source=pass:glmcp/api-key truthfully; set "
+            "PAYG fallback requires the default secret name so spend receipts can state "
+            "secret_source=filestore:glmcp/api-key truthfully; set "
             "HAPAX_GLMCP_REVIEW_PAYG_FALLBACK=0 for reviewed alternate glmcp/* entries"
         )
     if normalized_base == normalized_payg_base:
@@ -341,34 +339,40 @@ def load_config() -> ReviewConfig:
 
 
 def read_secret(secret_entry: str) -> str:
-    if shutil.which("pass") is None:
-        raise ConfigError(
-            "pass is not on PATH; install pass or add it to PATH before using "
-            "the glmcp/api-key secret"
-        )
+    """Read one secret from the FileStore through the shared resolver. Never pass.
+
+    Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going
+    forward. `shared.secrets.get_secret` is the one Python resolver — env, then the
+    FileStore via the reins pin, then the `hapax-secret` CLI on hosts without the module,
+    then a typed refusal. It never logs a value, and a corrupt blob raises rather than
+    reading as absent.
+
+    The three failure shapes this used to distinguish are preserved, because they need
+    different operator actions: the tool is unavailable, the entry is absent, and the blob
+    failed its integrity check are not the same problem.
+    """
+
     try:
-        proc = subprocess.run(
-            ["pass", "show", secret_entry],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
+        from shared.secrets import SecretIntegrityFailed, SecretUnavailable, get_secret
+    except ImportError as exc:  # pragma: no cover - the repo root is on sys.path above
         raise ConfigError(
-            f"failed to run pass show {secret_entry!r}: {exc}; "
-            f"check: pass show {secret_entry!r} >/dev/null"
+            f"could not import the estate secret resolver: {exc}. "
+            "Next action: run from the council checkout so shared/ is importable."
         ) from exc
-    if proc.returncode != 0:
+
+    try:
+        token = get_secret(secret_entry)
+    except SecretIntegrityFailed as exc:
         raise ConfigError(
-            f"failed to read pass entry {secret_entry!r}; pass stderr suppressed to avoid "
-            f"replaying secret-adjacent diagnostics; check: pass show {secret_entry!r} >/dev/null"
-        )
-    token = proc.stdout.splitlines()[0] if proc.stdout.splitlines() else ""
+            f"the stored blob for {secret_entry!r} failed its integrity check — corruption "
+            f"or tampering, not an absent secret. Next action: {exc.legal_next}"
+        ) from exc
+    except SecretUnavailable as exc:
+        raise ConfigError(f"no secret for {secret_entry!r}. Next action: {exc.legal_next}") from exc
     if not token:
         raise ConfigError(
-            f"pass entry {secret_entry!r} returned an empty first line; update line 1 "
-            "to the Z.ai Coding Plan API key"
+            f"the stored secret {secret_entry!r} is empty. Next action: put the Z.ai Coding "
+            f"Plan API key with `hapax-secret {secret_entry}`"
         )
     return token
 
@@ -1105,7 +1109,7 @@ def _payg_spend_receipt_fields(
         ("billing_mode", "api_credit_payg"),
         ("payg_fallback", "true"),
         ("primary_error_class", primary_error.info.error_class),
-        ("secret_source", "pass:glmcp/api-key"),
+        ("secret_source", "filestore:glmcp/api-key"),
         ("secret_value_persisted", "false"),
         ("prompt_or_output_persisted", "false"),
     ]

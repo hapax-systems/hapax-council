@@ -34,6 +34,8 @@ from pathlib import Path
 import numpy as np
 from pydantic import BaseModel, Field
 
+from shared.secrets import SecretUnavailable, get_secret
+
 try:
     import torchaudio
 except ImportError:
@@ -684,26 +686,15 @@ def _load_diarization_pipeline():
     """Load pyannote speaker diarization pipeline (lazy, cached)."""
     global _diarization_pipeline
     if _diarization_pipeline is None:
-        import os
-
         import torch
         from pyannote.audio import Pipeline
 
-        hf_token = os.environ.get("HF_TOKEN", "")
-        if not hf_token:
-            import subprocess
-
-            try:
-                result = subprocess.run(
-                    ["pass", "show", "huggingface/token"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if result.returncode == 0:
-                    hf_token = result.stdout.strip()
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                pass
+        # ``api/huggingface`` is the estate name for this token (the env producer maps
+        # HF_TOKEN to it); the ``huggingface/token`` entry this used to read never existed.
+        try:
+            hf_token = get_secret("api/huggingface", env="HF_TOKEN", required=False) or ""
+        except SecretUnavailable:
+            hf_token = ""
 
         _diarization_pipeline = Pipeline.from_pretrained(
             "pyannote/speaker-diarization-3.1",

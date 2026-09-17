@@ -10,7 +10,7 @@
 #   HAPAX_OPERATOR_ORCID=0009-0001-5146-4548 scripts/configure-orcid.sh
 #
 # The env-var path is wired via shared.orcid.operator_orcid() which checks
-# $HAPAX_OPERATOR_ORCID first and falls back to `pass show orcid/orcid` —
+# $HAPAX_OPERATOR_ORCID first and falls back to the FileStore (`orcid/orcid`) —
 # this script's env-file write becomes load-bearing once the systemd unit
 # loads it (or the operator sources it from a shell).
 #

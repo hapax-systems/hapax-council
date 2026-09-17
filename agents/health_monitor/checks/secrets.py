@@ -1,10 +1,11 @@
-"""Secret validation checks (environment variables + pass store)."""
+"""Secret validation checks (environment variables + the FileStore; never pass)."""
 
 from __future__ import annotations
 
 import os
-import subprocess
 import time
+
+from shared.secrets import SecretIntegrityFailed, SecretUnavailable, get_secret, put_instruction
 
 from .. import constants as _c
 from .. import utils as _u
@@ -12,45 +13,63 @@ from ..models import CheckResult, Status
 from ..registry import check_group
 
 
-def _pass_show(path: str) -> str:
-    """Try to read a secret from pass. Returns empty string on failure."""
+def _store_secret(name: str) -> str:
+    """The FileStore value for ``name`` through ``shared.secrets``; ``""`` when absent.
+
+    An integrity failure propagates: a blob that is present but will not verify must not be
+    reported as "not set".
+    """
     try:
-        result = subprocess.run(
-            ["pass", "show", path],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        return result.stdout.strip() if result.returncode == 0 else ""
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return get_secret(name, required=False) or ""
+    except SecretIntegrityFailed:
+        raise
+    except SecretUnavailable:
         return ""
 
 
-def _get_secret(env_var: str, pass_path: str) -> tuple[str, str]:
-    """Get secret from env var, falling back to pass. Returns (value, source)."""
+def _get_secret(env_var: str, name: str) -> tuple[str, str]:
+    """Env var first, then the FileStore. Returns ``(value, source)``.
+
+    ``source`` is ``"env"``, ``"store"``, ``""`` (absent) or ``"integrity_failed"``.
+    """
     val = os.environ.get(env_var, "")
     if val:
         return val, "env"
-    val = _pass_show(pass_path)
+    try:
+        val = _store_secret(name)
+    except SecretIntegrityFailed:
+        return "", "integrity_failed"
     if val:
-        return val, "pass"
+        return val, "store"
     return "", ""
 
 
 @check_group("secrets")
 async def check_env_secrets() -> list[CheckResult]:
-    """Validate required secrets are accessible (env var or pass store)."""
+    """Validate required secrets are accessible (env var or the FileStore)."""
     results: list[CheckResult] = []
-    for var, pass_path in _c.REQUIRED_SECRETS.items():
+    for var, name in _c.REQUIRED_SECRETS.items():
         t = time.monotonic()
-        val, source = _get_secret(var, pass_path)
-        if not val:
+        val, source = _get_secret(var, name)
+        if source == "integrity_failed":
             results.append(
                 CheckResult(
                     name=f"secrets.{var.lower()}",
                     group="secrets",
                     status=Status.FAILED,
-                    message=f"{var} not set (env or pass)",
+                    message=f"{var}: stored blob failed its integrity check (not a missing secret)",
+                    remediation="hapax-secret --audit",
+                    duration_ms=_u._timed(t),
+                )
+            )
+        elif not val:
+            results.append(
+                CheckResult(
+                    name=f"secrets.{var.lower()}",
+                    group="secrets",
+                    status=Status.FAILED,
+                    message=f"{var} not set (env or FileStore)",
+                    remediation=put_instruction(name),
                     duration_ms=_u._timed(t),
                 )
             )

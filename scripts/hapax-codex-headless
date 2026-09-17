@@ -489,7 +489,6 @@ for name in (
     "HAPAX_IDLE_UPDATE_SECONDS",
     "HAPAX_CODEX_BIN_PATH",
     "NPM_CONFIG_PREFIX",
-    "PASSWORD_STORE_DIR",
 ):
     value = os.environ.get(name)
     if value is not None:
@@ -827,7 +826,6 @@ export HAPAX_WORKTREE_ROLE="$HAPAX_AGENT_SLOT"
 export HAPAX_SESSION_ID="$SESSION_UUID"
 export CLAUDE_ROLE="${CLAUDE_ROLE:-$SESSION}"
 export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
-export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
 export LOGOS_BASE_URL
 export COCKPIT_BASE_URL
 
