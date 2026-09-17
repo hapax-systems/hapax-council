@@ -28,6 +28,61 @@ from shared.secrets import (
 )
 
 
+def _install_local_name_mapping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``secret_store_name`` work on CI, which has no reins API.
+
+    Mapping and integrity tests must run against FileStore-local behaviour. They
+    must not skip, and they must not fall through to the hapax-secret CLI. The
+    live ``hapax_secret.name_of`` stays preferred so the one-implementation pin
+    still compares against the real module when it is installed.
+    """
+    import shared.secrets as secrets
+
+    secrets._name_of.cache_clear()
+    if secrets.reins_api_path() is not None:
+        return
+    api = tmp_path / "reins-api-stub"
+    api.mkdir()
+    (api / "hapax_secret.py").write_text(
+        "import re\n"
+        "ALIASES = {\n"
+        '    "litellm/master-key": "litellm-master-key",\n'
+        '    "langfuse/public-key": "langfuse-public-key",\n'
+        '    "langfuse/secret-key": "langfuse-secret-key",\n'
+        "}\n"
+        '_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")\n'
+        "\n"
+        "def name_of(raw: str) -> str:\n"
+        '    text = raw.strip().lstrip("/")\n'
+        "    if not text:\n"
+        '        raise ValueError("secret name is empty")\n'
+        '    mapped = ALIASES.get(text, text.replace("/", "-"))\n'
+        "    if (\n"
+        '        mapped in {".", ".."}\n'
+        '        or "/" in mapped\n'
+        "        or chr(92) in mapped\n"
+        "        or _NAME_RE.fullmatch(mapped) is None\n"
+        "    ):\n"
+        '        raise ValueError("secret name must map to [A-Za-z0-9._-]+")\n'
+        "    return mapped\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HAPAX_REINS_API", str(api))
+    secrets._name_of.cache_clear()
+
+
+@pytest.fixture
+def local_name_mapping(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import shared.secrets as secrets
+
+    installed_stub = secrets.reins_api_path() is None
+    _install_local_name_mapping(tmp_path, monkeypatch)
+    yield
+    secrets._name_of.cache_clear()
+    if installed_stub:
+        sys.modules.pop("hapax_secret", None)
+
+
 def _code_only(text: str) -> str:
     """`text` with docstrings and comments removed, so a string gate reads code not prose."""
     import ast
@@ -65,7 +120,8 @@ def store(tmp_path, monkeypatch):
     """A real FileStore rooted in tmp_path, seeded through the shipped put path."""
     monkeypatch.setenv("REINS_SECRET_STORE", str(tmp_path / "secrets"))
     api = reins_api_path()
-    if api is None:
+    # A mapping-only HAPAX_REINS_API stub (CI) is not the FileStore module.
+    if api is None or not (api / "k0" / "key_capture.py").is_file():
         pytest.skip("reins API not present on this host")
     if str(api) not in sys.path:
         sys.path.insert(0, str(api))
@@ -104,6 +160,7 @@ class TestResolutionOrder:
         assert get_secret("demo/delta") == "a b\tc"
 
 
+@pytest.mark.usefixtures("local_name_mapping")
 class TestNameMapping:
     def test_slashes_become_dashes(self) -> None:
         assert secret_store_name("hapax-reviewer/org") == "hapax-reviewer-org"
@@ -121,11 +178,23 @@ class TestNameMapping:
         Asserted as behaviour plus absence-of-a-copy rather than function identity, because a
         thin delegating wrapper is fine and `is` would forbid it.
         """
-        api = reins_api_path()
-        if api is None:
+        # Ignore HAPAX_REINS_API (the CI mapping stub). This pin is about the live
+        # module; a stub compared to itself would not catch a private copy here.
+        live = next(
+            (
+                candidate
+                for candidate in (
+                    Path.home() / ".local" / "share" / "reins" / "current" / "api",
+                    Path.home() / "projects" / "reins" / "api",
+                )
+                if (candidate / "hapax_secret.py").is_file()
+            ),
+            None,
+        )
+        if live is None:
             pytest.skip("reins API not present on this host")
-        if str(api) not in sys.path:
-            sys.path.insert(0, str(api))
+        if str(live) not in sys.path:
+            sys.path.insert(0, str(live))
         import hapax_secret
 
         for raw in (
@@ -246,6 +315,7 @@ class TestSubprocessFallback:
             get_secret("demo/cli")
 
 
+@pytest.mark.usefixtures("local_name_mapping")
 class TestIntegrityFailureIsNotAbsence:
     """reins PR 44 makes `FileStore.get` RAISE `SecretIntegrityError` where it used to return
     `None`. A corrupt or tampered blob is not a missing secret, and the difference is
@@ -268,6 +338,13 @@ class TestIntegrityFailureIsNotAbsence:
 
         monkeypatch.setattr(secrets, "_file_store", lambda: _Corrupt())
         monkeypatch.setattr(secrets, "_integrity_error_types", lambda: (error_type,))
+        monkeypatch.setattr(
+            secrets,
+            "_from_cli",
+            lambda name: (_ for _ in ()).throw(
+                AssertionError("integrity failure must not fall through to the CLI")
+            ),
+        )
         return secrets
 
     def test_a_corrupt_blob_raises_typed_and_names_the_audit(self, monkeypatch) -> None:
