@@ -797,8 +797,11 @@ def clear_route_recovered_family_outage(
     receipt is a recovery witness for that backing route; if the route is still
     blocked, the outage latch stays intact. The route_blocked_families input is
     the operational killswitch for a bad recovery detector: route-block the
-    family and this helper will not clear its outage latch. Legacy one-line
-    outage entries remain explicit family outages and are not route-cleared.
+    family and this helper will not clear its outage latch. A parseable until
+    still in the future is not recovery: a post-outage route admission must
+    not pop that family. After until lapses, or when until is absent,
+    route-admission recovery is unchanged. Legacy one-line outage entries
+    remain explicit family outages and are not route-cleared.
     """
 
     if not outage_witness:
@@ -820,6 +823,10 @@ def clear_route_recovered_family_outage(
         if family in structured_outage_families
         and family in route_ids
         and family not in route_blocked_families
+        and not _family_until_still_active(
+            raw_state.get(family),
+            now_iso or datetime.now(UTC).isoformat(),
+        )
         and _route_has_post_outage_admission_witness(
             route_ids[family],
             observed_at,
