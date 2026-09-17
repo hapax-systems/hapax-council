@@ -66,6 +66,9 @@ from github_pr_status import (  # noqa: E402
 )
 
 from shared import public_gate_receipts  # noqa: E402
+from shared.platform_capability_registry import (  # noqa: E402
+    _route_specific_quota_admission_fresh,
+)
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
@@ -717,6 +720,67 @@ def load_family_outage(now_iso: str, state_path: Path | None = None) -> frozense
     return frozenset(load_family_outage_witness(now_iso, state_path))
 
 
+def _family_outage_entry_has_until(existing: Any) -> bool:
+    """True when a dict outage entry carries an operator-authored until key."""
+
+    return isinstance(existing, dict) and "until" in existing
+
+
+def _glmcp_payg_transition_budget_active(now: datetime | None) -> bool:
+    """True when a live TransitionBudget is active for glmcp-review-direct / z_ai."""
+
+    try:
+        resolved = review_team.load_quota_spend_ledger_resolved()
+    except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
+        return False
+    if getattr(resolved, "source", None) != "live":
+        return False
+    ledger = getattr(resolved, "ledger", None)
+    if ledger is None:
+        return False
+    try:
+        budgets = ledger.active_paid_budgets(now=now)
+    except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
+        return False
+    provider = review_team.GLMCP_PAYG_BUDGET_PROVIDER
+    profile = review_team.GLMCP_PAYG_BUDGET_PROFILE
+    return any(
+        provider in getattr(budget, "providers_allowed", ())
+        and profile in getattr(budget, "profiles_allowed", ())
+        for budget in budgets
+    )
+
+
+def _glmcp_review_direct_quota_admission_fresh(now: datetime | None) -> bool:
+    """True when glmcp.review.direct has a fresh route-specific quota admission."""
+
+    try:
+        fresh, _refs = _route_specific_quota_admission_fresh(
+            {"route_id": review_team.GLMCP_PAYG_BUDGET_ROUTE_ID},
+            now=now,
+        )
+    except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
+        return False
+    return bool(fresh)
+
+
+def _glmcp_payg_review_route_eligible(now_iso: str) -> bool:
+    """True when glmcp.review.direct PAYG is a live glm review route.
+
+    A Coding Plan wall is not glm-family death. PAYG stays eligible when a live
+    TransitionBudget is active for glmcp-review-direct / z_ai, or when
+    glmcp.review.direct has a fresh route-specific quota admission.
+    """
+
+    now = _parse_aware_datetime(now_iso)
+    try:
+        if _glmcp_payg_transition_budget_active(now):
+            return True
+        return _glmcp_review_direct_quota_admission_fresh(now)
+    except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
+        return False
+
+
 def update_family_outage(
     reviews: list[dict[str, Any]],
     now_iso: str,
@@ -728,6 +792,11 @@ def update_family_outage(
     preserves operator-authored until/note and never invents until. A
     parseable verdict or invalid-output clears the family only when until
     is absent or now >= until; a still-future until keeps the family OUT.
+
+    Family ``glm`` is the exception when glmcp.review.direct PAYG is
+    eligible: a Coding Plan wall is not glm-family death, so glm is not
+    inserted or restamped, and a no-until glm latch is popped. claude and
+    codex are never popped by this PAYG path.
     """
 
     state_path = state_path or FAMILY_OUTAGE_STATE
@@ -746,8 +815,12 @@ def update_family_outage(
             for r in reviews:
                 by_family.setdefault(str(r.get("family")), []).append(str(r.get("verdict")))
             available_verdicts = PARSEABLE_VERDICTS | {"invalid-output"}
+            glm_payg_eligible = _glmcp_payg_review_route_eligible(now_iso)
             for family, verdicts in by_family.items():
                 if all(v in review_team.FAMILY_OUTAGE_VERDICTS for v in verdicts):
+                    if family == "glm" and glm_payg_eligible:
+                        # Coding Plan wall ≠ glm-family death. Do not insert/restamp glm.
+                        continue
                     # Sustained outage: preserve the STABLE outage_started_at (set when this
                     # outage began) and only advance observed_at. Legacy str entries seed
                     # started == the old timestamp; a brand-new outage seeds started == now.
@@ -766,6 +839,10 @@ def update_family_outage(
                         # Stay OUT until operator until. Do not pop until/note.
                         continue
                     state.pop(family, None)
+            if glm_payg_eligible:
+                existing_glm = state.get("glm")
+                if existing_glm is not None and not _family_outage_entry_has_until(existing_glm):
+                    state.pop("glm", None)
             with tempfile.NamedTemporaryFile(
                 "w",
                 encoding="utf-8",
