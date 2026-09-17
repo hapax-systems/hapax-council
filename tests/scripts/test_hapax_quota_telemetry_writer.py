@@ -3683,10 +3683,11 @@ def test_registry_pools_loaded_flag_witnesses_the_fail_closed_state(
     stub = _fake_nvidia_smi(tmp_path, "echo '1000, 32000'")
     out = tmp_path / "out" / "quota-spend-ledger-live.json"
 
-    def boom(*args, **kwargs):
-        raise main_globals["PlatformCapabilityRegistryError"]("registry unavailable (test)")
-
-    monkeypatch.setitem(main_globals, "load_platform_capability_registry_for_dispatch", boom)
+    monkeypatch.setitem(
+        main_globals,
+        "PLATFORM_CAPABILITY_REGISTRY",
+        Path("/nonexistent/hapax-platform-capability-registry.json"),
+    )
     monkeypatch.setitem(
         main_globals,
         "pull_forward_due_producers",
@@ -3923,18 +3924,16 @@ def test_static_registry_failure_fails_closed_to_the_quota_ttl(
     closed to the quota TTL, which can only tighten the witness. The failure
     must be visible on stderr with a next action, not silent."""
     sys.path.insert(0, str(REPO_ROOT))
-    from shared.platform_capability_registry import PlatformCapabilityRegistryError
 
     namespace = runpy.run_path(str(SCRIPT))
-
-    def unavailable(*args, **kwargs):
-        raise PlatformCapabilityRegistryError("synthetic: registry unavailable")
 
     # runpy.run_path returns a COPY of the module globals — patch the live
     # function globals, the same idiom the main-flow tests use for main().
     pools_globals = namespace["static_registry_route_pools"].__globals__
     monkeypatch.setitem(
-        pools_globals, "load_platform_capability_registry_for_dispatch", unavailable
+        pools_globals,
+        "PLATFORM_CAPABILITY_REGISTRY",
+        Path("/nonexistent/hapax-platform-capability-registry.json"),
     )
     pools_globals["_static_registry_route_pools_cache"] = None
     assert namespace["static_registry_route_pools"]() == {}

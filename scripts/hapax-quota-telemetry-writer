@@ -193,7 +193,9 @@ from shared.platform_capability_receipts import (  # noqa: E402
     receipt_reference,
 )
 from shared.platform_capability_registry import (  # noqa: E402
+    PLATFORM_CAPABILITY_REGISTRY,
     CapacityPool,
+    PlatformCapabilityRegistry,
     PlatformCapabilityRegistryError,
     QuotaSource,
     _quota_unobservable_nonblocking,
@@ -201,7 +203,6 @@ from shared.platform_capability_registry import (  # noqa: E402
     _route_receipt_resource_reason_codes,
     _route_wrapper_for_receipt,
     _surface_status_from_reasons,
-    load_platform_capability_registry_for_dispatch,
 )
 from shared.quota_spend_ledger import (  # noqa: E402
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
@@ -2742,13 +2743,15 @@ def static_registry_route_pools() -> dict[str, tuple[CapacityPool, QuotaSource]]
     global _static_registry_route_pools_cache, _static_registry_route_pools_state
     if _static_registry_route_pools_cache is None:
         try:
-            registry, _ = load_platform_capability_registry_for_dispatch(apply_receipts=False)
+            registry = PlatformCapabilityRegistry.model_validate(
+                json.loads(PLATFORM_CAPABILITY_REGISTRY.read_text(encoding="utf-8"))
+            )
             _static_registry_route_pools_cache = {
                 route.route_id: (route.capacity_pool, route.telemetry.quota_source)
                 for route in registry.routes
             }
             _static_registry_route_pools_state = "loaded"
-        except PlatformCapabilityRegistryError as exc:
+        except (OSError, json.JSONDecodeError, PlatformCapabilityRegistryError) as exc:
             print(
                 "hapax-quota-telemetry-writer: static capability registry unavailable "
                 f"({exc}); receipt-surface expiries fail closed to the quota TTL. "
