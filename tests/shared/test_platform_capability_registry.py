@@ -1930,13 +1930,21 @@ KIMI_NOW = datetime(2026, 9, 11, 15, 5, tzinfo=UTC)
 KIMI_ADMISSION_PROVIDER = "moonshot-kimi-code-managed"
 
 
-def _write_kimi_live_quota_ledger(path: Path) -> None:
+def _write_kimi_live_quota_ledger(
+    path: Path,
+    *,
+    provider: str = KIMI_ADMISSION_PROVIDER,
+    evidence_refs: list[str] | None = None,
+    include_telemetry_writer: bool = True,
+    fresh_until: str = "2026-09-11T15:59:00Z",
+) -> None:
     payload = deepcopy(json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8")))
     payload["ledger_id"] = "quota-spend-ledger-test-kimi-live"
     payload["captured_at"] = "2026-09-11T14:59:30Z"
-    payload["generated_from"] = list(
-        dict.fromkeys([*payload["generated_from"], "scripts/hapax-quota-telemetry-writer"])
-    )
+    if include_telemetry_writer:
+        payload["generated_from"] = list(
+            dict.fromkeys([*payload["generated_from"], "scripts/hapax-quota-telemetry-writer"])
+        )
     payload["quota_snapshots"] = [
         snapshot
         for snapshot in payload["quota_snapshots"]
@@ -1947,28 +1955,64 @@ def _write_kimi_live_quota_ledger(path: Path) -> None:
             "quota_snapshot_schema": 1,
             "snapshot_id": "quota-kimi-interactive-lane-fresh",
             "captured_at": "2026-09-11T14:59:00Z",
-            "fresh_until": "2026-09-11T15:59:00Z",
+            "fresh_until": fresh_until,
             "route_id": KIMI_INTERACTIVE_ROUTE_ID,
-            "provider": KIMI_ADMISSION_PROVIDER,
+            "provider": provider,
             "capacity_pool": "subscription_quota",
             "subscription_quota_state": "fresh",
-            "evidence_refs": [KIMI_ADMISSION_EVIDENCE_REF],
+            "evidence_refs": list(evidence_refs or [KIMI_ADMISSION_EVIDENCE_REF]),
             "operator_visible_reason": "fixture kimi admission receipt",
         }
     )
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _apply_kimi_live_admission(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    provider: str = KIMI_ADMISSION_PROVIDER,
+    evidence_refs: list[str] | None = None,
+    include_telemetry_writer: bool = True,
+    fresh_until: str = "2026-09-11T15:59:00Z",
+) -> dict:
+    live_ledger = tmp_path / "quota-spend-ledger-live.json"
+    _write_kimi_live_quota_ledger(
+        live_ledger,
+        provider=provider,
+        evidence_refs=evidence_refs,
+        include_telemetry_writer=include_telemetry_writer,
+        fresh_until=fresh_until,
+    )
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER_LIVE", str(live_ledger))
+    route = _route_payload(_payload(), KIMI_INTERACTIVE_ROUTE_ID)
+    _apply_receipt_to_route_payload(
+        route,
+        _make_receipt(observed_at=datetime(2026, 9, 11, 15, 1, tzinfo=UTC)),
+        now=KIMI_NOW,
+    )
+    return route
+
+
 def test_kimi_interactive_route_specific_quota_admission_registered() -> None:
     # The live minter contract (~/.local/bin/hapax-kimi-quota-admission) hard-codes
     # ROUTE_ID = "kimi.interactive.lane"; the registry and blocker map must follow it
     # or the config-recorded blocker can never clear.
+    from shared.quota_spend_ledger import (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS,
+        RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES,
+    )
+
     assert KIMI_INTERACTIVE_ROUTE_ID in ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS
     assert (
         ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS[KIMI_INTERACTIVE_ROUTE_ID]
         == "route_specific_quota_receipt_absent"
     )
     assert KIMI_INTERACTIVE_ROUTE_ID in REQUIRED_ROUTE_IDS
+    assert KIMI_INTERACTIVE_ROUTE_ID in RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+    assert (
+        RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS[KIMI_INTERACTIVE_ROUTE_ID] == KIMI_ADMISSION_PROVIDER
+    )
 
 
 def test_kimi_interactive_route_blocked_with_exact_reasons() -> None:
@@ -1998,3 +2042,67 @@ def test_kimi_fresh_live_admission_clears_route_specific_blocker(
     assert route["blocked_reasons"] == []
     assert route["freshness"]["evidence"]["quota"]["blocked_reasons"] == []
     assert KIMI_ADMISSION_EVIDENCE_REF in route["freshness"]["evidence"]["quota"]["evidence_refs"]
+
+
+def _assert_kimi_route_specific_quota_still_blocked(route: dict) -> None:
+    assert route["route_state"] != "active"
+    assert "route_specific_quota_receipt_absent" in route["blocked_reasons"]
+
+
+def test_kimi_wrong_provider_live_admission_does_not_clear_route_specific_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    route = _apply_kimi_live_admission(monkeypatch, tmp_path, provider="z_ai-glm-coding-plan")
+    _assert_kimi_route_specific_quota_still_blocked(route)
+
+
+def test_kimi_evidence_without_supported_tool_does_not_clear_route_specific_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    route = _apply_kimi_live_admission(
+        monkeypatch,
+        tmp_path,
+        evidence_refs=[
+            KIMI_ADMISSION_EVIDENCE_REF.replace(
+                "supported_tool:hapax-kimi-quota-admission:",
+                "",
+            )
+        ],
+    )
+    _assert_kimi_route_specific_quota_still_blocked(route)
+
+
+def test_kimi_evidence_without_fresh_until_does_not_clear_route_specific_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    route = _apply_kimi_live_admission(
+        monkeypatch,
+        tmp_path,
+        evidence_refs=[
+            KIMI_ADMISSION_EVIDENCE_REF.removesuffix(":fresh_until:2026-09-11T15:59:00Z")
+        ],
+    )
+    _assert_kimi_route_specific_quota_still_blocked(route)
+
+
+def test_kimi_generated_from_without_writer_does_not_clear_route_specific_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    route = _apply_kimi_live_admission(monkeypatch, tmp_path, include_telemetry_writer=False)
+    _assert_kimi_route_specific_quota_still_blocked(route)
+
+
+def test_kimi_expired_fresh_until_does_not_clear_route_specific_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    route = _apply_kimi_live_admission(
+        monkeypatch,
+        tmp_path,
+        fresh_until="2026-09-11T15:00:00Z",
+    )
+    _assert_kimi_route_specific_quota_still_blocked(route)
