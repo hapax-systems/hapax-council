@@ -320,6 +320,91 @@ def test_call_glm_falls_back_to_payg_api_on_coding_plan_quota_wall(
     ]
 
 
+def test_call_glm_payg_retries_once_with_thinking_enabled_on_1210(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """PAYG rejects thinking=disabled for always-thinking models (HTTP 400,
+    code 1210). The fallback retries once with thinking enabled instead of
+    forcing a lower model."""
+    module = _load_module()
+    seen_thinking: list[str] = []
+
+    def fake_open(request: object, *, timeout: float) -> FakeResponse:
+        body = json.loads(request.data.decode("utf-8"))
+        seen_thinking.append(body["thinking"]["type"])
+        if len(seen_thinking) == 1:
+            payload = {
+                "error": {
+                    "code": "1310",
+                    "message": "Quota exhausted. Your limit will reset at 2026-07-09T13:02:51Z.",
+                    "next_flush_time": "2026-07-09T13:02:51Z",
+                }
+            }
+            raise urllib.error.HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                {},
+                io.BytesIO(json.dumps(payload).encode("utf-8")),
+            )
+        if len(seen_thinking) == 2:
+            payload = {
+                "error": {
+                    "code": "1210",
+                    "message": "This model always engages in thinking and cannot be disabled",
+                }
+            }
+            raise urllib.error.HTTPError(
+                request.full_url,
+                400,
+                "Bad Request",
+                {},
+                io.BytesIO(json.dumps(payload).encode("utf-8")),
+            )
+        return FakeResponse(
+            {"choices": [{"message": {"content": "```yaml\nverdict: accept\n```"}}]}
+        )
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    monkeypatch.setattr(
+        module,
+        "_require_payg_spend_gate",
+        lambda: module.PaygSpendGate(
+            state="eligible_active_budget",
+            budget_id="tb-20260706-zai-glmcp-payg-review",
+            budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+            cap_remaining_usd="99.95",
+            ledger_source="live",
+            ledger_path=Path("quota-spend-ledger-live.json"),
+        ),
+    )
+    monkeypatch.setattr(
+        module, "_reserve_payg_spend_receipt", lambda **_kwargs: _payg_reservation(module)
+    )
+    monkeypatch.setattr(
+        module,
+        "_mark_payg_spend_receipt_succeeded",
+        lambda reservation, **_kwargs: reservation,
+    )
+    config = module.ReviewConfig(
+        secret_entry="glmcp/api-key",
+        base_url=module.DEFAULT_CODING_PLAN_BASE_URL,
+        model="glm-5.3",
+        timeout_seconds=42,
+        max_tokens=123,
+        temperature=0,
+        thinking="disabled",
+        payg_fallback=True,
+        payg_base_url=module.DEFAULT_PAYG_BASE_URL,
+    )
+
+    reply = module.call_glm("review prompt", config, "test-secret-token")
+
+    assert reply == "```yaml\nverdict: accept\n```"
+    assert seen_thinking == ["disabled", "disabled", "enabled"]
+
+
 def test_call_glm_reports_payg_fallback_failure_after_coding_plan_quota_wall(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

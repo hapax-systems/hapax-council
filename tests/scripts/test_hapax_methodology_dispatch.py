@@ -3863,7 +3863,7 @@ exit 1
     assert receipt["platform"] == "glmcp"
     assert receipt["routes"] == ["glmcp.review.direct"]
     assert receipt["cli"]["binary"] == "scripts/hapax-glmcp-reviewer"
-    assert "model=glm-5.2" in receipt["cli"]["version"]
+    assert "model=glm-5.3" in receipt["cli"]["version"]
     assert "payg_fallback=enabled" in receipt["cli"]["version"]
     receipt_text = json.dumps(receipt)
     assert "test-secret-token" not in receipt_text
