@@ -342,7 +342,10 @@ def test_call_glm_payg_retries_once_with_thinking_enabled_on_1210(
                 }
             }
             raise urllib.error.HTTPError(
-                request.full_url, 429, "Too Many Requests", {},
+                request.full_url,
+                429,
+                "Too Many Requests",
+                {},
                 io.BytesIO(json.dumps(payload).encode("utf-8")),
             )
         if len(seen_thinking) == 2:
@@ -353,7 +356,10 @@ def test_call_glm_payg_retries_once_with_thinking_enabled_on_1210(
                 }
             }
             raise urllib.error.HTTPError(
-                request.full_url, 400, "Bad Request", {},
+                request.full_url,
+                400,
+                "Bad Request",
+                {},
                 io.BytesIO(json.dumps(payload).encode("utf-8")),
             )
         return FakeResponse(
