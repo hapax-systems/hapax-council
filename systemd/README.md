@@ -2,7 +2,7 @@
 
 Application and utility services run as systemd user units under `user@1000.service` with lingering enabled. Narrow host-safety units, including the root OOM enforcer and its failure-intake bridge, run in the system manager. No process supervisors (process-compose, supervisord) are in the boot chain.
 
-**Topology:** <!-- topology-inventory:services -->301<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->147<!-- /topology-inventory:timers --> timers, 6 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
+**Topology:** <!-- topology-inventory:services -->308<!-- /topology-inventory:services --> services, <!-- topology-inventory:timers -->154<!-- /topology-inventory:timers --> timers, 6 paths, 3 targets. Verify with `uv run python scripts/hapax_topology_inventory.py --check`.
 
 `scripts/hapax_topology_inventory.py` is source-only: it verifies the
 git-tracked `systemd/units/` topology and does not prove what the live user
@@ -46,7 +46,7 @@ n8n, open-webui, minio, ntfy       visual-layer-agg  → perception pipeline
                                     studio-compositor → camera tiling (GPU)
 Managed by:                         studio-fx-output  → ffmpeg /dev/video50
   llm-stack.service (oneshot)       hapax-watch-recv  → Wear OS biometrics
-  llm-stack-analytics.service       147 timers        → sync, health, backups
+  llm-stack-analytics.service       timer fleet       → sync, health, backups
 ```
 
 ## Grouping Targets
