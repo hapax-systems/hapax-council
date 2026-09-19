@@ -111,7 +111,7 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "publish_orchestrator.SURFACE_REGISTRY entry "
             "`internet-archive-ias3`. Access + secret keys from env "
             "HAPAX_IA_ACCESS_KEY + HAPAX_IA_SECRET_KEY (hapax-secrets.service "
-            "from pass `ia/access-key` + `ia/secret-key`)."
+            "from the FileStore `ia/access-key` + `ia/secret-key`)."
         ),
     ),
     "agents.publication_bus.omg_weblog_publisher": WireEntry(
@@ -247,7 +247,7 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "Wired via agents/refusal_brief_zenodo_adapter into "
             "publish_orchestrator._DISPATCH_MAP entry "
             "`zenodo-refusal-deposit`. Token from env HAPAX_ZENODO_TOKEN "
-            "(hapax-secrets.service from pass `zenodo/api-token`). "
+            "(hapax-secrets.service from the FileStore `zenodo/api-token`). "
             "RelatedIdentifier graph composition (IsRequiredBy + "
             "IsObsoletedBy) ships with the publisher."
         ),
@@ -310,7 +310,7 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "Wired via logos/api/routes/payment_rails.py POST "
             "/api/payment-rails/buy-me-a-coffee. HMAC SHA-256 over raw body via "
             "X-Signature-Sha256 + BUY_ME_A_COFFEE_WEBHOOK_SECRET env var "
-            "(hapax-secrets.service from pass `buy-me-a-coffee/webhook-secret`). "
+            "(hapax-secrets.service from the FileStore `buy-me-a-coffee/webhook-secret`). "
             "Membership-cancellation events emit a RefusalEvent under axiom "
             "full_auto_or_nothing for the refusal_annex_renderer to aggregate."
         ),
@@ -341,7 +341,7 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "Wired via logos/api/routes/payment_rails.py POST "
             "/api/payment-rails/ko-fi. Token-in-payload verification (NOT HMAC) "
             "via KO_FI_WEBHOOK_VERIFICATION_TOKEN env var (hapax-secrets.service "
-            "from pass `ko-fi/webhook-verification-token`). No cancellation event "
+            "from the FileStore `ko-fi/webhook-verification-token`). No cancellation event "
             "in the canonical 4 (donation / subscription / commission / shop_order), "
             "so no auto-link path."
         ),
@@ -371,7 +371,7 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "Wired via logos/api/routes/payment_rails.py POST "
             "/api/payment-rails/open-collective. HMAC SHA-256 over raw body via "
             "X-Open-Collective-Signature + OPEN_COLLECTIVE_WEBHOOK_SECRET env var "
-            "(hapax-secrets.service from pass `open-collective/webhook-secret`). "
+            "(hapax-secrets.service from the FileStore `open-collective/webhook-secret`). "
             "Multi-currency-native; no cancellation event in the canonical 4 "
             "(collective_transaction_created / order_processed / member_created / "
             "expense_paid), so no auto-link path. Operator-action gated on the "
@@ -393,7 +393,7 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
             "webhooks (per liberapay/liberapay.com#688); upstream bridge "
             "(cloudmailin / mailgun / n8n) parses Liberapay outbound emails or "
             "CSV exports and POSTs to this endpoint. Webhook secret from "
-            "LIBERAPAY_WEBHOOK_SECRET env var (hapax-secrets.service from pass "
+            "LIBERAPAY_WEBHOOK_SECRET env var (hapax-secrets.service from the FileStore "
             "`liberapay/webhook-secret`); IP allowlist gate via "
             "LIBERAPAY_REQUIRE_IP_ALLOWLIST=1. Tip-cancellation events emit a "
             "RefusalEvent to the canonical refusal log under axiom "

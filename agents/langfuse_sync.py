@@ -111,14 +111,14 @@ def _langfuse_auth_header() -> str:
     if not public_key or not secret_key:
         raise RuntimeError(
             "Langfuse credentials not found. Set LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY "
-            "or store in pass as langfuse/public-key and langfuse/secret-key"
+            "or store them with hapax-secret as langfuse/public-key and langfuse/secret-key"
         )
     encoded = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
     return f"Basic {encoded}"
 
 
 def _litellm_api_key() -> str:
-    """Get LiteLLM API key from env or pass store."""
+    """Get LiteLLM API key from env or the FileStore."""
     return _get_credential("LITELLM_API_KEY", "litellm/master-key")
 
 

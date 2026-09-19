@@ -69,7 +69,7 @@ OPERATOR_GATES: tuple[str, ...] = (
     "confirm tax registrations with the relevant authority before creating "
     "Stripe tax.registration objects",
     "set the Stripe head-office address before creating tax registrations",
-    f"store live credentials in pass entries {API_KEY_PASS_ENTRY!r} and "
+    f"store live credentials with hapax-secret under {API_KEY_PASS_ENTRY!r} and "
     f"{WEBHOOK_SECRET_PASS_ENTRY!r}",
     "run the first live $1 charge and confirm RevenueMetricsDashboard ingestion",
 )

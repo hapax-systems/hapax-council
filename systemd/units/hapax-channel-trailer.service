@@ -28,7 +28,7 @@ Environment=HAPAX_LOG_LEVEL=INFO
 # axioms/contracts/publication/channel-trailer.yaml).
 #
 # To go live (post-bootstrap):
-#   1. shared/google_auth.py reads `google/token` from the pass store —
+#   1. shared/google_auth.py reads `google/token` from the FileStore —
 #      mint with the `youtube.force-ssl` scope (channels.update needs write).
 #   2. Export YOUTUBE_CHANNEL_ID via hapax-secrets.
 #   3. Flip current_reality → active_legacy in cross_surface_event_contract.

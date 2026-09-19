@@ -979,7 +979,7 @@ def render_operator_note(report: Mapping[str, Any]) -> str:
         "- Dry-run local packet only; no filings, applications, account creation, "
         "payments, signatures, or external API calls.",
         "- Not legal, tax, financial, or banking advice.",
-        "- Sensitive identifiers belong only in the operator's private vault/pass store.",
+        "- Sensitive identifiers belong only in the operator's private vault or the FileStore.",
         "",
         "## Summary",
         "",

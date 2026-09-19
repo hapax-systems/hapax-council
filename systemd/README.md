@@ -61,7 +61,7 @@ Both targets are `WantedBy=default.target` so they activate on user login.
 ## Boot Sequence
 
 ```
-1. hapax-secrets.service     Load credentials from pass store → /run/user/1000/hapax-secrets.env
+1. hapax-secrets.service     Load credentials from the FileStore → /run/user/1000/hapax-secrets.env
 2. llm-stack.service         docker compose --profile full up -d (waits 30s for Docker daemon)
 3. llm-stack-analytics       docker compose --profile analytics up -d (60s after llm-stack)
 4. logos-api.service         After: llm-stack, hapax-secrets
@@ -474,9 +474,12 @@ run destructive restic prune.
 does not produce backup artifacts; it points at the local/GDrive lanes above.
 Restore details: `docs/runbooks/llm-stack-backup-reconciliation.md`.
 
-Secrets: local password in `pass show backups/restic-password`; current GDrive
-critical repo password remains in `pass show backblaze/restic-password` until a
-separate credential-rename task changes custody.
+Secrets: both restic passwords are in the FileStore. Local password under
+`backups/restic-password`; current GDrive critical repo password still under its
+legacy name `backblaze/restic-password` until a separate credential-rename task
+renames it. Recheck presence without printing a value:
+`hapax-secret --where backups/restic-password` and
+`hapax-secret --where backblaze/restic-password` (each prints `filestore`).
 
 ### Minio Object Lifecycle
 

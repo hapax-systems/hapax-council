@@ -6,7 +6,7 @@ Core invariants:
 
 - Single operator only. Do not add auth, user roles, collaboration flows, or multi-user abstractions.
 - Obsidian is the canonical work-state surface. CC/Codex work items live in `~/Documents/Personal/20-projects/hapax-cc-tasks/`; use `cc-claim` and the active claim files when the task gate is enabled.
-- Use `uv`, not `pip`. Secrets come from `pass` and `hapax-secrets`; do not copy credential values into code or docs.
+- Use `uv`, not `pip`. Secrets come from the reins FileStore (`hapax-secret <name>`, or `shared.secrets` in Python) and `hapax-secrets`; do not copy credential values into code or docs. `pass`/`gopass` are retired — operator ruling 2026-09-16.
 - Prefer `scripts/hapax-codex --session cx-<color> --slot <alpha|beta|delta|epsilon>` to launch Codex so hooks, MCP, Obsidian context, and no-ask execution are all active. Without `--cd`, non-primary Codex sessions use Codex-native worktrees named `~/projects/hapax-council--cx-<color>`.
 - Use `scripts/hapax-codex-send --session cx-<color> --require-ack -- "message"` for load-bearing parent-to-child instructions. The reliable control plane is tmux (`hapax-codex-cx-<color>`); direct `foot` delivery is a legacy fallback and must not be treated as task receipt unless an ACK is observed.
 - Use `scripts/hapax-operator-message --type advisory|query|escalation --subject ...` for child/session-to-operator messages that should appear in the SBCL/CLOG Operator Inbox. Do not use it for work assignment; dispatch still goes through `scripts/hapax-methodology-dispatch`.
@@ -33,7 +33,7 @@ When reviewing changes in this repository:
 - Treat review-team quorum, critical findings, and signed acceptance receipts as the authoritative review plane.
 - Flag attempts to make Codecov, Semgrep, CodeRabbit, Claude, or Codex a required branch-protection context unless the PR includes a governed task authorizing that gate change and rollback.
 - For CI/CD edits, verify merge-queue behavior explicitly: required contexts should remain stable and aggregate, while advisory checks must not wedge queued PRs.
-- For secrets and provider credentials, verify values are referenced through GitHub Secrets, `pass`, or `hapax-secrets`; never request plaintext values in files, PR comments, or logs.
+- For secrets and provider credentials, verify values are referenced through GitHub Secrets, the reins FileStore, or `hapax-secrets`; never request plaintext values in files, PR comments, or logs.
 - New Hapax repositories must be created under `hapax-systems`, never under
   `ryanklee`. Use `scripts/hapax-github-repo-create` for new repos and
   `scripts/hapax-github-repo-standards-audit.py` to check CI/app baselines.

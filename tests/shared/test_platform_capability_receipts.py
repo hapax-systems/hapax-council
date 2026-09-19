@@ -1394,7 +1394,8 @@ def test_glmcp_known_unknowns_disclose_secret_read_without_persistence() -> None
 
     unknowns = namespace["known_unknowns_for"]("glmcp")
 
-    assert any("may read the pass-backed secret" in item for item in unknowns)
+    assert any("may read the FileStore-backed secret" in item for item in unknowns)
+    assert not any("pass-backed" in item for item in unknowns)
     assert any("never persists the secret value" in item for item in unknowns)
     assert not any("never reads secret values" in item for item in unknowns)
 

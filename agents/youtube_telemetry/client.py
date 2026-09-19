@@ -8,8 +8,9 @@ googleapiclient at all.
 Auth: ``shared.google_auth.get_google_credentials()`` with the
 ``yt-analytics.readonly`` scope. Unlike Cloud Monitoring (Application
 Default Credentials), Analytics API uses the same OAuth flow as the
-other Google content APIs, so we reuse the existing pass store
-pattern. The operator must mint a token with the analytics scope; the
+other Google content APIs, so we reuse the existing FileStore
+pattern (the ``google/token`` secret). The operator must mint a token
+with the analytics scope; the
 helper documents the scope but does not force-mint.
 """
 

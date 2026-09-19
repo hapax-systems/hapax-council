@@ -32,6 +32,12 @@ DEFAULT_LEDGER_PATH = DEFAULT_STATE_DIR / "usage.jsonl"
 DEFAULT_LOCK_DIR = DEFAULT_STATE_DIR / "locks"
 #: FileStore names tried in order, after the environment.
 SECRET_NAMES = ("tavily/api-key", "api/tavily")
+#: Built from ``SECRET_NAMES`` so the next action cannot name a secret the loader never reads.
+NO_API_KEY_MESSAGE = (
+    "TAVILY_API_KEY is not set and no FileStore secret was found. "
+    f"Next action: `hapax-secret --where {SECRET_NAMES[0]}`; if absent, export TAVILY_API_KEY "
+    f"or run `hapax-secret` (TTY put) and store the key as {SECRET_NAMES[0]}"
+)
 logger = logging.getLogger(__name__)
 
 SearchDepth = Literal["basic", "advanced", "fast", "ultra-fast"]
@@ -708,7 +714,7 @@ class TavilyClient:
     def usage(self, *, project_id: str | None = None) -> TavilyUsageResponse:
         """Return Tavily's account/key usage view without writing local ledger rows."""
         if not self.api_key:
-            raise TavilyConfigError("TAVILY_API_KEY is not set and no pass entry was found")
+            raise TavilyConfigError(NO_API_KEY_MESSAGE)
         try:
             response = self.http_client.get(
                 f"{self.base_url}/usage",
@@ -752,7 +758,7 @@ class TavilyClient:
         cacheable: bool = True,
     ) -> tuple[dict[str, Any], TavilyUsage]:
         if not self.api_key:
-            raise TavilyConfigError("TAVILY_API_KEY is not set and no pass entry was found")
+            raise TavilyConfigError(NO_API_KEY_MESSAGE)
         self._configured_lane_cap(lane)
 
         project = project_id or f"hapax-{lane}"

@@ -13,7 +13,7 @@ Environment=PATH=%h/projects/hapax-council/.venv/bin:/usr/bin
 Environment=HAPAX_YT_CHAT_METRICS_PORT=9498
 Environment=HAPAX_LOG_LEVEL=INFO
 # OAuth path: shared/google_auth.py reads `google/token-youtube-streaming`
-# from the pass store. Operator must mint the token with at least the
+# from the FileStore. Operator must mint the token with at least the
 # `https://www.googleapis.com/auth/youtube.readonly` scope:
 #   scripts/mint-google-token.py --pass-key google/token-youtube-streaming
 # Daemon idles silently (no API calls) when no broadcast is live, so

@@ -6,8 +6,8 @@
 #   hapax-omg-email set <forward-to-address>
 #   hapax-omg-email show
 #
-# Uses the shared OmgLolClient (pass-based auth); silent-disables if the
-# API key is missing from the pass store.
+# Uses the shared OmgLolClient (FileStore-backed auth); silent-disables if
+# the API key is missing from the FileStore.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

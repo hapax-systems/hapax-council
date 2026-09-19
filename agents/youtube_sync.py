@@ -543,7 +543,9 @@ def run_auth() -> None:
         print(f"Authenticated as: {title}")
     else:
         print("Authenticated (no channel found)")
-    print("Token saved to pass store.")
+    from agents._google_auth import token_custody_line
+
+    print(token_custody_line())
 
 
 def run_full_sync() -> None:
