@@ -70,8 +70,9 @@ from shared.platform_capability_registry import (  # noqa: E402
     _route_specific_quota_admission_fresh,
 )
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
-from shared.sdlc_lifecycle import (  # noqa: E402
+from shared.sdlc_note_contract import (  # noqa: E402
     acceptance_receipt_path,
+    acceptance_receipt_triggers,
     requires_acceptance_receipt,
 )
 
@@ -2736,10 +2737,17 @@ def write_acceptance_receipt_if_due(
     outage_witness: dict[str, str] | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
 ) -> Path | None:
-    """The dossier IS the acceptance receipt for review-floor tasks (spec §5).
+    """The dossier IS the acceptance receipt for receipt-armed tasks (spec §5).
 
-    Only on quorum-accept, only for ``frontier_review_required`` tasks, and an
-    existing receipt (e.g. operator-signed) is never overwritten.
+    Only on quorum-accept, only for tasks whose declarations arm the receipt
+    gate — ``quality_floor: frontier_review_required`` **or** a declared
+    ``review_requirement.independent_review_required`` (see
+    ``shared.sdlc_lifecycle.acceptance_receipt_triggers``) — and an existing
+    receipt (e.g. operator-signed) is never overwritten.
+
+    This shares one predicate with the close gate deliberately. If close armed
+    on a declaration that minting ignored, such rows would block at close with
+    no path to obtain a receipt.
     """
 
     if dossier["review_team_verdict"] != review_team.QUORUM_ACCEPT:
@@ -2827,6 +2835,11 @@ def write_acceptance_receipt_if_due(
             {"id": r.get("id"), "family": r.get("family"), "verdict": r.get("verdict")}
             for r in dossier.get("reviewers") or []
         ],
+        # Which declaration(s) required this receipt. Recorded so the decision is
+        # reconstructable from the receipt alone: a row armed by a MALFORMED
+        # independent-review flag mints the same receipt as one that declared
+        # review properly, and without this the difference is invisible later.
+        "arming_triggers": list(acceptance_receipt_triggers(frontmatter)),
     }
     _apply_public_gate_authority_context(receipt, frontmatter)
     _sign_public_gate_authority_evidence(receipt)

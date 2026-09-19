@@ -12,8 +12,8 @@ from shared.sdlc_lifecycle import (
     TASK_NON_FULFILLING_CLOSED_STATUSES,
     blocked_reason_from_frontmatter,
     blocked_witness_from_frontmatter,
-    frontmatter_from_text,
 )
+from shared.sdlc_note_contract import frontmatter_from_text
 
 CC_TASK_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"
 SOP_TASK_ID = "appendix-podium-sop-baseline-proof-20260604"

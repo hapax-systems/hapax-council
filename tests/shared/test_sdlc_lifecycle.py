@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 from shared.blocked_witness import evaluate_blocked_witness
 from shared.sdlc_lifecycle import (
@@ -28,18 +29,35 @@ from shared.sdlc_lifecycle import (
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
     StageMetadataError,
-    acceptance_receipt_blockers,
-    acceptance_receipt_path,
     active_blocked_task_blockers,
-    frontmatter_from_text,
     is_active_blocked_with_evidence,
     is_dependency_blocked_reason,
     is_legal_stage_edge,
     load_sdlc_stage_metadata,
-    requires_acceptance_receipt,
     stage_edges,
     stage_token,
     task_closure_validity,
+)
+from shared.sdlc_note_contract import (  # the note contract moved to a leaf module
+    FRONTMATTER_ABSENT,
+    FRONTMATTER_EMPTY_BLOCK,
+    FRONTMATTER_INVALID_OPENING_FENCE,
+    FRONTMATTER_NOT_A_MAPPING,
+    FRONTMATTER_OK,
+    FRONTMATTER_PARSE_ERROR,
+    FRONTMATTER_UNREADABLE_STATES,
+    FRONTMATTER_UNTERMINATED,
+    RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+    RECEIPT_TRIGGER_MALFORMED_CONTAINER,
+    RECEIPT_TRIGGER_MALFORMED_REVIEW,
+    RECEIPT_TRIGGER_REVIEW_FLOOR,
+    acceptance_receipt_blockers,
+    acceptance_receipt_path,
+    acceptance_receipt_triggers,
+    frontmatter_block_text,
+    frontmatter_from_text,
+    frontmatter_state_from_text,
+    requires_acceptance_receipt,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -937,3 +955,599 @@ class TestAcceptanceReceiptEnforcement:
         )
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
         assert acceptance_receipt_blockers(frontmatter, note) == ("missing_acceptance_receipt",)
+
+
+def _rr(value: object) -> dict[str, object]:
+    return {"review_requirement": {"independent_review_required": value}}
+
+
+class TestIndependentReviewTriggerNormalization:
+    """The flag is read from raw frontmatter but written against a coercing schema.
+
+    ``route_metadata_schema.ReviewRequirement.independent_review_required`` is a
+    pydantic ``bool``, so ``"true"``, ``"yes"``, ``"y"``, ``"on"``, ``"t"``,
+    ``"1"`` and ``1`` all validate as *demanding* independent review. The close
+    gate reads the same frontmatter as raw text. An identity test against Python
+    ``True`` therefore disagreed with the schema and let a schema-valid demand
+    spelled ``"true"`` disarm the gate — the exact fail-open the trigger exists
+    to close, reintroduced at the parser boundary.
+    """
+
+    @pytest.mark.parametrize("value", ["true", "True", "TRUE", "yes", "y", "on", "t", "1", 1, True])
+    def test_schema_truthy_spellings_arm_the_gate(self, value: object) -> None:
+        assert acceptance_receipt_triggers(_rr(value)) == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,)
+
+    @pytest.mark.parametrize("value", ["false", "False", "no", "n", "off", "f", "0", 0, False])
+    def test_schema_falsy_spellings_do_not_arm(self, value: object) -> None:
+        assert acceptance_receipt_triggers(_rr(value)) == ()
+
+    @pytest.mark.parametrize("value", [None, "maybe", "", 2, [], {}])
+    def test_unrecognized_values_arm_as_malformed(self, value: object) -> None:
+        """The schema rejects these outright, so their intent is unknown.
+
+        An unknown review requirement must not read as *no* requirement: that is
+        how a malformed declaration would silently disable enforcement.
+        """
+        assert acceptance_receipt_triggers(_rr(value)) == (RECEIPT_TRIGGER_MALFORMED_REVIEW,)
+
+    def test_absent_block_does_not_arm(self) -> None:
+        assert acceptance_receipt_triggers({"quality_floor": "verification_receipt"}) == ()
+
+    def test_absent_flag_within_present_block_does_not_arm(self) -> None:
+        frontmatter = {"review_requirement": {"support_artifact_allowed": True}}
+        assert acceptance_receipt_triggers(frontmatter) == ()
+
+
+class TestSchemaParity:
+    """The classifier must agree with ``ReviewRequirement`` on every value.
+
+    ``shared.sdlc_lifecycle`` reimplements the schema's boolean coercion instead
+    of importing it, because ``scripts/cc-close`` runs the close gate under a
+    bare ``python3`` and pydantic must not become a runtime dependency of a gate.
+    That duplication is only safe while it is *pinned*: this test round-trips
+    each value through the real model, so a pydantic upgrade that changes the
+    accepted spellings fails here rather than silently reopening the
+    parser-boundary fail-open.
+
+    Asserted against the model, never against the local frozensets — restating
+    the table would prove nothing.
+    """
+
+    @staticmethod
+    def _schema_verdict(value: object) -> bool | None:
+        from shared.route_metadata_schema import ReviewRequirement
+
+        try:
+            return bool(
+                ReviewRequirement(independent_review_required=value).independent_review_required
+            )
+        except Exception:  # noqa: BLE001 - any validation failure means "rejected"
+            return None
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            True,
+            False,
+            "true",
+            "True",
+            "TRUE",
+            "TrUe",
+            "yes",
+            "Yes",
+            "y",
+            "on",
+            "t",
+            "1",
+            "false",
+            "False",
+            "no",
+            "n",
+            "off",
+            "OFF",
+            "f",
+            "0",
+            0,
+            1,
+            2,
+            -1,
+            0.0,
+            1.0,
+            2.0,
+            0.5,
+            -1.0,
+            '"true"',
+            '"false"',
+            "'true'",
+            "  true  ",
+            "  ",
+            "",
+            "maybe",
+            "null",
+            "none",
+            None,
+            [],
+            {},
+            # bytes: the model accepts them, so the classifier's decode branch —
+            # including its UnicodeDecodeError path (b"\xff") — must agree rather
+            # than be incidentally correct.
+            b"true",
+            b"false",
+            b"maybe",
+            b"\xff",
+            b"",
+        ],
+    )
+    def test_classifier_matches_schema_for_every_value(self, value: object) -> None:
+        schema_verdict = self._schema_verdict(value)
+        triggers = acceptance_receipt_triggers(_rr(value))
+
+        if schema_verdict is True:
+            assert triggers == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,), (
+                f"{value!r} is a schema-valid DEMAND but did not arm the gate"
+            )
+        elif schema_verdict is False:
+            assert triggers == (), f"{value!r} is a schema-valid DECLINE but armed the gate"
+        else:
+            assert triggers == (RECEIPT_TRIGGER_MALFORMED_REVIEW,), (
+                f"{value!r} is REJECTED by the schema but was not classified malformed"
+            )
+
+
+class TestMalformedBlockShape:
+    """A ``review_requirement`` that is present but not a mapping is malformed.
+
+    ``review_requirement: [{independent_review_required: true}]`` is rejected by
+    ``assess_route_metadata`` yet was classified *absent*, so the gate permitted
+    closure on a row the schema considered invalid. Present-but-unreadable may
+    never collapse into "nothing was claimed".
+    """
+
+    @pytest.mark.parametrize(
+        "block", [[{"independent_review_required": True}], "true", 1, [], None]
+    )
+    def test_non_mapping_block_is_malformed_top_level(self, block: object) -> None:
+        assert acceptance_receipt_triggers({"review_requirement": block}) == (
+            RECEIPT_TRIGGER_MALFORMED_CONTAINER,
+        )
+
+    @pytest.mark.parametrize(
+        "block", [[{"independent_review_required": True}], "true", 1, [], None]
+    )
+    def test_non_mapping_block_is_malformed_in_mirror(self, block: object) -> None:
+        frontmatter = {"route_metadata": {"review_requirement": block}}
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_MALFORMED_CONTAINER,)
+
+    def test_missing_block_is_still_absent(self) -> None:
+        """The distinction that matters: absent is not malformed."""
+        assert acceptance_receipt_triggers({"quality_floor": "verification_receipt"}) == ()
+
+
+class TestFrontmatterParseState:
+    """The document is the outermost container, and it gets the same rule.
+
+    ``frontmatter_from_text`` collapses every failure to ``{}``, so a note whose
+    YAML does not parse is indistinguishable from one that declares nothing. For
+    a gate that arms on declarations those are opposite meanings, and the gate
+    was reporting the first as the second.
+    """
+
+    def test_well_formed_frontmatter_is_ok(self) -> None:
+        loaded, state = frontmatter_state_from_text("---\ntask_id: x\n---\nbody\n")
+        assert state == FRONTMATTER_OK
+        assert loaded == {"task_id": "x"}
+
+    def test_no_frontmatter_is_absent_not_unreadable(self) -> None:
+        """A plain markdown file declares nothing; that is not a failure."""
+        _, state = frontmatter_state_from_text("just a body\n")
+        assert state == FRONTMATTER_ABSENT
+        assert state not in FRONTMATTER_UNREADABLE_STATES
+
+    def test_an_empty_fence_pair_is_its_own_state_not_absent(self) -> None:
+        """A declared-but-empty block is distinguishable from no block at all.
+
+        Both are readable and both declare nothing, so neither arms the gate.
+        They are separate states because a caller that must tell them apart —
+        the autoqueue, which reports "no frontmatter fence" for one and accepts
+        the other — was re-reading line 0 to recover the difference, a second
+        reading of a fact this walk already had.
+        """
+        _, state = frontmatter_state_from_text("---\n\n---\nbody\n")
+        assert state == FRONTMATTER_EMPTY_BLOCK
+        assert state != FRONTMATTER_ABSENT
+        assert state not in FRONTMATTER_UNREADABLE_STATES
+
+    def test_unterminated_frontmatter_is_unreadable(self) -> None:
+        _, state = frontmatter_state_from_text("---\ntask_id: x\nbody without close\n")
+        assert state == FRONTMATTER_UNTERMINATED
+        assert state in FRONTMATTER_UNREADABLE_STATES
+
+    def test_invalid_yaml_is_unreadable(self) -> None:
+        text = "---\nverification_surface: [\nreview_requirement:\n  a: b\n---\nbody\n"
+        _, state = frontmatter_state_from_text(text)
+        assert state == FRONTMATTER_PARSE_ERROR
+        assert state in FRONTMATTER_UNREADABLE_STATES
+
+    def test_sequence_document_is_unreadable(self) -> None:
+        _, state = frontmatter_state_from_text("---\n- a\n- b\n---\nbody\n")
+        assert state == FRONTMATTER_NOT_A_MAPPING
+        assert state in FRONTMATTER_UNREADABLE_STATES
+
+    def test_a_yaml_key_starting_with_dashes_is_not_a_closing_fence(self) -> None:
+        """``---extra: abc`` is a legal key, not a fence.
+
+        Matching the fence as a prefix truncated the block there and returned
+        the preceding fields with state ``ok`` — hiding whatever followed behind
+        a confident success rather than declaring itself unreadable.
+        """
+        text = (
+            "---\ntask_id: x\n---extra: abc\n"
+            "review_requirement:\n  independent_review_required: true\n---\nbody\n"
+        )
+
+        loaded, state = frontmatter_state_from_text(text)
+
+        assert state == FRONTMATTER_OK
+        assert loaded["---extra"] == "abc"
+        assert acceptance_receipt_triggers(loaded) == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,)
+
+    def test_adjacent_and_blank_separated_empty_fences_agree(self) -> None:
+        """Both are empty frontmatter; the offset scan disagreed about them."""
+        adjacent = frontmatter_state_from_text("---\n---\nbody\n")
+        blank_separated = frontmatter_state_from_text("---\n\n---\nbody\n")
+
+        assert adjacent == blank_separated == ({}, FRONTMATTER_EMPTY_BLOCK)
+
+    def test_a_commented_opening_fence_still_arms_the_gate(self) -> None:
+        """``--- # task metadata`` is a supported header and a legal YAML marker.
+
+        Tightening the opening-fence check to an exact ``---`` rejected it, so a
+        note carrying BOTH the frontier floor and an independent-review demand
+        reported ``absent`` and the gate returned 0 — a previously enforced note
+        silently disarmed. Base blocked it; that head did not.
+        """
+        text = (
+            "--- # task metadata\n"
+            "quality_floor: frontier_review_required\n"
+            "review_requirement:\n  independent_review_required: true\n---\nbody\n"
+        )
+
+        loaded, state = frontmatter_state_from_text(text)
+
+        assert state == FRONTMATTER_OK
+        assert acceptance_receipt_triggers(loaded) == (
+            RECEIPT_TRIGGER_REVIEW_FLOOR,
+            RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+        )
+
+    def test_indented_dashes_inside_a_literal_scalar_are_not_a_fence(self) -> None:
+        """A fence sits at column 0; an indented ``---`` is scalar content.
+
+        ``strip()`` accepted it, truncating the block and dropping every field
+        below — including the review demand. It also regressed frontier
+        enforcement: a ``quality_floor`` placed after such a scalar vanished.
+        """
+        text = (
+            "---\ntask_id: x\ndescription: |\n  ---\n"
+            "review_requirement:\n  independent_review_required: true\n---\nbody\n"
+        )
+
+        loaded, state = frontmatter_state_from_text(text)
+
+        assert state == FRONTMATTER_OK
+        assert acceptance_receipt_triggers(loaded) == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,)
+
+    def test_indented_dashes_do_not_hide_the_quality_floor(self) -> None:
+        """The frontier-enforcement regression, pinned in its own right."""
+        text = (
+            "---\ntask_id: x\ndescription: >\n  ---\n"
+            "quality_floor: frontier_review_required\n---\nbody\n"
+        )
+
+        loaded, _ = frontmatter_state_from_text(text)
+
+        assert acceptance_receipt_triggers(loaded) == (RECEIPT_TRIGGER_REVIEW_FLOOR,)
+
+    def test_fence_with_trailing_whitespace_still_closes(self) -> None:
+        loaded, state = frontmatter_state_from_text("---\ntask_id: x\n--- \nbody\n")
+        assert state == FRONTMATTER_OK
+        assert loaded == {"task_id": "x"}
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "---nope: 1\ntask_id: x\n---\nbody\n",
+            "---extra: [\ntask_id: x\n---\nbody\n",
+            "----\ntask_id: x\n---\nbody\n",
+        ],
+    )
+    def test_an_attempted_but_invalid_opening_marker_is_unreadable(self, text: str) -> None:
+        """Not ABSENT: the note visibly tried to declare frontmatter.
+
+        Classing it absent let the close gate report "no receipt-arming
+        declaration" and pass, while admission — which was given this
+        distinction first — blocked. The two surfaces disagreed on the same
+        input, which is the split this PR exists to remove.
+        """
+        _, state = frontmatter_state_from_text(text)
+
+        assert state == FRONTMATTER_INVALID_OPENING_FENCE
+        assert state in FRONTMATTER_UNREADABLE_STATES
+
+    def test_a_document_with_no_marker_at_all_is_still_absent(self) -> None:
+        """The control: absent and invalid must stay distinguishable."""
+        _, state = frontmatter_state_from_text("plain body\n")
+        assert state == FRONTMATTER_ABSENT
+        assert state not in FRONTMATTER_UNREADABLE_STATES
+
+    def test_opening_line_yaml_content_is_preserved(self) -> None:
+        """``--- {a: 1}`` is a document whose mapping sits on the marker line.
+
+        The fence predicate accepted the line and extraction then took only the
+        lines *after* it, so the declarations on it vanished while the parse
+        reported success — a clean-looking result that had dropped half the
+        document.
+        """
+        text = "--- {task_id: inline, quality_floor: frontier_review_required}\n\n---\nbody\n"
+
+        loaded, state = frontmatter_state_from_text(text)
+
+        assert state == FRONTMATTER_OK
+        assert loaded["task_id"] == "inline"
+        assert acceptance_receipt_triggers(loaded) == (RECEIPT_TRIGGER_REVIEW_FLOOR,)
+
+    def test_crlf_notes_parse_identically_to_lf(self) -> None:
+        """The snapshot path decodes raw bytes; the gate uses newline-normalizing reads.
+
+        Without CR tolerance those two surfaces disagree about the same file:
+        terminal close raised task_note_frontmatter_malformed on a CRLF note the
+        standalone checker accepted.
+        """
+        crlf = "---\r\ntask_id: x\r\nquality_floor: frontier_review_required\r\n---\r\nbody\r\n"
+        lf = crlf.replace("\r\n", "\n")
+
+        assert frontmatter_state_from_text(crlf) == frontmatter_state_from_text(lf)
+        loaded, state = frontmatter_state_from_text(crlf)
+        assert state == FRONTMATTER_OK
+        assert acceptance_receipt_triggers(loaded) == (RECEIPT_TRIGGER_REVIEW_FLOOR,)
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("---\ntask_id: x\n---\nbody\n", {"task_id": "x"}),
+            ("no frontmatter\n", {}),
+            ("---\nverification_surface: [\n---\nbody\n", {}),
+            ("---\n- a\n---\nbody\n", {}),
+            ("---\ntask_id: x\nbody without close\n", {}),
+            ("---\n---\nbody\n", {}),
+            ("---\n\n---\nbody\n", {}),
+            # Fence boundaries: a line that merely STARTS with --- is a YAML key,
+            # not a closing fence, and must not truncate the block.
+            (
+                "---\ntask_id: x\n---extra: abc\nkeep: yes\n---\nbody\n",
+                {"task_id": "x", "---extra": "abc", "keep": True},
+            ),
+            ("---\ntask_id: x\n--- \nbody\n", {"task_id": "x"}),
+        ],
+    )
+    def test_lossy_helper_returns_the_expected_mapping(
+        self, text: str, expected: dict[str, object]
+    ) -> None:
+        """Explicit expectations, not a comparison with the implementation.
+
+        The previous version asserted ``frontmatter_from_text(text) ==
+        frontmatter_state_from_text(text)[0]``, which is how the wrapper is
+        *defined* — it stayed green even when both returned a wrong mapping, so
+        it established nothing about the preserved parser contract.
+        """
+        assert frontmatter_from_text(text) == expected
+
+
+class TestFrontmatterRegionIsShared:
+    """The region a caller inspects is the region the parser loads.
+
+    ``cc-pr-autoqueue`` scans the frontmatter block for ANSI escapes and must not
+    see the markdown body. It used to re-implement the fence walk to find that
+    region; both copies agreed only because both called the same predicate. This
+    PR's own lesson is that restating a rule is how the parsers came to disagree,
+    so the region now comes from the shared module and the equality is structural.
+    """
+
+    def test_block_text_is_exactly_what_the_parser_loads(self) -> None:
+        text = (
+            "---\ntask_id: x\nquality_floor: verification_receipt\n---\n\n"
+            "## Session log\n\nbody text that must not be in the block\n"
+        )
+
+        raw, state = frontmatter_block_text(text)
+        loaded, parse_state = frontmatter_state_from_text(text)
+
+        assert state == parse_state == FRONTMATTER_OK
+        assert yaml.safe_load(raw) == loaded
+        assert "body text" not in raw
+
+    def test_block_text_includes_opening_line_content(self) -> None:
+        raw, state = frontmatter_block_text("--- {a: 1}\n\n---\nbody\n")
+
+        assert state == FRONTMATTER_OK
+        assert yaml.safe_load(raw) == {"a": 1}
+
+    @pytest.mark.parametrize(
+        ("text", "expected_state"),
+        [
+            ("plain body\n", FRONTMATTER_ABSENT),
+            ("---extra: [\ntask_id: x\n---\n", FRONTMATTER_INVALID_OPENING_FENCE),
+            ("---\ntask_id: x\nno closing marker\n", FRONTMATTER_UNTERMINATED),
+        ],
+    )
+    def test_block_text_reports_the_same_failure_as_the_parser(
+        self, text: str, expected_state: str
+    ) -> None:
+        raw, state = frontmatter_block_text(text)
+        _, parse_state = frontmatter_state_from_text(text)
+
+        assert state == expected_state
+        assert state == parse_state
+        assert raw == ""
+
+
+class TestMalformedContainerAtEveryLevel:
+    """Shape is checked at every level of the lookup chain, not just the innermost.
+
+    Skipping a present-but-wrong-shaped container discards whatever it holds.
+    That bit twice: a non-mapping ``review_requirement`` classified as absent,
+    then a non-mapping ``route_metadata`` skipped outright — which silently
+    discarded a review demand nested inside it while ``assess_route_metadata``
+    rejected the same note. Same error, different depth.
+    """
+
+    @pytest.mark.parametrize(
+        "route_metadata",
+        [
+            [{"review_requirement": {"independent_review_required": True}}],
+            "oops",
+            1,
+            [],
+        ],
+    )
+    def test_non_mapping_route_metadata_arms(self, route_metadata: object) -> None:
+        frontmatter = {
+            "quality_floor": "verification_receipt",
+            "route_metadata": route_metadata,
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_MALFORMED_CONTAINER,)
+
+    def test_demand_nested_in_a_malformed_route_metadata_is_not_discarded(self) -> None:
+        """The reported critical: the demand is invisible, so the gate must arm anyway."""
+        frontmatter = {
+            "quality_floor": "verification_receipt",
+            "route_metadata": [{"review_requirement": {"independent_review_required": True}}],
+        }
+        assert acceptance_receipt_triggers(frontmatter) != ()
+
+    def test_top_level_decline_does_not_excuse_a_malformed_route_metadata(self) -> None:
+        """An explicit false cannot vouch for a mirror nobody can read."""
+        frontmatter = {
+            "review_requirement": {"independent_review_required": False},
+            "route_metadata": [{"review_requirement": {"independent_review_required": True}}],
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_MALFORMED_CONTAINER,)
+
+    def test_container_and_value_malformations_are_distinct(self) -> None:
+        """The refusal must not tell an operator to fix an already-valid flag."""
+        container = acceptance_receipt_triggers({"review_requirement": [{"x": 1}]})
+        value = acceptance_receipt_triggers(
+            {"review_requirement": {"independent_review_required": "maybe"}}
+        )
+        assert container == (RECEIPT_TRIGGER_MALFORMED_CONTAINER,)
+        assert value == (RECEIPT_TRIGGER_MALFORMED_REVIEW,)
+        assert container != value
+
+    def test_absent_route_metadata_is_not_malformed(self) -> None:
+        assert acceptance_receipt_triggers({"quality_floor": "verification_receipt"}) == ()
+
+    def test_valid_mapping_route_metadata_is_not_malformed(self) -> None:
+        frontmatter = {"route_metadata": {"quality_floor": "verification_receipt"}}
+        assert acceptance_receipt_triggers(frontmatter) == ()
+
+
+class TestIndependentReviewMirror:
+    """The ``route_metadata`` mirror is consulted, fail-closed on disagreement."""
+
+    def test_mirror_only_declaration_arms(self) -> None:
+        frontmatter = {
+            "quality_floor": "verification_receipt",
+            "route_metadata": {"review_requirement": {"independent_review_required": True}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,)
+
+    def test_mirror_demand_overrides_benign_top_level(self) -> None:
+        """Disagreement fails closed: a demand anywhere arms."""
+        frontmatter = {
+            "quality_floor": "verification_receipt",
+            "review_requirement": {"independent_review_required": False},
+            "route_metadata": {"review_requirement": {"independent_review_required": True}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,)
+
+    def test_top_level_demand_overrides_benign_mirror(self) -> None:
+        frontmatter = {
+            "quality_floor": "verification_receipt",
+            "review_requirement": {"independent_review_required": True},
+            "route_metadata": {"review_requirement": {"independent_review_required": False}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_INDEPENDENT_REVIEW,)
+
+    def test_both_declining_does_not_arm(self) -> None:
+        frontmatter = {
+            "quality_floor": "verification_receipt",
+            "review_requirement": {"independent_review_required": False},
+            "route_metadata": {"review_requirement": {"independent_review_required": False}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == ()
+
+    def test_malformed_mirror_arms_even_when_top_level_declines(self) -> None:
+        frontmatter = {
+            "review_requirement": {"independent_review_required": False},
+            "route_metadata": {"review_requirement": {"independent_review_required": "maybe"}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (RECEIPT_TRIGGER_MALFORMED_REVIEW,)
+
+    def test_demand_plus_malformed_reports_both(self) -> None:
+        """A demand elsewhere must not suppress an unreadable declaration.
+
+        The gate arms either way, so this is not a fail-open — but reporting only
+        the demand loses which location is unreadable, which is precisely the
+        reconstructability the malformed trigger exists to provide, and hides
+        mirror drift ``assess_route_metadata`` would reject.
+        """
+        frontmatter = {
+            "review_requirement": {"independent_review_required": True},
+            "route_metadata": {"review_requirement": {"independent_review_required": "maybe"}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (
+            RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+            RECEIPT_TRIGGER_MALFORMED_REVIEW,
+        )
+
+    def test_malformed_plus_demand_reports_both_in_the_reverse_arrangement(self) -> None:
+        frontmatter = {
+            "review_requirement": {"independent_review_required": "maybe"},
+            "route_metadata": {"review_requirement": {"independent_review_required": True}},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (
+            RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+            RECEIPT_TRIGGER_MALFORMED_REVIEW,
+        )
+
+
+class TestBothTriggersTogether:
+    def test_both_declarations_are_reported(self) -> None:
+        frontmatter = {
+            "quality_floor": "frontier_review_required",
+            "review_requirement": {"independent_review_required": True},
+        }
+        assert acceptance_receipt_triggers(frontmatter) == (
+            RECEIPT_TRIGGER_REVIEW_FLOOR,
+            RECEIPT_TRIGGER_INDEPENDENT_REVIEW,
+        )
+
+    def test_floor_alone_reports_only_the_floor(self) -> None:
+        assert acceptance_receipt_triggers({"quality_floor": "frontier_review_required"}) == (
+            RECEIPT_TRIGGER_REVIEW_FLOOR,
+        )
+
+    def test_boolean_predicate_derives_from_triggers(self) -> None:
+        """One definition of "armed" — the boolean may never disagree."""
+        for frontmatter in (
+            {"quality_floor": "frontier_review_required"},
+            {"quality_floor": "verification_receipt"},
+            _rr(True),
+            _rr("true"),
+            _rr(False),
+            _rr("maybe"),
+            {},
+        ):
+            assert requires_acceptance_receipt(frontmatter) is bool(
+                acceptance_receipt_triggers(frontmatter)
+            )

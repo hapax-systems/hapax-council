@@ -38,6 +38,7 @@ from shared.sdlc_claim import (
     inspect_claim_publications,
 )
 from shared.sdlc_close import CloseGateEvidence, TerminalCloseError, close_task
+from shared.sdlc_note_contract import FRONTMATTER_OK, frontmatter_state_from_text
 from shared.sdlc_task_store import (
     ClaimDispatchBinding,
     resolve_task_note,
@@ -209,6 +210,7 @@ def _fixture(
     echo_session: str = "session-test",
     acceptance_receipt: bool = True,
     note_mode: int = 0o644,
+    frontmatter_prelude: str = "",
 ) -> CloseFixture:
     task_id = "task-close"
     lane = "alpha"
@@ -237,7 +239,7 @@ def _fixture(
     note = active / f"{task_id}.md"
     note.write_text(
         f"""---
-type: cc-task
+{frontmatter_prelude}type: cc-task
 task_id: {task_id}
 title: Close fixture
 status: offered
@@ -414,10 +416,11 @@ axiom_mutation_authorized: false
     )
 
 
-def _close(fixture: CloseFixture, *, final_status: str = "done"):
+def _close(fixture: CloseFixture, *, final_status: str = "done", pr: str = ""):
     return close_task(
         fixture.task_id,
         final_status=final_status,
+        pr=pr,
         actor=fixture.lane,
         session_id=fixture.session_id,
         vault_root=fixture.vault,
@@ -563,6 +566,213 @@ def test_done_close_projects_every_terminal_surface_atomically(
         "sdlc.transition_prepared",
         "sdlc.transition_applied",
     ]
+
+
+@pytest.mark.parametrize(
+    ("label", "prelude"),
+    [
+        ("plain", ""),
+        # A legal mapping key that begins with three dashes. The readers stopped
+        # treating it as the closing fence; until the writer did too, it split
+        # the note in half and the close wrote S11/done ABOVE the real fields.
+        ("dash_prefixed_key", "---extra: abc\n"),
+        # YAML resolves a duplicated key to the LAST occurrence. Rewriting only
+        # the first left the note parsing exactly as it had before the close.
+        ("duplicated_keys", "stage: S10\nstatus: blocked\n"),
+    ],
+)
+def test_terminal_close_projects_a_note_that_parses_as_closed(
+    label: str,
+    prelude: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The closed note must PARSE as closed, not merely contain the substring.
+
+    Terminal close deletes the active note and every claim lease in the same
+    transaction that projects this text. A postimage that still parses as
+    S10/in_progress is therefore unrecoverable by the lane that wrote it.
+    """
+
+    fixture = _fixture(tmp_path, monkeypatch, frontmatter_prelude=prelude)
+    _inject_trusted_echo_projection(fixture, monkeypatch)
+
+    _close(fixture)
+
+    closed_note = fixture.vault / "closed" / fixture.note.name
+    parsed, state = frontmatter_state_from_text(closed_note.read_text(encoding="utf-8"))
+    assert state == FRONTMATTER_OK, label
+    assert parsed["stage"] == "S11", label
+    assert parsed["status"] == "done", label
+    assert parsed["completed_at"], label
+    assert parsed["updated_at"], label
+    assert not fixture.note.exists(), label
+
+
+def test_setting_a_key_does_not_consume_the_line_beneath_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty-valued key must not swallow its successor.
+
+    Read on the note the close path actually writes: every claimed note carries
+    an empty ``pr:`` immediately above ``implementation_authorized: true``. The
+    previous writer matched ``^pr:\\s*.*$``, whose ``\\s*`` crosses the newline,
+    so closing with ``--pr`` dropped the authorization key from the closed note.
+    ``close_task`` strips ``HAPAX_PR_MERGE_GATE_OFF`` from its gate children, so
+    the merged-PR evidence cannot be faked to reach this through the full path —
+    this exercises the exact preimage that path hands the writer.
+    """
+
+    fixture = _fixture(tmp_path, monkeypatch)
+    preimage = fixture.note.read_text(encoding="utf-8")
+    before, before_state = frontmatter_state_from_text(preimage)
+    assert before_state == FRONTMATTER_OK
+    assert before["pr"] is None
+    assert before["implementation_authorized"] is True
+
+    written = sdlc_close._frontmatter_set(preimage, "pr", "4669")
+
+    after, state = frontmatter_state_from_text(written)
+    assert state == FRONTMATTER_OK
+    assert after["pr"] == 4669
+    assert {key: value for key, value in after.items() if key != "pr"} == {
+        key: value for key, value in before.items() if key != "pr"
+    }
+
+
+@pytest.mark.parametrize(
+    ("label", "text", "reason"),
+    [
+        (
+            "nested_mapping_value",
+            "---\ntask_id: t\nstage:\n  name: S10\n---\n\nbody\n",
+            "terminal_close_frontmatter_malformed",
+        ),
+        (
+            "flow_collection_member",
+            "---\ntask_id: t\nrefs: [\nstage: x\n]\nstage: S10\n---\n\nbody\n",
+            "terminal_close_frontmatter_write_collateral",
+        ),
+        (
+            "no_closing_fence",
+            "---\ntask_id: t\nstage: S10\n\nbody\n",
+            "terminal_close_frontmatter_malformed",
+        ),
+        (
+            "dash_prefixed_opening_line",
+            "---extra: abc\ntask_id: t\nstage: S10\n---\n\nbody\n",
+            "terminal_close_frontmatter_malformed",
+        ),
+        # Same key, spelled so the line rewrite cannot see it, and LAST — so it
+        # wins the parse no matter what the rewrite did above it.
+        (
+            "quoted_duplicate_wins_the_parse",
+            '---\ntask_id: t\nstage: S10\n"stage": S99\n---\n\nbody\n',
+            "terminal_close_frontmatter_write_ineffective",
+        ),
+    ],
+)
+def test_frontmatter_set_refuses_what_it_cannot_edit_exactly(
+    label: str,
+    text: str,
+    reason: str,
+) -> None:
+    """A note the line edit cannot express is refused, never half-written.
+
+    The post-condition is an equality over the parsed mapping, so a shape
+    nobody enumerated fails closed rather than reaching ``closed/``.
+    """
+
+    with pytest.raises(TerminalCloseError) as excinfo:
+        sdlc_close._frontmatter_set(text, "stage", "S11")
+    assert excinfo.value.reason_code == reason, label
+
+
+@pytest.mark.parametrize(
+    ("label", "key"),
+    [("rewrite_existing_key", "stage"), ("append_absent_key", "completed_at")],
+)
+def test_frontmatter_set_keeps_a_crlf_note_wholly_crlf(label: str, key: str) -> None:
+    """Neither write path may splice a lone LF into a CRLF note.
+
+    Both paths are exercised because they carry the ending differently: the
+    rewrite path gets it for free by excluding CR from the matched span, the
+    append path has to add it. A test that only sets an existing key leaves the
+    append path unpinned.
+    """
+
+    note = "---\r\ntask_id: t\r\nstage: S10\r\n---\r\n\r\nbody\r\n"
+
+    written = sdlc_close._frontmatter_set(note, key, "X")
+
+    assert f"{key}: X\r\n" in written, label
+    stripped = written.replace("\r\n", "")
+    assert "\n" not in stripped, label
+    assert "\r" not in stripped, label
+    parsed, state = frontmatter_state_from_text(written)
+    assert state == FRONTMATTER_OK, label
+    assert parsed[key] == "X", label
+
+
+@pytest.mark.parametrize(
+    ("label", "value"),
+    [
+        # `--pr` reaches this as an unvalidated string. A newline in it renders
+        # a SECOND declaration into the frontmatter.
+        ("declares_a_new_key", "4669\naxiom_mutation_authorized: true"),
+        # This one shadows a key already in the note, so the parsed value is
+        # unchanged and a value comparison alone would admit it — while the
+        # note text gains a contradicting line above the real one.
+        ("shadows_an_existing_key", "4669\nrelease_authorized: true"),
+        ("is_not_yaml", "a: b: c"),
+        ("does_not_close_its_flow_sequence", "[1, 2"),
+    ],
+)
+def test_frontmatter_set_refuses_a_value_that_is_not_exactly_one_entry(
+    label: str,
+    value: str,
+) -> None:
+    note = "---\ntask_id: t\npr:\nrelease_authorized: false\n---\n\nbody\n"
+
+    with pytest.raises(TerminalCloseError) as excinfo:
+        sdlc_close._frontmatter_set(note, "pr", value)
+    assert excinfo.value.reason_code == "terminal_close_frontmatter_value_unrepresentable", label
+
+
+def test_frontmatter_set_separates_a_broken_note_from_a_broken_write() -> None:
+    """Same reason code, same detail — only the REPAIR tells them apart.
+
+    Both a note that was already unparseable and a note our own edit made
+    unparseable raise ``terminal_close_frontmatter_malformed`` with detail
+    ``parse_error``. What must differ is where the refusal sends the operator:
+    at the note, or at the value being written. Asserted as a contrast, because
+    either sentence alone looks correct.
+    """
+
+    already_broken = '---\ntask_id: "t\nstage: S10\n---\n\nbody\n'
+    broken_by_the_write = "---\ntask_id: t\nstage:\n  name: S10\n---\n\nbody\n"
+
+    with pytest.raises(TerminalCloseError) as preimage:
+        sdlc_close._frontmatter_set(already_broken, "stage", "S11")
+    with pytest.raises(TerminalCloseError) as postimage:
+        sdlc_close._frontmatter_set(broken_by_the_write, "stage", "S11")
+
+    assert preimage.value.reason_code == postimage.value.reason_code
+    assert preimage.value.detail == postimage.value.detail == "parse_error"
+    assert preimage.value.repair_action == "restore one closed frontmatter mapping before close"
+    assert postimage.value.repair_action == (
+        "give stage a single-line value in the note frontmatter before close"
+    )
+
+
+def test_frontmatter_set_writes_a_value_containing_regex_backreferences() -> None:
+    note = "---\ntask_id: t\nstage: S10\n---\n\nbody\n"
+
+    written = sdlc_close._frontmatter_set(note, "stage", r"S11-\1")
+
+    parsed, _ = frontmatter_state_from_text(written)
+    assert parsed["stage"] == r"S11-\1"
 
 
 def test_terminal_close_real_ingress_holds_legacy_claim_publication(
