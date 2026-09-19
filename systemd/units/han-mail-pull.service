@@ -1,0 +1,15 @@
+[Unit]
+Description=HAN inbound mail to private foreign-data quarantine
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/hapax-council
+ExecStart=%h/.local/bin/uv run --no-sync python -m scripts.han_mail_pull
+Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+UMask=0077
+NoNewPrivileges=true
+TimeoutStartSec=240
+MemoryMax=256M
+StandardOutput=journal
+StandardError=journal
