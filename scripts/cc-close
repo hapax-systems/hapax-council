@@ -14,7 +14,12 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Bash does not resolve symlinks in BASH_SOURCE; cc-close is installed as a
+# symlink in ~/.local/bin. Without resolution, all seven SCRIPT_DIR-relative
+# sibling reads point at nonexistent paths, so the installed entrypoint has
+# never reached task closure: it refuses at the missing cc-task-root.sh helper.
+_cc_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "$_cc_self")" && pwd)"
 ROLE_HELPER="$SCRIPT_DIR/../hooks/scripts/agent-role.sh"
 if [[ -f "$ROLE_HELPER" ]]; then
   # shellcheck source=../hooks/scripts/agent-role.sh
