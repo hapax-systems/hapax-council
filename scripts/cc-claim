@@ -446,6 +446,7 @@ if canon_enforced:
     from shared.sdlc_claim import (  # noqa: E402
         ClaimPublicationError,
         ClaimPublicationIntent,
+        archive_file_byte_exact,
         inspect_claim_publications,
         recover_claim_publications,
         resolve_applied_claim_publication,
@@ -567,7 +568,10 @@ if canon_enforced:
             )
             lineage_dir.mkdir(parents=True, exist_ok=False)
             destination = lineage_dir / dispatch_path.name
-            dispatch_path.replace(destination)
+            # ~/.cache is local disk and the lineage tree is an NFS mount: a plain
+            # rename raises EXDEV. archive_file_byte_exact completes the rename across
+            # devices and unlinks the source only after verifying the copy.
+            archive_file_byte_exact(dispatch_path, destination)
             (lineage_dir / "README.md").write_text(
                 "Archived dispatch-only claim residue before a fresh admitted claim.\n"
                 f"task_id: {binding.task_id}\n"
