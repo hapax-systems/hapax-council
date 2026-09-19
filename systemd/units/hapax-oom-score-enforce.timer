@@ -4,9 +4,12 @@ Description=Reapply live Hapax OOM scores
 Documentation=https://github.com/hapax-systems/hapax-council/blob/main/systemd/README.md
 
 [Timer]
-OnBootSec=30s
-OnUnitActiveSec=30s
-AccuracySec=1s
+# 2min: the 30s cadence with sub-second accuracy generated a PAM/logind
+# session storm through runuser (the 2026-08-10 appendix SSH wedge).
+# Unit-start score application rides the ExecStartPost triggers regardless;
+# the timer is only the reconciler. Accuracy stays at the default.
+OnBootSec=1min
+OnUnitActiveSec=2min
 Unit=hapax-oom-score-enforce.service
 
 [Install]
