@@ -365,12 +365,6 @@ class ClaimPublicationIntent:
             )
         from_status = str(task.frontmatter.get("status") or "offered").strip()
         assigned_to = str(task.frontmatter.get("assigned_to") or "").strip()
-        if task.frontmatter.get("claimable") is not True:
-            raise ClaimPublicationError(
-                "claim_publication_task_not_claimable",
-                "advance the task through a lawful claimable lifecycle projection",
-                f"{task.task_id}:claimable={task.frontmatter.get('claimable')!r}",
-            )
         if from_status in TASK_CLAIMABLE_STATUSES and assigned_to.lower() in {
             "",
             "none",
@@ -378,6 +372,16 @@ class ClaimPublicationIntent:
             "unassigned",
             "~",
         }:
+            # `claimable` governs FRESH claims only, so it is tested inside this branch.
+            # Testing it ahead of the claim-vs-resume split also gated resume, which
+            # stranded an owning lane on its own merge-ready row whenever that row was
+            # minted before the field existed — the ordinary case, not an edge.
+            if task.frontmatter.get("claimable") is not True:
+                raise ClaimPublicationError(
+                    "claim_publication_task_not_claimable",
+                    "advance the task through a lawful claimable lifecycle projection",
+                    f"{task.task_id}:claimable={task.frontmatter.get('claimable')!r}",
+                )
             claim_mode = "claim"
             to_status = "claimed"
         elif from_status in TASK_RESUMABLE_STATUSES and assigned_to == binding.lane:
