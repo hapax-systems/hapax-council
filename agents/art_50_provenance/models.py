@@ -20,6 +20,16 @@ ART50_EVIDENCE_SOURCES: tuple[str, ...] = (
     "20260505T001841Z-jr-currentness-scout-c2pa-rs-python-libraries-2026-05-04.md",
 )
 
+# Preserve these complete statements, including their order and negations, on
+# every public surface. A stored packet's custom prose cannot raise assurance.
+ART50_VERIFICATION_LIMITATIONS: tuple[str, ...] = (
+    "All C2PA signing states, including signed_embedded, are issuance declarations; "
+    "local packet checks do not verify signatures, signer trust or attribution "
+    "and never establish valid_signed.",
+    "Identity-name presence does not establish authorship or attribution.",
+    "A perceptual match is only perceptual-hash proximity, not byte identity or signed provenance.",
+)
+
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 _PHONE_RE = re.compile(r"\b(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}\b")
 
@@ -153,8 +163,7 @@ class Art50CredentialCertificate(BaseModel):
     evidence_sources: tuple[str, ...] = ART50_EVIDENCE_SOURCES
     limitations: tuple[str, ...] = (
         "This packet is Article 50 audit-trail evidence, not legal advice.",
-        "Unsigned or blocked C2PA states are implementation readiness signals, not trusted "
-        "claim-signer validation.",
+        *ART50_VERIFICATION_LIMITATIONS,
         "The fallback PDQ-DCT hash is not native PDQ and must be replaced or accepted by a "
         "production owner before claiming native PDQ coverage.",
         "No court-admissibility or forensic-authenticity claim is made.",
@@ -163,6 +172,7 @@ class Art50CredentialCertificate(BaseModel):
 
 __all__ = [
     "ART50_EVIDENCE_SOURCES",
+    "ART50_VERIFICATION_LIMITATIONS",
     "DEFAULT_V5_IDENTITIES",
     "Art50CredentialCertificate",
     "Art50CredentialRequest",
