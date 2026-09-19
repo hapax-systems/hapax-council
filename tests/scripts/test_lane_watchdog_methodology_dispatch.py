@@ -142,7 +142,7 @@ def test_idle_watchdog_sends_await_dispatch_when_no_claim(tmp_path: Path) -> Non
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
 
     result = subprocess.run([str(IDLE_WATCHDOG)], env=env, capture_output=True, text=True)
@@ -160,7 +160,7 @@ def test_idle_watchdog_appendix_only_skips_unclaimed_local_nudge(tmp_path: Path)
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
     env["HAPAX_LOCAL_DEV_MAINTENANCE_MODE"] = "appendix-only"
 
@@ -179,7 +179,7 @@ def test_idle_watchdog_appendix_only_preserves_active_task_resume_prompt(
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
     env["HAPAX_LOCAL_DEV_MAINTENANCE_MODE"] = "appendix-only"
     task_dir = (
@@ -206,7 +206,7 @@ def test_idle_watchdog_appendix_only_disables_required_claude_launch(
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
     env["HAPAX_LOCAL_DEV_MAINTENANCE_MODE"] = "appendix-only"
     home = Path(env["HOME"])
@@ -233,7 +233,7 @@ def test_idle_watchdog_does_not_dispatch_offered_task_from_idle_lane(tmp_path: P
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
     task_dir = (
         Path(env["HOME"]) / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
@@ -270,7 +270,7 @@ def test_idle_watchdog_preserves_active_task_resume_prompt(tmp_path: Path) -> No
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
     task_dir = (
         Path(env["HOME"]) / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
@@ -297,7 +297,7 @@ def test_idle_watchdog_does_not_raw_tmux_fallback_when_codex_ack_fails(
     env = _base_env(
         tmp_path,
         session="hapax-codex-cx-red",
-        pane="ready\ngpt-5.5 ~/projects/hapax-council",
+        pane="ready\n› \nengine-name ~/projects/hapax-council",
     )
     codex_send = Path(env["HOME"]) / "projects" / "hapax-council" / "scripts" / "hapax-codex-send"
     _write_executable(

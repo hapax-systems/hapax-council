@@ -15,6 +15,7 @@ usage() {
   cat <<'EOF'
 usage: hapax-codex [--session cx-color] [--slot alpha|beta|delta|epsilon] [--cd DIR]
                    [--task TASK_ID] [--bootstrap FILE] [--task-gate]
+                   [--execution-route ROUTE_OR_LEAF]
                    [--terminal none|tmux|foot] [--force] [--no-claim]
                    [--] [codex args...]
 
@@ -510,7 +511,7 @@ PYEOF
     PATH="$PATH" \
     REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-}" \
     SSL_CERT_FILE="${SSL_CERT_FILE:-}" \
-    "$codex_bin" exec \
+    "$codex_bin" exec "${CODEX_EXECUTION_ARGS[@]}" \
       --ephemeral \
       --skip-git-repo-check \
       --ignore-rules \
@@ -565,6 +566,7 @@ payload = {
     "binaries": ["python3", "codex"],
     "codex_bin_path": os.environ.get("HAPAX_CODEX_BIN_PATH", ""),
     "npm_config_prefix": os.environ.get("NPM_CONFIG_PREFIX", ""),
+    "execution_args": json.loads(os.environ["HAPAX_CODEX_EXECUTION_ARGS"]),
     "codex_exec_auth_timeout": os.environ.get("HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS", "30"),
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
@@ -719,7 +721,7 @@ else:
     if not math.isfinite(timeout_s) or timeout_s <= 0:
         timeout_s=30.0
     try:
-        result=subprocess.run([codex_bin,"exec","--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=timeout_s,env=env)
+        result=subprocess.run([codex_bin,"exec",*p["execution_args"],"--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=timeout_s,env=env)
     except subprocess.TimeoutExpired:
         auth_error="codex_saved_auth_exec_timeout"
     except OSError as exc:
@@ -904,10 +906,19 @@ TERMINAL="${HAPAX_CODEX_TERMINAL:-none}"
 TASK_GATE=0
 CLAIM_TASK=1
 FORCE=0
+EXECUTION_ROUTE="codex.headless.full"
 CODEX_EXTRA=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --execution-route)
+      EXECUTION_ROUTE="${2:?--execution-route requires a registry route}"
+      shift 2
+      ;;
+    --execution-route=*)
+      EXECUTION_ROUTE="${1#*=}"
+      shift
+      ;;
     --session|--thread|--name)
       SESSION="${2:-}"
       shift 2
@@ -1018,6 +1029,11 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# Resolve identity before any provider call or launch side effect.
+# shellcheck source=scripts/capability-execution.sh
+. "$COUNCIL_DIR/scripts/capability-execution.sh"
+bind_codex_execution || exit 9
 
 if [ -z "$SESSION" ]; then
   SESSION="${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:-${CODEX_SESSION_NAME:-${CODEX_SESSION:-${CODEX_ROLE:-}}}}}"
@@ -1402,8 +1418,7 @@ fi
 CODEX_ARGS=(
   --dangerously-bypass-approvals-and-sandbox
   --cd "$WORKDIR"
-  -c 'model="gpt-6-astra"'
-  -c 'model_reasoning_effort="xhigh"'
+  "${CODEX_EXECUTION_ARGS[@]}"
   -c 'approval_policy="never"'
   -c 'sandbox_mode="danger-full-access"'
   -c "projects.\"$HOME/projects\".trust_level=\"trusted\""
@@ -1468,7 +1483,7 @@ if ! RUNNER="$(mktemp "$RUNNER_TEMPLATE")"; then
 fi
 umask "$RUNNER_UMASK"
 chmod 700 "$RUNNER"
-CHILD_ARGS=(--session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
+CHILD_ARGS=(--execution-route "$EXECUTION_ROUTE" --session "$SESSION" --slot "$SLOT" --cd "$WORKDIR" --terminal none)
 if [ "$FORCE" -eq 1 ]; then
   CHILD_ARGS+=(--force)
 fi
@@ -1551,6 +1566,10 @@ else
     # Propagate the session id so the re-exec'd inner hapax-codex keeps ONE stable
     # uuid (reform Phase 1, FM-2) instead of minting a fresh one.
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+    printf 'export HAPAX_COUNCIL_DIR=%q\n' "$COUNCIL_DIR"
+    if [ -n "${HAPAX_PLATFORM_CAPABILITY_REGISTRY:-}" ]; then
+      printf 'export HAPAX_PLATFORM_CAPABILITY_REGISTRY=%q\n' "$HAPAX_PLATFORM_CAPABILITY_REGISTRY"
+    fi
     printf 'cd %q\n' "$WORKDIR"
     printf 'exec %q' "$COUNCIL_DIR/scripts/hapax-codex"
     for arg in "${CHILD_ARGS[@]}"; do

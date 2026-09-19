@@ -406,6 +406,9 @@ write_runner() {
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
+    if [ -n "${VIBE_ACTIVE_MODEL:-}" ]; then
+      printf 'export VIBE_ACTIVE_MODEL=%q\n' "$VIBE_ACTIVE_MODEL"
+    fi
     printf 'exec %q' "$VIBE_BIN"
     for arg in "${VIBE_ARGS[@]}"; do
       printf ' %q' "$arg"

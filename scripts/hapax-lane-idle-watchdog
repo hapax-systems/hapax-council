@@ -12,7 +12,7 @@
 #
 # Platforms:
 #   Claude:  idle = "❯" prompt visible + no active tool indicators
-#   Codex:   idle = "gpt-5.5" model line at bottom, NO "Working (" indicator
+#   Codex:   idle = input prompt at bottom, NO "Working (" indicator
 #
 # Runs as systemd oneshot (hapax-lane-idle-watchdog.timer, every 2 min).
 # Nudges ALL idle lanes per tick. Cooldown: 120s per lane between kicks.
@@ -159,18 +159,14 @@ is_claude_context_full() {
     echo "$pane" | tail -10 | grep -q "/clear to save"
 }
 
-# Codex: idle when model line visible at bottom, no "Working" indicator
+# Codex: idle when input prompt is visible at bottom, no "Working" indicator
 is_codex_idle() {
     local pane="$1"
     # Active: "Working (Xm Ys" or "Working (Xs"
     if echo "$pane" | grep -qE 'Working \([0-9]'; then
         return 1  # actively working
     fi
-    # Idle: shows model string at bottom (gpt-5.5/gpt-4.1/o3/etc)
-    if echo "$pane" | tail -5 | grep -qE '(gpt-[0-9]|o[0-9]|codex-).*~/projects/'; then
-        return 0  # idle at prompt
-    fi
-    # Also idle if we see the "› " prompt line without Working above it
+    # Idle if we see the "› " prompt line without Working above it
     if echo "$pane" | tail -10 | grep -qE '^› '; then
         if ! echo "$pane" | grep -qE 'Working \('; then
             return 0
@@ -379,7 +375,7 @@ if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" !
             pane_cmd=$(tmux display-message -t "$session" -p '#{pane_current_command}' 2>/dev/null) || continue
             pane_check=$(tmux capture-pane -t "$session" -p -S -5 2>/dev/null)
             codex_tui=false
-            if echo "$pane_check" | grep -qE '(Working|gpt-[0-9]|codex-|context left|› )'; then
+            if echo "$pane_check" | grep -qE '(Working|context left|› )'; then
                 codex_tui=true
             fi
 

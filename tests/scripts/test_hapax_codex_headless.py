@@ -15,12 +15,15 @@ from pathlib import Path
 
 import pytest
 
+from shared.capability_execution import codex_execution_args, resolve_execution_descriptor
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 
 
 @pytest.fixture(autouse=True)
 def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_TASK", raising=False)
     monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "headless-pids"))
     monkeypatch.setenv(
         "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE",
@@ -256,7 +259,18 @@ def test_resolve_local_codex_bin_skips_directory_candidates(tmp_path: Path) -> N
     assert result.stdout.strip() == str(fallback_codex)
 
 
+def _write_descriptor_runtime(path: Path) -> None:
+    # The launcher now requires a provisioned registry/resolver before provider calls.
+    (path / "scripts").mkdir(parents=True, exist_ok=True)
+    for directory in ("shared", "config", ".venv"):
+        (path / directory).symlink_to(REPO_ROOT / directory, target_is_directory=True)
+    shutil.copy2(
+        REPO_ROOT / "scripts/capability-execution.sh", path / "scripts/capability-execution.sh"
+    )
+
+
 def _write_minimal_council(council_dir: Path, retire_log: Path) -> None:
+    _write_descriptor_runtime(council_dir)
     _write_executable(council_dir / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
     _write_executable(
         council_dir / "scripts" / "hapax-relay-retire",
@@ -268,6 +282,7 @@ exit 0
 
 def _init_primary_council_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+    _write_descriptor_runtime(path)
     subprocess.run(
         ["git", "init", "-b", "main", str(path)],
         check=True,
@@ -1832,6 +1847,7 @@ def test_codex_headless_remote_preflight_ignores_token_handoff_payload(
     handoff = Path("/tmp") / f"hapax-codex-token-headless-ttl-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -1871,6 +1887,7 @@ def test_codex_headless_remote_preflight_ignores_invalid_token_handoff_ttl(
     handoff = Path("/tmp") / f"hapax-codex-token-headless-invalid-ttl-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -1905,6 +1922,7 @@ def test_codex_headless_remote_preflight_ignores_world_readable_published_token(
     token = _write_codex_access_token(tmp_path / "oauth", exp=int(time.time()) + 3600)
     token.chmod(0o644)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": [],
@@ -1962,6 +1980,7 @@ exit 0
 """,
     )
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": [],
@@ -2080,6 +2099,7 @@ exit 77
     )
     fake_codex.chmod(0o755)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -2137,6 +2157,7 @@ def test_codex_headless_remote_preflight_does_not_fork_for_token_cleanup(
     handoff = Path("/tmp") / f"hapax-codex-token-headless-fork-fail-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -2507,6 +2528,7 @@ def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(
     _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
+    _write_descriptor_runtime(primary)
     _write_executable(primary / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
     workdir = home / "projects" / "hapax-council--cx-amber"
     workdir.mkdir(parents=True)
