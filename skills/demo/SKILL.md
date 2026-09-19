@@ -30,7 +30,7 @@ Prerequisites for video format:
 Run the demo agent:
 
 ```bash
-cd ~/projects/hapax-council && LITELLM_API_KEY=$(pass show litellm/master-key) uv run python -m agents.demo "{user_request}" --format app
+cd ~/projects/hapax-council && LITELLM_API_KEY=$(hapax-secret litellm/master-key) uv run python -m agents.demo "{user_request}" --format app
 ```
 
 After generation, report the output directory and activation URL. For app format: `http://localhost:5173/?demo={demo-dir-name}`. For video: note the MP4 path. For slides: note the PDF path.

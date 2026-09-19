@@ -34,5 +34,5 @@ for dim, facts in sorted(p.get('dimensions', {}).items()):
 **With `--refresh` flag:** Run the profiler to update:
 
 ```bash
-cd ~/projects/hapax-council && LITELLM_API_KEY=$(pass show litellm/master-key) uv run python -m agents.profiler --auto
+cd ~/projects/hapax-council && LITELLM_API_KEY=$(hapax-secret litellm/master-key) uv run python -m agents.profiler --auto
 ```
