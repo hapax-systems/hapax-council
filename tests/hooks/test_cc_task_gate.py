@@ -394,9 +394,7 @@ class TestConnectorClassifierDeployedLayout:
             env.update(extra_env)
         return subprocess.run(
             ["bash", str(gate)],
-            input=json.dumps(
-                {"tool_name": tool_name, "tool_input": tool_input or {}}
-            ),
+            input=json.dumps({"tool_name": tool_name, "tool_input": tool_input or {}}),
             capture_output=True,
             text=True,
             env=env,
@@ -458,9 +456,7 @@ class TestConnectorClassifierDeployedLayout:
         # fallback and the claim requirement still binds.
         self._fake_rebuild_worktree(tmp_path)
         gate = self._deploy(tmp_path)
-        result = self._run_deployed(
-            gate, "mcp__github__create_pull_request", tmp_path
-        )
+        result = self._run_deployed(gate, "mcp__github__create_pull_request", tmp_path)
         assert result.returncode == 2
         assert "no claimed task" in result.stderr.lower()
 
@@ -480,14 +476,7 @@ class TestConnectorClassifierDeployedLayout:
         # via the same repo-root resolution; a blank-stage, fully-authorized
         # claimed task must get stamped (and the edit admitted) in the deployed
         # layout. Pre-fix this failed closed with ModuleNotFoundError.
-        vault = (
-            tmp_path
-            / "Documents"
-            / "Personal"
-            / "20-projects"
-            / "hapax-cc-tasks"
-            / "active"
-        )
+        vault = tmp_path / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
         vault.mkdir(parents=True)
         note = vault / "test-001-test-task.md"
         note.write_text(
