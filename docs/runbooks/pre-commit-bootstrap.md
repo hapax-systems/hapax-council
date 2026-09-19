@@ -155,6 +155,17 @@ can silently skip other encodings. The scanner refuses such files by name withou
 their contents. Convert them to UTF-8 or remove them, then amend/rebase the affected commits
 before retrying; changing only the branch tip leaves the earlier commits unscannable.
 
+Filenames containing a backslash are refused with exit 3 and
+`REFUSED [unsupported-filename]`: detect-secrets 1.5.0 rewrites that character into a
+directory separator when scanning a single file and can silently skip its content.
+The refusal applies to clean files and multiple-file scans too. Staging also refuses
+absolute paths and empty, `.` or `..` components that could alias another path. The
+diagnostic prints each affected filename with escaped control characters. Rename the
+files to canonical relative paths without backslashes, then amend/rebase every affected
+commit before retrying. Leading dashes, newlines, and other literal separators are scanned.
+Recheck: `uv run pytest tests/scripts/test_hapax_prepush_secret_scan.py -q -k
+'backslash or unmappable or supported_filename_separators'`.
+
 The installed policy's `systemd/units/` home-path exemption and inline
 `pragma: allowlist secret` exemption for vendor findings are preserved. Home paths outside
 that directory have no inline exemption. These are explicit policy exceptions, separate from

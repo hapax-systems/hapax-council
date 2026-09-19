@@ -313,6 +313,112 @@ def test_detect_secrets_scans_a_filename_containing_whitespace(tmp_path):
     assert fake not in r.stderr and fake not in r.stdout
 
 
+def test_single_backslash_filename_is_refused_before_detector_can_skip_it(tmp_path):
+    """One changed file reaches detect-secrets' special single-file scan branch."""
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    filename = r"probe\name.txt"
+    key = "AKIA" + "Z" * 16
+    tip = _commit(repo, filename, f'TOKEN = "{key}"\n')
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 3, result.stderr
+    assert "REFUSED [unsupported-filename]" in result.stderr
+    assert f"unscanned content: {ascii(filename)}" in result.stderr
+    assert "Remedy: rename" in result.stderr
+    assert "amend/rebase" in result.stderr
+    assert key not in result.stdout and key not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        pytest.param(r"\probe.txt", id="leading-backslash"),
+        pytest.param(r"dir\name/probe.txt", id="directory-backslash"),
+        pytest.param("probe\\\nname.txt", id="backslash-newline"),
+    ],
+)
+@pytest.mark.parametrize("companion", [False, True], ids=["single-file", "multiple-files"])
+def test_backslash_names_are_refused_even_for_clean_content(tmp_path, filename, companion):
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    if companion:
+        (repo / "companion.txt").write_text("ordinary companion content\n")
+    tip = _commit(repo, filename, "ordinary content\n")
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 3, result.stderr
+    assert "REFUSED [unsupported-filename]" in result.stderr
+    assert f"unscanned content: {ascii(filename)}" in result.stderr
+    assert "Remedy: rename" in result.stderr
+    assert "amend/rebase" in result.stderr
+    assert len(result.stderr.splitlines()) == 3  # Control characters stay escaped.
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["./probe.txt", "dir//probe.txt", "../probe.txt", "/probe.txt", "dir/../probe.txt"],
+    ids=["dot-component", "empty-component", "parent-component", "absolute", "internal-parent"],
+)
+def test_unmappable_staging_paths_are_refused_before_reading_content(monkeypatch, capsys, filename):
+    scanner = runpy.run_path(str(SCRIPT))
+
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("unsupported staging paths must be refused before reading content")
+
+    monkeypatch.setattr(subprocess, "run", unexpected_read)
+    with pytest.raises(SystemExit) as error:
+        scanner["scan_with_detector"]("unused-tip", [filename], {filename: [(1, "ordinary")]})
+    assert error.value.code == 3
+    diagnostic = capsys.readouterr().err
+    assert "REFUSED [unsupported-filename]" in diagnostic
+    assert f"unscanned content: {ascii(filename)}" in diagnostic
+    assert "Remedy: rename" in diagnostic
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        pytest.param("-probe.txt", id="leading-dash"),
+        pytest.param("--probe.txt", id="double-dash"),
+        pytest.param("probe\nname.txt", id="newline"),
+        pytest.param("probe\rname.txt", id="carriage-return"),
+        pytest.param("probe\r\nname.txt", id="crlf"),
+        pytest.param("probe\tname.txt", id="tab"),
+        pytest.param("probe\vname.txt", id="vertical-tab"),
+        pytest.param("probe\fname.txt", id="form-feed"),
+        pytest.param("probe\x1cname.txt", id="file-separator"),
+        pytest.param("probe\x1dname.txt", id="group-separator"),
+        pytest.param("probe\x1ename.txt", id="record-separator"),
+        pytest.param("probe\x85name.txt", id="next-line"),
+        pytest.param("probe\u2028name.txt", id="line-separator"),
+        pytest.param("probe\u2029name.txt", id="paragraph-separator"),
+        pytest.param("dir/name.txt", id="forward-slash"),
+        pytest.param("probe\u2215name.txt", id="division-slash"),
+        pytest.param("probe\uff0fname.txt", id="fullwidth-slash"),
+        pytest.param("probe\uff3cname.txt", id="fullwidth-backslash"),
+        pytest.param(".probe.txt", id="dotfile"),
+        pytest.param("probe.txt ", id="trailing-space"),
+        pytest.param(os.fsdecode(b"probe\xffname.txt"), id="non-utf8-filename"),
+    ],
+)
+def test_real_detector_scans_supported_filename_separators(tmp_path, filename):
+    """An AWS-only finding must survive literal staging through the real single-file CLI."""
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    key = "AKIA" + "Z" * 16
+    tip = _commit(repo, filename, f'TOKEN = "{key}"\n')
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 1, result.stderr
+    assert "REFUSED" in result.stderr
+    assert "AWS Access Key" in result.stderr
+    assert key not in result.stdout and key not in result.stderr
+
+
 def test_detect_secrets_staging_preserves_distinct_repository_paths(tmp_path):
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
