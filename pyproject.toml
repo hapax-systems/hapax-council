@@ -142,6 +142,10 @@ audio = [
     "obsws-python>=1.7.0",
     "hsemotion-onnx>=0.3",
     "praat-parselmouth>=0.4.5",
+    # Ceiling held at dev1389: dev1438 publishes a cp314-only wheel and no
+    # sdist, so `uv` cannot build the venv on our cp312/cp313 interpreters
+    # ("only has wheels with the following Python implementation tag: cp314").
+    # Re-take the bump when essentia ships a cp312/cp313 wheel above dev1389.
     "essentia>=2.1b6.dev1091,<=2.1b6.dev1389",
     # laion-clap: install separately — pins numpy<2.0.0 which conflicts with qdrant-client on 3.14
     #   uv pip install 'laion-clap>=1.1.6' --no-deps
