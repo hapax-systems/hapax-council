@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agentgov.consent import ConsentContract
+from agentgov.consent import ConsentContract, identity_operation, resolve_principal_id
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,18 @@ class ConsentLabel:
 
     def can_flow_to(self, target: ConsentLabel) -> bool:
         """Check if data with this label may flow to a target context."""
-        return self.policies <= target.policies
+        with identity_operation():
+            source_policies, target_policies = (
+                frozenset(
+                    (
+                        resolve_principal_id(owner),
+                        frozenset(resolve_principal_id(r) for r in readers),
+                    )
+                    for owner, readers in label.policies
+                )
+                for label in (self, target)
+            )
+            return source_policies <= target_policies
 
     @staticmethod
     def bottom() -> ConsentLabel:
