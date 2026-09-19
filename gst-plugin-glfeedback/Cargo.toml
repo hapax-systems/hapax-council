@@ -11,7 +11,7 @@ name = "gstglfeedback"
 crate-type = ["cdylib"]
 
 [dependencies]
-glib = "0.20"
+glib = "0.22"
 gst = { package = "gstreamer", version = "0.23" }
 gst-base = { package = "gstreamer-base", version = "0.23" }
 gst-video = { package = "gstreamer-video", version = "0.23" }
