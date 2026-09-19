@@ -68,6 +68,15 @@ def test_case_insensitive_match(fixture_dir: Path) -> None:
     assert _run([str(f)]) == 1
 
 
+@pytest.mark.parametrize(
+    "identifier", ["Kleeberger", "principal-c1", "principal-c2", "principal-a1"]
+)
+def test_registered_identity_forms_fail(fixture_dir: Path, identifier: str) -> None:
+    f = fixture_dir / "registered-identity-leak.md"
+    f.write_text(f"subject: {identifier}\n", encoding="utf-8")
+    assert _run([str(f)]) == 1
+
+
 def test_email_is_not_gated(fixture_dir: Path) -> None:
     """The operator's email is an operational identifier, not a
     referent-policy target. mail-monitor specs and integration tests
