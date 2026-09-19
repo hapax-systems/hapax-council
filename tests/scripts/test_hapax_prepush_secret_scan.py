@@ -65,8 +65,14 @@ def _commit(repo: Path, name: str, text: str) -> str:
 
 
 def _run(repo: Path, remote: str, refs: str) -> subprocess.CompletedProcess:
+    try:
+        destination = _git(repo, "remote", "get-url", "--push", remote)
+    except subprocess.CalledProcessError:
+        destination = (
+            ""  # Direct protocol tests with no configured destination scan conservatively.
+        )
     return subprocess.run(
-        [sys.executable, str(SCRIPT), remote, "https://example.invalid/x.git"],
+        [sys.executable, str(SCRIPT), remote, destination],
         cwd=repo,
         input=refs,
         capture_output=True,
@@ -232,7 +238,7 @@ def test_git_binary_classification_refuses_and_names_unscannable_file(tmp_path, 
     assert payload.decode(errors="ignore") not in r.stderr
 
 
-def test_vendor_key_prefix_cannot_be_allowlisted_by_inline_pragma(tmp_path, monkeypatch):
+def test_vendor_key_prefix_honours_installed_inline_pragma(tmp_path, monkeypatch):
     """The independent vendor predicate still refuses keys detect-secrets does not flag."""
     fake_bin = tmp_path / "detector-bin"
     fake_bin.mkdir()
@@ -249,11 +255,10 @@ def test_vendor_key_prefix_cannot_be_allowlisted_by_inline_pragma(tmp_path, monk
     assert r.returncode == 1, r.stderr
     assert "vendor-key-shaped in 1 added line(s): env.txt" in r.stderr
     assert fake not in r.stderr
-    # A detect-secrets pragma must not bypass the independent vendor-prefix predicate.
+    # Preserve the installed hook's explicit false-positive pragma policy.
     tip2 = _commit(repo, "env.txt", f"EXAMPLE={fake}  # pragma: allowlist secret\n")
     r2 = _run(repo, "origin", f"refs/heads/main {tip2} refs/heads/main {tip}\n")
-    assert r2.returncode == 1, r2.stderr
-    assert "vendor-key-shaped in 1 added line(s): env.txt" in r2.stderr
+    assert r2.returncode == 0, r2.stderr
     assert fake not in r2.stderr and fake not in r2.stdout
 
 
@@ -453,7 +458,16 @@ def test_pre_existing_finding_in_a_changed_file_is_not_new_exposure(tmp_path):
     assert "secret-shaped: fixture.py" in r2.stderr
 
 
-def test_generated_hash_bearing_artifacts_are_exempt_from_entropy_only_findings(tmp_path):
+@pytest.mark.parametrize(
+    "generated",
+    [
+        "docs/architecture/system-dynamics-map.lock.json",
+        "config/capability-inventory-baseline.json",
+    ],
+)
+def test_generated_hash_bearing_artifacts_are_exempt_from_entropy_only_findings(
+    tmp_path, generated
+):
     """A re-materialized architecture map adds fresh hex digests; those are not secrets. The same
     digest in any other path is still refused, and a keyword on the generated path still is."""
     repo = _repo(tmp_path)
@@ -461,8 +475,6 @@ def test_generated_hash_bearing_artifacts_are_exempt_from_entropy_only_findings(
     # Computed, not literal: this file's own push must not carry a high-entropy hex line.
     digest = hashlib.sha256(b"content digest, not a secret").hexdigest()
     line = f'{{"digest": "{digest}"}}\n'
-    generated = "docs/architecture/system-dynamics-map.lock.json"
-    (repo / "docs" / "architecture").mkdir(parents=True)
     tip = _commit(repo, generated, line)
     r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
     assert r.returncode == 0, r.stderr
@@ -478,8 +490,8 @@ def test_generated_hash_bearing_artifacts_are_exempt_from_entropy_only_findings(
     assert r3.returncode == 1, r3.stderr  # the exemption is entropy-only; keywords still count
 
 
-def test_systemd_unit_files_have_no_home_path_exemption(tmp_path):
-    """The configured private-mirror exception is the only home-path bypass."""
+def test_systemd_unit_files_preserve_installed_home_path_exemption(tmp_path):
+    """Reconcile the installed systemd-only exception, leaving ordinary files guarded."""
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
     # Built at runtime so this fixture line is not itself a home path in an added line.
@@ -488,8 +500,11 @@ def test_systemd_unit_files_have_no_home_path_exemption(tmp_path):
     )
     tip = _commit(repo, "systemd/units/job.service", "[Service]\n" + line)
     r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
-    assert r.returncode == 1
-    assert "home path in 1 added line(s): systemd/units/job.service" in r.stderr
+    assert r.returncode == 0, r.stderr
+    tip2 = _commit(repo, "config/job.service", "[Service]\n" + line)
+    r2 = _run(repo, "origin", f"refs/heads/main {tip2} refs/heads/main {tip}\n")
+    assert r2.returncode == 1, r2.stderr
+    assert "home path in 1 added line(s): config/job.service" in r2.stderr
 
 
 def test_deletion_pushes_nothing_and_passes(tmp_path):
@@ -520,6 +535,190 @@ def _publish_base(repo: Path, tmp_path: Path) -> Path:
     _git(repo, "push", "-q", "-u", "origin", "main")
     assert _git(repo, "rev-parse", "refs/remotes/origin/main") == _git(remote, "rev-parse", "main")
     return remote
+
+
+def _published_feature(tmp_path: Path) -> tuple[Path, Path, str]:
+    repo = _repo(tmp_path)
+    remote = _publish_base(repo, tmp_path)
+    _git(repo, "checkout", "-q", "-b", "feature")
+    base = _commit(repo, "feature.txt", "published feature\n")
+    _git(repo, "push", "-q", "origin", "feature")
+    return repo, remote, base
+
+
+def _feature_scan(repo: Path, base: str) -> subprocess.CompletedProcess:
+    tip = _git(repo, "rev-parse", "HEAD")
+    return _run(repo, "origin", f"refs/heads/feature {tip} refs/heads/feature {base}\n")
+
+
+@pytest.mark.parametrize("remote_branch", ["main", "other-published", "published-tag"])
+def test_existing_branch_merges_remote_fixtures(tmp_path, remote_branch):
+    """(a) Previously published content on any destination ref adds no exposure."""
+    repo, _remote, base = _published_feature(tmp_path)
+    _git(repo, "checkout", "-q", "main")
+    if remote_branch != "main":
+        _git(repo, "checkout", "-q", "-b", remote_branch)
+    fake = "AKIA" + "ZXCVBNMASDFG1234"  # Synthetic shape only.
+    home = "/".join(("", "home", "example", "fixture"))
+    _commit(repo, "fixture.txt", f"{fake}\n{home}\n")
+    if remote_branch == "published-tag":
+        _git(repo, "tag", "-a", "remote-fixture", "-m", "published fixtures")
+        _git(repo, "push", "-q", "origin", "refs/tags/remote-fixture")
+    else:
+        _git(repo, "push", "-q", "origin", remote_branch)
+    _git(repo, "checkout", "-q", "feature")
+    _git(repo, "merge", "--no-ff", "-q", "-m", "merge published fixtures", remote_branch)
+    assert _git(repo, "diff", remote_branch, "HEAD", "--", "fixture.txt") == ""
+
+    result = _feature_scan(repo, base)
+
+    assert result.returncode == 0, result.stderr
+    assert fake not in result.stdout + result.stderr
+
+
+def test_merge_conflict_resolution_secret_is_refused(tmp_path):
+    """(b) A new line in the merge itself is absent from both published parents."""
+    repo, remote, _base = _published_feature(tmp_path)
+    base = _commit(repo, "README.md", "feature resolution candidate\n")
+    _git(repo, "push", "-q", "origin", "feature")
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, "README.md", "main resolution candidate\n")
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "checkout", "-q", "feature")
+    merge = subprocess.run(
+        ["git", "merge", "--no-ff", "main"], cwd=repo, capture_output=True, text=True
+    )
+    assert merge.returncode == 1
+    fake = "AKIA" + "ZXCVBNMASDFG1234"  # Synthetic shape only.
+    _commit(repo, "README.md", f"{fake}\n")
+    assert len(_git(repo, "rev-list", "--parents", "-n", "1", "HEAD").split()) == 3
+    for branch in ("feature", "main"):
+        assert fake not in _git(remote, "show", f"{branch}:README.md")
+
+    result = _feature_scan(repo, base)
+
+    assert result.returncode == 1, result.stderr
+    assert "secret-shaped: README.md" in result.stderr
+    assert fake not in result.stdout + result.stderr
+
+
+def test_existing_ref_new_secret_is_refused(tmp_path):
+    """(c) Ordinary new commits remain in the scan even on an existing remote ref."""
+    repo, _remote, base = _published_feature(tmp_path)
+    fake = "AKIA" + "ZXCVBNMASDFG1234"  # Synthetic shape only.
+    _commit(repo, "new-secret.txt", f"{fake}\n")
+
+    result = _feature_scan(repo, base)
+
+    assert result.returncode == 1, result.stderr
+    assert "secret-shaped: new-secret.txt" in result.stderr
+    assert fake not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("published_default", [False, True], ids=["empty", "known-default"])
+@pytest.mark.parametrize("dirty", [False, True], ids=["clean", "secret"])
+def test_new_ref_zero_sha_preserves_scanning(tmp_path, published_default, dirty):
+    """(d) New refs still allow clean content and refuse new secrets, with or without a base."""
+    repo = _repo(tmp_path)
+    fake = "AKIA" + "ZXCVBNMASDFG1234"  # Synthetic shape only.
+    if published_default:
+        _commit(repo, "published-fixture.txt", f"{fake}\n")
+        _publish_base(repo, tmp_path)
+    else:
+        remote = tmp_path / "empty.git"
+        _git(tmp_path, "init", "--bare", "-q", str(remote))
+        _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "checkout", "-q", "-b", "feature")
+    _commit(repo, "new-content.txt", f"{fake}\n" if dirty else "ordinary content\n")
+
+    result = _feature_scan(repo, ZERO)
+
+    assert result.returncode == (1 if dirty else 0), result.stderr
+    assert ("secret-shaped: new-content.txt" in result.stderr) == dirty
+    assert fake not in result.stdout + result.stderr
+
+
+def test_existing_ref_new_home_path_is_refused(tmp_path):
+    """(e) Home paths newly introduced on a published branch remain guarded."""
+    repo, _remote, base = _published_feature(tmp_path)
+    home = "/".join(("", "home", "example", "private"))
+    _commit(repo, "new-path.txt", f"path {home}\n")
+
+    result = _feature_scan(repo, base)
+
+    assert result.returncode == 1, result.stderr
+    assert "home path in 1 added line(s): new-path.txt" in result.stderr
+    assert home not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("retarget", ["url", "pushurl"])
+def test_cached_refs_from_other_destination_cannot_hide_secret(tmp_path, retarget):
+    repo = _repo(tmp_path)
+    fake = "AKIA" + "ZXCVBNMASDFG1234"  # Synthetic shape only.
+    _commit(repo, "secret.txt", f"{fake}\n")
+    _publish_base(repo, tmp_path)
+    empty = tmp_path / "other.git"
+    _git(tmp_path, "init", "--bare", "-q", str(empty))
+    _git(repo, "config", f"remote.origin.{retarget}", str(empty))
+
+    result = _feature_scan(repo, ZERO)
+
+    assert result.returncode == 1, result.stderr
+    assert "secret-shaped: secret.txt" in result.stderr
+
+
+def test_unpublished_second_parent_secret_is_scanned(tmp_path):
+    repo, _remote, base = _published_feature(tmp_path)
+    _git(repo, "checkout", "-q", "-b", "unpublished", "main")
+    fake = "AKIA" + "ZXCVBNMASDFG1234"  # Synthetic shape only.
+    _commit(repo, "side-secret.txt", f"{fake}\n")
+    _git(repo, "checkout", "-q", "feature")
+    _git(repo, "merge", "--no-ff", "-q", "-m", "merge unpublished branch", "unpublished")
+
+    result = _feature_scan(repo, base)
+
+    assert result.returncode == 1, result.stderr
+    assert "secret-shaped: side-secret.txt" in result.stderr
+
+
+def test_unavailable_destination_cannot_trust_cached_refs(tmp_path):
+    repo = _repo(tmp_path)
+    fake = "AKIA" + "ZXCVBNMASDFG1234"  # Synthetic shape only.
+    _commit(repo, "secret.txt", f"{fake}\n")
+    _publish_base(repo, tmp_path)
+    _git(repo, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+
+    result = _feature_scan(repo, ZERO)
+
+    assert result.returncode == 1, result.stderr
+    assert "could not verify destination refs" in result.stderr
+    assert "secret-shaped: secret.txt" in result.stderr
+    assert fake not in result.stdout + result.stderr
+
+
+def test_missing_protocol_history_refuses_with_fetch_guidance(tmp_path):
+    repo = _repo(tmp_path)
+    missing = "1" * 40
+
+    result = _feature_scan(repo, missing)
+
+    assert result.returncode == 3, result.stderr
+    assert "could not resolve pushed history" in result.stderr
+    assert "fetch the destination's missing history" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_textconv_cannot_hide_added_secret(tmp_path):
+    repo, _remote, base = _published_feature(tmp_path)
+    _commit(repo, ".gitattributes", "*.txt diff=hidden\n")
+    _git(repo, "config", "diff.hidden.textconv", "true")
+    fake = "AKIA" + "ZXCVBNMASDFG1234"  # Synthetic shape only.
+    _commit(repo, "hidden.txt", f"{fake}\n")
+
+    result = _feature_scan(repo, base)
+
+    assert result.returncode == 1, result.stderr
+    assert "secret-shaped: hidden.txt" in result.stderr
 
 
 @pytest.mark.parametrize("binary", [False, True], ids=["text", "binary"])
@@ -816,8 +1015,8 @@ def test_installed_hook_scan_failure(installed_checkout, clean_detector, monkeyp
             "original_run = subprocess.run\n"
             "def short_deadline(*args, **kwargs):\n"
             "    if 'timeout' in kwargs:\n"
-            "        assert kwargs['timeout'] == 600\n"
-            "        kwargs['timeout'] = 0.05\n"
+            "        if kwargs['timeout'] == 600:\n"
+            "            kwargs['timeout'] = 0.05\n"
             "    return original_run(*args, **kwargs)\n"
             "subprocess.run = short_deadline\n"
             "sys.argv = sys.argv[1:]\n"

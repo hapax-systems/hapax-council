@@ -116,13 +116,25 @@ every worktree of that clone shares both hooks.
 Do not point `core.hooksPath` at `scripts`: Git would stop consulting the common directory and
 silently disable the pre-commit hook. Re-run the installer when `scripts/pre-push` changes.
 
-What it does: for each ref being pushed, it enumerates every commit not reachable from the remote
-tip (or the known remote default branch for a new ref) and scans the lines each commit ADDS against
-its first parent. Root commits are compared with the empty tree. The detectors are detect-secrets
-`--all-files`, a vendor-key prefix regex (Anthropic, xAI, Hugging Face, GitLab, …), and an
-absolute-home-path check; the hook prints finding TYPES and counts, never values, and refuses with
-a remedy. Entropy-only findings on the codebase-derived
-`docs/architecture/system-dynamics-map*` files are not secrets and are skipped there.
+What it does: for each ref being pushed, it enumerates every commit not reachable from any
+verified ref on the actual push destination. It uses the push protocol's advertised tips plus
+locally available commits advertised by `git ls-remote` on the push URL, including branches and
+commit tags. Cached remote-tracking refs alone never exclude history: changing a remote URL or
+using a different push URL must not hide unpublished content. If the destination cannot be
+queried, the scan conservatively excludes only the push protocol's tips; fetch missing history
+before retrying a refusal. New refs with no verified remote history scan every reachable commit.
+
+Each commit is scanned, including intermediate commits whose content is removed later. Ordinary
+commits are compared with their parent; roots with the empty tree. For merges, added positions
+are intersected across **all parents**. Inherited lines were either already published or are
+scanned at their introducing ancestor; a new conflict-resolution line remains in the scan.
+This allows a published branch to merge main's existing fixtures without suppressing new content.
+Text conversion is disabled so diff drivers cannot hide additions. The detectors are detect-secrets
+`--all-files`, a vendor-key prefix regex (Anthropic, xAI, Hugging Face, GitLab, …), and a
+`/home/<user>/` path check; the hook prints finding TYPES and counts, never values, and refuses
+with a remedy. The installed policy's entropy-only exemptions are preserved for
+`docs/architecture/system-dynamics-map*` and `config/capability-inventory-baseline.json*`.
+Keyword and vendor detectors still apply on those paths.
 
 Detector line numbers are translated back to Git's LF-delimited lines, including files with
 bare carriage returns or CRLF endings. Every scanned file must be valid UTF-8: detect-secrets
@@ -130,14 +142,17 @@ can silently skip other encodings. The scanner refuses such files by name withou
 their contents. Convert them to UTF-8 or remove them, then amend/rebase the affected commits
 before retrying; changing only the branch tip leaves the earlier commits unscannable.
 
-There is no path-based exemption from the absolute-home-path check, including under
-`systemd/units/`, and neither the vendor-key nor home-path detector has a line-level allowlist. A
-unit that needs an operator-specific path must be parameterized. Recheck all predicates,
+The installed policy's `systemd/units/` home-path exemption and inline
+`pragma: allowlist secret` exemption for vendor findings are preserved. Home paths outside
+that directory have no inline exemption. These are explicit policy exceptions, separate from
+the remote-history exclusion. Git-binary changes are refused by path because no added text can
+be scanned; remove them from the pushed history and obtain independent review.
+Recheck all predicates,
 per-commit behavior, and installed hook dispatch with the same pytest command above, omitting
 the `-k` filter. The full suite also runs the real detect-secrets CLI. For an offline run with
 cached tools, add `UV_TOOL_DIR=/store-fast/tmp/uv-tools-verify UV_OFFLINE=1` to that command's
 environment.
 
-Exempting a private mirror (the only sanctioned exemption): `git config --add
-hapax.prepushScan.skipRemote <remote-name>`. There is no in-script bypass; if the hook refuses a
+Exempting a whole private mirror: `git config --add
+hapax.prepushScan.skipRemote <remote-name>`. There is no environment-variable bypass; if the hook refuses a
 line the remote already has, the hook is wrong — fix it, do not `--no-verify`.
