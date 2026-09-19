@@ -106,6 +106,49 @@ def test_clean_push_passes(tmp_path):
 @pytest.mark.parametrize(
     "filename",
     [
+        pytest.param(":(exclude)*", id="exclude-magic"),
+        pytest.param(":!*.txt", id="exclude-shorthand"),
+        pytest.param(":/probe.txt", id="top-magic"),
+        pytest.param(":(glob)probe*.txt", id="glob-magic"),
+        pytest.param("probe*.txt", id="asterisk"),
+        pytest.param("probe?.txt", id="question-mark"),
+        pytest.param("probe[ab].txt", id="brackets"),
+        pytest.param("--probe.txt", id="leading-dash"),
+    ],
+)
+def test_committed_pathspec_filenames_are_literal_and_refused(tmp_path, monkeypatch, filename):
+    """Scan each committed filename exactly, including names that Git treats as patterns."""
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    # In the same commit, add clean files that magic/glob pathspecs could select.
+    # Refusal alone would miss glob widening: it must not pollute this file's lines.
+    for companion in ("probe.txt", "probea.txt"):
+        (repo / companion).write_text("unrelated added content\n")
+    key = "AKIA" + "Z" * 16
+    vendor = "sk-ant-" + "a" * 32
+    home = "/home/" + "synthetic-operator/private"
+    lines = [f'TOKEN = "{key}"', f'provider = "{vendor}"', f'archive = "{home}"']
+    tip = _commit(repo, filename, "\n".join(lines) + "\n")
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 1, result.stderr
+    assert "REFUSED" in result.stderr
+    assert f"secret-shaped: {filename}" in result.stderr
+    assert "AWS Access Key" in result.stderr
+    assert f"vendor-key-shaped in 1 added line(s): {filename}" in result.stderr
+    assert f"home path in 1 added line(s): {filename}" in result.stderr
+    for value in (key, vendor, home):
+        assert value not in result.stdout and value not in result.stderr
+
+    scanner = runpy.run_path(str(SCRIPT))
+    monkeypatch.chdir(repo)
+    assert scanner["added_lines"](base, tip, [filename]) == {filename: list(enumerate(lines, 1))}
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
         pytest.param("probe.css", id="is_non_text_file-css"),
         pytest.param("probe.svg", id="is_non_text_file-svg"),
         pytest.param("probe.lock", id="is_non_text_file-lock"),
@@ -1188,7 +1231,7 @@ def test_installed_hook_scan_failure(installed_checkout, clean_detector, monkeyp
             "import runpy, subprocess, sys\n"
             "original_run = subprocess.run\n"
             "def unreadable_blob(cmd, *args, **kwargs):\n"
-            "    if cmd[:2] == ['git', 'show'] and cmd[2].endswith(':scan-me.txt'):\n"
+            "    if cmd[0] == 'git' and cmd[-2] == 'show' and cmd[-1].endswith(':scan-me.txt'):\n"
             "        return subprocess.CompletedProcess(cmd, 128, b'', b'')\n"
             "    return original_run(cmd, *args, **kwargs)\n"
             "subprocess.run = unreadable_blob\n"
