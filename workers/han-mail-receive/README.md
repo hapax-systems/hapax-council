@@ -42,12 +42,31 @@ Content-identical deliveries intentionally collapse to one local item.
 
 The local parser receives only a bounded header block to extract the subject.
 Notifications allowlist sender, subject, unverified auth observations and time;
-they never include a body or MIME excerpt. `shared.notify.send_notification`
-uses `technical=False` to prevent foreign subjects from triggering incident
-task creation, and high priority to request desktop visibility. No enrichment
-API is called. Failed notifications remain pending locally after KV deletion
-and retry on later runs. A successful send followed by a crash before recording
-success can produce a duplicate notification; it cannot lose the item.
+they never include a body or MIME excerpt. Each poll coalesces all pending items
+(including prior failures) into **one push at most**, with the count and the
+first item's metadata in the existing deterministic hash order. The durable
+per-item record and schema are unchanged.
+
+The HAN adapter publishes to topic `hapax-han-mail` on
+`NTFY_BASE_URL` (default `http://100.85.131.41:8090`, the appendix tailnet bind).
+It uses ntfy's [JSON publishing API](https://docs.ntfy.sh/publish/#publish-as-json)
+to preserve Unicode, with high priority, a 10-second timeout, no redirects,
+no environment proxy and no immediate retry. Only HTTP **2xx** counts as ntfy
+acceptance. On failure it tries `shared.notify.send_notification` once, with
+`technical=False` to prevent incident task creation and high desktop priority.
+An accepted ntfy push skips the desktop attempt to avoid a second interruption.
+No enrichment API is called.
+
+If either channel accepts the summary, all its items become `notified=true`.
+Otherwise all stay pending locally after KV deletion and retry on the next poll.
+Attempts are durably recorded before delivery; retry titles change so desktop
+dedup cannot treat a prior failed attempt as acceptance. A successful send
+followed by a crash before recording success can produce a duplicate notice;
+it cannot lose the item. Server acceptance does not prove a phone displayed it.
+
+**Operator action:** subscribe the phone's ntfy app to `hapax-han-mail` using
+server `http://100.85.131.41:8090`, reachable over the tailnet. Subscription is
+the operator's act and was not attempted by this task.
 
 The user service and timer are supplied in `systemd/units/han-mail-pull.*`.
 **They have not been installed or enabled. Installation follows review.**
@@ -101,10 +120,14 @@ uv run --no-sync python workers/han-mail-receive/mutation-check.py
 systemd-analyze --user verify systemd/units/han-mail-pull.service systemd/units/han-mail-pull.timer
 ```
 
-All fixtures are self-authored. Three mutation checks must fail their targeted
-test: deleting before durable storage, notifying again on re-pull, and leaking
-raw bytes into a notification. Mutation copies live in a temporary directory;
-the deployed/source implementation is never mutated by the checker.
+All fixtures are self-authored. The 38 puller tests include coalescing a durable
+retry with new arrivals, wire-payload body exclusion, HTTP status boundaries,
+timeouts, desktop fallback and complete-batch retry after remote deletion.
+Five mutation checks must fail their targeted test: deleting before durable
+storage, notifying again on re-pull, leaking raw bytes into a desktop notice,
+leaking them into an ntfy push, and sending one push per item instead of per
+poll. Mutation copies live in a temporary directory; the deployed/source
+implementation is never mutated by the checker.
 
 One invocation of `synthetic.mjs` exercised the exact deployed handler source
 with a real KV REST adapter. It wrote a 224-byte synthetic message (three KV
@@ -113,16 +136,22 @@ its known hash. No SMTP delivery or operator mailbox was used, and no real
 message body was read. This verifies the handler/storage/puller path, not an
 SMTP event executing inside the hosted Cloudflare runtime.
 
-The synthetic item's desktop notification remains pending: the host user bus
-reported no owner for `org.freedesktop.Notifications`, and `send_notification`
-returned false on both attempts. Its body and pending record remain durable.
-After the operator's normal notification service is restored, this local-only
-retry completes the remaining synthetic notification check (run from the repo):
+The original synthetic notice remained pending after two desktop failures:
+the host user bus had no owner for `org.freedesktop.Notifications`. On
+2026-09-19 at 09:55:12Z, the new adapter completed that same record with exactly
+one ntfy publish, **HTTP 200**, message ID `eqJWQO1tHL1z`. The record transitioned
+from `notified=false` to `true`, attempts 2 → 3; all other fields were unchanged.
+The 224-byte synthetic raw file's hash was verified before and after. A second
+local notification pass returned zero and issued no second HTTP request.
+No Cloudflare request, new synthetic message or host unit installation was
+needed. Phone subscription remains the operator's action.
+
+For local-only retries with the poller stopped, run from the repo:
 
 ```sh
-uv run --no-sync python -c 'from scripts.han_mail_pull import QUARANTINE, notify_pending; from shared.notify import send_notification; print(notify_pending(QUARANTINE, send_notification))'
+uv run --no-sync python -c 'from scripts.han_mail_pull import QUARANTINE, notify_pending, send_mail_notification; print(notify_pending(QUARANTINE, send_mail_notification))'
 ```
 
-Expect one newly delivered item, then zero on a repeat. Restore the existing
-desktop notification service through its own governed workflow; this row does
-not install or enable host units or alter the shared notification subsystem.
+The already-settled synthetic record produces zero. Future failed notices stay
+durable until a channel accepts their summary. This row does not install or
+enable host units or alter the shared notification subsystem.

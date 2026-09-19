@@ -74,6 +74,187 @@ def notices():
     return calls, notify
 
 
+@pytest.fixture
+def channels(monkeypatch):
+    from shared import notify
+
+    state = {"status": 200, "desktop_result": False, "pushes": [], "desktops": []}
+    real_client = httpx.Client
+    monkeypatch.delenv("NTFY_BASE_URL", raising=False)
+
+    def handler(request):
+        state["pushes"].append(request)
+        if "on_push" in state:
+            state["on_push"]()
+        if state["status"] == "timeout":
+            raise httpx.ReadTimeout("synthetic timeout", request=request)
+        if state["status"] == "connection":
+            raise httpx.ConnectError("synthetic outage", request=request)
+        return httpx.Response(state["status"], headers={"Location": "https://example.invalid/"})
+
+    def client(**kwargs):
+        assert kwargs == {"timeout": 10, "follow_redirects": False, "trust_env": False}
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    def desktop(*args, **kwargs):
+        state["desktops"].append((args, kwargs))
+        if state["desktop_result"] == "exception":
+            raise RuntimeError("synthetic desktop failure")
+        return state["desktop_result"]
+
+    monkeypatch.setattr(pull.httpx, "Client", client)
+    monkeypatch.setattr(notify, "send_notification", desktop)
+    return state
+
+
+def pending_batch(root):
+    """One durable retry plus two newly arrived, self-authored messages."""
+    kv = FakeKV()
+    kv.entries = []
+    raw_by_key = {}
+    for index in range(3):
+        raw = RAW.replace(b"Self-authored_", f"Self-authored_{index}_".encode())
+        key = hashlib.sha256(raw).hexdigest()
+        metadata = {**METADATA, "size": len(raw), "sender": f"fixture{index}@example.invalid"}
+        raw_by_key[key] = raw
+        if index == 0:
+            pull.store_item(root, key, raw, metadata)
+        else:
+            kv.entries.append({"name": key, "metadata": metadata})
+    kv.get_value = raw_by_key.__getitem__
+    return kv, sorted(raw_by_key)
+
+
+def test_coalesces_one_push_per_poll(root, channels):
+    kv, keys = pending_batch(root)
+
+    def check_durable_attempts():
+        for key in keys:
+            item = pull.read_json(root / f"{key}.json")
+            assert not item["notified"]
+            assert item["notification_attempts"] == 1
+
+    channels["on_push"] = check_durable_attempts
+    assert pull.run_once(kv, root, pull.send_mail_notification, lambda: NOW) == {
+        "pulled": 2,
+        "notified": 3,
+    }
+    assert len(channels["pushes"]) == 1
+    payload = json.loads(channels["pushes"][0].content)
+    assert "3 pending foreign item(s)" in payload["title"]
+    first = pull.read_json(root / f"{keys[0]}.json")
+    assert f"Sender: {first['sender']}" in payload["message"]
+    assert f"Subject: {first['subject']}" in payload["message"]
+    for key in keys:
+        item = pull.read_json(root / f"{key}.json")
+        assert item["notified"]
+        if key != keys[0]:
+            assert item["sender"] not in payload["message"]
+            assert item["subject"] not in payload["message"]
+    assert not channels["desktops"]
+    kv.entries = []
+    assert pull.run_once(kv, root, pull.send_mail_notification, lambda: NOW + 300) == {
+        "pulled": 0,
+        "notified": 0,
+    }
+    assert len(channels["pushes"]) == 1
+
+
+def test_body_never_in_push(root, channels):
+    pull.run_once(FakeKV(), root, pull.send_mail_notification, lambda: NOW)
+    assert len(channels["pushes"]) == 1
+    request = channels["pushes"][0]
+    assert request.method == "POST"
+    assert str(request.url) == "http://100.85.131.41:8090/"
+    wire = str(request.url) + str(request.headers) + request.content.decode()
+    assert "FOREIGN_BODY_SENTINEL" not in wire
+    assert "forged body subject" not in wire
+    assert json.loads(request.content) == {
+        "topic": "hapax-han-mail",
+        "title": f"HAN mail — 1 pending foreign item(s) [{KEY[:12]}]",
+        "message": (
+            "Sender: fixture@example.invalid\nSubject: Self-authored ✓\n"
+            "Auth: unverified (header observations only); SPF=pass, DKIM=none, DMARC=none\n"
+            "Received: 2026-09-19T09:00:00Z"
+        ),
+        "priority": 4,
+        "tags": ["mail"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "desktop_result", "accepted"),
+    [
+        (200, False, True),
+        (201, False, True),
+        (204, False, True),
+        (299, False, True),
+        (199, False, False),
+        (300, False, False),
+        (302, False, False),
+        (403, False, False),
+        (429, False, False),
+        (500, False, False),
+        (503, True, True),
+        (503, "exception", False),
+        ("timeout", False, False),
+        ("timeout", True, True),
+        ("connection", False, False),
+        ("connection", True, True),
+    ],
+)
+def test_notified_requires_channel_acceptance(root, channels, status, desktop_result, accepted):
+    channels.update(status=status, desktop_result=desktop_result)
+    result = pull.run_once(FakeKV(), root, pull.send_mail_notification, lambda: NOW)
+    assert result["notified"] == int(accepted)
+    assert pull.read_json(root / f"{KEY}.json")["notified"] is accepted
+    assert len(channels["pushes"]) == 1
+    if isinstance(status, int) and 200 <= status < 300:
+        assert not channels["desktops"]
+    else:
+        assert len(channels["desktops"]) == 1
+        assert channels["desktops"][0][1] == {
+            "priority": "high",
+            "tags": ["mail"],
+            "technical": False,
+        }
+
+
+def test_failed_batch_retries_once_next_poll_after_remote_deletion(root, channels):
+    kv, keys = pending_batch(root)
+    channels["status"] = 503
+    assert pull.run_once(kv, root, pull.send_mail_notification, lambda: NOW)["notified"] == 0
+    assert len(kv.deletes) == 2
+    before = {key: pull.read_json(root / f"{key}.json") for key in keys}
+    assert all(not item["notified"] for item in before.values())
+    assert len(channels["pushes"]) == len(channels["desktops"]) == 1
+    kv.entries = []
+    channels["status"] = 200
+    assert pull.run_once(kv, root, pull.send_mail_notification, lambda: NOW + 300) == {
+        "pulled": 0,
+        "notified": 3,
+    }
+    assert len(channels["pushes"]) == 2
+    titles = [json.loads(request.content)["title"] for request in channels["pushes"]]
+    assert titles[0] != titles[1]  # desktop dedup cannot settle a failed attempt
+    for key in keys:
+        assert pull.read_json(root / f"{key}.json") == {
+            **before[key],
+            "notified": True,
+            "notification_attempts": 2,
+        }
+
+
+def test_main_uses_ntfy_and_configured_base_url(root, channels, monkeypatch, capsys):
+    monkeypatch.setenv("NTFY_BASE_URL", "http://ntfy.test:8090/")
+    monkeypatch.setattr(pull, "QUARANTINE", root)
+    monkeypatch.setattr(pull, "CloudflareKV", lambda _namespace: FakeKV())
+    assert pull.main() == 0
+    assert json.loads(capsys.readouterr().out) == {"pulled": 1, "notified": 1}
+    assert len(channels["pushes"]) == 1
+    assert str(channels["pushes"][0].url) == "http://ntfy.test:8090/"
+
+
 def test_idempotent_repull(root, notices):
     kv = FakeKV()
     calls, notify = notices

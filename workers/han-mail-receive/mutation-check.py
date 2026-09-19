@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove the three required safety tests reject deliberate implementation defects."""
+"""Prove mail safety and attention-budget tests reject deliberate defects."""
 
 import os
 import subprocess
@@ -24,8 +24,23 @@ MUTATIONS = [
     (
         "body-in-notification",
         "test_body_never_in_notification",
-        "        if notify(title, message, priority=",
-        '        message += (root / f"{path.stem}.eml").read_text()\n        if notify(title, message, priority=',
+        "    if notify(title, message, priority=",
+        '    message += (root / f"{first_path.stem}.eml").read_text()\n'
+        "    if notify(title, message, priority=",
+    ),
+    (
+        "body-in-push",
+        "test_body_never_in_push",
+        "    if notify(title, message, priority=",
+        '    message += (root / f"{first_path.stem}.eml").read_text()\n'
+        "    if notify(title, message, priority=",
+    ),
+    (
+        "one-push-per-item",
+        "test_coalesces_one_push_per_poll",
+        '    if notify(title, message, priority="high", tags=["mail"], technical=False):\n',
+        '    if any([notify(title, message, priority="high", tags=["mail"], technical=False)\n'
+        "            for _ in pending]):\n",
     ),
 ]
 

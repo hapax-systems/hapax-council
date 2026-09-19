@@ -223,8 +223,41 @@ def pull_item(kv: KV, root: Path, key: str, metadata: dict, budget: Budget) -> b
     return True
 
 
+def send_mail_notification(title: str, message: str, **desktop_options) -> bool:
+    """One ntfy attempt, then desktop fallback; only acceptance settles pending mail."""
+    # Follow the council's NTFY_BASE_URL convention; appendix binds only on tailnet.
+    base_url = os.environ.get("NTFY_BASE_URL", "http://100.85.131.41:8090").rstrip("/")
+    try:
+        # JSON preserves Unicode without putting foreign text in HTTP headers.
+        # No redirects, proxies or immediate retries for this private notice.
+        with httpx.Client(timeout=10, follow_redirects=False, trust_env=False) as client:
+            response = client.post(
+                base_url + "/",
+                json={
+                    "topic": "hapax-han-mail",
+                    "title": title,
+                    "message": message,
+                    "priority": 4,
+                    "tags": ["mail"],
+                },
+            )
+        if 200 <= response.status_code < 300:
+            return True
+    except (httpx.HTTPError, ValueError):
+        pass
+
+    try:
+        from shared.notify import send_notification
+
+        return send_notification(title, message, **desktop_options)
+    except Exception:
+        # A broken desktop channel must leave the durable batch available for retry.
+        return False
+
+
 def notify_pending(root: Path, notify: Callable[..., bool]) -> int:
-    sent = 0
+    """Surface one summary for the complete pending batch, at most once per poll."""
+    pending = []
     for path in sorted(root.glob("*.json")):
         if not HASH.fullmatch(path.stem):
             continue
@@ -234,27 +267,35 @@ def notify_pending(root: Path, notify: Callable[..., bool]) -> int:
         verify_local(root / f"{path.stem}.eml", path.stem, item["size"])
         item["notification_attempts"] += 1
         write_json(path, item)
-        attempt = item["notification_attempts"]
-        title = f"HAN mail — foreign data [{path.stem[:12]}]"
-        if attempt > 1:
-            title += f" (delivery retry {attempt})"
-        # Explicit allowlist: no raw bytes, path dereference, body or MIME excerpt.
-        message = "\n".join(
-            [
-                f"Sender: {html.escape(item['sender'])}",
-                f"Subject: {html.escape(item['subject'])}",
-                f"Auth: {item['auth_verdict']}; "
-                + ", ".join(
-                    f"{name.upper()}={item['auth'][name]}" for name in ("spf", "dkim", "dmarc")
-                ),
-                f"Received: {html.escape(item['received_at'])}",
-            ]
-        )
-        if notify(title, message, priority="high", tags=["mail"], technical=False):
+        pending.append((path, item))
+    if not pending:
+        return 0
+
+    # Keep the existing deterministic hash order; display only the first item's metadata.
+    first_path, first = pending[0]
+    count = len(pending)
+    attempt = max(item["notification_attempts"] for _, item in pending)
+    title = f"HAN mail — {count} pending foreign item(s) [{first_path.stem[:12]}]"
+    if attempt > 1:
+        title += f" (delivery retry {attempt})"
+    # Explicit allowlist: no raw bytes, path dereference, body or MIME excerpt.
+    message = "\n".join(
+        [
+            f"Sender: {html.escape(first['sender'])}",
+            f"Subject: {html.escape(first['subject'])}",
+            f"Auth: {first['auth_verdict']}; "
+            + ", ".join(
+                f"{name.upper()}={first['auth'][name]}" for name in ("spf", "dkim", "dmarc")
+            ),
+            f"Received: {html.escape(first['received_at'])}",
+        ]
+    )
+    if notify(title, message, priority="high", tags=["mail"], technical=False):
+        for path, item in pending:
             item["notified"] = True
             write_json(path, item)
-            sent += 1
-    return sent
+        return count
+    return 0
 
 
 def run_once(
@@ -364,11 +405,9 @@ def main() -> int:
         # Fixed production path: no CLI switch can redirect mail into an agent-read repo/vault.
         if QUARANTINE.resolve() != QUARANTINE:
             raise IntakeError("Quarantine path must not resolve through symlinks")
-        from shared.notify import send_notification
-
         config = tomllib.loads(DEPLOYMENT.read_text())
         kv = CloudflareKV(config["namespace_id"])
-        result = run_once(kv, QUARANTINE, send_notification)
+        result = run_once(kv, QUARANTINE, send_mail_notification)
         print(json.dumps(result))  # Counts only; no foreign metadata in journal output.
         return 0
     except IntakeError as exc:
