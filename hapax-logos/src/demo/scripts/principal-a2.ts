@@ -1,5 +1,5 @@
 /**
- * Alexis demo — comprehensive Hapax walkthrough.
+ * principal-a2 demo — comprehensive Hapax walkthrough.
  *
  * Every region change is preceded by focusRegion() for visual emphasis.
  * Ground ambient (surface) is shown with focusRegion("ground") to give it visual weight.

@@ -104,7 +104,7 @@ The audit ran in three phases:
 | Service | Status | Notes |
 |---|---|---|
 | `hapax-imagination` | active running | Frame pump 60-90 fps after #696 reverie bridge fix landed and #697 audit-fix binary installed. |
-| `hapax-daimonion` | active running | 4 active consent contracts loaded (operator↔agatha, simon, guest, contract--2026-03-23). 143 capabilities batch-indexed with the new consent gate code. |
+| `hapax-daimonion` | active running | 4 active consent contracts loaded (operator↔principal-c1, principal-c2, guest, contract--2026-03-23). 143 capabilities batch-indexed with the new consent gate code. |
 | `logos-api` | active running | 95/97 health checks passing, 0 failed, 2 degraded (`sync.gcalendar_freshness`, `sync.langfuse_freshness` — pre-existing sync staleness, not blocking). |
 | `hapax-dmn` | active running | Picked up by the same rebuild path as daimonion. |
 | `studio-compositor` | active running | Alpha territory; verified active for cross-stream sanity. |
