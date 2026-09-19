@@ -4161,7 +4161,16 @@ PerceptionPoint._geometry_policy
 
 # pydantic @model_serializer(mode="wrap") — invoked by pydantic during
 # model_dump, not by an explicit static call site.
+# The extensionless hapax-quota-telemetry-writer calls these for its v2
+# measurement projection, read-only --check, and operator-report subcommand.
+from shared.quota_headroom import collect_measurements, enrich_ledger, operator_report  # noqa: E402
+from shared.quota_spend_ledger import QuotaSpendLedger as _QuotaHeadroomLedger  # noqa: E402
 from shared.quota_spend_ledger import SpendReceipt as _QuotaSpendLedgerSpendReceipt  # noqa: E402
+
+collect_measurements
+enrich_ledger
+operator_report
+_QuotaHeadroomLedger.schema_v1_payload
 
 _QuotaSpendLedgerSpendReceipt._serialize_without_empty_task_hash
 
