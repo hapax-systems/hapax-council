@@ -95,12 +95,191 @@ def test_refuses_secret_and_home_path_and_names_types_only(tmp_path):
     assert "Remedy:" in r.stderr
 
 
+def test_clean_companion_cannot_hide_css_aws_key(tmp_path):
+    """The real CLI must give the same refusal with one file and two files."""
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    key = "AKIA" + "Z" * 16
+    tip = _commit(repo, "probe.css", f'TOKEN = "{key}"\n')
+    single = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+    assert single.returncode == 1, single.stderr
+    assert "AWS Access Key" in single.stderr
+
+    (repo / "README.md").write_text("clean companion\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--amend", "--no-edit", "-q")
+    tip = _git(repo, "rev-parse", "HEAD")
+    multiple = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+    assert multiple.returncode == 1, (multiple.returncode, multiple.stderr)
+    assert "secret-shaped: probe.css" in multiple.stderr
+    assert "AWS Access Key" in multiple.stderr
+    for result in (single, multiple):
+        assert key not in result.stdout and key not in result.stderr
+
+
 def test_clean_push_passes(tmp_path):
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
     tip = _commit(repo, "notes.md", "nothing secret here; relative paths only: ~/.cache/x\n")
     r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
     assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.parametrize(
+    "filename", ["probe.yaml", "probe.yml", "probe.eyaml", "probe.ini", "probe.py"]
+)
+@pytest.mark.parametrize("companion", [False, True], ids=["single-file", "multiple-files"])
+def test_real_detector_transformers_cannot_hide_comments(tmp_path, filename, companion):
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    key = "AKIA" + "Z" * 16
+    if companion:
+        (repo / "README.md").write_text("clean companion\n")
+    prefix = (
+        "label: ordinary\n" if filename.endswith(("yaml", "yml")) else "[section]\nlabel=ordinary\n"
+    )
+    tip = _commit(repo, filename, prefix + f"# {key}\n")
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 1, (result.returncode, result.stderr)
+    assert f"secret-shaped: {filename}" in result.stderr
+    assert "AWS Access Key" in result.stderr
+    assert key not in result.stdout and key not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "case", ["key", "sequence", "duplicate-key", "block-scalar", "ini-section"]
+)
+def test_real_detector_transformers_preserve_all_added_content(tmp_path, case):
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    key = "AKIA" + "Z" * 16
+    content = {
+        "key": f"label: ordinary\n{key}: ordinary\n",
+        "sequence": f"label: ordinary\nitems:\n  - {key}\n",
+        "duplicate-key": f"label: {key}\nlabel: ordinary\n",
+        "block-scalar": f"label: |\n  ordinary\n  {key}\n",
+        "ini-section": f"[{key}]\nlabel=ordinary\n",
+    }[case]
+    filename = "probe.ini" if case == "ini-section" else "probe.yaml"
+    (repo / "README.md").write_text("clean companion\n")
+    tip = _commit(repo, filename, content)
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 1, result.stderr
+    assert f"secret-shaped: {filename}" in result.stderr
+    assert "AWS Access Key" in result.stderr
+    assert key not in result.stdout and key not in result.stderr
+
+
+@pytest.mark.parametrize("filename", ["probe.yaml", "probe.ini"])
+@pytest.mark.parametrize("policy", ["unchanged", "inline-pragma", "nextline-pragma"])
+def test_raw_scan_preserves_added_line_and_pragma_policy(tmp_path, filename, policy):
+    repo = _repo(tmp_path)
+    key = "AKIA" + "Z" * 16
+    prefix = "label: ordinary\n" if filename.endswith("yaml") else "[section]\nlabel=ordinary\n"
+    secret_line = f"# {key}\n"
+    if policy == "unchanged":
+        _commit(repo, filename, prefix + secret_line)
+    base = _git(repo, "rev-parse", "HEAD")
+    if policy == "inline-pragma":
+        secret_line = f"# {key}  # pragma: allowlist secret\n"
+    elif policy == "nextline-pragma":
+        secret_line = "# pragma: allowlist nextline secret\n" + secret_line
+    (repo / "README.md").write_text("clean companion\n")
+    tip = _commit(repo, filename, prefix + secret_line + "# ordinary added comment\n")
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 0, result.stderr
+    assert key not in result.stdout and key not in result.stderr
+
+
+def test_multifile_scan_reports_every_secret_file(tmp_path):
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    key = "AKIA" + "Z" * 16
+    files = ["00-probe.css", "nested/probe.svg", "probe.lock", ".hidden/probe.txt"]
+    for filename in files:
+        path = repo / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f'TOKEN = "{key}"\n')
+    tip = _commit(repo, "README.md", "clean companion\n")
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 1, result.stderr
+    for filename in files:
+        assert f"secret-shaped: {filename}" in result.stderr
+    assert result.stderr.count("AWS Access Key") == len(files)
+    assert key not in result.stdout and key not in result.stderr
+
+
+def test_real_detector_scans_symlink_blob_with_companion(tmp_path):
+    """A dangling symlink's committed bytes must be scanned as regular staged text."""
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    key = "AKIA" + "Z" * 16
+    (repo / "probe.svg").symlink_to(key)
+    tip = _commit(repo, "README.md", "clean companion\n")
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 1, result.stderr
+    assert "secret-shaped: probe.svg" in result.stderr
+    assert "AWS Access Key" in result.stderr
+    assert key not in result.stdout and key not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "failure", ["bad-version", "missing-version", "config-rejected", "invalid-json"]
+)
+@pytest.mark.parametrize("raw_view", [False, True], ids=["normal-view", "raw-view"])
+def test_later_file_detector_failure_refuses_without_retry(
+    tmp_path, monkeypatch, failure, raw_view
+):
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    (repo / "README.md").write_text("clean companion\n")
+    tip = _commit(repo, "last.css", "ordinary content\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "invocations.jsonl"
+    payload = {"version": "1.5.0", "results": {}}
+    if failure == "bad-version":
+        payload["version"] = "1.6.0"
+    elif failure == "missing-version":
+        del payload["version"]
+    output = "invalid-json" if failure == "invalid-json" else json.dumps(payload)
+    _executable(
+        bin_dir / "detect-secrets",
+        f"#!{sys.executable}\n"
+        "import json, pathlib, sys\n"
+        "files = sorted(p for p in pathlib.Path('.').rglob('*') if p.is_file())\n"
+        "raw = any(p.read_bytes().startswith(b'@hapax-prepush-raw@') for p in files)\n"
+        f"with open({str(log)!r}, 'a') as log:\n"
+        "    log.write(json.dumps([str(p) for p in files]) + '\\n')\n"
+        f"if pathlib.Path('last.css') in files and raw == {raw_view!r}:\n"
+        f"    print({output!r})\n"
+        f"    sys.exit({2 if failure == 'config-rejected' else 0})\n"
+        "print(json.dumps({'version': '1.5.0', 'results': {}}))\n",
+    )
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 3, result.stderr
+    kind = (
+        "detector-version"
+        if "version" in failure
+        else ("detector-failed" if failure == "config-rejected" else "detector-result")
+    )
+    assert f"REFUSED [{kind}]" in result.stderr
+    assert "Remedy:" in result.stderr
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert calls == [["README.md"], ["README.md"]] + [["last.css"]] * (2 if raw_view else 1)
 
 
 @pytest.mark.parametrize(
@@ -160,7 +339,8 @@ def test_committed_pathspec_filenames_are_literal_and_refused(tmp_path, monkeypa
     ],
 )
 @pytest.mark.parametrize("content", ["aws", "keyword", "clean", "pragma"])
-def test_real_detector_filename_filters_cannot_exempt_text(tmp_path, filename, content):
+@pytest.mark.parametrize("companions", [0, 1, 4], ids=["single-file", "two-files", "five-files"])
+def test_real_detector_filename_filters_cannot_exempt_text(tmp_path, filename, content, companions):
     """File format guesses are not permission to omit committed UTF-8 text."""
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
@@ -174,6 +354,8 @@ def test_real_detector_filename_filters_cannot_exempt_text(tmp_path, filename, c
         kind = "Secret Keyword"
     if content == "pragma":
         line += "  # pragma: allowlist secret"
+    for index in range(companions):
+        (repo / f"companion-{index}.md").write_text("clean companion\n")
     tip = _commit(repo, filename, line + "\n")
 
     result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
@@ -221,9 +403,12 @@ def test_real_detector_filename_filters_cannot_exempt_text(tmp_path, filename, c
         ),
     ],
 )
-def test_real_detector_content_filters_cannot_exempt_findings(tmp_path, line, kind):
+@pytest.mark.parametrize("companion", [False, True], ids=["single-file", "multiple-files"])
+def test_real_detector_content_filters_cannot_exempt_findings(tmp_path, line, kind, companion):
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
+    if companion:
+        (repo / "README.md").write_text("clean companion\n")
     # A known source extension avoids the eager INI transformer, which quotes
     # apparent function calls in unknown file types and masks the reference filter.
     tip = _commit(repo, "probe.py", line + "\n")
@@ -242,7 +427,10 @@ def test_real_detector_content_filters_cannot_exempt_findings(tmp_path, line, ki
     ["fixture-candidate", "$fixture-candidate"],
     ids=["is_ignored_due_to_verification_policies", "is_prefixed_with_dollar_sign"],
 )
-def test_real_detector_filters_cannot_discard_plugin_findings(tmp_path, monkeypatch, fake):
+@pytest.mark.parametrize("companion", [False, True], ids=["single-file", "multiple-files"])
+def test_real_detector_filters_cannot_discard_plugin_findings(
+    tmp_path, monkeypatch, fake, companion
+):
     """Exercise the real CLI's filter pipeline with an offline verification result.
 
     The extension supplies a dollar-prefixed candidate because 1.5.0's bundled
@@ -275,6 +463,8 @@ def test_real_detector_filters_cannot_discard_plugin_findings(tmp_path, monkeypa
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
+    if companion:
+        (repo / "README.md").write_text("clean companion\n")
     tip = _commit(repo, "probe.txt", fake + "\n")
 
     result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
@@ -404,10 +594,13 @@ def test_unmappable_staging_paths_are_refused_before_reading_content(monkeypatch
         pytest.param(os.fsdecode(b"probe\xffname.txt"), id="non-utf8-filename"),
     ],
 )
-def test_real_detector_scans_supported_filename_separators(tmp_path, filename):
-    """An AWS-only finding must survive literal staging through the real single-file CLI."""
+@pytest.mark.parametrize("companion", [False, True], ids=["single-file", "multiple-files"])
+def test_real_detector_scans_supported_filename_separators(tmp_path, filename, companion):
+    """An AWS-only finding must survive literal staging with either file count."""
     repo = _repo(tmp_path)
     base = _git(repo, "rev-parse", "HEAD")
+    if companion:
+        (repo / "README.md").write_text("clean companion\n")
     key = "AKIA" + "Z" * 16
     tip = _commit(repo, filename, f'TOKEN = "{key}"\n')
 
@@ -505,7 +698,9 @@ def test_git_binary_classification_refuses_and_names_unscannable_file(tmp_path, 
     fake_bin = tmp_path / "detector-bin"
     fake_bin.mkdir()
     fake_detector = fake_bin / "detect-secrets"
-    fake_detector.write_text("#!/bin/sh\nprintf '%s\\n' '{\"results\": {}}'\n")
+    fake_detector.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' \'{"version": "1.5.0", "results": {}}\'\n'
+    )
     fake_detector.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
 
@@ -532,7 +727,9 @@ def test_vendor_key_prefix_honours_installed_inline_pragma(tmp_path, monkeypatch
     fake_bin = tmp_path / "detector-bin"
     fake_bin.mkdir()
     fake_detector = fake_bin / "detect-secrets"
-    fake_detector.write_text("#!/bin/sh\nprintf '%s\\n' '{\"results\": {}}'\n")
+    fake_detector.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' \'{"version": "1.5.0", "results": {}}\'\n'
+    )
     fake_detector.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
 
@@ -556,7 +753,9 @@ def test_detector_nonzero_exit_with_valid_json_refuses_push(tmp_path, monkeypatc
     fake_bin = tmp_path / "detector-bin"
     fake_bin.mkdir()
     fake_detector = fake_bin / "detect-secrets"
-    fake_detector.write_text("#!/bin/sh\nprintf '%s\\n' '{\"results\": {}}'\nexit 9\n")
+    fake_detector.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' \'{"version": "1.5.0", "results": {}}\'\nexit 9\n'
+    )
     fake_detector.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
 
@@ -603,7 +802,9 @@ def test_new_branch_to_foreign_remote_does_not_inherit_origin_base(tmp_path, mon
     fake_bin = tmp_path / "detector-bin"
     fake_bin.mkdir()
     fake_detector = fake_bin / "detect-secrets"
-    fake_detector.write_text("#!/bin/sh\nprintf '%s\\n' '{\"results\": {}}'\n")
+    fake_detector.write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' \'{"version": "1.5.0", "results": {}}\'\n'
+    )
     fake_detector.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
 
@@ -812,7 +1013,10 @@ def _executable(path: Path, body: str) -> None:
 def clean_detector(tmp_path, monkeypatch):
     bin_dir = tmp_path / "clean-detector"
     bin_dir.mkdir()
-    _executable(bin_dir / "detect-secrets", "#!/bin/sh\nprintf '%s\\n' '{\"results\": {}}'\n")
+    _executable(
+        bin_dir / "detect-secrets",
+        '#!/bin/sh\nprintf \'%s\\n\' \'{"version": "1.5.0", "results": {}}\'\n',
+    )
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
     return bin_dir
 

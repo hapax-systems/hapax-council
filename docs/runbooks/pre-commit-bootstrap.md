@@ -149,6 +149,29 @@ not sent to providers and verification cannot suppress a finding. Only explicit 
 pragmas and the generated-path entropy policy suppress secret findings. Genuine false
 positives require a declared pragma.
 
+Every detector invocation sees exactly one staged file. In the inspected detect-secrets
+1.5.0 source, `SecretsCollection.scan_files` creates a multiprocessing pool for two or
+more files, even with one requested processor. Its initializer calls
+`Settings.configure_filters`, which reinstates `DEFAULT_FILTERS`, including the extension
+filter; serialized settings cannot represent its removal. The hook therefore stages,
+scans, and removes each file before staging the next. CSS/SVG/lockfile coverage must hold
+with clean companion files as well as when scanned alone.
+
+The same source inspection found that YAML and INI transformers omit comments, keys, and
+other raw text. Each file receives both its normal scan and a supplemental raw scan with
+the same filename and a first-line `@hapax-prepush-raw@` marker. In 1.5.0 this marker makes
+both parsers (including eager INI parsing) reject the format and scan the raw lines. All
+original bytes remain after the marker; its one-line offset is removed before checking
+added Git lines. Findings from both views are combined. Filename-specific pragma rules
+and generated-path entropy exemptions apply to both views. This costs two detector
+processes per file; it never falls back to a batch scan.
+
+The `uvx` invocation pins 1.5.0, and results from an executable on PATH must also report
+1.5.0. Missing or different versions produce exit 3, `REFUSED [detector-version]`, with
+an installation remedy. An unavailable detector, nonzero exit (including rejected filter
+configuration), or invalid result produces a typed refusal, including if an earlier file
+or the normal view scanned successfully. There is no retry with weaker configuration.
+
 Detector line numbers are translated back to Git's LF-delimited lines, including files with
 bare carriage returns or CRLF endings. Every scanned file must be valid UTF-8: detect-secrets
 can silently skip other encodings. The scanner refuses such files by name without printing
@@ -179,9 +202,29 @@ environment.
 
 Filter regressions alone: `uv run pytest tests/scripts/test_hapax_prepush_secret_scan.py
 -q -k filters_cannot`. Each disabled filter has a refusal fixture. Filename fixtures cover
-AWS and keyword findings, clean text, and explicit pragmas. Two fixtures use a local detector
+AWS and keyword findings, clean text, and explicit pragmas with one, two, and five staged
+files. Two fixtures use a local detector
 extension through the real CLI to exercise dollar-prefixed candidates and a deterministic
 negative verification result without network calls.
+
+Skip-class recheck: `uv run pytest tests/scripts/test_hapax_prepush_secret_scan.py -q -k
+'companion or multifile or filters_cannot or transformers or raw_scan or later_file or
+backslash or unmappable or supported_filename or non_utf8 or binary_classification or
+symlink or carriage_returns or staging_preserves or content_status'`.
+
+| Potential omission in the inspected source | Guard and regression |
+| --- | --- |
+| Multiprocessing restores the extension filter | One staged file per call; `test_clean_companion_cannot_hide_css_aws_key`, `test_multifile_scan_reports_every_secret_file` |
+| Extension, lockfile, Swagger, candidate, or verification filter | Explicit disabling; `test_real_detector_filename_filters_cannot_exempt_text`, `test_real_detector_content_filters_cannot_exempt_findings`, `test_real_detector_filters_cannot_discard_plugin_findings` |
+| YAML/INI transformation discards source text | Supplemental raw view; `test_real_detector_transformers_cannot_hide_comments`, `test_real_detector_transformers_preserve_all_added_content` |
+| Scratch directory lacks tracked files; symlink or path normalization omits a file | `--all-files`, regular-file staging, literal Git paths, and unsupported-name refusal; filename, staging, and symlink regressions |
+| Non-UTF-8 decoding or Git binary classification omits content | Explicit refusal; `test_real_detector_refuses_non_utf8_text`, `test_git_binary_classification_refuses_and_names_unscannable_file` |
+| CR/CRLF or the raw marker shifts added-line attribution | Explicit line mapping; carriage-return regressions and `test_raw_scan_preserves_added_line_and_pragma_policy` |
+| Detector failure or unsupported version after earlier successful files | Exit 3 without retry; `test_later_file_detector_failure_refuses_without_retry`, installed-hook failure regressions |
+
+Intentional exclusions remain verified destination history, deleted/unchanged content,
+explicit pragmas, and the declared entropy/home-path exceptions; the full suite covers
+these separately. File extension and file count are never exemptions.
 
 Exempting a whole private mirror: `git config --add
 hapax.prepushScan.skipRemote <remote-name>`. There is no environment-variable bypass; if the hook refuses a
