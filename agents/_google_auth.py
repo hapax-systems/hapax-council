@@ -12,7 +12,13 @@ import logging
 
 from googleapiclient.discovery import build as discovery_build
 
-from shared.secrets import SecretIntegrityFailed, SecretUnavailable, get_secret, put_secret
+from shared.secrets import (
+    SecretIntegrityFailed,
+    SecretUnavailable,
+    get_secret,
+    has_secret,
+    put_secret,
+)
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +77,23 @@ def _save_token(creds) -> None:
         put_secret(TOKEN_PASS_KEY, token_data.encode("utf-8"))
     except SecretUnavailable as exc:
         log.warning("Failed to save token: %s", type(exc).__name__)
+
+
+def token_custody_line() -> str:
+    """What the ``--auth`` CLIs print after consent: where the token IS, checked, not assumed.
+
+    ``_save_token`` swallows a failed write, and a still-valid cached token is never rewritten,
+    so "Token saved" is a claim the caller cannot make. Presence is the claim that can be
+    checked, and it is checked here without reading the value.
+    """
+    if has_secret(TOKEN_PASS_KEY):
+        return f"Token present in the FileStore ({TOKEN_PASS_KEY})."
+    return (
+        f"Token is NOT in the FileStore ({TOKEN_PASS_KEY}): the save failed, see the "
+        "'Failed to save token' warning. Next action: re-run --auth from a process that can "
+        "write the FileStore (the reins API installed on this host); recheck with "
+        f"`hapax-secret --where {TOKEN_PASS_KEY}`."
+    )
 
 
 def get_google_credentials(scopes: list[str]):

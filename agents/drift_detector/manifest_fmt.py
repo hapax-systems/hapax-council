@@ -62,7 +62,7 @@ def format_summary(m: InfrastructureManifest) -> str:
         lines.append(f"  {d.mount:15s} {d.used}/{d.size} ({d.use_percent}%)")
     lines.append("")
 
-    lines.append(f"Pass Entries ({len(m.pass_entries)}): {', '.join(m.pass_entries)}")
+    lines.append(f"FileStore Secrets ({len(m.pass_entries)}): {', '.join(m.pass_entries)}")
     lines.append(f"Profile Files: {', '.join(m.profile_files)}")
     port_summary = ", ".join(m.listening_ports) if m.listening_ports else "(none)"
     if m.listening_ports_status != "observed":

@@ -137,7 +137,7 @@ class SecretCustodyPointerRecord(RegistryRecord):
     @model_validator(mode="after")
     def _pointer_only(self) -> SecretCustodyPointerRecord:
         if "\n" in self.pass_path:
-            raise ValueError("secret custody pointer must be a pass path, not secret material")
+            raise ValueError("secret custody pointer must be a secret name, not secret material")
         return self
 
 
