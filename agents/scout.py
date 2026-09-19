@@ -220,8 +220,10 @@ def _tavily_search(
                 lane="scout_horizon",
             )
         )
-    except TavilyConfigError:
-        log.warning("TAVILY_API_KEY not set and no FileStore secret found — skipping web search")
+    except TavilyConfigError as e:
+        # The error names its own cause and next action; a fixed "no key" line here
+        # misreported every other config failure (bad yaml, unknown lane cap).
+        log.warning("Tavily not configured — skipping web search: %s", e)
         return []
     except (TavilyBudgetExceeded, TavilyPolicyViolation, TavilyRequestError) as e:
         query_hash = hashlib.sha256(query.encode()).hexdigest()

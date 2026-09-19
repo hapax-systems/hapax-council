@@ -474,10 +474,12 @@ run destructive restic prune.
 does not produce backup artifacts; it points at the local/GDrive lanes above.
 Restore details: `docs/runbooks/llm-stack-backup-reconciliation.md`.
 
-Secrets: local password in the FileStore under `backups/restic-password`
-(`hapax-secret backups/restic-password`); current GDrive critical repo password
-remains under `backblaze/restic-password` until a separate credential-rename task
-changes custody.
+Secrets: both restic passwords are in the FileStore. Local password under
+`backups/restic-password`; current GDrive critical repo password still under its
+legacy name `backblaze/restic-password` until a separate credential-rename task
+renames it. Recheck presence without printing a value:
+`hapax-secret --where backups/restic-password` and
+`hapax-secret --where backblaze/restic-password` (each prints `filestore`).
 
 ### Minio Object Lifecycle
 

@@ -848,7 +848,7 @@ def run_auth() -> None:
     service = _get_drive_service()
     about = service.about().get(fields="user").execute()
     print(f"Authenticated as: {about['user']['emailAddress']}")
-    print("Token saved to the FileStore (gdrive/token).")
+    print("Token saved to the FileStore (google/token).")
 
 
 def run_full_scan() -> None:
