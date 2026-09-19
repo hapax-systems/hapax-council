@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import runpy
+import shlex
 import shutil
 import subprocess
 import sys
@@ -100,6 +101,145 @@ def test_clean_push_passes(tmp_path):
     tip = _commit(repo, "notes.md", "nothing secret here; relative paths only: ~/.cache/x\n")
     r = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
     assert r.returncode == 0, r.stderr
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        pytest.param("probe.css", id="is_non_text_file-css"),
+        pytest.param("probe.svg", id="is_non_text_file-svg"),
+        pytest.param("probe.lock", id="is_non_text_file-lock"),
+        pytest.param("probe.png", id="is_non_text_file-utf8-png"),
+        pytest.param("package-lock.json", id="is_lock_file-package"),
+        pytest.param("nested/Cartfile.resolved", id="is_lock_file-cartfile"),
+        pytest.param("swagger-ui.html", id="is_swagger_file-name"),
+        pytest.param("swagger/config.txt", id="is_swagger_file-directory"),
+    ],
+)
+@pytest.mark.parametrize("content", ["aws", "keyword", "clean", "pragma"])
+def test_real_detector_filename_filters_cannot_exempt_text(tmp_path, filename, content):
+    """File format guesses are not permission to omit committed UTF-8 text."""
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    if content in {"aws", "pragma"}:
+        fake = "AKIA" + "Z" * 16
+        line = f'TOKEN = "{fake}"'
+        kind = "AWS Access Key"
+    else:
+        fake = "quartz-mango-bicycle"
+        line = f'password = "{fake}"' if content == "keyword" else "ordinary text"
+        kind = "Secret Keyword"
+    if content == "pragma":
+        line += "  # pragma: allowlist secret"
+    tip = _commit(repo, filename, line + "\n")
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == (0 if content in {"clean", "pragma"} else 1), result.stderr
+    if content not in {"clean", "pragma"}:
+        assert f"secret-shaped: {filename}" in result.stderr
+        assert kind in result.stderr
+        assert "REFUSED" in result.stderr
+    assert fake not in result.stdout and fake not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "line,kind",
+    [
+        pytest.param(
+            'token = fetch("' + "AKIA" + "Z" * 16 + '")',
+            "AWS Access Key",
+            id="is_indirect_reference",
+        ),
+        pytest.param(
+            'password = "abcdefghijklmnop"',  # pragma: allowlist secret
+            "Secret Keyword",
+            id="is_sequential_string",
+        ),
+        pytest.param(
+            'password = "7d3812ce-894b-467f-afe2-038914fed9ab"',  # pragma: allowlist secret
+            "Secret Keyword",
+            id="is_potential_uuid",
+        ),
+        pytest.param(
+            'id = "zxCBVnmlk09876poiuyTREWQ43215asdfg"',  # pragma: allowlist secret
+            "Base64 High Entropy String",
+            id="is_likely_id_string",
+        ),
+        pytest.param(
+            'url = "https://probe:{quartz-mango-bicycle}@example.invalid"',  # pragma: allowlist secret
+            "Basic Auth Credentials",
+            id="is_templated_secret",
+        ),
+        pytest.param(
+            'password = "937102648509"',  # pragma: allowlist secret
+            "Secret Keyword",
+            id="is_not_alphanumeric_string",
+        ),
+    ],
+)
+def test_real_detector_content_filters_cannot_exempt_findings(tmp_path, line, kind):
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    # A known source extension avoids the eager INI transformer, which quotes
+    # apparent function calls in unknown file types and masks the reference filter.
+    tip = _commit(repo, "probe.py", line + "\n")
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 1, result.stderr
+    assert "REFUSED" in result.stderr
+    assert "secret-shaped: probe.py" in result.stderr
+    assert kind in result.stderr
+    assert line not in result.stdout and line not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "fake",
+    ["fixture-candidate", "$fixture-candidate"],
+    ids=["is_ignored_due_to_verification_policies", "is_prefixed_with_dollar_sign"],
+)
+def test_real_detector_filters_cannot_discard_plugin_findings(tmp_path, monkeypatch, fake):
+    """Exercise the real CLI's filter pipeline with an offline verification result.
+
+    The extension supplies a dollar-prefixed candidate because 1.5.0's bundled
+    regexes do not emit that shape. No scanner or filter output is mocked.
+    """
+    plugin = tmp_path / "fixture_detector.py"
+    plugin.write_text(
+        "import re\n"
+        "from detect_secrets.plugins.base import RegexBasedDetector\n"
+        "from detect_secrets.constants import VerifiedResult\n"
+        "class FixtureDetector(RegexBasedDetector):\n"
+        "    secret_type = 'Fixture Credential'\n"  # pragma: allowlist secret
+        "    denylist = [re.compile(r'\\$?fixture-candidate')]\n"
+        "    def verify(self, secret):\n"
+        "        return VerifiedResult.VERIFIED_FALSE\n"
+    )
+    detector = shutil.which("detect-secrets")
+    command = [detector] if detector else ["uvx", "detect-secrets"]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    wrapper = bin_dir / "detect-secrets"
+    wrapper.write_text(
+        "#!/bin/sh\nexec "
+        + shlex.join(command)
+        + ' "$@" --plugin '
+        + shlex.quote(str(plugin))
+        + "\n"
+    )
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+    repo = _repo(tmp_path)
+    base = _git(repo, "rev-parse", "HEAD")
+    tip = _commit(repo, "probe.txt", fake + "\n")
+
+    result = _run(repo, "origin", f"refs/heads/main {tip} refs/heads/main {base}\n")
+
+    assert result.returncode == 1, result.stderr
+    assert "REFUSED" in result.stderr
+    assert "Fixture Credential" in result.stderr
+    assert fake not in result.stdout and fake not in result.stderr
 
 
 def test_intermediate_commit_finding_is_scanned_even_when_tip_removes_it(tmp_path):

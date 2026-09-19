@@ -130,11 +130,24 @@ are intersected across **all parents**. Inherited lines were either already publ
 scanned at their introducing ancestor; a new conflict-resolution line remains in the scan.
 This allows a published branch to merge main's existing fixtures without suppressing new content.
 Text conversion is disabled so diff drivers cannot hide additions. The detectors are detect-secrets
-`--all-files`, a vendor-key prefix regex (Anthropic, xAI, Hugging Face, GitLab, …), and a
+`--all-files` with implicit filters disabled, a vendor-key prefix regex
+(Anthropic, xAI, Hugging Face, GitLab, …), and a
 `/home/<user>/` path check; the hook prints finding TYPES and counts, never values, and refuses
 with a remedy. The installed policy's entropy-only exemptions are preserved for
 `docs/architecture/system-dynamics-map*` and `config/capability-inventory-baseline.json*`.
 Keyword and vendor detectors still apply on those paths.
+
+`--all-files` alone does not prevent detect-secrets from skipping files. The hook disables
+the extension (`is_non_text_file`), lockfile-name (`is_lock_file`), and Swagger-path
+(`is_swagger_file`) filters. UTF-8 content in `.css`, `.svg`, `.lock`, or even `.png` files
+is scanned. It also disables `is_indirect_reference`, `is_sequential_string`,
+`is_potential_uuid`, `is_likely_id_string`, `is_templated_secret`,
+`is_prefixed_with_dollar_sign`, and `is_not_alphanumeric_string`: apparent references,
+IDs, templates, and candidate shapes are not implicit exemptions. The network verification
+filter (`is_ignored_due_to_verification_policies`) is disabled too; matching strings are
+not sent to providers and verification cannot suppress a finding. Only explicit inline
+pragmas and the generated-path entropy policy suppress secret findings. Genuine false
+positives require a declared pragma.
 
 Detector line numbers are translated back to Git's LF-delimited lines, including files with
 bare carriage returns or CRLF endings. Every scanned file must be valid UTF-8: detect-secrets
@@ -152,6 +165,12 @@ per-commit behavior, and installed hook dispatch with the same pytest command ab
 the `-k` filter. The full suite also runs the real detect-secrets CLI. For an offline run with
 cached tools, add `UV_TOOL_DIR=/store-fast/tmp/uv-tools-verify UV_OFFLINE=1` to that command's
 environment.
+
+Filter regressions alone: `uv run pytest tests/scripts/test_hapax_prepush_secret_scan.py
+-q -k filters_cannot`. Each disabled filter has a refusal fixture. Filename fixtures cover
+AWS and keyword findings, clean text, and explicit pragmas. Two fixtures use a local detector
+extension through the real CLI to exercise dollar-prefixed candidates and a deterministic
+negative verification result without network calls.
 
 Exempting a whole private mirror: `git config --add
 hapax.prepushScan.skipRemote <remote-name>`. There is no environment-variable bypass; if the hook refuses a
