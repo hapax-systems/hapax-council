@@ -326,83 +326,21 @@ if [[ -n "$role" ]]; then
     session_id="$(hapax_session_id 2>/dev/null || true)"
   fi
   cleared_claim=0
-  reap_keys=()
   for claim_key in \
     "$role" \
     ${session_id:+"$role-$session_id"}; do
     claim_file="$HOME/.cache/hapax/cc-active-task-$claim_key"
     if [[ -f "$claim_file" ]] &&
        [[ "$(head -n1 "$claim_file" | tr -d '[:space:]')" == "$task_id" ]]; then
-      reap_keys+=("$claim_key")
+      # The cc-claim-epoch sidecar carries the claim age for task_is_terminal;
+      # clear it with its claim file so a stale epoch can never mis-age a
+      # future claim. Explicit path construction — substring substitution on
+      # the full path would rewrite a parent-directory occurrence instead.
+      rm -f "$claim_file" "$HOME/.cache/hapax/cc-claim-epoch-$claim_key"
+      echo "cc-close: cleared claim file '$claim_file' (role '$role')"
+      cleared_claim=1
     fi
   done
-  # cc-claim writes THREE sidecar families per key, and enters the applied-publication
-  # path when ANY of them exists. Clearing only some of them is what made every
-  # successful close manufacture the residue that wedges the lane's next claim, for any
-  # task (measured end to end on lane beta, 2026-09-19). Reap all three, for every key,
-  # and archive them byte-exact rather than deleting: the claim lineage is evidence.
-  if (( ${#reap_keys[@]} > 0 )); then
-    PYTHONPATH="$_cc_close_repo_root:${PYTHONPATH:-}" \
-      python3 - "$task_id" "$vault_root" "$HOME/.cache/hapax" "${reap_keys[@]}" <<'PYEOF'
-import re
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-from shared.sdlc_claim import ClaimPublicationError, archive_file_byte_exact
-
-task_id = sys.argv[1]
-vault_root = Path(sys.argv[2])
-cache_dir = Path(sys.argv[3])
-keys = sys.argv[4:]
-
-safe_task = re.sub(r"[^A-Za-z0-9._:-]+", "_", task_id).strip("._:-")[:160] or "unknown"
-observed_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-lineage = vault_root / "_lineage" / safe_task / f"closed-claim-residue-{observed_at}"
-
-archived: list[tuple[str, str]] = []
-stranded: list[str] = []
-for key in keys:
-    for name in (
-        f"cc-active-task-{key}",
-        f"cc-claim-epoch-{key}",
-        f"cc-claim-dispatch-{key}.json",
-    ):
-        source = cache_dir / name
-        if not source.exists():
-            continue
-        try:
-            lineage.mkdir(parents=True, exist_ok=True)
-            archived.append((name, archive_file_byte_exact(source, lineage / name)))
-        except (ClaimPublicationError, OSError) as exc:
-            # Never fail the close over archiving: the note has already moved. Say so
-            # loudly instead, because a sidecar left here wedges the next claim.
-            stranded.append(f"{source} ({exc})")
-
-if archived:
-    (lineage / "README.md").write_text(
-        "Claim sidecars reaped by cc-close, preserved byte-exact.\n"
-        f"task_id: {task_id}\n"
-        f"archived_at: {observed_at}\n"
-        "reason: a close clears the role's claim; all three sidecar families go together "
-        "so no residue is left to wedge the lane's next claim.\n\n"
-        + "".join(f"{name}  sha256:{digest}\n" for name, digest in archived),
-        encoding="utf-8",
-    )
-    print(f"cc-close: archived {len(archived)} claim sidecar(s) to {lineage}")
-for name, _digest in archived:
-    print(f"cc-close: cleared claim sidecar '{cache_dir / name}'")
-for item in stranded:
-    print(
-        f"cc-close: WARNING could not archive {item}; it remains in place and the next "
-        "claim by this role will hold on it. Next action: archive it under the task's "
-        "_lineage/ by hand, then rerun cc-claim.",
-        file=sys.stderr,
-    )
-PYEOF
-    echo "cc-close: cleared claim file '$HOME/.cache/hapax/cc-active-task-$role' (role '$role')"
-    cleared_claim=1
-  fi
   if [[ "$cleared_claim" == 1 ]]; then
     systemctl --user start hapax-cc-hygiene.service 2>/dev/null || true
   fi
