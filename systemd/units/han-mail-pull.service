@@ -4,9 +4,10 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/projects/hapax-council
-ExecStart=%h/.local/bin/uv run --no-sync python -m scripts.han_mail_pull
-Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python %h/.cache/hapax/source-activation/worktree/scripts/han_mail_pull.py
 UMask=0077
 NoNewPrivileges=true
 TimeoutStartSec=240

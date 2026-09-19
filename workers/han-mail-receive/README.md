@@ -115,7 +115,7 @@ References: [KV pricing](https://developers.cloudflare.com/kv/platform/pricing/)
 
 ```sh
 node --test workers/han-mail-receive/worker.test.mjs
-uv run --no-sync pytest tests/test_han_mail_pull.py -q
+uv run --no-sync pytest tests/test_han_mail_pull.py tests/systemd/test_han_mail_pull_unit.py -q
 uv run --no-sync python workers/han-mail-receive/mutation-check.py
 systemd-analyze --user verify systemd/units/han-mail-pull.service systemd/units/han-mail-pull.timer
 ```
@@ -128,6 +128,15 @@ storage, notifying again on re-pull, leaking raw bytes into a desktop notice,
 leaking them into an ntfy push, and sending one push per item instead of per
 poll. Mutation copies live in a temporary directory; the deployed/source
 implementation is never mutated by the checker.
+
+The service takes its interpreter, script, working directory, `PATH` and
+`PYTHONPATH` from `%h/.cache/hapax/source-activation/worktree`, following
+`hapax-opus-route-authority-receipt.service` and `hapax-content-resolver.service`.
+The parsed-unit test rejects any `projects/` path, including earlier repeated
+environment directives, and requires the release paths. Six additional unit
+mutations independently regress each runtime path or insert a development path
+in an earlier environment directive; each must fail that test. Both source and
+unit mutation copies are temporary. This check does not install or start units.
 
 One invocation of `synthetic.mjs` exercised the exact deployed handler source
 with a real KV REST adapter. It wrote a 224-byte synthetic message (three KV
