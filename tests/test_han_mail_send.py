@@ -193,7 +193,13 @@ def test_frozen_candidate_copy(tmp_path):
     if not source:
         pytest.skip("Private frozen candidate supplied only during commissioned local validation")
     raw = Path(source).read_bytes()
-    assert mail.digest(raw) == "3e55da135c42c5f8fc3cb339da24ee61d1f3e5850b20aada768ee7de2e9b34b0"
+    # Dispatch-pinned SHA-256 of the draft, not a credential.
+    assert (
+        mail.digest(raw)
+        == (
+            "3e55da135c42c5f8fc3cb339da24ee61d1f3e5850b20aada768ee7de2e9b34b0"  # pragma: allowlist secret
+        )
+    )
     copy = tmp_path / "candidate.eml"
     copy.write_bytes(raw)
     with pytest.raises(mail.Refused):
