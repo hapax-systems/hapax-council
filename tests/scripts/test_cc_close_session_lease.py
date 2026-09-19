@@ -12,6 +12,7 @@ only when the file still names the task being closed).
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import textwrap
@@ -121,6 +122,48 @@ def test_cc_close_clears_both_legacy_and_session_keyed_lease(tmp_path: Path) -> 
         f"session-keyed lease leaked (finding #12/#13)\nstdout={result.stdout}"
     )
     assert not session_sidecar.exists(), f"session epoch sidecar leaked\nstdout={result.stdout}"
+
+
+def test_cc_close_archives_all_three_sidecar_families(tmp_path: Path) -> None:
+    """A successful close must not leave residue that wedges the lane's next claim.
+
+    cc-claim writes three sidecar families per key and enters the applied-publication
+    path when ANY of them exists. Clearing only some of them is what made every
+    successful close manufacture the wedge (measured on lane beta, 2026-09-19).
+    """
+    home = tmp_path / "home"
+    vault = _vault(home)
+    _write_task(vault, "foo")
+    cache = _cache(home)
+    dispatch_payloads: dict[str, bytes] = {}
+    for key in ("eta", "eta-sess123"):
+        (cache / f"cc-active-task-{key}").write_text("foo\n", encoding="utf-8")
+        (cache / f"cc-claim-epoch-{key}").write_text("1780000000 foo\n", encoding="utf-8")
+        dispatch = cache / f"cc-claim-dispatch-{key}.json"
+        dispatch.write_text(
+            json.dumps({"task_id": "foo", "lane": "eta", "schema": "test"}), encoding="utf-8"
+        )
+        dispatch_payloads[key] = dispatch.read_bytes()
+
+    result = _run_close(home, "foo", role="eta", session_id="sess123")
+
+    assert result.returncode == 0, result.stderr
+    for key in ("eta", "eta-sess123"):
+        assert not (cache / f"cc-active-task-{key}").exists()
+        assert not (cache / f"cc-claim-epoch-{key}").exists()
+        assert not (cache / f"cc-claim-dispatch-{key}.json").exists(), (
+            f"dispatch binding for {key} leaked; the lane's next claim will wedge on it"
+        )
+
+    # never deleted: every reaped sidecar is preserved byte-exact under the task lineage
+    archived = sorted((vault / "_lineage" / "foo").glob("closed-claim-residue-*/*"))
+    by_name = {path.name: path for path in archived}
+    for key in ("eta", "eta-sess123"):
+        assert by_name[f"cc-active-task-{key}"].read_text(encoding="utf-8") == "foo\n"
+        assert by_name[f"cc-claim-epoch-{key}"].read_text(encoding="utf-8") == "1780000000 foo\n"
+        assert by_name[f"cc-claim-dispatch-{key}.json"].read_bytes() == dispatch_payloads[key]
+    assert "README.md" in by_name
+    assert "foo" in by_name["README.md"].read_text(encoding="utf-8")
 
 
 def test_cc_close_preserves_session_lease_naming_a_different_task(
