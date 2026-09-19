@@ -514,6 +514,17 @@ async def _deliberate_inner(
     ).hexdigest()
     cache_policy = cache_policy_for_aliases(config.model_aliases)
 
+    phases_attempted = [1]
+    phases_completed: list[int] = []
+    phases_failed: list[dict[str, object]] = []
+    phases_not_attempted: list[dict[str, object]] = []
+    phase_accounting = {
+        "phases_requested": list(config.phases),
+        "phases_attempted": phases_attempted,
+        "phases_completed": phases_completed,
+        "phases_failed": phases_failed,
+        "phases_not_attempted": phases_not_attempted,
+    }
     failed_members: list[MemberFailure] = []
     phase1_results = await run_phase1(inp, rubric, config, failures_out=failed_members)
     # Keep this boundary check even though run_phase1 applies it for real member
@@ -529,12 +540,20 @@ async def _deliberate_inner(
     ]
     health = _assess_health(phase1_results, failed_members, config)
     health_payload = health.model_dump(mode="json")
+    # Phase 1 requires the surviving panel to meet both configured quorum floors.
+    if not phase1_results:
+        phases_failed.append({"phase": 1, "reason": "no_valid_member_results"})
+    elif health.below_quorum:
+        phases_failed.append({"phase": 1, "reason": "below_quorum_or_family_floor"})
+    else:
+        phases_completed.append(1)
 
     if health.below_quorum:
         # Refuse LOUDLY. The panel is below the principled quorum / family-
         # diversity floor (or every member failed). A broken panel is typed
         # REFUSED — never HUNG (genuine disagreement) and never a silent pass.
         reason = "all_models_failed" if not phase1_results else "below_quorum_or_family_floor"
+        phases_not_attempted.extend({"phase": phase, "reason": reason} for phase in (2, 3, 4, 5))
         _log.warning(
             "Council REFUSED (%s): members_valid=%d/%d (floor %d), families_valid=%d/%d (floor %d)",
             reason,
@@ -560,6 +579,7 @@ async def _deliberate_inner(
                     "council_health": health_payload,
                     "failed_members": failed_members_payload,
                     "cache_policy": cache_policy,
+                    **phase_accounting,
                     **_capability_admission_receipt_fields(capability_admission_events),
                     "phase1_transcript": _phase1_transcript(phase1_results),
                 },
@@ -567,9 +587,14 @@ async def _deliberate_inner(
         )
 
     if should_shortcircuit(phase1_results, config.shortcircuit_iqr_threshold):
+        phases_not_attempted.extend(
+            {"phase": phase, "reason": "shortcircuited"} for phase in (2, 3, 4)
+        )
+        phases_attempted.append(5)
         agg = aggregate_scores(
             phase1_results, config.contested_iqr_threshold, min_values=config.min_axis_values
         )
+        phases_completed.append(5)
         return CouncilVerdict(
             scores={k: v.score for k, v in agg.items()},
             confidence_bands={k: v.confidence_band for k, v in agg.items()},
@@ -588,30 +613,68 @@ async def _deliberate_inner(
                     "failed_members": failed_members_payload,
                     "cache_policy": cache_policy,
                     **_capability_admission_receipt_fields(capability_admission_events),
-                    "phases_completed": [1],
+                    **phase_accounting,
                     "phase1_transcript": _phase1_transcript(phase1_results),
                 },
             ),
         )
 
     # Phase 2: Evidence matrix (epistemic) or Alternative Framing Matrix (narrative)
-    evidence_matrix = await _run_phase2(phase1_results, rubric, config, mode=mode, text=inp.text)
+    phases_attempted.append(2)
+    evidence_matrix = await _run_phase2(
+        phase1_results, rubric, config, mode=mode, text=inp.text, failures_out=phases_failed
+    )
+    if not any(failure["phase"] == 2 for failure in phases_failed):
+        phases_completed.append(2)
 
     # Phase 3: Adversarial challenge (epistemic) or Audience Simulation (narrative)
+    phases_attempted.append(3)
     adversarial_exchanges = await _run_phase3(
-        phase1_results, evidence_matrix, rubric, config, mode=mode, text=inp.text
+        phase1_results,
+        evidence_matrix,
+        rubric,
+        config,
+        mode=mode,
+        text=inp.text,
+        failures_out=phases_failed,
     )
+    if not any(failure["phase"] == 3 for failure in phases_failed):
+        phases_completed.append(3)
 
     # Phase 4: Revised private judgment
+    revision_receipts: list[dict[str, object]] = []
     phase4_results = await _run_phase4(
-        phase1_results, evidence_matrix, adversarial_exchanges, rubric, config
+        phase1_results,
+        evidence_matrix,
+        adversarial_exchanges,
+        rubric,
+        config,
+        revisions_out=revision_receipts,
     )
+    if revision_receipts and all(record["attempted"] for record in revision_receipts):
+        phases_attempted.append(4)
+        # Every retained phase-1 member must have an accepted revision. Retaining
+        # originals after a failed/rejected attempt does not complete this phase.
+        if all(record["status"] == "revised" for record in revision_receipts):
+            phases_completed.append(4)
+        else:
+            reason = (
+                "revision_call_failed"
+                if any(record["status"] == "failed" for record in revision_receipts)
+                else "revision_rejected"
+            )
+            phases_failed.append({"phase": 4, "reason": reason})
+    else:
+        phases_not_attempted.append({"phase": 4, "reason": "no_adversarial_exchanges"})
+    revisions_by_alias = {record["model_alias"]: record for record in revision_receipts}
 
     # Phase 5: Final convergence on revised scores
+    phases_attempted.append(5)
     final_results = phase4_results if phase4_results else phase1_results
     agg = aggregate_scores(
         final_results, config.contested_iqr_threshold, min_values=config.min_axis_values
     )
+    phases_completed.append(5)
     overall = _fold_overall(agg)
 
     return CouncilVerdict(
@@ -635,7 +698,8 @@ async def _deliberate_inner(
                 "failed_members": failed_members_payload,
                 "cache_policy": cache_policy,
                 **_capability_admission_receipt_fields(capability_admission_events),
-                "phases_completed": [1, 2, 3, 4, 5],
+                **phase_accounting,
+                "phase4_revisions": revision_receipts,
                 "phase1_transcript": _phase1_transcript(phase1_results),
                 "phase2_transcript": {
                     "built_by": evidence_matrix.built_by if evidence_matrix else None,
@@ -654,7 +718,12 @@ async def _deliberate_inner(
                     for e in adversarial_exchanges
                 ],
                 "phase4_transcript": [
-                    {"model": r.model_alias, "scores": r.scores} for r in final_results
+                    {
+                        "model": result.model_alias,
+                        "scores": result.scores,
+                        **revisions_by_alias.get(result.model_alias, {}),
+                    }
+                    for result in final_results
                 ],
                 "phase5_convergence": {
                     a: {"status": v.status.value, "iqr": v.iqr, "score": v.score}
@@ -672,8 +741,9 @@ async def _run_phase2(
     *,
     mode: CouncilMode = CouncilMode.DISCONFIRMATION,
     text: str = "",
+    failures_out: list[dict[str, object]] | None = None,
 ) -> EvidenceMatrix | None:
-    """Phase 2: Build ACH evidence matrix (epistemic) or Alternative Framing Matrix (narrative)."""
+    """Build a matrix; no contested axes is a successful no-matrix result."""
     from .aggregation import compute_iqr
 
     contested_axes: list[str] = []
@@ -747,6 +817,8 @@ async def _run_phase2(
         return EvidenceMatrix(axes=matrix_axes, built_by=config.model_aliases[0])
     except Exception as e:
         _log.warning("Phase 2 failed: %s", e)
+        if failures_out is not None:
+            failures_out.append({"phase": 2, "reason": "evidence_matrix_failed"})
         return None
 
 
@@ -758,8 +830,13 @@ async def _run_phase3(
     *,
     mode: CouncilMode = CouncilMode.DISCONFIRMATION,
     text: str = "",
+    failures_out: list[dict[str, object]] | None = None,
 ) -> list[AdversarialExchange]:
-    """Phase 3: Adversarial challenge (epistemic) or Audience Simulation (narrative)."""
+    """Challenge differing scorers; no eligible axes is a successful no-exchange result.
+
+    A missing matrix does not prevent exchanges based on the original findings.
+    Any failed exchange makes this phase incomplete, even if others succeed.
+    """
     from .aggregation import compute_iqr
 
     exchanges: list[AdversarialExchange] = []
@@ -842,8 +919,48 @@ async def _run_phase3(
             )
         except Exception as e:
             _log.warning("Phase 3 adversarial exchange failed for %s: %s", axis, e)
+            failure = {"phase": 3, "reason": "adversarial_exchange_failed"}
+            if failures_out is not None and failure not in failures_out:
+                failures_out.append(failure)
 
     return exchanges
+
+
+def _revision_validation_error(
+    scores: object, rubric: Rubric, original_scores: dict[str, int]
+) -> tuple[str, dict[str, object]] | None:
+    """Bound revision validation to previously accepted member scores.
+
+    This does not establish that those scores capture an externally defined demand.
+    """
+    if not isinstance(scores, dict):
+        return "revision_unparseable", {"received_type": type(scores).__name__}
+    if not scores:
+        return "revision_empty", {}
+    demanded = set(original_scores)
+    unexpected = sorted(scores.keys() - demanded)
+    missing = sorted(demanded - scores.keys())
+
+    def score_detail(keys: list[str]) -> dict[str, object]:
+        return {"scores": [{"axis": key, "value_json": json.dumps(scores[key])} for key in keys]}
+
+    if unexpected:
+        return "revision_axis_not_demanded", {**score_detail(unexpected), "missing_axes": missing}
+    nonintegers = [key for key, value in scores.items() if type(value) is not int]
+    if nonintegers:
+        return "revision_score_not_integer", score_detail(nonintegers)
+    score_bounds = {axis.name: (axis.min_score, axis.max_score) for axis in rubric.axes}
+    out_of_range = []
+    for key, value in scores.items():
+        # Legacy Phase1Output dict callers can supply axes outside the rubric;
+        # native build_phase1_model forbids extras. Bound revisions of those
+        # previously accepted scores to 1-5, matching RubricAxis defaults.
+        min_score, max_score = score_bounds.get(key, (1, 5))
+        if not min_score <= value <= max_score:
+            out_of_range.append(key)
+    if out_of_range:
+        return "revision_score_out_of_range", score_detail(out_of_range)
+    return None
 
 
 async def _run_phase4(
@@ -852,9 +969,27 @@ async def _run_phase4(
     adversarial_exchanges: list[AdversarialExchange],
     rubric: Rubric,
     config: CouncilConfig,
+    *,
+    revisions_out: list[dict[str, object]] | None = None,
 ) -> list[PhaseOneResult]:
-    """Phase 4: All models re-score privately after seeing evidence + challenges."""
+    """Attempt private revisions, retaining and labelling originals on rejection."""
     if not adversarial_exchanges:
+        if revisions_out is not None:
+            revisions_out.extend(
+                {
+                    "model_alias": original.model_alias,
+                    "attempted": False,
+                    "status": "not_attempted",
+                    "original_retained": True,
+                    "reason": "no_adversarial_exchanges",
+                    **(
+                        {"phase1_served_model": original.served_model}
+                        if original.served_model
+                        else {}
+                    ),
+                }
+                for original in phase1_results
+            )
         return phase1_results
 
     matrix_summary = (
@@ -872,9 +1007,17 @@ async def _run_phase4(
         for e in adversarial_exchanges
     )
 
-    revised_results: list[PhaseOneResult] = []
-
-    async def _revise_one(original: PhaseOneResult) -> PhaseOneResult:
+    async def _revise_one(
+        original: PhaseOneResult,
+    ) -> tuple[PhaseOneResult, dict[str, object]]:
+        record: dict[str, object] = {
+            "model_alias": original.model_alias,
+            "attempted": True,
+            "status": "rejected",
+            "original_retained": True,
+        }
+        if original.served_model:
+            record["phase1_served_model"] = original.served_model
         prompt = phase4_revision_prompt(
             rubric=rubric,
             original_scores=original.scores,
@@ -883,7 +1026,19 @@ async def _run_phase4(
         )
         try:
             member = build_member(original.model_alias)
-            raw, _, _ = await _call_member(member, prompt)
+            raw, _, served_model = await _call_member(member, prompt)
+        except Exception as e:
+            _log.warning("Phase 4 revision call failed for %s: %s", original.model_alias, e)
+            record.update(
+                status="failed",
+                reason="revision_call_failed",
+                detail={"exception_type": type(e).__name__},
+            )
+            return original, record
+
+        if served_model:
+            record["phase4_served_model"] = served_model
+        try:
             revision_admission = member_capability_admission(member)
             text = raw.strip()
             if "```json" in text:
@@ -891,25 +1046,47 @@ async def _run_phase4(
             elif "```" in text:
                 text = text.split("```", 1)[1].split("```", 1)[0].strip()
             data = json.loads(text, strict=False)
-            revised_scores = {k: int(v) for k, v in data.get("revised_scores", {}).items()}
-            if revised_scores:
-                return PhaseOneResult(
-                    model_alias=original.model_alias,
-                    capability_id=(revision_admission.capability_id if revision_admission else ""),
-                    route_id=revision_admission.route_id if revision_admission else "",
-                    capability_admission_action=(
-                        revision_admission.admission_action if revision_admission else ""
-                    ),
-                    capability_receipt_refs=(
-                        revision_admission.receipt_refs if revision_admission else ()
-                    ),
-                    scores=revised_scores,
-                    rationale=data.get("revision_rationale", original.rationale),
-                    research_findings=original.research_findings,
+            revised_scores = data.get("revised_scores")
+            error = _revision_validation_error(revised_scores, rubric, original.scores)
+            if error is not None:
+                record.update(
+                    status="failed" if error[0] == "revision_unparseable" else "rejected",
+                    reason=error[0],
+                    detail=error[1],
                 )
+                return original, record
+            revised = PhaseOneResult(
+                model_alias=original.model_alias,
+                served_model=served_model,
+                capability_id=(revision_admission.capability_id if revision_admission else ""),
+                route_id=revision_admission.route_id if revision_admission else "",
+                capability_admission_action=(
+                    revision_admission.admission_action if revision_admission else ""
+                ),
+                capability_receipt_refs=(
+                    revision_admission.receipt_refs if revision_admission else ()
+                ),
+                scores={**original.scores, **revised_scores},
+                rationale=data.get("revision_rationale", original.rationale),
+                research_findings=original.research_findings,
+            )
+            record.update(
+                status="revised",
+                original_retained=False,
+                revised_axes=sorted(revised_scores),
+                retained_axes=sorted(original.scores.keys() - revised_scores.keys()),
+            )
+            return revised, record
         except Exception as e:
             _log.warning("Phase 4 revision failed for %s: %s", original.model_alias, e)
-        return original
+            record.update(
+                status="failed",
+                reason="revision_unparseable",
+                detail={"exception_type": type(e).__name__},
+            )
+            return original, record
 
-    revised_results = list(await asyncio.gather(*(_revise_one(r) for r in phase1_results)))
-    return revised_results
+    revisions = await asyncio.gather(*(_revise_one(r) for r in phase1_results))
+    if revisions_out is not None:
+        revisions_out.extend(record for _, record in revisions)
+    return [result for result, _ in revisions]
