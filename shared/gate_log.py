@@ -29,12 +29,48 @@ from shared.transcript_scrubber import scrub_structured_value
 # Persistent (NOT tmpfs): gate history must survive a reboot to be a measurement
 # substrate. ``~/.cache/hapax`` is on the NVMe; ``/tmp`` / ``/dev/shm`` are tmpfs
 # on this host and would be lost (the tmpfs-swap-trap). Overridable for tests.
-DEFAULT_GATE_LOG = Path(
-    os.environ.get(
-        "HAPAX_GATE_LOG",
-        str(Path.home() / ".cache" / "hapax" / "sdlc-routing" / "gate-events.jsonl"),
-    )
-)
+GATE_LOG_PATH_ENV = "HAPAX_GATE_LOG"
+
+
+def _home_gate_log() -> Path:
+    return Path.home() / ".cache" / "hapax" / "sdlc-routing" / "gate-events.jsonl"
+
+
+_IMPORT_TIME_GATE_LOG = Path(os.environ.get(GATE_LOG_PATH_ENV, str(_home_gate_log())))
+# The patchable module default. It is compared against the import-time value at call time,
+# never captured as a parameter default: a test that changes HOME or sets HAPAX_GATE_LOG
+# after this module was imported must still redirect the actual write.
+DEFAULT_GATE_LOG = _IMPORT_TIME_GATE_LOG
+
+
+def default_gate_log() -> Path:
+    """Resolve the canonical gate log at call time.
+
+    A ``DEFAULT_GATE_LOG`` that DIFFERS IN VALUE from the import-time one wins, then
+    ``HAPAX_GATE_LOG``, then the current home. Resolving at call time is what keeps a
+    test process that changed its environment after import from appending to the
+    operator's routing ledger.
+
+    **The value comparison is deliberate, and the first line used to overstate it**
+    as "a patched ``DEFAULT_GATE_LOG`` wins" (review finding, claude, at `069e726dc`).
+    A patch to a path EQUAL to the import-time value does NOT win, and must not: a
+    value indistinguishable from the one this module bound at import is
+    indistinguishable from nobody having set it, and treating it as an override is
+    exactly how the stale import-time default reached the operator's routing ledger
+    in the first place. `test_import_time_default_gate_log_does_not_override_the_
+    environment` pins that case directly.
+
+    So this is a real limit, not a latent bug: an override that happens to equal the
+    import-time path cannot be honoured, because it cannot be recognised. Switching
+    to ``is not`` would recognise it — and would reopen the leak for every caller
+    holding the import-time value, which is the condition the seam exists to catch.
+    Measured before choosing: that change turns the pin above red.
+    """
+    if DEFAULT_GATE_LOG != _IMPORT_TIME_GATE_LOG:
+        return DEFAULT_GATE_LOG
+    configured = os.environ.get(GATE_LOG_PATH_ENV)
+    return Path(configured) if configured else _home_gate_log()
+
 
 GateResult = Literal["accept", "reject", "abstain", "escalate", "error"]
 GateType = Literal["deterministic", "gold_verifier", "llm_acceptor", "frontier_review", "none"]
@@ -87,8 +123,9 @@ def append_gate_event(event: GateEvent, *, path: Path | str | None = None) -> Pa
     serialization-clean event is always written; an unwritable path raises the
     OSError to the caller — a lost measurement must surface, never silently pass.
     """
-    target = Path(path) if path is not None else DEFAULT_GATE_LOG
-    if target == DEFAULT_GATE_LOG:
+    canonical = default_gate_log()
+    target = Path(path) if path is not None else canonical
+    if target == canonical:
         _append_durable_gate_event(event)
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -99,7 +136,7 @@ def append_gate_event(event: GateEvent, *, path: Path | str | None = None) -> Pa
 
 def read_gate_events(*, path: Path | str | None = None) -> Iterator[GateEvent]:
     """Yield gate events from the log; skip blank/corrupt lines, never raise."""
-    target = Path(path) if path is not None else DEFAULT_GATE_LOG
+    target = Path(path) if path is not None else default_gate_log()
     if not target.exists():
         return
     with target.open(encoding="utf-8") as fh:
@@ -120,7 +157,7 @@ def is_persistent(path: Path | str | None = None) -> bool:
     Best-effort: walk to the nearest existing ancestor and reject the host's tmpfs
     mounts (``/tmp``, ``/dev/shm``); default True when the path can't be resolved.
     """
-    target = Path(path) if path is not None else DEFAULT_GATE_LOG
+    target = Path(path) if path is not None else default_gate_log()
     probe = target
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
