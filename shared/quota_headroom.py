@@ -586,7 +586,9 @@ def freeze_predicate(rows: list[QuotaMeasurement], *, now: datetime) -> dict[str
         "schema": "hapax.freeze-predicate.v1",
         "active": bool(frozen),
         "families": sorted({row.capacity_id.split(".")[0] for row in frozen}),
-        "until": min(row.resets_at for row in frozen).isoformat().replace("+00:00", "Z")
+        "until": min(row.resets_at for row in frozen if row.resets_at is not None)
+        .isoformat()
+        .replace("+00:00", "Z")
         if frozen
         else None,
         "source": "quota-spend-ledger:local-measurements",
