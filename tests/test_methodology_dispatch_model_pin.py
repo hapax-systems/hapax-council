@@ -1,4 +1,4 @@
-"""R0-pin: launch_claude_headless must pin --model per profile (CEI drift guard).
+"""Registry binding: launch_claude_headless must pin --model per profile (CEI drift guard).
 
 Regression for the fable->opus silent-drop: the `full` profile previously inherited the
 Claude Code CLI default model (fable) instead of its registry-declared model (opus).
@@ -54,9 +54,10 @@ def test_full_profile_pins_opus_not_cli_default():
     route = mod.PLATFORM_PATHS[("claude", "headless", "full")]
     rc, env = _run_launch(route)
     assert rc == 0
-    # The registry declares claude.headless.full -> claude-opus-4-8; the launch must pin
-    # "opus" so it never inherits the CLI default (fable, which drops fable->opus).
-    assert env["HAPAX_CLAUDE_MODEL"] == "opus"
+    # Pass the concrete declared identity; a moving CLI alias is not identity.
+    descriptor = mod.resolve_execution_descriptor("claude.headless.full")
+    assert env["HAPAX_CLAUDE_MODEL"] == descriptor.model_id
+    assert env["HAPAX_CLAUDE_EFFORT"] == descriptor.effort
 
 
 @pytest.mark.parametrize(
@@ -67,7 +68,9 @@ def test_known_profiles_pin_their_declared_model(profile: str, expected: str):
     route = mod.PLATFORM_PATHS[("claude", "headless", profile)]
     rc, env = _run_launch(route)
     assert rc == 0
-    assert env["HAPAX_CLAUDE_MODEL"] == expected
+    descriptor = mod.resolve_execution_descriptor(f"claude.headless.{profile}")
+    assert env["HAPAX_CLAUDE_MODEL"] == descriptor.model_id
+    assert env["HAPAX_CLAUDE_EFFORT"] == descriptor.effort
 
 
 def test_unknown_profile_fails_closed_without_launch():
@@ -86,5 +89,5 @@ def test_every_claude_profile_in_registry_has_a_model_pin():
         for (platform, mode, profile) in mod.PLATFORM_PATHS
         if platform == "claude" and mode == "headless"
     }
-    missing = claude_profiles - set(mod.CLAUDE_PROFILE_MODEL_PIN)
-    assert not missing, f"claude headless profiles missing a model pin: {missing}"
+    for profile in claude_profiles:
+        assert mod.resolve_execution_descriptor(f"claude.headless.{profile}").model_id

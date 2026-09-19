@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Run guard mutations in place, restoring each source byte-for-byte.
+
+Run with uv run --no-sync python scripts/check-execution-descriptor-mutations.py.
+No provider calls: the contract tests use captured fake harness invocations.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+TEST = "tests/scripts/test_capability_execution_contract.py"
+MUTATIONS = (
+    (
+        "literal model in dispatch",
+        "scripts/hapax-methodology-dispatch",
+        "from __future__ import annotations",
+        'from __future__ import annotations\n# model="gpt-5.5"',
+        "test_launchers_and_dispatch_have_no_literal_model_ids",
+    ),
+    (
+        "restore config fallback",
+        "config/codex/config.toml",
+        'approval_policy = "never"',
+        'model = "gpt-5.5"\nmodel_reasoning_effort = "low"\napproval_policy = "never"',
+        "test_codex_config_has_no_identity_defaults",
+    ),
+    (
+        "ignore missing descriptor",
+        "shared/capability_execution.py",
+        "except (KeyError, ValueError, PlatformCapabilityRegistryError) as exc:\n",
+        "except (KeyError, ValueError, PlatformCapabilityRegistryError) as exc:\n"
+        '        return ExecutionDescriptor(model_id=ModelId.GPT_5_5, effort="low")\n',
+        "test_missing_descriptor_is_refused_before_invocation",
+    ),
+    (
+        "substitute invocation model",
+        "shared/capability_execution.py",
+        'f"model={json.dumps(descriptor.model_id)}"',
+        "'model=\"mutant-model\"'",
+        "test_invocation_carries_exact_descriptor",
+    ),
+    (
+        "substitute invocation effort",
+        "shared/capability_execution.py",
+        'f"model_reasoning_effort={json.dumps(descriptor.effort)}"',
+        "'model_reasoning_effort=\"high\"'",
+        "test_invocation_carries_exact_descriptor",
+    ),
+    (
+        "drop headless invocation identity",
+        "scripts/hapax-codex-headless",
+        '  "${CODEX_EXECUTION_ARGS[@]}"',
+        "  -c 'approval_policy=\"never\"'",
+        "test_invocation_carries_exact_descriptor",
+    ),
+    (
+        "drop interactive invocation identity",
+        "scripts/hapax-codex",
+        '  "${CODEX_EXECUTION_ARGS[@]}"',
+        "  -c 'approval_policy=\"never\"'",
+        "test_invocation_carries_exact_descriptor",
+    ),
+    (
+        "allow identity override",
+        "shared/capability_execution.py",
+        "def reject_codex_identity_overrides(args: list[str]) -> None:\n",
+        "def reject_codex_identity_overrides(args: list[str]) -> None:\n    return\n",
+        "test_launcher_refuses_cli_override",
+    ),
+    (
+        "ignore turn mismatch",
+        "shared/codex_execution_receipt.py",
+        'status = "matched" if observed == declared else "misattributed"',
+        'status = "matched"',
+        "test_turn_context_mismatch_is_misattributed",
+    ),
+    (
+        "watchdog depends on model footer",
+        "scripts/hapax-lane-idle-watchdog",
+        '    # Idle if we see the "› " prompt line without Working above it',
+        '    if echo "$pane" | tail -5 | grep -qE "gpt-[0-9].*~/projects/"; then\n'
+        "        return 0\n    fi\n"
+        '    # Idle if we see the "› " prompt line without Working above it',
+        "test_watchdog_idle_is_independent_of_model",
+    ),
+)
+
+
+def run_tests(test: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-B", "-m", "pytest", f"{TEST}::{test}", "-q", "--tb=short"],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=120,
+    )
+
+
+def main() -> int:
+    # Every selected test must first be green: pre-existing failures cannot kill mutants.
+    for test in dict.fromkeys(mutation[4] for mutation in MUTATIONS):
+        result = run_tests(test)
+        if result.returncode != 0:
+            print(result.stdout)
+            raise SystemExit(f"baseline failed: {test}")
+    survived = []
+    for name, relative, before, after, test in MUTATIONS:
+        path = ROOT / relative
+        original = path.read_bytes()
+        text = original.decode()
+        if text.count(before) != 1:
+            raise SystemExit(f"mutation anchor must occur once: {name}")
+        try:
+            path.write_text(text.replace(before, after, 1))
+            result = run_tests(test)
+        finally:
+            path.write_bytes(original)
+        killed = result.returncode == 1 and " failed" in result.stdout
+        print(
+            json.dumps(
+                {
+                    "mutation": name,
+                    "test": test,
+                    "killed": killed,
+                    "exit_code": result.returncode,
+                    "restored_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            ),
+            flush=True,
+        )
+        if not killed:
+            survived.append(name)
+            print(result.stdout)
+    return int(bool(survived))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

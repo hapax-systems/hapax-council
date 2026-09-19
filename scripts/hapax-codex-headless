@@ -353,7 +353,7 @@ PYEOF
     PATH="$PATH" \
     REQUESTS_CA_BUNDLE="${REQUESTS_CA_BUNDLE:-}" \
     SSL_CERT_FILE="${SSL_CERT_FILE:-}" \
-    "$codex_bin" exec \
+    "$codex_bin" exec "${CODEX_EXECUTION_ARGS[@]}" \
       --ephemeral \
       --skip-git-repo-check \
       --ignore-rules \
@@ -419,6 +419,7 @@ payload = {
     "workdir": workdir,
     "codex_bin_path": os.environ.get("HAPAX_CODEX_BIN_PATH", ""),
     "npm_config_prefix": os.environ.get("NPM_CONFIG_PREFIX", ""),
+    "execution_args": json.loads(os.environ["HAPAX_CODEX_EXECUTION_ARGS"]),
     "codex_exec_auth_timeout": os.environ.get("HAPAX_CODEX_EXEC_AUTH_TIMEOUT_SECONDS", "30"),
 }
 print(base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode())
@@ -597,7 +598,7 @@ else:
     if not os.path.isdir(auth_workdir):
         auth_workdir=os.path.expanduser("~")
     try:
-        result=subprocess.run([codex_bin,"exec","--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=auth_timeout,env=env)
+        result=subprocess.run([codex_bin,"exec",*p["execution_args"],"--ephemeral","--skip-git-repo-check","--ignore-rules","--sandbox","read-only","--json","--cd",auth_workdir,"Reply exactly: "+sentinel],text=True,capture_output=True,timeout=auth_timeout,env=env)
     except (OSError,subprocess.TimeoutExpired) as exc:
         actuation_error="codex_saved_auth_exec_failed:"+type(exc).__name__
     else:
@@ -701,7 +702,7 @@ argv=p["argv"]; argv[0]=codex_bin; os.execv(codex_bin, argv)'
 
 usage() {
   cat >&2 <<'EOF'
-usage: hapax-codex-headless [--task TASK_ID] [--no-claim] [--force] <cx-session> <governed-initial-message> [-- codex exec args...]
+usage: hapax-codex-headless [--task TASK_ID] [--execution-route ROUTE_OR_LEAF] [--no-claim] [--force] <cx-session> <governed-initial-message> [-- codex exec args...]
 
 Default-deny: enable with `touch ~/.cache/hapax/enable-codex-headless` or
 HAPAX_CODEX_HEADLESS_ALLOW=1. The governed initial message is the codex exec
@@ -713,9 +714,18 @@ SESSION=""
 CODEX_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
 CLAIM_TASK=1
 FORCE=0
+EXECUTION_ROUTE="codex.headless.full"
 CODEX_EXTRA=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --execution-route)
+      EXECUTION_ROUTE="${2:?--execution-route requires a registry route}"
+      shift 2
+      ;;
+    --execution-route=*)
+      EXECUTION_ROUTE="${1#*=}"
+      shift
+      ;;
     --task)
       CODEX_TASK="${2:-}"
       shift 2
@@ -760,6 +770,11 @@ INITIAL_MSG="${1:-}"
 if [[ $# -gt 0 ]]; then
   CODEX_EXTRA+=("$@")
 fi
+
+# Resolve identity before any provider call or launch side effect.
+# shellcheck source=scripts/capability-execution.sh
+. "$COUNCIL_DIR/scripts/capability-execution.sh"
+bind_codex_execution || exit 9
 
 if [[ -z "$INITIAL_MSG" ]]; then
   echo "hapax-codex-headless: governed initial message required" >&2
@@ -1103,8 +1118,7 @@ CODEX_ARGS=(
   --skip-git-repo-check
   --json
   --cd "$WORKDIR"
-  -c 'model="gpt-6-astra"'
-  -c 'model_reasoning_effort="xhigh"'
+  "${CODEX_EXECUTION_ARGS[@]}"
   -c 'approval_policy="never"'
   -c 'sandbox_mode="danger-full-access"'
   -c "projects.\"$HOME/projects\".trust_level=\"trusted\""
