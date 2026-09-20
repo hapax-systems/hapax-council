@@ -143,6 +143,9 @@ another release or a missing native global.
 
 `scripts/hapax-post-merge-deploy` stages the installer and its inputs from the
 specified Git commit. It does not render from an arbitrarily dirty checkout.
+Deployment stages live under the existing instruction state directory. A failed
+deploy retains its private staged executable, so the printed recovery command
+survives temporary-directory cleanup and reboot; successful staging is removed.
 Publication backs up originals, detects overlapping destinations, verifies
 readback and restores attempted writes on failure. Rollback errors retain the
 backup and report both failures with a copyable recovery command. A pending
@@ -151,6 +154,10 @@ installation until recovery. Recovery checks every destination against its saved
 preimage or known postimage before restoring anything. Intervening edits require
 reconciliation, including edits to a predecessor receipt. This also covers a
 failed first install or interrupted rollback where no current receipt exists.
+A retry with the same source revision, complete binding selection, verified
+regular payloads and supported receipt returns the existing receipt under the
+install lock. It leaves files and the original rollback boundary intact. Drift,
+a changed revision or a changed selection follows the normal publication path.
 The current receipt records hashes, byte counts
 and source revision; it deliberately says native loading is unobserved.
 No coordinator restart or trust change is required. Existing sessions are not
@@ -206,7 +213,9 @@ receipt. Presence and matching bytes do not establish native delivery.
 
 `shared.capability_load_set.observe_load_set` can join native path/hash witnesses
 to the declaration and identify missing, changed or unexpected inputs. Unknown
-hashes cannot pass as observed delivery. The present inventory covers declared
+hashes cannot pass as observed delivery. Receipts retain resolved roots, actual
+resolved file paths, declaration source references and a declaration digest, so
+equal bytes in different native homes remain distinguishable. The present inventory covers declared
 native/project roots; it is not a complete scan of ancestors, nested imports,
 plugins, skills, hooks, MCP or memory. Caller-provided witnesses are support
 evidence with `may_authorize=false`. The offered declared-load-set programme
@@ -216,10 +225,16 @@ Codex headless execution now gives each launch a fresh native JSON stream and
 separate stderr. Its supervisor waits for the actual child, emits a create-once
 lifecycle receipt, and the existing methodology-dispatch receipt consumes that
 exact path. `output.jsonl` remains a compatibility symlink; predecessor files are
-retained. The observer runs from its deployed absolute path in isolated Python
-mode, so an older child checkout cannot shadow it. A reader holding the previous
+retained. The observer resolves from the existing governed source-activation
+tree (`HAPAX_SOURCE_ACTIVATE_WORKTREE`, otherwise
+`~/.cache/hapax/source-activation/worktree`) and runs by absolute path in
+isolated Python mode. Neither a stale primary nor a stale child checkout selects
+that dependency. A missing producer, an old module without the receipt CLI or a
+missing fresh receipt produces a diagnostic; it does not manufacture completion. A reader holding the previous
 `output.jsonl` file descriptor keeps the previous stream; consumers needing the
-new launch should use the receipt's exact stream path. Requested host names, an SSH transport exit, PID existence and a
+new launch should use the receipt's exact stream path. The observer runs beside
+the local launcher even for SSH dispatch; the remote case records transport
+output and never marks an SSH exit as owned native-process completion. Requested host names, an SSH transport exit, PID existence and a
 successful interactive launcher do not establish native completion.
 
 Completion needs an unambiguous native session, successful terminal event, clean
@@ -286,3 +301,10 @@ They do not establish content delivery, semantic uptake, live-session readiness,
 quota headroom, or route admission. The summary records
 `semantic_uptake: unobserved` and `may_authorize: false`. A missing native global,
 other releases, and foreign skill loading remain outside this fixture.
+
+
+Automatic repository rotation discovers regular authored files, including the
+extracted policy sources. An in-tree compatibility symlink is covered through
+its canonical target once. For an instruction symlink targeting outside that
+scan tree, pass the alias explicitly to `scripts/check-claude-md-rot.sh`; the
+workspace monthly audit follows named aliases and deduplicates resolved targets.

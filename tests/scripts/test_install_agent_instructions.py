@@ -66,10 +66,13 @@ def test_unhandled_native_settings_layout_refuses_before_publication(tmp_path):
     assert not (tmp_path / ".claude/CLAUDE.md").exists()
 
 
-def test_native_settings_change_between_render_and_lock_refuses(tmp_path, monkeypatch):
+@pytest.mark.parametrize("installed", [False, True])
+def test_native_settings_change_between_render_and_lock_refuses(tmp_path, monkeypatch, installed):
     grok = tmp_path / ".grok/config.toml"
     grok.parent.mkdir()
     grok.write_text("[compat.claude]\nagents = true\n")
+    if installed:
+        installer.install(ROOT, tmp_path, revision="fixture", apply=True)
     original = installer.fcntl.flock
 
     def change_then_lock(*args):
@@ -79,7 +82,7 @@ def test_native_settings_change_between_render_and_lock_refuses(tmp_path, monkey
     monkeypatch.setattr(installer.fcntl, "flock", change_then_lock)
     with pytest.raises(OSError, match="changed during preparation"):
         installer.install(ROOT, tmp_path, revision="fixture", apply=True)
-    assert not (tmp_path / ".claude/CLAUDE.md").exists()
+    assert (tmp_path / ".claude/CLAUDE.md").exists() is installed
     assert tomllib.loads(grok.read_text())["compat"]["claude"]["rules"] is False
 
 
@@ -136,13 +139,16 @@ def test_failed_readback_rolls_back_entire_publication(tmp_path, monkeypatch):
     assert not (home / ".grok/AGENTS.md").exists()
 
 
-def test_shadow_refuses_before_any_native_write(tmp_path):
+@pytest.mark.parametrize("installed", [False, True])
+def test_shadow_refuses_before_any_native_write(tmp_path, installed):
+    if installed:
+        installer.install(ROOT, tmp_path, revision="fixture", apply=True)
     shadow = tmp_path / ".codex/AGENTS.override.md"
-    shadow.parent.mkdir()
+    shadow.parent.mkdir(exist_ok=True)
     shadow.write_text("override")
     with pytest.raises(ValueError, match="shadows"):
         installer.install(ROOT, tmp_path, revision="fixture", apply=True)
-    assert not (tmp_path / ".claude/CLAUDE.md").exists()
+    assert (tmp_path / ".claude/CLAUDE.md").exists() is installed
 
 
 def test_oversize_refuses_instead_of_truncating(tmp_path):
@@ -330,6 +336,187 @@ def test_failed_manual_rollback_can_be_retried_after_current_receipt_restored(
         assert not target.exists()
 
 
+def test_identical_retry_preserves_files_receipt_and_original_rollback(tmp_path):
+    target = tmp_path / ".codex/AGENTS.md"
+    target.parent.mkdir()
+    target.write_bytes(b"original policy")
+    target.chmod(0o640)
+    first = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    state = tmp_path / ".config/hapax/agent-instructions"
+
+    def snapshot():
+        return {
+            str(path.relative_to(tmp_path)): (
+                path.lstat().st_ino,
+                path.lstat().st_mtime_ns,
+                path.lstat().st_mode,
+                path.read_bytes() if path.is_file() else None,
+            )
+            for path in tmp_path.rglob("*")
+        }
+
+    before = snapshot()
+    for _ in range(2):
+        assert installer.install(ROOT, tmp_path, revision="fixture", apply=True) == first
+        assert snapshot() == before
+    assert list((state / "backups").iterdir()) == [Path(first["rollback"])]
+    installer.restore(Path(first["rollback"]))
+    assert target.read_bytes() == b"original policy"
+    assert target.stat().st_mode & 0o7777 == 0o640
+    assert not (tmp_path / ".claude/CLAUDE.md").exists()
+    assert not (state / "current.json").exists()
+
+
+@pytest.mark.parametrize("binding", ["codex", "grok-instruction-setting"])
+@pytest.mark.parametrize("drift", ["edited", "missing", "symlink", "mode"])
+def test_identical_retry_repairs_local_drift(tmp_path, binding, drift):
+    first = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    item = next(item for item in first["files"] if item["binding"] == binding)
+    target = Path(item["path"])
+    expected = target.read_bytes()
+    if drift == "edited":
+        target.write_bytes(expected + b"\n# Local edit\n")
+        if binding == "grok-instruction-setting":
+            expected = target.read_bytes()
+    elif drift == "missing":
+        target.unlink()
+    elif drift == "symlink":
+        saved = tmp_path / "saved"
+        target.rename(saved)
+        target.symlink_to(saved)
+    else:
+        target.chmod(0o644)
+
+    second = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    assert second["rollback"] != first["rollback"]
+    assert target.is_file() and not target.is_symlink()
+    assert target.read_bytes() == expected
+    assert target.stat().st_mode & 0o7777 == 0o600
+
+
+def test_identical_bytes_with_changed_revision_create_new_receipt(tmp_path):
+    first = installer.install(ROOT, tmp_path, revision="first", apply=True)
+    second = installer.install(ROOT, tmp_path, revision="second", apply=True)
+    assert second["files"] == first["files"]
+    assert second["source_revision"] == "second"
+    assert second["rollback"] != first["rollback"]
+    state = tmp_path / ".config/hapax/agent-instructions"
+    assert json.loads((state / "current.json").read_text()) == second
+    installer.restore(Path(second["rollback"]))
+    assert json.loads((state / "current.json").read_text()) == first
+
+
+@pytest.mark.parametrize(
+    ("first_names", "second_names"),
+    [
+        (["codex"], ["codex", "claude"]),
+        (["codex", "claude"], ["codex"]),
+        (["codex"], ["opencode"]),
+    ],
+)
+def test_identical_revision_with_changed_selection_creates_new_receipt(
+    tmp_path, first_names, second_names
+):
+    first = installer.install(ROOT, tmp_path, revision="fixture", names=first_names, apply=True)
+    second = installer.install(ROOT, tmp_path, revision="fixture", names=second_names, apply=True)
+    assert second["rollback"] != first["rollback"]
+    assert {item["binding"] for item in second["files"]} == {"shared", *second_names}
+    state = tmp_path / ".config/hapax/agent-instructions"
+    assert json.loads((state / "current.json").read_text()) == second
+
+
+def test_identical_revision_with_changed_destination_creates_new_receipt(tmp_path):
+    first = installer.install(ROOT, tmp_path, revision="fixture", names=["codex"], apply=True)
+    alternate = tmp_path / "alternate-codex"
+    second = installer.install(
+        ROOT,
+        tmp_path,
+        revision="fixture",
+        names=["codex"],
+        env={"CODEX_HOME": str(alternate)},
+        apply=True,
+    )
+    assert second["rollback"] != first["rollback"]
+    assert (alternate / "AGENTS.md").read_bytes() == (tmp_path / ".codex/AGENTS.md").read_bytes()
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "invalid-json",
+        "nonobject",
+        "missing-rollback",
+        "invalid-rollback",
+        "observation",
+        "native-loading",
+        "file-bytes",
+        "extra-field",
+        "symlink",
+        "mode",
+    ],
+)
+def test_identical_retry_does_not_preserve_invalid_current_receipt(tmp_path, damage):
+    first = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    current_path = tmp_path / ".config/hapax/agent-instructions/current.json"
+    current = json.loads(current_path.read_text())
+    if damage == "invalid-json":
+        current_path.write_bytes(b"{")
+    elif damage == "nonobject":
+        current_path.write_text("[]")
+    elif damage == "symlink":
+        saved = tmp_path / "saved-receipt"
+        current_path.rename(saved)
+        current_path.symlink_to(saved)
+    elif damage == "mode":
+        current_path.chmod(0o644)
+    else:
+        if damage == "missing-rollback":
+            del current["rollback"]
+        elif damage == "invalid-rollback":
+            current["rollback"] = None
+        elif damage == "observation":
+            current["observation"] = "render_only"
+        elif damage == "native-loading":
+            current["native_loading"] = "observed"
+        elif damage == "file-bytes":
+            current["files"][0]["bytes"] += 1
+        else:
+            current["unsupported"] = True
+        current_path.write_text(json.dumps(current))
+    second = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    assert second["rollback"] != first["rollback"]
+    assert second["files"] == first["files"]
+    assert second["observation"] == "filesystem_readback"
+    assert second["native_loading"] == "unobserved"
+    assert not current_path.is_symlink()
+    assert current_path.stat().st_mode & 0o7777 == 0o600
+    assert json.loads(current_path.read_text()) == second
+
+
+@pytest.mark.parametrize("dangling", [False, True])
+def test_identical_retry_still_refuses_pending_transaction(tmp_path, dangling):
+    receipt = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    state = tmp_path / ".config/hapax/agent-instructions"
+    pending = state / "pending.json"
+    if dangling:
+        pending.symlink_to("missing-transaction.json")
+    else:
+        pending.write_text(json.dumps({"backup": receipt["rollback"]}))
+    current_before = (state / "current.json").read_bytes()
+    with pytest.raises((OSError, ValueError)):
+        installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    assert (state / "current.json").read_bytes() == current_before
+    assert list((state / "backups").iterdir()) == [Path(receipt["rollback"])]
+    assert pending.is_symlink() if dangling else pending.exists()
+
+
+def test_identical_retry_with_empty_override_does_not_reuse_receipt(tmp_path):
+    first = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    (tmp_path / ".codex/AGENTS.override.md").touch()
+    second = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    assert second["rollback"] != first["rollback"]
+
+
 def test_rollback_rejects_predecessor_backup_after_successor(tmp_path, monkeypatch):
     first = installer.install(ROOT, tmp_path, revision="first", apply=True)
     second = installer.install(ROOT, tmp_path, revision="second", apply=True)
@@ -343,7 +530,7 @@ def test_rollback_rejects_predecessor_backup_after_successor(tmp_path, monkeypat
     )
 
 
-@pytest.mark.parametrize("drift", ["none", "missing", "edited", "symlink", "receipt"])
+@pytest.mark.parametrize("drift", ["none", "missing", "edited", "symlink", "receipt", "pending"])
 def test_check_cli_reports_drift_without_mutation(tmp_path, monkeypatch, capsys, drift):
     installer.install(ROOT, tmp_path, revision="fixture", apply=True)
     target = tmp_path / ".codex/AGENTS.md"
@@ -357,6 +544,8 @@ def test_check_cli_reports_drift_without_mutation(tmp_path, monkeypatch, capsys,
         target.symlink_to(saved)
     elif drift == "receipt":
         (tmp_path / ".config/hapax/agent-instructions/current.json").unlink()
+    elif drift == "pending":
+        (tmp_path / ".config/hapax/agent-instructions/pending.json").symlink_to("missing.json")
     before = {
         str(p): (p.lstat().st_mtime_ns, p.readlink() if p.is_symlink() else p.read_bytes())
         for p in tmp_path.rglob("*")
@@ -385,3 +574,17 @@ def test_check_cli_reports_drift_without_mutation(tmp_path, monkeypatch, capsys,
         if p.is_file() or p.is_symlink()
     }
     assert after == before
+
+
+def test_restore_refuses_dangling_pending_transaction(tmp_path, monkeypatch):
+    receipt = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    state = tmp_path / ".config/hapax/agent-instructions"
+    pending = state / "pending.json"
+    pending.symlink_to("missing.json")
+    before = (state / "current.json").read_bytes()
+    monkeypatch.setattr(
+        "sys.argv", ["installer", "--home", str(tmp_path), "--restore-backup", receipt["rollback"]]
+    )
+    assert installer.main() == 1
+    assert pending.is_symlink()
+    assert (state / "current.json").read_bytes() == before

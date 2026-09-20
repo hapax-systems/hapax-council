@@ -129,3 +129,32 @@ def test_registry_instruction_hashes_match_authored_payloads():
                 )
                 assert hashlib.sha256(body).hexdigest() == file["sha256"], route["route_id"]
     assert count == 11
+
+
+def test_identical_bytes_in_different_native_homes_keep_binding_provenance(tmp_path):
+    native, declaration = fixture(tmp_path)
+    declaration.source_refs = ["config/platform-capability-registry.json"]
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "AGENTS.md").write_bytes((native / "AGENTS.md").read_bytes())
+    observations = [
+        observe_load_set(declaration, home=native.parent, project=tmp_path, env=env)
+        for env in ({}, {"CODEX_HOME": str(other)})
+    ]
+    assert all(o["files"][0]["state"] == "match" for o in observations)
+    assert observations[0]["files"][0]["sha256"] == observations[1]["files"][0]["sha256"]
+    assert [o["resolved_roots"]["native_home"] for o in observations] == [
+        str(native.resolve()),
+        str(other.resolve()),
+    ]
+    assert [o["files"][0]["observed_path"] for o in observations] == [
+        str((native / "AGENTS.md").resolve()),
+        str((other / "AGENTS.md").resolve()),
+    ]
+    assert observations[0]["declaration_sha256"] == observations[1]["declaration_sha256"]
+    assert observations[0]["source_refs"] == declaration.source_refs
+    declaration.source_refs = ["different-authority.md"]
+    changed = observe_load_set(declaration, home=native.parent, project=tmp_path, env={})
+    assert changed["declaration_sha256"] != observations[0]["declaration_sha256"]
+    assert changed["source_refs"] == declaration.source_refs
+    assert changed["may_authorize"] is False

@@ -215,13 +215,45 @@ def check_bindings(receipt: dict, home: Path) -> dict:
         current.get("source_revision") == receipt["source_revision"]
         and current.get("files") == receipt["files"]
     )
-    result["pending_transaction"] = (state / "pending.json").exists()
+    result["pending_transaction"] = os.path.lexists(state / "pending.json")
     result["matches"] = (
         all(item["matches"] for item in result["files"])
         and result["receipt_matches"]
         and not result["pending_transaction"]
     )
     return result
+
+
+def verified_current_installation(
+    receipt: dict, outputs: list[tuple[str, Path, bytes]], state: Path
+) -> dict | None:
+    """Reuse only a complete receipt with unchanged regular 0600 postimages."""
+    try:
+        current_path = state / "current.json"
+        if preimage(current_path) != {"kind": "file", "mode": 0o600}:
+            return None
+        current = json.loads(current_path.read_bytes())
+        if not isinstance(current, dict):
+            return None
+        rollback = current.get("rollback")
+        if not isinstance(rollback, str) or not rollback or "\0" in rollback:
+            return None
+        # Exact equality validates the supported receipt shape and the complete
+        # binding/path/hash/byte-count selection, including its source revision.
+        if current != {**receipt, "rollback": rollback}:
+            return None
+        for _, path, body in outputs:
+            # check_bindings does not check mode; publication and pending
+            # recovery both require regular files with mode 0600.
+            if preimage(path) != {"kind": "file", "mode": 0o600}:
+                return None
+            if path.read_bytes() != body:
+                return None
+    except (OSError, ValueError):
+        # Missing, malformed or unreadable evidence cannot justify preserving
+        # a success receipt. Normal publication retains its preimages.
+        return None
+    return current
 
 
 def install(
@@ -244,10 +276,12 @@ def install(
         )
     ]
     settings_before: dict[Path, bytes | None] = {}
+    shadows: list[Path] = []
     for name, (binding, payload) in rendered.items():
         path = destination(binding, home, env)
         if binding.get("shadow"):
             shadow = path.with_name(binding["shadow"])
+            shadows.append(shadow)
             if shadow.exists() and shadow.read_bytes().strip():
                 raise ValueError(f"{name}: {shadow} shadows the global binding; reconcile it first")
         outputs.append((name, path, payload))
@@ -275,7 +309,7 @@ def install(
     state.mkdir(parents=True, exist_ok=True)
     with (state / "install.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if (state / "pending.json").exists():
+        if os.path.lexists(state / "pending.json"):
             pending = json.loads((state / "pending.json").read_text())
             raise ValueError(
                 "unresolved instruction transaction; next action: "
@@ -284,6 +318,12 @@ def install(
         for path, prior in settings_before.items():
             if (path.read_bytes() if path.exists() else None) != prior:
                 raise OSError(f"native settings changed during preparation; retry: {path}")
+        # Keep both transaction guards ahead of reuse. An identical retry must
+        # retain the original rollback boundary instead of backing up itself.
+        if not any(os.path.lexists(shadow) for shadow in shadows):
+            current = verified_current_installation(receipt, outputs, state)
+            if current is not None:
+                return current
         # Save every original before publishing any payload. Include the current
         # receipt so rollback restores the reported state as well as Markdown.
         targets = [p for _, p, _ in outputs] + [state / "current.json"]
@@ -355,7 +395,7 @@ def main() -> int:
             state = args.home / ".config/hapax/agent-instructions"
             with (state / "install.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                if (state / "pending.json").exists():
+                if os.path.lexists(state / "pending.json"):
                     recover_pending(state, args.restore_backup)
                     print("Recovered the pending instruction transaction.")
                     return 0

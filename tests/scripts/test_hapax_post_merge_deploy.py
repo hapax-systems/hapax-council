@@ -6,7 +6,9 @@ import fcntl
 import hashlib
 import json
 import os
+import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -264,6 +266,79 @@ def test_instruction_deploy_reads_commit_and_leaves_native_settings_alone(tmp_pa
     receipt = json.loads((home / ".config/hapax/agent-instructions/current.json").read_text())
     assert receipt["source_revision"] == sha
     assert receipt["native_loading"] == "unobserved"
+
+
+def test_failed_instruction_deploy_retains_executable_recovery_command(tmp_path):
+    installer_body = (REPO_ROOT / "scripts/install-agent-instructions.py").read_text()
+    files = {
+        "scripts/install-agent-instructions.py": installer_body,
+        "config/agent-instructions/AGENTS.md": "Committed policy.\n",
+        "config/agent-instructions/bindings.json": json.dumps(
+            {"codex": {"path": ".codex/AGENTS.md", "filename": "AGENTS.md"}}
+        ),
+    }
+    repo, sha = _repo_with_linear_commit(tmp_path, files)
+    home = tmp_path / "home"
+    home.mkdir()
+    bin_dir, calls = _fake_systemctl(tmp_path)
+    wrapper = bin_dir / "python3"
+    wrapper.write_text(
+        f"#!{sys.executable}\n"
+        + r"""import os,runpy,sys
+from pathlib import Path
+if not sys.argv[1].endswith("install-agent-instructions.py"):
+    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+script = sys.argv.pop(1)
+namespace = runpy.run_path(script)
+g = namespace["main"].__globals__
+atomic = g["atomic_write"]
+unlink = Path.unlink
+target = Path.home() / ".codex/AGENTS.md"
+def faulty_write(path, body, mode=0o600):
+    atomic(path, body, mode)
+    if path == target:
+        raise OSError("fixture publication failure")
+def faulty_unlink(path, *args, **kwargs):
+    if path == target:
+        raise OSError("fixture rollback failure")
+    return unlink(path, *args, **kwargs)
+g["atomic_write"] = faulty_write
+Path.unlink = faulty_unlink
+raise SystemExit(namespace["main"]())
+"""
+    )
+    wrapper.chmod(0o755)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "REPO": str(repo),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HAPAX_SYSTEMCTL_CALLS": str(calls),
+        "HAPAX_POST_MERGE_TRACE_PATH": str(tmp_path / "traces/deploy.jsonl"),
+    }
+    result = subprocess.run([str(SCRIPT), sha], env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert (
+        "fixture publication failure" in result.stderr
+        and "fixture rollback failure" in result.stderr
+    )
+    line = next(
+        line
+        for line in result.stderr.splitlines()
+        if "next action:" in line and "--restore-backup" in line
+    )
+    command = shlex.split(line.split("next action: ", 1)[1])
+    retained = Path(command[1])
+    assert retained.is_file()
+    assert retained.read_text() == installer_body
+    assert retained.is_relative_to(home / ".config/hapax/agent-instructions/staging")
+    assert retained.parents[1].stat().st_mode & 0o777 == 0o700
+    assert not (tmp_path / "traces/last-deployed-sha").exists()
+    recovered = subprocess.run(command, env=env, capture_output=True, text=True)
+    assert recovered.returncode == 0, recovered.stderr
+    assert not (home / ".codex/AGENTS.md").exists()
+    assert not (home / ".config/hapax/agent-instructions/pending.json").exists()
+    assert not (home / ".config/hapax/agent-instructions/current.json").exists()
 
 
 def _repo_with_recovery_installer_then_linear_commit(

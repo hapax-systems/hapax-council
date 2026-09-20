@@ -1207,7 +1207,9 @@ fi
 # Grok's named-instruction switch; trust, credentials, plugins, hooks and running
 # sessions are unchanged.
 if [ "${#AGENT_INSTRUCTIONS[@]}" -gt 0 ]; then
-    instruction_stage="$(mktemp -d)"
+    instruction_stages="$HOME/.config/hapax/agent-instructions/staging"
+    install -d -m 700 "$instruction_stages"
+    instruction_stage="$(mktemp -d "$instruction_stages/deploy-XXXXXXXX")"
     if git archive "$SHA" config/agent-instructions scripts/install-agent-instructions.py \
         | tar -x -C "$instruction_stage" \
         && python3 "$instruction_stage/scripts/install-agent-instructions.py" \
@@ -1215,8 +1217,9 @@ if [ "${#AGENT_INSTRUCTIONS[@]}" -gt 0 ]; then
         DID_ANYTHING=1
         rm -rf "$instruction_stage"
     else
-        rm -rf "$instruction_stage"
-        echo "native instruction deployment failed; no deployment SHA will be stamped" >&2
+        # Keep the exact executable named by the installer's recovery command,
+        # including across reboot/temporary-directory cleanup.
+        echo "native instruction deployment failed; no deployment SHA will be stamped; retained deployment stage at $instruction_stage; next action: repair the reported archive or installer error, use any printed recovery command from this retained stage, then retry deployment" >&2
         exit 1
     fi
 fi

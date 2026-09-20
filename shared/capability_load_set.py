@@ -7,6 +7,7 @@ launch/measurement receipts; this module creates no ledger and grants no authori
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -60,7 +61,15 @@ def observe_load_set(
             observed = None
             state = "unreadable"
             problems.append(f"unreadable:{item.root}:{item.path}:{type(exc).__name__}")
-        files.append({"root": item.root, "path": item.path, "state": state, "sha256": observed})
+        files.append(
+            {
+                "root": item.root,
+                "path": item.path,
+                "observed_path": key,
+                "state": state,
+                "sha256": observed,
+            }
+        )
 
     # Presence is only a discovery hazard. Do not call these unexpected_load
     # until the native loader actually reports consuming the bytes.
@@ -97,6 +106,13 @@ def observe_load_set(
             native_loading = "observed"
     return {
         "declaration": "present",
+        "declaration_sha256": _sha(
+            json.dumps(
+                declaration.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+            ).encode()
+        ),
+        "source_refs": list(declaration.source_refs),
+        "resolved_roots": {name: str(path) for name, path in roots.items()},
         "files": files,
         "problems": problems,
         "unexpected_present": unexpected_present,

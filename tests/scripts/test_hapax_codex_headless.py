@@ -22,6 +22,8 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 @pytest.fixture(autouse=True)
 def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "headless-pids"))
+    monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
+    monkeypatch.delenv("HAPAX_NATIVE_LIFECYCLE_RECEIPT", raising=False)
     monkeypatch.setenv(
         "HAPAX_CODEX_OAUTH_ACCESS_TOKEN_FILE",
         str(_write_codex_access_token(tmp_path / "codex-oauth")),
@@ -264,6 +266,131 @@ def _write_minimal_council(council_dir: Path, retire_log: Path) -> None:
 exit 0
 """,
     )
+
+
+@pytest.mark.parametrize("activation_override", [False, True])
+@pytest.mark.parametrize("remote", [False, True])
+@pytest.mark.parametrize("case", ["current", "no_cli", "missing", "unsupported", "preexisting"])
+def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
+    tmp_path: Path, activation_override: bool, remote: bool, case: str
+) -> None:
+    home = tmp_path / "home"
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    (home / "projects/hapax-mcp").mkdir(parents=True)
+    primary = home / "projects/hapax-council"
+    workdir = home / "projects/hapax-council--cx-amber"
+    _write_minimal_council(primary, tmp_path / "retire.log")
+    stale_module = "# Historical module without a receipt CLI.\n"
+    for root in (primary, workdir):
+        (root / "shared").mkdir(parents=True)
+        (root / "shared/__init__.py").write_text("")
+        (root / "shared/execution_observer.py").write_text(stale_module)
+
+    default_activation = cache / "source-activation/worktree"
+    activation = tmp_path / "configured-activation" if activation_override else default_activation
+    (activation / "shared").mkdir(parents=True)
+    if activation_override:
+        (default_activation / "shared").mkdir(parents=True)
+        (default_activation / "shared/execution_observer.py").write_text(stale_module)
+    observer = activation / "shared/execution_observer.py"
+    if case in {"current", "unsupported"}:
+        shutil.copy2(REPO_ROOT / "shared/execution_observer.py", observer)
+    elif case != "missing":
+        observer.write_text(stale_module)
+
+    # Exercise the complete installed-copy entry point, not an extracted
+    # function or a launcher rooted beside the current observer source.
+    bin_dir = home / ".local/bin"
+    bin_dir.mkdir(parents=True)
+    installed = bin_dir / SCRIPT.name
+    shutil.copy2(SCRIPT, installed)
+    events = (
+        [{"type": "future.unsupported_event"}]
+        if case == "unsupported"
+        else [
+            {"type": "thread.started", "thread_id": "activation-test"},
+            {"type": "turn.started"},
+            {"type": "turn.completed"},
+        ]
+    )
+    event_args = " ".join(f"'{json.dumps(event)}'" for event in events)
+    child_exit = 23 if case == "missing" else 0
+    _write_executable(
+        bin_dir / "codex",
+        f"printf '%s\\n' {event_args}\necho 'native diagnostic' >&2\nexit {child_exit}\n",
+    )
+    _write_executable(bin_dir / "getent", "exit 2\n")
+    _write_executable(
+        bin_dir / "ssh",
+        # A remote environment override must not move the caller's observer.
+        'export HAPAX_SOURCE_ACTIVATE_WORKTREE="$HAPAX_CODEX_HEADLESS_WORKDIR"\n'
+        'exec bash -c "${@: -1}"\n',
+    )
+    if remote:
+        _write_claim_epoch(cache, "cx-amber", "task-x")
+
+    receipt = tmp_path / "lifecycle.json"
+    predecessor = '{"complete": true, "stream_path": "predecessor.jsonl"}\n'
+    if case == "preexisting":
+        receipt.write_text(predecessor)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+        "HAPAX_CODEX_HEADLESS_WORKDIR": str(workdir),
+        "HAPAX_DISPATCH_HOST": "observer-test.invalid" if remote else "local",
+        "HAPAX_DISPATCH_HOST_FALLBACK": "",
+        "HAPAX_NATIVE_LIFECYCLE_RECEIPT": str(receipt),
+    }
+    env.pop("HAPAX_COUNCIL_DIR", None)
+    env.pop("HAPAX_SOURCE_ACTIVATE_WORKTREE", None)
+    if activation_override:
+        env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(activation)
+
+    result = subprocess.run(
+        [str(installed), "--task", "task-x", "--no-claim", "cx-amber", "fixture"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=15,
+    )
+
+    assert result.returncode == child_exit, result.stderr
+    streams = list((cache / "codex-headless/cx-amber").glob("native-*.jsonl"))
+    assert len(streams) == 1
+    assert [json.loads(line) for line in streams[0].read_text().splitlines()] == events
+    diagnostic = streams[0].with_suffix(".stderr.log")
+    assert "native diagnostic" in diagnostic.read_text()
+    if case in {"no_cli", "missing", "preexisting"}:
+        assert "native lifecycle observation unavailable" in result.stderr
+        assert str(activation) in result.stderr
+        assert str(receipt) in result.stderr
+        if case == "preexisting":
+            assert receipt.read_text() == predecessor
+        else:
+            assert not receipt.exists()
+        return
+
+    assert "native lifecycle observation unavailable" not in result.stderr
+    observed = json.loads(receipt.read_text())
+    assert observed["stream_path"] == str(streams[0])
+    assert observed["stream_sha256"] == hashlib.sha256(streams[0].read_bytes()).hexdigest()
+    assert observed["diagnostics_path"] == str(diagnostic)
+    assert observed["owned_native_process"] is (not remote)
+    assert observed["process_returncode"] == (None if remote else child_exit)
+    assert observed["complete"] is (case == "current" and not remote)
+    assert observed["cancel_confirmed"] is False
+    assert observed["readiness"] == "unobserved"
+    assert observed["may_authorize"] is False
+    if case == "unsupported":
+        assert observed["session_identity"] == "unobserved"
+        assert observed["evidence"] == []
+        assert observed["phase"] == ("unobserved" if remote else "exited_unverified")
+    else:
+        assert observed["session_id"] == "activation-test"
+        assert observed["phase"] == ("turn_complete" if remote else "complete")
 
 
 def _init_primary_council_repo(path: Path) -> None:
