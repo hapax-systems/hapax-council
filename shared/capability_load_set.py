@@ -44,6 +44,11 @@ def observe_load_set(
     for item in declaration.files:
         path = roots[item.root] / item.path
         key = str(path.resolve())
+        if key in declared and declared[key] != item.sha256:
+            raise ValueError(
+                f"conflicting native load declarations for {key}; next action: reconcile "
+                "native-home/project aliases or declared digests before observing this load set"
+            )
         declared[key] = item.sha256
         try:
             body = path.read_bytes()

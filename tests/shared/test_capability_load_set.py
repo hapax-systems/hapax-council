@@ -97,6 +97,51 @@ def test_configuration_only_is_not_instruction_loading(tmp_path):
     assert result["native_loading"] == "incomplete"
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("alias", [False, True])
+@pytest.mark.parametrize("other_digest", [None, "0" * 64])
+def test_conflicting_resolved_declarations_never_collapse_to_observed(
+    tmp_path, reverse, alias, other_digest
+):
+    native, declaration = fixture(tmp_path)
+    project = native
+    if alias:
+        project = tmp_path / "project-alias"
+        project.symlink_to(native, target_is_directory=True)
+    declaration.files.append(
+        NativeLoadFile(root="project", path="AGENTS.md", kind="instructions", sha256=other_digest)
+    )
+    witness = {"path": str(native / "AGENTS.md"), "sha256": declaration.files[0].sha256}
+    if reverse:
+        declaration.files.reverse()
+    with pytest.raises(ValueError, match="conflicting native load declarations.*next action"):
+        observe_load_set(
+            declaration,
+            home=native.parent,
+            project=project,
+            env={"CODEX_HOME": str(project)},
+            native_receipts=[witness],
+        )
+
+
+def test_identical_expectations_for_one_resolved_file_can_share_native_witness(tmp_path):
+    native, declaration = fixture(tmp_path)
+    expected = declaration.files[0].sha256
+    declaration.files.append(
+        NativeLoadFile(root="project", path="AGENTS.md", kind="instructions", sha256=expected)
+    )
+    observation = observe_load_set(
+        declaration,
+        home=native.parent,
+        project=native,
+        env={},
+        native_receipts=[{"path": str(native / "AGENTS.md"), "sha256": expected}],
+    )
+    assert observation["native_loading"] == "observed"
+    assert len(observation["files"]) == 2
+    assert observation["may_authorize"] is False
+
+
 @pytest.mark.parametrize("path", ["/etc/AGENTS.md", "../AGENTS.md"])
 def test_declaration_cannot_escape_named_root(path):
     with pytest.raises(ValueError, match="declared root"):

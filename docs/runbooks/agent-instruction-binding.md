@@ -249,7 +249,9 @@ observed deployment. Recheck installed/default/override/missing cases with
 
 `shared.capability_load_set.observe_load_set` can join native path/hash witnesses
 to the declaration and identify missing, changed or unexpected inputs. Unknown
-hashes cannot pass as observed delivery. Receipts retain resolved roots, actual
+hashes cannot pass as observed delivery. Resolved-path declarations with conflicting
+digests are rejected independently of their order; identical expectations may
+share one native witness. Receipts retain resolved roots, actual
 resolved file paths, declaration source references and a declaration digest, so
 equal bytes in different native homes remain distinguishable. The present inventory covers declared
 native/project roots; it is not a complete scan of ancestors, nested imports,

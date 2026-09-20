@@ -76,7 +76,13 @@ def instruction_setting(
         target = path.with_name("config.toml")
         prior = target.read_bytes() if target.exists() else None
         body = prior.decode() if prior is not None else ""
-        before = tomllib.loads(body)
+        try:
+            before = tomllib.loads(body)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(
+                f"invalid native TOML in {target}; next action: repair its TOML syntax "
+                "before retrying instruction installation"
+            ) from exc
         expected = copy.deepcopy(before)
         expected.setdefault("compat", {}).setdefault("claude", {})["agents"] = False
         section = re.search(r"(?m)^\[compat\.claude\][ \t]*(?:#[^\n]*)?\n", body)

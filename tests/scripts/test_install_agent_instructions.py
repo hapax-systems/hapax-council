@@ -69,6 +69,20 @@ def test_unhandled_native_settings_layout_refuses_before_publication(tmp_path):
     assert not (tmp_path / ".claude/CLAUDE.md").exists()
 
 
+def test_invalid_existing_toml_names_its_path_and_repair_before_publication(tmp_path):
+    grok = tmp_path / ".grok/config.toml"
+    grok.parent.mkdir()
+    body = b"not valid TOML\n"
+    grok.write_bytes(body)
+    with pytest.raises(ValueError) as error:
+        installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    assert str(grok) in str(error.value)
+    assert "repair its TOML syntax before retrying" in str(error.value)
+    assert grok.read_bytes() == body
+    assert not (tmp_path / ".claude/CLAUDE.md").exists()
+    assert not (tmp_path / ".config/hapax/agent-instructions").exists()
+
+
 @pytest.mark.parametrize("installed", [False, True])
 def test_native_settings_change_between_render_and_lock_refuses(tmp_path, monkeypatch, installed):
     grok = tmp_path / ".grok/config.toml"
