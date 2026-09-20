@@ -100,3 +100,9 @@ only for the measured bindings and interfaces on those hosts.
 Shared policy is also a correlated-failure surface: a bad common rule reaches
 several shapes. Review and reversible publication reduce that risk; native
 differences and independently obtained review evidence should remain visible.
+
+The initial same-image Appendix/Podium replay is recorded in the
+[sanitized evidence](evidence/native-harness-reductions-20260920.yaml).
+Instruction sets and bytes matched. Claude hook-event arrival order differed;
+that is retained as an observation, not promoted to a claim about instruction
+precedence or semantic equivalence.

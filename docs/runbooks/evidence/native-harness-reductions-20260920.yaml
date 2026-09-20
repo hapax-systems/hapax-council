@@ -1,0 +1,243 @@
+recorded_date: '2026-09-20'
+scope: Support-only native loading and owned-state continuation in reusable container substrates; not admission
+  of production worker shapes.
+probe: scripts/probe-native-harness-container.py
+probe_sha256: 4018244c90acf8b9cfa2122ca56f3450b6c9f067599e38e9c2d49d14328f613f  # pragma: allowlist secret — public Git/image/content digest
+project_sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+credentials: absent
+network: none
+model_requests: 0
+may_authorize: false
+images:
+  claude:
+    image_id: sha256:96efe5eb55ffd349bdfa8007edeaa90e02ac399b7afe1f7d931e1d34a3e23429  # pragma: allowlist secret — public Git/image/content digest
+    native_version: 2.1.277 (Claude Code)
+    filesystem:
+      instruction_hashes_match: true
+      input_writes_denied: true
+      owned_state_writable: true
+      os_packages_sha256: e50b922a7ce7604d300d85119b831711c65014e11603b700ca63a855bfc05e7c  # pragma: allowlist secret — public Git/image/content digest
+    instructions:
+    - binding: shared
+      path: /opt/hapax-agent/.config/hapax/agent-instructions/AGENTS.md
+      sha256: 10c998961118c718e28a24e37e62bb1d64ebbda429550c835ecff5fb5ce5d261  # pragma: allowlist secret — public Git/image/content digest
+      bytes: 7199
+    - binding: claude
+      path: /opt/hapax-agent/.claude/CLAUDE.md
+      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+      bytes: 8249
+    - binding: codex
+      path: /opt/hapax-agent/.codex/AGENTS.md
+      sha256: 3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5  # pragma: allowlist secret — public Git/image/content digest
+      bytes: 7276
+  codex:
+    image_id: sha256:a3e5f444dcb803998ed3f22f7fce83fd247fd8461fe4d257b25adbddbfe7c38e  # pragma: allowlist secret — public Git/image/content digest
+    native_version: codex-cli 0.155.1
+    filesystem:
+      instruction_hashes_match: true
+      input_writes_denied: true
+      owned_state_writable: true
+      os_packages_sha256: 1a982d02e96da2971191c72507a05f18745e7285fda6b89a8e90f6424243b238  # pragma: allowlist secret — public Git/image/content digest
+    instructions:
+    - binding: shared
+      path: /opt/hapax-agent/.config/hapax/agent-instructions/AGENTS.md
+      sha256: 10c998961118c718e28a24e37e62bb1d64ebbda429550c835ecff5fb5ce5d261  # pragma: allowlist secret — public Git/image/content digest
+      bytes: 7199
+    - binding: claude
+      path: /opt/hapax-agent/.claude/CLAUDE.md
+      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+      bytes: 8249
+    - binding: codex
+      path: /opt/hapax-agent/.codex/AGENTS.md
+      sha256: 3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5  # pragma: allowlist secret — public Git/image/content digest
+      bytes: 7276
+hosts:
+- host: hapax-appendix
+  docker_version: 29.8.0
+  uid: 1000
+  source_delivery: commit checked
+  cells:
+  - platform: claude
+    cwd: /work
+    files:
+    - path: /opt/hapax-agent/.claude/CLAUDE.md
+      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+    - path: /work/CLAUDE.md
+      sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+    pass: true
+  - platform: codex
+    cwd: /work
+    instruction_sources:
+    - /opt/hapax-agent/.codex/AGENTS.md
+    - /work/AGENTS.md
+    resume: same_native_session
+    owned_state_persisted: true
+    pass: true
+  - platform: claude
+    cwd: /work/nested
+    files:
+    - path: /opt/hapax-agent/.claude/CLAUDE.md
+      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+    - path: /work/CLAUDE.md
+      sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+    pass: true
+  - platform: codex
+    cwd: /work/nested
+    instruction_sources:
+    - /opt/hapax-agent/.codex/AGENTS.md
+    - /work/AGENTS.md
+    resume: same_native_session
+    owned_state_persisted: true
+    pass: true
+  negative_cells:
+    override_mismatch_detected: true
+    missing_instruction_detected: true
+    wrong_resume_id_rejected: true
+- host: hapax-podium
+  docker_version: 29.5.1
+  uid: 1000
+  source_delivery: minimal Git archive transferred; source/probe content hashes match first host
+  cells:
+  - platform: claude
+    cwd: /work
+    files:
+    - path: /opt/hapax-agent/.claude/CLAUDE.md
+      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+    - path: /work/CLAUDE.md
+      sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+    pass: true
+  - platform: codex
+    cwd: /work
+    instruction_sources:
+    - /opt/hapax-agent/.codex/AGENTS.md
+    - /work/AGENTS.md
+    resume: same_native_session
+    owned_state_persisted: true
+    pass: true
+  - platform: claude
+    cwd: /work/nested
+    files:
+    - path: /work/CLAUDE.md
+      sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+    - path: /opt/hapax-agent/.claude/CLAUDE.md
+      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+    pass: true
+  - platform: codex
+    cwd: /work/nested
+    instruction_sources:
+    - /opt/hapax-agent/.codex/AGENTS.md
+    - /work/AGENTS.md
+    resume: same_native_session
+    owned_state_persisted: true
+    pass: true
+  negative_cells:
+    override_mismatch_detected: true
+    missing_instruction_detected: true
+    wrong_resume_id_rejected: true
+cross_host:
+  same_image_ids: true
+  same_probe: true
+  same_instruction_bytes: true
+  same_instruction_sets: true
+  same_native_results: true
+  hook_event_arrival_order_equal: false
+  instruction_precedence: unobserved
+unobserved:
+- semantic compliance
+- full service readiness
+- Codex shell execution (native user-namespace prerequisite diagnostic)
+- provider model/effort actually served
+- full plugin, skill, hook, MCP and memory inventories
+- model-request cancellation
+discovery_fixtures:
+  grok:
+    version: 1.0.25
+    isolated_home: true
+    model_requests: 0
+    rules_false_alone_suppresses_named_claude_global: false
+    agents_false_disables_named_claude_global: true
+    top_level_project_claude_retained: true
+    independent_rule_directory_retained: true
+    estate_trust_unchanged: true
+  muse:
+    version: 1.3.0-R3401.1
+    isolated_home: true
+    native_command: /rules
+    provider: echo (no model turn)
+    native_user_rule: $CONFIG_DIR/AGENTS.md
+    foreign_claude_rule: not read
+    foreign_codex_rule: not read
+    same_result_with_foreign_personal_rules_true_and_false: true
+    native_settings_change_needed: false
+validation:
+  full_focused_suite:
+    passed: 780
+    seconds: 393.13
+  rotation_assertions: 16
+  restored_targeted_suite: 35
+  registry_installer_followup: 96
+  unknown_flags_followup: 80
+  applied_mutations:
+  - name: collision
+    file: scripts/install-agent-instructions.py
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: c6379273b156f458059df84f73cc847e47fde21dd845643018fbafbf2873fe98  # pragma: allowlist secret — public Git/image/content digest
+  - name: shadow
+    file: scripts/install-agent-instructions.py
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: c6379273b156f458059df84f73cc847e47fde21dd845643018fbafbf2873fe98  # pragma: allowlist secret — public Git/image/content digest
+  - name: rollback
+    file: scripts/install-agent-instructions.py
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: c6379273b156f458059df84f73cc847e47fde21dd845643018fbafbf2873fe98  # pragma: allowlist secret — public Git/image/content digest
+  - name: unknown_hash
+    file: shared/capability_load_set.py
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 8bb80b8b5a9e3a85ebdf0f9604aab41e2c8f7eeb763afdbbfa4e7680ccb46547  # pragma: allowlist secret — public Git/image/content digest
+  - name: owned_exit
+    file: shared/execution_observer.py
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 3e4f90b1fda885c67b240733ee8ba6e9492326092aaf9a9ec6a55dda0a582d8e  # pragma: allowlist secret — public Git/image/content digest
+  - name: session_identity
+    file: shared/execution_observer.py
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 3e4f90b1fda885c67b240733ee8ba6e9492326092aaf9a9ec6a55dda0a582d8e  # pragma: allowlist secret — public Git/image/content digest
+  - name: cancel_witness
+    file: shared/execution_observer.py
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 3e4f90b1fda885c67b240733ee8ba6e9492326092aaf9a9ec6a55dda0a582d8e  # pragma: allowlist secret — public Git/image/content digest
+  - name: foreign_duplicate
+    file: config/agent-instructions/bindings.json
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: d475051b78e417e76024bdcb8e5eec47d45fd28267e22c66b549bed2a888f14c  # pragma: allowlist secret — public Git/image/content digest
+  - name: commit_source
+    file: scripts/hapax-post-merge-deploy
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: bb473c012a4ea8d67902be4158cde7aa3124df9fba94030e7df2aa52019d7715  # pragma: allowlist secret — public Git/image/content digest
+  - name: shell_signal_conflation
+    file: shared/execution_observer.py
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 0a19ceea5f4c8dd4c33c6658f40dfb9f50a11c222ee7c458030333ea53ad2164  # pragma: allowlist secret — public Git/image/content digest
+  production_typecheck: passed
+  precommit: Applicable source checks passed; pre-existing live Claude gate-manifest mismatch remains (pii-guard
+    vs gate0a-beta-pii-guard).
+  final_headless_and_observer_suite: 90
+  shell_wait_ambiguity: Actual exit(143) child is reaped without being mislabeled as a negative native wait result;
+    applied regression mutation failed, exact restore passed.
+support_capacity:
+  shape: codex exec gpt-6-astra/high/read-only, subscription, no fallback
+  count: 4
+  native_turn_context_verified: true
+  authority: support advice only; final independent review is separate
+container_source_revision: 33c9bde49ec8482fd1274172d3fea30daf97d6b1  # pragma: allowlist secret — public Git/image/content digest
+implementation_source_revision: 3088b29d0d1faf1a6a752d6efeaf7bb840f21c9f  # pragma: allowlist secret — public Git/image/content digest
