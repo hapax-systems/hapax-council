@@ -202,8 +202,13 @@ def test_unwritable_unchanged_destination_does_not_interrupt_rollback(tmp_path):
 def test_parent_symlink_aliases_are_rejected_before_publication(tmp_path):
     (tmp_path / ".codex").mkdir()
     (tmp_path / ".grok").symlink_to(".codex", target_is_directory=True)
-    with pytest.raises(ValueError, match="overlap"):
+    with pytest.raises(ValueError, match="overlap") as error:
         installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    message = str(error.value)
+    assert f"codex ({tmp_path / '.codex/AGENTS.md'})" in message
+    assert f"grok ({tmp_path / '.grok/AGENTS.md'})" in message
+    assert f"both resolve to {tmp_path / '.codex/AGENTS.md'}" in message
+    assert "reconcile native-home overrides or directory aliases before retrying" in message
     assert not (tmp_path / ".codex/AGENTS.md").exists()
 
 
@@ -510,11 +515,32 @@ def test_identical_retry_still_refuses_pending_transaction(tmp_path, dangling):
     assert pending.is_symlink() if dangling else pending.exists()
 
 
-def test_identical_retry_with_empty_override_does_not_reuse_receipt(tmp_path):
+@pytest.mark.parametrize("contents", ["", " \n"])
+def test_identical_retry_with_empty_override_retains_original_rollback(tmp_path, contents):
+    override = tmp_path / ".codex/AGENTS.override.md"
+    override.parent.mkdir()
+    override.write_text(contents)
     first = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
-    (tmp_path / ".codex/AGENTS.override.md").touch()
+    state = tmp_path / ".config/hapax/agent-instructions"
+    before = (state / "current.json").stat()
     second = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
-    assert second["rollback"] != first["rollback"]
+    third = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    assert third == second == first
+    after = (state / "current.json").stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    assert list((state / "backups").iterdir()) == [Path(first["rollback"])]
+    installer.restore(Path(first["rollback"]))
+    assert not (override.parent / "AGENTS.md").exists()
+    assert override.read_text() == contents
+
+
+def test_dangling_override_requires_reconciliation_before_install(tmp_path):
+    override = tmp_path / ".codex/AGENTS.override.md"
+    override.parent.mkdir()
+    override.symlink_to("missing")
+    with pytest.raises(ValueError, match="reconcile"):
+        installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    assert not (tmp_path / ".claude/CLAUDE.md").exists()
 
 
 def test_rollback_rejects_predecessor_backup_after_successor(tmp_path, monkeypatch):

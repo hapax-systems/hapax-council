@@ -878,6 +878,7 @@ DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.js
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 CODEX_PID=""
+CODEX_PGID=""
 CODEX_BIN=""
 LOCAL_FALLBACK_AUTH_PROVEN=0
 # shellcheck disable=SC2329
@@ -1164,19 +1165,32 @@ write_native_lifecycle() {
   return 0
 }
 cancel_native_child() {
-  local signal_name="$1" signal_number="$2"
+  local signal_name="$1" signal_number="$2" attempt
   trap '' TERM INT
-  # Bash's live job table identifies the still-owned child; do not signal a
-  # stale PID file or infer remote native termination from killing SSH.
-  if [[ -n "$CODEX_PID" ]] && jobs -pr | grep -Fxq "$CODEX_PID"; then
-    if kill -s "$signal_name" "$CODEX_PID"; then
-      CANCEL_SIGNAL="$signal_number"
-    fi
-    if ! timeout 5s tail --pid="$CODEX_PID" -f /dev/null; then
-      if jobs -pr | grep -Fxq "$CODEX_PID" && kill -KILL "$CODEX_PID"; then
-        CANCEL_SIGNAL=9
+
+  # This group was created by our launch, never recovered from a PID file.
+  # Its leader may be an npm wrapper that exits before the native child.
+  # Killing the local SSH group still establishes no remote native ownership.
+  if [[ -n "$CODEX_PGID" ]] \
+    && kill -s "$signal_name" -- "-$CODEX_PGID" 2>/dev/null; then
+    CANCEL_SIGNAL="$signal_number"
+    for attempt in {1..50}; do
+      if ! kill -0 -- "-$CODEX_PGID" 2>/dev/null; then
+        # Once absent, abandon this numeric identity rather than retrying it.
+        CODEX_PGID=""
+        break
       fi
+      sleep 0.1
+    done
+    if [[ -n "$CODEX_PGID" ]] && kill -KILL -- "-$CODEX_PGID" 2>/dev/null; then
+      CANCEL_SIGNAL=9
     fi
+  fi
+  CODEX_PGID=""
+
+  if [[ -n "$CODEX_PID" ]]; then
+    # wait also returns Bash's cached status for an already-exited wrapper.
+    # Retain its numeric ambiguity; group signaling is not native wait proof.
     if wait "$CODEX_PID"; then EXIT_CODE=0; else EXIT_CODE=$?; fi
     write_native_lifecycle
   fi
@@ -1193,14 +1207,37 @@ if [[ -n "$DISPATCH_HOST" ]]; then
   export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
   REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
   REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
+fi
+
+# A signal between fork and recording $! must not strand the new child.
+# Record requests here; do not ignore signals in the child at launch.
+PENDING_CANCEL=""
+trap 'PENDING_CANCEL=TERM' TERM
+trap 'PENDING_CANCEL=INT' INT
+MONITOR_WAS_SET=0
+[[ $- == *m* ]] && MONITOR_WAS_SET=1
+# Bash assigns this single-command background job its own PGID, including
+# noninteractive shells. Restore the prior setting immediately after launch.
+set -m
+if [[ -n "$DISPATCH_HOST" ]]; then
   ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
     -o ControlPath=none -i "$HOME/.ssh/id_ed25519" "$DISPATCH_HOST" "$REMOTE_EXEC_COMMAND" \
-    >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
+    </dev/null >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
 else
-  "$CODEX_BIN" "${CODEX_ARGS[@]}" >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
+  "$CODEX_BIN" "${CODEX_ARGS[@]}" </dev/null >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
 fi
 CODEX_PID=$!
+CODEX_PGID="$CODEX_PID"
+if [[ "$MONITOR_WAS_SET" == 0 ]]; then
+  set +m
+fi
 echo "$CODEX_PID" >"$PID_FILE"
+trap 'cancel_native_child TERM 15' TERM
+trap 'cancel_native_child INT 2' INT
+case "$PENDING_CANCEL" in
+  TERM) cancel_native_child TERM 15 ;;
+  INT) cancel_native_child INT 2 ;;
+esac
 echo "hapax-codex-headless: pid=$CODEX_PID"
 if [[ -z "$DISPATCH_HOST" && -n "$DISPATCH_FALLBACK_REASON" ]]; then
   write_local_dispatch_proof "$CODEX_PID" "1" "$DISPATCH_FALLBACK_REASON"
@@ -1212,6 +1249,7 @@ else
   EXIT_CODE=$?
 fi
 trap - TERM INT
+CODEX_PGID=""
 write_native_lifecycle
 echo "hapax-codex-headless: $SESSION exited (code=$EXIT_CODE)"
 exit "$EXIT_CODE"

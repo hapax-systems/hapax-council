@@ -11,6 +11,18 @@ Claude's import loader, but those readers would see only the import directive.
 Git-blob readers must read `AGENTS.md`: `git show HEAD:CLAUDE.md` returns the link
 target name, not the target body. The monthly audit handles this explicitly.
 
+Recheck from a committed checkout:
+
+```bash
+test "$(readlink CLAUDE.md)" = AGENTS.md
+test "$(git show HEAD:CLAUDE.md)" = AGENTS.md
+cmp CLAUDE.md AGENTS.md
+uv run pytest tests/scripts/test_monthly_instruction_audit.py -q
+```
+
+The first three commands succeed without output: the filesystem alias reads the
+body while the Git blob stores its target name. The monthly audit tests must pass.
+
 Claude documents this binding, including deduplication and instruction-load hook
 behavior: [Claude memory documentation](https://code.claude.com/docs/en/memory#share-one-file-with-other-coding-tools).
 It also works when direct AGENTS discovery is unavailable or a CLAUDE file takes
@@ -208,6 +220,10 @@ authorship boundary.
 native routes declare instruction digests, optional configuration paths, native
 home selection, memory scope and loading flags. `null` extension sets mean
 unobserved, not empty. API/tool routes are not forced into a native-file model.
+Digests pin authored expectations, rather than adopting whatever bytes happen
+to be installed. After policy changes, update the corresponding declaration
+digests; `test_registry_instruction_hashes_match_authored_payloads` recomputes
+them against the renderer and repository sources and rejects stale values.
 `hapax-platform-capability-receipts` attaches host-side observations to its existing
 receipt. Presence and matching bytes do not establish native delivery.
 
@@ -241,13 +257,31 @@ Completion needs an unambiguous native session, successful terminal event, clean
 event stream and owned process exit zero. Signal-cause confirmation requires a
 native wait witness. Bash conflates signal termination with explicit exit codes,
 so this supervisor records the requested signal and reaped exit without converting
-that shell status into a negative native wait result. It still bounds termination
-and reaps its child. Resume
-identity, readiness, instruction delivery and task acceptance remain distinct.
+that shell status into a negative native wait result. Cancellation targets the process group created for this invocation, including a
+native child behind an npm launcher; escalation still reaches the group if its
+leader exits first. The grace interval is approximately five seconds; reaping
+can still wait on uninterruptible kernel sleep. Only that launch-time group is owned, never a group inferred
+from a PID file. Descendants that deliberately detach into a different session or
+process group are outside this guarantee. Remote SSH teardown does not prove
+remote termination. Resume identity, readiness, instruction delivery and task
+acceptance remain distinct.
 Claude's event vocabulary is mapped by the observer but does not acquire a new
 production supervisor through this change. Other native mappings remain visibly
 unimplemented. Existing ExecutionDescriptor work in PR4699 owns invocation
 model/effort identity; this change does not create a competing identity source.
+
+Recheck the declaration digests, observations, process lifecycle and dispatch
+receipt consumer from this checkout:
+
+```bash
+uv run pytest tests/shared/test_capability_load_set.py \
+  tests/shared/test_execution_observer.py \
+  tests/scripts/test_hapax_codex_headless.py \
+  tests/scripts/test_hapax_methodology_dispatch.py -q
+```
+
+All tests must pass. The cancellation fixtures exercise real local processes;
+provider execution and semantic instruction uptake are not implied by this run.
 
 Container construction and replay are documented in
 [Native harness substrates](native-harness-substrates.md).

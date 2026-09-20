@@ -276,13 +276,11 @@ def install(
         )
     ]
     settings_before: dict[Path, bytes | None] = {}
-    shadows: list[Path] = []
     for name, (binding, payload) in rendered.items():
         path = destination(binding, home, env)
         if binding.get("shadow"):
             shadow = path.with_name(binding["shadow"])
-            shadows.append(shadow)
-            if shadow.exists() and shadow.read_bytes().strip():
+            if os.path.lexists(shadow) and (not shadow.is_file() or shadow.read_bytes().strip()):
                 raise ValueError(f"{name}: {shadow} shadows the global binding; reconcile it first")
         outputs.append((name, path, payload))
         setting = instruction_setting(name, binding, path)
@@ -292,9 +290,17 @@ def install(
             settings_before[target] = prior
     # Resolve parent directories, but not the final component: publishing
     # intentionally replaces an old file symlink rather than its target.
-    paths = [p.parent.resolve() / p.name for _, p, _ in outputs]
-    if len(set(paths)) != len(paths):
-        raise ValueError("native instruction destinations overlap")
+    destinations: dict[Path, tuple[str, Path]] = {}
+    for name, path, _ in outputs:
+        resolved = path.parent.resolve() / path.name
+        if resolved in destinations:
+            prior_name, prior_path = destinations[resolved]
+            raise ValueError(
+                f"native instruction destinations overlap: {prior_name} ({prior_path}) and "
+                f"{name} ({path}) both resolve to {resolved}; next action: reconcile native-home "
+                "overrides or directory aliases before retrying"
+            )
+        destinations[resolved] = (name, path)
     receipt = {
         "source_revision": revision,
         "observation": "filesystem_readback" if apply else "render_only",
@@ -320,10 +326,9 @@ def install(
                 raise OSError(f"native settings changed during preparation; retry: {path}")
         # Keep both transaction guards ahead of reuse. An identical retry must
         # retain the original rollback boundary instead of backing up itself.
-        if not any(os.path.lexists(shadow) for shadow in shadows):
-            current = verified_current_installation(receipt, outputs, state)
-            if current is not None:
-                return current
+        current = verified_current_installation(receipt, outputs, state)
+        if current is not None:
+            return current
         # Save every original before publishing any payload. Include the current
         # receipt so rollback restores the reported state as well as Markdown.
         targets = [p for _, p, _ in outputs] + [state / "current.json"]
