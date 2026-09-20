@@ -81,8 +81,8 @@ existing working binary; do not substitute another version without recording it.
 Exit zero requires exactly one project `InstructionsLoaded` event per cwd, naming
 the alias at session start and matching the canonical SHA-256 measured by the
 hook. Older clients can finish initialization before the hook writes; the probe
-records a three-second receipt window after exit. Missing evidence fails the
-probe, and this bounded observation is not a general hook-drain guarantee.
+keeps input open until a receipt arrives or ten seconds elapse, then sends EOF.
+Missing evidence fails the probe; initialization success alone is insufficient.
 Inspect `summary.json`, the raw `*-instructions.jsonl`, and stdout/stderr.
 For a head-bound witness, commit the source first and require
 `source_matches_head: true`. Preserve the sanitized summary with the client hash,

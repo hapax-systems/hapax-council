@@ -83,7 +83,7 @@ def main() -> int:
         "client_sha256": hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
         "environment": {key: value.replace(str(output), "<fixture>") for key, value in env.items()},
         "user_turns": 0,
-        "hook_observation_grace_seconds": 3,
+        "initialize_receipt_timeout_seconds": 10,
         "cells": [],
     }
     initialize = (
@@ -125,21 +125,36 @@ def main() -> int:
             str(settings_path),
             "--no-session-persistence",
         ]
-        result = subprocess.run(
-            command,
-            cwd=cwd,
-            env={**env, "CLAUDE_CONFIG_DIR": str(config)},
-            input=initialize,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        (output / f"{label}-stdout.jsonl").write_text(result.stdout)
-        (output / f"{label}-stderr.log").write_text(result.stderr)
-        # Older clients can finish SDK initialization/EOF before their hook
-        # subprocess writes its receipt. Observe a declared bounded window;
-        # missing evidence after it remains a failed probe, never a silent pass.
-        time.sleep(summary["hook_observation_grace_seconds"])
+        # Keep SDK input open until an instruction receipt arrives. EOF directly
+        # after initialize can race older clients' asynchronous memory loader.
+        # File-backed output avoids a full stdout pipe blocking initialization.
+        with (
+            (output / f"{label}-stdout.jsonl").open("w") as stdout,
+            (output / f"{label}-stderr.log").open("w") as stderr,
+            subprocess.Popen(
+                command,
+                cwd=cwd,
+                env={**env, "CLAUDE_CONFIG_DIR": str(config)},
+                stdin=subprocess.PIPE,
+                stdout=stdout,
+                stderr=stderr,
+                text=True,
+            ) as process,
+        ):
+            assert process.stdin is not None
+            process.stdin.write(initialize)
+            process.stdin.flush()
+            deadline = time.monotonic() + summary["initialize_receipt_timeout_seconds"]
+            while process.poll() is None and time.monotonic() < deadline:
+                if events_path.exists() and events_path.read_text().endswith("\n"):
+                    break
+                time.sleep(0.05)
+            try:
+                process.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                raise
         events = (
             [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
             if events_path.exists()
@@ -147,7 +162,7 @@ def main() -> int:
         )
         project_events = [event for event in events if event.get("memory_type") == "Project"]
         passed = (
-            result.returncode == 0
+            process.returncode == 0
             and len(project_events) == 1
             and all(
                 event.get("file_path") == str(project / "CLAUDE.md")
@@ -160,7 +175,7 @@ def main() -> int:
         summary["cells"].append(
             {
                 "cwd": label,
-                "exit_code": result.returncode,
+                "exit_code": process.returncode,
                 "passed": passed,
                 "command": [
                     part.replace(binary, "<claude>").replace(str(output), "<fixture>")
