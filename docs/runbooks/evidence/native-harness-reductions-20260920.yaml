@@ -484,13 +484,45 @@ validation:
     precommit: passed for selected changed files
     ruff: passed
     production_pyrefly: 0 errors
+  vibe_resume_restored_suite:
+    passed: 90
+    seconds: 4.65
+  codex_launcher_final_suite:
+    passed: 64
+    seconds: 9.39
+  vibe_resume_mutations:
+  - name: ambiguous_resume
+    file: shared/execution_observer.py
+    applied: true
+    killed: true
+    restored_sha256: 04dff664ce16c0d2d4549030db20e37086f335746c5cfc9fd0c402cf18ad5e08  # pragma: allowlist secret — public Git/image/content digest
+  - name: missing_resume
+    file: shared/execution_observer.py
+    applied: true
+    killed: true
+    restored_sha256: 04dff664ce16c0d2d4549030db20e37086f335746c5cfc9fd0c402cf18ad5e08  # pragma: allowlist secret — public Git/image/content digest
+  - name: vibe_launcher_writer
+    file: scripts/hapax-vibe
+    applied: true
+    killed: true
+    restored_sha256: 5d4b880ce45b7fbe165abea13cf41b29db89f3f209c85acf2c505ee242efa056  # pragma: allowlist secret — public Git/image/content digest
+  - name: vibe_standup_writer
+    file: scripts/standup-vibe-team
+    applied: true
+    killed: true
+    restored_sha256: e723ff5b69c7bf94428a21ad812f5441e185cd78259774a90114500e7b38ddd1  # pragma: allowlist secret — public Git/image/content digest
+  vibe_resume_checks:
+    precommit: passed for changed implementation/test files
+    ruff: passed
+    bash_syntax: passed
+    production_pyrefly: 0 errors
 support_capacity:
   shape: codex exec gpt-6-astra/high/read-only, subscription, no fallback
   count: 12
   native_turn_context_verified: true
   authority: support advice only; final independent review is separate
 container_source_revision: 920599ca5314513b958fe2df2a12f0c64fd7aad3  # pragma: allowlist secret — public Git/image/content digest
-implementation_source_revision: 920599ca5314513b958fe2df2a12f0c64fd7aad3  # pragma: allowlist secret — public Git/image/content digest
+implementation_source_revision: b4b9135696e2ee5ccda9a3b29413582eabf7b936  # pragma: allowlist secret — public Git/image/content digest
 cross_host_comparison: *id001
 retained_failed_attempts:
 - source_revision: 7cb0558c3e0f23d67ee301c651286fde7bad3ae3  # pragma: allowlist secret — public Git/image/content digest
@@ -543,3 +575,15 @@ review_repairs:
   cases pass.
 - Unsupported native TOML preservation errors identify the file, supported table form and next action. Existing
   and dangling output aliases preserve their prior targets when the fresh stream is published.
+- Vibe launch and standup preserve authored instruction bytes and metadata and leave absent files absent; existing
+  regression assertions now match this behavior.
+- Native resume reports success only for one observed matching session; absent or mixed identity stays unobserved,
+  and a single differing identity is a mismatch. Both native mappings are exercised.
+container_inputs_unchanged_at_revision: b4b9135696e2ee5ccda9a3b29413582eabf7b936  # pragma: allowlist secret — public Git/image/content digest
+container_input_comparison_paths:
+- AGENTS.md
+- CLAUDE.md
+- config/agent-instructions
+- docker
+- scripts/install-agent-instructions.py
+- scripts/probe-native-harness-container.py
