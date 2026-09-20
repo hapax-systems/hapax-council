@@ -10,7 +10,7 @@ model_requests: 0
 may_authorize: false
 images:
   claude:
-    image_id: sha256:96efe5eb55ffd349bdfa8007edeaa90e02ac399b7afe1f7d931e1d34a3e23429  # pragma: allowlist secret — public Git/image/content digest
+    image_id: sha256:74f9b88548def9b3dbac6e6d0e6a0b728c7896dab17f759951c1aa7a43820b32  # pragma: allowlist secret — public Git/image/content digest
     native_version: 2.1.277 (Claude Code)
     filesystem:
       instruction_hashes_match: true
@@ -31,7 +31,7 @@ images:
       sha256: 3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5  # pragma: allowlist secret — public Git/image/content digest
       bytes: 7276
   codex:
-    image_id: sha256:a3e5f444dcb803998ed3f22f7fce83fd247fd8461fe4d257b25adbddbfe7c38e  # pragma: allowlist secret — public Git/image/content digest
+    image_id: sha256:d9cf13c27fd6debd40adefc0069529ea6e4b32f262a05826ea1f99cf7ccb69ca  # pragma: allowlist secret — public Git/image/content digest
     native_version: codex-cli 0.155.1
     filesystem:
       instruction_hashes_match: true
@@ -76,10 +76,10 @@ hosts:
   - platform: claude
     cwd: /work/nested
     files:
-    - path: /opt/hapax-agent/.claude/CLAUDE.md
-      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
     - path: /work/CLAUDE.md
       sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+    - path: /opt/hapax-agent/.claude/CLAUDE.md
+      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
     pass: true
   - platform: codex
     cwd: /work/nested
@@ -96,15 +96,15 @@ hosts:
 - host: hapax-podium
   docker_version: 29.5.1
   uid: 1000
-  source_delivery: minimal Git archive transferred; source/probe content hashes match first host
+  source_delivery: minimal selected source archive; hashes compared
   cells:
   - platform: claude
     cwd: /work
     files:
-    - path: /opt/hapax-agent/.claude/CLAUDE.md
-      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
     - path: /work/CLAUDE.md
       sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+    - path: /opt/hapax-agent/.claude/CLAUDE.md
+      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
     pass: true
   - platform: codex
     cwd: /work
@@ -134,7 +134,7 @@ hosts:
     override_mismatch_detected: true
     missing_instruction_detected: true
     wrong_resume_id_rejected: true
-cross_host:
+cross_host: &id001
   same_image_ids: true
   same_probe: true
   same_instruction_bytes: true
@@ -169,11 +169,50 @@ discovery_fixtures:
     foreign_codex_rule: not read
     same_result_with_foreign_personal_rules_true_and_false: true
     native_settings_change_needed: false
+  versioned_probe: scripts/probe-native-foreign-instructions.py
+  versioned_probe_sha256: d93b33c83e3a96593852c24b335f8aab759941e57691f04487bd8bbf71a31424  # pragma: allowlist secret — public Git/image/content digest
+  versioned_cells:
+  - case: grok-true
+    status: observed
+    binary_sha256: a46d17bcd602c46135b5be2da69a081447f8c514c5ea733c5be1265bcfb62b80  # pragma: allowlist secret — public Git/image/content digest
+    checks:
+      inspect_exit: true
+      fixture_trusted: true
+      active_fixture_paths: true
+    exit_code: 0
+  - case: grok-false
+    status: observed
+    binary_sha256: a46d17bcd602c46135b5be2da69a081447f8c514c5ea733c5be1265bcfb62b80  # pragma: allowlist secret — public Git/image/content digest
+    checks:
+      inspect_exit: true
+      fixture_trusted: true
+      active_fixture_paths: true
+    exit_code: 0
+  - case: muse-true
+    status: observed
+    binary_sha256: 71b089d055dfe6e4562092bc484896b61bd96fd6ef9fef9da54a14aa174e2a33  # pragma: allowlist secret — public Git/image/content digest
+    checks:
+      rules_report: true
+      native_global: true
+      empty_project: true
+      .claude/CLAUDE.md: true
+      .codex/AGENTS.md: true
+    exit_code: 0
+  - case: muse-false
+    status: observed
+    binary_sha256: 71b089d055dfe6e4562092bc484896b61bd96fd6ef9fef9da54a14aa174e2a33  # pragma: allowlist secret — public Git/image/content digest
+    checks:
+      rules_report: true
+      native_global: true
+      empty_project: true
+      .claude/CLAUDE.md: true
+      .codex/AGENTS.md: true
+    exit_code: 0
 validation:
   full_focused_suite:
     passed: 780
     seconds: 393.13
-  rotation_assertions: 16
+  rotation_assertions: 19
   restored_targeted_suite: 35
   registry_installer_followup: 96
   unknown_flags_followup: 80
@@ -234,10 +273,92 @@ validation:
   final_headless_and_observer_suite: 90
   shell_wait_ambiguity: Actual exit(143) child is reaped without being mislabeled as a negative native wait result;
     applied regression mutation failed, exact restore passed.
+  review_repair_suite:
+    passed: 1445
+    seconds: 442.26
+  final_installer_retry_suite: 28
+  review_repair_applied_mutations:
+  - name: deployed_observer
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 92b8a1aa959d8650f2fedfafdee754dc9300de6ae2e50e07709f0b76b242aaab  # pragma: allowlist secret — public Git/image/content digest
+  - name: pending_recovery
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 191f5f2302a98ba0fea88ba7e19470c195f5fa10ab3467b4b83734035a03555f  # pragma: allowlist secret — public Git/image/content digest
+  - name: foreign_recovery_guard
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 191f5f2302a98ba0fea88ba7e19470c195f5fa10ab3467b4b83734035a03555f  # pragma: allowlist secret — public Git/image/content digest
+  - name: drift_check
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 191f5f2302a98ba0fea88ba7e19470c195f5fa10ab3467b4b83734035a03555f  # pragma: allowlist secret — public Git/image/content digest
+  - name: domain_codeowners
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 1874a66e815df1fbe7cfd0c9dea9f1b6ca0666a6bc59107632839003ef16ba03  # pragma: allowlist secret — public Git/image/content digest
+  - name: domain_floor
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 56977d3cc95874dc84e5f9695a7ff2751ba305e13f1514a078e1ae4e6c240ec1  # pragma: allowlist secret — public Git/image/content digest
+  - name: domain_release
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 725e30e63409dad8f085513f168fe9c08312c95de18af60cb78056dcd01dc649  # pragma: allowlist secret — public Git/image/content digest
+  - name: domain_invariant
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: a6f22abb531c2f431ebfa0204b667e5e2fdb5dbceea257d1cedc0f853139ce16  # pragma: allowlist secret — public Git/image/content digest
+  - name: domain_review
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: e577437b5723ee0e7da8235474a73cb84f8ec79d0d2f0841d628f8ab8950ae70  # pragma: allowlist secret — public Git/image/content digest
+  - name: domain_assertions
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 7a99dcac51f17f1c5ecb5708c294891c0d044572942425142ed839feeab80b74  # pragma: allowlist secret — public Git/image/content digest
+  - name: authored_drift
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: bc38820488d4e24999de960976ebab89947f36624a1d60ff7863f15474a881d3  # pragma: allowlist secret — public Git/image/content digest
+  - name: domain_monthly
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: 32da8cb800448dcb02251aab6bbef12f2520abcbccb87590604d504c3bc2d986  # pragma: allowlist secret — public Git/image/content digest
+  - name: symlink_recovery_retry
+    applied: true
+    killed_by_assertion: true
+    restored_sha256: a7814a40176dc1b8bf4a6601d4388927402e7a7519f4d30d81179a4f24ca7c65  # pragma: allowlist secret — public Git/image/content digest
+  final_installer_precommit: passed; live-manifest checker not selected for the two-file follow-up
 support_capacity:
   shape: codex exec gpt-6-astra/high/read-only, subscription, no fallback
-  count: 4
+  count: 8
   native_turn_context_verified: true
   authority: support advice only; final independent review is separate
-container_source_revision: 33c9bde49ec8482fd1274172d3fea30daf97d6b1  # pragma: allowlist secret — public Git/image/content digest
-implementation_source_revision: 3088b29d0d1faf1a6a752d6efeaf7bb840f21c9f  # pragma: allowlist secret — public Git/image/content digest
+container_source_revision: cfa83fd0d063efa7d8578fca2d1991349757bed8  # pragma: allowlist secret — public Git/image/content digest
+implementation_source_revision: cfa83fd0d063efa7d8578fca2d1991349757bed8  # pragma: allowlist secret — public Git/image/content digest
+cross_host_comparison: *id001
+retained_failed_attempts:
+- source_revision: 7cb0558c3e0f23d67ee301c651286fde7bad3ae3  # pragma: allowlist secret — public Git/image/content digest
+  host: hapax-appendix
+  cell: codex-resume-nested
+  outcome: native process required forced stop after ten-second graceful-exit deadline
+  accepted: false
+  subsequent_observation: final cfa83fd0d images completed the unchanged probe on both hosts; this does not erase
+    the timeout or establish production reliability
+- probe: foreign instruction fixture initial invocation
+  outcome: Grok rejected unsupported --trust/--no-auto-update inspect flags; no inspection receipt
+  accepted: false
+  correction: Installed help verified inspect --json; process-local fixture GROK_FOLDER_TRUST=0; four corrected
+    cells passed
+review_repairs:
+- Governing native/domain prose, binding configuration and installer keep existing governance protections; ordinary
+  docs excluded.
+- Governance lenses and T1 review include instructions; assertion and drift readers follow authored sources once.
+- Rotation and canonical monthly staging include extracted policy prose.
+- Deployed lifecycle observer uses isolated Python and an absolute source path; unique output alias retains predecessor
+  evidence.
+- Pending transactions permit guarded recovery of failed first installs, upgrades and partial rollback; foreign
+  edits/successors refused; symlink retry tested.
+- Explicit --check detects filesystem and receipt drift without writes; native loading remains unobserved.
