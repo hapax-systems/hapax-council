@@ -8,6 +8,7 @@ import re
 import subprocess
 import sys
 from datetime import UTC, datetime
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,7 @@ class RotationRunner(_FakeRunner):
         self.fail_graphql_listing = False
         self.first_page_count_delta = 0
         self.listing_returncode = 0
+        self.fail_hydration: set[int] = set()
 
     def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
@@ -105,6 +107,8 @@ class RotationRunner(_FakeRunner):
             )
         if cmd[:3] == ["gh", "pr", "view"]:
             self.calls.append(cmd)
+            if int(cmd[3]) in self.fail_hydration:
+                return subprocess.CompletedProcess(cmd, 1, "", "persistent hydration failure")
             row = next(row for row in self.open_prs if str(row["number"]) == cmd[3])
             return subprocess.CompletedProcess(
                 cmd,
@@ -112,6 +116,11 @@ class RotationRunner(_FakeRunner):
                 json.dumps({**row, "url": f"https://github.com/owner/repo/pull/{row['number']}"}),
                 "",
             )
+        if any(f"repos/owner/repo/pulls/{number}/files" in cmd for number in self.fail_hydration):
+            self.calls.append(cmd)
+            # A files command error can become a normal fail-closed partial row;
+            # a timeout exercises the REST hydration exception boundary instead.
+            raise subprocess.TimeoutExpired(cmd, 45)
         return super().__call__(cmd, **kwargs)
 
     def hydrated_numbers(self) -> set[int]:
@@ -389,3 +398,169 @@ def test_autoqueue_cli_uses_persistent_rotation_by_default(
 def test_autoqueue_rejects_nonpositive_tick_limit(tmp_path: Path, limit: int) -> None:
     with pytest.raises(ValueError, match="limit must be positive"):
         tick(tmp_path, RotationRunner(10), limit=limit)
+
+
+@pytest.mark.parametrize("transport", ["rest", "graphql"])
+@pytest.mark.parametrize("count,limit", [(10, 5), (6, 1)])
+def test_autoqueue_repeated_hydration_failure_cannot_starve_healthy_prs(
+    tmp_path: Path, transport: str, count: int, limit: int
+) -> None:
+    # A single-slot window must also progress; merely continuing peers cannot fix it.
+    runner = RotationRunner(count, transport)
+    runner.fail_hydration = {1}
+    healthy = set(range(2, count + 1))
+    first_sweep_ticks = ceil((count + 1) / limit)  # One immediate retry, then fair rotation.
+    for sweep_ticks in (first_sweep_ticks, ceil(count / limit), ceil(count / limit)):
+        reconciled = set()
+        for _ in range(sweep_ticks):
+            runner.calls.clear()
+            report = tick(tmp_path, runner, limit=limit)
+            window = examined(report)
+            reconciled.update(window)
+            assert len(runner.hydrated_numbers()) <= limit
+            assert 1 not in window
+            assert report["examined_pr_count"] == len(window)
+            assert report["open_pr_count"] == count
+            state = json.loads((tmp_path / "examined.json").read_text())
+            assert "1" not in state["repositories"]["owner/repo"]
+            failure = report["hydration_failures"][0]
+            assert failure["pr"] == 1
+            assert failure["reason"]
+            assert failure["next_action"]
+            assert failure["attempted_this_tick"] == (1 in runner.hydrated_numbers())
+            assert (
+                failure["consecutive_failures"]
+                == state["hydration_failures"]["owner/repo"]["1"]["consecutive_failures"]
+            )
+        assert reconciled == healthy
+    assert failure["consecutive_failures"] >= 4  # Failed PR keeps returning, never vanishes.
+
+
+@pytest.mark.parametrize("transport", ["rest", "graphql"])
+def test_autoqueue_failed_hydration_keeps_old_timestamp_and_continues_peers(
+    tmp_path: Path, transport: str
+) -> None:
+    runner = RotationRunner(5, transport)
+    tick(tmp_path, runner)
+    state_path = tmp_path / "examined.json"
+    before = json.loads(state_path.read_text())["repositories"]["owner/repo"]
+    runner.fail_hydration = {1}
+    report = tick(tmp_path, runner)
+    assert examined(report) == [2, 3, 4, 5]
+    after = json.loads(state_path.read_text())["repositories"]["owner/repo"]
+    assert after["1"] == before["1"]
+    assert all(after[str(number)] > before[str(number)] for number in range(2, 6))
+    assert report["hydration_failures"][0]["consecutive_failures"] == 1
+
+
+def test_autoqueue_interrupted_reconciliation_acknowledges_only_completed_prs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = RotationRunner(3, "graphql")
+    tick(tmp_path, runner)
+    state_path = tmp_path / "examined.json"
+    before = json.loads(state_path.read_text())["repositories"]["owner/repo"]
+    original = autoqueue.set_autoqueue_admission_status
+
+    def interrupt(decision: Any, **kwargs: Any) -> Any:
+        if decision.pr.number == 2:
+            raise RuntimeError("interrupted reconciliation")
+        return original(decision, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(autoqueue, "set_autoqueue_admission_status", interrupt)
+        with pytest.raises(RuntimeError, match="interrupted reconciliation"):
+            tick(tmp_path, runner)
+    after = json.loads(state_path.read_text())["repositories"]["owner/repo"]
+    assert after["1"] > before["1"]
+    assert after["2"] == before["2"]
+    assert after["3"] == before["3"]  # Hydrated/selected, but never reconciled.
+    assert examined(tick(tmp_path, runner, limit=1)) == [2]
+
+
+def test_autoqueue_retry_policy_and_pending_failure_survive_restart_and_recovery(
+    tmp_path: Path,
+) -> None:
+    for attempts in (1, 2):
+        runner = RotationRunner(3, "graphql")  # Fresh caller, same disk state.
+        runner.fail_hydration = {1}
+        report = tick(tmp_path, runner, limit=1)
+        assert examined(report) == []
+        assert runner.hydrated_numbers() == {1}
+        failure = report["hydration_failures"][0]
+        assert failure["consecutive_failures"] == attempts
+        assert failure["retry_policy"] == ("next_tick" if attempts == 1 else "fair_rotation")
+    runner = RotationRunner(3, "graphql")
+    for number in (2, 3):
+        report = tick(tmp_path, runner, limit=1)
+        assert examined(report) == [number]
+        assert report["hydration_failures"][0]["pr"] == 1
+        assert report["hydration_failures"][0]["attempted_this_tick"] is False
+    assert examined(report := tick(tmp_path, runner, limit=1)) == [1]
+    assert report["hydration_failures"] == []
+    state = json.loads((tmp_path / "examined.json").read_text())
+    assert state["hydration_failures"]["owner/repo"] == {}
+    assert "1" in state["repositories"]["owner/repo"]
+    for _ in range(2):
+        tick(tmp_path, runner, limit=1)
+    runner.fail_hydration = {1}
+    report = tick(tmp_path, runner, limit=1)
+    assert report["hydration_failures"][0]["consecutive_failures"] == 1
+    assert report["hydration_failures"][0]["retry_policy"] == "next_tick"
+
+
+def test_autoqueue_failed_hydration_dry_run_does_not_persist_retry_state(tmp_path: Path) -> None:
+    runner = RotationRunner(3, "graphql")
+    runner.fail_hydration = {1}
+    report = tick(tmp_path, runner, apply=False)
+    assert examined(report) == [2, 3]
+    assert report["hydration_failures"][0]["consecutive_failures"] == 1
+    state_path = tmp_path / "examined.json"
+    assert not state_path.exists()
+    tick(tmp_path, runner)
+    before = state_path.read_bytes()
+    tick(tmp_path, runner, apply=False)
+    assert state_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("bad_identity", ["missing", "mismatch"])
+def test_autoqueue_unusable_hydrated_identity_is_a_visible_per_pr_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bad_identity: str
+) -> None:
+    original = autoqueue._hydrate_open_prs
+
+    def hydrate(raw: Any, route: Any, **kwargs: Any) -> Any:
+        prs, route = original(raw, route, **kwargs)
+        if raw[0]["number"] == 1:
+            prs = [] if bad_identity == "missing" else [autoqueue.replace(prs[0], number=99)]
+        return prs, route
+
+    monkeypatch.setattr(autoqueue, "_hydrate_open_prs", hydrate)
+    report = tick(tmp_path, RotationRunner(3, "graphql"))
+    assert examined(report) == [2, 3]
+    assert report["hydration_failures"][0]["reason"] == "selected_pr_hydration_identity_invalid"
+    assert set(
+        json.loads((tmp_path / "examined.json").read_text())["repositories"]["owner/repo"]
+    ) == {"2", "3"}
+
+
+@pytest.mark.parametrize(
+    "field,value", [("consecutive_failures", 0), ("consecutive_failures", True), ("reason", None)]
+)
+def test_autoqueue_corrupt_retry_state_refuses_without_hydration(
+    tmp_path: Path, field: str, value: Any
+) -> None:
+    runner = RotationRunner(3, "graphql")
+    runner.fail_hydration = {1}
+    tick(tmp_path, runner)
+    state_path = tmp_path / "examined.json"
+    state = json.loads(state_path.read_text())
+    state["hydration_failures"]["owner/repo"]["1"][field] = value
+    state_path.write_text(json.dumps(state))
+    previous = state_path.read_bytes()
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    assert report["reason"] == "open_pr_scan_indeterminate:rotation_state_unavailable_or_invalid"
+    assert report["decisions"] == report["mutations"] == []
+    assert not runner.hydrated_numbers()
+    assert state_path.read_bytes() == previous

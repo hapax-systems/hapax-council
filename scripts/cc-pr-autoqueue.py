@@ -41,6 +41,8 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1343,62 +1345,123 @@ def _list_candidate_pages(
         page += 1
 
 
-def _select_pr_window(
-    rows: list[dict[str, Any]], *, repo: str, limit: int, state_path: Path, persist: bool
-) -> list[dict[str, Any]]:
-    """Atomically reserve the oldest PRs so restarts/overlapping ticks cannot starve them."""
-    if limit <= 0:
-        raise ValueError("autoqueue limit must be positive")
-
-    def select() -> list[dict[str, Any]]:
-        try:
-            state = json.loads(state_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            state = {"schema_version": 1, "repositories": {}}
-        if state["schema_version"] != 1 or not isinstance(state["repositories"], dict):
-            raise ValueError("invalid rotation state")
-        previous = state["repositories"].get(repo, {})
-        examined = {
-            int(number): datetime.fromisoformat(stamp) for number, stamp in previous.items()
-        }
-        if any(stamp.tzinfo is None for stamp in examined.values()):
-            raise ValueError("rotation timestamps must include a timezone")
-        oldest = datetime.min.replace(tzinfo=UTC)
-        selected = sorted(
-            rows, key=lambda row: (examined.get(row["number"], oldest), row["number"])
-        )[:limit]
-        if persist:
-            # Keep order even when ticks share a timestamp or the wall clock moves back.
-            now = max(
-                datetime.now(UTC),
-                max(examined.values(), default=oldest) + timedelta(microseconds=1),
-            )
-            live = {row["number"] for row in rows}
-            examined = {number: stamp for number, stamp in examined.items() if number in live}
-            examined.update({row["number"]: now for row in selected})
-            state["repositories"][repo] = {
-                str(number): stamp.isoformat() for number, stamp in examined.items()
-            }
-            temporary = state_path.with_suffix(".tmp")
-            temporary.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
-            temporary.replace(state_path)
-        return selected
-
+@contextmanager
+def _rotation_state(
+    *, repo: str, state_path: Path, persist: bool
+) -> Iterator[tuple[dict[int, datetime], dict[int, dict[str, Any]]]]:
+    """Read/modify/write under one lock; old examined-only state remains readable."""
     try:
-        if not persist:
-            return select()
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        with state_path.with_suffix(".lock").open("a") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            return select()
+        if persist:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+        with state_path.with_suffix(".lock").open("a") if persist else nullcontext() as lock:
+            if lock is not None:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                state = {"schema_version": 1, "repositories": {}}
+            if state["schema_version"] != 1 or not isinstance(state["repositories"], dict):
+                raise ValueError("invalid rotation state")
+            examined = {
+                int(number): datetime.fromisoformat(stamp)
+                for number, stamp in state["repositories"].get(repo, {}).items()
+            }
+            failure_repos = state.setdefault("hydration_failures", {})
+            failures = {
+                int(number): failure for number, failure in failure_repos.get(repo, {}).items()
+            }
+            stamps = list(examined.values())
+            for failure in failures.values():
+                count = failure["consecutive_failures"]
+                if type(count) is not int or count < 1 or not isinstance(failure["reason"], str):
+                    raise ValueError("invalid hydration failure")
+                stamps.append(datetime.fromisoformat(failure["last_failed_at"]))
+            if any(stamp.tzinfo is None for stamp in stamps):
+                raise ValueError("rotation timestamps must include a timezone")
+            yield examined, failures
+            if persist:
+                state["repositories"][repo] = {
+                    str(number): stamp.isoformat() for number, stamp in examined.items()
+                }
+                failure_repos[repo] = {str(number): failure for number, failure in failures.items()}
+                temporary = state_path.with_suffix(".tmp")
+                temporary.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+                temporary.replace(state_path)
     except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError) as exc:
         raise RestIndeterminateError("rotation_state_unavailable_or_invalid") from exc
 
 
+def _rotation_timestamp(
+    examined: dict[int, datetime], failures: dict[int, dict[str, Any]]
+) -> datetime:
+    # Completion and retry order must progress even with equal/backward wall clocks.
+    stamps = [*examined.values()]
+    stamps.extend(
+        datetime.fromisoformat(failure["last_failed_at"]) for failure in failures.values()
+    )
+    return max(
+        datetime.now(UTC),
+        max(stamps, default=datetime.min.replace(tzinfo=UTC)) + timedelta(microseconds=1),
+    )
+
+
+def _select_pr_window(
+    rows: list[dict[str, Any]], *, repo: str, limit: int, state_path: Path, persist: bool
+) -> list[dict[str, Any]]:
+    """Select without acknowledging work. Repeated failures share the fair rotation."""
+    if limit <= 0:
+        raise ValueError("autoqueue limit must be positive")
+    with _rotation_state(repo=repo, state_path=state_path, persist=persist) as (examined, failures):
+        live = {row["number"] for row in rows}
+        for records in (examined, failures):
+            for number in set(records) - live:
+                del records[number]
+
+        def priority(row: dict[str, Any]) -> tuple[datetime, int]:
+            number = row["number"]
+            stamp = examined.get(number, datetime.min.replace(tzinfo=UTC))
+            failure = failures.get(number)
+            if failure and failure["consecutive_failures"] >= 2:
+                stamp = max(stamp, datetime.fromisoformat(failure["last_failed_at"]))
+            return stamp, number
+
+        return sorted(rows, key=priority)[:limit]
+
+
+def _record_hydration_failure(
+    number: int, reason: str, *, repo: str, state_path: Path, persist: bool
+) -> dict[str, Any]:
+    with _rotation_state(repo=repo, state_path=state_path, persist=persist) as (examined, failures):
+        failure = {
+            "consecutive_failures": failures.get(number, {}).get("consecutive_failures", 0) + 1,
+            "last_failed_at": _rotation_timestamp(examined, failures).isoformat(),
+            "reason": reason,
+        }
+        failures[number] = failure
+    return failure
+
+
+@contextmanager
+def _reconciled_pr(
+    number: int, *, repo: str, state_path: Path | None, failures: dict[int, dict[str, Any]]
+) -> Iterator[None]:
+    """Acknowledge only a completed per-PR pass, including explicit holds/refusals.
+
+    An exception or interrupted process leaves the old timestamp intact. This
+    scope also covers early continues in the mutation loop.
+    """
+    yield
+    if state_path is not None:
+        with _rotation_state(repo=repo, state_path=state_path, persist=True) as (examined, pending):
+            examined[number] = _rotation_timestamp(examined, pending)
+            pending.pop(number, None)
+        failures.pop(number, None)
+
+
 def fetch_rotating_open_prs(
     *, repo: str, repo_root: Path, limit: int, state_path: Path, persist: bool, runner: Any
-) -> tuple[list[PullRequest], ListingRoute, int]:
-    """Prove the complete estate, reserve at most limit identities, then hydrate only those."""
+) -> tuple[list[PullRequest], ListingRoute, int, dict[int, dict[str, Any]]]:
+    """Prove the complete estate, then hydrate at most limit identities independently."""
     snapshot = rate_snapshot(repo_root=repo_root, runner=runner)
     transport, reason = choose_transport(repo_root=repo_root, runner=runner, snapshot=snapshot)
     if transport is None:
@@ -1422,33 +1485,65 @@ def fetch_rotating_open_prs(
     selected = _select_pr_window(
         rows, repo=repo, limit=limit, state_path=state_path, persist=persist
     )
-    raw = []
-    for item in selected:
-        if transport == "rest":
-            row = _pull_status_row_from_rest(
-                item,
-                repo=repo,
-                repo_root=repo_root,
-                runner=runner,
-                include_files=True,
-                include_review_decision=True,
-            )
-        else:
-            row = get_pr_status_graphql(
-                item["number"],
-                repo=repo,
-                repo_root=repo_root,
-                runner=runner,
-                expected_head_sha=item.get("headRefOid"),
-            )
-            if row is None:
-                raise RestIndeterminateError("selected_pr_hydration_failed")
-            row.update({key: item.get(key) for key in ("baseRefName", "baseRepoDefaultBranch")})
-            row["refEvidenceReasons"] = pr_reference_reasons(item)
-        raw.append(row)
+    with _rotation_state(repo=repo, state_path=state_path, persist=False) as (_, failures):
+        failures = {
+            number: {**failure, "attempted_this_tick": False}
+            for number, failure in failures.items()
+        }
     route = ListingRoute(transport=transport, rest_blocked=rest_blocked, reason=reason)
-    prs, _ = _hydrate_open_prs(raw, route, repo=repo, repo_root=repo_root, runner=runner)
-    return prs, route, len(rows)
+    prs = []
+    for item in selected:
+        try:
+            if transport == "rest":
+                row = _pull_status_row_from_rest(
+                    item,
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                    include_files=True,
+                    include_review_decision=True,
+                )
+            else:
+                row = get_pr_status_graphql(
+                    item["number"],
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                    expected_head_sha=item.get("headRefOid"),
+                )
+                if row is None:
+                    raise RestIndeterminateError("selected_pr_hydration_failed")
+                row.update({key: item.get(key) for key in ("baseRefName", "baseRepoDefaultBranch")})
+                row["refEvidenceReasons"] = pr_reference_reasons(item)
+            hydrated, _ = _hydrate_open_prs(
+                [row], route, repo=repo, repo_root=repo_root, runner=runner
+            )
+            if len(hydrated) != 1 or hydrated[0].number != item["number"]:
+                raise RestIndeterminateError("selected_pr_hydration_identity_invalid")
+        except (
+            OSError,
+            subprocess.SubprocessError,
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+        ) as exc:
+            failure_reason = (
+                exc.reason if isinstance(exc, RestIndeterminateError) else type(exc).__name__
+            )
+            failure = _record_hydration_failure(
+                item["number"], failure_reason, repo=repo, state_path=state_path, persist=persist
+            )
+            failures[item["number"]] = {**failure, "attempted_this_tick": True}
+            LOG.warning(
+                "PR #%s hydration failed (%s), consecutive failures=%s; retry remains scheduled",
+                item["number"],
+                failure_reason,
+                failure["consecutive_failures"],
+            )
+            continue
+        prs.extend(hydrated)
+    return prs, route, len(rows), failures
 
 
 def fetch_open_prs(
@@ -3772,9 +3867,10 @@ def run_reconciler(
             repo_root=repo_root,
             runner=runner,
         )
+    hydration_failures: dict[int, dict[str, Any]] = {}
     try:
         if rotation_state_path is not None:
-            prs, listing_route, open_pr_count = fetch_rotating_open_prs(
+            prs, listing_route, open_pr_count, hydration_failures = fetch_rotating_open_prs(
                 repo=repo,
                 repo_root=repo_root,
                 limit=limit,
@@ -3948,45 +4044,93 @@ def run_reconciler(
     mutation_results: list[dict[str, Any]] = []
     if apply:
         for decision in decisions:
-            admission_status = _admission_status_for(decision)
-            release_head_subject = decision.action in {
-                "queue",
-                "enable_auto_merge",
-                "already_queued",
-                "already_auto_merge_enabled",
-            }
-            if release_head_subject:
-                if decision.auto_arm and decision.task is not None:
-                    armed_ok, armed_message = arm_release_for_task(
-                        decision.task,
-                        ledger_path=auto_arm_ledger_path,
-                        now=now,
-                        verified_checks=set(decision.auto_arm_verified_checks),
-                        pr_number=decision.pr.number,
-                        head_ref=decision.pr.head_ref,
-                        expected_head_sha=decision.pr.head_sha,
+            with _reconciled_pr(
+                decision.pr.number,
+                repo=repo,
+                state_path=rotation_state_path,
+                failures=hydration_failures,
+            ):
+                admission_status = _admission_status_for(decision)
+                release_head_subject = decision.action in {
+                    "queue",
+                    "enable_auto_merge",
+                    "already_queued",
+                    "already_auto_merge_enabled",
+                }
+                if release_head_subject:
+                    if decision.auto_arm and decision.task is not None:
+                        armed_ok, armed_message = arm_release_for_task(
+                            decision.task,
+                            ledger_path=auto_arm_ledger_path,
+                            now=now,
+                            verified_checks=set(decision.auto_arm_verified_checks),
+                            pr_number=decision.pr.number,
+                            head_ref=decision.pr.head_ref,
+                            expected_head_sha=decision.pr.head_sha,
+                            require_route_metadata=require_route_metadata,
+                            route=listing_route,
+                            changed_files=decision.pr.files,
+                            changed_file_count=decision.pr.changed_files_count,
+                            repo=repo,
+                            repo_root=repo_root,
+                            runner=runner,
+                        )
+                        auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
+                        if not auto_arm_ok:
+                            mutation_results.append(
+                                {
+                                    **decision.as_dict(),
+                                    "action": "release_auto_arm",
+                                    "ok": False,
+                                    "message": f"release auto-arm failed: {armed_message}",
+                                }
+                            )
+                            mutation_results.extend(
+                                _release_auto_arm_fail_closed_mutations(
+                                    decision,
+                                    armed_message,
+                                    repo=repo,
+                                    repo_root=repo_root,
+                                    runner=runner,
+                                    now=now,
+                                    route=listing_route,
+                                )
+                            )
+                            continue
+                        mutation_results.append(
+                            {
+                                **decision.as_dict(),
+                                "action": "release_auto_arm",
+                                "ok": True,
+                                "message": armed_message,
+                            }
+                        )
+                    release_authorization_waivers: list[str] = []
+                    head_blocker = _release_head_boundary_blocker(
+                        decision,
                         require_route_metadata=require_route_metadata,
-                        route=listing_route,
                         changed_files=decision.pr.files,
                         changed_file_count=decision.pr.changed_files_count,
                         repo=repo,
                         repo_root=repo_root,
                         runner=runner,
+                        release_authorization_waivers=release_authorization_waivers,
+                        route=listing_route,
                     )
-                    auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
-                    if not auto_arm_ok:
+                    if head_blocker is not None:
                         mutation_results.append(
                             {
                                 **decision.as_dict(),
-                                "action": "release_auto_arm",
+                                "action": "release_head_revalidation",
                                 "ok": False,
-                                "message": f"release auto-arm failed: {armed_message}",
+                                "message": head_blocker,
                             }
                         )
                         mutation_results.extend(
                             _release_auto_arm_fail_closed_mutations(
                                 decision,
-                                armed_message,
+                                head_blocker,
+                                reason_prefix="release_head_revalidation_failed",
                                 repo=repo,
                                 repo_root=repo_root,
                                 runner=runner,
@@ -3995,40 +4139,148 @@ def run_reconciler(
                             )
                         )
                         continue
-                    mutation_results.append(
-                        {
-                            **decision.as_dict(),
-                            "action": "release_auto_arm",
-                            "ok": True,
-                            "message": armed_message,
-                        }
-                    )
-                release_authorization_waivers: list[str] = []
-                head_blocker = _release_head_boundary_blocker(
+                    if release_authorization_waivers:
+                        mutation_results.append(
+                            {
+                                **decision.as_dict(),
+                                "action": "release_authorization_waiver",
+                                "ok": True,
+                                "waivers": release_authorization_waivers,
+                            }
+                        )
+                status_result = set_autoqueue_admission_status(
                     decision,
-                    require_route_metadata=require_route_metadata,
-                    changed_files=decision.pr.files,
-                    changed_file_count=decision.pr.changed_files_count,
                     repo=repo,
                     repo_root=repo_root,
                     runner=runner,
-                    release_authorization_waivers=release_authorization_waivers,
+                    now=now,
+                    force_fresh_success=_decision_is_release_head_guard_subject(decision),
                     route=listing_route,
                 )
-                if head_blocker is not None:
+                # An unreadable status prevents new admission, but a known blocker still requires
+                # cancellation. merge_pr retains the existing dequeue revalidation below.
+                if (
+                    decision.action not in {"dequeue", "disable_auto_merge"}
+                    and status_result is not None
+                    and not status_result[0]
+                    and _admission_status_write_deferral_class(status_result[1])
+                    == "admission_status_read_failed"
+                ):
                     mutation_results.append(
                         {
                             **decision.as_dict(),
-                            "action": "release_head_revalidation",
-                            "ok": False,
-                            "message": head_blocker,
+                            "action": "hold",
+                            "ok": True,
+                            "reasons": ["admission_status_read_failed"],
+                            "message": status_result[1],
                         }
                     )
+                    continue
+                if decision.action not in {
+                    "queue",
+                    "enable_auto_merge",
+                    "disable_auto_merge",
+                    "dequeue",
+                }:
+                    if status_result is not None:
+                        assert admission_status is not None
+                        ok, message = status_result
+                        mutation_results.append(
+                            {
+                                **decision.as_dict(),
+                                "action": "set_admission_status",
+                                "status_state": admission_status[0],
+                                "ok": ok,
+                                "message": message,
+                            }
+                        )
+                        if not ok:
+                            deferral = _admission_status_write_deferral_class(message)
+                            if deferral is not None:
+                                # The write failed for a reason that is not about this PR (see
+                                # _admission_status_write_deferral_class): hold the queue state and
+                                # let the next cycle write the same status. Failure paths narrow —
+                                # no mutation is the only safe act on evidence about the transport.
+                                mutation_results.append(
+                                    {
+                                        **decision.as_dict(),
+                                        "action": "hold",
+                                        "ok": True,
+                                        "reasons": [f"admission_status_write_deferred:{deferral}"],
+                                        "message": (
+                                            "admission status write failed on a transport response; "
+                                            "queue state held for the next cycle"
+                                        ),
+                                    }
+                                )
+                            else:
+                                mutation_results.extend(
+                                    _release_auto_arm_fail_closed_mutations(
+                                        decision,
+                                        message,
+                                        reason_prefix="admission_status_write_failed",
+                                        repo=repo,
+                                        repo_root=repo_root,
+                                        runner=runner,
+                                        now=now,
+                                        route=listing_route,
+                                    )
+                                )
+                    continue
+                if (
+                    decision.action in {"queue", "enable_auto_merge"}
+                    and status_result is not None
+                    and not status_result[0]
+                ):
+                    assert admission_status is not None
+                    mutation_results.append(
+                        {
+                            **decision.as_dict(),
+                            "action": "set_admission_status",
+                            "status_state": admission_status[0],
+                            "ok": False,
+                            "message": "admission status write failed; queue mutation skipped",
+                            "admission_status": {
+                                "state": admission_status[0],
+                                "ok": status_result[0],
+                                "message": status_result[1],
+                            },
+                        }
+                    )
+                    continue
+                ok, message = merge_pr(
+                    decision,
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                    require_route_metadata=require_route_metadata,
+                    route=listing_route,
+                )
+                result = {
+                    **decision.as_dict(),
+                    "ok": ok,
+                    "message": message,
+                }
+                if status_result is not None:
+                    assert admission_status is not None
+                    status_ok, status_message = status_result
+                    result["admission_status"] = {
+                        "state": admission_status[0],
+                        "ok": status_ok,
+                        "message": status_message,
+                    }
+                mutation_results.append(result)
+                if (
+                    not ok
+                    and admission_status is not None
+                    and admission_status[0] == "success"
+                    and status_result is not None
+                ):
                     mutation_results.extend(
                         _release_auto_arm_fail_closed_mutations(
                             decision,
-                            head_blocker,
-                            reason_prefix="release_head_revalidation_failed",
+                            message,
+                            reason_prefix="queue_mutation_failed",
                             repo=repo,
                             repo_root=repo_root,
                             runner=runner,
@@ -4036,156 +4288,6 @@ def run_reconciler(
                             route=listing_route,
                         )
                     )
-                    continue
-                if release_authorization_waivers:
-                    mutation_results.append(
-                        {
-                            **decision.as_dict(),
-                            "action": "release_authorization_waiver",
-                            "ok": True,
-                            "waivers": release_authorization_waivers,
-                        }
-                    )
-            status_result = set_autoqueue_admission_status(
-                decision,
-                repo=repo,
-                repo_root=repo_root,
-                runner=runner,
-                now=now,
-                force_fresh_success=_decision_is_release_head_guard_subject(decision),
-                route=listing_route,
-            )
-            # An unreadable status prevents new admission, but a known blocker still requires
-            # cancellation. merge_pr retains the existing dequeue revalidation below.
-            if (
-                decision.action not in {"dequeue", "disable_auto_merge"}
-                and status_result is not None
-                and not status_result[0]
-                and _admission_status_write_deferral_class(status_result[1])
-                == "admission_status_read_failed"
-            ):
-                mutation_results.append(
-                    {
-                        **decision.as_dict(),
-                        "action": "hold",
-                        "ok": True,
-                        "reasons": ["admission_status_read_failed"],
-                        "message": status_result[1],
-                    }
-                )
-                continue
-            if decision.action not in {
-                "queue",
-                "enable_auto_merge",
-                "disable_auto_merge",
-                "dequeue",
-            }:
-                if status_result is not None:
-                    assert admission_status is not None
-                    ok, message = status_result
-                    mutation_results.append(
-                        {
-                            **decision.as_dict(),
-                            "action": "set_admission_status",
-                            "status_state": admission_status[0],
-                            "ok": ok,
-                            "message": message,
-                        }
-                    )
-                    if not ok:
-                        deferral = _admission_status_write_deferral_class(message)
-                        if deferral is not None:
-                            # The write failed for a reason that is not about this PR (see
-                            # _admission_status_write_deferral_class): hold the queue state and
-                            # let the next cycle write the same status. Failure paths narrow —
-                            # no mutation is the only safe act on evidence about the transport.
-                            mutation_results.append(
-                                {
-                                    **decision.as_dict(),
-                                    "action": "hold",
-                                    "ok": True,
-                                    "reasons": [f"admission_status_write_deferred:{deferral}"],
-                                    "message": (
-                                        "admission status write failed on a transport response; "
-                                        "queue state held for the next cycle"
-                                    ),
-                                }
-                            )
-                        else:
-                            mutation_results.extend(
-                                _release_auto_arm_fail_closed_mutations(
-                                    decision,
-                                    message,
-                                    reason_prefix="admission_status_write_failed",
-                                    repo=repo,
-                                    repo_root=repo_root,
-                                    runner=runner,
-                                    now=now,
-                                    route=listing_route,
-                                )
-                            )
-                continue
-            if (
-                decision.action in {"queue", "enable_auto_merge"}
-                and status_result is not None
-                and not status_result[0]
-            ):
-                assert admission_status is not None
-                mutation_results.append(
-                    {
-                        **decision.as_dict(),
-                        "action": "set_admission_status",
-                        "status_state": admission_status[0],
-                        "ok": False,
-                        "message": "admission status write failed; queue mutation skipped",
-                        "admission_status": {
-                            "state": admission_status[0],
-                            "ok": status_result[0],
-                            "message": status_result[1],
-                        },
-                    }
-                )
-                continue
-            ok, message = merge_pr(
-                decision,
-                repo=repo,
-                repo_root=repo_root,
-                runner=runner,
-                require_route_metadata=require_route_metadata,
-                route=listing_route,
-            )
-            result = {
-                **decision.as_dict(),
-                "ok": ok,
-                "message": message,
-            }
-            if status_result is not None:
-                assert admission_status is not None
-                status_ok, status_message = status_result
-                result["admission_status"] = {
-                    "state": admission_status[0],
-                    "ok": status_ok,
-                    "message": status_message,
-                }
-            mutation_results.append(result)
-            if (
-                not ok
-                and admission_status is not None
-                and admission_status[0] == "success"
-                and status_result is not None
-            ):
-                mutation_results.extend(
-                    _release_auto_arm_fail_closed_mutations(
-                        decision,
-                        message,
-                        reason_prefix="queue_mutation_failed",
-                        repo=repo,
-                        repo_root=repo_root,
-                        runner=runner,
-                        now=now,
-                        route=listing_route,
-                    )
-                )
 
     report = {
         "repo": repo,
@@ -4220,6 +4322,17 @@ def run_reconciler(
         "open_pr_count": open_pr_count,
         "examined_pr_count": len(prs),
         "rotation_state_path": str(rotation_state_path) if rotation_state_path else None,
+        "hydration_failures": [
+            {
+                "pr": number,
+                **failure,
+                "retry_policy": "next_tick"
+                if failure["consecutive_failures"] == 1
+                else "fair_rotation",
+                "next_action": "Retry automatically; inspect this PR's hydration if failures persist.",
+            }
+            for number, failure in sorted(hydration_failures.items())
+        ],
         "queued_prs": sorted(queued_prs),
         "decisions": [decision.as_dict() for decision in decisions],
         "counts": {
