@@ -107,6 +107,6 @@ after nested resume and required a forced stop; that failed attempt is retained.
 Successful later cells do not establish production lifecycle reliability. Both
 accepted observations and failed attempts are recorded in the
 [sanitized evidence](evidence/native-harness-reductions-20260920.yaml).
-Instruction sets and bytes matched. Claude hook-event arrival order differed;
-that is retained as an observation, not promoted to a claim about instruction
-precedence or semantic equivalence.
+Instruction sets and bytes matched. Claude hook-event arrival order differed in
+earlier accepted replays and matched in the latest replay. Neither observation
+establishes instruction precedence or semantic equivalence.

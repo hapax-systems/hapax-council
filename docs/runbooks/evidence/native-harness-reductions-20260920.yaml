@@ -10,7 +10,7 @@ model_requests: 0
 may_authorize: false
 images:
   claude:
-    image_id: sha256:569ddda63e9b32e191c8be8f2e5e44a5850cda0770ef6c89bc90099438ee9a2c  # pragma: allowlist secret — public Git/image/content digest
+    image_id: sha256:9e2d5570671ad93a5fa16afda2feb2bfb0146c2f9633dbb84040b06e3e57ab44  # pragma: allowlist secret — public Git/image/content digest
     native_version: 2.1.277 (Claude Code)
     filesystem:
       instruction_hashes_match: true
@@ -31,7 +31,7 @@ images:
       sha256: 3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5  # pragma: allowlist secret — public Git/image/content digest
       bytes: 7276
   codex:
-    image_id: sha256:e1d76925dbe58194b60c0ad63d3de30b20d3a7af71a6547d75329ddb1ab46258  # pragma: allowlist secret — public Git/image/content digest
+    image_id: sha256:de052f00ba391ae5fbbf7e124649e30602e45aafbf1ca8235a34f23ba7d1397d  # pragma: allowlist secret — public Git/image/content digest
     native_version: codex-cli 0.155.1
     filesystem:
       instruction_hashes_match: true
@@ -60,10 +60,10 @@ hosts:
   - platform: claude
     cwd: /work
     files:
-    - path: /opt/hapax-agent/.claude/CLAUDE.md
-      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
     - path: /work/CLAUDE.md
       sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+    - path: /opt/hapax-agent/.claude/CLAUDE.md
+      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
     pass: true
   - platform: codex
     cwd: /work
@@ -101,10 +101,10 @@ hosts:
   - platform: claude
     cwd: /work
     files:
-    - path: /opt/hapax-agent/.claude/CLAUDE.md
-      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
     - path: /work/CLAUDE.md
       sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+    - path: /opt/hapax-agent/.claude/CLAUDE.md
+      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
     pass: true
   - platform: codex
     cwd: /work
@@ -117,10 +117,10 @@ hosts:
   - platform: claude
     cwd: /work/nested
     files:
-    - path: /opt/hapax-agent/.claude/CLAUDE.md
-      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
     - path: /work/CLAUDE.md
       sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+    - path: /opt/hapax-agent/.claude/CLAUDE.md
+      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
     pass: true
   - platform: codex
     cwd: /work/nested
@@ -140,7 +140,7 @@ cross_host: &id001
   same_instruction_bytes: true
   same_instruction_sets: true
   same_native_results: true
-  hook_event_arrival_order_equal: false
+  hook_event_arrival_order_equal: true
   instruction_precedence: unobserved
 unobserved:
 - semantic compliance
@@ -451,13 +451,46 @@ validation:
     ruff: passed
     bash_syntax: passed
     installer_pyrefly: 0 errors
+  rollback_receipt_suite:
+    passed: 288
+    seconds: 253.62
+  rollback_receipt_mutations:
+  - name: automatic_rollback_guard
+    file: scripts/install-agent-instructions.py
+    applied: true
+    killed: true
+    restored_sha256: 2e3cf0c6923c8328fc84c6fbc195cee185c3a08bb279eeaca7bcaa0a0e2ebf5c  # pragma: allowlist secret — public Git/image/content digest
+  - name: toml_next_action
+    file: scripts/install-agent-instructions.py
+    applied: true
+    killed: true
+    restored_sha256: 2e3cf0c6923c8328fc84c6fbc195cee185c3a08bb279eeaca7bcaa0a0e2ebf5c  # pragma: allowlist secret — public Git/image/content digest
+  - name: alias_publication
+    file: scripts/hapax-codex-headless
+    applied: true
+    killed: true
+    restored_sha256: 855f46a84a9026688009952cc4829ec5d4af3d31c7f1e07da5f5391fe129b38c  # pragma: allowlist secret — public Git/image/content digest
+  - name: receipt_project_binding
+    file: scripts/hapax-platform-capability-receipts
+    applied: true
+    killed: true
+    restored_sha256: 5ab3ffd9af69f4b2e088bad2d4485583670ed17de4aa3b24e5df3211044c94ce  # pragma: allowlist secret — public Git/image/content digest
+  - name: installed_receipt_import
+    file: scripts/hapax-platform-capability-receipts
+    applied: true
+    killed: true
+    restored_sha256: 5ab3ffd9af69f4b2e088bad2d4485583670ed17de4aa3b24e5df3211044c94ce  # pragma: allowlist secret — public Git/image/content digest
+  rollback_receipt_checks:
+    precommit: passed for selected changed files
+    ruff: passed
+    production_pyrefly: 0 errors
 support_capacity:
   shape: codex exec gpt-6-astra/high/read-only, subscription, no fallback
-  count: 11
+  count: 12
   native_turn_context_verified: true
   authority: support advice only; final independent review is separate
-container_source_revision: bdf0e04fd82d7a3398be11aecfe9c03b7fd28465  # pragma: allowlist secret — public Git/image/content digest
-implementation_source_revision: bdf0e04fd82d7a3398be11aecfe9c03b7fd28465  # pragma: allowlist secret — public Git/image/content digest
+container_source_revision: 920599ca5314513b958fe2df2a12f0c64fd7aad3  # pragma: allowlist secret — public Git/image/content digest
+implementation_source_revision: 920599ca5314513b958fe2df2a12f0c64fd7aad3  # pragma: allowlist secret — public Git/image/content digest
 cross_host_comparison: *id001
 retained_failed_attempts:
 - source_revision: 7cb0558c3e0f23d67ee301c651286fde7bad3ae3  # pragma: allowlist secret — public Git/image/content digest
@@ -502,3 +535,11 @@ review_repairs:
   native-load/lifecycle and alias/blob-reader rechecks.
 - Registry digest freshness was already covered by an authored-payload test; an applied stale-digest mutation verifies
   rejection.
+- Automatic rollback uses the same guarded pending-transaction recovery as the CLI; unknown intervening file, symlink
+  or directory edits retain pending state and preimages. The lock serializes participating installers, not arbitrary
+  external writers.
+- Installed capability-receipt scripts import from governed activation and observe its selected project; source-checkout
+  imports do not substitute a checkout as the deployed project. Default, empty, override, missing and isolated-import
+  cases pass.
+- Unsupported native TOML preservation errors identify the file, supported table form and next action. Existing
+  and dangling output aliases preserve their prior targets when the fresh stream is published.
