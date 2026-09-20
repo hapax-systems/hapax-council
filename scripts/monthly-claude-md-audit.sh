@@ -44,10 +44,10 @@ canonical_dir=$(mktemp -d)
 trap 'rm -rf "$canonical_dir"' EXIT
 
 mkdir -p "$canonical_dir/council/vscode"
-if ! git -C "$COUNCIL_CANONICAL" show origin/main:CLAUDE.md > "$canonical_dir/council/CLAUDE.md" 2>/dev/null; then
-    echo "monthly-claude-md-audit: git show origin/main:CLAUDE.md failed (council main not fetched?)" >&2
+if ! git -C "$COUNCIL_CANONICAL" show origin/main:AGENTS.md > "$canonical_dir/council/AGENTS.md" 2>/dev/null; then
+    echo "monthly-claude-md-audit: git show origin/main:AGENTS.md failed (council main not fetched?)" >&2
     # Fall back to the working tree.
-    cp "$COUNCIL_CANONICAL/CLAUDE.md" "$canonical_dir/council/CLAUDE.md" 2>/dev/null \
+    cp "$COUNCIL_CANONICAL/AGENTS.md" "$canonical_dir/council/AGENTS.md" 2>/dev/null \
         || { echo "monthly-claude-md-audit: working-tree fallback also failed" >&2; exit 2; }
 fi
 if ! git -C "$COUNCIL_CANONICAL" show origin/main:vscode/CLAUDE.md > "$canonical_dir/council/vscode/CLAUDE.md" 2>/dev/null; then
@@ -63,7 +63,7 @@ fi
 # Worktree dirs (alpha hapax-council/, delta hapax-council--*) are excluded
 # from auto-discovery because their working-tree state is not authoritative.
 targets=(
-    "$canonical_dir/council/CLAUDE.md"
+    "$canonical_dir/council/AGENTS.md"
     "$canonical_dir/council/vscode/CLAUDE.md"
 )
 
@@ -78,7 +78,7 @@ done < <(
            -o -name venv \
            -o -name node_modules \
         \) -prune \
-        -o \( -name CLAUDE.md \( -type f -o -type l \) \) -print \
+        -o \( \( -name AGENTS.md -o -name CLAUDE.md \) \( -type f -o -type l \) \) -print \
         2>/dev/null \
         | sort -u
 )

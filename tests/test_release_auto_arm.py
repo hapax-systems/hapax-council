@@ -16,6 +16,8 @@ exists for that sensitive class.
 
 from __future__ import annotations
 
+import pytest
+
 from shared.release_gate import (
     LIVE_EGRESS_MITIGATION_CHECKS,
     assess_release_auto_arm_estate,
@@ -406,6 +408,20 @@ def test_sensitive_path_matches_claude_md_file_segment() -> None:
     fm = _eligible_frontmatter(mutation_scope_refs=["hapax-council/CLAUDE.md"])
     assessment = assess_release_auto_arm(fm)
     assert any("sensitive_path" in blocker for blocker in assessment.blockers)
+
+
+@pytest.mark.parametrize("path", ["AGENTS.md", "hapax-council/AGENTS.md"])
+def test_sensitive_path_matches_agents_md_file_segment(path: str) -> None:
+    assessment = assess_release_auto_arm(_eligible_frontmatter(mutation_scope_refs=[path]))
+    assert assessment.eligible is False
+    assert f"sensitive_path:{path}" in assessment.blockers
+
+
+def test_agents_md_lookalike_is_not_a_sensitive_file() -> None:
+    assessment = assess_release_auto_arm(
+        _eligible_frontmatter(mutation_scope_refs=["docs/AGENTS.md.example"])
+    )
+    assert assessment.eligible is True
 
 
 def test_ineligible_when_public_current_already_true() -> None:

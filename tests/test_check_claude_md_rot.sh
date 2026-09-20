@@ -106,6 +106,27 @@ assert "TODO strict exits 1"     1 "$(run "$todo_file" '--strict')"
 # --- fixture 8: missing explicit target — typo guard ---
 assert "missing target exits 2" 2 "$(run "$tmproot/no-such-file" '')"
 
+# --- automatic discovery: canonical names, legacy names and build exclusions ---
+discovery="$tmproot/discovery"
+mkdir -p "$discovery/nested" "$discovery/node_modules"
+printf 'Stable instructions.\n' > "$discovery/AGENTS.md"
+ln -s AGENTS.md "$discovery/CLAUDE.md"
+printf 'Stable legacy instructions.\n' > "$discovery/nested/CLAUDE.md"
+printf 'currently broken\n' > "$discovery/node_modules/AGENTS.md"
+output=$(cd "$discovery" && "$SCRIPT" 2>&1); rc=$?
+assert "discovery scans canonical plus legacy, excluding build and alias" 0 "$rc"
+assert "discovery actually scans two authored files" 1 "$(printf '%s' "$output" | grep -c '2 file(s) scanned')"
+printf 'currently broken\n' > "$discovery/AGENTS.md"
+output=$(cd "$discovery" && "$SCRIPT" 2>&1); rc=$?
+assert "auto-discovered root AGENTS rot exits 1" 1 "$rc"
+assert "root finding names canonical file" 1 "$(printf '%s' "$output" | grep -c '^./AGENTS.md:')"
+assert "explicit symlink reads canonical rot" 1 "$(run "$discovery/CLAUDE.md" '')"
+printf 'Stable instructions.\n' > "$discovery/AGENTS.md"
+printf 'currently broken\n' > "$discovery/nested/AGENTS.md"
+output=$(cd "$discovery" && "$SCRIPT" 2>&1); rc=$?
+assert "auto-discovered nested AGENTS rot exits 1" 1 "$rc"
+assert "nested finding names canonical file" 1 "$(printf '%s' "$output" | grep -c '^./nested/AGENTS.md:')"
+
 # --- summary ---
 echo
 printf 'tests: %d passed, %d failed\n' "$passes" "$fails"

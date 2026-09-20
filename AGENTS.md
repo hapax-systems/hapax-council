@@ -24,7 +24,7 @@ both instruction filenames.
 
 ## Architecture
 
-Filesystem-as-bus: agents read/write markdown+YAML on disk; inotify reactive engine cascades work. Three tiers: T1 interactive (Tauri, waybar, VS Code), T2 LLM agents (pydantic-ai via LiteLLM :4000; configured local and cloud engines; verify host-specific runtime bindings before use), T3 deterministic (sync/health/maintenance). Docker Compose 13 containers + systemd user units. New units → `systemd/units/` only. Key chain: hapax-secrets → logos-api(:8051) → tabbyapi(:5000) → hapax-daimonion → studio-compositor. Qdrant `operator-patterns` is dead schema — don't add writers.
+Filesystem-as-bus: agents read/write markdown+YAML on disk; inotify reactive engine cascades work. Three tiers: T1 interactive (Screwm/compositor, waybar, VS Code), T2 LLM agents (pydantic-ai via LiteLLM :4000; configured local and cloud engines; verify host-specific runtime bindings before use), T3 deterministic (sync/health/maintenance). Docker Compose 13 containers + systemd user units. New units → `systemd/units/` only. Key chain: hapax-secrets → logos-api(:8051) → tabbyapi(:5000) → hapax-daimonion → studio-compositor. Qdrant `operator-patterns` is dead schema — don't add writers.
 
 ## Design Language
 

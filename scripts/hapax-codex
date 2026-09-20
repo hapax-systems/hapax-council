@@ -1323,7 +1323,7 @@ elif { [ -n "$TASK_ID" ] || [ "$TERMINAL" != "none" ]; } && [ "$explicit_codex_c
 
 First actions:
 
-1. Read $HOME/projects/CLAUDE.md, $COUNCIL_DIR/CLAUDE.md, $COUNCIL_DIR/AGENTS.md, $WORKDIR/CLAUDE.md, and $WORKDIR/AGENTS.md when present. Parent AGENTS/posture files are authoritative when the clean child worktree is behind the bootstrap branch.
+1. Read $HOME/AGENTS.md and $HOME/.claude/CLAUDE.md for workspace and shared conventions. Read canonical $COUNCIL_DIR/AGENTS.md and $WORKDIR/AGENTS.md when present; read substantive CLAUDE.md files in unmigrated scopes, but do not reread a CLAUDE.md symlink to an already-read AGENTS.md. Parent AGENTS/posture files are authoritative when the clean child worktree is behind the bootstrap branch.
 2. Treat $WORKDIR as the Codex worktree for this thread. Greek slot names are coordination lanes, not Codex worktree names; do not migrate work into Claude-era hapax-council--delta/epsilon/main-red paths unless the parent explicitly passed --cd.
 3. Read the parent Codex posture from $COUNCIL_DIR even when the target worktree is stale or detached: $COUNCIL_DIR/scripts/hapax-codex, $COUNCIL_DIR/config/codex/config.toml, $COUNCIL_DIR/hooks/scripts/codex-hook-adapter.sh, and $COUNCIL_DIR/hooks/scripts/agent-role.sh.
 4. Read the active task note if task_id is not "none".

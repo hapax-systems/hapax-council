@@ -78,6 +78,10 @@ def test_manifest_module_loader_validates() -> None:
         ),
         # self-protection: manifest rot is governance rot
         ("config/invariant-manifest.yaml", "invariant-manifest"),
+        ("AGENTS.md", "governance-meta"),
+        ("nested/AGENTS.md", "governance-meta"),
+        ("CLAUDE.md", "governance-meta"),
+        ("nested/CLAUDE.md", "governance-meta"),
         ("scripts/hapax-invariant-touch-report", "invariant-manifest"),
     ],
 )

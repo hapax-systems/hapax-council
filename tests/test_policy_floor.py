@@ -318,6 +318,8 @@ class TestAxiomDefenseInDepth:
             ".github/CODEOWNERS",
             "CLAUDE.md",
             "agents/CLAUDE.md",
+            "AGENTS.md",
+            "agents/AGENTS.md",
             "config/pipewire/voice-fx-warm.conf",
         ],
     )
@@ -333,7 +335,10 @@ class TestAxiomDefenseInDepth:
         d = evaluate_floor("Bash", command="sed -i s/a/b/ .github/CODEOWNERS")
         assert d.blocked and d.gate == "floor:axiom"
 
-    @pytest.mark.parametrize("file_path", ["docs/foo.md", "shared/config.py", "agents/foo.py"])
+    @pytest.mark.parametrize(
+        "file_path",
+        ["docs/foo.md", "shared/config.py", "agents/foo.py", "docs/AGENTS.md.example"],
+    )
     def test_ordinary_source_and_docs_still_reversible(self, file_path):
         d = evaluate_floor("Edit", file_path=file_path)
         assert d.allowed and d.gate == "floor:reversible"

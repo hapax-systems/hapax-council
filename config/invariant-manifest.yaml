@@ -108,12 +108,13 @@ invariants:
     class: governance_protected
     description: >-
       Governance-protected path registry (CODEOWNERS), project constitution
-      surface (CLAUDE.md), and the SDLC lifecycle vocabulary incl.
+      surfaces (AGENTS.md and CLAUDE.md), and the SDLC lifecycle vocabulary incl.
       SENSITIVE_PATH_MARKERS (#4046).
     reference: .github/CODEOWNERS
     globs:
       - .github/CODEOWNERS
       - "**/CLAUDE.md"
+      - "**/AGENTS.md"
       - shared/sdlc_lifecycle.py
     checker: uv run pytest tests/shared/test_sdlc_lifecycle.py -q
 

@@ -1524,6 +1524,9 @@ def test_task_launch_generates_bootstrap_prompt_without_claim_when_disabled(tmp_
     assert "task_id: demo-task" in bootstrap
     assert "idle_update_seconds: 270" in bootstrap
     assert f"{REPO_ROOT}/AGENTS.md" in bootstrap
+    assert "/.claude/CLAUDE.md for workspace and shared conventions" in bootstrap
+    assert "/projects/CLAUDE.md" not in bootstrap
+    assert "do not reread a CLAUDE.md symlink" in bootstrap
     assert "relay/preflight note" in bootstrap
     assert "Codex version, MCP startup warnings" in bootstrap
     assert "not actively producing" in bootstrap
