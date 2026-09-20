@@ -63,6 +63,20 @@ check "cp within vault"               ALLOW  "cp $VAULT ${VAULT}.bak"
 check "touch vault note"              ALLOW  "touch $VAULT"
 
 echo
+echo "== the harness-assigned session scratchpad is cognition =="
+# The agent is TOLD to work here; the gate did not know the surface existed. Measured 2026-09-20: a
+# `cp` between two files inside a session's own scratchpad was refused and working data was lost.
+SCRATCH_BASE="${TMPDIR:-/tmp}"; SCRATCH_BASE="${SCRATCH_BASE%/}"
+SP="$SCRATCH_BASE/claude-1000/-home-user/sess/scratchpad/note.md"
+check "cat > session scratchpad"       ALLOW  "cat > $SP"
+check "cp within session scratchpad"   ALLOW  "cp $SP ${SP}.bak"
+check "legacy /tmp/claude-* form"      ALLOW  "cat > /tmp/claude-1000/s/scratchpad/n.md"
+# NARROW on purpose: $TMPDIR at large is not cognition, or an unclaimed lane could write arbitrary
+# temp source — the same reasoning the /tmp/hapax-* carve-out is drawn narrowly for.
+check "TMPDIR at large is NOT cognition" REFUSE "cat > $SCRATCH_BASE/random-file.sh"
+check "sibling tmp dir is NOT cognition" REFUSE "cat > $SCRATCH_BASE/notclaude-1000/x.md"
+
+echo
 echo "== non-cognition writes still refused =="
 check "cat > council source"          REFUSE "cat > $SRC"
 check "cp vault -> council source"    REFUSE "cp $VAULT $SRC"

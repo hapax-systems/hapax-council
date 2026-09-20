@@ -484,6 +484,22 @@ is_cognition_path() {
     /dev/shm/*) return 0 ;;                     # ephemeral diagnostic scratch
     /tmp/hapax-*|/tmp/hapax/*) return 0 ;;      # project diagnostic scratch
   esac
+  # The harness-assigned per-session scratchpad. The agent is TOLD to work here — its environment
+  # block names the directory and says it "can generally be used without permission prompts" — and
+  # the gate did not know the surface existed, so writes there were refused like any other. Measured
+  # 2026-09-20: a `cp` between two files inside a session's own scratchpad was refused, and the
+  # reasoning of two reviewers was lost because the backup never ran.
+  #
+  # Derived from $TMPDIR rather than a hardcoded mount: the path here happens to be /store-fast/tmp,
+  # which is an accident of this host. Kept as NARROW as the /tmp/hapax-* carve-out above — only the
+  # claude-<uid> session scratch root, never $TMPDIR at large, so an unclaimed lane still cannot
+  # write arbitrary temp source. The legacy /tmp form is included for hosts with no TMPDIR override.
+  local _tmpbase="${TMPDIR:-/tmp}"
+  _tmpbase="${_tmpbase%/}"
+  case "$p" in
+    "$_tmpbase"/claude-*/*) return 0 ;;
+    /tmp/claude-*/*) return 0 ;;
+  esac
   return 1
 }
 
