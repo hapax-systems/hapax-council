@@ -10,7 +10,7 @@ model_requests: 0
 may_authorize: false
 images:
   claude:
-    image_id: sha256:9e2d5570671ad93a5fa16afda2feb2bfb0146c2f9633dbb84040b06e3e57ab44  # pragma: allowlist secret — public Git/image/content digest
+    image_id: sha256:a3b7c63dd7da170f11e051c40eee3ed22d2520637191fd374a8f967f70b0cbc6  # pragma: allowlist secret — public Git/image/content digest
     native_version: 2.1.277 (Claude Code)
     filesystem:
       instruction_hashes_match: true
@@ -31,7 +31,7 @@ images:
       sha256: 3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5  # pragma: allowlist secret — public Git/image/content digest
       bytes: 7276
   codex:
-    image_id: sha256:de052f00ba391ae5fbbf7e124649e30602e45aafbf1ca8235a34f23ba7d1397d  # pragma: allowlist secret — public Git/image/content digest
+    image_id: sha256:555df4285514ca7ab2f8161df4b09ff883433c5520303f396dc0d3433cee42a3  # pragma: allowlist secret — public Git/image/content digest
     native_version: codex-cli 0.155.1
     filesystem:
       instruction_hashes_match: true
@@ -60,10 +60,10 @@ hosts:
   - platform: claude
     cwd: /work
     files:
-    - path: /work/CLAUDE.md
-      sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
     - path: /opt/hapax-agent/.claude/CLAUDE.md
       sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+    - path: /work/CLAUDE.md
+      sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
     pass: true
   - platform: codex
     cwd: /work
@@ -140,7 +140,7 @@ cross_host: &id001
   same_instruction_bytes: true
   same_instruction_sets: true
   same_native_results: true
-  hook_event_arrival_order_equal: true
+  hook_event_arrival_order_equal: false
   instruction_precedence: unobserved
 unobserved:
 - semantic compliance
@@ -516,13 +516,31 @@ validation:
     ruff: passed
     bash_syntax: passed
     production_pyrefly: 0 errors
+  load_conflict_restored_suite:
+    passed: 87
+    seconds: 6.68
+  load_conflict_mutations:
+  - name: resolved_declaration_conflict
+    file: shared/capability_load_set.py
+    applied: true
+    killed: true
+    restored_sha256: b2e3e68207b387bf8a9393ed6e52afb1b89be7124bfdd907195ed599fb0fb2e9  # pragma: allowlist secret — public Git/image/content digest
+  - name: invalid_toml_path
+    file: scripts/install-agent-instructions.py
+    applied: true
+    killed: true
+    restored_sha256: c785a93465b01f1699b7aa398a4b8fe0523120fd7110dbd9152acfa463b7b6b0  # pragma: allowlist secret — public Git/image/content digest
+  load_conflict_checks:
+    precommit: passed for selected changed files
+    ruff: passed
+    production_pyrefly: 0 errors
 support_capacity:
   shape: codex exec gpt-6-astra/high/read-only, subscription, no fallback
   count: 12
   native_turn_context_verified: true
   authority: support advice only; final independent review is separate
-container_source_revision: 920599ca5314513b958fe2df2a12f0c64fd7aad3  # pragma: allowlist secret — public Git/image/content digest
-implementation_source_revision: b4b9135696e2ee5ccda9a3b29413582eabf7b936  # pragma: allowlist secret — public Git/image/content digest
+container_source_revision: 1ad2c95558e0774c7699b1b4bdfa945a77c7841b  # pragma: allowlist secret — public Git/image/content digest
+implementation_source_revision: 1ad2c95558e0774c7699b1b4bdfa945a77c7841b  # pragma: allowlist secret — public Git/image/content digest
 cross_host_comparison: *id001
 retained_failed_attempts:
 - source_revision: 7cb0558c3e0f23d67ee301c651286fde7bad3ae3  # pragma: allowlist secret — public Git/image/content digest
@@ -579,11 +597,17 @@ review_repairs:
   regression assertions now match this behavior.
 - Native resume reports success only for one observed matching session; absent or mixed identity stays unobserved,
   and a single differing identity is a mismatch. Both native mappings are exercised.
-container_inputs_unchanged_at_revision: b4b9135696e2ee5ccda9a3b29413582eabf7b936  # pragma: allowlist secret — public Git/image/content digest
-container_input_comparison_paths:
-- AGENTS.md
-- CLAUDE.md
-- config/agent-instructions
-- docker
-- scripts/install-agent-instructions.py
-- scripts/probe-native-harness-container.py
+- Resolved paths with conflicting digest expectations are rejected regardless of declaration order, including aliases
+  and unknown digests; identical expectations may share a witness.
+- Invalid original Grok TOML reports its path and a syntax-repair action before publication, separately from unsupported
+  valid layouts.
+historical_container_input_comparisons:
+- image_source_revision: 920599ca5314513b958fe2df2a12f0c64fd7aad3  # pragma: allowlist secret — public Git/image/content digest
+  unchanged_at_revision: b4b9135696e2ee5ccda9a3b29413582eabf7b936  # pragma: allowlist secret — public Git/image/content digest
+  paths:
+  - AGENTS.md
+  - CLAUDE.md
+  - config/agent-instructions
+  - docker
+  - scripts/install-agent-instructions.py
+  - scripts/probe-native-harness-container.py
