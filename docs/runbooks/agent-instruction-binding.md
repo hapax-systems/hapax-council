@@ -204,6 +204,11 @@ if a successor install or changed output needs reconciliation. Backups of native
 settings remain local and private; never publish their contents. If publication
 or rollback failed, use the recovery command in its error; `pending.json`
 identifies that transaction even after `current.json` has been restored.
+Automatic rollback uses those same known-preimage/postimage checks before
+restoring. Unknown edits or file types retain the pending transaction and its
+private backup for reconciliation instead of being overwritten. The install lock
+serializes participating installers; these checks are not a filesystem transaction
+against arbitrary simultaneous writers.
 
 `--check` is an explicit read-only diagnostic, not a background drift monitor.
 It compares expected payloads and the current source receipt, identifies pending
@@ -224,8 +229,20 @@ Digests pin authored expectations, rather than adopting whatever bytes happen
 to be installed. After policy changes, update the corresponding declaration
 digests; `test_registry_instruction_hashes_match_authored_payloads` recomputes
 them against the renderer and repository sources and rejects stale values.
+Run that specific re-render comparison in the same policy-change PR:
+
+```bash
+uv run pytest tests/shared/test_capability_load_set.py::test_registry_instruction_hashes_match_authored_payloads -q
+```
+
 `hapax-platform-capability-receipts` attaches host-side observations to its existing
 receipt. Presence and matching bytes do not establish native delivery.
+Its observed project comes from `HAPAX_SOURCE_ACTIVATE_WORKTREE` or the default
+governed activation tree, including when that tree is missing. Installed copies
+import their implementation from activation; a source-checkout invocation keeps
+its own implementation dependencies without substituting that checkout as the
+observed deployment. Recheck installed/default/override/missing cases with
+`uv run pytest tests/shared/test_platform_capability_receipts.py -k 'selected_activation or imports_from_activation' -q`.
 
 `shared.capability_load_set.observe_load_set` can join native path/hash witnesses
 to the declaration and identify missing, changed or unexpected inputs. Unknown

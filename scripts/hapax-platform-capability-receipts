@@ -20,7 +20,24 @@ from typing import Any
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ACTIVATION_ROOT = (
+    Path(
+        os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+        or Path.home() / ".cache" / "hapax" / "source-activation" / "worktree"
+    )
+    .expanduser()
+    .resolve()
+)
+_SCRIPT_PATH = Path(__file__).resolve()
+_CHECKOUT_ROOT = _SCRIPT_PATH.parents[1]
+# Explicit source-checkout execution keeps its own implementation dependencies.
+# Regular installed copies import from governed activation, never mutable primary.
+REPO_ROOT = (
+    _CHECKOUT_ROOT
+    if _SCRIPT_PATH.parent.name == "scripts"
+    and (_CHECKOUT_ROOT / "shared" / "platform_capability_receipts.py").is_file()
+    else SOURCE_ACTIVATION_ROOT
+)
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -829,7 +846,9 @@ def build_receipt(
             route.route_id: observe_load_set(
                 route.native_load_set,
                 home=Path.home(),
-                project=Path(__file__).resolve().parents[1],
+                # Import provenance does not select the host's deployed project.
+                # Keep the selected root even when absent, so absence is observed.
+                project=SOURCE_ACTIVATION_ROOT,
                 env=os.environ,
             )
             for route in routes

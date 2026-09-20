@@ -61,8 +61,11 @@ def test_unhandled_native_settings_layout_refuses_before_publication(tmp_path):
     grok = tmp_path / ".grok/config.toml"
     grok.parent.mkdir()
     grok.write_text("compat = {claude = {agents = true}}\n")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as error:
         installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    assert str(grok) in str(error.value)
+    assert "standalone [compat.claude] table" in str(error.value)
+    assert "preserving other settings, then retry" in str(error.value)
     assert not (tmp_path / ".claude/CLAUDE.md").exists()
 
 
@@ -122,7 +125,7 @@ def test_rollback_cli_refuses_changed_outputs_but_restores_current_install(
         assert not target.exists()
 
 
-def test_failed_readback_rolls_back_entire_publication(tmp_path, monkeypatch):
+def test_failed_readback_retains_unknown_bytes_for_reconciliation(tmp_path, monkeypatch):
     home = tmp_path / "home"
     original = installer.atomic_write
 
@@ -132,11 +135,82 @@ def test_failed_readback_rolls_back_entire_publication(tmp_path, monkeypatch):
             path.write_bytes(b"corrupted")
 
     monkeypatch.setattr(installer, "atomic_write", faulty)
-    with pytest.raises(OSError, match="readback failed"):
+    with pytest.raises(OSError, match="readback failed.*reconcile.*next action"):
         installer.install(ROOT, home, revision="fixture", apply=True)
-    assert not (home / ".claude/CLAUDE.md").exists()
-    assert not (home / ".codex/AGENTS.md").exists()
-    assert not (home / ".grok/AGENTS.md").exists()
+    assert (home / ".grok/AGENTS.md").read_bytes() == b"corrupted"
+    assert (home / ".config/hapax/agent-instructions/pending.json").exists()
+
+
+@pytest.mark.parametrize("upgrade", [False, True])
+@pytest.mark.parametrize("foreign_kind", ["file", "symlink", "directory"])
+def test_automatic_rollback_preserves_intervening_edits_and_pending_recovery(
+    tmp_path, monkeypatch, upgrade, foreign_kind
+):
+    home = tmp_path / "home"
+    state = home / ".config/hapax/agent-instructions"
+    target = home / ".claude/CLAUDE.md"
+    prior = installer.install(ROOT, home, revision="prior", apply=True) if upgrade else None
+    prior_body = target.read_bytes() if upgrade else None
+    expected_body = installer.render(ROOT)["claude"][1]
+    foreign_body = b"Intervening authored instruction.\n"
+    foreign_target = tmp_path / "foreign-instruction"
+    foreign_target.write_bytes(foreign_body)
+    atomic = installer.atomic_write
+
+    def intervene_then_fail(path, body, mode=0o600):
+        if path == home / ".codex/AGENTS.md":
+            assert target.read_bytes() == expected_body
+            if foreign_kind == "file":
+                target.write_bytes(foreign_body)
+                target.chmod(0o640)
+            else:
+                target.unlink()
+                if foreign_kind == "symlink":
+                    target.symlink_to(foreign_target)
+                else:
+                    target.mkdir()
+            raise OSError("injected later publication failure")
+        atomic(path, body, mode)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(installer, "atomic_write", intervene_then_fail)
+        with pytest.raises(OSError) as error:
+            installer.install(ROOT, home, revision="new", apply=True)
+    assert foreign_target.read_bytes() == foreign_body
+    if foreign_kind == "directory":
+        assert target.is_dir()
+    elif foreign_kind == "symlink":
+        assert target.is_symlink() and target.readlink() == foreign_target
+    else:
+        assert target.is_file()
+        assert target.read_bytes() == foreign_body
+        assert target.stat().st_mode & 0o777 == 0o640
+    assert "later publication failure" in str(error.value)
+    assert "next action" in str(error.value)
+    pending = json.loads((state / "pending.json").read_text())
+    assert Path(pending["backup"]).is_dir()
+    with pytest.raises(ValueError, match="unresolved instruction transaction"):
+        installer.install(ROOT, home, revision="successor", apply=True)
+    monkeypatch.setattr(
+        "sys.argv", ["installer", "--home", str(home), "--restore-backup", pending["backup"]]
+    )
+    assert installer.main() == 1
+    assert (state / "pending.json").exists()
+
+    # Explicit reconciliation to a known postimage makes guarded recovery
+    # possible; the automatic path must never do this to someone else's edit.
+    if target.is_dir():
+        target.rmdir()
+    atomic(target, expected_body)
+    assert installer.main() == 0
+    assert not (state / "pending.json").exists()
+    assert foreign_target.read_bytes() == foreign_body
+    if upgrade:
+        assert target.read_bytes() == prior_body
+        assert json.loads((state / "current.json").read_text()) == prior
+    else:
+        assert not target.exists()
+        assert not (state / "current.json").exists()
 
 
 @pytest.mark.parametrize("installed", [False, True])

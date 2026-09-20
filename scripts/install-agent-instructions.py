@@ -94,9 +94,15 @@ def instruction_setting(
             body += "\n[compat.claude]\nagents = false\n"
         # Unsupported TOML layouts refuse before any publication instead of
         # rewriting or losing unrelated settings.
-        if tomllib.loads(body) != expected:
+        try:
+            preserved = tomllib.loads(body) == expected
+        except tomllib.TOMLDecodeError:
+            preserved = False
+        if not preserved:
             raise ValueError(
-                f"cannot preserve native TOML while setting {target}: compat.claude.agents"
+                f"cannot preserve native TOML in {target} while setting compat.claude.agents; "
+                "next action: express this setting under a standalone [compat.claude] table "
+                "with an agents = true/false line, preserving other settings, then retry"
             )
         return target, body.encode(), prior
     return None
@@ -352,27 +358,26 @@ def install(
                 indent=2,
             ).encode(),
         )
-        attempted: list[int] = []
         try:
             for index, (_, path, body) in enumerate(outputs):
                 if not matches_preimage(path, originals[index], backup, index):
                     raise OSError(f"instruction destination changed during installation: {path}")
-                attempted.append(index)
                 atomic_write(path, body)
             for _, path, body in outputs:
                 if path.is_symlink() or path.read_bytes() != body:
                     raise OSError(f"instruction readback failed: {path}")
-            attempted.append(len(outputs))
             atomic_write(state / "current.json", receipt_body)
         except BaseException as exc:
             try:
-                restore(backup, attempted)
-            except OSError as rollback_error:
+                # Automatic recovery has the same ownership boundary as the
+                # CLI: unknown intervening bytes are never ours to overwrite.
+                # Keep pending state and preimages when reconciliation is needed.
+                recover_pending(state, backup)
+            except (OSError, ValueError) as rollback_error:
                 raise OSError(
                     f"installation failed: {exc}; {rollback_error}; next action: "
                     + recovery_command(home, backup)
                 ) from exc
-            (state / "pending.json").unlink()
             raise
         (state / "pending.json").unlink()
     return receipt

@@ -686,7 +686,10 @@ exit 0
     assert not list((cache / "orchestration" / "dispatch-host-proofs").glob("*remote.json"))
 
 
-def test_codex_headless_treats_appendix_alias_as_local_on_appendix(tmp_path: Path) -> None:
+@pytest.mark.parametrize("predecessor", ["file", "symlink", "dangling"])
+def test_codex_headless_treats_appendix_alias_as_local_on_appendix(
+    tmp_path: Path, predecessor: str
+) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -700,7 +703,13 @@ def test_codex_headless_treats_appendix_alias_as_local_on_appendix(tmp_path: Pat
     (workdir / "shared/execution_observer.py").write_text("raise SystemExit(0)\n")
     log_dir = cache / "codex-headless/cx-amber"
     log_dir.mkdir(parents=True)
-    (log_dir / "output.jsonl").write_text("predecessor evidence\n")
+    previous_target = tmp_path / "previous-native-stream"
+    if predecessor == "file":
+        (log_dir / "output.jsonl").write_text("predecessor evidence\n")
+    else:
+        if predecessor == "symlink":
+            previous_target.write_text("predecessor evidence\n")
+        (log_dir / "output.jsonl").symlink_to(previous_target)
 
     bin_dir = tmp_path / "bin"
     ssh_called = tmp_path / "ssh-called"
@@ -757,7 +766,14 @@ exit 0
     assert observed["malformed_lines"] == 0
     assert "harmless native warning" in Path(observed["diagnostics_path"]).read_text()
     assert (log_dir / "output.jsonl").is_symlink()
-    assert [p.read_text() for p in log_dir.glob("*.predecessor.log")] == ["predecessor evidence\n"]
+    assert [p.read_text() for p in log_dir.glob("*.predecessor.log")] == (
+        ["predecessor evidence\n"] if predecessor == "file" else []
+    )
+    assert (log_dir / "output.jsonl").resolve() == Path(observed["stream_path"]).resolve()
+    if predecessor == "symlink":
+        assert previous_target.read_text() == "predecessor evidence\n"
+    else:
+        assert not previous_target.exists()
 
 
 @pytest.mark.parametrize("termination", ["default", "ignore", "exit143"])
