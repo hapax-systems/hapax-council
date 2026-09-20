@@ -91,7 +91,7 @@ spawnable Agy dispatch route still requires measured route/resource/governance
 receipts and is not listed in `--list-platform-paths` by this wiring slice.
 Gemini/Claude/GPT-OSS are engines behind the agy harness, not separate Hapax
 capability-family names. Recheck before treating agy/Gemini as live worker
-supply: `rg -n "agy.review.direct|Antigrav.*retired|Gemini.*engine|antigrav.interactive.full" CLAUDE.md docs/routing-ontology-reference.md config/platform-capability-registry.json`
+supply: `rg -n "agy.review.direct|Antigrav.*retired|Gemini.*engine|antigrav.interactive.full" AGENTS.md docs/routing-ontology-reference.md config/platform-capability-registry.json`
 must match this file, the routing ontology, and the registry; `scripts/hapax-methodology-dispatch --list-platform-paths | rg -i "antigrav|agy"`
 must return no rows because `agy.review.direct` is a review route, not a
 PLATFORM_PATHS launcher. Active interactive stacks use tmux control plane +

@@ -45,10 +45,10 @@ trap 'rm -rf "$canonical_dir"' EXIT
 
 mkdir -p "$canonical_dir/council/vscode"
 if ! git -C "$COUNCIL_CANONICAL" show origin/main:AGENTS.md > "$canonical_dir/council/AGENTS.md" 2>/dev/null; then
-    echo "monthly-claude-md-audit: git show origin/main:AGENTS.md failed (council main not fetched?)" >&2
+    echo "monthly-claude-md-audit: git show origin/main:AGENTS.md failed; verify COUNCIL_CANONICAL=$COUNCIL_CANONICAL, fetch origin/main in that checkout if appropriate, then retry. Trying working-tree content." >&2
     # Fall back to the working tree.
     cp "$COUNCIL_CANONICAL/AGENTS.md" "$canonical_dir/council/AGENTS.md" 2>/dev/null \
-        || { echo "monthly-claude-md-audit: working-tree fallback also failed" >&2; exit 2; }
+        || { echo "monthly-claude-md-audit: working-tree fallback also failed; restore AGENTS.md in the verified COUNCIL_CANONICAL checkout, then retry." >&2; exit 2; }
 fi
 if ! git -C "$COUNCIL_CANONICAL" show origin/main:vscode/CLAUDE.md > "$canonical_dir/council/vscode/CLAUDE.md" 2>/dev/null; then
     cp "$COUNCIL_CANONICAL/vscode/CLAUDE.md" "$canonical_dir/council/vscode/CLAUDE.md" 2>/dev/null \
@@ -58,7 +58,7 @@ fi
 # Build target list:
 #   1. Council canonical files (from origin/main via git show)
 #   2. Sibling repos (officium, watch, phone, mcp, constitution, distro-work, atlas, tabbyAPI)
-#   3. Workspace root CLAUDE.md (resolves dotfiles symlink)
+#   3. Workspace root AGENTS.md / CLAUDE.md (resolves dotfiles symlinks)
 #
 # Worktree dirs (alpha hapax-council/, delta hapax-council--*) are excluded
 # from auto-discovery because their working-tree state is not authoritative.
@@ -83,23 +83,25 @@ done < <(
         | sort -u
 )
 
-# Filter out missing files and dedupe.
+# Filter out missing files and dedupe by resolved target, preserving the first
+# discovered name (AGENTS sorts before CLAUDE for the canonical/alias pair).
 filtered=()
 seen=()
 for t in "${targets[@]}"; do
     [[ -e "$t" ]] || continue
+    resolved=$(realpath -e -- "$t") || exit 2
     skip=0
     for s in "${seen[@]}"; do
-        if [[ "$s" == "$t" ]]; then skip=1; break; fi
+        if [[ "$s" == "$resolved" ]]; then skip=1; break; fi
     done
     [[ $skip -eq 0 ]] || continue
-    seen+=("$t")
+    seen+=("$resolved")
     filtered+=("$t")
 done
 targets=("${filtered[@]}")
 
 if [[ ${#targets[@]} -eq 0 ]]; then
-    echo "monthly-claude-md-audit: no CLAUDE.md files found under $WORKSPACE" >&2
+    echo "monthly-claude-md-audit: no AGENTS.md or CLAUDE.md files found under $WORKSPACE" >&2
     exit 2
 fi
 
