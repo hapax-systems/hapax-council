@@ -34,6 +34,7 @@ outage bypass.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
 import os
@@ -61,14 +62,20 @@ from github_pr_status import (  # noqa: E402
     ListingRoute,
     PrListingUnavailable,
     RestIndeterminateError,
+    _pull_status_row_from_rest,
     _rest_get_json,
+    choose_transport,
     fetch_status_check_rollup_rest,
+    get_pr_status_graphql,
     get_pull_rest,
+    graphql_pool_blocked,
     list_open_pr_statuses,
     listing_unavailable_detail,
     pr_reference_reasons,
+    rate_snapshot,
     read_ref_name,
     rest_merge_state_status,
+    rest_pool_blocked,
     run_graphql_rate_aware,
 )
 
@@ -110,6 +117,7 @@ DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "h
 DEFAULT_REPORT_PATH = (
     Path.home() / ".cache" / "hapax" / "orchestration" / "cc-pr-autoqueue-report.json"
 )
+DEFAULT_ROTATION_STATE_PATH = DEFAULT_REPORT_PATH.with_name("cc-pr-autoqueue-examined.json")
 DEFAULT_ADMISSION_GOVERNOR_PATH = Path.home() / ".cache" / "hapax" / "pr-admission-governor.yaml"
 KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 EXPECTED_MERGE_METHOD_OVERRIDE_ENV = "HAPAX_CC_PR_AUTOQUEUE_EXPECTED_MERGE_METHOD"
@@ -1211,6 +1219,238 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
     )
 
 
+def _list_candidate_pages(
+    *, transport: str, repo: str, repo_root: Path, runner: Any
+) -> list[dict[str, Any]]:
+    """List identities without per-PR hydration; require transport pagination evidence."""
+    owner, name = repo.split("/", 1)
+    query = (
+        "query($owner:String!,$name:String!,$cursor:String){"
+        "repository(owner:$owner,name:$name){defaultBranchRef{name}"
+        "pullRequests(states:OPEN,first:100,after:$cursor,"
+        "orderBy:{field:CREATED_AT,direction:ASC}){totalCount "
+        "pageInfo{hasNextPage endCursor} nodes{number headRefOid headRefName baseRefName}}}}"
+    )
+    rows: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    cursors: set[str] = set()
+    cursor = None
+    page = 1
+    total = None
+    while True:
+        if transport == "rest":
+            cmd = [
+                "gh",
+                "api",
+                "--method",
+                "GET",
+                "-H",
+                "Accept: application/vnd.github+json",
+                f"repos/{repo}/pulls",
+                "--include",
+                "-f",
+                "state=open",
+                "-f",
+                "sort=created",
+                "-f",
+                "direction=asc",
+                "-f",
+                "per_page=100",
+                "-f",
+                f"page={page}",
+            ]
+        else:
+            cmd = [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"name={name}",
+            ]
+            if cursor is not None:
+                cmd.extend(["-f", f"cursor={cursor}"])
+        try:
+            proc = runner(
+                cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60
+            )
+            if proc.returncode:
+                raise RestIndeterminateError(f"{transport}_listing_failed")
+            body = proc.stdout
+            if transport == "rest":
+                parts = re.split(r"\r?\n\r?\n", body, maxsplit=1)
+                if len(parts) != 2 or not re.match(r"HTTP/\S+ 200\b", parts[0]):
+                    raise RestIndeterminateError("rest_pagination_headers_missing")
+                headers, body = parts
+                links = re.findall(r"^link:\s*(.+)$", headers, re.IGNORECASE | re.MULTILINE)
+                relations = []
+                for link in links:
+                    pattern = r'<[^>]+>;\s*rel="(next|prev|first|last)"'
+                    if re.sub(pattern, "", link).strip(", \r\t"):
+                        raise RestIndeterminateError("rest_pagination_link_invalid")
+                    relations.extend(re.findall(pattern, link))
+                # GitHub's terminal-page signal is a complete HTTP response with no
+                # rel="next" (including no Link header for a single-page estate).
+                has_next = "next" in relations
+                batch = json.loads(body)
+            else:
+                payload = json.loads(body)
+                if payload.get("errors"):
+                    raise RestIndeterminateError("graphql_listing_errors")
+                repository = payload["data"]["repository"]
+                connection = repository["pullRequests"]
+                info = connection["pageInfo"]
+                has_next = info["hasNextPage"]
+                count = connection["totalCount"]
+                if type(has_next) is not bool or type(count) is not int or count < 0:
+                    raise RestIndeterminateError("graphql_pagination_invalid")
+                if total is not None and count != total:
+                    raise RestIndeterminateError("open_pr_count_changed_during_listing")
+                total = count
+                batch = connection["nodes"]
+                if has_next:
+                    cursor = info["endCursor"]
+                    if not isinstance(cursor, str) or not cursor or cursor in cursors:
+                        raise RestIndeterminateError("graphql_pagination_cursor_invalid")
+                    cursors.add(cursor)
+        except (
+            OSError,
+            subprocess.TimeoutExpired,
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+        ) as exc:
+            raise RestIndeterminateError(f"{transport}_listing_indeterminate") from exc
+        if not isinstance(batch, list) or len(batch) > 100 or (has_next and not batch):
+            raise RestIndeterminateError(f"{transport}_pagination_invalid")
+        for item in batch:
+            number = item.get("number") if isinstance(item, dict) else None
+            if type(number) is not int or number <= 0 or number in seen:
+                raise RestIndeterminateError("open_pr_identity_invalid_or_duplicate")
+            seen.add(number)
+            if transport == "graphql":
+                default_ref = repository.get("defaultBranchRef") or {}
+                item["baseRepoDefaultBranch"] = default_ref.get("name")
+            rows.append(item)
+        if not has_next:
+            if total is not None and len(rows) != total:
+                raise RestIndeterminateError("open_pr_listing_truncated")
+            return rows
+        page += 1
+
+
+def _select_pr_window(
+    rows: list[dict[str, Any]], *, repo: str, limit: int, state_path: Path, persist: bool
+) -> list[dict[str, Any]]:
+    """Atomically reserve the oldest PRs so restarts/overlapping ticks cannot starve them."""
+    if limit <= 0:
+        raise ValueError("autoqueue limit must be positive")
+
+    def select() -> list[dict[str, Any]]:
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            state = {"schema_version": 1, "repositories": {}}
+        if state["schema_version"] != 1 or not isinstance(state["repositories"], dict):
+            raise ValueError("invalid rotation state")
+        previous = state["repositories"].get(repo, {})
+        examined = {
+            int(number): datetime.fromisoformat(stamp) for number, stamp in previous.items()
+        }
+        if any(stamp.tzinfo is None for stamp in examined.values()):
+            raise ValueError("rotation timestamps must include a timezone")
+        oldest = datetime.min.replace(tzinfo=UTC)
+        selected = sorted(
+            rows, key=lambda row: (examined.get(row["number"], oldest), row["number"])
+        )[:limit]
+        if persist:
+            # Keep order even when ticks share a timestamp or the wall clock moves back.
+            now = max(
+                datetime.now(UTC),
+                max(examined.values(), default=oldest) + timedelta(microseconds=1),
+            )
+            live = {row["number"] for row in rows}
+            examined = {number: stamp for number, stamp in examined.items() if number in live}
+            examined.update({row["number"]: now for row in selected})
+            state["repositories"][repo] = {
+                str(number): stamp.isoformat() for number, stamp in examined.items()
+            }
+            temporary = state_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+            temporary.replace(state_path)
+        return selected
+
+    try:
+        if not persist:
+            return select()
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        with state_path.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return select()
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError) as exc:
+        raise RestIndeterminateError("rotation_state_unavailable_or_invalid") from exc
+
+
+def fetch_rotating_open_prs(
+    *, repo: str, repo_root: Path, limit: int, state_path: Path, persist: bool, runner: Any
+) -> tuple[list[PullRequest], ListingRoute, int]:
+    """Prove the complete estate, reserve at most limit identities, then hydrate only those."""
+    snapshot = rate_snapshot(repo_root=repo_root, runner=runner)
+    transport, reason = choose_transport(repo_root=repo_root, runner=runner, snapshot=snapshot)
+    if transport is None:
+        raise RestIndeterminateError("both_rate_pools_below_floor")
+    rest_blocked = rest_pool_blocked(snapshot) is not None
+    try:
+        rows = _list_candidate_pages(
+            transport=transport, repo=repo, repo_root=repo_root, runner=runner
+        )
+    except RestIndeterminateError:
+        fallback = "rest" if transport == "graphql" else "graphql"
+        if (fallback == "rest" and rest_blocked) or (
+            fallback == "graphql" and graphql_pool_blocked(snapshot) is not None
+        ):
+            raise
+        rows = _list_candidate_pages(
+            transport=fallback, repo=repo, repo_root=repo_root, runner=runner
+        )
+        reason = f"{transport}_listing_indeterminate_{fallback}_fallback"
+        transport = fallback
+    selected = _select_pr_window(
+        rows, repo=repo, limit=limit, state_path=state_path, persist=persist
+    )
+    raw = []
+    for item in selected:
+        if transport == "rest":
+            row = _pull_status_row_from_rest(
+                item,
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+                include_files=True,
+                include_review_decision=True,
+            )
+        else:
+            row = get_pr_status_graphql(
+                item["number"],
+                repo=repo,
+                repo_root=repo_root,
+                runner=runner,
+                expected_head_sha=item.get("headRefOid"),
+            )
+            if row is None:
+                raise RestIndeterminateError("selected_pr_hydration_failed")
+            row.update({key: item.get(key) for key in ("baseRefName", "baseRepoDefaultBranch")})
+            row["refEvidenceReasons"] = pr_reference_reasons(item)
+        raw.append(row)
+    route = ListingRoute(transport=transport, rest_blocked=rest_blocked, reason=reason)
+    prs, _ = _hydrate_open_prs(raw, route, repo=repo, repo_root=repo_root, runner=runner)
+    return prs, route, len(rows)
+
+
 def fetch_open_prs(
     *,
     repo: str = DEFAULT_REPO,
@@ -1250,6 +1490,12 @@ def fetch_open_prs(
             listing_unavailable_detail(exc),
         )
         return [], None
+    return _hydrate_open_prs(raw, route, repo=repo, repo_root=repo_root, runner=runner)
+
+
+def _hydrate_open_prs(
+    raw: list[dict[str, Any]], route: ListingRoute, *, repo: str, repo_root: Path, runner: Any
+) -> tuple[list[PullRequest], ListingRoute]:
     if not raw:
         # A successful listing with zero rows is a genuinely quiet estate, NOT an unavailable
         # one. Returning `None` here made the caller skip the cycle on a correct measurement —
@@ -3415,6 +3661,7 @@ def _build_storm_mode(
     failed_recent_merge_group_runs: tuple[dict[str, Any], ...],
     throttle_decision: ThrottleDecision,
     recommended_max_entries_to_build: int,
+    open_pr_count: int | None = None,
 ) -> StormMode:
     blocked_queued = tuple(
         decision.as_dict()
@@ -3426,7 +3673,7 @@ def _build_storm_mode(
     return StormMode(
         active=active,
         reasons=tuple(reasons),
-        open_pr_count=len(prs),
+        open_pr_count=len(prs) if open_pr_count is None else open_pr_count,
         queued_pr_count=len(queued_prs),
         blocked_queued_pr_count=len(blocked_queued),
         blocked_queued_prs=blocked_queued,
@@ -3460,11 +3707,19 @@ def run_reconciler(
     storm_recent_run_limit: int = DEFAULT_STORM_RECENT_RUN_LIMIT,
     auto_arm_ledger_path: Path | None = None,
     report_path: Path | None = None,
+    rotation_state_path: Path | None = None,
     admission_governor_path: Path = DEFAULT_ADMISSION_GOVERNOR_PATH,
     expected_auto_merge_method_override: str | None = None,
     expected_auto_merge_method_source: str | None = None,
     runner: Any = None,
 ) -> dict[str, Any]:
+    """Reconcile one batch; timer/CLI callers provide rotation_state_path across ticks.
+
+    Without a state path, the one-shot API retains its bounded snapshot behavior.
+    Dry runs can preview the persistent window but never advance it.
+    """
+    if limit <= 0:
+        raise ValueError("autoqueue limit must be positive")
     now = datetime.now(UTC)
     if any(os.environ.get(name) == "1" for name in KILLSWITCH_ENVS):
         report = {
@@ -3518,9 +3773,20 @@ def run_reconciler(
             runner=runner,
         )
     try:
-        prs, listing_route = fetch_open_prs(
-            repo=repo, repo_root=repo_root, limit=limit, runner=runner
-        )
+        if rotation_state_path is not None:
+            prs, listing_route, open_pr_count = fetch_rotating_open_prs(
+                repo=repo,
+                repo_root=repo_root,
+                limit=limit,
+                state_path=rotation_state_path,
+                persist=apply,
+                runner=runner or subprocess.run,
+            )
+        else:
+            prs, listing_route = fetch_open_prs(
+                repo=repo, repo_root=repo_root, limit=limit, runner=runner
+            )
+            open_pr_count = len(prs)
     except RestIndeterminateError as exc:
         report = {
             "repo": repo,
@@ -3618,7 +3884,7 @@ def run_reconciler(
         write_quarantine(quarantine_path, quarantine_reconciliation.records)
     throttle_decision = decide_fleet_throttle(
         lineage_records,
-        open_pr_count=len(prs),
+        open_pr_count=open_pr_count,
         policy=throttle_policy,
         now=now,
         quarantined_prs=quarantined_prs,
@@ -3641,6 +3907,7 @@ def run_reconciler(
         failed_recent_merge_group_runs=failed_recent_merge_group_runs,
         throttle_decision=throttle_decision,
         recommended_max_entries_to_build=recommended_entries,
+        open_pr_count=open_pr_count,
     )
     decisions = preliminary_decisions
     if storm_mode_enabled and storm_mode.active:
@@ -3675,6 +3942,7 @@ def run_reconciler(
             failed_recent_merge_group_runs=failed_recent_merge_group_runs,
             throttle_decision=throttle_decision,
             recommended_max_entries_to_build=recommended_entries,
+            open_pr_count=open_pr_count,
         )
 
     mutation_results: list[dict[str, Any]] = []
@@ -3949,7 +4217,9 @@ def run_reconciler(
             ),
         },
         "lineage_ledger_path": str(lineage_ledger_path) if lineage_ledger_path else None,
-        "open_pr_count": len(prs),
+        "open_pr_count": open_pr_count,
+        "examined_pr_count": len(prs),
+        "rotation_state_path": str(rotation_state_path) if rotation_state_path else None,
         "queued_prs": sorted(queued_prs),
         "decisions": [decision.as_dict() for decision in decisions],
         "counts": {
@@ -3986,7 +4256,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", default=DEFAULT_REPO, help="GitHub repo, owner/name.")
     parser.add_argument("--repo-root", type=Path, default=default_repo_root())
     parser.add_argument("--vault-root", type=Path, default=DEFAULT_VAULT_ROOT)
-    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--limit", type=int, default=100, help="Maximum PRs examined per tick.")
+    parser.add_argument(
+        "--rotation-state-path",
+        type=Path,
+        default=DEFAULT_ROTATION_STATE_PATH,
+        help="Persistent examination timestamps beside the autoqueue report.",
+    )
     parser.add_argument(
         "--allow-legacy-task-metadata",
         action="store_true",
@@ -4073,6 +4349,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--verbose", "-v", action="count", default=0)
     args = parser.parse_args(argv)
+    if args.limit <= 0:
+        parser.error("--limit must be positive")
 
     level = logging.WARNING
     if args.verbose == 1:
@@ -4110,6 +4388,7 @@ def main(argv: list[str] | None = None) -> int:
         storm_failed_merge_group_threshold=args.storm_failed_merge_group_threshold,
         storm_recent_run_limit=args.storm_recent_run_limit,
         report_path=None if args.no_write_report else args.report_path,
+        rotation_state_path=args.rotation_state_path,
         admission_governor_path=args.admission_governor_path,
         expected_auto_merge_method_override=expected_method_override,
         expected_auto_merge_method_source=expected_method_source,
