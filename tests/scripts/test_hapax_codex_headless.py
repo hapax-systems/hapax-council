@@ -567,6 +567,14 @@ def test_codex_headless_treats_appendix_alias_as_local_on_appendix(tmp_path: Pat
     workdir = tmp_path / "worktree"
     workdir.mkdir()
 
+    # An older child checkout must not shadow the deployed receipt producer.
+    (workdir / "shared").mkdir()
+    (workdir / "shared/__init__.py").write_text("")
+    (workdir / "shared/execution_observer.py").write_text("raise SystemExit(0)\n")
+    log_dir = cache / "codex-headless/cx-amber"
+    log_dir.mkdir(parents=True)
+    (log_dir / "output.jsonl").write_text("predecessor evidence\n")
+
     bin_dir = tmp_path / "bin"
     ssh_called = tmp_path / "ssh-called"
     codex_args = tmp_path / "codex-args.txt"
@@ -621,6 +629,8 @@ exit 0
     assert observed["owned_native_process"] is True
     assert observed["malformed_lines"] == 0
     assert "harmless native warning" in Path(observed["diagnostics_path"]).read_text()
+    assert (log_dir / "output.jsonl").is_symlink()
+    assert [p.read_text() for p in log_dir.glob("*.predecessor.log")] == ["predecessor evidence\n"]
 
 
 @pytest.mark.parametrize("termination", ["default", "ignore", "exit143"])

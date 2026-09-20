@@ -127,6 +127,20 @@ output=$(cd "$discovery" && "$SCRIPT" 2>&1); rc=$?
 assert "auto-discovered nested AGENTS rot exits 1" 1 "$rc"
 assert "nested finding names canonical file" 1 "$(printf '%s' "$output" | grep -c '^./nested/AGENTS.md:')"
 
+# --- extracted authored prose, excluding ordinary docs and binding JSON ---
+printf 'Stable instructions.\n' > "$discovery/nested/AGENTS.md"
+mkdir -p "$discovery/config/agent-instructions/native" "$discovery/docs/runbooks"
+printf 'currently broken\n' > "$discovery/docs/runbooks/ordinary.md"
+printf 'currently broken\n' > "$discovery/config/agent-instructions/bindings.json"
+output=$(cd "$discovery" && "$SCRIPT" 2>&1); rc=$?
+assert "ordinary docs and binding JSON excluded from prose rotation" 0 "$rc"
+for policy in config/agent-instructions/native/grok.md docs/runbooks/council-domain-context.md; do
+    printf 'currently broken\n' > "$discovery/$policy"
+    output=$(cd "$discovery" && "$SCRIPT" 2>&1); rc=$?
+    assert "extracted policy $policy discovered" 1 "$rc"
+    printf 'Stable instructions.\n' > "$discovery/$policy"
+done
+
 # --- summary ---
 echo
 printf 'tests: %d passed, %d failed\n' "$passes" "$fails"

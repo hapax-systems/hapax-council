@@ -224,3 +224,146 @@ def test_rollback_failure_continues_other_restores_and_retains_both_errors(tmp_p
     assert not (tmp_path / ".claude/CLAUDE.md").exists()
     assert not (tmp_path / ".config/hapax/agent-instructions/AGENTS.md").exists()
     assert list((tmp_path / ".config/hapax/agent-instructions/backups").glob("*/preimages.json"))
+
+
+@pytest.mark.parametrize("upgrade", [False, True])
+@pytest.mark.parametrize("foreign_edit", [False, True])
+def test_cli_recovers_failed_transaction_without_current_receipt(
+    tmp_path, monkeypatch, upgrade, foreign_edit
+):
+    home = tmp_path / "home"
+    source = tmp_path / "source"
+    shutil.copytree(ROOT / "config/agent-instructions", source / "config/agent-instructions")
+    state = home / ".config/hapax/agent-instructions"
+    prior_receipt = None
+    if upgrade:
+        installer.install(ROOT, home, revision="predecessor", apply=True)
+        prior_receipt = (state / "current.json").read_bytes()
+    target = home / ".codex/AGENTS.md"
+    prior_body = target.read_bytes() if upgrade else None
+    common = source / "config/agent-instructions/AGENTS.md"
+    common.write_text(common.read_text() + "\nA changed instruction for upgrade.\n")
+    atomic = installer.atomic_write
+    unlink = Path.unlink
+    published = False
+
+    def fail_publication_and_restore(path, body, mode=0o600):
+        nonlocal published
+        if path == target:
+            if published:
+                raise OSError("injected restore failure")
+            atomic(path, body, mode)
+            published = True
+            raise OSError("injected publication failure")
+        atomic(path, body, mode)
+
+    def fail_unlink(path, *args, **kwargs):
+        if path == target:
+            raise OSError("injected restore failure")
+        return unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(installer, "atomic_write", fail_publication_and_restore)
+        fault.setattr(Path, "unlink", fail_unlink)
+        with pytest.raises(OSError, match="publication failure.*rollback incomplete.*next action:"):
+            installer.install(source, home, revision="failed-upgrade", apply=True)
+    pending = json.loads((state / "pending.json").read_text())
+    with pytest.raises(ValueError, match="unresolved instruction transaction"):
+        installer.install(ROOT, home, revision="successor", apply=True)
+    if foreign_edit:
+        target.write_text("intervening authored instruction")
+    monkeypatch.setattr(
+        "sys.argv", ["installer", "--home", str(home), "--restore-backup", pending["backup"]]
+    )
+    assert installer.main() == (1 if foreign_edit else 0)
+    if foreign_edit:
+        assert target.read_text() == "intervening authored instruction"
+        assert (state / "pending.json").exists()
+    else:
+        assert not (state / "pending.json").exists()
+        if upgrade:
+            assert target.read_bytes() == prior_body
+            assert (state / "current.json").read_bytes() == prior_receipt
+        else:
+            assert not target.exists()
+            assert not (state / "current.json").exists()
+
+
+def test_failed_manual_rollback_can_be_retried_after_current_receipt_restored(
+    tmp_path, monkeypatch
+):
+    receipt = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    target = tmp_path / ".codex/AGENTS.md"
+    unlink = Path.unlink
+
+    def fail_one(path, *args, **kwargs):
+        if path == target:
+            raise OSError("restore denied")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        "sys.argv", ["installer", "--home", str(tmp_path), "--restore-backup", receipt["rollback"]]
+    )
+    with monkeypatch.context() as fault:
+        fault.setattr(Path, "unlink", fail_one)
+        assert installer.main() == 1
+    assert not (tmp_path / ".config/hapax/agent-instructions/current.json").exists()
+    assert installer.main() == 0
+    assert not target.exists()
+
+
+def test_rollback_rejects_predecessor_backup_after_successor(tmp_path, monkeypatch):
+    first = installer.install(ROOT, tmp_path, revision="first", apply=True)
+    second = installer.install(ROOT, tmp_path, revision="second", apply=True)
+    monkeypatch.setattr(
+        "sys.argv", ["installer", "--home", str(tmp_path), "--restore-backup", first["rollback"]]
+    )
+    assert installer.main() == 1
+    assert (
+        json.loads((tmp_path / ".config/hapax/agent-instructions/current.json").read_text())
+        == second
+    )
+
+
+@pytest.mark.parametrize("drift", ["none", "missing", "edited", "symlink", "receipt"])
+def test_check_cli_reports_drift_without_mutation(tmp_path, monkeypatch, capsys, drift):
+    installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    target = tmp_path / ".codex/AGENTS.md"
+    if drift == "missing":
+        target.unlink()
+    elif drift == "edited":
+        target.write_text("local edit")
+    elif drift == "symlink":
+        saved = tmp_path / "saved"
+        target.rename(saved)
+        target.symlink_to(saved)
+    elif drift == "receipt":
+        (tmp_path / ".config/hapax/agent-instructions/current.json").unlink()
+    before = {
+        str(p): (p.lstat().st_mtime_ns, p.readlink() if p.is_symlink() else p.read_bytes())
+        for p in tmp_path.rglob("*")
+        if p.is_file() or p.is_symlink()
+    }
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "installer",
+            "--home",
+            str(tmp_path),
+            "--source",
+            str(ROOT),
+            "--source-revision",
+            "fixture",
+            "--check",
+        ],
+    )
+    assert installer.main() == (0 if drift == "none" else 1)
+    result = json.loads(capsys.readouterr().out)
+    assert result["matches"] is (drift == "none")
+    assert result["native_loading"] == "unobserved"
+    after = {
+        str(p): (p.lstat().st_mtime_ns, p.readlink() if p.is_symlink() else p.read_bytes())
+        for p in tmp_path.rglob("*")
+        if p.is_file() or p.is_symlink()
+    }
+    assert after == before

@@ -145,7 +145,13 @@ another release or a missing native global.
 specified Git commit. It does not render from an arbitrarily dirty checkout.
 Publication backs up originals, detects overlapping destinations, verifies
 readback and restores attempted writes on failure. Rollback errors retain the
-backup and report both failures. The current receipt records hashes, byte counts
+backup and report both failures with a copyable recovery command. A pending
+transaction records known postimages before publication; it blocks a successor
+installation until recovery. Recovery checks every destination against its saved
+preimage or known postimage before restoring anything. Intervening edits require
+reconciliation, including edits to a predecessor receipt. This also covers a
+failed first install or interrupted rollback where no current receipt exists.
+The current receipt records hashes, byte counts
 and source revision; it deliberately says native loading is unobserved.
 No coordinator restart or trust change is required. Existing sessions are not
 claimed to have reloaded the new body.
@@ -160,7 +166,9 @@ git archive "$instruction_revision" config/agent-instructions \
 python3 "$instruction_stage/scripts/install-agent-instructions.py" \
   --source "$instruction_stage" --home /absolute/target/home \
   --source-revision "$instruction_revision"
-# Add --apply only when activating the inspected result.
+# Add --apply when activating the inspected result.
+# Use --check with the same source, home, revision and binding options to
+# report drift without writes (exit 1 for missing/changed bindings or receipt).
 ```
 
 The default binds the explicit home's default native paths. Ambient `CODEX_HOME`,
@@ -174,7 +182,18 @@ To restore the latest install, pass its `current.json` rollback path to
 `--restore-backup PATH --home /absolute/target/home`. This restores original file
 contents, modes, symlinks, absence and the predecessor receipt. The CLI refuses
 if a successor install or changed output needs reconciliation. Backups of native
-settings remain local and private; never publish their contents.
+settings remain local and private; never publish their contents. If publication
+or rollback failed, use the recovery command in its error; `pending.json`
+identifies that transaction even after `current.json` has been restored.
+
+`--check` is an explicit read-only diagnostic, not a background drift monitor.
+It compares expected payloads and the current source receipt, identifies pending
+recovery, and does not assert native loading. Re-run it after deployment or
+native configuration edits. Policy protection, governance review, prose rotation
+and assertion extraction include the authored shared/native and domain sources.
+The installer and binding JSON receive governance protection but not prose
+rotation. Ordinary runbooks and generated evidence remain outside that policy
+authorship boundary.
 
 ## Declared inputs and native lifecycle
 
@@ -197,7 +216,10 @@ Codex headless execution now gives each launch a fresh native JSON stream and
 separate stderr. Its supervisor waits for the actual child, emits a create-once
 lifecycle receipt, and the existing methodology-dispatch receipt consumes that
 exact path. `output.jsonl` remains a compatibility symlink; predecessor files are
-retained. Requested host names, an SSH transport exit, PID existence and a
+retained. The observer runs from its deployed absolute path in isolated Python
+mode, so an older child checkout cannot shadow it. A reader holding the previous
+`output.jsonl` file descriptor keeps the previous stream; consumers needing the
+new launch should use the receipt's exact stream path. Requested host names, an SSH transport exit, PID existence and a
 successful interactive launcher do not establish native completion.
 
 Completion needs an unambiguous native session, successful terminal event, clean
@@ -214,3 +236,53 @@ model/effort identity; this change does not create a competing identity source.
 
 Container construction and replay are documented in
 [Native harness substrates](native-harness-substrates.md).
+
+## Manual native foreign-instruction fixture
+
+Use existing native Linux executables, with an output directory that does not
+exist. Substitute the explicitly selected Grok binary path; the Muse path below
+identifies the binary used for the original scratch observation.
+
+```bash
+python3 scripts/probe-native-foreign-instructions.py \
+  --grok /absolute/path/to/native/grok \
+  --muse /absolute/path/to/native/muse-bin-1.3.0-R3401.1 \
+  --output-dir /tmp/native-foreign-instructions-replay
+```
+
+The script rejects shell wrappers, creates four isolated homes and Git projects,
+and supplies explicit fixture instructions. Its child environment does not inherit
+host credentials, provider settings, native-home overrides or XDG configuration.
+It neither installs clients nor edits live configuration. Native initialization
+may write state inside the fixtures. This is environment isolation, not an OS
+sandbox or proof that a native client cannot consult system-wide paths.
+
+Grok runs `inspect --json` with process-local `GROK_FOLDER_TRUST=0` in its
+isolated HOME/GROK_HOME. This bypasses the folder-trust prompt only for that
+fixture process; it changes no estate trust setting.
+The cases set `compat.claude.agents=true/rules=false` and
+`agents=false/rules=true`. Expected active paths include native global/project
+AGENTS and root project CLAUDE in both cases. Foreign global and hidden project
+CLAUDE follow `agents`; the foreign global `rules/unique.md` follows `rules`.
+Entries marked disabled are excluded from the active set; the original inspection
+output remains intact.
+
+Muse uses its echo provider with approval judging, shell and write tools disabled,
+and trusts only its fixture workspace. Both cases contain native, Claude and Codex
+globals; only `context.foreign_personal_rules` changes, while
+`foreign_personal_skills=true`. A 40×120 PTY answers cursor-position requests and
+sends `/rules` and Enter separately, then `/exit` and Enter separately. Capture
+and child cleanup are bounded. The script sends no inference prompt.
+
+Inspect `summary.json` and its `raw_logs` paths. Exit zero means all four fixture
+observations matched. Muse requires the actual rules report, its native user rule,
+and explicit “not read” reports for both foreign globals; a prompt or completion
+menu alone is insufficient. `terminated` records whether Muse required cleanup
+after `/exit`. Missing, changed or timed-out evidence exits nonzero and retains
+raw output for inspection.
+
+These are discovery/report observations for the selected binaries and fixtures.
+They do not establish content delivery, semantic uptake, live-session readiness,
+quota headroom, or route admission. The summary records
+`semantic_uptake: unobserved` and `may_authorize: false`. A missing native global,
+other releases, and foreign skill loading remain outside this fixture.

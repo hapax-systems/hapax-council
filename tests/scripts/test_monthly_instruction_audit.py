@@ -130,3 +130,39 @@ def test_monthly_audit_refuses_missing_canonical_content(
     assert "working-tree fallback also failed; restore AGENTS.md" in result.stderr
     assert "clean" not in result.stdout
     assert not notification_log.exists()
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        "config/agent-instructions/AGENTS.md",
+        "config/agent-instructions/native/grok.md",
+        "docs/runbooks/council-domain-context.md",
+    ],
+)
+@pytest.mark.parametrize("fallback", [False, True])
+def test_extracted_policy_uses_canonical_snapshot(audit, policy, fallback):
+    council, env, _ = audit
+    target = council / policy
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("currently broken\n")
+    if fallback:
+        git(council, env, "update-ref", "-d", "refs/remotes/origin/main")
+    else:
+        git(council, env, "add", ".")
+        git(
+            council,
+            env,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "extracted policy",
+        )
+        git(council, env, "update-ref", "refs/remotes/origin/main", "HEAD")
+        target.write_text("Clean working-tree successor.\n")
+    result = run_audit(env)
+    assert result.returncode == 1, result.stderr
+    assert f"/council/{policy}: [broken-claim] 1:" in result.stderr

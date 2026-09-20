@@ -44,12 +44,47 @@ def test_existing_assertion_reader_follows_alias_once(tmp_path: Path, resumable:
         assert reader(tmp_path, source_kind="claude_md") == []
 
 
-@pytest.mark.parametrize("path", ["AGENTS.md", "nested/AGENTS.md", "CLAUDE.md"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "AGENTS.md",
+        "nested/AGENTS.md",
+        "CLAUDE.md",
+        "nested/CLAUDE.md",
+        "config/agent-instructions/AGENTS.md",
+        "config/agent-instructions/native/claude.md",
+        "config/agent-instructions/native/grok.md",
+        "config/agent-instructions/native/kimi.md",
+        "config/agent-instructions/native/vibe.md",
+        "config/agent-instructions/native/future-client.md",
+        "config/agent-instructions/bindings.json",
+        "docs/runbooks/council-domain-context.md",
+        "scripts/install-agent-instructions.py",
+    ],
+)
 def test_codeowners_consumer_protects_instruction_paths(path: str) -> None:
     assert _is_governance_protected_path(path)
 
 
-@pytest.mark.parametrize("path", ["docs/AGENTS.md.example", "agents/helper.py"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/AGENTS.md.example",
+        "docs/CLAUDE.md.example",
+        "agents/helper.py",
+        "docs/runbooks/ordinary.md",
+        "config/ordinary.yaml",
+        "config/agent-instructions/README.md",
+        "config/agent-instructions/native/claude.md.example",
+        "config/agent-instructions/native-extra/claude.md",
+        "config/agent-instructions/bindings.json.example",
+        "config/agent-instructions-extra/bindings.json",
+        "docs/runbooks/council-domain-context.md.example",
+        "docs/runbooks/other-council-domain-context.md",
+        "scripts/install-agent-instructions.py.example",
+        "scripts/other-install-agent-instructions.py",
+    ],
+)
 def test_codeowners_consumer_does_not_classify_lookalikes(path: str) -> None:
     assert not _is_governance_protected_path(path)
 

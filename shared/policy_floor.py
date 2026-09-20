@@ -37,6 +37,10 @@ _AXIOM_PATH_RE = re.compile(
     r"(?:^|/)(?:axioms|shared/governance)/"
     r"|(?:^|/)CODEOWNERS$"
     r"|(?:^|/)(?:CLAUDE|AGENTS)\.md$"
+    r"|(?:^|/)config/agent-instructions/native/[^/]+\.md$"
+    r"|(?:^|/)config/agent-instructions/bindings\.json$"
+    r"|(?:^|/)docs/runbooks/council-domain-context\.md$"
+    r"|(?:^|/)scripts/install-agent-instructions\.py$"
     r"|config/pipewire/"
 )
 

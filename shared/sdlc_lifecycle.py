@@ -519,6 +519,11 @@ SENSITIVE_PATH_MARKERS = (
     "codeowners",
     "claude.md",
     "agents.md",
+    # Native instruction sources use the existing directory-marker seam.
+    "config/agent-instructions/native/",
+    "config/agent-instructions/bindings.json",
+    "docs/runbooks/council-domain-context.md",
+    "scripts/install-agent-instructions.py",
     "hapax-constitution",
     # Operator-coupled broadcast/visual surfaces (operator directive 2026-06-10):
     # correctness depends on continuous operator aesthetic/directorial judgment,

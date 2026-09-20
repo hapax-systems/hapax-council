@@ -13,6 +13,8 @@ on:
     paths:
       - "**/CLAUDE.md"
       - "**/AGENTS.md"
+      - "config/agent-instructions/native/*.md"
+      - "docs/runbooks/council-domain-context.md"
       - "scripts/check-claude-md-rot.sh"
       - "tests/test_check_claude_md_rot.sh"
   pull_request:
@@ -20,6 +22,8 @@ on:
     paths:
       - "**/CLAUDE.md"
       - "**/AGENTS.md"
+      - "config/agent-instructions/native/*.md"
+      - "docs/runbooks/council-domain-context.md"
       - "scripts/check-claude-md-rot.sh"
       - "tests/test_check_claude_md_rot.sh"
 

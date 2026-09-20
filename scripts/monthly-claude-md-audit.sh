@@ -43,9 +43,11 @@ fi
 canonical_dir=$(mktemp -d)
 trap 'rm -rf "$canonical_dir"' EXIT
 
+canonical_from_git=1
 mkdir -p "$canonical_dir/council/vscode"
 if ! git -C "$COUNCIL_CANONICAL" show origin/main:AGENTS.md > "$canonical_dir/council/AGENTS.md" 2>/dev/null; then
     echo "monthly-claude-md-audit: git show origin/main:AGENTS.md failed; verify COUNCIL_CANONICAL=$COUNCIL_CANONICAL, fetch origin/main in that checkout if appropriate, then retry. Trying working-tree content." >&2
+    canonical_from_git=0
     # Fall back to the working tree.
     cp "$COUNCIL_CANONICAL/AGENTS.md" "$canonical_dir/council/AGENTS.md" 2>/dev/null \
         || { echo "monthly-claude-md-audit: working-tree fallback also failed; restore AGENTS.md in the verified COUNCIL_CANONICAL checkout, then retry." >&2; exit 2; }
@@ -54,6 +56,31 @@ if ! git -C "$COUNCIL_CANONICAL" show origin/main:vscode/CLAUDE.md > "$canonical
     cp "$COUNCIL_CANONICAL/vscode/CLAUDE.md" "$canonical_dir/council/vscode/CLAUDE.md" 2>/dev/null \
         || { echo "monthly-claude-md-audit: vscode/CLAUDE.md fallback failed" >&2; exit 2; }
 fi
+
+# Extracted governing prose belongs to the same canonical snapshot. Binding
+# JSON and the installer are governance inputs, not prose-rotation targets.
+policy_paths=()
+if [[ $canonical_from_git -eq 1 ]]; then
+    mapfile -t policy_paths < <(git -C "$COUNCIL_CANONICAL" ls-tree -r --name-only origin/main -- \
+        config/agent-instructions/AGENTS.md config/agent-instructions/native/ \
+        docs/runbooks/council-domain-context.md | grep -E '\.md$')
+else
+    for policy in "$COUNCIL_CANONICAL/config/agent-instructions/AGENTS.md" \
+        "$COUNCIL_CANONICAL"/config/agent-instructions/native/*.md \
+        "$COUNCIL_CANONICAL/docs/runbooks/council-domain-context.md"; do
+        [[ -f "$policy" ]] && policy_paths+=("${policy#"$COUNCIL_CANONICAL/"}")
+    done
+fi
+for policy in "${policy_paths[@]}"; do
+    mkdir -p "$(dirname "$canonical_dir/council/$policy")"
+    if [[ $canonical_from_git -eq 1 ]]; then
+        git -C "$COUNCIL_CANONICAL" show "origin/main:$policy" > "$canonical_dir/council/$policy" \
+            || { echo "monthly-claude-md-audit: cannot read $policy from origin/main; verify the canonical ref, then retry" >&2; exit 2; }
+    else
+        cp "$COUNCIL_CANONICAL/$policy" "$canonical_dir/council/$policy" \
+            || { echo "monthly-claude-md-audit: cannot stage $policy; restore the canonical working-tree file, then retry" >&2; exit 2; }
+    fi
+done
 
 # Build target list:
 #   1. Council canonical files (from origin/main via git show)
@@ -66,6 +93,10 @@ targets=(
     "$canonical_dir/council/AGENTS.md"
     "$canonical_dir/council/vscode/CLAUDE.md"
 )
+
+for policy in "${policy_paths[@]}"; do
+    targets+=("$canonical_dir/council/$policy")
+done
 
 while IFS= read -r f; do
     targets+=("$f")

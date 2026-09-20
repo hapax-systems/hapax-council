@@ -1,3 +1,5 @@
+# Historical first-slice observations at the source revision below.
+# Current compact policy and substrate replay: native-harness-reductions-20260920.yaml.
 recorded_date: '2026-09-20'
 scope: Isolated Linux compatibility binding; native startup receipts, no model request
   or semantic-compliance claim.

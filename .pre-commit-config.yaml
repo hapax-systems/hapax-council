@@ -23,7 +23,7 @@ repos:
         name: Agent instruction rotation policy check
         entry: scripts/check-claude-md-rot.sh
         language: script
-        files: (^|/)(AGENTS|CLAUDE)\.md$
+        files: (^|/)(AGENTS|CLAUDE)\.md$|^config/agent-instructions/native/.*\.md$|^docs/runbooks/council-domain-context\.md$
         pass_filenames: true
       - id: lrr-frozen-files
         name: LRR research-condition frozen-files enforcement

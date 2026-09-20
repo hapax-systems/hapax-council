@@ -56,7 +56,7 @@ else
     mapfile -t targets < <(
         find . \
             \( -path './.git' -o -path './node_modules' -o -path './.venv' -o -path './target' -o -path './build' \) -prune \
-            -o \( -name AGENTS.md -o -name CLAUDE.md \) -type f -print \
+            -o \( -name AGENTS.md -o -name CLAUDE.md -o -path "*/config/agent-instructions/native/*.md" -o -path "*/docs/runbooks/council-domain-context.md" \) -type f -print \
             | sort
     )
 fi

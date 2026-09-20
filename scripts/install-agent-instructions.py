@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import stat
 import sys
 import tempfile
@@ -42,9 +43,15 @@ def render(source: Path, names: list[str] | None = None) -> dict[str, tuple[dict
         )
         payload = body.encode()
         if len(body) > binding.get("max_chars", sys.maxsize):
-            raise ValueError(f"{name}: instruction character limit exceeded")
+            raise ValueError(
+                f"{name}: instruction character limit exceeded; reduce shared/native content "
+                "or move domain guidance to a scoped reference, then retry"
+            )
         if len(payload) > binding.get("max_bytes", sys.maxsize):
-            raise ValueError(f"{name}: instruction byte limit exceeded")
+            raise ValueError(
+                f"{name}: instruction byte limit exceeded; reduce shared/native content "
+                "or move domain guidance to a scoped reference, then retry"
+            )
         rendered[name] = (binding, payload)
     return rendered
 
@@ -150,6 +157,68 @@ def restore(backup: Path, indexes: list[int] | None = None) -> None:
         raise OSError(f"rollback incomplete; retained backup {backup}: {'; '.join(errors)}")
 
 
+def recovery_command(home: Path, backup: Path) -> str:
+    return shlex.join(
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--home",
+            str(home),
+            "--restore-backup",
+            str(backup),
+        ]
+    )
+
+
+def recover_pending(state: Path, backup: Path) -> None:
+    """Recover only this unresolved transaction's preimages or known postimages.
+
+    The pending record is written before publication. A failed first install,
+    upgrade or rollback remains recoverable even if current.json was restored.
+    All destinations are checked before any restore; foreign edits narrow the
+    action to manual reconciliation. Installers refuse successors while pending.
+    """
+    pending = json.loads((state / "pending.json").read_text())
+    if Path(pending["backup"]).resolve() != backup.resolve():
+        raise ValueError("backup is not the pending transaction; recover that transaction first")
+    originals = json.loads((backup / "preimages.json").read_text())
+    for index, (item, post) in enumerate(zip(originals, pending["postimages"], strict=True)):
+        path = Path(item["path"])
+        if matches_preimage(path, item, backup, index):
+            continue
+        if preimage(path) != {"kind": "file", "mode": 0o600} or digest(path.read_bytes()) != post:
+            raise ValueError(
+                f"transaction output changed; reconcile against retained preimage before recovery: {path}"
+            )
+    restore(backup)
+    (state / "pending.json").unlink()
+
+
+def check_bindings(receipt: dict, home: Path) -> dict:
+    """Read-only comparison with rendered expectations, never a loading claim."""
+    result = copy.deepcopy(receipt)
+    result["observation"] = "filesystem_drift_check"
+    for item in result["files"]:
+        path = Path(item["path"])
+        observed = digest(path.read_bytes()) if path.is_file() else None
+        item["observed_sha256"] = observed
+        item["matches"] = not path.is_symlink() and observed == item["sha256"]
+    state = home / ".config/hapax/agent-instructions"
+    current_path = state / "current.json"
+    current = json.loads(current_path.read_text()) if current_path.is_file() else {}
+    result["receipt_matches"] = (
+        current.get("source_revision") == receipt["source_revision"]
+        and current.get("files") == receipt["files"]
+    )
+    result["pending_transaction"] = (state / "pending.json").exists()
+    result["matches"] = (
+        all(item["matches"] for item in result["files"])
+        and result["receipt_matches"]
+        and not result["pending_transaction"]
+    )
+    return result
+
+
 def install(
     source: Path,
     home: Path,
@@ -201,6 +270,12 @@ def install(
     state.mkdir(parents=True, exist_ok=True)
     with (state / "install.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        if (state / "pending.json").exists():
+            pending = json.loads((state / "pending.json").read_text())
+            raise ValueError(
+                "unresolved instruction transaction; next action: "
+                + recovery_command(home, Path(pending["backup"]))
+            )
         for path, prior in settings_before.items():
             if (path.read_bytes() if path.exists() else None) != prior:
                 raise OSError(f"native settings changed during preparation; retry: {path}")
@@ -216,6 +291,17 @@ def install(
                 atomic_write(backup / str(index), path.read_bytes())
         atomic_write(backup / "preimages.json", json.dumps(originals, indent=2).encode())
         receipt["rollback"] = str(backup)
+        receipt_body = json.dumps(receipt, indent=2).encode() + b"\n"
+        atomic_write(
+            state / "pending.json",
+            json.dumps(
+                {
+                    "backup": str(backup),
+                    "postimages": [digest(body) for _, _, body in outputs] + [digest(receipt_body)],
+                },
+                indent=2,
+            ).encode(),
+        )
         attempted: list[int] = []
         try:
             for index, (_, path, body) in enumerate(outputs):
@@ -227,13 +313,18 @@ def install(
                 if path.is_symlink() or path.read_bytes() != body:
                     raise OSError(f"instruction readback failed: {path}")
             attempted.append(len(outputs))
-            atomic_write(state / "current.json", json.dumps(receipt, indent=2).encode() + b"\n")
+            atomic_write(state / "current.json", receipt_body)
         except BaseException as exc:
             try:
                 restore(backup, attempted)
             except OSError as rollback_error:
-                raise OSError(f"installation failed: {exc}; {rollback_error}") from exc
+                raise OSError(
+                    f"installation failed: {exc}; {rollback_error}; next action: "
+                    + recovery_command(home, backup)
+                ) from exc
+            (state / "pending.json").unlink()
             raise
+        (state / "pending.json").unlink()
     return receipt
 
 
@@ -245,13 +336,24 @@ def main() -> int:
     parser.add_argument("--restore-backup", type=Path)
     parser.add_argument("--binding", action="append")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="compare rendered bindings and current receipt without writes",
+    )
     parser.add_argument("--use-native-home-env", action="store_true")
     args = parser.parse_args()
+    if args.check and (args.apply or args.restore_backup):
+        parser.error("--check cannot be combined with --apply or --restore-backup")
     try:
         if args.restore_backup is not None:
             state = args.home / ".config/hapax/agent-instructions"
             with (state / "install.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
+                if (state / "pending.json").exists():
+                    recover_pending(state, args.restore_backup)
+                    print("Recovered the pending instruction transaction.")
+                    return 0
                 current = json.loads((state / "current.json").read_text())
                 if Path(current["rollback"]).resolve() != args.restore_backup.resolve():
                     raise ValueError(
@@ -263,7 +365,22 @@ def main() -> int:
                         raise ValueError(
                             f"installed output changed; reconcile before rollback: {path}"
                         )
-                restore(args.restore_backup)
+                # Retain a recoverable transaction if manual rollback itself
+                # fails after restoring current.json or any earlier output.
+                originals = json.loads((args.restore_backup / "preimages.json").read_text())
+                atomic_write(
+                    state / "pending.json",
+                    json.dumps(
+                        {
+                            "backup": str(args.restore_backup),
+                            "postimages": [
+                                digest(Path(item["path"]).read_bytes()) for item in originals
+                            ],
+                        },
+                        indent=2,
+                    ).encode(),
+                )
+                recover_pending(state, args.restore_backup)
             print("Restored the previous instruction bindings and install receipt.")
             return 0
         if not args.source_revision:
@@ -276,11 +393,13 @@ def main() -> int:
             env=dict(os.environ) if args.use_native_home_env else {},
             apply=args.apply,
         )
+        if args.check:
+            receipt = check_bindings(receipt, args.home)
     except (OSError, ValueError, KeyError) as exc:
         print(f"instruction binding failed: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(receipt, indent=2))
-    return 0
+    return 0 if receipt.get("matches", True) else 1
 
 
 if __name__ == "__main__":
