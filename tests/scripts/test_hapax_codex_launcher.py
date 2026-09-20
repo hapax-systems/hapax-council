@@ -1524,7 +1524,8 @@ def test_task_launch_generates_bootstrap_prompt_without_claim_when_disabled(tmp_
     assert "task_id: demo-task" in bootstrap
     assert "idle_update_seconds: 270" in bootstrap
     assert f"{REPO_ROOT}/AGENTS.md" in bootstrap
-    assert "/.claude/CLAUDE.md for workspace and shared conventions" in bootstrap
+    assert "Shared conventions arrive through the Codex global AGENTS.md binding" in bootstrap
+    assert "/.config/hapax/agent-instructions/AGENTS.md" in bootstrap
     assert "/projects/CLAUDE.md" not in bootstrap
     assert "do not reread a CLAUDE.md symlink" in bootstrap
     assert "relay/preflight note" in bootstrap
@@ -1853,7 +1854,7 @@ def test_idle_cadence_contract_defaults_to_relay_protocol_270() -> None:
 
     assert 'HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"' in launcher
     assert 'HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-180}"' not in launcher
-    assert "`HAPAX_IDLE_UPDATE_SECONDS` (default 270)" in agents
+    assert "`HAPAX_IDLE_UPDATE_SECONDS` (default 270 seconds)" in agents
     assert "`HAPAX_IDLE_UPDATE_SECONDS` (default 180)" not in agents
 
 

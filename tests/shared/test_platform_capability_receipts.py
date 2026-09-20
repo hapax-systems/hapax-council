@@ -328,6 +328,11 @@ def test_receipt_refresh_redacts_secret_env_and_records_missing_cli(tmp_path: Pa
     assert receipt["cli"]["available"] is False
     assert "cli_missing_or_unusable" in receipt["capability"]["reason_codes"]
     assert all(item["redacted"] is True for item in receipt["config_refs"])
+    assert len(receipt["load_sets"]) == 2
+    for observation in receipt["load_sets"].values():
+        assert observation["declaration"] == "present"
+        assert observation["native_loading"] == "unobserved"
+        assert observation["may_authorize"] is False
 
 
 def test_receipt_refresh_fails_local_on_unrelated_observation_metadata(

@@ -589,6 +589,8 @@ exit 99
     _write_executable(
         bin_dir / "codex",
         f"""printf '%s\n' "$*" > "{codex_args}"
+printf '%s\\n' '{{"type":"thread.started","thread_id":"native-test"}}' '{{"type":"turn.started"}}' '{{"type":"turn.completed"}}'
+echo 'harmless native warning' >&2
 exit 0
 """,
     )
@@ -612,6 +614,73 @@ exit 0
     assert result.returncode == 0, result.stderr
     assert not ssh_called.exists()
     assert codex_args.exists()
+    receipts = list((cache / "codex-headless/cx-amber").glob("native-*.receipt.json"))
+    assert len(receipts) == 1
+    observed = json.loads(receipts[0].read_text())
+    assert observed["complete"] is True
+    assert observed["owned_native_process"] is True
+    assert observed["malformed_lines"] == 0
+    assert "harmless native warning" in Path(observed["diagnostics_path"]).read_text()
+
+
+@pytest.mark.parametrize("ignore_term", [False, True])
+def test_codex_headless_cancels_and_reaps_its_owned_child(tmp_path, ignore_term):
+    import signal
+
+    home = tmp_path / "home"
+    (home / ".cache/hapax").mkdir(parents=True)
+    (home / "projects/hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    bin_dir = tmp_path / "bin"
+    _write_executable(bin_dir / "hostname", "echo hapax-appendix\n")
+    # Replace the fake CLI shell with a real owned process, retaining the
+    # existing fixture's no-provider authentication sentinel.
+    native = tmp_path / "native.py"
+    native.write_text(
+        "import json,os,signal,time\n"
+        + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
+        + f"open({str(tmp_path / 'native-pid')!r}, 'w').write(str(os.getpid()))\n"
+        + "print(json.dumps({'type':'thread.started','thread_id':'cancel-test'}),flush=True)\n"
+        + "print(json.dumps({'type':'turn.started'}),flush=True)\ntime.sleep(60)\n"
+    )
+    _write_executable(bin_dir / "codex", f'exec python3 "{native}"\n')
+    receipt = tmp_path / "lifecycle.json"
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
+        "HAPAX_CODEX_HEADLESS_ALLOW": "1",
+        "HAPAX_CODEX_HEADLESS_WORKDIR": str(workdir),
+        "HAPAX_DISPATCH_HOST": "appendix",
+        "HAPAX_NATIVE_LIFECYCLE_RECEIPT": str(receipt),
+    }
+    process = subprocess.Popen(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "fixture"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 8
+        while not (tmp_path / "native-pid").exists() and process.poll() is None:
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        process.send_signal(signal.SIGTERM)
+        _, err = process.communicate(timeout=10)
+        assert process.returncode == 143, err
+        observed = json.loads(receipt.read_text())
+        assert observed["cancel_confirmed"] is True
+        assert observed["process_returncode"] == (-9 if ignore_term else -15)
+        pid = int((tmp_path / "native-pid").read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=2)
 
 
 def test_codex_headless_treats_appendix_local_ip_as_local(tmp_path: Path) -> None:

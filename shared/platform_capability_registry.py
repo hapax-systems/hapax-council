@@ -864,6 +864,45 @@ class SupplyVector(StrictModel):
     supply_descriptor: SupplyDescriptor | None = None
 
 
+class NativeLoadFile(StrictModel):
+    """One declared input. An unknown digest is explicit, never a match."""
+
+    root: Literal["native_home", "project"]
+    path: str = Field(min_length=1)
+    kind: Literal["instructions", "configuration"]
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    required: bool = True
+
+    @model_validator(mode="after")
+    def _relative_binding(self) -> Self:
+        from pathlib import PurePosixPath
+
+        path = PurePosixPath(self.path)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("load-set paths must stay within their declared root")
+        return self
+
+
+class NativeLoadSet(StrictModel):
+    """Declared native inputs within the existing route contract.
+
+    Null extension lists mean unobserved, whereas [] deliberately declares none.
+    Host observations do not enforce isolation. OCI construction may constrain
+    inputs, but still cannot attest that a model used delivered instructions.
+    """
+
+    native_home: str = Field(min_length=1)
+    home_env: str | None = None
+    files: list[NativeLoadFile] = Field(min_length=1)
+    memory_scope: str = Field(min_length=1)
+    plugins: list[str] | None = None
+    skills: list[str] | None = None
+    hooks: list[str] | None = None
+    mcp: list[str] | None = None
+    loading_flags: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(min_length=1)
+
+
 class PlatformCapabilityRoute(StrictModel):
     registry_schema: Literal[1] = 1
     route_id: str
@@ -878,6 +917,7 @@ class PlatformCapabilityRoute(StrictModel):
     blocked_reasons: list[str] = Field(default_factory=list)
     model_or_engine: str | None
     execution_descriptor: ExecutionDescriptor
+    native_load_set: NativeLoadSet | None = None
     descriptor_variants: list[DescriptorVariant] = Field(default_factory=list)
     paid_provider: str | None = None
     paid_profile: str | None = None

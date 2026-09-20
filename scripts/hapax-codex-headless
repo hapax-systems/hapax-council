@@ -1127,6 +1127,46 @@ echo "  log: $LOG_FILE"
 echo "  pid: $PID_FILE"
 
 cd "$WORKDIR"
+# Each launch owns a fresh event stream. Preserve prior lane output and keep the
+# legacy path as an alias for readers; diagnostics cannot corrupt JSON evidence.
+NATIVE_LOG_FILE="$(mktemp "$LOG_DIR/native-XXXXXXXX.jsonl")"
+DIAGNOSTICS_FILE="${NATIVE_LOG_FILE%.jsonl}.stderr.log"
+if [[ -e "$LOG_FILE" && ! -L "$LOG_FILE" ]]; then
+  mv "$LOG_FILE" "${NATIVE_LOG_FILE%.jsonl}.predecessor.log"
+fi
+ln -s "$(basename "$NATIVE_LOG_FILE")" "$LOG_DIR/.output-$SESSION_UUID"
+mv -Tf "$LOG_DIR/.output-$SESSION_UUID" "$LOG_FILE"
+CANCEL_SIGNAL=0
+write_native_lifecycle() {
+  local receipt="${HAPAX_NATIVE_LIFECYCLE_RECEIPT:-${NATIVE_LOG_FILE%.jsonl}.receipt.json}"
+  local local_args=()
+  [[ -z "$DISPATCH_HOST" ]] && local_args+=(--local-child)
+  PYTHONPATH="$COUNCIL_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m shared.execution_observer \
+    --stream "$NATIVE_LOG_FILE" --diagnostics "$DIAGNOSTICS_FILE" --receipt "$receipt" \
+    --returncode "$EXIT_CODE" --cancel-signal "$CANCEL_SIGNAL" "${local_args[@]}" \
+    || echo "hapax-codex-headless: native lifecycle observation unavailable" >&2
+}
+cancel_native_child() {
+  local signal_name="$1" signal_number="$2"
+  trap '' TERM INT
+  # Bash's live job table identifies the still-owned child; do not signal a
+  # stale PID file or infer remote native termination from killing SSH.
+  if [[ -n "$CODEX_PID" ]] && jobs -pr | grep -Fxq "$CODEX_PID"; then
+    if kill -s "$signal_name" "$CODEX_PID"; then
+      CANCEL_SIGNAL="$signal_number"
+    fi
+    if ! timeout 5s tail --pid="$CODEX_PID" -f /dev/null; then
+      if jobs -pr | grep -Fxq "$CODEX_PID" && kill -KILL "$CODEX_PID"; then
+        CANCEL_SIGNAL=9
+      fi
+    fi
+    if wait "$CODEX_PID"; then EXIT_CODE=0; else EXIT_CODE=$?; fi
+    write_native_lifecycle
+  fi
+  exit "$((128 + signal_number))"
+}
+trap 'cancel_native_child TERM 15' TERM
+trap 'cancel_native_child INT 2' INT
 if [[ -n "$DISPATCH_HOST" ]]; then
   CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
   if [[ -z "$CLAIM_EPOCH_LINE" ]]; then
@@ -1138,9 +1178,9 @@ if [[ -n "$DISPATCH_HOST" ]]; then
   REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
   ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
     -o ControlPath=none -i "$HOME/.ssh/id_ed25519" "$DISPATCH_HOST" "$REMOTE_EXEC_COMMAND" \
-    >>"$LOG_FILE" 2>&1 &
+    >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
 else
-  "$CODEX_BIN" "${CODEX_ARGS[@]}" >>"$LOG_FILE" 2>&1 &
+  "$CODEX_BIN" "${CODEX_ARGS[@]}" >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
 fi
 CODEX_PID=$!
 echo "$CODEX_PID" >"$PID_FILE"
@@ -1154,5 +1194,7 @@ if wait "$CODEX_PID"; then
 else
   EXIT_CODE=$?
 fi
+trap - TERM INT
+write_native_lifecycle
 echo "hapax-codex-headless: $SESSION exited (code=$EXIT_CODE)"
 exit "$EXIT_CODE"

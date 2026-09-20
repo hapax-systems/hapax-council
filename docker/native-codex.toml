@@ -1,0 +1,4 @@
+# Native persistent state is owned separately from immutable configuration.
+# Model/effort are supplied by the selected ExecutionDescriptor at invocation.
+sqlite_home = "/state"
+log_dir = "/state/logs"
