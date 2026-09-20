@@ -10,7 +10,7 @@ model_requests: 0
 may_authorize: false
 images:
   claude:
-    image_id: sha256:199d3200481c00a34af1565195c267a82f299598407f10035d2cd8a4387e69d9  # pragma: allowlist secret — public Git/image/content digest
+    image_id: sha256:569ddda63e9b32e191c8be8f2e5e44a5850cda0770ef6c89bc90099438ee9a2c  # pragma: allowlist secret — public Git/image/content digest
     native_version: 2.1.277 (Claude Code)
     filesystem:
       instruction_hashes_match: true
@@ -31,7 +31,7 @@ images:
       sha256: 3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5  # pragma: allowlist secret — public Git/image/content digest
       bytes: 7276
   codex:
-    image_id: sha256:6f94d696dd5d66597fb9fe92a30b65259408e5d5de53452d465334bf5b9b61a1  # pragma: allowlist secret — public Git/image/content digest
+    image_id: sha256:e1d76925dbe58194b60c0ad63d3de30b20d3a7af71a6547d75329ddb1ab46258  # pragma: allowlist secret — public Git/image/content digest
     native_version: codex-cli 0.155.1
     filesystem:
       instruction_hashes_match: true
@@ -60,10 +60,10 @@ hosts:
   - platform: claude
     cwd: /work
     files:
-    - path: /work/CLAUDE.md
-      sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
     - path: /opt/hapax-agent/.claude/CLAUDE.md
       sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+    - path: /work/CLAUDE.md
+      sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
     pass: true
   - platform: codex
     cwd: /work
@@ -76,10 +76,10 @@ hosts:
   - platform: claude
     cwd: /work/nested
     files:
-    - path: /opt/hapax-agent/.claude/CLAUDE.md
-      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
     - path: /work/CLAUDE.md
       sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+    - path: /opt/hapax-agent/.claude/CLAUDE.md
+      sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
     pass: true
   - platform: codex
     cwd: /work/nested
@@ -101,10 +101,10 @@ hosts:
   - platform: claude
     cwd: /work
     files:
-    - path: /work/CLAUDE.md
-      sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
     - path: /opt/hapax-agent/.claude/CLAUDE.md
       sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+    - path: /work/CLAUDE.md
+      sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
     pass: true
   - platform: codex
     cwd: /work
@@ -117,10 +117,10 @@ hosts:
   - platform: claude
     cwd: /work/nested
     files:
-    - path: /work/CLAUDE.md
-      sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
     - path: /opt/hapax-agent/.claude/CLAUDE.md
       sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+    - path: /work/CLAUDE.md
+      sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
     pass: true
   - platform: codex
     cwd: /work/nested
@@ -208,6 +208,24 @@ discovery_fixtures:
       .claude/CLAUDE.md: true
       .codex/AGENTS.md: true
     exit_code: 0
+  codex_empty_global_overrides:
+    native_version: 0.155.1
+    image_id: sha256:6f94d696dd5d66597fb9fe92a30b65259408e5d5de53452d465334bf5b9b61a1  # pragma: allowlist secret — public Git/image/content digest
+    helper: scripts/probe-native-harness-container.py::codex
+    model_requests: 0
+    network: none
+    cells:
+    - case: empty
+      instruction_sources:
+      - /opt/hapax-agent/.codex/AGENTS.md
+      - /work/AGENTS.md
+      model_requests: 0
+    - case: whitespace
+      instruction_sources:
+      - /opt/hapax-agent/.codex/AGENTS.md
+      - /work/AGENTS.md
+      model_requests: 0
+    scope: native instructionSources report; semantic uptake unobserved
 validation:
   full_focused_suite:
     passed: 780
@@ -382,13 +400,64 @@ validation:
     killed_by_assertion: true
     restored_sha256: 5d700813d75379d94cac55e88b96cb26241ec580777fdacd61cd760bfb5ed590  # pragma: allowlist secret — public Git/image/content digest
   deployment_repair_precommit: passed
+  cancellation_repair_suite:
+    passed: 417
+    seconds: 190.7
+  cancellation_focused_cases: 7
+  restored_minor_suite: 82
+  cancellation_repair_mutations:
+  - name: empty_override_retry
+    file: scripts/install-agent-instructions.py
+    applied: true
+    killed: true
+    restored_sha256: 7bbdf0d6f4c2c6b841f275c28e5e6a1cab6a16326c208dbe09dda0cccaffa018  # pragma: allowlist secret — public Git/image/content digest
+  - name: collision_next_action
+    file: scripts/install-agent-instructions.py
+    applied: true
+    killed: true
+    restored_sha256: 7bbdf0d6f4c2c6b841f275c28e5e6a1cab6a16326c208dbe09dda0cccaffa018  # pragma: allowlist secret — public Git/image/content digest
+  - name: dangling_override
+    file: scripts/install-agent-instructions.py
+    applied: true
+    killed: true
+    restored_sha256: 7bbdf0d6f4c2c6b841f275c28e5e6a1cab6a16326c208dbe09dda0cccaffa018  # pragma: allowlist secret — public Git/image/content digest
+  - name: registry_digest_freshness
+    file: config/platform-capability-registry.json
+    applied: true
+    killed: true
+    restored_sha256: 27f7ae3dcfcdf2a3f248fd414b559c15854496a150881d35675a68a984487789  # pragma: allowlist secret — public Git/image/content digest
+  - name: group_escalation
+    file: scripts/hapax-codex-headless
+    applied: true
+    killed: true
+    restored_sha256: 855f46a84a9026688009952cc4829ec5d4af3d31c7f1e07da5f5391fe129b38c  # pragma: allowlist secret — public Git/image/content digest
+  - name: exited_leader_escalation
+    file: scripts/hapax-codex-headless
+    applied: true
+    killed: true
+    restored_sha256: 855f46a84a9026688009952cc4829ec5d4af3d31c7f1e07da5f5391fe129b38c  # pragma: allowlist secret — public Git/image/content digest
+  - name: deferred_startup_cancel
+    file: scripts/hapax-codex-headless
+    applied: true
+    killed: true
+    restored_sha256: 855f46a84a9026688009952cc4829ec5d4af3d31c7f1e07da5f5391fe129b38c  # pragma: allowlist secret — public Git/image/content digest
+  - name: owned_group_creation
+    file: scripts/hapax-codex-headless
+    applied: true
+    killed: true
+    restored_sha256: 855f46a84a9026688009952cc4829ec5d4af3d31c7f1e07da5f5391fe129b38c  # pragma: allowlist secret — public Git/image/content digest
+  cancellation_repair_checks:
+    precommit: passed for selected changed files
+    ruff: passed
+    bash_syntax: passed
+    installer_pyrefly: 0 errors
 support_capacity:
   shape: codex exec gpt-6-astra/high/read-only, subscription, no fallback
-  count: 10
+  count: 11
   native_turn_context_verified: true
   authority: support advice only; final independent review is separate
-container_source_revision: 9e207e6750904747e67145a42bcf53ad2d92517e  # pragma: allowlist secret — public Git/image/content digest
-implementation_source_revision: 9e207e6750904747e67145a42bcf53ad2d92517e  # pragma: allowlist secret — public Git/image/content digest
+container_source_revision: bdf0e04fd82d7a3398be11aecfe9c03b7fd28465  # pragma: allowlist secret — public Git/image/content digest
+implementation_source_revision: bdf0e04fd82d7a3398be11aecfe9c03b7fd28465  # pragma: allowlist secret — public Git/image/content digest
 cross_host_comparison: *id001
 retained_failed_attempts:
 - source_revision: 7cb0558c3e0f23d67ee301c651286fde7bad3ae3  # pragma: allowlist secret — public Git/image/content digest
@@ -422,3 +491,14 @@ review_repairs:
 - Identical verified same-revision retries preserve original payloads, receipt and rollback boundary; pending or
   changed installations do not take the fast path.
 - Native load-set receipts retain resolved roots, actual paths, declaration source refs and a declaration digest.
+- Launch-time process-group ownership reaches native children behind npm wrappers, including after leader exit;
+  cancellation is deferred across fork/identity recording. Real-process tests preserve a peer and reject PID-file
+  signaling authority.
+- Group escalation retains Bash wait-status ambiguity and never promotes local SSH teardown to remote-native termination.
+  Detached descendants and uninterruptible kernel waits remain explicit limits.
+- Empty and whitespace-only Codex overrides consistently permit verified identical retry; dangling overrides require
+  reconciliation. Repeated retry retains the original rollback receipt.
+- Collision errors identify both native bindings and resolved destinations with a next action; runbook includes
+  native-load/lifecycle and alias/blob-reader rechecks.
+- Registry digest freshness was already covered by an authored-payload test; an applied stale-digest mutation verifies
+  rejection.
