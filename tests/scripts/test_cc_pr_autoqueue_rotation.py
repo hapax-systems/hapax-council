@@ -22,6 +22,9 @@ class RotationRunner(_FakeRunner):
         self.open_prs = [_pr(number=number) for number in range(count, 0, -1)]
         self.transport = transport
         self.broken: str | None = None
+        self.fail_graphql_listing = False
+        self.first_page_count_delta = 0
+        self.listing_returncode = 0
 
     def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
         if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
@@ -46,15 +49,27 @@ class RotationRunner(_FakeRunner):
             body = json.dumps([self._rest_pr(row) for row in rows])
             if self.broken == "missing_marker":
                 return subprocess.CompletedProcess(cmd, 0, body, "")
+            if self.broken == "headers_absent":
+                # Keep the body separator so deleting the envelope guard cannot
+                # hide behind an unrelated tuple-unpacking or JSON parse failure.
+                headers = ""
             if self.broken == "malformed_link":
                 headers += "Link: truncated\r\n"
-            return subprocess.CompletedProcess(cmd, 0, headers + "\r\n" + body, "")
+            return subprocess.CompletedProcess(
+                cmd,
+                self.listing_returncode,
+                headers.rstrip("\r\n") + "\r\n\r\n" + body,
+                "listing failed" if self.listing_returncode else "",
+            )
         if cmd[:3] == ["gh", "api", "graphql"] and any("pullRequests(" in p for p in cmd):
             self.calls.append(cmd)
+            if self.fail_graphql_listing:
+                return subprocess.CompletedProcess(cmd, 1, "", "GraphQL unavailable")
             offset = int(self._fields(cmd).get("cursor", "0"))
             rows = self.open_prs[offset : offset + 100]
             connection = {
-                "totalCount": len(self.open_prs),
+                "totalCount": len(self.open_prs)
+                + (self.first_page_count_delta if offset == 0 else 0),
                 "pageInfo": {
                     "hasNextPage": offset + 100 < len(self.open_prs),
                     "endCursor": str(offset + len(rows)),
@@ -82,7 +97,12 @@ class RotationRunner(_FakeRunner):
                     "repository": {"pullRequests": connection, "defaultBranchRef": {"name": "main"}}
                 }
             }
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return subprocess.CompletedProcess(
+                cmd,
+                self.listing_returncode,
+                json.dumps(payload),
+                "listing failed" if self.listing_returncode else "",
+            )
         if cmd[:3] == ["gh", "pr", "view"]:
             self.calls.append(cmd)
             row = next(row for row in self.open_prs if str(row["number"]) == cmd[3])
@@ -248,6 +268,60 @@ def test_autoqueue_indeterminate_listing_refuses_before_reconciliation(
     assert report["decisions"] == report["mutations"] == []
     assert runner.hydrated_numbers() == set()
     assert not (tmp_path / "examined.json").exists()
+
+
+def assert_listing_refused_without_advancing(
+    tmp_path: Path, runner: RotationRunner, previous_state: bytes
+) -> None:
+    report = tick(tmp_path, runner)
+    assert report.get("skipped") is True
+    assert report["decisions"] == report["mutations"] == []
+    assert not runner.hydrated_numbers()
+    assert (tmp_path / "examined.json").read_bytes() == previous_state
+
+
+def test_autoqueue_rest_rows_without_pagination_headers_refuse(tmp_path: Path) -> None:
+    runner = RotationRunner(79)
+    runner.fail_graphql_listing = True
+    assert examined(tick(tmp_path, runner)) == [1, 2, 3, 4, 5]
+    previous_state = (tmp_path / "examined.json").read_bytes()
+    runner.calls.clear()
+    # Valid rows, but neither an HTTP envelope nor Link/end-of-pagination evidence.
+    runner.broken = "headers_absent"
+    assert_listing_refused_without_advancing(tmp_path, runner, previous_state)
+    listing_calls = [cmd for cmd in runner.calls if "repos/owner/repo/pulls" in cmd]
+    assert [runner._fields(cmd)["page"] for cmd in listing_calls] == ["1"]
+
+
+@pytest.mark.parametrize("first_page_count_delta", [-1, 1], ids=["increases", "decreases"])
+def test_autoqueue_open_pr_count_changes_between_pages_refuse(
+    tmp_path: Path, first_page_count_delta: int
+) -> None:
+    runner = RotationRunner(101, "graphql")
+    assert examined(tick(tmp_path, runner)) == [1, 2, 3, 4, 5]
+    previous_state = (tmp_path / "examined.json").read_bytes()
+    runner.calls.clear()
+    # Page one's count differs; the terminal count still matches the 101 rows.
+    # Removing the change guard must not get caught by the final-count guard.
+    runner.first_page_count_delta = first_page_count_delta
+    assert_listing_refused_without_advancing(tmp_path, runner, previous_state)
+    listing_calls = [cmd for cmd in runner.calls if any("pullRequests(" in arg for arg in cmd)]
+    assert [runner._fields(cmd).get("cursor") for cmd in listing_calls] == [None, "100"]
+
+
+@pytest.mark.parametrize("transport", ["rest", "graphql"])
+def test_autoqueue_failed_listing_with_parseable_stdout_refuses(
+    tmp_path: Path, transport: str
+) -> None:
+    runner = RotationRunner(79, transport)
+    runner.fail_graphql_listing = transport == "rest"
+    assert examined(tick(tmp_path, runner)) == [1, 2, 3, 4, 5]
+    previous_state = (tmp_path / "examined.json").read_bytes()
+    runner.calls.clear()
+    # A failed gh command can leave valid-looking stdout. Its exit status must
+    # independently veto reconciliation, without relying on a parsing failure.
+    runner.listing_returncode = 1
+    assert_listing_refused_without_advancing(tmp_path, runner, previous_state)
 
 
 def test_autoqueue_dry_run_previews_without_advancing(tmp_path: Path) -> None:
