@@ -15,6 +15,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 CAPTURE = """import hashlib, json, sys
@@ -82,6 +83,7 @@ def main() -> int:
         "client_sha256": hashlib.sha256(Path(binary).read_bytes()).hexdigest(),
         "environment": {key: value.replace(str(output), "<fixture>") for key, value in env.items()},
         "user_turns": 0,
+        "hook_observation_grace_seconds": 3,
         "cells": [],
     }
     initialize = (
@@ -134,6 +136,10 @@ def main() -> int:
         )
         (output / f"{label}-stdout.jsonl").write_text(result.stdout)
         (output / f"{label}-stderr.log").write_text(result.stderr)
+        # Older clients can finish SDK initialization/EOF before their hook
+        # subprocess writes its receipt. Observe a declared bounded window;
+        # missing evidence after it remains a failed probe, never a silent pass.
+        time.sleep(summary["hook_observation_grace_seconds"])
         events = (
             [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
             if events_path.exists()
