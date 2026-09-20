@@ -136,7 +136,10 @@ verbatim to `council-domain-context.md`; the core requires reading the applicabl
 sections before domain work. Codex's global plus repository body fits its default
 32 KiB budget, but additional nested files still need their own budget check.
 The Codex bootstrap no longer unconditionally rereads Claude's global body, and
-the Vibe launcher no longer writes lane identity into repository instructions.
+the Vibe launcher and standup utility no longer write lane identity into repository
+instructions. They preserve authored files and leave absent files absent;
+lane identity remains in environment/relay context. Recheck with
+`uv run pytest tests/scripts/test_vbe_dispatch.py -q`.
 
 Grok previously discovered both its own global and Claude's global. The installer
 sets only `compat.claude.agents=false` in its existing TOML. Grok's naming is

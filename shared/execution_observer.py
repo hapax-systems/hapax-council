@@ -117,7 +117,9 @@ def observe_native_lifecycle(
     )
     if expected_resume_id is not None:
         result["resume"] = (
-            "same_native_session"
+            "unobserved"
+            if len(session_ids) != 1
+            else "same_native_session"
             if result["session_id"] == expected_resume_id
             else "session_mismatch"
         )

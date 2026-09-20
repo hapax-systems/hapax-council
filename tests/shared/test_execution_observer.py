@@ -81,6 +81,32 @@ def test_resume_identity_mismatch_never_completes(tmp_path):
     assert not result["complete"]
 
 
+def test_resume_requires_one_observed_native_identity(tmp_path):
+    for platform in ("claude", "codex"):
+        for starts, expected in (
+            ([], "unobserved"),
+            (["other", "expected"], "unobserved"),
+            (["expected", "other"], "unobserved"),
+            (["other"], "session_mismatch"),
+            (["expected"], "same_native_session"),
+        ):
+            events = (
+                [{"type": "thread.started", "thread_id": value} for value in starts]
+                + [{"type": "turn.completed"}]
+                if platform == "codex"
+                else [
+                    {"type": "system", "subtype": "init", "session_id": value} for value in starts
+                ]
+                + [{"type": "result", "subtype": "success"}]
+            )
+            path = _write(tmp_path / "resume.jsonl", events)
+            result = observe_native_lifecycle(
+                path, platform=platform, process_returncode=0, expected_resume_id="expected"
+            )
+            assert result["resume"] == expected, (platform, starts, result)
+            assert result["complete"] is (expected == "same_native_session")
+
+
 def test_partial_or_malformed_native_stream_never_claims_complete(tmp_path):
     path = _write(tmp_path / "native.jsonl", [{"type": "turn.completed"}])
     with path.open("a") as out:
