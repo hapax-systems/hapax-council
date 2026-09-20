@@ -146,9 +146,14 @@ def restore(backup: Path, indexes: list[int] | None = None) -> None:
             if item["kind"] == "file":
                 atomic_write(path, (backup / str(index)).read_bytes(), item["mode"])
             elif item["kind"] == "symlink":
-                temp = path.with_name(f".{path.name}.restore-{backup.name}")
-                temp.symlink_to(item["target"])
-                os.replace(temp, path)
+                # A failed rename must not leave a deterministic temporary
+                # link name that blocks the next recovery attempt.
+                with tempfile.TemporaryDirectory(
+                    prefix=f".{path.name}.restore-", dir=path.parent
+                ) as temporary:
+                    temp = Path(temporary) / "link"
+                    temp.symlink_to(item["target"])
+                    os.replace(temp, path)
             else:
                 path.unlink(missing_ok=True)
         except (OSError, ValueError) as exc:

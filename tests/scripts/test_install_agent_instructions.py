@@ -289,12 +289,23 @@ def test_cli_recovers_failed_transaction_without_current_receipt(
             assert not (state / "current.json").exists()
 
 
+@pytest.mark.parametrize("original_symlink", [False, True])
 def test_failed_manual_rollback_can_be_retried_after_current_receipt_restored(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, original_symlink
 ):
-    receipt = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
     target = tmp_path / ".codex/AGENTS.md"
+    if original_symlink:
+        target.parent.mkdir()
+        (target.parent / "original.md").write_text("Original policy")
+        target.symlink_to("original.md")
+    receipt = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
     unlink = Path.unlink
+    replace = installer.os.replace
+
+    def fail_symlink(source, destination):
+        if destination == target and Path(source).is_symlink():
+            raise OSError("symlink restore denied")
+        return replace(source, destination)
 
     def fail_one(path, *args, **kwargs):
         if path == target:
@@ -305,11 +316,18 @@ def test_failed_manual_rollback_can_be_retried_after_current_receipt_restored(
         "sys.argv", ["installer", "--home", str(tmp_path), "--restore-backup", receipt["rollback"]]
     )
     with monkeypatch.context() as fault:
-        fault.setattr(Path, "unlink", fail_one)
+        if original_symlink:
+            fault.setattr(installer.os, "replace", fail_symlink)
+        else:
+            fault.setattr(Path, "unlink", fail_one)
         assert installer.main() == 1
     assert not (tmp_path / ".config/hapax/agent-instructions/current.json").exists()
     assert installer.main() == 0
-    assert not target.exists()
+    if original_symlink:
+        assert target.is_symlink() and target.readlink() == Path("original.md")
+        assert target.read_text() == "Original policy"
+    else:
+        assert not target.exists()
 
 
 def test_rollback_rejects_predecessor_backup_after_successor(tmp_path, monkeypatch):
