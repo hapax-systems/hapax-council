@@ -623,8 +623,8 @@ exit 0
     assert "harmless native warning" in Path(observed["diagnostics_path"]).read_text()
 
 
-@pytest.mark.parametrize("ignore_term", [False, True])
-def test_codex_headless_cancels_and_reaps_its_owned_child(tmp_path, ignore_term):
+@pytest.mark.parametrize("termination", ["default", "ignore", "exit143"])
+def test_codex_headless_cancels_and_reaps_its_owned_child(tmp_path, termination):
     import signal
 
     home = tmp_path / "home"
@@ -639,7 +639,12 @@ def test_codex_headless_cancels_and_reaps_its_owned_child(tmp_path, ignore_term)
     native = tmp_path / "native.py"
     native.write_text(
         "import json,os,signal,time\n"
-        + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
+        + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if termination == "ignore" else "")
+        + (
+            "signal.signal(signal.SIGTERM, lambda *_: exit(143))\n"
+            if termination == "exit143"
+            else ""
+        )
         + f"open({str(tmp_path / 'native-pid')!r}, 'w').write(str(os.getpid()))\n"
         + "print(json.dumps({'type':'thread.started','thread_id':'cancel-test'}),flush=True)\n"
         + "print(json.dumps({'type':'turn.started'}),flush=True)\ntime.sleep(60)\n"
@@ -672,8 +677,10 @@ def test_codex_headless_cancels_and_reaps_its_owned_child(tmp_path, ignore_term)
         _, err = process.communicate(timeout=10)
         assert process.returncode == 143, err
         observed = json.loads(receipt.read_text())
-        assert observed["cancel_confirmed"] is True
-        assert observed["process_returncode"] == (-9 if ignore_term else -15)
+        assert observed["cancel_confirmed"] is False
+        assert observed["owned_exit_after_cancel"] is True
+        assert observed["wait_status_kind"] == "shell_wait"
+        assert observed["process_returncode"] == (137 if termination == "ignore" else 143)
         pid = int((tmp_path / "native-pid").read_text())
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)

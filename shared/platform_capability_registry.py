@@ -900,7 +900,7 @@ class NativeLoadSet(StrictModel):
     skills: list[str] | None = None
     hooks: list[str] | None = None
     mcp: list[str] | None = None
-    loading_flags: list[str] = Field(default_factory=list)
+    loading_flags: list[str] | None = None
     source_refs: list[str] = Field(min_length=1)
 
 

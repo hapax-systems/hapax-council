@@ -16,63 +16,32 @@
     "routes"
   ],
   "properties": {
-    "registry_schema": {
-      "const": 1
-    },
-    "registry_id": {
-      "type": "string",
-      "minLength": 1
-    },
-    "schema_ref": {
-      "const": "schemas/platform-capability-registry.schema.json"
-    },
-    "declared_at": {
-      "type": "string",
-      "format": "date-time"
-    },
-    "capacity_invariant": {
-      "type": "string",
-      "minLength": 1
-    },
+    "registry_schema": {"const": 1},
+    "registry_id": {"type": "string", "minLength": 1},
+    "schema_ref": {"const": "schemas/platform-capability-registry.schema.json"},
+    "declared_at": {"type": "string", "format": "date-time"},
+    "capacity_invariant": {"type": "string", "minLength": 1},
     "generated_from": {
       "type": "array",
       "minItems": 1,
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
+      "items": {"type": "string", "minLength": 1}
     },
     "required_route_ids": {
       "type": "array",
       "minItems": 1,
-      "items": {
-        "type": "string",
-        "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+\\.[a-z0-9_]+$"
-      }
+      "items": {"type": "string", "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+\\.[a-z0-9_]+$"}
     },
     "omitted_capability_shapes": {
       "type": "array",
       "minItems": 1,
-      "items": {
-        "$ref": "#/$defs/capability_shape_descriptor"
-      },
+      "items": {"$ref": "#/$defs/capability_shape_descriptor"},
       "contains": {
         "type": "object",
-        "required": [
-          "shape_id",
-          "shape_state",
-          "observation_receipt_class"
-        ],
+        "required": ["shape_id", "shape_state", "observation_receipt_class"],
         "properties": {
-          "shape_id": {
-            "const": "local_compute.agentic_trust_evaluator_surface"
-          },
-          "shape_state": {
-            "const": "evidence_only"
-          },
-          "observation_receipt_class": {
-            "const": "AgenticTrustEvidenceReceiptV1"
-          }
+          "shape_id": {"const": "local_compute.agentic_trust_evaluator_surface"},
+          "shape_state": {"const": "evidence_only"},
+          "observation_receipt_class": {"const": "AgenticTrustEvidenceReceiptV1"}
         }
       },
       "minContains": 1,
@@ -81,195 +50,184 @@
     "routes": {
       "type": "array",
       "minItems": 1,
-      "items": {
-        "$ref": "#/$defs/platform_capability_route"
-      }
+      "items": {"$ref": "#/$defs/platform_capability_route"}
     }
   },
   "$defs": {
-    "NativeLoadFile": {
-      "additionalProperties": false,
-      "description": "One declared input. An unknown digest is explicit, never a match.",
-      "properties": {
-        "root": {
-          "enum": [
-            "native_home",
-            "project"
-          ],
-          "title": "Root",
-          "type": "string"
-        },
-        "path": {
-          "minLength": 1,
-          "title": "Path",
-          "type": "string"
-        },
-        "kind": {
-          "enum": [
-            "instructions",
-            "configuration"
-          ],
-          "title": "Kind",
-          "type": "string"
-        },
-        "sha256": {
-          "anyOf": [
-            {
-              "pattern": "^[0-9a-f]{64}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Sha256"
-        },
-        "required": {
-          "default": true,
-          "title": "Required",
-          "type": "boolean"
-        },
-        "digest_description": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Digest Description"
-        }
+  "NativeLoadFile": {
+    "additionalProperties": false,
+    "description": "One declared input. An unknown digest is explicit, never a match.",
+    "properties": {
+      "root": {
+        "enum": [
+          "native_home",
+          "project"
+        ],
+        "title": "Root",
+        "type": "string"
       },
-      "required": [
-        "root",
-        "path",
-        "kind"
-      ],
-      "title": "NativeLoadFile",
-      "type": "object"
-    },
-    "native_load_set": {
-      "additionalProperties": false,
-      "description": "Declared native inputs within the existing route contract.\n\nNull extension lists mean unobserved, whereas [] deliberately declares none.\nHost observations do not enforce isolation. OCI construction may constrain\ninputs, but still cannot attest that a model used delivered instructions.",
-      "properties": {
-        "native_home": {
-          "minLength": 1,
-          "title": "Native Home",
-          "type": "string"
-        },
-        "home_env": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Home Env"
-        },
-        "files": {
-          "items": {
-            "$ref": "#/$defs/NativeLoadFile"
-          },
-          "minItems": 1,
-          "title": "Files",
-          "type": "array"
-        },
-        "memory_scope": {
-          "minLength": 1,
-          "title": "Memory Scope",
-          "type": "string"
-        },
-        "plugins": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Plugins"
-        },
-        "skills": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Skills"
-        },
-        "hooks": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Hooks"
-        },
-        "mcp": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Mcp"
-        },
-        "loading_flags": {
-          "items": {
+      "path": {
+        "minLength": 1,
+        "title": "Path",
+        "type": "string"
+      },
+      "kind": {
+        "enum": [
+          "instructions",
+          "configuration"
+        ],
+        "title": "Kind",
+        "type": "string"
+      },
+      "sha256": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{64}$",
             "type": "string"
           },
-          "title": "Loading Flags",
-          "type": "array"
-        },
-        "source_refs": {
-          "items": {
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Sha256"
+      },
+      "digest_description": {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
+        "default": null,
+        "title": "Digest Description"
+      },
+      "required": {
+        "default": true,
+        "title": "Required",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "root",
+      "path",
+      "kind"
+    ],
+    "title": "NativeLoadFile",
+    "type": "object"
+  },
+  "native_load_set": {
+    "additionalProperties": false,
+    "description": "Declared native inputs within the existing route contract.\n\nNull extension lists mean unobserved, whereas [] deliberately declares none.\nHost observations do not enforce isolation. OCI construction may constrain\ninputs, but still cannot attest that a model used delivered instructions.",
+    "properties": {
+      "native_home": {
+        "minLength": 1,
+        "title": "Native Home",
+        "type": "string"
+      },
+      "home_env": {
+        "anyOf": [
+          {
             "type": "string"
           },
-          "minItems": 1,
-          "title": "Source Refs",
-          "type": "array"
-        }
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Home Env"
       },
-      "required": [
-        "native_home",
-        "files",
-        "memory_scope",
-        "source_refs"
-      ],
-      "title": "NativeLoadSet",
-      "type": "object"
+      "files": {
+        "items": {
+          "$ref": "#/$defs/NativeLoadFile"
+        },
+        "minItems": 1,
+        "title": "Files",
+        "type": "array"
+      },
+      "memory_scope": {
+        "minLength": 1,
+        "title": "Memory Scope",
+        "type": "string"
+      },
+      "plugins": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Plugins"
+      },
+      "skills": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Skills"
+      },
+      "hooks": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Hooks"
+      },
+      "mcp": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Mcp"
+      },
+      "loading_flags": {
+        "anyOf": [{"items": {"type": "string"}, "type": "array"}, {"type": "null"}],
+        "default": null,
+        "title": "Loading Flags"
+      },
+      "source_refs": {
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "title": "Source Refs",
+        "type": "array"
+      }
     },
+    "required": [
+      "native_home",
+      "files",
+      "memory_scope",
+      "source_refs"
+    ],
+    "title": "NativeLoadSet",
+    "type": "object"
+  },
     "non_agentic_trust_supply_identity": {
       "type": "string",
       "minLength": 1,
@@ -303,26 +261,10 @@
       ]
     },
     "platform": {
-      "enum": [
-        "agy",
-        "api",
-        "claude",
-        "codex",
-        "gemini",
-        "glmcp",
-        "kimi",
-        "local_tool",
-        "vibe"
-      ]
+      "enum": ["agy", "api", "claude", "codex", "gemini", "glmcp", "kimi", "local_tool", "vibe"]
     },
     "mode": {
-      "enum": [
-        "headless",
-        "interactive",
-        "local",
-        "receipt_only",
-        "review"
-      ]
+      "enum": ["headless", "interactive", "local", "receipt_only", "review"]
     },
     "profile": {
       "enum": [
@@ -344,10 +286,7 @@
       ]
     },
     "route_state": {
-      "enum": [
-        "active",
-        "blocked"
-      ]
+      "enum": ["active", "blocked"]
     },
     "capability_shape_class": {
       "enum": [
@@ -364,62 +303,25 @@
       ]
     },
     "capability_shape_state": {
-      "enum": [
-        "evidence_only",
-        "intake_required",
-        "measurement_pending",
-        "deprecated"
-      ]
+      "enum": ["evidence_only", "intake_required", "measurement_pending", "deprecated"]
     },
     "capability_shape_freshness_state": {
-      "enum": [
-        "fresh",
-        "stale",
-        "missing",
-        "asserted_only",
-        "contradictory"
-      ]
+      "enum": ["fresh", "stale", "missing", "asserted_only", "contradictory"]
     },
     "auth_surface": {
-      "enum": [
-        "api_key",
-        "local",
-        "oauth",
-        "operator_session",
-        "subscription",
-        "unknown",
-        "vertex"
-      ]
+      "enum": ["api_key", "local", "oauth", "operator_session", "subscription", "unknown", "vertex"]
     },
     "capacity_pool": {
-      "enum": [
-        "api_paid_spend",
-        "bootstrap_budget",
-        "local_compute",
-        "subscription_quota"
-      ]
+      "enum": ["api_paid_spend", "bootstrap_budget", "local_compute", "subscription_quota"]
     },
     "authority_ceiling": {
-      "enum": [
-        "authoritative",
-        "frontier_review_required",
-        "read_only",
-        "support_only"
-      ]
+      "enum": ["authoritative", "frontier_review_required", "read_only", "support_only"]
     },
     "filesystem_access": {
-      "enum": [
-        "none",
-        "read_only",
-        "read_write"
-      ]
+      "enum": ["none", "read_only", "read_write"]
     },
     "shell_access": {
-      "enum": [
-        "none",
-        "read_only",
-        "full"
-      ]
+      "enum": ["none", "read_only", "full"]
     },
     "privacy_posture": {
       "enum": [
@@ -431,50 +333,19 @@
       ]
     },
     "quality_floor": {
-      "enum": [
-        "deterministic_ok",
-        "frontier_required",
-        "frontier_review_required"
-      ]
+      "enum": ["deterministic_ok", "frontier_required", "frontier_review_required"]
     },
     "context_class": {
-      "enum": [
-        "small",
-        "medium",
-        "large",
-        "very_large",
-        "unknown"
-      ]
+      "enum": ["small", "medium", "large", "very_large", "unknown"]
     },
     "quota_source": {
-      "enum": [
-        "cli",
-        "cloud_monitoring",
-        "ledger",
-        "manual",
-        "none",
-        "otel",
-        "provider_console",
-        "unknown"
-      ]
+      "enum": ["cli", "cloud_monitoring", "ledger", "manual", "none", "otel", "provider_console", "unknown"]
     },
     "cost_source": {
-      "enum": [
-        "estimated",
-        "ledger",
-        "none",
-        "otel",
-        "provider_usage",
-        "unknown"
-      ]
+      "enum": ["estimated", "ledger", "none", "otel", "provider_usage", "unknown"]
     },
     "resource_source": {
-      "enum": [
-        "infra_observation_spine",
-        "local_probe",
-        "none",
-        "unknown"
-      ]
+      "enum": ["infra_observation_spine", "local_probe", "none", "unknown"]
     },
     "approval_posture": {
       "enum": [
@@ -507,13 +378,8 @@
     },
     "timestamp_or_null": {
       "anyOf": [
-        {
-          "type": "string",
-          "format": "date-time"
-        },
-        {
-          "type": "null"
-        }
+        {"type": "string", "format": "date-time"},
+        {"type": "null"}
       ]
     },
     "duration": {
@@ -523,105 +389,46 @@
     "freshness_surface_evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "evidence_refs",
-        "blocked_reasons"
-      ],
+      "required": ["evidence_refs", "blocked_reasons"],
       "anyOf": [
-        {
-          "required": [
-            "evidence_refs"
-          ],
-          "properties": {
-            "evidence_refs": {
-              "minItems": 1
-            }
-          }
-        },
-        {
-          "required": [
-            "blocked_reasons"
-          ],
-          "properties": {
-            "blocked_reasons": {
-              "minItems": 1
-            }
-          }
-        }
+        {"required": ["evidence_refs"], "properties": {"evidence_refs": {"minItems": 1}}},
+        {"required": ["blocked_reasons"], "properties": {"blocked_reasons": {"minItems": 1}}}
       ],
       "properties": {
         "evidence_refs": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-          }
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "blocked_reasons": {
           "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "items": {"type": "string", "minLength": 1}
         }
       }
     },
     "freshness_evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "capability",
-        "quota",
-        "resource",
-        "provider_docs"
-      ],
+      "required": ["capability", "quota", "resource", "provider_docs"],
       "properties": {
-        "capability": {
-          "$ref": "#/$defs/freshness_surface_evidence"
-        },
-        "quota": {
-          "$ref": "#/$defs/freshness_surface_evidence"
-        },
-        "resource": {
-          "$ref": "#/$defs/freshness_surface_evidence"
-        },
-        "provider_docs": {
-          "$ref": "#/$defs/freshness_surface_evidence"
-        }
+        "capability": {"$ref": "#/$defs/freshness_surface_evidence"},
+        "quota": {"$ref": "#/$defs/freshness_surface_evidence"},
+        "resource": {"$ref": "#/$defs/freshness_surface_evidence"},
+        "provider_docs": {"$ref": "#/$defs/freshness_surface_evidence"}
       }
     },
     "score_confidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "score",
-        "confidence",
-        "evidence_refs",
-        "observed_at",
-        "stale_after"
-      ],
+      "required": ["score", "confidence", "evidence_refs", "observed_at", "stale_after"],
       "properties": {
-        "score": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 5
-        },
-        "confidence": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 5
-        },
+        "score": {"type": "integer", "minimum": 0, "maximum": 5},
+        "confidence": {"type": "integer", "minimum": 0, "maximum": 5},
         "evidence_refs": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-          }
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
-        "observed_at": {
-          "$ref": "#/$defs/timestamp_or_null"
-        },
-        "stale_after": {
-          "$ref": "#/$defs/duration"
-        }
+        "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "stale_after": {"$ref": "#/$defs/duration"}
       }
     },
     "capability_scores": {
@@ -644,90 +451,42 @@
         "local_calibration"
       ],
       "properties": {
-        "grounding": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "governance_reasoning": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "source_editing": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "architecture": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "ambiguity_resolution": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "long_context": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "current_docs_grounding": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "multimodal_verification": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "runtime_debugging": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "test_authoring": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "coordination_reliability": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "privacy_safety": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "public_claim_safety": {
-          "$ref": "#/$defs/score_confidence"
-        },
-        "local_calibration": {
-          "$ref": "#/$defs/score_confidence"
-        }
+        "grounding": {"$ref": "#/$defs/score_confidence"},
+        "governance_reasoning": {"$ref": "#/$defs/score_confidence"},
+        "source_editing": {"$ref": "#/$defs/score_confidence"},
+        "architecture": {"$ref": "#/$defs/score_confidence"},
+        "ambiguity_resolution": {"$ref": "#/$defs/score_confidence"},
+        "long_context": {"$ref": "#/$defs/score_confidence"},
+        "current_docs_grounding": {"$ref": "#/$defs/score_confidence"},
+        "multimodal_verification": {"$ref": "#/$defs/score_confidence"},
+        "runtime_debugging": {"$ref": "#/$defs/score_confidence"},
+        "test_authoring": {"$ref": "#/$defs/score_confidence"},
+        "coordination_reliability": {"$ref": "#/$defs/score_confidence"},
+        "privacy_safety": {"$ref": "#/$defs/score_confidence"},
+        "public_claim_safety": {"$ref": "#/$defs/score_confidence"},
+        "local_calibration": {"$ref": "#/$defs/score_confidence"}
       }
     },
     "benchmark_coverage_state": {
-      "enum": [
-        "unknown",
-        "covered",
-        "partial",
-        "absent",
-        "stale",
-        "misleading"
-      ]
+      "enum": ["unknown", "covered", "partial", "absent", "stale", "misleading"]
     },
     "benchmark_coverage": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "coverage_state",
-        "benchmark_refs",
-        "gap_refs",
-        "evidence_refs"
-      ],
+      "required": ["coverage_state", "benchmark_refs", "gap_refs", "evidence_refs"],
       "properties": {
-        "coverage_state": {
-          "$ref": "#/$defs/benchmark_coverage_state"
-        },
+        "coverage_state": {"$ref": "#/$defs/benchmark_coverage_state"},
         "benchmark_refs": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-          }
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "gap_refs": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-          }
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "evidence_refs": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-          }
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         }
       }
     },
@@ -743,37 +502,18 @@
         "projection_ref"
       ],
       "properties": {
-        "fixed_cost_score": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 5
-        },
-        "setup_seconds": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "context_tokens": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "coordination_steps": {
-          "type": "integer",
-          "minimum": 0
-        },
+        "fixed_cost_score": {"type": "integer", "minimum": 0, "maximum": 5},
+        "setup_seconds": {"type": "integer", "minimum": 0},
+        "context_tokens": {"type": "integer", "minimum": 0},
+        "coordination_steps": {"type": "integer", "minimum": 0},
         "evidence_refs": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-          }
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "projection_ref": {
           "anyOf": [
-            {
-              "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-            },
-            {
-              "type": "null"
-            }
+            {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"},
+            {"type": "null"}
           ]
         }
       }
@@ -781,36 +521,19 @@
     "local_calibration_provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "source",
-        "posterior_receipt_refs",
-        "evidence_refs",
-        "observed_at",
-        "stale_after"
-      ],
+      "required": ["source", "posterior_receipt_refs", "evidence_refs", "observed_at", "stale_after"],
       "properties": {
-        "source": {
-          "type": "string",
-          "minLength": 1
-        },
+        "source": {"type": "string", "minLength": 1},
         "posterior_receipt_refs": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-          }
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "evidence_refs": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-          }
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
-        "observed_at": {
-          "$ref": "#/$defs/timestamp_or_null"
-        },
-        "stale_after": {
-          "$ref": "#/$defs/duration"
-        }
+        "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "stale_after": {"$ref": "#/$defs/duration"}
       }
     },
     "historical_performance": {
@@ -825,128 +548,62 @@
         "local_calibration_provenance"
       ],
       "properties": {
-        "calibration_window": {
-          "type": "string",
-          "minLength": 1
-        },
+        "calibration_window": {"type": "string", "minLength": 1},
         "evidence_refs": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-          }
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "class_posteriors": {
           "type": "object",
-          "additionalProperties": {
-            "$ref": "#/$defs/score_confidence"
-          }
+          "additionalProperties": {"$ref": "#/$defs/score_confidence"}
         },
-        "benchmark_coverage": {
-          "$ref": "#/$defs/benchmark_coverage"
-        },
-        "fixed_route_overhead": {
-          "$ref": "#/$defs/fixed_route_overhead"
-        },
-        "local_calibration_provenance": {
-          "$ref": "#/$defs/local_calibration_provenance"
-        }
+        "benchmark_coverage": {"$ref": "#/$defs/benchmark_coverage"},
+        "fixed_route_overhead": {"$ref": "#/$defs/fixed_route_overhead"},
+        "local_calibration_provenance": {"$ref": "#/$defs/local_calibration_provenance"}
       }
     },
     "tool_authority_use": {
-      "enum": [
-        "read",
-        "write",
-        "execute",
-        "verify"
-      ]
+      "enum": ["read", "write", "execute", "verify"]
     },
     "tool_state": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "tool_id",
-        "available",
-        "authority_use",
-        "observed_at",
-        "stale_after",
-        "evidence_ref"
-      ],
+      "required": ["tool_id", "available", "authority_use", "observed_at", "stale_after", "evidence_ref"],
       "properties": {
-        "tool_id": {
-          "$ref": "#/$defs/non_agentic_trust_supply_identity"
-        },
-        "available": {
-          "type": "boolean"
-        },
+        "tool_id": {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
+        "available": {"type": "boolean"},
         "authority_use": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/tool_authority_use"
-          }
+          "items": {"$ref": "#/$defs/tool_authority_use"}
         },
-        "observed_at": {
-          "$ref": "#/$defs/timestamp_or_null"
-        },
-        "stale_after": {
-          "$ref": "#/$defs/duration"
-        },
-        "evidence_ref": {
-          "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-        }
+        "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "stale_after": {"$ref": "#/$defs/duration"},
+        "evidence_ref": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
       }
     },
     "mutability": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "vault_docs",
-        "source",
-        "runtime",
-        "public",
-        "provider_spend"
-      ],
+      "required": ["vault_docs", "source", "runtime", "public", "provider_spend"],
       "properties": {
-        "vault_docs": {
-          "type": "boolean"
-        },
-        "source": {
-          "type": "boolean"
-        },
-        "runtime": {
-          "type": "boolean"
-        },
-        "public": {
-          "type": "boolean"
-        },
-        "provider_spend": {
-          "type": "boolean"
-        }
+        "vault_docs": {"type": "boolean"},
+        "source": {"type": "boolean"},
+        "runtime": {"type": "boolean"},
+        "public": {"type": "boolean"},
+        "provider_spend": {"type": "boolean"}
       }
     },
     "tool_access": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "filesystem",
-        "shell",
-        "browser",
-        "mcp"
-      ],
+      "required": ["filesystem", "shell", "browser", "mcp"],
       "properties": {
-        "filesystem": {
-          "$ref": "#/$defs/filesystem_access"
-        },
-        "shell": {
-          "$ref": "#/$defs/shell_access"
-        },
-        "browser": {
-          "type": "boolean"
-        },
+        "filesystem": {"$ref": "#/$defs/filesystem_access"},
+        "shell": {"$ref": "#/$defs/shell_access"},
+        "browser": {"type": "boolean"},
         "mcp": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-          }
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         }
       }
     },
@@ -962,54 +619,34 @@
         "eligible_quality_floors": {
           "type": "array",
           "minItems": 1,
-          "items": {
-            "$ref": "#/$defs/quality_floor"
-          }
+          "items": {"$ref": "#/$defs/quality_floor"}
         },
         "explicit_equivalence_records": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"
-          }
+          "items": {"$ref": "#/$defs/non_agentic_trust_supply_evidence_ref"}
         },
         "excluded_task_classes": {
           "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "items": {"type": "string"}
         }
       }
     },
     "context_limits": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "max_context_class"
-      ],
+      "required": ["max_context_class"],
       "properties": {
-        "max_context_class": {
-          "$ref": "#/$defs/context_class"
-        }
+        "max_context_class": {"$ref": "#/$defs/context_class"}
       }
     },
     "telemetry": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "quota_source",
-        "cost_source",
-        "resource_source"
-      ],
+      "required": ["quota_source", "cost_source", "resource_source"],
       "properties": {
-        "quota_source": {
-          "$ref": "#/$defs/quota_source"
-        },
-        "cost_source": {
-          "$ref": "#/$defs/cost_source"
-        },
-        "resource_source": {
-          "$ref": "#/$defs/resource_source"
-        }
+        "quota_source": {"$ref": "#/$defs/quota_source"},
+        "cost_source": {"$ref": "#/$defs/cost_source"},
+        "resource_source": {"$ref": "#/$defs/resource_source"}
       }
     },
     "freshness": {
@@ -1027,33 +664,15 @@
         "evidence"
       ],
       "properties": {
-        "capability_checked_at": {
-          "$ref": "#/$defs/timestamp_or_null"
-        },
-        "capability_stale_after": {
-          "$ref": "#/$defs/duration"
-        },
-        "quota_checked_at": {
-          "$ref": "#/$defs/timestamp_or_null"
-        },
-        "quota_stale_after": {
-          "$ref": "#/$defs/duration"
-        },
-        "resource_checked_at": {
-          "$ref": "#/$defs/timestamp_or_null"
-        },
-        "resource_stale_after": {
-          "$ref": "#/$defs/duration"
-        },
-        "provider_docs_checked_at": {
-          "$ref": "#/$defs/timestamp_or_null"
-        },
-        "provider_docs_stale_after": {
-          "$ref": "#/$defs/duration"
-        },
-        "evidence": {
-          "$ref": "#/$defs/freshness_evidence"
-        }
+        "capability_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "capability_stale_after": {"$ref": "#/$defs/duration"},
+        "quota_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "quota_stale_after": {"$ref": "#/$defs/duration"},
+        "resource_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "resource_stale_after": {"$ref": "#/$defs/duration"},
+        "provider_docs_checked_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "provider_docs_stale_after": {"$ref": "#/$defs/duration"},
+        "evidence": {"$ref": "#/$defs/freshness_evidence"}
       }
     },
     "model_id": {
@@ -1078,104 +697,49 @@
       ]
     },
     "effort": {
-      "enum": [
-        "none",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ]
+      "enum": ["none", "low", "medium", "high", "xhigh", "max"]
     },
     "context_mode": {
-      "enum": [
-        "standard",
-        "extended_1m",
-        "not_applicable"
-      ]
+      "enum": ["standard", "extended_1m", "not_applicable"]
     },
     "fast_mode": {
-      "enum": [
-        "off",
-        "fast",
-        "not_applicable"
-      ]
+      "enum": ["off", "fast", "not_applicable"]
     },
     "quantization": {
-      "enum": [
-        "none",
-        "exl3_4_0bpw",
-        "exl3_5_0bpw",
-        "not_applicable"
-      ]
+      "enum": ["none", "exl3_4_0bpw", "exl3_5_0bpw", "not_applicable"]
     },
     "execution_descriptor": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "model_id",
-        "effort",
-        "context_mode",
-        "fast_mode",
-        "quantization"
-      ],
+      "required": ["model_id", "effort", "context_mode", "fast_mode", "quantization"],
       "properties": {
-        "model_id": {
-          "$ref": "#/$defs/model_id"
-        },
-        "effort": {
-          "$ref": "#/$defs/effort"
-        },
-        "context_mode": {
-          "$ref": "#/$defs/context_mode"
-        },
-        "fast_mode": {
-          "$ref": "#/$defs/fast_mode"
-        },
-        "quantization": {
-          "$ref": "#/$defs/quantization"
-        }
+        "model_id": {"$ref": "#/$defs/model_id"},
+        "effort": {"$ref": "#/$defs/effort"},
+        "context_mode": {"$ref": "#/$defs/context_mode"},
+        "fast_mode": {"$ref": "#/$defs/fast_mode"},
+        "quantization": {"$ref": "#/$defs/quantization"}
       }
     },
     "descriptor_variant": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "variant_id"
-      ],
+      "required": ["variant_id"],
       "properties": {
-        "variant_id": {
-          "$ref": "#/$defs/non_agentic_trust_supply_identity"
-        },
+        "variant_id": {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
         "knobs_override": {
           "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
+          "additionalProperties": {"type": "string"}
         },
         "score_delta": {
           "type": "object",
-          "additionalProperties": {
-            "type": "integer"
-          }
+          "additionalProperties": {"type": "integer"}
         },
         "scores_inherited_from": {
-          "anyOf": [
-            {
-              "type": "string",
-              "minLength": 1
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
         },
         "blocked_reasons": {
           "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "items": {"type": "string", "minLength": 1}
         }
       }
     },
@@ -1208,196 +772,100 @@
         "blocked_reasons"
       ],
       "properties": {
-        "descriptor_schema": {
-          "const": 1
-        },
+        "descriptor_schema": {"const": 1},
         "shape_id": {
           "type": "string",
           "minLength": 1,
           "pattern": "^[a-z0-9][a-z0-9._-]*$"
         },
-        "shape_class": {
-          "$ref": "#/$defs/capability_shape_class"
-        },
-        "carrier_family": {
-          "type": "string",
-          "minLength": 1
-        },
-        "summary": {
-          "type": "string",
-          "minLength": 1
-        },
-        "harness_shape": {
-          "type": "string",
-          "minLength": 1
-        },
-        "authority_ceiling": {
-          "$ref": "#/$defs/authority_ceiling"
-        },
-        "shape_state": {
-          "$ref": "#/$defs/capability_shape_state"
-        },
-        "demand_eligible": {
-          "const": false
-        },
-        "route_ids": {
-          "type": "array",
-          "maxItems": 0
-        },
+        "shape_class": {"$ref": "#/$defs/capability_shape_class"},
+        "carrier_family": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "harness_shape": {"type": "string", "minLength": 1},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "shape_state": {"$ref": "#/$defs/capability_shape_state"},
+        "demand_eligible": {"const": false},
+        "route_ids": {"type": "array", "maxItems": 0},
         "resource_semantics": {
           "type": "array",
           "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "items": {"type": "string", "minLength": 1}
         },
         "spend_semantics": {
           "type": "array",
           "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "items": {"type": "string", "minLength": 1}
         },
         "observability": {
           "type": "array",
           "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "items": {"type": "string", "minLength": 1}
         },
         "failure_classes": {
           "type": "array",
           "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "items": {"type": "string", "minLength": 1}
         },
         "measurement_plan_refs": {
           "type": "array",
           "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "items": {"type": "string", "minLength": 1}
         },
         "remediation_refs": {
           "type": "array",
           "minItems": 1,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "items": {"type": "string", "minLength": 1}
         },
         "surface_delta_signal": {
-          "anyOf": [
-            {
-              "type": "string",
-              "minLength": 1
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
         },
         "observation_receipt_class": {
-          "anyOf": [
-            {
-              "type": "string",
-              "minLength": 1
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]
         },
-        "observed_at": {
-          "$ref": "#/$defs/timestamp_or_null"
-        },
-        "stale_after": {
-          "$ref": "#/$defs/duration"
-        },
-        "freshness_state": {
-          "$ref": "#/$defs/capability_shape_freshness_state"
-        },
+        "observed_at": {"$ref": "#/$defs/timestamp_or_null"},
+        "stale_after": {"$ref": "#/$defs/duration"},
+        "freshness_state": {"$ref": "#/$defs/capability_shape_freshness_state"},
         "evidence_refs": {
           "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "items": {"type": "string", "minLength": 1}
         },
         "blocked_reasons": {
           "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "items": {"type": "string", "minLength": 1}
         }
       },
       "allOf": [
         {
           "if": {
-            "properties": {
-              "shape_state": {
-                "const": "evidence_only"
-              }
-            },
-            "required": [
-              "shape_state"
-            ]
+            "properties": {"shape_state": {"const": "evidence_only"}},
+            "required": ["shape_state"]
           },
           "then": {
             "properties": {
-              "authority_ceiling": {
-                "const": "read_only"
-              },
-              "surface_delta_signal": {
-                "type": "null"
-              },
-              "observation_receipt_class": {
-                "type": "string",
-                "minLength": 1
-              }
+              "authority_ceiling": {"const": "read_only"},
+              "surface_delta_signal": {"type": "null"},
+              "observation_receipt_class": {"type": "string", "minLength": 1}
             }
           },
           "else": {
             "properties": {
-              "surface_delta_signal": {
-                "type": "string",
-                "minLength": 1
-              }
+              "surface_delta_signal": {"type": "string", "minLength": 1}
             }
           }
         },
         {
           "if": {
             "properties": {
-              "shape_id": {
-                "const": "local_compute.agentic_trust_evaluator_surface"
-              }
+              "shape_id": {"const": "local_compute.agentic_trust_evaluator_surface"}
             },
-            "required": [
-              "shape_id"
-            ]
+            "required": ["shape_id"]
           },
           "then": {
             "properties": {
-              "authority_ceiling": {
-                "const": "read_only"
-              },
-              "shape_state": {
-                "const": "evidence_only"
-              },
-              "surface_delta_signal": {
-                "type": "null"
-              },
-              "observation_receipt_class": {
-                "const": "AgenticTrustEvidenceReceiptV1"
-              }
+              "authority_ceiling": {"const": "read_only"},
+              "shape_state": {"const": "evidence_only"},
+              "surface_delta_signal": {"type": "null"},
+              "observation_receipt_class": {"const": "AgenticTrustEvidenceReceiptV1"}
             }
           }
         }
@@ -1438,159 +906,71 @@
         "known_unknowns"
       ],
       "properties": {
-        "registry_schema": {
-          "const": 1
-        },
+        "registry_schema": {"const": 1},
         "route_id": {
           "allOf": [
-            {
-              "type": "string",
-              "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+\\.[a-z0-9_]+$"
-            },
-            {
-              "$ref": "#/$defs/non_agentic_trust_supply_identity"
-            }
+            {"type": "string", "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+\\.[a-z0-9_]+$"},
+            {"$ref": "#/$defs/non_agentic_trust_supply_identity"}
           ]
         },
-        "platform": {
-          "$ref": "#/$defs/platform"
-        },
-        "mode": {
-          "$ref": "#/$defs/mode"
-        },
-        "profile": {
-          "$ref": "#/$defs/profile"
-        },
-        "launcher": {
-          "$ref": "#/$defs/non_agentic_trust_supply_identity"
-        },
-        "sanctioned_wrapper": {
-          "$ref": "#/$defs/non_agentic_trust_supply_identity"
-        },
-        "summary": {
-          "type": "string",
-          "minLength": 1
-        },
-        "notes": {
-          "type": "string",
-          "minLength": 1
-        },
-        "route_state": {
-          "$ref": "#/$defs/route_state"
-        },
+        "platform": {"$ref": "#/$defs/platform"},
+        "mode": {"$ref": "#/$defs/mode"},
+        "profile": {"$ref": "#/$defs/profile"},
+        "launcher": {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
+        "sanctioned_wrapper": {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
+        "summary": {"type": "string", "minLength": 1},
+        "notes": {"type": "string", "minLength": 1},
+        "route_state": {"$ref": "#/$defs/route_state"},
         "blocked_reasons": {
           "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "items": {"type": "string", "minLength": 1}
         },
         "model_or_engine": {
           "anyOf": [
-            {
-              "$ref": "#/$defs/non_agentic_trust_supply_identity"
-            },
-            {
-              "type": "null"
-            }
+            {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
+            {"type": "null"}
           ]
         },
-        "execution_descriptor": {
-          "$ref": "#/$defs/execution_descriptor"
-        },
-        "native_load_set": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/native_load_set"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
+        "execution_descriptor": {"$ref": "#/$defs/execution_descriptor"},
+        "native_load_set": {"anyOf": [{"$ref": "#/$defs/native_load_set"}, {"type": "null"}]},
         "descriptor_variants": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/descriptor_variant"
-          }
+          "items": {"$ref": "#/$defs/descriptor_variant"}
         },
         "paid_provider": {
           "anyOf": [
-            {
-              "$ref": "#/$defs/non_agentic_trust_supply_identity"
-            },
-            {
-              "type": "null"
-            }
+            {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
+            {"type": "null"}
           ]
         },
         "paid_profile": {
           "anyOf": [
-            {
-              "$ref": "#/$defs/non_agentic_trust_supply_identity"
-            },
-            {
-              "type": "null"
-            }
+            {"$ref": "#/$defs/non_agentic_trust_supply_identity"},
+            {"type": "null"}
           ]
         },
-        "approval_posture": {
-          "$ref": "#/$defs/approval_posture"
-        },
-        "capability_tier": {
-          "$ref": "#/$defs/capability_tier"
-        },
-        "worker_tier": {
-          "$ref": "#/$defs/worker_tier"
-        },
-        "auth_surface": {
-          "$ref": "#/$defs/auth_surface"
-        },
-        "capacity_pool": {
-          "$ref": "#/$defs/capacity_pool"
-        },
-        "mutability": {
-          "$ref": "#/$defs/mutability"
-        },
-        "authority_ceiling": {
-          "$ref": "#/$defs/authority_ceiling"
-        },
-        "tool_access": {
-          "$ref": "#/$defs/tool_access"
-        },
-        "privacy_posture": {
-          "$ref": "#/$defs/privacy_posture"
-        },
-        "quality_envelope": {
-          "$ref": "#/$defs/quality_envelope"
-        },
-        "capability_scores": {
-          "$ref": "#/$defs/capability_scores"
-        },
+        "approval_posture": {"$ref": "#/$defs/approval_posture"},
+        "capability_tier": {"$ref": "#/$defs/capability_tier"},
+        "worker_tier": {"$ref": "#/$defs/worker_tier"},
+        "auth_surface": {"$ref": "#/$defs/auth_surface"},
+        "capacity_pool": {"$ref": "#/$defs/capacity_pool"},
+        "mutability": {"$ref": "#/$defs/mutability"},
+        "authority_ceiling": {"$ref": "#/$defs/authority_ceiling"},
+        "tool_access": {"$ref": "#/$defs/tool_access"},
+        "privacy_posture": {"$ref": "#/$defs/privacy_posture"},
+        "quality_envelope": {"$ref": "#/$defs/quality_envelope"},
+        "capability_scores": {"$ref": "#/$defs/capability_scores"},
         "tool_state": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/tool_state"
-          }
+          "items": {"$ref": "#/$defs/tool_state"}
         },
-        "historical_performance": {
-          "$ref": "#/$defs/historical_performance"
-        },
-        "context_limits": {
-          "$ref": "#/$defs/context_limits"
-        },
-        "telemetry": {
-          "$ref": "#/$defs/telemetry"
-        },
-        "freshness": {
-          "$ref": "#/$defs/freshness"
-        },
+        "historical_performance": {"$ref": "#/$defs/historical_performance"},
+        "context_limits": {"$ref": "#/$defs/context_limits"},
+        "telemetry": {"$ref": "#/$defs/telemetry"},
+        "freshness": {"$ref": "#/$defs/freshness"},
         "known_unknowns": {
           "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "items": {"type": "string", "minLength": 1}
         }
       }
     }

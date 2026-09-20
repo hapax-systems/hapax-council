@@ -1205,7 +1205,7 @@
         "skills": null,
         "hooks": null,
         "mcp": null,
-        "loading_flags": [],
+        "loading_flags": null,
         "source_refs": [
           "config/agent-instructions/bindings.json",
           "docs/runbooks/agent-instruction-binding.md",
@@ -1558,7 +1558,7 @@
         "skills": null,
         "hooks": null,
         "mcp": null,
-        "loading_flags": [],
+        "loading_flags": null,
         "source_refs": [
           "config/agent-instructions/bindings.json",
           "docs/runbooks/agent-instruction-binding.md",
@@ -1910,7 +1910,7 @@
         "skills": null,
         "hooks": null,
         "mcp": null,
-        "loading_flags": [],
+        "loading_flags": null,
         "source_refs": [
           "config/agent-instructions/bindings.json",
           "docs/runbooks/agent-instruction-binding.md",
@@ -2273,7 +2273,7 @@
         "skills": null,
         "hooks": null,
         "mcp": null,
-        "loading_flags": [],
+        "loading_flags": null,
         "source_refs": [
           "config/agent-instructions/bindings.json",
           "docs/runbooks/agent-instruction-binding.md",
@@ -2637,7 +2637,7 @@
         "skills": null,
         "hooks": null,
         "mcp": null,
-        "loading_flags": [],
+        "loading_flags": null,
         "source_refs": [
           "config/agent-instructions/bindings.json",
           "docs/runbooks/agent-instruction-binding.md",
@@ -2921,7 +2921,7 @@
         "skills": null,
         "hooks": null,
         "mcp": null,
-        "loading_flags": [],
+        "loading_flags": null,
         "source_refs": [
           "config/agent-instructions/bindings.json",
           "docs/runbooks/agent-instruction-binding.md",
@@ -3286,7 +3286,7 @@
         "skills": null,
         "hooks": null,
         "mcp": null,
-        "loading_flags": [],
+        "loading_flags": null,
         "source_refs": [
           "config/agent-instructions/bindings.json",
           "docs/runbooks/agent-instruction-binding.md",
@@ -3641,7 +3641,7 @@
         "skills": null,
         "hooks": null,
         "mcp": null,
-        "loading_flags": [],
+        "loading_flags": null,
         "source_refs": [
           "config/agent-instructions/bindings.json",
           "docs/runbooks/agent-instruction-binding.md",
@@ -3999,7 +3999,7 @@
         "skills": null,
         "hooks": null,
         "mcp": null,
-        "loading_flags": [],
+        "loading_flags": null,
         "source_refs": [
           "config/agent-instructions/bindings.json",
           "docs/runbooks/agent-instruction-binding.md",
@@ -4307,7 +4307,7 @@
         "skills": null,
         "hooks": null,
         "mcp": null,
-        "loading_flags": [],
+        "loading_flags": null,
         "source_refs": [
           "config/agent-instructions/bindings.json",
           "docs/runbooks/agent-instruction-binding.md",
@@ -4926,7 +4926,7 @@
         "skills": null,
         "hooks": null,
         "mcp": null,
-        "loading_flags": [],
+        "loading_flags": null,
         "source_refs": [
           "config/agent-instructions/bindings.json",
           "docs/runbooks/agent-instruction-binding.md",

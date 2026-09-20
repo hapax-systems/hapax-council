@@ -201,8 +201,11 @@ retained. Requested host names, an SSH transport exit, PID existence and a
 successful interactive launcher do not establish native completion.
 
 Completion needs an unambiguous native session, successful terminal event, clean
-event stream and owned process exit zero. Cancellation requires observed signal
-termination; the supervisor bounds termination and reaps its child. Resume
+event stream and owned process exit zero. Signal-cause confirmation requires a
+native wait witness. Bash conflates signal termination with explicit exit codes,
+so this supervisor records the requested signal and reaped exit without converting
+that shell status into a negative native wait result. It still bounds termination
+and reaps its child. Resume
 identity, readiness, instruction delivery and task acceptance remain distinct.
 Claude's event vocabulary is mapped by the observer but does not acquire a new
 production supervisor through this change. Other native mappings remain visibly

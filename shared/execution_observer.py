@@ -397,13 +397,12 @@ def _native_receipt_main() -> int:
     parser.add_argument("--local-child", action="store_true")
     parser.add_argument("--cancel-signal", type=int, default=0)
     args = parser.parse_args()
-    rc = args.returncode
-    if args.cancel_signal and rc == 128 + args.cancel_signal:
-        rc = -args.cancel_signal
+    # Bash wait conflates signal termination with an explicit exit(128+signal).
+    # Do not manufacture a negative subprocess wait witness from that value.
     observed = observe_native_lifecycle(
         args.stream,
         platform="codex",
-        process_returncode=rc if args.local_child else None,
+        process_returncode=args.returncode if args.local_child else None,
         cancellation_requested=bool(args.cancel_signal),
     )
     observed.update(
@@ -414,6 +413,9 @@ def _native_receipt_main() -> int:
             "diagnostics_path": str(args.diagnostics),
             "observer_host": socket.gethostname(),
             "owned_native_process": args.local_child,
+            "wait_status_kind": "shell_wait",
+            "cancel_signal_requested": args.cancel_signal or None,
+            "owned_exit_after_cancel": bool(args.cancel_signal and args.local_child),
         }
     )
     args.receipt.parent.mkdir(parents=True, exist_ok=True)

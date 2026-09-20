@@ -36,6 +36,7 @@ def test_presence_never_promotes_to_native_loading(tmp_path):
     assert result["files"][0]["state"] == "match"
     assert result["native_loading"] == "unobserved"
     assert result["extensions"]["plugins"] is None
+    assert result["loading_flags"] is None
     assert result["may_authorize"] is False
 
 
