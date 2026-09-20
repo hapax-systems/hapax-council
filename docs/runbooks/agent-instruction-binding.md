@@ -88,7 +88,7 @@ For a head-bound witness, commit the source first and require
 `source_matches_head: true`. Preserve the sanitized summary with the client hash,
 configuration and source head; do not publish raw session traces indiscriminately.
 The initial replay receipts are in
-[the versioned evidence file](evidence/agent-instruction-binding-20260920.json).
+[the versioned evidence file](evidence/agent-instruction-binding-20260920.yaml).
 These observations concern the compatibility binding, not direct AGENTS discovery,
 semantic uptake, resume, or the coordinator's live session.
 
