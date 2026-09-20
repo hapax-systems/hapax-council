@@ -412,6 +412,61 @@ connector_tool_is_mutating() {
 # Repo docs/*.md are deliberately NOT carved here — they keep the existing
 # docs_mutation_authorized gate below; broadening cognition to repo docs is a
 # separate, explicit follow-on (it would change the docs-authorization invariant).
+# Write targets of a quote-stripped bash command, one per line, for the cognition carve-out ONLY.
+#
+# Deliberately CONSERVATIVE and deliberately not a general shell parser: this exists to decide
+# "is every target a cognition path", and its failure mode must be to extract nothing (which fails
+# closed at the call site), never to extract the wrong thing. It handles the forms actually seen —
+# a stdout redirect, and the trailing-operand writers — and gives up on everything else.
+#
+# It does NOT decide scope for non-cognition paths. Per the 2026-09-20 ruling, this gate classifies
+# on command text and may never treat that text as identifying; extending this into a general
+# scope-from-text check would be exactly the error the ruling forbids.
+_bash_write_targets() {
+  local cmd="$1" seg tok prev
+  while IFS= read -r seg; do
+    [[ -z "${seg// /}" ]] && continue
+    # A heredoc operator is not a write target; drop it before scanning redirects.
+    seg="$(printf '%s' "$seg" | sed -E 's/<<-?[A-Za-z_'"'"'"]+//g')"
+    # stdout redirect: `> f`, `>> f`, `1> f`. fd-dup / stderr forms already stripped upstream.
+    printf '%s\n' "$seg" | grep -oE '(^|[[:space:]])1?>>?[[:space:]]*[^[:space:]<>|&;]+' \
+      | sed -E 's/.*>>?[[:space:]]*//' | grep -v '^$'
+    _bash_seg_head "$seg"
+    case "$_HEAD" in
+      # Last operand is the destination for these; a single-operand form targets that operand.
+      cp | mv | install)
+        (( ${#_ARGS[@]} )) && printf '%s\n' "${_ARGS[${#_ARGS[@]}-1]}" ;;
+      touch | truncate | mkdir)
+        for tok in "${_ARGS[@]}"; do [[ "$tok" == -* ]] || printf '%s\n' "$tok"; done ;;
+      tee)
+        for tok in "${_ARGS[@]}"; do [[ "$tok" == -* ]] || printf '%s\n' "$tok"; done ;;
+      sed)
+        prev=""
+        for tok in "${_ARGS[@]}"; do prev="$tok"; done
+        [[ -n "$prev" && "$prev" != -* ]] && printf '%s\n' "$prev" ;;
+    esac
+  done < <(_bash_segments "$cmd") | sed '/^$/d' | sort -u
+}
+
+# True iff a quote-stripped bash command writes ONLY cognition paths — the whole decision, in one
+# place, so a test can exercise THIS text rather than a copy of it.
+#
+# (Defined after is_cognition_path below via late binding: bash resolves the call at run time.)
+#
+# Fails closed twice over: an empty target list is a refusal (we extracted nothing, so we know
+# nothing), and any single non-cognition target is a refusal. Both properties are load-bearing and
+# are mutation-tested in tests/hooks/test_cc_task_gate_cognition_shell.sh.
+_bash_writes_cognition_only() {
+  local targets t
+  targets="$(_bash_write_targets "$1")"
+  [[ -z "$targets" ]] && return 1
+  while IFS= read -r t; do
+    [[ -z "$t" ]] && continue
+    is_cognition_path "$(realpath -m -- "$t" 2>/dev/null || printf '%s' "$t")" || return 1
+  done <<<"$targets"
+  return 0
+}
+
 is_cognition_path() {
   local p="$1"
   [[ -z "$p" ]] && return 1
@@ -1335,13 +1390,31 @@ if [[ -z "$edit_path" && -n "$bash_cmd" && "$mutation_surface_hint" != "runtime"
   # closed. (FR-BASH-MUTATION-FALSE-POSITIVES)
   _cmd_stripped="$(printf '%s' "$bash_cmd" | sed -zE "s/'[^']*'//g; s/\"[^\"]*\"//g; s/(^|[[:space:]])#[^\n]*//g")"
   if bash_source_mutation_requires_scope "$_cmd_stripped"; then
-    _emit_block <<EOF
+    # INV-5 reaches shell writes too (2026-09-20). is_cognition_path() exists so that "a blocked
+    # lane must still be able to think, take notes, and report state" — but it was consulted only
+    # for $edit_path, i.e. the Edit/Write tools. A bash command has no $edit_path, so EVERY shell
+    # write was refused unconditionally, including writes to the very paths cognition exists to keep
+    # open. Measured: `cat > <vault note>` with the body `probe` was refused, while the identical
+    # bytes through the Write tool were allowed. One invariant, honoured on one surface only.
+    #
+    # The refusal was also the thing teaching evasion: if no shell write can succeed, the only way to
+    # write from a shell is to not look like a shell write, and every agent finds that door at once.
+    #
+    # This narrows the refusal and never widens it. The precondition is machine-checkable at the
+    # moment of use: allow ONLY when at least one target was extracted AND every extracted target is
+    # a cognition path. Anything unresolvable, or any non-cognition target, still fails closed
+    # exactly as before — so a command whose targets cannot be read is refused, not waved through.
+    if ! _bash_writes_cognition_only "$_cmd_stripped"; then
+      _cog_targets="$(_bash_write_targets "$_cmd_stripped")"
+      _emit_block <<EOF
 cc-task-gate: BLOCKED — cannot verify mutation_scope_refs for shell source mutation.
 
   Command: ${bash_cmd:0:160}
+  Targets read: ${_cog_targets:-"(none could be extracted)"}
   Task: $note_path
 EOF
-    exit 2
+      exit 2
+    fi
   fi
 fi
 
