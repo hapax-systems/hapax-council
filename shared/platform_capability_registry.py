@@ -871,6 +871,7 @@ class NativeLoadFile(StrictModel):
     path: str = Field(min_length=1)
     kind: Literal["instructions", "configuration"]
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    digest_description: str | None = None
     required: bool = True
 
     @model_validator(mode="after")

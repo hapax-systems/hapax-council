@@ -14,10 +14,10 @@ services:
     cpus: 2
     tmpfs:
       - /tmp:uid=1000,gid=1000,mode=1777
-      - /home/agent/.cache:uid=1000,gid=1000
+      - /opt/hapax-agent/.cache:uid=1000,gid=1000
     volumes:
       - ${NATIVE_PROJECT:?set an isolated project}:/work:ro
-      - ${CLAUDE_STATE:?set this session's owned state}:/home/agent/.claude/projects
+      - ${CLAUDE_STATE:?set this session's owned state}:/opt/hapax-agent/.claude/projects
     command: [--version]
   codex:
     image: ${CODEX_IMAGE:?set the tested immutable Codex image reference}
@@ -31,10 +31,10 @@ services:
     cpus: 2
     tmpfs:
       - /tmp:uid=1000,gid=1000,mode=1777
-      - /home/agent/.cache:uid=1000,gid=1000
-      - /home/agent/.codex/skills:uid=1000,gid=1000
+      - /opt/hapax-agent/.cache:uid=1000,gid=1000
+      - /opt/hapax-agent/.codex/skills:uid=1000,gid=1000
     volumes:
       - ${NATIVE_PROJECT:?set an isolated project}:/work:ro
       - ${CODEX_STATE:?set this session's owned state}:/state
-      - ${CODEX_STATE:?set this session's owned state}/sessions:/home/agent/.codex/sessions
+      - ${CODEX_STATE:?set this session's owned state}/sessions:/opt/hapax-agent/.codex/sessions
     command: [--version]

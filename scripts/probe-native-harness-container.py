@@ -47,7 +47,7 @@ def container(image: str, project: Path, state: Path) -> list[str]:
         "--tmpfs",
         "/tmp:uid=1000,gid=1000,mode=1777",
         "--tmpfs",
-        "/home/agent/.cache:uid=1000,gid=1000",
+        "/opt/hapax-agent/.cache:uid=1000,gid=1000",
         "--mount",
         f"type=bind,src={project},dst=/work,readonly",
         "--mount",
@@ -132,11 +132,11 @@ def codex(
     command = container(image, project, evidence)
     command[-1:-1] = [
         "--tmpfs",
-        "/home/agent/.codex/skills:uid=1000,gid=1000",
+        "/opt/hapax-agent/.codex/skills:uid=1000,gid=1000",
         "--mount",
         f"type=bind,src={state},dst=/state",
         "--mount",
-        f"type=bind,src={state / 'sessions'},dst=/home/agent/.codex/sessions",
+        f"type=bind,src={state / 'sessions'},dst=/opt/hapax-agent/.codex/sessions",
     ]
     command += ["app-server", "--stdio"]
     rpc = Rpc(command, evidence)
@@ -331,7 +331,7 @@ from pathlib import Path
 installed=json.loads(Path("/opt/hapax/instruction-install.json").read_text())
 for item in installed["files"]:
     assert hashlib.sha256(Path(item["path"]).read_bytes()).hexdigest()==item["sha256"]
-for name in ("/work/AGENTS.md", "/home/agent/.codex/AGENTS.md"):
+for name in ("/work/AGENTS.md", "/opt/hapax-agent/.codex/AGENTS.md"):
     try:
         with open(name,"ab") as stream: stream.write(b"unexpected mutation")
     except OSError as exc:
@@ -353,7 +353,7 @@ print(json.dumps({"instruction_hashes_match":True,"input_writes_denied":True,
             "instruction_install": installed,
             "filesystem": proof,
         }
-    expected_sources = ["/home/agent/.codex/AGENTS.md", "/work/AGENTS.md"]
+    expected_sources = ["/opt/hapax-agent/.codex/AGENTS.md", "/work/AGENTS.md"]
     for label, cwd in (("root", "/work"), ("nested", "/work/nested")):
         events = claude(images["claude"], project, root / f"claude-{label}", cwd)
         expected_hash = next(
@@ -362,7 +362,7 @@ print(json.dumps({"instruction_hashes_match":True,"input_writes_denied":True,
             if f["binding"] == "claude"
         )
         assert sorted(e["file_path"] for e in events) == [
-            "/home/agent/.claude/CLAUDE.md",
+            "/opt/hapax-agent/.claude/CLAUDE.md",
             "/work/CLAUDE.md",
         ]
         assert {e["sha256"] for e in events} == {expected_hash, summary["project_sha256"]}
