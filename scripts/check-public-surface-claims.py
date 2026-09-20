@@ -967,11 +967,17 @@ def _git_revision_exists(revision: str) -> bool:
 
 def _git_fetch_base_refs_for_path_status() -> bool:
     fetched = False
+    # --depth=1 keeps this cheap on CI's already-shallow checkout, but against a full
+    # clone the same flag GRAFTS it: history is truncated for every worktree sharing the
+    # object store, and stays truncated. The deploy plane reads that store, so its
+    # `merge-base --is-ancestor` leg became unanswerable and refused every root-package
+    # transition. Bound the fetch only where the history is already absent.
+    depth_args = ["--depth=1"] if _git_repository_is_shallow() else []
     for branch in dict.fromkeys(
         branch for branch in (os.environ.get("GITHUB_BASE_REF"), "main") if branch
     ):
         result = subprocess.run(
-            ["git", "fetch", "--depth=1", "origin", f"{branch}:refs/remotes/origin/{branch}"],
+            ["git", "fetch", *depth_args, "origin", f"{branch}:refs/remotes/origin/{branch}"],
             cwd=REPO_ROOT,
             text=True,
             capture_output=True,

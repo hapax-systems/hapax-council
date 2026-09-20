@@ -120,7 +120,7 @@ def test_main_dry_run_writes_plan_and_never_opens_browser(
     assert cassette["actions"][0]["url"] == plan["dashboard_url"]
     assert summary["applied"] is False
     assert summary["profile_url"] == "https://github.com/sponsors/hapax-llc"
-    assert (out_dir / "pass-store-plan.sh").exists()
+    assert (out_dir / "secret-put-plan.sh").exists()
 
 
 def test_apply_requires_live_env_and_does_not_open_browser(
@@ -173,10 +173,10 @@ def test_apply_can_capture_tier_ids_and_write_pass_when_explicitly_gated(
             "--output-dir",
             str(tmp_path / "out"),
             "--apply",
-            "--write-pass",
+            "--write-secrets",
         ],
         portal_runner=runner,
-        pass_writer=lambda key, value: writes.append((key, value)),
+        secret_writer=lambda key, value: writes.append((key, value)),
         env={runner_mod.LIVE_ENV: "1"},
     )
 
@@ -193,14 +193,14 @@ def test_apply_can_capture_tier_ids_and_write_pass_when_explicitly_gated(
     assert json.loads(supporter)["tier_id"] == "tier_123"
 
 
-def test_write_pass_requires_apply(runner_mod: ModuleType, tmp_path: Path) -> None:
+def test_write_secrets_requires_apply(runner_mod: ModuleType, tmp_path: Path) -> None:
     rc = runner_mod.main(
         [
             "--config",
             str(_config(tmp_path / "tiers.toml")),
             "--output-dir",
             str(tmp_path / "out"),
-            "--write-pass",
+            "--write-secrets",
         ],
         env={},
     )

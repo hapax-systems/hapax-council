@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Answer "which host has X" by measuring, not by reading a document.
+
+    scripts/hapax-estate-inventory                 # table
+    scripts/hapax-estate-inventory --json          # machine-readable
+    scripts/hapax-estate-inventory --find 5090     # which host has the 5090
+    scripts/hapax-estate-inventory --find video    # which host has the cameras
+
+Every other inventory instrument here is host-scoped. This one enumerates the tailnet, probes
+each host read-only, and keeps unreachable hosts as rows with a reason -- so a partial answer
+can never be mistaken for a complete one.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import socket
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from shared.estate_host_inventory import (  # noqa: E402
+    InventoryUnavailable,
+    collect,
+    find,
+    render,
+)
+
+DEFAULT_OUT = Path.home() / ".cache" / "hapax" / "estate" / "host-inventory.json"
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--json", action="store_true", help="emit the inventory as JSON")
+    ap.add_argument("--find", metavar="TERM", help="which host has TERM (gpu, device, product)")
+    ap.add_argument(
+        "--out", type=Path, default=DEFAULT_OUT, help=f"write JSON to (default {DEFAULT_OUT})"
+    )
+    ap.add_argument("--no-write", action="store_true", help="do not persist the inventory")
+    args = ap.parse_args(argv)
+
+    try:
+        inventory = collect(self_name=socket.gethostname())
+    except InventoryUnavailable as exc:
+        print(f"hapax-estate-inventory: {exc}", file=sys.stderr)
+        return 2
+
+    if not args.no_write:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+
+    if args.find:
+        hits = find(inventory, args.find)
+        if not hits:
+            print(f"no host matches {args.find!r}", file=sys.stderr)
+            return 1
+        for hit in hits:
+            print(hit)
+        return 0
+
+    print(json.dumps(inventory, indent=2) if args.json else render(inventory))
+
+    # Unreachable hosts are a real result, not a warning to bury: an inventory that silently
+    # omitted them would read as complete.
+    if inventory["unreachable"]:
+        print(
+            f"\n{len(inventory['unreachable'])} host(s) not measured: "
+            f"{', '.join(inventory['unreachable'])}",
+            file=sys.stderr,
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

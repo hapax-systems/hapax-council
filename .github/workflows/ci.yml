@@ -18,6 +18,33 @@ concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  # tests/shared/test_coord_projection_nfs_integration.py verifies the rebuilt renameat2
+  # legs against a mount that actually refuses the flags, and it FAILS CLOSED when no mount
+  # is offered — a reviewer observed that nothing set the variable, so the witness could
+  # stay permanently and invisibly skipped while the repair's central claim rested on a
+  # one-off transcript.
+  #
+  # Declared at WORKFLOW level on purpose. It was first added to the `test-full-shard` step
+  # only, and a reviewer then found the separate non-sharded `test` job running the same
+  # suite with neither variable set, so that path errored. Two step-local copies that must
+  # stay in sync is the defect, not the missing copy — one declaration every job inherits
+  # cannot drift.
+  #
+  # Hosted runners cannot mount NFS4, so this declares the absence out loud rather than
+  # skipping in silence. Any runner that CAN reach such a mount sets
+  # HAPAX_NFS_INTEGRATION_DIR instead and this waiver comes out. Where such a lane should
+  # live is a governance question with its own deferred decision; this asserts no plan
+  # about it.
+  #
+  # The `*` in the row id below is an ELISION, not a glob: the literal runner-label word it
+  # stands in for is banned in this file by tests/ci/test_self_hosted_runner_experiment.py.
+  # The full id lives in tests/shared/test_coord_projection_nfs_integration.py as
+  # `_WAIVER_EXPIRY_ROW_ID`, and `test_the_waiver_expiry_row_is_resolvable` there fails if
+  # this elided form stops matching it — so the waiver is followable from where it is
+  # declared, which it was not.
+  HAPAX_NFS_INTEGRATION_WAIVED: "hosted runner cannot mount nfs4; live witness runs outside CI against the operator's vault export; expiry owned by row nfs-fallback-live-witness-*-ci-20260913"
+
 jobs:
   post_merge_duplicate_filter:
     runs-on: ubuntu-latest
@@ -87,10 +114,10 @@ jobs:
 
           if [ -n "$PR_BASE_SHA" ]; then
             git fetch --quiet origin "$PR_BASE_SHA" || true
-            git diff --name-only "$PR_BASE_SHA"...HEAD > "$changed_files"
+            git diff --no-renames --name-only "$PR_BASE_SHA"...HEAD > "$changed_files"
           elif [ -n "$merge_group_base_sha" ]; then
             git fetch --quiet origin "$merge_group_base_sha" || true
-            git diff --name-only "$merge_group_base_sha"..HEAD > "$changed_files"
+            git diff --no-renames --name-only "$merge_group_base_sha"..HEAD > "$changed_files"
           else
             if [ -z "$PUSH_BEFORE_SHA" ] || [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
               echo "docs_only=false" >> "$GITHUB_OUTPUT"
@@ -99,7 +126,7 @@ jobs:
               exit 0
             fi
             git fetch --quiet origin "$PUSH_BEFORE_SHA" || true
-            git diff --name-only "$PUSH_BEFORE_SHA" HEAD > "$changed_files"
+            git diff --no-renames --name-only "$PUSH_BEFORE_SHA" HEAD > "$changed_files"
           fi
 
           sed -i '/^$/d' "$changed_files"
@@ -613,6 +640,9 @@ jobs:
           LANGFUSE_HOST: "http://0.0.0.0:1"
           PYTEST_SHARD: ${{ matrix.shard }}
           PYTEST_SHARD_COUNT: ${{ matrix.shard_count }}
+          # HAPAX_NFS_INTEGRATION_WAIVED is declared once at workflow level so every job
+          # that runs the suite inherits it. It lived here, and the separate non-sharded
+          # `test` job then ran the same tests with it unset.
         run: |
           # pytest hangs post-session due to open sockets from module-level
           # LiteLLM/Qdrant clients. Root conftest.py has a pytest_sessionfinish
@@ -894,6 +924,16 @@ jobs:
             -q --tb=line
       - name: Install python-prod optional witness system deps
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true' && needs.docs_only_filter.outputs.docs_only != 'true' && steps.test_mode.outputs.mode == 'pr-admission' && needs.docs_only_filter.outputs.python_prod_dependency_witness == 'true'
+        # Bounded because this step hangs. Observed 2026-08-12 on run 31554774553: stalled
+        # >20 min inside `apt-get update` while a neighbouring run completed the identical
+        # step in 36 s, consuming the whole 35-minute job clock instead of failing fast and
+        # being retryable.
+        #
+        # Its exposure also rises with the --no-renames fix in this same change: a moved
+        # pyproject.toml or ci.yml never reached the witness case before, because the rename
+        # collapsed to its destination. It fires correctly now, so a flaky mirror must not be
+        # the slowest possible way to find out.
+        timeout-minutes: 5
         run: |
           sudo apt-get update
           sudo apt-get install -y \

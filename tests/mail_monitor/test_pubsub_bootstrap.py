@@ -31,17 +31,17 @@ def _counter(resource: str, result: str) -> float:
 # ── credential loading ────────────────────────────────────────────────
 
 
-def test_pubsub_client_kwargs_empty_without_pass_service_account() -> None:
-    with mock.patch.object(pubsub_bootstrap, "_pass_show_text", return_value=None):
+def test_pubsub_client_kwargs_empty_without_service_account_secret() -> None:
+    with mock.patch.object(pubsub_bootstrap, "_read_secret_text", return_value=None):
         assert pubsub_bootstrap._pubsub_client_kwargs() == {}
 
 
-def test_pubsub_client_kwargs_uses_pass_service_account_json() -> None:
+def test_pubsub_client_kwargs_uses_service_account_json_secret() -> None:
     fake_creds = mock.Mock()
     info = {"type": "service_account", "client_email": "sa@example.iam.gserviceaccount.com"}
 
     with (
-        mock.patch.object(pubsub_bootstrap, "_pass_show_text", return_value=json.dumps(info)),
+        mock.patch.object(pubsub_bootstrap, "_read_secret_text", return_value=json.dumps(info)),
         mock.patch(
             "google.oauth2.service_account.Credentials.from_service_account_info",
             return_value=fake_creds,
@@ -57,7 +57,7 @@ def test_pubsub_client_kwargs_uses_pass_service_account_json() -> None:
 
 def test_pubsub_client_kwargs_raises_on_invalid_json() -> None:
     with (
-        mock.patch.object(pubsub_bootstrap, "_pass_show_text", return_value="{not-json"),
+        mock.patch.object(pubsub_bootstrap, "_read_secret_text", return_value="{not-json"),
         pytest.raises(PubsubBootstrapError, match="valid JSON"),
     ):
         pubsub_bootstrap._pubsub_client_kwargs()
@@ -65,7 +65,7 @@ def test_pubsub_client_kwargs_raises_on_invalid_json() -> None:
 
 def test_pubsub_client_kwargs_raises_on_malformed_service_account_json() -> None:
     with (
-        mock.patch.object(pubsub_bootstrap, "_pass_show_text", return_value="{}"),
+        mock.patch.object(pubsub_bootstrap, "_read_secret_text", return_value="{}"),
         pytest.raises(PubsubBootstrapError, match="malformed service-account JSON"),
     ):
         pubsub_bootstrap._pubsub_client_kwargs()
@@ -441,7 +441,7 @@ def test_bootstrap_pubsub_returns_none_when_config_missing(
 ) -> None:
     before_topic = _counter("topic", "missing_config")
     before_sub = _counter("subscription", "missing_config")
-    with mock.patch.object(pubsub_bootstrap, "_pass_show", side_effect=[None, None, None]):
+    with mock.patch.object(pubsub_bootstrap, "_read_secret", side_effect=[None, None, None]):
         assert bootstrap_pubsub() is None
     assert _counter("topic", "missing_config") - before_topic == 1.0
     assert _counter("subscription", "missing_config") - before_sub == 1.0
@@ -451,7 +451,7 @@ def test_bootstrap_pubsub_returns_none_when_only_project_missing() -> None:
     before = _counter("topic", "missing_config")
     with mock.patch.object(
         pubsub_bootstrap,
-        "_pass_show",
+        "_read_secret",
         side_effect=[None, "https://logos.x.ts.net:8051/webhook/gmail", "sa@x.iam"],
     ):
         assert bootstrap_pubsub() is None
@@ -462,7 +462,7 @@ def test_bootstrap_pubsub_calls_topic_then_subscription_when_config_present() ->
     with (
         mock.patch.object(
             pubsub_bootstrap,
-            "_pass_show",
+            "_read_secret",
             side_effect=[
                 "my-project",
                 "https://logos.example.ts.net:8051/webhook/gmail",

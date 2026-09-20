@@ -64,11 +64,18 @@ branch: null
     return path
 
 
+_SESSION_ID = "0f9f9f9f-1111-2222-3333-444455556666"
+
+
 def _claim(home: Path, task_id: str, force: bool = False) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env["HAPAX_SESSION_ID"] = _SESSION_ID
     env.pop("HAPAX_CC_TASK_GATE_OFF", None)
+    # Isolate multi-claim behavior from admitted publication. Canon --force
+    # retirement is asserted separately below.
+    env["HAPAX_GATE0B_CLAIM_PUBLICATION_OFF"] = "1"
     cmd = ["bash", str(CC_CLAIM)]
     if force:
         cmd.append("--force")
@@ -158,6 +165,9 @@ def test_claim_blocks_when_active_task_exists(tmp_path: Path) -> None:
 
 
 def test_claim_force_overrides_multi_claim_block(tmp_path: Path) -> None:
+    # Under the publication killswitch, --force still releases the prior
+    # claim. Canon-on retirement is the admitted path (exit 2); this
+    # suite isolates multi-claim, so the killswitch is on.
     home = tmp_path / "home"
     _write_task(home, "task-a", status="offered")
     _write_task(home, "task-b", status="offered")

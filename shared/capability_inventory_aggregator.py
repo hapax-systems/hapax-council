@@ -12,6 +12,10 @@ import logging
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from shared.bare_host_capability_observer import (
+    descriptors_from_bare_host_receipts,
+    load_bare_host_cli_probe_receipts,
+)
 from shared.capability_harness_descriptor import (
     CapabilityHarnessDescriptor,
     CapabilitySurfaceDelta,
@@ -142,12 +146,17 @@ def aggregate_all_capabilities(root: Path | None = None) -> list[CapabilityHarne
     return descriptors
 
 
-def aggregate_capability_inventory(root: Path | None = None) -> CapabilityInventorySnapshot:
+def aggregate_capability_inventory(
+    root: Path | None = None,
+    *,
+    bare_host_receipt_dir: Path | None = None,
+) -> CapabilityInventorySnapshot:
     """Aggregate the authoritative tagged inventory across supply and non-supply planes.
 
     Existing vocabulary adapters remain admitted-supply projections. The platform
-    registry's ``omitted_capability_shapes`` enter only the evidence-only non-supply
-    plane and therefore cannot be passed to supply consumers by type accident.
+    registry's ``omitted_capability_shapes`` and landed bare-host CLI probe
+    receipts enter only the evidence-only non-supply plane and therefore cannot
+    be passed to supply consumers by type accident.
     """
 
     root = root or repo_root()
@@ -156,6 +165,11 @@ def aggregate_capability_inventory(root: Path | None = None) -> CapabilityInvent
     omitted_shapes = []
     if platform_path.is_file():
         _, omitted_shapes = ingest_platform_capability_inventory(platform_path)
+    omitted_shapes.extend(
+        descriptors_from_bare_host_receipts(
+            load_bare_host_cli_probe_receipts(bare_host_receipt_dir)
+        )
+    )
 
     records = [
         AdmittedSupplyInventoryRecord(

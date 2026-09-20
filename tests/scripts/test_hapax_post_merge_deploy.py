@@ -4393,7 +4393,7 @@ fi
 : "${HAPAX_CANONICAL_HOOKS:?}"
 mkdir -p "$HAPAX_CANONICAL_HOOKS"
 cp "$from/hooks/scripts/cc-task-gate.impl.sh" "$HAPAX_CANONICAL_HOOKS/cc-task-gate.sh"
-for sibling in agent-role.sh escape-grant.sh hapax_check_enable_latch.sh cc-task-gate-bootstrap.py hooks-doctor.sh; do
+for sibling in agent-role.sh escape-grant.sh cc-task-root.sh hapax_check_enable_latch.sh cc-task-gate-bootstrap.py hooks-doctor.sh; do
     cp "$from/hooks/scripts/$sibling" "$HAPAX_CANONICAL_HOOKS/$sibling"
 done
 """
@@ -4406,6 +4406,7 @@ def _gate_closure_bodies() -> dict[str, str]:
         ),
         "hooks/scripts/agent-role.sh": "#!/usr/bin/env bash\necho agent-role\n",
         "hooks/scripts/escape-grant.sh": "#!/usr/bin/env bash\necho escape-grant\n",
+        "hooks/scripts/cc-task-root.sh": "#!/usr/bin/env bash\necho cc-task-root\n",
         "hooks/scripts/hapax_check_enable_latch.sh": ("#!/usr/bin/env bash\necho enable-latch\n"),
         "hooks/scripts/cc-task-gate-bootstrap.py": "print('bootstrap')\n",
         "hooks/scripts/hooks-doctor.sh": _fake_hooks_doctor(),
@@ -4441,6 +4442,7 @@ def _seed_canonical_gate(repo: Path, canon: Path, *, stale: bool) -> None:
         for sibling in (
             "agent-role.sh",
             "escape-grant.sh",
+            "cc-task-root.sh",
             "cc-task-gate-bootstrap.py",
             "hooks-doctor.sh",
         ):
@@ -4454,6 +4456,7 @@ def _seed_canonical_gate(repo: Path, canon: Path, *, stale: bool) -> None:
     for sibling in (
         "agent-role.sh",
         "escape-grant.sh",
+        "cc-task-root.sh",
         "hapax_check_enable_latch.sh",
         "cc-task-gate-bootstrap.py",
         "hooks-doctor.sh",

@@ -151,7 +151,7 @@ class CapabilityCIGateTest(unittest.TestCase):
         baseline = CapabilityInventoryBaselineV2.model_validate(payload)
 
         self.assertEqual(baseline.schema_version, 2)
-        self.assertEqual(baseline.count, 191)
+        self.assertEqual(baseline.count, 192)
         evaluator = baseline.records["local_compute.agentic_trust_evaluator_surface"]
         self.assertEqual(evaluator.inventory_disposition.value, "evidence_only_non_supply")
 
@@ -160,10 +160,10 @@ class CapabilityCIGateTest(unittest.TestCase):
         raw = HISTORICAL_V1_BASELINE.read_bytes()
         self.assertEqual(
             hashlib.sha256(raw).hexdigest(),
-            "e926961181f3ecae11674c6eaa01d47f6e17759e12bb6ca51429129e180acd45",
+            "28e5ab9a10f9d878ee6c0b968aff1bb7182366ea29d0bd61fa3cdc7be225e31e",
         )
         legacy = json.loads(raw)
-        self.assertEqual(legacy["count"], 179)
+        self.assertEqual(legacy["count"], 180)
         self.assertEqual(
             legacy["fingerprints"],
             {

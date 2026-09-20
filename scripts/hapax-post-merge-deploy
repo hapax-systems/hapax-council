@@ -703,6 +703,7 @@ GATE_CLOSURE_FILES=(
     hooks/scripts/cc-task-gate.impl.sh
     hooks/scripts/agent-role.sh
     hooks/scripts/escape-grant.sh
+    hooks/scripts/cc-task-root.sh
     hooks/scripts/hapax_check_enable_latch.sh
     hooks/scripts/cc-task-gate-bootstrap.py
     hooks/scripts/hooks-doctor.sh
@@ -1145,6 +1146,7 @@ while IFS= read -r f; do
         systemd/units/*.md)               ;; # docs
         systemd/units/*.d/README.md)      ;; # drop-in dir docs (e.g. collapse ledgers)
         systemd/overrides/*)              ;; # source/rationale docs; deployable copies live under systemd/units
+        systemd/units-pi6/*)              ;; # pi6 host units/wrappers; deployed on that host, not appendix post-merge
         systemd/*)                        SYSTEMD_UNCLASSIFIED+=("$f") ;;
     esac
 done <<< "$FILES"

@@ -45,6 +45,13 @@ SECRET_SOURCE = "claude:operator-session-subscription"
 DEFAULT_STALE_AFTER_SECONDS = 900
 MIN_STALE_AFTER_SECONDS = 60
 MAX_STALE_AFTER_SECONDS = 3600
+PROBE_ENV_SCRUBBED = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
+)
+PROBE_ENV_SCRUBBED_RECEIPT_VALUE = ",".join(PROBE_ENV_SCRUBBED)
 
 # The bounded observation kinds this writer will attest. Each names an account-live subscription
 # observation that is NOT lane/tmux/session presence: a real Claude invocation completed without a
@@ -223,6 +230,11 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_STALE_AFTER_SECONDS,
     )
+    parser.add_argument(
+        "--probe-environment-scrubbed",
+        action="store_true",
+        help="Record the fixed provider-environment controls removed by the active probe",
+    )
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -249,6 +261,11 @@ def main(argv: list[str] | None = None) -> int:
             ("capacity_pool", CAPACITY_POOL),
             ("auth_surface", AUTH_SURFACE),
             ("observation", observation),
+            *(
+                [("probe_environment_scrubbed", PROBE_ENV_SCRUBBED_RECEIPT_VALUE)]
+                if args.probe_environment_scrubbed
+                else []
+            ),
             ("observed_at", _iso(observed_at)),
             ("stale_after_seconds", args.stale_after_seconds),
             ("evidence_ref", evidence_ref),
@@ -291,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
         "account_live_quota_observed": True,
         "lane_presence_used_as_quota_evidence": False,
     }
+    if args.probe_environment_scrubbed:
+        summary["probe_environment_scrubbed"] = list(PROBE_ENV_SCRUBBED)
     if args.json:
         import json
 

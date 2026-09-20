@@ -2,7 +2,7 @@
 
 Single wrapper around the omg.lol REST API used by every omg.lol-
 writing daemon in the outreach / surface-publishing epic. Handles
-credential loading (`pass show omg-lol/api-key`), exponential-backoff
+credential loading (`hapax-secret omg-lol/api-key`), exponential-backoff
 retry on 5xx + 429, silent-skip on persistent 401/403, and per-call
 Prometheus accounting so `ytb-OMG9` infrastructure-observability can
 correlate traffic to upstream outcomes.
@@ -19,9 +19,11 @@ added by mirroring the pattern of existing methods.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -76,26 +78,44 @@ except ImportError:
         log.debug("prometheus_client unavailable; metric dropped")
 
 
-def _load_api_key(pass_key: str) -> str | None:
-    """Load the omg.lol API key from the operator's `pass` store.
+def _hapax_secret_bin() -> str:
+    """Canonical reins install pin; HAPAX_SECRET overrides for tests."""
+    override = (os.environ.get("HAPAX_SECRET") or "").strip()
+    if override:
+        return override
+    return str(Path.home() / ".local" / "bin" / "hapax-secret")
 
-    Returns None when `pass show` fails (no key, pass not initialized,
-    gpg-agent unavailable) — caller handles the disabled path.
+
+def _load_api_key(pass_key: str) -> str | None:
+    """Load the omg.lol API key from reins FileStore via hapax-secret.
+
+    Returns None when `hapax-secret` fails (no key, FileStore unreadable)
+    — caller handles the disabled path.
     """
+    argv = [_hapax_secret_bin(), pass_key]
     try:
         result = subprocess.run(
-            ["pass", "show", pass_key],
+            argv,
             capture_output=True,
             text=True,
             timeout=5.0,
             check=False,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        log.warning("pass show failed (%s): %s", pass_key, e)
+        log.warning(
+            "hapax-secret failed (%s): %s. Next action: hapax-secret --where %s",
+            pass_key,
+            e,
+            pass_key,
+        )
         return None
     if result.returncode != 0:
         log.warning(
-            "pass show returned %d for %s: %s", result.returncode, pass_key, result.stderr.strip()
+            "hapax-secret returned %d for %s: %s. Next action: hapax-secret --where %s",
+            result.returncode,
+            pass_key,
+            result.stderr.strip(),
+            pass_key,
         )
         return None
     return result.stdout.strip() or None

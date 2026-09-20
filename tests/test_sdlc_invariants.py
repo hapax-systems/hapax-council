@@ -20,6 +20,7 @@ from shared.sdlc_invariants import (
     InvariantResult,
     Ladder,
     _load_ledger_trace,
+    _record_is_evidenced_block,
     check_all,
     check_inv1_deadlock_freedom,
     check_inv2_liveness,
@@ -437,6 +438,34 @@ class TestLoadLedgerTrace:
             path.unlink(missing_ok=True)
         assert trace[0]["blocked_witness_path"] == "/tmp/review-packet.md"
         assert r.holds, r.violations
+
+    def test_structured_satisfied_witness_is_not_stringified_to_refuse(self, tmp_path):
+        present = tmp_path / "here"
+        present.write_text("ok", encoding="utf-8")
+        iso = "2026-06-02T00:00:00Z"
+        path = self._write(
+            [{"kind": "stage_transition", "ts": iso, "task_id": "typed-block", "to_stage": "S5"}]
+        )
+        (tmp_path / "active").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "active" / "typed-block.md").write_text(
+            "---\n"
+            "type: cc-task\n"
+            "task_id: typed-block\n"
+            "status: blocked\n"
+            "blocked_reason: waiting\n"
+            "blocked_witness:\n"
+            "  kind: path_exists\n"
+            f"  ref: {present}\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        try:
+            trace = _load_ledger_trace(path, vault_tasks=tmp_path)
+        finally:
+            path.unlink(missing_ok=True)
+        assert isinstance(trace[0]["blocked_witness"], dict)
+        assert trace[0]["blocked_witness"]["kind"] == "path_exists"
+        assert _record_is_evidenced_block(trace[0]) is True
 
     def test_vault_malformed_and_missing_task_id_notes_do_not_break_valid_metadata(self, tmp_path):
         iso = "2026-06-02T00:00:00Z"

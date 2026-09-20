@@ -6,7 +6,7 @@
 # file at $HAPAX_CANONICAL_HOOKS (default ~/.local/lib/hapax/hooks/cc-task-gate.sh),
 # so "update the gate" is a one-file change instead of a 26-worktree physical
 # fan-out (reform FM-6 collapse). The deployed closure carries this file plus its
-# sourced siblings agent-role.sh + escape-grant.sh. Drift between any worktree's
+# sourced siblings agent-role.sh + escape-grant.sh + cc-task-root.sh. Drift between any worktree's
 # shim and the canonical copy is detected by hooks-doctor.sh (SessionStart + CI +
 # timer); the canonical copy is refreshed by hapax-post-merge-deploy on merge.
 #
@@ -50,6 +50,58 @@ fi
 if [[ -f "$SCRIPT_DIR/escape-grant.sh" ]]; then
   # shellcheck source=escape-grant.sh
   . "$SCRIPT_DIR/escape-grant.sh"
+fi
+
+if [[ -f "$SCRIPT_DIR/cc-task-root.sh" ]]; then
+  # shellcheck source=cc-task-root.sh
+  . "$SCRIPT_DIR/cc-task-root.sh"
+  cc_task_root_resolve || exit $?
+else
+  # Same class as a missing bootstrap helper: a mid-deploy / staged closure
+  # must not fail-close every mutation. Honor HAPAX_CC_TASKS_ROOT /
+  # PERSONAL_VAULT_PATH with the same absolute-directory rules as the
+  # resolver; only the unset case uses the personal-vault default.
+  # hooks-doctor + post-merge-deploy still ship the sibling so production
+  # uses the resolver.
+  _cc_fb="${HAPAX_CC_TASKS_ROOT:-}"
+  _cc_fb="${_cc_fb#"${_cc_fb%%[![:space:]]*}"}"
+  _cc_fb="${_cc_fb%"${_cc_fb##*[![:space:]]}"}"
+  if [[ -n "$_cc_fb" ]]; then
+    case "$_cc_fb" in
+      "~") _cc_fb="$HOME" ;;
+      "~/"*) _cc_fb="$HOME/${_cc_fb#\~/}" ;;
+    esac
+    case "$_cc_fb" in
+      /*)
+        if [[ ! -d "$_cc_fb" ]]; then
+          echo "cc-task-gate: cc-task-root.sh missing and HAPAX_CC_TASKS_ROOT is not a directory. Next: restore hooks/scripts/cc-task-root.sh" >&2
+          exit 2
+        fi
+        CC_TASK_ROOT="$_cc_fb"
+        ;;
+      *)
+        echo "cc-task-gate: cc-task-root.sh missing and HAPAX_CC_TASKS_ROOT is not absolute. Next: restore hooks/scripts/cc-task-root.sh" >&2
+        exit 2
+        ;;
+    esac
+  else
+    _cc_fb="${PERSONAL_VAULT_PATH:-}"
+    _cc_fb="${_cc_fb#"${_cc_fb%%[![:space:]]*}"}"
+    _cc_fb="${_cc_fb%"${_cc_fb##*[![:space:]]}"}"
+    if [[ -z "$_cc_fb" ]]; then
+      _cc_fb="$HOME/Documents/Personal"
+    fi
+    case "$_cc_fb" in
+      "~") _cc_fb="$HOME" ;;
+      "~/"*) _cc_fb="$HOME/${_cc_fb#\~/}" ;;
+    esac
+    if [[ "$_cc_fb" != /* ]]; then
+      echo "cc-task-gate: cc-task-root.sh missing and PERSONAL_VAULT_PATH is not absolute. Next: restore hooks/scripts/cc-task-root.sh" >&2
+      exit 2
+    fi
+    CC_TASK_ROOT="${_cc_fb}/20-projects/hapax-cc-tasks"
+  fi
+  unset _cc_fb
 fi
 
 # This gate's scope name for escape grants (a grant must cover this exact gate,
@@ -691,7 +743,7 @@ EOF
 fi
 
 # --- 6. Locate task note in vault ---
-vault_root="$HOME/Documents/Personal/20-projects/hapax-cc-tasks"
+vault_root="$CC_TASK_ROOT"
 note_path=""
 for candidate in "$vault_root/active/$task_id-"*.md; do
   if [[ -f "$candidate" ]]; then
@@ -988,35 +1040,91 @@ is_nullish() {
 # if present, else insert it before the closing '---'. Atomic (tmp + rename).
 # Used to stamp a derived/defaulted field durably so downstream release/packet
 # checks read it consistently. Best-effort: returns non-zero on any failure.
+# Stamp one frontmatter field, under the projection lock.
+#
+# This note is a path shared/coord_projection.py relocates transactionally. A stamp landing
+# between its preimage pin and its atomic install is counted by the transition's safety
+# check and then destroyed, while the transition is still recorded applied — fail-open, and
+# invisible from either side (beta 2026-09-13T22:10Z; codex-1 C1 on PR #4667).
+#
+# Refuses rather than stamping if the lock cannot be taken. Failing open here would restore
+# exactly the race this closes; the caller reports the refusal instead.
 _stamp_frontmatter_field() {
-  local note="$1" key="$2" value="$3"
-  python3 - "$note" "$key" "$value" <<'PYEOF' 2>/dev/null || return 1
+  local note="$1" key="$2" value="$3" repo_root
+  repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)" || return 1
+  # Propagate the interpreter's exit code verbatim. `|| return 1` collapsed the 3 that
+  # means "the projection lock is held" into the 1 that means "something else broke", so
+  # the caller's contention branch could never fire and every failure was recorded as
+  # refused_error — the mirror image of the defect these exit codes were added to fix. A
+  # boundary that flattens a distinction both sides agreed on is as bad as never making it.
+  local _stamp_py_rc=0
+  # A short bound: this runs inside a tool-call hook, so waiting out a wedged transition
+  # would hang the session. Refusing to stamp is safe; the caller reports it.
+  #
+  # The env prefix and the command are ONE logical line with nothing between them, on
+  # purpose. Bash removes a backslash-newline before it tokenizes, so a comment placed after
+  # the continuation is joined onto the assignment and its `#` ends the command right there:
+  # the bound became a plain, unexported shell variable, the interpreter never saw it, and
+  # the gate waited task_note_lock's 30s default inside a tool-call hook while this comment
+  # said 5s (round 5: gemini-1 critical, claude-1 major — measured with a stand-in
+  # interpreter that printed what it inherited: nothing). Pinned by
+  # test_the_gate_s_lock_bound_reaches_the_interpreter, which asks the interpreter, not the
+  # source.
+  HAPAX_TASK_NOTE_LOCK_TIMEOUT="${HAPAX_TASK_NOTE_LOCK_TIMEOUT:-5}" \
+  PYTHONPATH="$repo_root:${PYTHONPATH:-}" python3 - "$note" "$key" "$value" <<'PYEOF' || _stamp_py_rc=$?
 import sys
 from pathlib import Path
 
+from shared.task_note_lock import TaskNoteLockError, projected_path_lock
+
 path, key, value = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
-text = path.read_text(encoding="utf-8")
-if not text.startswith("---"):
+try:
+    lock = projected_path_lock(None, (path,))
+    lock.__enter__()
+except TaskNoteLockError as exc:
+    print(f"cc-task-gate: {key} stamp skipped — {exc}", file=sys.stderr)
+    # Exit 3 means specifically 'another writer or a transition holds this note'. Every
+    # other failure keeps exit 1, so the caller can record the cause it actually saw
+    # rather than filing an unsafe root or malformed frontmatter as contention.
+    sys.exit(3)
+except Exception as exc:  # noqa: BLE001 — the gate reports; it does not stamp regardless.
+    print(f"cc-task-gate: {key} stamp failed — {exc}", file=sys.stderr)
     sys.exit(1)
-end = text.find("\n---", 4)
-if end < 0:
-    sys.exit(1)
-front, body = text[4:end], text[end:]
-out, found = [], False
-for line in front.splitlines():
-    stripped = line.strip()
-    if stripped.startswith(f"{key}:") or stripped.startswith(f"{key} :"):
+try:
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        sys.exit(1)
+    end = text.find("\n---", 4)
+    if end < 0:
+        sys.exit(1)
+    front, body = text[4:end], text[end:]
+    out, found = [], False
+    for line in front.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{key}:") or stripped.startswith(f"{key} :"):
+            out.append(f"{key}: {value}")
+            found = True
+        else:
+            out.append(line)
+    if not found:
         out.append(f"{key}: {value}")
-        found = True
-    else:
-        out.append(line)
-if not found:
-    out.append(f"{key}: {value}")
-new = "---\n" + "\n".join(out) + body
-tmp = path.with_suffix(path.suffix + ".tmp")
-tmp.write_text(new, encoding="utf-8")
-tmp.replace(path)
+    rendered = "---\n" + "\n".join(out) + body
+    # One fixed scratch sibling, deliberately: the projection lock above serializes every
+    # stamper, so a per-process name would only add a scratch class the recovery sweep does
+    # not discover — which the row pre-registers as a hazard in its own right
+    # (2026-09-13T23:24:07Z: discovery coverage for ALL scratch classes). A crash between
+    # write and replace leaves this one reusable slot, exactly as before this change.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(rendered, encoding="utf-8")
+        tmp.replace(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+finally:
+    lock.__exit__(None, None, None)
 PYEOF
+  return "$_stamp_py_rc"
 }
 
 # authority_case and parent_spec remain HARD requirements: they are the verified
@@ -1099,15 +1207,53 @@ fi
 if [[ "$_is_docs_edit" != "true" && -z "$_stage_num" && "$impl_authorized" == "true" ]] \
    && ! is_nullish "$authority_case" && ! is_nullish "$parent_spec"; then
   _orig_stage="${case_stage:-<blank>}"
-  case_stage="S6_IMPLEMENTATION"
-  _stage_num=6
-  _stamp_frontmatter_field "$note_path" "stage" "S6_IMPLEMENTATION" || true
   _stage_ledger="$HOME/.cache/hapax/methodology-emergency-ledger.jsonl"
   mkdir -p "$(dirname "$_stage_ledger")" 2>/dev/null || true
-  printf '{"ts":"%s","kind":"stage_derived","role":"%s","task":"%s","case":"%s","from":"%s","to":"S6_IMPLEMENTATION"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$_orig_stage" \
+  # The stamp can now REFUSE (another writer or a transition holds the note's projection
+  # lock). Its result decides what follows: deriving the stage in memory and reporting
+  # "stamped" while the note is unchanged would admit the mutation on the strength of a write
+  # that did not happen, and every retry would append another derivation record for it.
+  if _stamp_frontmatter_field "$note_path" "stage" "S6_IMPLEMENTATION"; then
+    case_stage="S6_IMPLEMENTATION"
+    _stage_num=6
+    _stage_outcome="stamped"
+    echo "cc-task-gate: blank stage on authorized task — derived + stamped S6_IMPLEMENTATION (logged)." >&2
+  else
+    # 3 is specifically "the projection lock is held"; anything else is a different failure
+    # and must not be filed as contention — a receipt that says projection_lock_held for a
+    # malformed note sends the operator to look for a holder that was never there.
+    _stamp_rc=$?
+    if [[ "$_stamp_rc" -eq 3 ]]; then
+      _stage_outcome="refused_locked"
+      _stage_reason="projection_lock_held"
+      _stage_detail="A transition or another writer holds this note's projection lock, so the note was NOT modified and the stage was NOT derived.
+
+  Next action: retry in a moment. If it persists, find the holder with
+    fuser -v \"\${HAPAX_COORD_DIR:-\$HOME/.cache/hapax/coord}/task-locks\"/*.lock"
+    else
+      _stage_outcome="refused_error"
+      _stage_reason="stamp_failed"
+      _stage_detail="The stage stamp failed for a reason other than lock contention (see the
+  cc-task-gate message above: an unsafe or unavailable lock root, malformed frontmatter, a
+  missing note, or a write error). The note was NOT modified.
+
+  Next action: fix the cause named above, then retry."
+    fi
+    _emit_block <<EOF
+cc-task-gate: BLOCKED — task '$task_id' has a blank stage and it could not be stamped.
+
+  Task: $note_path
+  $_stage_detail
+EOF
+    printf '{"ts":"%s","kind":"stage_derive_refused","role":"%s","task":"%s","case":"%s","from":"%s","reason":"%s","stamp_rc":%s}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$_orig_stage" \
+      "$_stage_reason" "$_stamp_rc" \
+      >> "$_stage_ledger" 2>/dev/null || true
+    exit 2
+  fi
+  printf '{"ts":"%s","kind":"stage_derived","role":"%s","task":"%s","case":"%s","from":"%s","to":"S6_IMPLEMENTATION","outcome":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$role" "$task_id" "$authority_case" "$_orig_stage" "$_stage_outcome" \
     >> "$_stage_ledger" 2>/dev/null || true
-  echo "cc-task-gate: blank stage on authorized task — derived + stamped S6_IMPLEMENTATION (logged)." >&2
 fi
 if [[ "$_is_docs_edit" != "true" && ( -z "$_stage_num" || "$_stage_num" -lt 6 ) ]]; then
   _emit_block <<EOF

@@ -13,7 +13,7 @@ READ-ONLY contract:
     this by source scan.
 
 Credential bootstrap:
-    ``pass insert lightning/alby-access-token`` (one-time)
+    put ``lightning/alby-access-token`` with ``hapax-secret`` (one-time)
 
 If the token is missing OR Alby returns 401 (token expired,
 operator-physical OAuth UI flow needed), the receiver emits one
@@ -123,7 +123,7 @@ class LightningReceiver:
         if not self._token:
             self._disable_with_refusal(
                 surface="alby-token-bootstrap",
-                reason="No alby-access-token in pass; rail disabled until pass insert.",
+                reason="No lightning/alby-access-token in the FileStore; rail disabled until put.",
             )
             return 0
         client = self._client()

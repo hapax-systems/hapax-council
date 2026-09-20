@@ -1168,6 +1168,8 @@ def _run_cc_claim(
         env[role_env] = role
     if extra_env:
         env.update(extra_env)
+    # Isolate session-key tests from admitted Gate-0B publication.
+    env.setdefault("HAPAX_GATE0B_CLAIM_PUBLICATION_OFF", "1")
     return subprocess.run(
         ["bash", str(CC_CLAIM), task_id],
         env=env,

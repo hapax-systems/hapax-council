@@ -397,6 +397,177 @@ def test_cascade_withdraw_skips_already_withdrawn(tmp_path: Path) -> None:
     assert "status: withdrawn" in target.read_text(encoding="utf-8")
 
 
+def test_cascade_evaluates_no_deps_typed_witness_and_does_not_bulk_unblock(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    present = tmp_path / "present"
+    present.write_text("ok", encoding="utf-8")
+    missing = tmp_path / "missing"
+    satisfied = vault / "active" / "satisfied.md"
+    unsatisfied = vault / "active" / "unsatisfied.md"
+    unknown = vault / "active" / "unknown.md"
+    satisfied.write_text(
+        f"""---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: path_exists
+  ref: {present}
+depends_on: []
+---
+""",
+        encoding="utf-8",
+    )
+    unsatisfied.write_text(
+        f"""---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: path_exists
+  ref: {missing}
+depends_on: []
+---
+""",
+        encoding="utf-8",
+    )
+    unknown.write_text(
+        """---
+status: blocked
+blocked_reason: waiting
+blocked_witness:
+  kind: existence_implies_resolved
+  ref: /tmp/x
+depends_on: []
+---
+""",
+        encoding="utf-8",
+    )
+
+    untyped = vault / "active" / "untyped.md"
+    untyped.write_text(
+        """---
+status: blocked
+blocked_reason: null
+blocked_witness: /tmp/prose-or-path-not-a-kind
+depends_on: []
+---
+""",
+        encoding="utf-8",
+    )
+
+    assert module.cascade_unblock() == 0
+    assert "status: blocked" in satisfied.read_text(encoding="utf-8")
+    assert "status: blocked" in unsatisfied.read_text(encoding="utf-8")
+    assert "status: blocked" in unknown.read_text(encoding="utf-8")
+    assert "status: blocked" in untyped.read_text(encoding="utf-8")
+
+
+def _write_typed_witness_row(
+    vault: Path,
+    task_id: str,
+    *,
+    kind: str,
+    ref: str,
+    depends_on: list[str],
+    blocked_reason: str = "null",
+) -> Path:
+    path = vault / "active" / f"{task_id}.md"
+    deps = "\n".join(f"  - {dep}" for dep in depends_on)
+    path.write_text(
+        f"""---
+status: blocked
+blocked_reason: {blocked_reason}
+blocked_witness:
+  kind: {kind}
+  ref: {ref}
+depends_on:
+{deps}
+---
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_cascade_offers_satisfied_typed_witness_when_deps_are_valid(tmp_path: Path) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    module._check_pr_merged = lambda _pr: "merged"
+    present = tmp_path / "present"
+    present.write_text("ok", encoding="utf-8")
+    _write_task(
+        vault,
+        "closed",
+        "valid-dep",
+        status="done",
+        pr=123,
+        body="## Acceptance criteria\n\n- [x] Evidence exists\n",
+    )
+    target = _write_typed_witness_row(
+        vault,
+        "target",
+        kind="path_exists",
+        ref=str(present),
+        depends_on=["valid-dep"],
+    )
+
+    assert module.cascade_unblock("valid-dep") == 1
+    text = target.read_text(encoding="utf-8")
+    assert "status: offered" in text
+    assert "blocked_reason: null" in text
+
+
+def test_cascade_keeps_refuse_and_unsatisfied_witness_blocked_even_with_valid_deps(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    vault = _make_vault(tmp_path, module)
+    module._check_pr_merged = lambda _pr: "merged"
+    missing = tmp_path / "missing"
+    _write_task(
+        vault,
+        "closed",
+        "valid-dep",
+        status="done",
+        pr=123,
+        body="## Acceptance criteria\n\n- [x] Evidence exists\n",
+    )
+    refuse = _write_typed_witness_row(
+        vault,
+        "refuse",
+        kind="existence_implies_resolved",
+        ref="/tmp/x",
+        depends_on=["valid-dep"],
+    )
+    unsatisfied = _write_typed_witness_row(
+        vault,
+        "unsatisfied",
+        kind="path_exists",
+        ref=str(missing),
+        depends_on=["valid-dep"],
+    )
+    untyped = vault / "active" / "untyped.md"
+    untyped.write_text(
+        """---
+status: blocked
+blocked_reason: null
+blocked_witness: /tmp/prose-or-path-not-a-kind
+depends_on:
+  - valid-dep
+---
+""",
+        encoding="utf-8",
+    )
+
+    assert module.cascade_unblock("valid-dep") == 0
+    assert "status: blocked" in refuse.read_text(encoding="utf-8")
+    assert "status: blocked" in unsatisfied.read_text(encoding="utf-8")
+    assert "status: blocked" in untyped.read_text(encoding="utf-8")
+    assert "waiting_for_closure_valid_dependencies" not in refuse.read_text(encoding="utf-8")
+
+
 def test_safe_read_text_tolerates_missing_file(tmp_path: Path) -> None:
     module = _load_module()
     missing = tmp_path / "gone.md"
@@ -404,6 +575,25 @@ def test_safe_read_text_tolerates_missing_file(tmp_path: Path) -> None:
     present = tmp_path / "here.md"
     present.write_text("hello", encoding="utf-8")
     assert module._safe_read_text(present) == "hello"
+
+
+def test_rewrite_under_lock_reports_unreadable_note(tmp_path: Path, capsys) -> None:
+    """A note that vanishes under the lock is a skip with a next action, not silence."""
+
+    module = _load_module()
+    gone = tmp_path / "active" / "vanished.md"
+    gone.parent.mkdir(parents=True)
+
+    def mutate(text: str) -> str:
+        raise AssertionError("must not mutate an unreadable note")
+
+    def revalidate(text: str) -> str | None:
+        raise AssertionError("must not revalidate an unreadable note")
+
+    assert module._rewrite_under_lock(gone, mutate, revalidate) is False
+    err = capsys.readouterr().err
+    assert "vanished skipped — unreadable under the lock" in err, err
+    assert f"ls {gone.parent.parent}/*/vanished*" in err, err
 
 
 def test_blocked_candidates_survives_concurrent_close(tmp_path: Path, monkeypatch) -> None:
@@ -445,3 +635,12 @@ def test_blocked_candidates_survives_concurrent_close(tmp_path: Path, monkeypatc
     monkeypatch.undo()
     assert "status: offered" in survivor.read_text(encoding="utf-8")
     assert not vanishing.exists()
+
+
+def test_imported_vault_follows_hapax_cc_tasks_root(tmp_path: Path, monkeypatch) -> None:
+    override = tmp_path / "elsewhere"
+    override.mkdir()
+    monkeypatch.setenv("HAPAX_CC_TASKS_ROOT", str(override))
+    module = _load_module()
+    assert override == module.VAULT
+    assert override / "active" == module.ACTIVE

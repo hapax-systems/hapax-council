@@ -1,0 +1,12 @@
+[Unit]
+Description=Hapax bare-host capability probe (daily, 05:17-family, after k0)
+
+[Timer]
+OnCalendar=*-*-* 05:27:00
+Persistent=true
+AccuracySec=5min
+RandomizedDelaySec=10min
+Unit=hapax-bare-host-capability-probe.service
+
+[Install]
+WantedBy=timers.target

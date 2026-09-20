@@ -4,16 +4,29 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-DEFAULT_MODEL = "gemini-3.1-pro-preview"
+DEFAULT_MODEL = "gemini-3.1-pro-high"
 DEFAULT_PRINT_TIMEOUT = "20m0s"
 DEFAULT_AGY_BIN = "/usr/bin/agy"
 PINNED_REVIEW_MODEL = DEFAULT_MODEL
+LEGACY_REVIEW_MODEL = "gemini-3.1-pro-preview"
+# Live agy 1.1.13 names the 3.1 Pro seat gemini-3.1-pro-high / -low. The old
+# preview id is still accepted as the same seat and rewritten to high; the
+# rewrite is pinned by test_agy_reviewer_accepts_legacy_review_model_id.
+PINNED_REVIEW_MODELS = frozenset({DEFAULT_MODEL, LEGACY_REVIEW_MODEL})
+# The seeded token makes the sandbox worth attacking: the dossier is untrusted
+# text and tool permissions are skipped, so a prompt-injected review could read
+# the token back out. Anything this long out of the token file is secret
+# material that must never reach a caller. 24 chars clears every leaf of the
+# live token file except token_type ("Bearer"), which is not a secret.
+GUARDED_SECRET_MIN_CHARS = 24
+TOKEN_ECHO_EXIT = 65
 
 REVIEW_PROMPT = """You are a blind PR reviewer invoked non-interactively through agy --print.
 Review ONLY the dossier supplied in the review-dossier.md file in your current sandbox
@@ -83,6 +96,64 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _operator_token_path() -> Path:
+    return Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+
+
+def _guarded_secrets(text: str) -> tuple[str, ...]:
+    """Return the substrings whose presence in agy output proves a token leak.
+
+    The token file is JSON, so guard each long leaf string (access_token,
+    refresh_token, expiry) as well as the whole file body: a leak of one field
+    is a leak. Unparseable content falls back to the body alone rather than
+    guessing at a structure.
+    """
+
+    found = [text.strip()] if len(text.strip()) >= GUARDED_SECRET_MIN_CHARS else []
+    try:
+        stack = [json.loads(text)]
+    except ValueError:
+        return tuple(found)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+        elif isinstance(node, str) and len(node) >= GUARDED_SECRET_MIN_CHARS:
+            found.append(node)
+    return tuple(dict.fromkeys(found))
+
+
+def _seed_agy_oauth(sandbox_home: Path) -> tuple[str, ...]:
+    """Copy only the operator OAuth token into the isolated HOME.
+
+    The review env rewrites HOME/XDG so a leaked tool cannot see the
+    operator's conversations. That also hid the token, so a live ``agy``
+    login could not satisfy ``hapax-agy-quota-admission``. Presence of the
+    token is not a quota observation; absence of the token is not a
+    quota block.
+
+    Returns the secret substrings the output guard must never forward.
+    """
+
+    src = _operator_token_path()
+    if not src.is_file():
+        print(
+            f"hapax-agy-reviewer: no operator agy login token at {src}; "
+            "run `agy` once to log in. Missing login, not a capacity block.",
+            file=sys.stderr,
+        )
+        return ()
+    data = src.read_bytes()
+    dest_dir = sandbox_home / ".gemini" / "antigravity-cli"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / "antigravity-oauth-token"
+    dest.write_bytes(data)
+    dest.chmod(0o600)
+    return _guarded_secrets(data.decode("utf-8", errors="replace"))
+
+
 def _review_env(workdir: Path) -> dict[str, str]:
     preserved = (
         "PATH",
@@ -116,18 +187,23 @@ def main(argv: list[str] | None = None) -> int:
     if agy_bin.name != "agy" or not agy_bin.is_absolute():
         print("hapax-agy-reviewer: --agy-bin must be an absolute path named agy", file=sys.stderr)
         return 64
-    if args.model != PINNED_REVIEW_MODEL:
+    if args.model not in PINNED_REVIEW_MODELS:
         print(
             "hapax-agy-reviewer: review model is pinned to "
-            f"{PINNED_REVIEW_MODEL} for registry family traceability",
+            f"{PINNED_REVIEW_MODEL} for registry family traceability "
+            f"(the retired id {LEGACY_REVIEW_MODEL} names the same seat)",
             file=sys.stderr,
         )
         return 64
+    cli_model = PINNED_REVIEW_MODEL
 
     dossier = sys.stdin.read()
     prompt = "\n\n".join([REVIEW_PROMPT.strip(), "# Reviewer dossier", dossier.strip()])
     with tempfile.TemporaryDirectory(prefix="hapax-agy-review-") as tmp:
         workdir = Path(tmp)
+        sandbox_home = workdir / "home"
+        sandbox_home.mkdir(parents=True, exist_ok=True)
+        guarded = _seed_agy_oauth(sandbox_home)
         prompt_path = workdir / "review-dossier.md"
         prompt_path.write_text(prompt, encoding="utf-8")
         cmd = [
@@ -137,9 +213,14 @@ def main(argv: list[str] | None = None) -> int:
             "--log-file",
             str(workdir / "agy.log"),
             "--sandbox",
+            # Headless agy auto-denies tools and then emits nothing. Skip the
+            # prompt so the pinned print-mode review can write the YAML fence.
+            # HOME/XDG still point at the temp sandbox.
+            "--dangerously-skip-permissions",
+            "--disable-slash-commands",
         ]
-        if args.model:
-            cmd.extend(["--model", args.model])
+        if cli_model:
+            cmd.extend(["--model", cli_model])
         cmd.extend(["--print", PRINT_PROMPT])
 
         try:
@@ -148,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
                 text=True,
                 check=False,
                 cwd=workdir,
+                capture_output=True,
                 env=_review_env(workdir),
             )
         except OSError as exc:
@@ -157,6 +239,21 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
+
+        # Output is buffered rather than inherited so this check can happen
+        # before a caller ever sees the bytes. The precondition is the exact
+        # token material read a moment ago, so the check is a comparison, not
+        # a judgement about what the model was trying to do.
+        if any(secret in result.stdout or secret in result.stderr for secret in guarded):
+            print(
+                "hapax-agy-reviewer: agy output echoed the seeded operator login "
+                "token; discarding the whole review rather than forwarding it. "
+                "Read the dossier as an injection attempt, not a review failure.",
+                file=sys.stderr,
+            )
+            return TOKEN_ECHO_EXIT
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
     return result.returncode
 
 

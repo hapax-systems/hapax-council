@@ -3,7 +3,158 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+
+# Receipt schemas name fields at every record depth. Lists name their item
+# schema; cache policies are indexed by models identified by the receipt.
+# These are projections, not model defaults: unrecorded fields stay unrecorded.
+_PROVENANCE_FIELDS = {
+    "served_model": str,
+    "capability_id": str,
+    "route_id": str,
+    "capability_admission_action": str,
+    "capability_receipt_refs": [str],
+}
+_MEMBER_EXECUTION_FIELDS = {
+    "oracle_weight": int,
+    "model_alias": str,
+    **_PROVENANCE_FIELDS,
+}
+_FAILURE_FIELDS = {"model_alias": str, "reason": str}
+_HEALTH_FIELDS = {
+    "members_requested": int,
+    "members_valid": int,
+    "families_requested": int,
+    "families_valid": int,
+    "failed_members": [_FAILURE_FIELDS],
+    "below_quorum": bool,
+    "quorum_floor_members": int,
+    "quorum_floor_families": int,
+    "served_substitutions": int,
+}
+_CACHE_POLICY_FIELDS = {
+    "alias": str,
+    "family": str,
+    "cache_control": bool,
+    "cache_control_ttl": (str, type(None)),
+    "cache_control_ttl_setting": (str, type(None)),
+    "openai_prompt_cache": bool,
+    "openai_prompt_cache_retention": (str, type(None)),
+}
+_ADMISSION_FIELDS = {
+    "receipt_schema": int,
+    "receipt_id": str,
+    "receipt_ref": str,
+    "capability_id": str,
+    "route_id": str,
+    "provider": str,
+    "capacity_pool": str,
+    "profile": str,
+    "task_class": str,
+    "quality_floor": str,
+    "estimated_cost_usd": str,
+    "evaluated_at": str,
+    "authority_task_id": str,
+    "authority_case": str,
+    "authority_item": str,
+    "authority_parent_spec": str,
+    "authority_source_ref": str,
+    "admission_action": str,
+    "admitted": bool,
+    "reason_codes": [str],
+    "quota_evidence_refs": [str],
+    "spend_evidence_refs": [str],
+    "resource_evidence_refs": [str],
+    "receipt_refs": [str],
+    "ledger_id": str,
+    "ledger_captured_at": str,
+}
+_EXECUTION_RECEIPT_SCHEMA = {
+    **_MEMBER_EXECUTION_FIELDS,
+    "input_hash": str,
+    "refused": bool,
+    "refusal_reason": str,
+    "shortcircuited": bool,
+    "council_health": _HEALTH_FIELDS,
+    "models_used": [str],
+    "served_models": [str],
+    "ruler_substituted": bool,
+    "failed_members": [_FAILURE_FIELDS],
+    "cache_policy": {},  # Named model indices are bound at the receipt boundary.
+    "capability_admissions": [_ADMISSION_FIELDS],
+    "route_resource_admission": str,
+    "capability_admission_source": str,
+    "capability_admission_call_count": int,
+    "phases_completed": [int],
+    "member_execution": [_MEMBER_EXECUTION_FIELDS],
+}
+EXECUTION_RECEIPT_FIELDS = frozenset(_EXECUTION_RECEIPT_SCHEMA)
+_OMIT = object()
+
+
+def _sanitize_execution_value(value: Any, schema: Any) -> Any:
+    if isinstance(schema, dict):
+        if not isinstance(value, dict):
+            return _OMIT
+        sanitized = {}
+        for key, child_schema in schema.items():
+            if key not in value:
+                continue
+            child = _sanitize_execution_value(value[key], child_schema)
+            if child is _OMIT:
+                continue
+            # Empty legacy references represent unavailable provenance. Do not
+            # turn these producer sentinels into recorded evidence.
+            if key == "capability_receipt_refs" and not child:
+                continue
+            # This legacy list is positional relative to models_used. Dropping
+            # individual unknowns would relabel the surviving served models.
+            # Per-member receipts retain whatever provenance was observed.
+            if key == "served_models" and (not child or len(child) != len(value[key])):
+                continue
+            sanitized[key] = child
+        if schema is _MEMBER_EXECUTION_FIELDS:
+            sanitized["oracle_weight"] = 0
+        return sanitized if sanitized or not value else _OMIT
+    if isinstance(schema, list):
+        if not isinstance(value, (list, tuple)):
+            return _OMIT
+        items = [
+            cleaned
+            for item in value
+            if (cleaned := _sanitize_execution_value(item, schema[0])) is not _OMIT
+        ]
+        return type(value)(items) if items or not value else _OMIT
+    if isinstance(value, str) and not value.strip():
+        return _OMIT
+    allowed_types = schema if isinstance(schema, tuple) else (schema,)
+    return value if type(value) in allowed_types else _OMIT
+
+
+def sanitize_execution_receipt(receipt: Any) -> dict[str, Any]:
+    """Project named execution/provenance fields recursively, with zero oracle weight."""
+    source = receipt if isinstance(receipt, dict) else {}
+    aliases = [source.get("model_alias")]
+    models_used = source.get("models_used")
+    if isinstance(models_used, (list, tuple)):
+        aliases.extend(models_used)
+    for field in ("member_execution", "failed_members"):
+        members = source.get(field)
+        if isinstance(members, (list, tuple)):
+            aliases.extend(
+                member.get("model_alias") for member in members if isinstance(member, dict)
+            )
+    # A cache record cannot authorize its own index name. Only model identities
+    # recorded elsewhere in this receipt may name entries in this container.
+    schema = {
+        **_EXECUTION_RECEIPT_SCHEMA,
+        "cache_policy": {
+            alias: _CACHE_POLICY_FIELDS
+            for alias in aliases
+            if isinstance(alias, str) and alias.strip()
+        },
+    }
+    return _sanitize_execution_value({**source, "oracle_weight": 0}, schema)
 
 
 class CouncilMode(StrEnum):
@@ -45,6 +196,10 @@ class CouncilInput(BaseModel):
     source_ref: str = Field(min_length=1)
     source_context: str = Field(default="")
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Most council requests judge a panel without requiring every member to
+    # publish an argument. Callers that need a reviewable argument can opt in;
+    # only then is an evidence-free member result invalid.
+    requires_reviewable_argument: bool = False
 
 
 class CouncilConfig(BaseModel):
@@ -106,12 +261,65 @@ class CouncilConfig(BaseModel):
 class PhaseOneResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_dossier_sections(cls, data: Any) -> Any:
+        """Keep the new dossier vocabulary and legacy member fields in sync."""
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+
+        if "evidentiary_rationale" not in values:
+            values["evidentiary_rationale"] = list(values.get("research_findings") or [])
+        elif "research_findings" not in values:
+            values["research_findings"] = list(values.get("evidentiary_rationale") or [])
+
+        if "process_trace" not in values:
+            values["process_trace"] = dict(values.get("rationale") or {})
+        elif "rationale" not in values:
+            values["rationale"] = dict(values.get("process_trace") or {})
+
+        execution_source = values.get("execution_receipt")
+        if "execution_receipt" not in values:
+            execution_source = {
+                field: values[field]
+                for field in (
+                    "served_model",
+                    "capability_id",
+                    "route_id",
+                    "capability_admission_action",
+                    "capability_receipt_refs",
+                )
+                if field in values
+            }
+        execution = sanitize_execution_receipt(execution_source)
+        values["execution_receipt"] = execution
+        for field in (
+            "served_model",
+            "capability_id",
+            "route_id",
+            "capability_admission_action",
+            "capability_receipt_refs",
+        ):
+            if field not in values and field in execution:
+                values[field] = execution[field]
+        return values
+
     model_alias: str
     capability_id: str = ""
     route_id: str = ""
     capability_admission_action: str = ""
     capability_receipt_refs: tuple[str, ...] = ()
     scores: dict[str, int]
+    # Inspectable claims, source references, test observations, and
+    # counter-evidence. This is the member content that can carry oracle weight.
+    evidentiary_rationale: list[str] = Field(default_factory=list)
+    # Optional narration/score notes. It is retained for auditability but has
+    # zero oracle weight and may be empty without invalidating the member.
+    process_trace: dict[str, str] = Field(default_factory=dict)
+    # Route/model/admission provenance for this member execution.
+    execution_receipt: dict[str, Any] = Field(default_factory=dict)
+    # Legacy names remain populated and readable for existing consumers.
     rationale: dict[str, str]
     research_findings: list[str] = Field(default_factory=list)
     tool_calls_log: list[str] = Field(default_factory=list)
@@ -263,6 +471,40 @@ class PhaseFourResult(BaseModel):
 class CouncilVerdict(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    @model_validator(mode="before")
+    @classmethod
+    def _populate_dossier_sections(cls, data: Any) -> Any:
+        """Make legacy verdict construction serialize the three dossier piles too."""
+        if not isinstance(data, dict):
+            return data
+        values = dict(data)
+        receipt = values.get("receipt") or values.get("execution_receipt") or {}
+        receipt_for_process = receipt if isinstance(receipt, dict) else {}
+        findings = list(values.get("research_findings") or [])
+        matrix = values.get("evidence_matrix")
+
+        if "evidentiary_rationale" not in values:
+            values["evidentiary_rationale"] = {
+                "research_findings": findings,
+                "evidence_matrix": matrix,
+            }
+        elif "research_findings" not in values:
+            values["research_findings"] = list(
+                values["evidentiary_rationale"].get("research_findings") or []
+            )
+        if "process_trace" not in values:
+            values["process_trace"] = {
+                "oracle_weight": 0,
+                "optional": True,
+                "member_rationales": [],
+                "phase1_transcript": receipt_for_process.get("phase1_transcript", []),
+            }
+        execution_source = values.get("execution_receipt", receipt)
+        values["execution_receipt"] = sanitize_execution_receipt(execution_source)
+        if "receipt" not in values:
+            values["receipt"] = values["execution_receipt"]
+        return values
+
     scores: dict[str, int | None]
     confidence_bands: dict[str, tuple[int, int]]
     convergence_status: ConvergenceStatus
@@ -271,6 +513,11 @@ class CouncilVerdict(BaseModel):
     evidence_matrix: EvidenceMatrix | None
     adversarial_exchanges: tuple[AdversarialExchange, ...] = ()
     receipt: dict[str, Any] = Field(default_factory=dict)
+    # Durable dossier sections. The legacy fields above remain first-class and
+    # readable; engine verdicts populate both vocabularies.
+    evidentiary_rationale: dict[str, Any] = Field(default_factory=dict)
+    process_trace: dict[str, Any] = Field(default_factory=dict)
+    execution_receipt: dict[str, Any] = Field(default_factory=dict)
 
 
 class NarrativeVerdictStatus(StrEnum):

@@ -44,6 +44,8 @@ from shared.quota_spend_ledger import (
 
 NOW = datetime(2026, 5, 17, 8, 0, 0, tzinfo=UTC)
 CURRENT_REFRESH_NOW = datetime(2026, 6, 4, 17, 10, 0, tzinfo=UTC)
+GLMCP_PAYG_BREAKGLASS_NOW = datetime(2026, 9, 17, 12, 0, 0, tzinfo=UTC)
+GLMCP_PAYG_BREAKGLASS_BUDGET_ID = "tb-20260916-zai-glmcp-payg-breakglass"
 GLMCP_ADMISSION_EVIDENCE_REF = (
     "relay-receipt:glmcp-quota-admission.yaml:"
     "witness:supported-tool-usage-witness:"
@@ -398,6 +400,63 @@ def test_default_fixture_reconciles_expired_bootstrap_without_reopening_spend() 
         for decision in ledger.spend_gate_decisions
     )
     assert all(not budget.auto_top_up_allowed for budget in ledger.transition_budgets)
+
+
+def test_glmcp_payg_breakglass_budget_is_active_inside_its_window(
+    tmp_path: Path,
+) -> None:
+    ledger = load_quota_spend_ledger()
+    budget = ledger.budget_by_id(GLMCP_PAYG_BREAKGLASS_BUDGET_ID)
+    july_budget = ledger.budget_by_id("tb-20260706-zai-glmcp-payg-review")
+
+    assert budget.lifecycle_state is BudgetLifecycleState.ACTIVE
+    assert str(budget.total_cap_usd) == "78.81"
+    assert str(budget.per_task_cap_usd) == "2.00"
+    assert str(budget.daily_cap_usd) == "20.00"
+    assert budget.providers_allowed == ("z_ai",)
+    assert budget.profiles_allowed == ("glmcp-review-direct",)
+    assert budget.task_classes_allowed == ("independent-review",)
+    assert budget.quality_floors_allowed == ("frontier_review_required",)
+    assert budget.is_unexpired_at(GLMCP_PAYG_BREAKGLASS_NOW)
+    assert july_budget.is_unexpired_at(GLMCP_PAYG_BREAKGLASS_NOW) is False
+    assert GLMCP_PAYG_BREAKGLASS_BUDGET_ID in {
+        item.budget_id for item in ledger.active_paid_budgets(GLMCP_PAYG_BREAKGLASS_NOW)
+    }
+
+    payload = _payload()
+    payload["captured_at"] = "2026-09-17T12:00:00Z"
+    fresh = QuotaSpendLedger.model_validate(payload)
+    decision = evaluate_paid_route_eligibility(
+        fresh,
+        _request(
+            route_id="glmcp.review.direct",
+            provider="z_ai",
+            profile="glmcp-review-direct",
+            task_class="independent-review",
+            quality_floor="frontier_review_required",
+            estimated_cost_usd="0.05",
+            capacity_pool="api_paid_spend",
+        ),
+        now=GLMCP_PAYG_BREAKGLASS_NOW,
+    )
+    assert decision.eligible is True
+    assert decision.state == "eligible_active_budget"
+    assert decision.budget_id == GLMCP_PAYG_BREAKGLASS_BUDGET_ID
+
+    from shared.dispatcher_policy import load_dispatch_policy_sources
+
+    sources = load_dispatch_policy_sources(
+        quota_ledger_path=QUOTA_SPEND_LEDGER_FIXTURES,
+        receipt_dir=tmp_path,
+        now=GLMCP_PAYG_BREAKGLASS_NOW,
+    )
+    assert sources.quota_ledger is not None
+    dispatch_budget = sources.quota_ledger.budget_by_id(GLMCP_PAYG_BREAKGLASS_BUDGET_ID)
+    assert dispatch_budget.is_unexpired_at(GLMCP_PAYG_BREAKGLASS_NOW)
+    assert GLMCP_PAYG_BREAKGLASS_BUDGET_ID in {
+        item.budget_id
+        for item in sources.quota_ledger.active_paid_budgets(GLMCP_PAYG_BREAKGLASS_NOW)
+    }
 
 
 def test_paid_route_refuses_without_any_transition_budget() -> None:

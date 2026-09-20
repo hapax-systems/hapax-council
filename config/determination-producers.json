@@ -1,0 +1,46 @@
+{
+  "schema": "hapax.determination_producers.v1",
+  "description": [
+    "Declarative registry of PRODUCERS: the things that mechanically determine a capability",
+    "property and write the evidence the calculi read. Adding a producer is a row here — no",
+    "new script and no new systemd unit. That is the whole point: as of 2026-08-19 the estate",
+    "had three separate bespoke units doing this shape (hapax-quota-telemetry,",
+    "hapax-claude-account-live-observe, and nothing at all for agy), and every capability",
+    "added another.",
+    "",
+    "The failure this closes is not 'we cannot measure'. Every property below was ALREADY",
+    "mechanically measurable. What was missing was CADENCE: agy's admission runs a real",
+    "reviewer round-trip and mints a 15-minute receipt, and nothing renewed it, so the gemini",
+    "review family silently left the floor. A measurement with no producer degrades into an",
+    "operator attestation; a producer with no schedule degrades into nothing at all."
+  ],
+  "producers": [
+    {
+      "id": "claude-account-live",
+      "property": "account_live_quota",
+      "subjects": ["claude.review.opus", "claude.headless.full"],
+      "command": ["scripts/hapax-claude-account-live-observe", "--max-age-seconds", "900", "--stale-after-seconds", "1800", "--json"],
+      "cadence_seconds": 600,
+      "evidence_ttl_seconds": 1800,
+      "provenance": "mechanical",
+      "host_scope": "any_host",
+      "success_exit_codes": [0],
+      "declined_exit_codes": [3, 4],
+      "notes": "3 = a quota wall was observed, 4 = nothing exercised the subscription and the probe could not observe either. Both are correct fail-closed outcomes and must not read as producer failure."
+    },
+    {
+      "id": "agy-review-quota",
+      "property": "route_specific_quota",
+      "subjects": ["agy.review.direct"],
+      "command": ["scripts/hapax-agy-quota-admission", "--json"],
+      "cadence_seconds": 600,
+      "evidence_ttl_seconds": 900,
+      "provenance": "mechanical",
+      "host_scope": "wherever_credential_present",
+      "success_exit_codes": [0],
+      "declined_exit_codes": [],
+      "notes": "Runs a REAL scripts/hapax-agy-reviewer smoke and requires schema-conformant fenced-YAML stdout, so the receipt cannot be minted without a completed provider round trip. Measured 2026-08-19: honest, fully mechanical on hapax-appendix, and on no timer — its receipts had been expired since 2026-08-17, which is why the gemini review family was unseatable. Its TTL is 900s, so cadence must stay well under that. NOTE its rc=2 is INDETERMINATE and is deliberately NOT listed as declined: agy collapses smoke-timeout, quota wall, auth failure, and model non-compliance into one exit code, so classifying it as a healthy decline would launder a broken producer as good news. Observed both within one minute on 2026-08-19 — a clean produce in 24s and a self-timeout at 240s, both indistinguishable at the exit code. Until agy discriminates, rc=2 surfaces as a failure. The fix belongs in agy, not in a generous mapping here.",
+      "timeout_seconds": 300
+    }
+  ]
+}

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import stat
 import subprocess
+import sys
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +16,7 @@ from shared.execution_admission import (
     DEFAULT_EXECUTION_COMPOSITION_ROOT,
     ContentAddress,
     ExecutionAdmissionError,
+    module_file_address,
 )
 from shared.gate0b_claim_publication_effect import (
     ClaimPublicationEffectInvocation,
@@ -23,6 +26,7 @@ from shared.gate0b_claim_publication_effect import (
 from shared.gate0b_claim_publication_install import (
     GATE0B_SLICE1_RATIFIED_INFLECTION_REF,
     ClaimPublicationCompositionRoots,
+    claim_publication_executor_descriptor,
     claim_publication_install_receipt_bytes,
     install_claim_publication_composition,
     load_claim_publication_composition,
@@ -40,6 +44,8 @@ from shared.sdlc_claim import (
     recover_claim_publications,
 )
 from shared.sdlc_task_store import ClaimDispatchBinding, resolve_task_note
+
+install_machinery = sys.modules["shared.gate0b_claim_publication_install"]
 
 
 @dataclass(frozen=True)
@@ -122,9 +128,10 @@ def _install(tmp_path: Path, fixture: Gate0BFixture):
     )
 
 
-def test_no_live_path_imports_gate0b_publication_machinery() -> None:
+def test_only_cc_claim_live_path_imports_gate0b_publication_machinery() -> None:
     allowed_prefixes = ("tests/",)
     allowed_files = {
+        "scripts/cc-claim",
         "shared/execution_admission.py",
         "shared/gate0b_claim_publication_effect.py",
         "shared/gate0b_claim_publication_install.py",
@@ -136,7 +143,7 @@ def test_no_live_path_imports_gate0b_publication_machinery() -> None:
         "shared.gate0b_claim_publication_lease",
     }
     result = subprocess.run(
-        ["git", "ls-files", "*.py"],
+        ["git", "ls-files", "*.py", "scripts/cc-claim"],
         cwd=Path.cwd(),
         check=True,
         capture_output=True,
@@ -146,6 +153,9 @@ def test_no_live_path_imports_gate0b_publication_machinery() -> None:
     for relpath in result.stdout.splitlines():
         allowed = relpath in allowed_files or relpath.startswith(allowed_prefixes)
         if allowed:
+            continue
+        if not relpath.endswith(".py"):
+            offenders.append(f"{relpath}:unexpected-non-python-live-path")
             continue
         tree = ast.parse(Path(relpath).read_text(encoding="utf-8"), filename=relpath)
         for node in ast.walk(tree):
@@ -170,6 +180,11 @@ def test_no_live_path_imports_gate0b_publication_machinery() -> None:
 
     assert offenders == []
 
+    cc_claim = Path("scripts/cc-claim").read_text(encoding="utf-8")
+    assert "from shared.gate0b_claim_publication_effect import publish_gate0b_claim" in cc_claim
+    assert "from shared.gate0b_claim_publication_install import (" in cc_claim
+    assert "from shared.gate0b_claim_publication_lease" not in cc_claim
+
 
 def test_install_receipt_activates_only_claim_publication_root(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
@@ -177,6 +192,10 @@ def test_install_receipt_activates_only_claim_publication_root(tmp_path: Path) -
 
     receipt = require_claim_publication_install_receipt(install.root)
     assert receipt.operator_inflection_ref == GATE0B_SLICE1_RATIFIED_INFLECTION_REF
+    descriptor = claim_publication_executor_descriptor(receipt)
+    root_refs = {address.ref for address in descriptor.active_generation_roots}
+    assert module_file_address(Path("shared/sdlc_claim.py").resolve()).ref in root_refs
+    assert module_file_address(Path("shared/coord_projection.py").resolve()).ref in root_refs
     install.root.require_effect_activation()
     loaded = load_claim_publication_composition(Path(fixture.roots.invocation_store_root))
     assert loaded.receipt == receipt
@@ -200,14 +219,240 @@ def test_install_receipt_rejects_noncanonical_receipt_bytes(tmp_path: Path) -> N
         require_claim_publication_install_receipt(install.root)
 
 
+def test_install_receipt_rejects_malformed_receipt_with_next_action(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    install = _install(tmp_path, fixture)
+    receipt_path = Path(fixture.roots.invocation_store_root) / "activation-receipt.json"
+    receipt_path.write_text("{}\n", encoding="ascii")
+
+    with pytest.raises(ExecutionAdmissionError) as excinfo:
+        require_claim_publication_install_receipt(install.root)
+
+    assert excinfo.value.reason_code == "gate0b_install_receipt_malformed"
+    assert "restore a canonical Gate-0B install receipt" in excinfo.value.repair_action
+
+
 def test_install_rejects_existing_receipt_collision(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     receipt_path = Path(fixture.roots.invocation_store_root) / "activation-receipt.json"
     receipt_path.parent.mkdir(parents=True)
+    receipt_path.parent.chmod(0o700)
     receipt_path.write_text("{}\n", encoding="ascii")
+    receipt_path.chmod(0o600)
 
     with pytest.raises(ExecutionAdmissionError, match="gate0b_install_file_collision"):
         _install(tmp_path, fixture)
+
+
+def test_install_rejects_matching_artifacts_with_unsafe_metadata(tmp_path: Path) -> None:
+    fixture = _fixture(tmp_path)
+    _install(tmp_path, fixture)
+    receipt_path = Path(fixture.roots.invocation_store_root) / "activation-receipt.json"
+    manifest_path = Path(fixture.roots.invocation_store_root) / "composition-manifest.json"
+    install_root = Path(fixture.roots.invocation_store_root)
+    receipt_payload = receipt_path.read_bytes()
+    manifest_payload = manifest_path.read_bytes()
+
+    install_root.chmod(0o755)
+    with pytest.raises(ExecutionAdmissionError) as dir_exc:
+        _install(tmp_path, fixture)
+    assert dir_exc.value.reason_code == "gate0b_install_directory_unsafe"
+    assert "mode-0700 private install directory" in dir_exc.value.repair_action
+    install_root.chmod(0o700)
+
+    hardlink = tmp_path / "activation-receipt-hardlink.json"
+    os.link(receipt_path, hardlink)
+    with pytest.raises(ExecutionAdmissionError) as hardlink_exc:
+        _install(tmp_path, fixture)
+    assert hardlink_exc.value.reason_code == "gate0b_install_file_unsafe"
+    assert "single-link mode-0600 regular file" in hardlink_exc.value.repair_action
+    hardlink.unlink()
+
+    receipt_path.chmod(0o644)
+    with pytest.raises(ExecutionAdmissionError) as mode_exc:
+        _install(tmp_path, fixture)
+    assert mode_exc.value.reason_code == "gate0b_install_file_unsafe"
+    assert "single-link mode-0600 regular file" in mode_exc.value.repair_action
+    receipt_path.chmod(0o600)
+
+    manifest_path.chmod(0o644)
+    with pytest.raises(ExecutionAdmissionError) as load_exc:
+        load_claim_publication_composition(Path(fixture.roots.invocation_store_root))
+    assert load_exc.value.reason_code == "gate0b_install_file_unsafe"
+    assert "single-link mode-0600 regular file" in load_exc.value.repair_action
+    manifest_path.chmod(0o600)
+
+    manifest_path.unlink()
+    unsafe_target = tmp_path / "unsafe-manifest.json"
+    unsafe_target.write_bytes(manifest_payload)
+    unsafe_target.chmod(0o600)
+    manifest_path.symlink_to(unsafe_target)
+    with pytest.raises(ExecutionAdmissionError) as symlink_exc:
+        load_claim_publication_composition(Path(fixture.roots.invocation_store_root))
+    assert symlink_exc.value.reason_code == "gate0b_install_file_unsafe"
+    assert manifest_path.read_bytes() == manifest_payload
+    assert receipt_path.read_bytes() == receipt_payload
+
+
+def test_install_private_writer_refuses_racing_collision_without_overwrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "root" / "activation-receipt.json"
+    racing_payload = b'{"schema":"other-generation"}\n'
+    original_link = install_machinery.os.link
+
+    def racing_link(
+        src: str | bytes | os.PathLike[str],
+        dst: str | bytes | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        if Path(dst) == target:
+            target.write_bytes(racing_payload)
+            target.chmod(0o600)
+            raise FileExistsError("simulated concurrent first-use install")
+        original_link(
+            src,
+            dst,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(install_machinery.os, "link", racing_link)
+
+    with pytest.raises(ExecutionAdmissionError) as excinfo:
+        install_machinery._write_private_file(target, b'{"schema":"this-generation"}\n')
+
+    assert excinfo.value.reason_code == "gate0b_install_file_collision"
+    assert "rerun first-use install" in excinfo.value.repair_action
+    assert target.read_bytes() == racing_payload
+    assert list(target.parent.glob(".activation-receipt.json.tmp-*")) == []
+
+
+def test_install_private_writer_wraps_mkdir_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "root" / "activation-receipt.json"
+    original_mkdir = Path.mkdir
+
+    def failing_mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        if self == target.parent:
+            raise OSError("simulated mkdir failure")
+        original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+
+    with pytest.raises(ExecutionAdmissionError) as excinfo:
+        install_machinery._write_private_file(target, b'{"schema":"fixture"}\n')
+
+    assert excinfo.value.reason_code == "gate0b_install_directory_unavailable"
+    assert "rerun first-use install" in excinfo.value.repair_action
+
+
+@pytest.mark.parametrize("operation", ["open", "write", "fsync"])
+def test_install_private_writer_wraps_temp_write_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    target = tmp_path / "root" / "activation-receipt.json"
+    target.parent.mkdir(parents=True, mode=0o700)
+    payload = b'{"schema":"fixture"}\n'
+
+    if operation == "open":
+        original_open = install_machinery.os.open
+
+        def failing_open(
+            path: str | bytes | os.PathLike[str],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            if Path(path).name.startswith(".activation-receipt.json.tmp-"):
+                raise OSError("simulated temp open failure")
+            return original_open(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(install_machinery.os, "open", failing_open)
+    elif operation == "write":
+
+        def failing_write(fd: int, data: bytes | bytearray | memoryview) -> int:
+            del fd, data
+            raise OSError("simulated temp write failure")
+
+        monkeypatch.setattr(install_machinery.os, "write", failing_write)
+    else:
+
+        def failing_fsync(fd: int) -> None:
+            del fd
+            raise OSError("simulated temp fsync failure")
+
+        monkeypatch.setattr(install_machinery.os, "fsync", failing_fsync)
+
+    with pytest.raises(ExecutionAdmissionError) as excinfo:
+        install_machinery._write_private_file(target, payload)
+
+    assert excinfo.value.reason_code == "gate0b_install_file_unavailable"
+    assert operation in excinfo.value.detail
+    assert "rerun first-use install" in excinfo.value.repair_action
+    assert list(target.parent.glob(".activation-receipt.json.tmp-*")) == []
+    assert not target.exists()
+
+
+def test_install_private_writer_wraps_temp_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "root" / "activation-receipt.json"
+    target.parent.mkdir(parents=True, mode=0o700)
+    original_unlink = Path.unlink
+
+    def failing_unlink(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name.startswith(".activation-receipt.json.tmp-"):
+            raise OSError("simulated temp cleanup failure")
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+
+    with pytest.raises(ExecutionAdmissionError) as excinfo:
+        install_machinery._write_private_file(target, b'{"schema":"fixture"}\n')
+
+    assert excinfo.value.reason_code == "gate0b_install_temp_cleanup_failed"
+    assert "remove the stale install temp file" in excinfo.value.repair_action
+
+
+def test_install_private_writer_wraps_chmod_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "root" / "activation-receipt.json"
+    target.parent.mkdir(parents=True, mode=0o700)
+
+    def failing_chmod(
+        path: str | bytes | os.PathLike[str],
+        mode: int,
+        *,
+        follow_symlinks: bool = True,
+    ) -> None:
+        del mode, follow_symlinks
+        if Path(path) == target:
+            raise OSError("simulated chmod failure")
+
+    monkeypatch.setattr(install_machinery.os, "chmod", failing_chmod)
+
+    with pytest.raises(ExecutionAdmissionError) as excinfo:
+        install_machinery._write_private_file(target, b'{"schema":"fixture"}\n')
+
+    assert excinfo.value.reason_code == "gate0b_install_file_unavailable"
+    assert "chmod" in excinfo.value.detail
+    assert "rerun first-use install" in excinfo.value.repair_action
 
 
 def test_invocation_store_private_writer_is_idempotent_and_rejects_collision(
@@ -394,25 +639,42 @@ def test_lease_rejects_mismatched_dispatch_binding(tmp_path: Path) -> None:
         )
 
 
-def test_effect_carrier_validates_but_remains_dormant_without_mutation(tmp_path: Path) -> None:
+def test_effect_carrier_applies_admitted_publication_once_installed(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     install = _install(tmp_path, fixture)
 
-    with pytest.raises(
-        ClaimPublicationError,
-        match="claim_publication_effect_activation_unvalidated",
-    ):
-        publish_gate0b_claim(
-            fixture.intent,
-            root=install.root,
-            now=datetime(2026, 8, 9, 17, 1, tzinfo=UTC),
-        )
+    receipt = publish_gate0b_claim(
+        fixture.intent,
+        root=install.root,
+        now=datetime(2026, 8, 9, 17, 1, tzinfo=UTC),
+    )
 
-    assert not Path(fixture.roots.claim_transaction_root).exists()
-    assert not Path(fixture.roots.claim_receipt_root).exists()
+    assert receipt.admission_consumption is not None
+    assert receipt.execution_admission is not None
+    assert receipt.execution_lease is not None
+    manifest = Path(receipt.manifest_path)
+    receipt_path = Path(receipt.receipt_path)
+    manifest_record = json.loads(manifest.read_text(encoding="ascii"))
+    assert manifest_record["state"] == "applied"
+    assert receipt_path.is_file()
+    assert stat.S_IMODE(receipt_path.stat(follow_symlinks=False).st_mode) == 0o600
     assert (
         fixture.vault / "active" / f"{fixture.intent.task_id}.md"
-    ).read_bytes() == fixture.intent.note_before
+    ).read_bytes() == fixture.intent.note_after
+    for key in (
+        fixture.intent.role,
+        f"{fixture.intent.role}-{fixture.intent.session_id}",
+    ):
+        assert (fixture.cache / f"cc-active-task-{key}").read_text(encoding="utf-8") == (
+            f"{fixture.intent.task_id}\n"
+        )
+        assert (fixture.cache / f"cc-claim-epoch-{key}").read_text(encoding="utf-8") == (
+            f"{fixture.intent.claim_epoch} {fixture.intent.task_id}\n"
+        )
+        binding = json.loads(
+            (fixture.cache / f"cc-claim-dispatch-{key}.json").read_text(encoding="ascii")
+        )
+        assert binding["receipt_hash"] == fixture.intent.binding.receipt_hash
 
 
 def test_effect_carrier_rejects_wrong_installed_root_without_mutation(tmp_path: Path) -> None:
@@ -480,19 +742,17 @@ def test_effect_invocation_identity_mismatch_has_repair_action(tmp_path: Path) -
         replace(invocation, invocation_hash="0" * 64)
 
 
-def test_recovery_path_remains_fail_closed_with_next_action(tmp_path: Path) -> None:
+def test_recovery_path_noops_without_journals(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
 
-    with pytest.raises(ClaimPublicationError) as raised:
-        recover_claim_publications(
-            cache_dir=fixture.cache,
-            transaction_root=Path(fixture.roots.claim_transaction_root),
-            receipt_root=Path(fixture.roots.claim_receipt_root),
-            lock_root=Path(fixture.roots.claim_lock_root),
-            task_id=fixture.intent.task_id,
-        )
+    result = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=Path(fixture.roots.claim_transaction_root),
+        receipt_root=Path(fixture.roots.claim_receipt_root),
+        lock_root=Path(fixture.roots.claim_lock_root),
+        task_id=fixture.intent.task_id,
+    )
 
-    assert raised.value.reason_code == "claim_publication_recovery_activation_unvalidated"
-    assert "Next action: dispatch recovery" in str(raised.value)
+    assert result == ()
     assert sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*")) == before

@@ -30,17 +30,14 @@ processes:
   secrets:
     command: |
       bash -c '
-        echo "export LITELLM_API_KEY=$(pass show litellm/master-key)" > /run/user/1000/hapax-daimonion.env
-        echo "export LANGFUSE_PUBLIC_KEY=$(pass show langfuse/public-key)" >> /run/user/1000/hapax-daimonion.env
-        echo "export LANGFUSE_SECRET_KEY=$(pass show langfuse/secret-key)" >> /run/user/1000/hapax-daimonion.env
-        echo "export HF_TOKEN=$(pass show api/huggingface)" >> /run/user/1000/hapax-daimonion.env
+        echo "export LITELLM_API_KEY=$("$HOME/.local/bin/hapax-secret" litellm/master-key)" > /run/user/1000/hapax-daimonion.env
+        echo "export LANGFUSE_PUBLIC_KEY=$("$HOME/.local/bin/hapax-secret" langfuse/public-key)" >> /run/user/1000/hapax-daimonion.env
+        echo "export LANGFUSE_SECRET_KEY=$("$HOME/.local/bin/hapax-secret" langfuse/secret-key)" >> /run/user/1000/hapax-daimonion.env
+        echo "export HF_TOKEN=$("$HOME/.local/bin/hapax-secret" api/huggingface)" >> /run/user/1000/hapax-daimonion.env
         chmod 600 /run/user/1000/hapax-daimonion.env
         echo "Secrets loaded"
       '
     working_dir: /home/hapax/projects/hapax-council
-    environment:
-      - "GNUPGHOME=/home/hapax/.gnupg"
-      - "PASSWORD_STORE_DIR=/home/hapax/.password-store"
     availability:
       restart: "no"  # run once
 
@@ -110,9 +107,6 @@ processes:
   health-monitor:
     command: bash /home/hapax/.local/bin/health-watchdog
     working_dir: /home/hapax/projects/hapax-council
-    environment:
-      - "GNUPGHOME=/home/hapax/.gnupg"
-      - "PASSWORD_STORE_DIR=/home/hapax/.password-store"
     availability:
       restart: "no"
     # Runs via systemd timer, not continuously — this is for manual runs

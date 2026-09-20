@@ -30,13 +30,13 @@ from __future__ import annotations
 import json
 import logging
 import re
-import subprocess
 import sys
 from typing import Any
 
 from prometheus_client import Counter
 
-from agents.mail_monitor.oauth import _pass_show
+from agents.mail_monitor.oauth import _read_secret
+from shared.secrets import get_secret
 
 log = logging.getLogger(__name__)
 
@@ -70,43 +70,37 @@ class PubsubBootstrapError(RuntimeError):
     """Raised when topic / subscription cannot be created or read."""
 
 
-def _pass_show_text(key: str, *, timeout_s: float = 5.0) -> str | None:
-    """Return full ``pass show <key>`` output, stripped, or ``None``."""
-    try:
-        result = subprocess.run(
-            ["pass", "show", key],
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        log.warning("pass show %s failed: %s", key, exc)
+def _read_secret_text(key: str) -> str | None:
+    """The full stored value for ``key`` (interior newlines preserved), stripped, or ``None``.
+
+    The service-account key is a JSON document, so the whole value matters — unlike the
+    single-line credentials, which read through :func:`agents.mail_monitor.oauth._read_secret`.
+    """
+    value = get_secret(key, required=False)
+    if value is None:
         return None
-    if result.returncode != 0:
-        return None
-    value = result.stdout.strip()
+    value = value.strip()
     return value or None
 
 
 def _pubsub_client_kwargs() -> dict[str, Any]:
-    """Return Pub/Sub client kwargs, preferring pass-stored credentials.
+    """Return Pub/Sub client kwargs, preferring FileStore-held credentials.
 
     The workstation may not have Google Application Default Credentials
-    even though all credentials are present in ``pass``. When
+    even though all credentials are present in the FileStore. When
     ``mail-monitor/google-service-account-json`` exists, construct
     service-account credentials in memory and pass them directly to the
     Pub/Sub clients. If the key is absent, return an empty dict so the
     Google client falls back to ADC as usual.
     """
-    key_json = _pass_show_text(SERVICE_ACCOUNT_JSON_PASS_KEY)
+    key_json = _read_secret_text(SERVICE_ACCOUNT_JSON_PASS_KEY)
     if not key_json:
         return {}
     try:
         info = json.loads(key_json)
     except json.JSONDecodeError as exc:
         raise PubsubBootstrapError(
-            f"pass {SERVICE_ACCOUNT_JSON_PASS_KEY} does not contain valid JSON: {exc}"
+            f"secret {SERVICE_ACCOUNT_JSON_PASS_KEY} does not contain valid JSON: {exc}"
         ) from exc
 
     from google.oauth2 import service_account
@@ -118,7 +112,7 @@ def _pubsub_client_kwargs() -> dict[str, Any]:
         )
     except Exception as exc:
         raise PubsubBootstrapError(
-            f"pass {SERVICE_ACCOUNT_JSON_PASS_KEY} contains malformed service-account JSON: {exc}"
+            f"secret {SERVICE_ACCOUNT_JSON_PASS_KEY} contains malformed service-account JSON: {exc}"
         ) from exc
     return {"credentials": credentials}
 
@@ -272,16 +266,16 @@ def bootstrap_subscription(
 
 
 def bootstrap_pubsub() -> tuple[str, str] | None:
-    """Read all operator config from ``pass``; install topic + subscription.
+    """Read all operator config from the FileStore; install topic + subscription.
 
     Returns ``(topic_path, subscription_path)`` on success, ``None``
     when any required config is missing. Both metric outcomes
     (``missing_config`` per resource) are emitted in the missing-config
     branch so observers see the gap.
     """
-    project_id = _pass_show(PROJECT_ID_PASS_KEY)
-    webhook_url = _pass_show(WEBHOOK_URL_PASS_KEY)
-    sa_email = _pass_show(PUBSUB_SA_EMAIL_PASS_KEY)
+    project_id = _read_secret(PROJECT_ID_PASS_KEY)
+    webhook_url = _read_secret(WEBHOOK_URL_PASS_KEY)
+    sa_email = _read_secret(PUBSUB_SA_EMAIL_PASS_KEY)
 
     if not project_id or not webhook_url or not sa_email:
         PUBSUB_INSTALLS_COUNTER.labels(resource="topic", result="missing_config").inc()
@@ -289,8 +283,8 @@ def bootstrap_pubsub() -> tuple[str, str] | None:
         PUBSUB_INSTALLS_COUNTER.labels(resource="subscription", result="missing_config").inc()
         log.warning(
             "Pub/Sub bootstrap incomplete: project=%s webhook=%s sa=%s. "
-            "Run pass insert mail-monitor/{google-project-id, webhook-url, "
-            "pubsub-sa-email}.",
+            "Put the missing ones with hapax-secret (TTY dialogue): "
+            "mail-monitor/{google-project-id, webhook-url, pubsub-sa-email}.",
             bool(project_id),
             bool(webhook_url),
             bool(sa_email),

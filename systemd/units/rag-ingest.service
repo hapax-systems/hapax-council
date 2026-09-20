@@ -10,7 +10,6 @@ Type=simple
 WorkingDirectory=/home/hapax/projects/hapax-council
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=GNUPGHOME=/home/hapax/.gnupg
-Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
 # Uses .venv-ingest (isolated from main .venv due to docling/pydantic-ai
 # huggingface-hub version conflict). Create with: make setup-ingest-venv
 ExecStartPre=/home/hapax/.local/bin/hapax-env-setup

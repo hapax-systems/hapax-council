@@ -105,7 +105,7 @@ class InfrastructureManifest(BaseModel):
     litellm_routes: list[LiteLLMRoute] = Field(default_factory=list)
     disk: list[DiskInfo] = Field(default_factory=list)
     listening_ports: list[str] = Field(default_factory=list)
-    pass_entries: list[str] = Field(default_factory=list)
+    secret_names: list[str] = Field(default_factory=list)
     compose_file: str = ""
     profile_files: list[str] = Field(default_factory=list)
     edge_nodes: list[dict] = Field(default_factory=list)
@@ -120,12 +120,10 @@ _litellm_base: str = os.environ.get(
 )
 _ollama_url: str = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 LLM_STACK_DIR: Path = _HAPAX_HOME / "llm-stack"
-PASSWORD_STORE_DIR: Path = _HAPAX_HOME / ".password-store"
 PROFILES_DIR: Path = Path(__file__).resolve().parent.parent / "profiles"
 # ── End vendored ────────────────────────────────────────────────────────────
 
 COMPOSE_FILE = LLM_STACK_DIR / "docker-compose.yml"
-PASSWORD_STORE = PASSWORD_STORE_DIR
 
 
 async def collect_docker() -> tuple[str, list[ContainerInfo]]:
@@ -399,13 +397,29 @@ async def collect_disk() -> list[DiskInfo]:
     return disks
 
 
-def collect_pass_entries() -> list[str]:
-    entries = []
-    if PASSWORD_STORE.is_dir():
-        for gpg in sorted(PASSWORD_STORE.rglob("*.gpg")):
-            entry = str(gpg.relative_to(PASSWORD_STORE)).removesuffix(".gpg")
-            entries.append(entry)
-    return entries
+#: The reins FileStore root. One blob per secret, `<name>.bin`; `.key` is the device key and
+#: is never a secret NAME. Overridable by REINS_SECRET_STORE, read at call time so a test or
+#: a differently-enrolled host is not baked in at import.
+def secret_store_root() -> Path:
+    override = os.environ.get("REINS_SECRET_STORE", "").strip()
+    if override:
+        return Path(override)
+    return Path.home() / ".config" / "reins" / "secrets"
+
+
+def collect_secret_names() -> list[str]:
+    """The NAMES the FileStore holds — never the values, which are not read here.
+
+    Replaces an enumeration of `~/.password-store/**/*.gpg`. Operator ruling 2026-09-16:
+    pass and gopass are not used to manage secrets going forward, so an inventory that
+    counts pass entries reports on a store the estate no longer writes to — it would show
+    zero on a clean host and a misleading number on one where the old store still sits.
+    """
+
+    root = secret_store_root()
+    if not root.is_dir():
+        return []
+    return sorted(blob.stem for blob in root.glob("*.bin"))
 
 
 def collect_profile_files() -> list[str]:
@@ -492,7 +506,7 @@ async def _generate_manifest_inner() -> InfrastructureManifest:
         litellm_routes=routes,
         disk=disks,
         listening_ports=ports,
-        pass_entries=collect_pass_entries(),
+        secret_names=collect_secret_names(),
         compose_file=str(COMPOSE_FILE) if COMPOSE_FILE.is_file() else "",
         profile_files=collect_profile_files(),
         edge_nodes=edge_nodes,
@@ -554,7 +568,7 @@ def format_summary(m: InfrastructureManifest) -> str:
         lines.append(f"  {d.mount:15s} {d.used}/{d.size} ({d.use_percent}%)")
     lines.append("")
 
-    lines.append(f"Pass Entries ({len(m.pass_entries)}): {', '.join(m.pass_entries)}")
+    lines.append(f"Secret Names ({len(m.secret_names)}): {', '.join(m.secret_names)}")
     lines.append(f"Profile Files: {', '.join(m.profile_files)}")
     lines.append(f"Listening Ports: {', '.join(m.listening_ports)}")
 

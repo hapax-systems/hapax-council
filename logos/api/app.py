@@ -7,6 +7,7 @@ Consumed by the Tauri desktop app and Vite dev server.
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 try:
@@ -1052,7 +1053,45 @@ app.include_router(studio_effects_router)
 app.include_router(studio_compositor_router)
 app.include_router(cbip_router)
 app.include_router(logos_router)
-app.include_router(mail_monitor_router)
+
+# mail_monitor is DEFAULT-OFF and must stay that way until the subsystem earns a
+# verified acceptance.
+#
+# Mounting this router exposes POST /webhook/gmail, which drives
+# agents.mail_monitor.runner.process_history against live Gmail data. The
+# subsystem's five cc-task rows are closed `done` with acceptance criteria
+# unchecked (kimi/auditor audit, 2026-08-18) — i.e. it was accepted without ever
+# being verified. An unconditional mount meant any logos-api restart silently
+# activated an unverified mail surface; the only thing standing between it and
+# the management_governance axiom ("LLMs prepare context; humans deliver words")
+# was tests/test_forbidden_mail_monitor_send_imports.py.
+#
+# Gating the MOUNT rather than the import is deliberate: the route module has no
+# meaningful import-time side effects (a logger, an APIRouter, a constant), so
+# removing the endpoint is what actually removes the reachable surface.
+#
+# Opt in per instance with HAPAX_MAIL_MONITOR_ENABLED=1. Absent or false, the
+# skip is LOGGED rather than silent — a capability that disappears quietly is the
+# defect this repo keeps rediscovering.
+_MAIL_MONITOR_ENABLED: bool = os.environ.get("HAPAX_MAIL_MONITOR_ENABLED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+if _MAIL_MONITOR_ENABLED:
+    logging.getLogger(__name__).info(
+        "mail_monitor router MOUNTED: HAPAX_MAIL_MONITOR_ENABLED is set. "
+        "POST /webhook/gmail is live."
+    )
+    app.include_router(mail_monitor_router)
+else:
+    logging.getLogger(__name__).info(
+        "mail_monitor router NOT mounted (default-off): HAPAX_MAIL_MONITOR_ENABLED "
+        "is unset or false, so POST /webhook/gmail is unavailable. Set it to 1 to opt in."
+    )
+
 app.include_router(flow_router)
 app.include_router(fortress_router)
 app.include_router(pi_router)

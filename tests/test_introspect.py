@@ -25,9 +25,9 @@ from agents.introspect import (
     collect_listening_ports,
     collect_litellm_routes,
     collect_ollama,
-    collect_pass_entries,
     collect_profile_files,
     collect_qdrant,
+    collect_secret_names,
     collect_systemd,
     format_summary,
 )
@@ -151,7 +151,7 @@ class TestInfrastructureManifest:
         m = InfrastructureManifest(timestamp="2026-02-28T12:00:00Z", hostname="testhost")
         assert m.containers == []
         assert m.gpu is None
-        assert m.pass_entries == []
+        assert m.secret_names == []
 
     def test_json_round_trip(self):
         m = InfrastructureManifest(
@@ -491,39 +491,57 @@ class TestCollectDisk:
         assert disks == []
 
 
-class TestCollectPassEntries:
-    def test_with_entries(self, tmp_path):
-        store = tmp_path / ".password-store"
+class TestCollectSecretNames:
+    """The inventory lists FileStore blob NAMES, never values and never pass entries.
+
+    Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going
+    forward, so an inventory counting `~/.password-store/**/*.gpg` reports on a store the
+    estate no longer writes — zero on a clean host, and a misleading number on one where the
+    old store still sits on disk.
+    """
+
+    def test_it_lists_blob_names(self, tmp_path, monkeypatch):
+        store = tmp_path / "secrets"
         store.mkdir()
-        (store / "api").mkdir()
-        (store / "api" / "anthropic.gpg").touch()
-        (store / "api" / "google.gpg").touch()
-        (store / "litellm").mkdir()
-        (store / "litellm" / "master-key.gpg").touch()
+        for name in ("api-anthropic", "api-google", "litellm-master-key"):
+            (store / f"{name}.bin").write_bytes(b"opaque")
+        monkeypatch.setenv("REINS_SECRET_STORE", str(store))
 
-        with patch("agents.introspect.PASSWORD_STORE", store):
-            entries = collect_pass_entries()
+        names = collect_secret_names()
 
-        assert "api/anthropic" in entries
-        assert "api/google" in entries
-        assert "litellm/master-key" in entries
+        assert names == ["api-anthropic", "api-google", "litellm-master-key"]
 
-    def test_empty_store(self, tmp_path):
-        store = tmp_path / ".password-store"
+    def test_the_device_key_is_not_a_secret_name(self, tmp_path, monkeypatch):
+        """`.key` is the FileStore's device key, not an entry. Listing it would advertise a
+        name no consumer can ever resolve."""
+        store = tmp_path / "secrets"
         store.mkdir()
+        (store / ".key").write_bytes(b"0" * 32)
+        (store / "api-anthropic.bin").write_bytes(b"opaque")
+        monkeypatch.setenv("REINS_SECRET_STORE", str(store))
 
-        with patch("agents.introspect.PASSWORD_STORE", store):
-            entries = collect_pass_entries()
+        assert collect_secret_names() == ["api-anthropic"]
 
-        assert entries == []
+    def test_no_value_is_read(self, tmp_path, monkeypatch):
+        """An inventory has no business decrypting anything; the blobs stay opaque."""
+        store = tmp_path / "secrets"
+        store.mkdir()
+        (store / "api-anthropic.bin").write_bytes(b"SUPER-SECRET-BYTES")
+        monkeypatch.setenv("REINS_SECRET_STORE", str(store))
 
-    def test_no_store_dir(self, tmp_path):
-        store = tmp_path / "nonexistent"
+        assert "SUPER-SECRET-BYTES" not in "".join(collect_secret_names())
 
-        with patch("agents.introspect.PASSWORD_STORE", store):
-            entries = collect_pass_entries()
+    def test_empty_store(self, tmp_path, monkeypatch):
+        store = tmp_path / "secrets"
+        store.mkdir()
+        monkeypatch.setenv("REINS_SECRET_STORE", str(store))
 
-        assert entries == []
+        assert collect_secret_names() == []
+
+    def test_no_store_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("REINS_SECRET_STORE", str(tmp_path / "nonexistent"))
+
+        assert collect_secret_names() == []
 
 
 class TestCollectProfileFiles:
@@ -713,11 +731,11 @@ class TestFormatSummary:
         assert "200G/500G" in output
         assert "40%" in output
 
-    def test_with_pass_entries(self):
-        m = self._make_manifest(pass_entries=["api/anthropic", "api/google"])
+    def test_with_secret_names(self):
+        m = self._make_manifest(secret_names=["api-anthropic", "api-google"])
         output = format_summary(m)
-        assert "Pass Entries (2)" in output
-        assert "api/anthropic" in output
+        assert "Secret Names (2)" in output
+        assert "api-anthropic" in output
 
     def test_with_systemd(self):
         m = self._make_manifest(

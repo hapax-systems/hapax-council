@@ -235,3 +235,146 @@ def test_parse_session_content_list_with_text_blocks():
         _write_jsonl(lines, Path(f.name))
         result = parse_session(Path(f.name), project_path="/tmp/test")
     assert result.messages[0].content_text == "part one part two"
+
+
+def _compact_summary_line(uuid: str, body: str) -> dict:
+    return {
+        "type": "user",
+        "uuid": uuid,
+        "parentUuid": None,
+        "sessionId": "sess-compact",
+        "timestamp": "2026-08-22T13:25:00.000Z",
+        "isCompactSummary": True,
+        "message": {"role": "user", "content": body},
+    }
+
+
+def test_compaction_summary_is_not_counted_as_an_operator_turn():
+    """A summary arrives as role "user"; left that way it launders agent prose."""
+    lines = [
+        {
+            "type": "user",
+            "uuid": "u1",
+            "parentUuid": None,
+            "sessionId": "sess-compact",
+            "timestamp": "2026-08-22T13:00:00.000Z",
+            "message": {"role": "user", "content": "a real operator turn"},
+        },
+        _compact_summary_line("c1", "agent-authored summary prose"),
+    ]
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False) as f:
+        _write_jsonl(lines, Path(f.name))
+        result = parse_session(Path(f.name), project_path="/tmp/test")
+
+    assert [m.role for m in result.messages] == ["user", "compaction_summary"]
+    assert sum(1 for m in result.messages if m.role == "user") == 1
+
+
+def test_compaction_events_are_emitted_with_position():
+    lines = [
+        _compact_summary_line("c1", "first summary"),
+        {
+            "type": "assistant",
+            "uuid": "a1",
+            "parentUuid": "c1",
+            "sessionId": "sess-compact",
+            "timestamp": "2026-08-22T13:30:00.000Z",
+            "message": {"role": "assistant", "content": "work continues"},
+        },
+        _compact_summary_line("c2", "second summary"),
+    ]
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False) as f:
+        _write_jsonl(lines, Path(f.name))
+        result = parse_session(Path(f.name), project_path="/tmp/test")
+
+    assert len(result.compaction_events) == 2
+    assert [e.record_position for e in result.compaction_events] == [1, 3]
+    assert [e.message_id for e in result.compaction_events] == ["c1", "c2"]
+    assert result.compaction_events[0].summary_chars == len("first summary")
+
+
+def test_assistant_compaction_summary_skips_tool_call_extraction():
+    """Pins `and not is_compact_summary` on the assistant branch.
+
+    Claude emits summaries as type "user" today, so without this the clause is inert:
+    removing it would fail nothing. A summary is generated prose and must never be
+    mined for tool calls, whatever record type carries it.
+    """
+    lines = [
+        {
+            "type": "assistant",
+            "uuid": "a1",
+            "parentUuid": None,
+            "sessionId": "sess-compact",
+            "timestamp": "2026-08-22T13:25:00.000Z",
+            "isCompactSummary": True,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "summary prose"},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                ],
+            },
+        }
+    ]
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False) as f:
+        _write_jsonl(lines, Path(f.name))
+        result = parse_session(Path(f.name), project_path="/tmp/test")
+
+    assert result.tool_calls == []
+    assert len(result.compaction_events) == 1
+    assert result.messages[0].role == "compaction_summary"
+
+
+def test_assistant_non_summary_still_extracts_tool_calls():
+    """The negative direction: the skip must not suppress ordinary assistant turns."""
+    lines = [
+        {
+            "type": "assistant",
+            "uuid": "a1",
+            "parentUuid": None,
+            "sessionId": "sess-plain",
+            "timestamp": "2026-08-22T13:25:00.000Z",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                ],
+            },
+        }
+    ]
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False) as f:
+        _write_jsonl(lines, Path(f.name))
+        result = parse_session(Path(f.name), project_path="/tmp/test")
+
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].tool_name == "Bash"
+    assert result.compaction_events == []
+
+
+def test_session_without_compaction_emits_no_events():
+    """The negative direction: the discriminator must not match ordinary turns."""
+    lines = [
+        {
+            "type": "user",
+            "uuid": "u1",
+            "parentUuid": None,
+            "sessionId": "sess-plain",
+            "timestamp": "2026-08-22T13:00:00.000Z",
+            "message": {"role": "user", "content": "no compaction here"},
+        },
+        {
+            "type": "assistant",
+            "uuid": "a1",
+            "parentUuid": "u1",
+            "sessionId": "sess-plain",
+            "timestamp": "2026-08-22T13:00:01.000Z",
+            "message": {"role": "assistant", "content": "acknowledged"},
+        },
+    ]
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", mode="w", delete=False) as f:
+        _write_jsonl(lines, Path(f.name))
+        result = parse_session(Path(f.name), project_path="/tmp/test")
+
+    assert result.compaction_events == []
+    assert all(m.role != "compaction_summary" for m in result.messages)

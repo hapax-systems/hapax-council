@@ -8,18 +8,49 @@ import os
 import pathlib
 import subprocess
 import textwrap
+from datetime import UTC, datetime
+
+from shared.gate0b_claim_publication_install import (
+    default_claim_publication_roots,
+    install_claim_publication_composition,
+)
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-claim"
 CLOSE_CHECK = REPO_ROOT / "scripts" / "cc-close-pr-merge-check.py"
+_SESSION_ID = "12345678-1234-4321-8765-123456789abc"
+_BINDING_HASH = "c" * 64
+_IDENTITY_ENV = (
+    "HAPAX_AGENT_NAME",
+    "CODEX_THREAD_NAME",
+    "CODEX_SESSION_NAME",
+    "CODEX_SESSION",
+    "CODEX_ROLE",
+    "CLAUDE_ROLE",
+    "HAPAX_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ID",
+    "HAPAX_GATE0B_CLAIM_PUBLICATION_OFF",
+    "HAPAX_CLAIM_DISPATCH_MESSAGE_ID",
+    "HAPAX_CLAIM_DISPATCH_BINDING_HASH",
+    "HAPAX_CLAIM_DISPATCH_PLATFORM",
+    "HAPAX_CLAIM_DISPATCH_MODE",
+    "HAPAX_CLAIM_DISPATCH_PROFILE",
+    "HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE",
+    "HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY",
+)
 
 
 def _extract_python(script_path: pathlib.Path) -> str:
-    """Extract the embedded Python from the bash heredoc."""
+    """Extract the embedded Python block that owns the PR dependency gate."""
     text = script_path.read_text()
-    start = text.index("<<'PYEOF'") + len("<<'PYEOF'") + 1
-    end = text.index("\nPYEOF", start)
-    return text[start:end]
+    offset = 0
+    while True:
+        start = text.index("<<'PYEOF'", offset) + len("<<'PYEOF'") + 1
+        end = text.index("\nPYEOF", start)
+        py_code = text[start:end]
+        if "def _parse_pr_number(" in py_code:
+            return py_code
+        offset = end + len("\nPYEOF")
 
 
 def test_script_exists_and_executable():
@@ -141,6 +172,7 @@ def _write_task(
         f'title: "{task_id}"',
         f"status: {status}",
         "assigned_to: unassigned",
+        "claimable: true",
         "kind: build",
         "authority_case: CASE-TEST-001",
         "parent_spec: /tmp/isap-test.md",
@@ -182,6 +214,14 @@ def _fake_gh(bin_dir: pathlib.Path, body: str) -> pathlib.Path:
     return gh
 
 
+def _install_gate0b_claim_publication_root(home: pathlib.Path) -> None:
+    install_claim_publication_composition(
+        roots=default_claim_publication_roots(home=home),
+        installed_at=datetime(2026, 8, 9, 17, 0, tzinfo=UTC),
+        install_task_ref="cc-task-gate0b-slice1b-cc-claim-reland-20260809-test",
+    )
+
+
 def _claim_with_fake_gh(
     home: pathlib.Path,
     task_id: str,
@@ -189,10 +229,22 @@ def _claim_with_fake_gh(
     log_path: pathlib.Path,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    for var in _IDENTITY_ENV:
+        env.pop(var, None)
     env["HOME"] = str(home)
     env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env["HAPAX_AGENT_NAME"] = "cx-test"
+    env["HAPAX_SESSION_ID"] = _SESSION_ID
+    env["HAPAX_CLAIM_DISPATCH_MESSAGE_ID"] = f"dispatch-{task_id}"
+    env["HAPAX_CLAIM_DISPATCH_BINDING_HASH"] = _BINDING_HASH
+    env["HAPAX_CLAIM_DISPATCH_PLATFORM"] = "codex"
+    env["HAPAX_CLAIM_DISPATCH_MODE"] = "headless"
+    env["HAPAX_CLAIM_DISPATCH_PROFILE"] = "ultra"
+    env["HAPAX_CLAIM_DISPATCH_AUTHORITY_CASE"] = "CASE-TEST-001"
+    env["HAPAX_CLAIM_DISPATCH_IDEMPOTENCY_KEY"] = f"coord-{task_id}"
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["GH_ARGS_LOG"] = str(log_path)
+    _install_gate0b_claim_publication_root(home)
     return subprocess.run(
         ["bash", str(SCRIPT), task_id],
         env=env,
