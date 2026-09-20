@@ -110,3 +110,10 @@ accepted observations and failed attempts are recorded in the
 Instruction sets and bytes matched. Across accepted replays, Claude hook-event arrival order has both
 matched and differed. Neither observation establishes instruction precedence or
 semantic equivalence.
+
+The installed lifecycle observer uses Council's governed activation root,
+`HAPAX_SOURCE_ACTIVATE_WORKTREE` or `~/.cache/hapax/source-activation/worktree`.
+Before a second repository adopts the installed launcher, bind its governed
+activation root explicitly and rerun the installed-copy receipt tests against
+that repository. Sharing the default alias does not establish correct selection
+across repositories.

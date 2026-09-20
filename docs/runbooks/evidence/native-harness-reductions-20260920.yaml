@@ -548,7 +548,7 @@ retained_failed_attempts:
   cell: codex-resume-nested
   outcome: native process required forced stop after ten-second graceful-exit deadline
   accepted: false
-  subsequent_observation: subsequent cfa83fd0d and9e207e675 images completed the unchanged probe on both hosts;
+  subsequent_observation: subsequent cfa83fd0d, 9e207e675 and final 1ad2c9555 images completed the unchanged probe on both hosts;
     this does not erase the timeout or establish production reliability
 - probe: foreign instruction fixture initial invocation
   outcome: Grok rejected unsupported --trust/--no-auto-update inspect flags; no inspection receipt
@@ -611,3 +611,8 @@ historical_container_input_comparisons:
   - docker
   - scripts/install-agent-instructions.py
   - scripts/probe-native-harness-container.py
+
+final_registry_contract_recheck:
+  before: 1 failed (intentional registry byte change without literal pin update), 57 passed
+  correction: Update the literal byte pin to the deliberately changed registry; no registry behavior change
+  after: 58 passed in 4.14s
