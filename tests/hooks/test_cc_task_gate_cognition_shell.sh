@@ -76,6 +76,25 @@ check "legacy /tmp/claude-* form"      ALLOW  "cat > /tmp/claude-1000/s/scratchp
 check "TMPDIR at large is NOT cognition" REFUSE "cat > $SCRATCH_BASE/random-file.sh"
 check "sibling tmp dir is NOT cognition" REFUSE "cat > $SCRATCH_BASE/notclaude-1000/x.md"
 
+# DOCUMENTED DEPENDENCY, not a defence against it. The carve-out's own input is a variable set
+# upstream. With TMPDIR unset the fallback computes /tmp/claude-<uid>, which matches nothing on a
+# host whose scratchpads live elsewhere, and the carve-out SILENTLY STOPS APPLYING. The failure
+# direction is safe — more refusals, never fewer — but it is silent, and it would present as exactly
+# the symptom this carve-out was added to fix, with a different cause. The next person to see
+# scratchpad writes refused will look at the carve-out, see it present, and not think to check the
+# variable. This assertion exists so they find it here instead.
+#
+# The irony is the argument, and it belongs in the record rather than in a fix: the remedy for
+# controls whose inputs are set by a layer upstream itself takes an input set by a layer upstream.
+# See cc-task-gate-interpreter-blindness-determination-20260920.
+( unset TMPDIR
+  got="$(decide "cat > /store-fast/tmp/claude-1000/s/scratchpad/n.md")"
+  if [[ "$got" == "REFUSE" ]]; then
+    echo "ok   - with TMPDIR unset the carve-out does NOT reach a non-/tmp scratchpad (REFUSE — documented, not desired)"
+  else
+    echo "FAIL - TMPDIR-unset behaviour changed: expected REFUSE, got $got"; exit 1
+  fi ) || fail=1
+
 echo
 echo "== non-cognition writes still refused =="
 check "cat > council source"          REFUSE "cat > $SRC"
