@@ -672,10 +672,23 @@ class TestCodexRunnerReentry:
         '"text":"HAPAX_CODEX_EXEC_AUTH_OK"}}\'\n'
     )
 
+    # Records the last argument of session-CREATING invocations only.
+    #
+    # It previously recorded the last argument of EVERY tmux call, which assumed the
+    # runner invocation would be the last one. That assumption broke when main added
+    # `tmux set-option -w -t "=$NAME:" remain-on-exit failed` after session creation
+    # (so a lane that dies badly leaves a pane to inspect): its last argument is the
+    # literal string "failed", which landed after the runner path and overwrote it.
+    # The test then read "failed" as the recorded runner and asserted it was a file.
+    #
+    # The subject here is which runner the launcher execs, not how many times tmux is
+    # called afterwards, so the stub now filters to the creating call. Any further
+    # post-creation tmux options can be added without silently breaking this.
     STUB_TMUX = (
         "#!/bin/sh\n"
         'case "$1" in\n'
         "  has-session) exit 1 ;;\n"
+        "  set-option|show-options|set-hook|wait-for) exit 0 ;;\n"
         "esac\n"
         'for a in "$@"; do last="$a"; done\n'
         'printf "%s\\n" "$last" >> "$TMUX_RECORD"\n'
