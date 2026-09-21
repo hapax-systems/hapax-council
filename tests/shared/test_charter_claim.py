@@ -33,7 +33,9 @@ def test_child_wider_than_charter_may_not_mint() -> None:
 
 
 def test_child_without_scope_may_not_mint() -> None:
-    empty = _CHILD.replace("mutation_scope_refs:\n  - shared/route_metadata_schema.py\n", "mutation_scope_refs: []\n")
+    empty = _CHILD.replace(
+        "mutation_scope_refs:\n  - shared/route_metadata_schema.py\n", "mutation_scope_refs: []\n"
+    )
     assert child_may_mint(_CHARTER, empty) is False
 
 
