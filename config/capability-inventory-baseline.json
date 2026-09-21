@@ -246,7 +246,7 @@
       "inventory_disposition": "admitted_supply"
     },
     "claude.review.opus": {
-      "fingerprint": "f8774dd2963fb932a63435ad68e06ec015f2384a277ef88bab0ffeed706a791c",
+      "fingerprint": "0d88d6ca84bb226117c26fd874d8e4adf1b4b443379b14559cb257eaae45a625",
       "inventory_disposition": "admitted_supply"
     },
     "cockpit_command.llm_backed_agent_commands": {

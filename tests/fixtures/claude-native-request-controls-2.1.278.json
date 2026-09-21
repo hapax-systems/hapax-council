@@ -1,0 +1,120 @@
+{
+  "client_version": "2.1.278",
+  "container_image": "sha256:555df4285514ca7ab2f8161df4b09ff883433c5520303f396dc0d3433cee42a3",
+  "observed_at": "2026-09-21T19:16:56.244352+00:00",
+  "scope": "Native client request construction and client OTel error observation against an offline HTTP400 fixture. No successful inference, endpoint attestation, saved-subscription qualification, semantic uptake, or production telemetry activation. Exact settings/argv/environment cases do not generalize to managed policies.",
+  "successful_model_executions": 0,
+  "may_authorize": false,
+  "cells": [
+    {
+      "cell": "settings_only",
+      "cli_effort": null,
+      "environment_effort": null,
+      "settings": {
+        "effortLevel": "low",
+        "modelSettings": {
+          "claude-opus-4-8": {
+            "effortLevel": "high"
+          }
+        }
+      },
+      "request": {
+        "path": "/v1/messages?beta=true",
+        "model": "claude-opus-4-8",
+        "output_config": {
+          "effort": "high"
+        },
+        "thinking": {
+          "type": "adaptive",
+          "display": "omitted"
+        },
+        "speed": null,
+        "stream": true
+      },
+      "api_error": {
+        "event.name": "api_error",
+        "model": "claude-opus-4-8",
+        "effort": "high",
+        "speed": "normal",
+        "status_code": 400,
+        "attempt": 1
+      },
+      "native_exit": 1,
+      "raw_capture_ref": "sha256:8a8b37d356db3e21e00e1ed331f61a7840716fcf13d847e2f499dbe16baaea4c"
+    },
+    {
+      "cell": "cli_xhigh_env_low",
+      "cli_effort": "xhigh",
+      "environment_effort": "low",
+      "settings": {
+        "effortLevel": "low",
+        "modelSettings": {
+          "claude-opus-4-8": {
+            "effortLevel": "high"
+          }
+        }
+      },
+      "request": {
+        "path": "/v1/messages?beta=true",
+        "model": "claude-opus-4-8",
+        "output_config": {
+          "effort": "low"
+        },
+        "thinking": {
+          "type": "adaptive",
+          "display": "omitted"
+        },
+        "speed": null,
+        "stream": true
+      },
+      "api_error": {
+        "event.name": "api_error",
+        "model": "claude-opus-4-8",
+        "effort": "low",
+        "speed": "normal",
+        "status_code": 400,
+        "attempt": 1
+      },
+      "native_exit": 1,
+      "raw_capture_ref": "sha256:162d27685ab2f2bbfc32ebb3f1a65de7a1a714cfa3c9c46a30824a24c970227a"
+    },
+    {
+      "cell": "cli_xhigh_env_xhigh",
+      "cli_effort": "xhigh",
+      "environment_effort": "xhigh",
+      "settings": {
+        "effortLevel": "low",
+        "modelSettings": {
+          "claude-opus-4-8": {
+            "effortLevel": "high"
+          }
+        }
+      },
+      "request": {
+        "path": "/v1/messages?beta=true",
+        "model": "claude-opus-4-8",
+        "output_config": {
+          "effort": "xhigh"
+        },
+        "thinking": {
+          "type": "adaptive",
+          "display": "omitted"
+        },
+        "speed": null,
+        "stream": true
+      },
+      "api_error": {
+        "event.name": "api_error",
+        "model": "claude-opus-4-8",
+        "effort": "xhigh",
+        "speed": "normal",
+        "status_code": 400,
+        "attempt": 1
+      },
+      "native_exit": 1,
+      "raw_capture_ref": "sha256:5b508bcbdf3939a621f9a4c2898f1609a4ce2bd490285781d17cd7ac352c9f16"
+    }
+  ],
+  "client_content_ref": "sha256:5c4735937844e84f8a93306e841a5b0e12252909b07870f789b190468da147ab",
+  "evidence_kind": "historical_native_capture_not_an_automated_test"
+}

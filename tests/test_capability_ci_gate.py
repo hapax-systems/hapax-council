@@ -155,7 +155,7 @@ class CapabilityCIGateTest(unittest.TestCase):
         evaluator = baseline.records["local_compute.agentic_trust_evaluator_surface"]
         self.assertEqual(evaluator.inventory_disposition.value, "evidence_only_non_supply")
 
-    def test_v1_baseline_surfaces_only_omitted_shapes_as_new(self) -> None:
+    def test_v1_baseline_preserves_historical_changes_and_omitted_shapes(self) -> None:
         snapshot = aggregate_capability_inventory()
         raw = HISTORICAL_V1_BASELINE.read_bytes()
         self.assertEqual(
@@ -164,12 +164,20 @@ class CapabilityCIGateTest(unittest.TestCase):
         )
         legacy = json.loads(raw)
         self.assertEqual(legacy["count"], 180)
+        current_fingerprints = {
+            descriptor.capability_id: descriptor_fingerprint(descriptor)
+            for descriptor in snapshot.admitted_supply_descriptors()
+        }
+        self.assertEqual(set(legacy["fingerprints"]), set(current_fingerprints))
+        # The v1 fixture is historical evidence. The Claude reviewer declaration
+        # has since changed; loading v1 must preserve and report that difference.
         self.assertEqual(
-            legacy["fingerprints"],
             {
-                descriptor.capability_id: descriptor_fingerprint(descriptor)
-                for descriptor in snapshot.admitted_supply_descriptors()
+                capability_id
+                for capability_id, fingerprint in legacy["fingerprints"].items()
+                if fingerprint != current_fingerprints[capability_id]
             },
+            {"claude.review.opus"},
         )
         registered = _load_inventory_baseline(HISTORICAL_V1_BASELINE)
 
@@ -179,7 +187,7 @@ class CapabilityCIGateTest(unittest.TestCase):
             set(delta.new_capability_ids),
             {descriptor.shape_id for descriptor in snapshot.evidence_only_non_supply_descriptors()},
         )
-        self.assertEqual(delta.changed_capability_ids, [])
+        self.assertEqual(delta.changed_capability_ids, ["claude.review.opus"])
         self.assertEqual(delta.missing_capability_ids, [])
 
     def test_v1_to_v2_wrapper_has_a_fixed_known_answer(self) -> None:

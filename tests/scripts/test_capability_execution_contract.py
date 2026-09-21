@@ -20,8 +20,12 @@ import pytest
 
 from shared.capability_execution import (
     ExecutionIdentityError,
+    claude_execution_binding,
     reject_codex_identity_overrides,
     resolve_execution_descriptor,
+)
+from shared.capability_execution import (
+    main as execution_main,
 )
 from shared.codex_execution_receipt import check_rollout
 from shared.codex_execution_receipt import main as receipt_main
@@ -36,8 +40,48 @@ IDENTITY_SOURCES = (
     *LAUNCHERS,
     REPO_ROOT / "scripts/hapax-methodology-dispatch",
     REPO_ROOT / "scripts/capability-execution.sh",
+    REPO_ROOT / "scripts/hapax-claude-reviewer",
     REPO_ROOT / "scripts/hapax-lane-idle-watchdog",
 )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--route", "codex.headless.full"],
+        ["--route", "claude.review.opus", "--", "--model", "opus"],
+    ],
+)
+def test_claude_cli_refuses_foreign_route_and_extra_identity_arguments(args, capsys):
+    assert execution_main(["--harness", "claude", *args]) == 9
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "non-Claude route or extra identity arguments" in captured.err
+    assert "remedy:" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("axis", "value"),
+    [
+        ("model_id", "gpt-6-astra"),
+        ("effort", "none"),
+        ("context_mode", "extended_1m"),
+        ("fast_mode", "fast"),
+        ("quantization", "exl3_4_0bpw"),
+    ],
+)
+def test_claude_mapping_refuses_every_unimplemented_axis(axis, value):
+    declared = {
+        "model_id": "claude-opus-4-8",
+        "effort": "xhigh",
+        "context_mode": "standard",
+        "fast_mode": "off",
+        "quantization": "none",
+    }
+    declared[axis] = value
+    descriptor = ExecutionDescriptor.model_validate(declared)
+    with pytest.raises(ExecutionIdentityError, match="unsupported Claude ExecutionDescriptor"):
+        claude_execution_binding(descriptor)
 
 
 def test_launchers_and_dispatch_have_no_literal_model_ids():

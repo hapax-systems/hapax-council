@@ -8,7 +8,11 @@ and resource attributes rather than trying to reset the global provider.
 from __future__ import annotations
 
 import importlib
+import json
 import os
+import subprocess
+import sys
+from pathlib import Path
 from unittest import mock
 
 
@@ -67,17 +71,42 @@ def test_no_env_vars_without_creds():
         assert mod.SECRET_KEY == ""
 
 
-def test_tracer_provider_has_correct_service_name():
-    """The TracerProvider resource should have service.name = hapax-council."""
-    from opentelemetry import trace
-    from opentelemetry.sdk.trace import TracerProvider
+def test_tracer_provider_has_correct_service_name(tmp_path):
+    """A fresh enabled bootstrap installs the declared service resource.
 
-    provider = trace.get_tracer_provider()
-    # If the bootstrap has run (it runs at import time when creds are set),
-    # verify the resource. If not, this test validates the no-op path.
-    if isinstance(provider, TracerProvider):
-        service_name = provider.resource.attributes.get("service.name", "")
-        assert service_name == "hapax-council"
+    The process-wide provider may belong to an earlier test and cannot be reset
+    through the public OTel API. Exercise this module's actual bootstrap in its
+    own process instead of making an assertion about that ambient provider.
+    """
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json\n"
+            "import shared.langfuse_config\n"
+            "from opentelemetry import trace\n"
+            "provider = trace.get_tracer_provider()\n"
+            "try:\n"
+            "    print(json.dumps(dict(provider.resource.attributes)))\n"
+            "finally:\n"
+            "    provider.shutdown()\n",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env={
+            "PATH": os.environ["PATH"],
+            "HOME": str(tmp_path),
+            "OTEL_SDK_DISABLED": "false",
+            "OTEL_TRACES_EXPORTER": "otlp",
+            "LANGFUSE_HOST": "http://127.0.0.1:1",
+            "LANGFUSE_PUBLIC_KEY": "pk-test-123",
+            "LANGFUSE_SECRET_KEY": "sk-test-456",
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["service.name"] == "hapax-council"
 
 
 def test_get_tracer_returns_usable_tracer():

@@ -275,13 +275,13 @@ class TestLensRegistry:
         """Claude (a reasoning model) must be given a bare-fence output directive,
         or it prepends prose and the strict dossier parser discards its verdict as
         invalid-output (a lost vote). The wrapper owns the no-prose contract,
-        model pin, and tool denial so the registry does not carry a raw CLI."""
+        descriptor binding, and tool denial so the registry does not carry a raw CLI."""
         roster = _registry()["families"]
         claude = next(entry for entry in roster if entry["family"] == "claude")
         cmd = claude["reviewer_command"]
         assert cmd == ["scripts/hapax-claude-reviewer"]
         wrapper = (REPO_ROOT / "scripts" / "hapax-claude-reviewer").read_text(encoding="utf-8")
-        assert 'PINNED_REVIEW_MODEL = "opus"' in wrapper
+        assert 'REVIEW_EXECUTION_ROUTE = "claude.review.opus"' in wrapper
         assert '"--allowedTools"' in wrapper
         assert "exactly one fenced yaml" in wrapper
         assert "invalid-output" in wrapper

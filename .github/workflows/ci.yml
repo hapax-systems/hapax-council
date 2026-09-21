@@ -728,9 +728,12 @@ jobs:
             exit 0
           fi
           set +e
+          # Preserve the blocked test's Python stacks before the outer timeout
+          # kills a stalled shard. This emits diagnostics without ending tests.
           timeout -s KILL 1200 \
             xargs -d '\n' -a "$shard_files" uv run --no-sync pytest -q --tb=line \
               --durations=0 --durations-min=0 \
+              -o faulthandler_timeout=120 \
               --benchmark-disable \
               -n 4 --dist loadfile \
               --ignore=tests/hapax_daimonion --ignore=tests/contract \

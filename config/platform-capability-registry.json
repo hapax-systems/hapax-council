@@ -2639,9 +2639,9 @@
       "platform": "claude",
       "mode": "review",
       "profile": "opus",
-      "launcher": "scripts/hapax-claude-reviewer (review seat: blind-review prompt on stdin -> claude -p --model opus with empty --tools/--allowedTools, explicit --disallowedTools, manual permission mode, safe mode, disabled slash commands, no session persistence, empty strict MCP config; YAML verdict on stdout)",
+      "launcher": "scripts/hapax-claude-reviewer (review seat: blind-review prompt on stdin -> claude -p with descriptor-bound model/effort arguments and effort/fast-mode environment, empty --tools/--allowedTools, explicit --disallowedTools, manual permission mode, safe mode, disabled slash commands, no session persistence, empty strict MCP config; YAML verdict on stdout)",
       "summary": "Claude Opus no-tools review seat",
-      "notes": "Read-only Claude review route. The wrapper pins Opus, disables tools, and preserves strict fenced-YAML output for review-team dossiers.",
+      "notes": "Read-only Claude review route. The wrapper derives invocation controls from the route execution descriptor, disables tools, and preserves strict fenced-YAML output for review-team dossiers.",
       "route_state": "blocked",
       "blocked_reasons": [
         "claude_review_seat_receipt_admission_required",
