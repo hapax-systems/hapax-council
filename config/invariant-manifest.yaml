@@ -108,14 +108,24 @@ invariants:
     class: governance_protected
     description: >-
       Governance-protected path registry (CODEOWNERS), project constitution
-      surface (CLAUDE.md), and the SDLC lifecycle vocabulary incl.
+      surfaces (AGENTS.md and CLAUDE.md), extracted native and domain instructions,
+      instruction bindings and installer, and the SDLC lifecycle vocabulary incl.
       SENSITIVE_PATH_MARKERS (#4046).
     reference: .github/CODEOWNERS
     globs:
       - .github/CODEOWNERS
       - "**/CLAUDE.md"
+      - "**/AGENTS.md"
+      - config/agent-instructions/native/*.md
+      - config/agent-instructions/bindings.json
+      - docs/runbooks/council-domain-context.md
+      - scripts/install-agent-instructions.py
       - shared/sdlc_lifecycle.py
-    checker: uv run pytest tests/shared/test_sdlc_lifecycle.py -q
+    checker: >-
+      uv run pytest tests/shared/test_sdlc_lifecycle.py
+      tests/test_agent_instruction_binding.py tests/test_policy_floor.py
+      tests/test_release_auto_arm.py tests/scripts/test_invariant_touch_report.py
+      tests/test_review_team.py -q
 
   - id: reverie-vocab
     class: protected_invariant

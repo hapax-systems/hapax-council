@@ -21,12 +21,15 @@ uv run --no-sync python -m shared.capability_execution --route codex.headless.fu
 uv run --no-sync python -m shared.capability_execution --route codex.headless.spark --
 ```
 
-Installed or relocated launchers require `HAPAX_COUNCIL_DIR` to identify the
-provisioned Council source release, with its executable `.venv/bin/python`,
-`shared/` modules, registry and `scripts/capability-execution.sh`. The default
-is `~/projects/hapax-council`; a worktree containing only copied launcher files
-is insufficient. Provision with the existing Council `uv` environment workflow,
-or select its governed activation root explicitly. An intentional
+Installed launchers resolve the identity helper from the governed activation
+root, `~/.cache/hapax/source-activation/worktree`, or its explicit
+`HAPAX_SOURCE_ACTIVATE_WORKTREE` binding. An explicit `HAPAX_COUNCIL_DIR` remains
+usable for a provisioned relocated source when no activation override is set.
+The helper resolves its own source release and executable `.venv/bin/python`;
+it does not inherit the legacy primary checkout's runtime. That source must
+contain its `shared/` modules, registry and `scripts/capability-execution.sh`.
+A worktree containing only copied launchers is insufficient. Restore the source
+through `hapax-source-activate` or the existing Council `uv` provisioning workflow. An intentional
 `HAPAX_PLATFORM_CAPABILITY_REGISTRY` override must be readable and valid.
 A missing runtime, registry, route or concrete descriptor refuses with exit9
 before native invocation; it never falls back to the user's default model.

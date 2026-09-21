@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 REPO_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT_FOR_IMPORTS) not in sys.path:
@@ -1253,6 +1254,7 @@ def write_receipt(
     durable_binding: DurableDispatchBinding | None = None,
     dispatch_launch: DispatchLaunchResult | None = None,
     route_policy_reason_codes: list[str] | None = None,
+    native_lifecycle: dict[str, Any] | None = None,
 ) -> Path:
     ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -1279,6 +1281,7 @@ def write_receipt(
         "launched": launched,
         "launch_returncode": launch_returncode,
         "prompt": prompt,
+        "native_lifecycle": native_lifecycle,
     }
     if durable_binding is not None:
         record["durable_mq_dispatch_bound"] = durable_binding.ok
@@ -1882,6 +1885,7 @@ def launch_codex_headless(
     *,
     reactivate_retired_relay: bool = False,
     execution_route: str | None = None,
+    lifecycle_receipt: Path | None = None,
 ) -> int:
     # Genuine headless path (reform §6 P0): `codex exec` via hapax-codex-headless,
     # NOT a tmux pane. The tmux launcher (hapax-codex) remains the interactive
@@ -1914,6 +1918,8 @@ def launch_codex_headless(
     args.extend([lane, prompt])
     env = os.environ.copy()
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
+    if lifecycle_receipt is not None:
+        env["HAPAX_NATIVE_LIFECYCLE_RECEIPT"] = str(lifecycle_receipt)
     env["HAPAX_DISPATCH_HOST"] = effective_dispatch_host("codex", "headless")
     if local_fallback_allowed:
         # Preserve a caller/operator-provided fallback value; the P0 drain rule
@@ -2568,6 +2574,7 @@ def main(argv: list[str] | None = None) -> int:
             durable_binding=durable_binding,
             validation=validation,
         )
+        lifecycle_receipt = orchestration_ledger_dir() / f"native-lifecycle-{uuid4()}.json"
         launchers: dict[tuple[str, str], Any] = {
             ("claude", "headless"): lambda: launch_claude_headless(
                 args.task,
@@ -2590,6 +2597,7 @@ def main(argv: list[str] | None = None) -> int:
                 route,
                 reactivate_retired_relay=reactivate_retired_codex_relay,
                 execution_route=route_decision.selected_descriptor_leaf,
+                lifecycle_receipt=lifecycle_receipt,
             ),
             ("vibe", "headless"): lambda: launch_vibe_headless(
                 args.task,
@@ -2600,7 +2608,10 @@ def main(argv: list[str] | None = None) -> int:
             ),
         }
 
+        native_lifecycle: dict[str, Any] | None = None
+
         def run_platform_launch() -> int:
+            nonlocal native_lifecycle
             launch = launchers.get((args.platform, args.mode))
             if launch is None or not supports_route(args.platform, args.mode):
                 caps = capabilities(args.platform)
@@ -2619,7 +2630,19 @@ def main(argv: list[str] | None = None) -> int:
                 print("Supported governed routes:", file=sys.stderr)
                 print("\n".join(supported_route_lines()), file=sys.stderr)
                 return 2
-            return launch()
+            rc = launch()
+            # Consume this launch's create-once observation from the supervisor
+            # that actually waited. Requested host strings cannot prove ownership.
+            native_lifecycle = {"phase": "unobserved", "may_authorize": False}
+            try:
+                observed = json.loads(lifecycle_receipt.read_text())
+                if isinstance(observed, dict) and observed.get("receipt_path") == str(
+                    lifecycle_receipt
+                ):
+                    native_lifecycle = {**observed, "may_authorize": False}
+            except (OSError, ValueError):
+                pass
+            return rc
 
         dispatch_launch: DispatchLaunchResult | None = None
         if route.mutable and not validation.exempt_read_only:
@@ -2727,6 +2750,7 @@ def main(argv: list[str] | None = None) -> int:
                 route_decision_receipt_path=route_decision_receipt_path,
                 durable_binding=durable_binding,
                 dispatch_launch=dispatch_launch,
+                native_lifecycle=native_lifecycle,
             )
         return rc
 

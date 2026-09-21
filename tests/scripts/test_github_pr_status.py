@@ -1985,6 +1985,7 @@ def test_every_per_pr_rest_call_in_the_fleet_is_routed_or_named() -> None:
     }
     routed_by_route_param = {
         ("cc-pr-autoqueue.py", "fetch_open_prs"),
+        ("cc-pr-autoqueue.py", "_hydrate_open_prs"),
         ("cc-pr-autoqueue.py", "fetch_pr_release_evidence"),
         ("hapax-merge-queue-lineage", "fetch_prs"),
     }

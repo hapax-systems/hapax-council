@@ -2166,7 +2166,8 @@ printf '%s\\n' "$@" > {launcher_args}
     assert states == [("offered",)]
 
 
-def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
+@pytest.mark.parametrize("native_observation", ["matching", "wrong_path", "malformed"])
+def test_launches_codex_headless_through_codex_launcher(tmp_path: Path, native_observation) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
     _task(
@@ -2186,6 +2187,18 @@ def test_launches_codex_headless_through_codex_launcher(tmp_path: Path) -> None:
         f"""#!/usr/bin/env bash
 printf 'host=%s\\nfallback=%s\\n' "$HAPAX_DISPATCH_HOST" "${{HAPAX_DISPATCH_HOST_FALLBACK:-}}" > {launcher_env}
 printf '%s\\n' "$@" > {launcher_args}
+{sys.executable} - <<'PY'
+import json, os
+from pathlib import Path
+receipt = Path(os.environ['HAPAX_NATIVE_LIFECYCLE_RECEIPT'])
+observed = {{'receipt_path': str(receipt), 'phase': 'complete', 'may_authorize': False}}
+if {native_observation!r} == 'wrong_path':
+    observed['receipt_path'] = '/another/launch.json'
+if {native_observation!r} == 'malformed':
+    observed = []
+receipt.parent.mkdir(parents=True, exist_ok=True)
+receipt.write_text(json.dumps(observed))
+PY
 """,
         encoding="utf-8",
     )
@@ -2237,6 +2250,10 @@ printf '%s\\n' "$@" > {launcher_args}
     assert receipt["coord_dispatch_replayed"] is False
     assert receipt["coord_dispatch_cleanup_state"] == "processed"
     assert receipt["dispatch_host"] == "appendix"
+    assert receipt["native_lifecycle"]["phase"] == (
+        "complete" if native_observation == "matching" else "unobserved"
+    )
+    assert receipt["native_lifecycle"]["may_authorize"] is False
     assert launcher_env.read_text(encoding="utf-8").splitlines() == [
         "host=appendix",
         "fallback=",

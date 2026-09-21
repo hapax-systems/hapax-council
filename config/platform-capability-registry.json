@@ -1174,6 +1174,44 @@
     {
       "registry_schema": 1,
       "route_id": "claude.headless.full",
+      "native_load_set": {
+        "native_home": ".claude",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "CLAUDE.md",
+            "kind": "instructions",
+            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of claude global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "claude",
       "mode": "headless",
       "profile": "full",
@@ -1489,6 +1527,44 @@
     {
       "registry_schema": 1,
       "route_id": "claude.interactive.full",
+      "native_load_set": {
+        "native_home": ".claude",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "CLAUDE.md",
+            "kind": "instructions",
+            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of claude global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "claude",
       "mode": "interactive",
       "profile": "full",
@@ -1803,6 +1879,44 @@
     {
       "registry_schema": 1,
       "route_id": "kimi.interactive.lane",
+      "native_load_set": {
+        "native_home": ".kimi-code",
+        "home_env": "KIMI_CODE_HOME",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "429d0a5636d3c75d341804260920bd6f7d6902139f30397793f7da1f32920147", "digest_description": "Public SHA-256 of kimi global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "config.toml",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "kimi",
       "mode": "interactive",
       "profile": "lane",
@@ -2128,6 +2242,44 @@
     {
       "registry_schema": 1,
       "route_id": "claude.headless.opus",
+      "native_load_set": {
+        "native_home": ".claude",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "CLAUDE.md",
+            "kind": "instructions",
+            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of claude global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "claude",
       "mode": "headless",
       "profile": "opus",
@@ -2454,6 +2606,44 @@
     {
       "registry_schema": 1,
       "route_id": "claude.review.opus",
+      "native_load_set": {
+        "native_home": ".claude",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "CLAUDE.md",
+            "kind": "instructions",
+            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of claude global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "claude",
       "mode": "review",
       "profile": "opus",
@@ -2700,6 +2890,44 @@
     {
       "registry_schema": 1,
       "route_id": "claude.headless.sonnet",
+      "native_load_set": {
+        "native_home": ".claude",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "CLAUDE.md",
+            "kind": "instructions",
+            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of claude global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "claude",
       "mode": "headless",
       "profile": "sonnet",
@@ -3027,6 +3255,44 @@
     {
       "registry_schema": 1,
       "route_id": "codex.headless.full",
+      "native_load_set": {
+        "native_home": ".codex",
+        "home_env": "CODEX_HOME",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5", "digest_description": "Public SHA-256 of agy global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "config.toml",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "codex",
       "mode": "headless",
       "profile": "full",
@@ -3344,6 +3610,44 @@
     {
       "registry_schema": 1,
       "route_id": "codex.headless.spark",
+      "native_load_set": {
+        "native_home": ".codex",
+        "home_env": "CODEX_HOME",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5", "digest_description": "Public SHA-256 of agy global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "config.toml",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "codex",
       "mode": "headless",
       "profile": "spark",
@@ -3664,6 +3968,44 @@
     {
       "registry_schema": 1,
       "route_id": "vibe.headless.full",
+      "native_load_set": {
+        "native_home": ".vibe",
+        "home_env": "VIBE_HOME",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "c931932e87b776c7b2feb57d07130a2aecfa65efca2cb1dbb4d0b9d1208b6dc4", "digest_description": "Public SHA-256 of vibe global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "config.toml",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "vibe",
       "mode": "headless",
       "profile": "full",
@@ -3934,6 +4276,44 @@
     {
       "registry_schema": 1,
       "route_id": "agy.review.direct",
+      "native_load_set": {
+        "native_home": ".gemini",
+        "home_env": null,
+        "files": [
+          {
+            "root": "native_home",
+            "path": "GEMINI.md",
+            "kind": "instructions",
+            "sha256": "3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5", "digest_description": "Public SHA-256 of agy global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "agy",
       "mode": "review",
       "profile": "direct",
@@ -4515,6 +4895,44 @@
     {
       "registry_schema": 1,
       "route_id": "claude.headless.haiku",
+      "native_load_set": {
+        "native_home": ".claude",
+        "home_env": "CLAUDE_CONFIG_DIR",
+        "files": [
+          {
+            "root": "native_home",
+            "path": "CLAUDE.md",
+            "kind": "instructions",
+            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of claude global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "project",
+            "path": "AGENTS.md",
+            "kind": "instructions",
+            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
+            "required": true
+          },
+          {
+            "root": "native_home",
+            "path": "settings.json",
+            "kind": "configuration",
+            "sha256": null,
+            "required": false
+          }
+        ],
+        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "plugins": null,
+        "skills": null,
+        "hooks": null,
+        "mcp": null,
+        "loading_flags": null,
+        "source_refs": [
+          "config/agent-instructions/bindings.json",
+          "docs/runbooks/agent-instruction-binding.md",
+          "task:capability-declared-load-set-20260919"
+        ]
+      },
       "platform": "claude",
       "mode": "headless",
       "profile": "haiku",

@@ -772,8 +772,16 @@ if [[ $# -gt 0 ]]; then
 fi
 
 # Resolve identity before any provider call or launch side effect.
+# The installed launcher follows the activator's source binding. An explicit
+# relocated council root remains supported; the legacy default primary checkout
+# is not an identity-source fallback.
+EXECUTION_SOURCE_ROOT="${HAPAX_SOURCE_ACTIVATE_WORKTREE:-${HAPAX_COUNCIL_DIR:-$HOME/.cache/hapax/source-activation/worktree}}"
+if [[ ! -r "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh" ]]; then
+  echo "hapax-codex-headless: identity source unavailable at $EXECUTION_SOURCE_ROOT; next action: restore the governed hapax-source-activate release or an explicitly provisioned source root" >&2
+  exit 9
+fi
 # shellcheck source=scripts/capability-execution.sh
-. "$COUNCIL_DIR/scripts/capability-execution.sh"
+. "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh"
 bind_codex_execution || exit 9
 
 if [[ -z "$INITIAL_MSG" ]]; then
@@ -893,6 +901,7 @@ DISPATCH_LOCAL_PROOF_FILE="$DISPATCH_PROOF_DIR/$DISPATCH_PROOF_BASENAME-local.js
 
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 CODEX_PID=""
+CODEX_PGID=""
 CODEX_BIN=""
 LOCAL_FALLBACK_AUTH_PROVEN=0
 # shellcheck disable=SC2329
@@ -1141,6 +1150,77 @@ echo "  log: $LOG_FILE"
 echo "  pid: $PID_FILE"
 
 cd "$WORKDIR"
+# Each launch owns a fresh event stream. Preserve prior lane output and keep the
+# legacy path as an alias for readers; diagnostics cannot corrupt JSON evidence.
+NATIVE_LOG_FILE="$(mktemp "$LOG_DIR/native-XXXXXXXX.jsonl")"
+DIAGNOSTICS_FILE="${NATIVE_LOG_FILE%.jsonl}.stderr.log"
+if [[ -e "$LOG_FILE" && ! -L "$LOG_FILE" ]]; then
+  mv "$LOG_FILE" "${NATIVE_LOG_FILE%.jsonl}.predecessor.log"
+  echo "  predecessor log: ${NATIVE_LOG_FILE%.jsonl}.predecessor.log"
+fi
+OUTPUT_ALIAS="${NATIVE_LOG_FILE%.jsonl}.alias"
+ln -s "$(basename "$NATIVE_LOG_FILE")" "$OUTPUT_ALIAS"
+mv -Tf "$OUTPUT_ALIAS" "$LOG_FILE"
+CANCEL_SIGNAL=0
+write_native_lifecycle() {
+  local receipt="${HAPAX_NATIVE_LIFECYCLE_RECEIPT:-${NATIVE_LOG_FILE%.jsonl}.receipt.json}"
+  # hapax-source-activate owns this binding and promotes the complete source
+  # tree; hapax-post-merge-deploy publishes scripts/hapax-* as installed copies.
+  # Resolve only this dependency through activation, independently of legacy
+  # COUNCIL_DIR and the child cwd. The override is the activator's existing
+  # deployment binding, not an implicit developer-checkout fallback.
+  local observer_root="${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}"
+  local local_args=()
+  # Observation runs on the caller, including for SSH dispatch. SSH wait status
+  # does not establish remote native exit, cancellation, or completion.
+  [[ -z "$DISPATCH_HOST" ]] && local_args+=(--local-child)
+  # Old modules without the receipt CLI exit successfully without observing.
+  # Require a newly created, nonempty regular receipt; preserve predecessors.
+  if [[ -e "$receipt" || -L "$receipt" ]] \
+    || ! python3 -I "$observer_root/shared/execution_observer.py" \
+    --stream "$NATIVE_LOG_FILE" --diagnostics "$DIAGNOSTICS_FILE" --receipt "$receipt" \
+    --returncode "$EXIT_CODE" --cancel-signal "$CANCEL_SIGNAL" "${local_args[@]}" \
+    2>>"$DIAGNOSTICS_FILE" \
+    || [[ ! -f "$receipt" || ! -s "$receipt" ]]; then
+    echo "hapax-codex-headless: native lifecycle observation unavailable (producer failed or no fresh receipt at $receipt); next action: inspect $NATIVE_LOG_FILE and $DIAGNOSTICS_FILE, verify the observer CLI under $observer_root through governed hapax-source-activate, then replay observation to a fresh receipt before relying on completion" >&2
+  fi
+  # Observation failure is diagnostic; retain the waited child's exit status.
+  return 0
+}
+cancel_native_child() {
+  local signal_name="$1" signal_number="$2" attempt
+  trap '' TERM INT
+
+  # This group was created by our launch, never recovered from a PID file.
+  # Its leader may be an npm wrapper that exits before the native child.
+  # Killing the local SSH group still establishes no remote native ownership.
+  if [[ -n "$CODEX_PGID" ]] \
+    && kill -s "$signal_name" -- "-$CODEX_PGID" 2>/dev/null; then
+    CANCEL_SIGNAL="$signal_number"
+    for attempt in {1..50}; do
+      if ! kill -0 -- "-$CODEX_PGID" 2>/dev/null; then
+        # Once absent, abandon this numeric identity rather than retrying it.
+        CODEX_PGID=""
+        break
+      fi
+      sleep 0.1
+    done
+    if [[ -n "$CODEX_PGID" ]] && kill -KILL -- "-$CODEX_PGID" 2>/dev/null; then
+      CANCEL_SIGNAL=9
+    fi
+  fi
+  CODEX_PGID=""
+
+  if [[ -n "$CODEX_PID" ]]; then
+    # wait also returns Bash's cached status for an already-exited wrapper.
+    # Retain its numeric ambiguity; group signaling is not native wait proof.
+    if wait "$CODEX_PID"; then EXIT_CODE=0; else EXIT_CODE=$?; fi
+    write_native_lifecycle
+  fi
+  exit "$((128 + signal_number))"
+}
+trap 'cancel_native_child TERM 15' TERM
+trap 'cancel_native_child INT 2' INT
 if [[ -n "$DISPATCH_HOST" ]]; then
   CLAIM_EPOCH_LINE="$(claim_epoch_for_task "$SESSION" "$SESSION_UUID" "$CODEX_TASK" || true)"
   if [[ -z "$CLAIM_EPOCH_LINE" ]]; then
@@ -1150,14 +1230,37 @@ if [[ -n "$DISPATCH_HOST" ]]; then
   export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
   REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
   REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
+fi
+
+# A signal between fork and recording $! must not strand the new child.
+# Record requests here; do not ignore signals in the child at launch.
+PENDING_CANCEL=""
+trap 'PENDING_CANCEL=TERM' TERM
+trap 'PENDING_CANCEL=INT' INT
+MONITOR_WAS_SET=0
+[[ $- == *m* ]] && MONITOR_WAS_SET=1
+# Bash assigns this single-command background job its own PGID, including
+# noninteractive shells. Restore the prior setting immediately after launch.
+set -m
+if [[ -n "$DISPATCH_HOST" ]]; then
   ssh -o BatchMode=yes -o RequestTTY=no -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
     -o ControlPath=none -i "$HOME/.ssh/id_ed25519" "$DISPATCH_HOST" "$REMOTE_EXEC_COMMAND" \
-    >>"$LOG_FILE" 2>&1 &
+    </dev/null >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
 else
-  "$CODEX_BIN" "${CODEX_ARGS[@]}" >>"$LOG_FILE" 2>&1 &
+  "$CODEX_BIN" "${CODEX_ARGS[@]}" </dev/null >>"$NATIVE_LOG_FILE" 2>>"$DIAGNOSTICS_FILE" &
 fi
 CODEX_PID=$!
+CODEX_PGID="$CODEX_PID"
+if [[ "$MONITOR_WAS_SET" == 0 ]]; then
+  set +m
+fi
 echo "$CODEX_PID" >"$PID_FILE"
+trap 'cancel_native_child TERM 15' TERM
+trap 'cancel_native_child INT 2' INT
+case "$PENDING_CANCEL" in
+  TERM) cancel_native_child TERM 15 ;;
+  INT) cancel_native_child INT 2 ;;
+esac
 echo "hapax-codex-headless: pid=$CODEX_PID"
 if [[ -z "$DISPATCH_HOST" && -n "$DISPATCH_FALLBACK_REASON" ]]; then
   write_local_dispatch_proof "$CODEX_PID" "1" "$DISPATCH_FALLBACK_REASON"
@@ -1168,5 +1271,8 @@ if wait "$CODEX_PID"; then
 else
   EXIT_CODE=$?
 fi
+trap - TERM INT
+CODEX_PGID=""
+write_native_lifecycle
 echo "hapax-codex-headless: $SESSION exited (code=$EXIT_CODE)"
 exit "$EXIT_CODE"

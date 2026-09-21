@@ -1,39 +1,158 @@
-# Hapax Council Codex Instructions
+# Hapax Council agent instructions
 
-Read `~/projects/CLAUDE.md` and this repo's `CLAUDE.md` as the governing system contract. `AGENTS.md` exists to make Codex load the same rules Claude Code already uses, not to fork policy.
+`AGENTS.md` is the canonical authored repository instruction file.
+`CLAUDE.md -> AGENTS.md` is its relative compatibility alias; edit the target.
+Do not reread or maintain an independent alias body. Binding and verification:
+`docs/runbooks/agent-instruction-binding.md`.
 
-Core invariants:
+Shared conventions are authored in `config/agent-instructions/AGENTS.md` and
+native global bindings deploy them from one source. If not already delivered,
+read `~/.config/hapax/agent-instructions/AGENTS.md`. Read `~/AGENTS.md` for
+workspace orientation; repository instructions take precedence over workspace
+summaries, and nested instructions apply to their directories. Discovery and
+semantic compliance must be observed separately.
 
-- Single operator only. Do not add auth, user roles, collaboration flows, or multi-user abstractions.
-- Obsidian is the canonical work-state surface. CC/Codex work items live in `~/Documents/Personal/20-projects/hapax-cc-tasks/`; use `cc-claim` and the active claim files when the task gate is enabled.
-- Use `uv`, not `pip`. Secrets come from `pass` and `hapax-secrets`; do not copy credential values into code or docs.
-- Prefer `scripts/hapax-codex --session cx-<color> --slot <alpha|beta|delta|epsilon>` to launch Codex so hooks, MCP, Obsidian context, and no-ask execution are all active. Without `--cd`, non-primary Codex sessions use Codex-native worktrees named `~/projects/hapax-council--cx-<color>`.
-- Use `scripts/hapax-codex-send --session cx-<color> --require-ack -- "message"` for load-bearing parent-to-child instructions. The reliable control plane is tmux (`hapax-codex-cx-<color>`); direct `foot` delivery is a legacy fallback and must not be treated as task receipt unless an ACK is observed.
-- Use `scripts/hapax-operator-message --type advisory|query|escalation --subject ...` for child/session-to-operator messages that should appear in the SBCL/CLOG Operator Inbox. Do not use it for work assignment; dispatch still goes through `scripts/hapax-methodology-dispatch`.
-- Screen visibility is required for `cx-red` and protected `cx-violet`. Other worker lanes may run headless in tmux if the Obsidian session dashboard (`hapax-cc-tasks/_dashboard/codex-session-health.md`), relay YAML, active claim file, and PR state stay current.
-- Respect relay path claims in `~/.cache/hapax/relay/*.yaml` before touching shared areas.
-- Respect protected live-session declarations in `~/.cache/hapax/relay/session-protection.md`; a protected `cx-*` lane must not be killed, replaced, relaunched, or reclaimed unless the operator explicitly overrides it.
-- Idle Codex sessions must stay on the coordination timer from `HAPAX_IDLE_UPDATE_SECONDS` (default 270): when blocked, waiting, or otherwise not actively producing, check parent/user/relay updates on that cadence and leave a concise relay/status update if the wait continues.
-- Existing Claude hook scripts are also the Codex guardrails through `hooks/scripts/codex-hook-adapter.sh`.
-- Current Claude Code config-conformance state, hook activation checks, pre-commit bootstrap, CODEOWNERS advisory ownership, and constitution-package follow-up are documented in `docs/runbooks/claude-code-config-conformance.md`.
-- **Task gate is MANDATORY for all Codex sessions.** The `cc-task-gate.sh` hook runs on every file-mutating tool call. You MUST `cc-claim <task_id>` before writing code. Bulk-claiming multiple tasks is blocked — close the current task before claiming another.
-- **One task at a time.** `cc-claim` refuses to claim a new task while the current claim is active (non-terminal). Use `cc-close` first, or follow the governed stale-lease release procedure for a stale claim. After normal closure, admitted `cc-claim` archives any terminal dispatch-only residue to the old task lineage before publishing the next claim. The admitted default path rejects `cc-claim --force`; use the explicit emergency fallback only with operator authorization.
-- **Worktree limit: 20 visible session worktrees.** Creating worktrees beyond this is blocked. Codex lanes share this cap with Claude Code sessions.
-- A `codex-claim-audit.timer` runs every 4 hours and auto-releases phantom claims (claimed > 6h with no PR). Do not disable this timer.
+Hapax serves a **single sovereign principal**. Serving and engaging other
+people is in scope; they do not become additional principals. Delegation and
+service preserve authority, consent and scope. Do not revive the old blanket
+prohibition on auth, roles or collaboration.
 
-For multi-session work, Codex lane identities use `cx-<color>` and worktree slots remain `alpha`, `beta`, `delta`, `epsilon` as coordination lanes. Greek slot names are not Codex worktree names; do not default Codex work into legacy Claude-era `hapax-council--delta/epsilon/main-red` paths.
+## Domain work
 
-## Review Guidelines
+Before changing a domain, read its full scoped instructions in
+`docs/runbooks/council-domain-context.md` and the referenced source of truth.
+That document retains architecture, audio maps, compositor/recruitment,
+publication, hook activation, voice/research and module details. This core
+file stays below 10,000 characters for Grok; no native binding may silently
+truncate it. Both filenames follow the rotation policy in
+`docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md`.
 
-External GitHub App reviewers such as CodeRabbit, Claude, and Codex are advisory unless their output is explicitly ingested through the Hapax review-team contract. Do not treat an external AI review, status check, or summary as authoritative closure evidence by itself.
+- New systemd units belong in `systemd/units/`. Never add writers to the dead
+  Qdrant `operator-patterns` schema. Preserve `hapax_span` ExitStack semantics.
+- Design authority: `docs/logos-design-language.md`; use CSS variables/Tailwind,
+  not hardcoded hex. Visual PRs require before/after screenshots via
+  `scripts/compositor-frame-capture.sh`.
+- Only the Logos/Tauri desktop frontend is sunsetted. Do not revive that shell
+  as primary. Screwm-native is the aggregate target; preserve the required
+  rendering, audio governance, drift, transition, recording and camera ports
+  enumerated in the domain reference. Shared visual crates remain usable.
+- Recruitment goes through the single `AffordancePipeline`; consent-required
+  capabilities fail closed, face privacy applies at egress. Imagination
+  produces intent, not implementation. Shader satellites use `sat_` prefixes;
+  preserve `tests/test_wgsl_node_affordance_coverage.py` coverage.
+- **Audio is protected.** Read `docs/audio-topology-reference.md` before any
+  audio work. Run `scripts/hapax-audio-routing-check` before and after changes;
+  revert on failure. Never bypass the Torso S-4 wet insert or MOTU mk5 hub.
+  MPC/L-12/Evil Pet are retired. Never drop the Rode operator mic; Cortado is
+  quarantined/non-broadcast. Never make a physical/broadcast device the default
+  sink, target `hapax-livestream-tap` playback from unauthorized sources, or
+  modify `~/.config/pipewire/pipewire.conf.d/` without authority. Music uses
+  `hapax-music-player.service`, not a browser.
+- Publication uses the publisher superclass's AllowlistGate, legal-name guard,
+  attribution and counter. Cold contact is citation-graph-only: at most five
+  per deposit and three per year per candidate. Observe the declared surface's
+  FULL_AUTO/CONDITIONAL_ENGAGE/REFUSED tier.
 
-When reviewing changes in this repository:
+## Work authority and coordination
 
-- Check that source, runtime, provider-spend, and public-surface mutations are tied to a cc-task with `authority_case`, non-null `parent_spec`, route metadata, and scoped mutation refs.
-- Treat review-team quorum, critical findings, and signed acceptance receipts as the authoritative review plane.
-- Flag attempts to make Codecov, Semgrep, CodeRabbit, Claude, or Codex a required branch-protection context unless the PR includes a governed task authorizing that gate change and rollback.
-- For CI/CD edits, verify merge-queue behavior explicitly: required contexts should remain stable and aggregate, while advisory checks must not wedge queued PRs.
-- For secrets and provider credentials, verify values are referenced through GitHub Secrets, `pass`, or `hapax-secrets`; never request plaintext values in files, PR comments, or logs.
-- New Hapax repositories must be created under `hapax-systems`, never under
-  `ryanklee`. Use `scripts/hapax-github-repo-create` for new repos and
-  `scripts/hapax-github-repo-standards-audit.py` to check CI/app baselines.
+Obsidian is the canonical work-state surface:
+`~/Documents/Personal/20-projects/hapax-cc-tasks/`. Use real
+`cc-claim <task_id>` before governed mutation, one active task at a time, and
+`cc-close <id> [--pr N]` at completion. Do not hand-write claim markers, disable
+hooks, or route around refusals. Close the current task before claiming another;
+use the governed stale-lease procedure when necessary. Admitted `cc-claim`
+archives terminal dispatch residue to the predecessor lineage. Its normal path
+rejects `--force`; emergency fallback requires explicit operator authorization.
+
+Every task `pr:` needs `pr_repo: <owner>/<name>`. Use `cc-task-pr-link.sh` to
+write both from the URL. A bare number can close a task against an unrelated
+repository's PR. Closure requires verified matching repository evidence.
+`HAPAX_PR_MERGE_GATE_OFF=1` produces no merge evidence; it is an explicit
+operator offline procedure, not a way to clear a block. Verification:
+`tests/test_cc_pr_merge_watcher_repo_scope.py` and
+`tests/scripts/test_cc_claim_pr_merge_gate.py`.
+
+**`cc-task-gate` is an advisory discipline aid, not an enforcement boundary**
+(operator ruling 2026-09-20). Claiming remains mandatory. It fails open when
+its substrate is missing (INV-5), classifies command spelling, and does not
+inspect script contents. It catches slips; **accidents do not evade**. Do not
+build a control on it or “fix” it by normalizing command heads or extending
+marker lists. A check may read an upstream-defined free variable but may not
+treat it as identifying. Irreversible/outward actions—token revocation, spend,
+messages to real people—have blocking checks. The personal vault is exempt
+from scope checking because cognition is always writable; vault
+`mutation_scope_refs` do not enforce scope. Shell source remains gated there.
+
+Use `uv`, not `pip`. Reference secrets through the declared `hapax-secret` /
+FileStore or credential binding; never place values in source, docs, logs or PRs.
+Respect relay path claims under `~/.cache/hapax/relay/` and protected-session
+rules in `session-protection.md`. Never replace, kill or reclaim a protected
+lane without operator override. Refresh progress/relay state; idle workers
+check updates on `HAPAX_IDLE_UPDATE_SECONDS` (default 270 seconds).
+
+Native Agent/Task subagents and dispatching plugins remain retired. Compose
+admitted, declared capabilities with quota/authority/measurement bindings.
+Do not infer admission from the presence of a CLI or from model names.
+Antigrav/Antigravity and legacy gemini-cli worker lanes are retired; do not use
+`hapax-antigrav` or Gemini lanes for SDLC ownership. `agy.review.direct` is a
+read-only review route, gated on route-specific evidence, not a visible-dev or
+methodology worker lane. Gemini/Claude/GPT-OSS behind agy are engines, not
+capability families. Before dispatch, reconcile
+`config/platform-capability-registry.json`, `docs/routing-ontology-reference.md`
+and `scripts/hapax-methodology-dispatch --list-platform-paths`.
+
+Interactive stacks use tmux control plane and relay YAML: Claude
+`hapax-claude-<role>`, Codex `hapax-codex-cx-<color>`, Vibe `hapax-vibe-vbe-N`.
+Require ACK for load-bearing sends where supported; terminal visibility alone
+is not receipt. RTE handles PR drain, branch and queue health on its 270-second
+tick and never carries workloads. Auxiliary vbe-* lanes may not mutate
+`axioms/`, `shared/governance/`, `agents/hapax_daimonion/`, `config/pipewire/`,
+`CODEOWNERS`, or any `AGENTS.md` / `CLAUDE.md` without appropriate authority.
+
+## Codex native additions
+
+- Launch with `scripts/hapax-codex --session cx-<color> --slot
+  <alpha|beta|delta|epsilon>` so configured hooks, MCP and context are active.
+  Without `--cd`, non-primary worktrees are `~/projects/hapax-council--cx-<color>`.
+  Greek slots are coordination lanes, never default worktree names. Do not
+  migrate to Claude-era delta/epsilon/main-red paths implicitly.
+- Use `scripts/hapax-codex-send --session cx-<color> --require-ack -- "message"`.
+  tmux is the reliable control plane; direct foot delivery is a legacy fallback
+  and does not prove receipt without ACK.
+- `scripts/hapax-operator-message --type advisory|query|escalation --subject ...`
+  delivers operator-facing notices to the SBCL/CLOG inbox. Work assignment
+  still uses `scripts/hapax-methodology-dispatch`.
+- `cx-red` and protected `cx-violet` require screen visibility. Other lanes may
+  be headless if the Obsidian session dashboard, relay, claim and PR stay current.
+- The Codex adapter is `hooks/scripts/codex-hook-adapter.sh`. Verify actual
+  hook activation with `hapax-hooks-doctor --check` after related changes;
+  configuration and historical observations are not current activation proof.
+- At most 20 visible session worktrees, shared with Claude lanes. Do not disable
+  `codex-claim-audit.timer` (four-hour audit, stale phantom claims >6h without PR).
+
+## Governance and review
+
+Governance derives from `hapax-constitution` / `hapax-sdlc` and
+`axioms/registry.yaml`: one sovereign principal (100); zero-configuration and
+next-action errors (95); employer data stays in employer systems (90);
+no persistent state about another person without consent (88). The management
+domain axiom (85) says LLMs prepare, humans deliver; preserve its declared
+`scope: domain` / `domain: management` rather than applying it to every
+communication. Operator referents use `shared/operator_referent`.
+
+Review source, runtime, provider-spend and public-surface mutations against the
+active task's `authority_case`, non-null `parent_spec`, route metadata and
+scoped `mutation_scope_refs`. Independent
+review-team quorum, critical-finding disposition and signed acceptance are the
+review plane. GitHub App reviewers and their summaries are advisory unless
+explicitly ingested there. Do not turn Codecov, Semgrep, CodeRabbit, Claude or
+Codex into required checks without governed authority and rollback. CI changes
+must preserve stable aggregate required contexts and working merge queues.
+
+Ownership exclusions include both instruction filenames. Code Owner reviews
+are advisory in this single-principal repository; do not infer self-approval
+requirements. Bootstrap new clones using `docs/runbooks/pre-commit-bootstrap.md`;
+configuration verification is in `docs/runbooks/claude-code-config-conformance.md`.
+Create new repositories under `hapax-systems`, never `ryanklee`, using
+`scripts/hapax-github-repo-create`; check baselines with
+`scripts/hapax-github-repo-standards-audit.py`.

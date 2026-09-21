@@ -14,6 +14,13 @@
 /CLAUDE.md               @ryanklee
 CLAUDE.md                @ryanklee
 **/CLAUDE.md             @ryanklee
+/AGENTS.md               @ryanklee
+AGENTS.md                @ryanklee
+**/AGENTS.md             @ryanklee
+/config/agent-instructions/native/*.md @ryanklee
+/config/agent-instructions/bindings.json @ryanklee
+/docs/runbooks/council-domain-context.md @ryanklee
+/scripts/install-agent-instructions.py @ryanklee
 /config/pipewire/        @ryanklee
 /CODEOWNERS              @ryanklee
 /.github/CODEOWNERS      @ryanklee

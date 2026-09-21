@@ -54,6 +54,180 @@
     }
   },
   "$defs": {
+  "NativeLoadFile": {
+    "additionalProperties": false,
+    "description": "One declared input. An unknown digest is explicit, never a match.",
+    "properties": {
+      "root": {
+        "enum": [
+          "native_home",
+          "project"
+        ],
+        "title": "Root",
+        "type": "string"
+      },
+      "path": {
+        "minLength": 1,
+        "title": "Path",
+        "type": "string"
+      },
+      "kind": {
+        "enum": [
+          "instructions",
+          "configuration"
+        ],
+        "title": "Kind",
+        "type": "string"
+      },
+      "sha256": {
+        "anyOf": [
+          {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Sha256"
+      },
+      "digest_description": {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
+        "default": null,
+        "title": "Digest Description"
+      },
+      "required": {
+        "default": true,
+        "title": "Required",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "root",
+      "path",
+      "kind"
+    ],
+    "title": "NativeLoadFile",
+    "type": "object"
+  },
+  "native_load_set": {
+    "additionalProperties": false,
+    "description": "Declared native inputs within the existing route contract.\n\nNull extension lists mean unobserved, whereas [] deliberately declares none.\nHost observations do not enforce isolation. OCI construction may constrain\ninputs, but still cannot attest that a model used delivered instructions.",
+    "properties": {
+      "native_home": {
+        "minLength": 1,
+        "title": "Native Home",
+        "type": "string"
+      },
+      "home_env": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Home Env"
+      },
+      "files": {
+        "items": {
+          "$ref": "#/$defs/NativeLoadFile"
+        },
+        "minItems": 1,
+        "title": "Files",
+        "type": "array"
+      },
+      "memory_scope": {
+        "minLength": 1,
+        "title": "Memory Scope",
+        "type": "string"
+      },
+      "plugins": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Plugins"
+      },
+      "skills": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Skills"
+      },
+      "hooks": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Hooks"
+      },
+      "mcp": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Mcp"
+      },
+      "loading_flags": {
+        "anyOf": [{"items": {"type": "string"}, "type": "array"}, {"type": "null"}],
+        "default": null,
+        "title": "Loading Flags"
+      },
+      "source_refs": {
+        "items": {
+          "type": "string"
+        },
+        "minItems": 1,
+        "title": "Source Refs",
+        "type": "array"
+      }
+    },
+    "required": [
+      "native_home",
+      "files",
+      "memory_scope",
+      "source_refs"
+    ],
+    "title": "NativeLoadSet",
+    "type": "object"
+  },
     "non_agentic_trust_supply_identity": {
       "type": "string",
       "minLength": 1,
@@ -758,6 +932,7 @@
           ]
         },
         "execution_descriptor": {"$ref": "#/$defs/execution_descriptor"},
+        "native_load_set": {"anyOf": [{"$ref": "#/$defs/native_load_set"}, {"type": "null"}]},
         "descriptor_variants": {
           "type": "array",
           "items": {"$ref": "#/$defs/descriptor_variant"}

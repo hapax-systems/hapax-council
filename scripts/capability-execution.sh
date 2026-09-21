@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Shared launcher identity binding. Resolve before claims, auth probes or spawns.
-# COUNCIL_DIR is the source release containing the registry and pinned runtime.
+# This helper belongs to the selected source release and uses its pinned runtime.
 bind_codex_execution() {
-  local execution_python="$COUNCIL_DIR/.venv/bin/python"
+  local execution_root execution_python
+  execution_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)" || return 9
+  execution_python="$execution_root/.venv/bin/python"
   if [[ ! -x "$execution_python" ]]; then
     echo "refusing invocation without the descriptor resolver runtime; remedy: use a provisioned council release" >&2
     return 9
   fi
-  HAPAX_CODEX_EXECUTION_ARGS="$(PYTHONPATH="$COUNCIL_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+  HAPAX_CODEX_EXECUTION_ARGS="$(PYTHONPATH="$execution_root${PYTHONPATH:+:$PYTHONPATH}" \
     "$execution_python" -m shared.capability_execution --route "$EXECUTION_ROUTE" -- "${CODEX_EXTRA[@]}")" || return 9
   export HAPAX_CODEX_EXECUTION_ARGS
   local execution_lines

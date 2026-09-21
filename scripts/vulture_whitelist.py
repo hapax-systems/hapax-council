@@ -5136,3 +5136,12 @@ from agents.deliberative_council.models import (
 
 _PhaseOneResult._populate_dossier_sections
 _CouncilVerdict._populate_dossier_sections
+
+# Native load-set observation is called by the extensionless
+# scripts/hapax-platform-capability-receipts producer; Pydantic invokes the
+# declared-path validator during registry parsing. Both have behavior tests.
+from shared.capability_load_set import observe_load_set as _observe_load_set  # noqa: E402
+from shared.platform_capability_registry import NativeLoadFile as _NativeLoadFile  # noqa: E402
+
+_observe_load_set
+_NativeLoadFile._relative_binding

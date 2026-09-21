@@ -334,6 +334,61 @@ def _load_review_team_module():
 
 
 class TestLensSelection:
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "AGENTS.md",
+            "nested/AGENTS.md",
+            "CLAUDE.md",
+            "nested/CLAUDE.md",
+            "config/agent-instructions/AGENTS.md",
+            "config/agent-instructions/native/claude.md",
+            "config/agent-instructions/native/grok.md",
+            "config/agent-instructions/native/kimi.md",
+            "config/agent-instructions/native/vibe.md",
+            "config/agent-instructions/native/future-client.md",
+            "config/agent-instructions/bindings.json",
+            "docs/runbooks/council-domain-context.md",
+            "scripts/install-agent-instructions.py",
+        ],
+    )
+    @pytest.mark.parametrize("risk_tier", ["T2", "T3"])
+    def test_instruction_sources_require_governance_lenses_and_t1(
+        self, path: str, risk_tier: str
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        lenses = rt.lenses_for_files([path], reg)
+        assert {"axiom-compliance", "formal-soundness", "consent-provenance"} <= set(lenses)
+        assert rt.team_class_for({"risk_tier": risk_tier}, [path], reg) == "t1_critical"
+
+    @pytest.mark.parametrize(
+        ("path", "expected_class"),
+        [
+            ("docs/AGENTS.md.example", "t3_docs"),
+            ("docs/CLAUDE.md.example", "t3_docs"),
+            ("docs/runbooks/ordinary.md", "t3_docs"),
+            ("config/ordinary.yaml", "t2_standard"),
+            ("config/agent-instructions/README.md", "t3_docs"),
+            ("config/agent-instructions/native/claude.md.example", "t2_standard"),
+            ("config/agent-instructions/native-extra/claude.md", "t3_docs"),
+            ("config/agent-instructions/bindings.json.example", "t2_standard"),
+            ("config/agent-instructions-extra/bindings.json", "t2_standard"),
+            ("docs/runbooks/council-domain-context.md.example", "t3_docs"),
+            ("docs/runbooks/other-council-domain-context.md", "t3_docs"),
+            ("scripts/install-agent-instructions.py.example", "t2_standard"),
+            ("scripts/other-install-agent-instructions.py", "t2_standard"),
+        ],
+    )
+    def test_instruction_lookalikes_and_ordinary_docs_keep_normal_review(
+        self, path: str, expected_class: str
+    ) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        lenses = rt.lenses_for_files([path], reg)
+        assert set(lenses) == set(reg["always_on_lenses"])
+        assert rt.team_class_for({"risk_tier": "T2"}, [path], reg) == expected_class
+
     def test_daimonion_diff_gets_daimonion_lenses_plus_always_on(self) -> None:
         rt = _load_review_team_module()
         reg = rt.load_lens_registry()

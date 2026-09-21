@@ -333,6 +333,51 @@ def test_dispatch_passes_selected_descriptor_route(tmp_path, monkeypatch, profil
     assert not any(arg.startswith("model=") for arg in args)
 
 
+def test_codex_dispatch_carries_variant_and_lifecycle_together(tmp_path, monkeypatch):
+    mod = _dispatch()
+    registry = _registry(tmp_path)
+    payload = json.loads(registry.read_text())
+    for item in payload["routes"]:
+        if item["route_id"] == "codex.headless.full":
+            item.setdefault("descriptor_variants", []).append(
+                {"variant_id": "receipt-test", "knobs_override": {"effort": "high"}}
+            )
+    registry.write_text(json.dumps(payload))
+    recorded = tmp_path / "child.json"
+    launcher = tmp_path / "launcher"
+    launcher.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        f"Path({str(recorded)!r}).write_text(json.dumps({{"
+        "'args': sys.argv[1:], 'receipt': os.environ['HAPAX_NATIVE_LIFECYCLE_RECEIPT']"
+        "}))\n"
+    )
+    launcher.chmod(0o755)
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(registry))
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(launcher))
+    monkeypatch.setattr(mod, "_sliced_call", lambda args, env: subprocess.call(args, env=env))
+    monkeypatch.setattr(mod, "allow_codex_p0_local_dispatch_fallback", lambda *args: False)
+    monkeypatch.setattr(mod, "effective_dispatch_host", lambda *args: "local")
+    receipt = tmp_path / "native.json"
+    selected = "codex.headless.full#receipt-test"
+    assert (
+        mod.launch_codex_headless(
+            "task-x",
+            "cx-amber",
+            "prompt",
+            mod.Validation(True, "ok", None, None, False),
+            mod.PLATFORM_PATHS[("codex", "headless", "full")],
+            execution_route=selected,
+            lifecycle_receipt=receipt,
+        )
+        == 0
+    )
+    child = json.loads(recorded.read_text())
+    assert child["args"][:2] == ["--execution-route", selected]
+    assert child["receipt"] == str(receipt)
+
+
 def test_dispatch_rejects_missing_descriptor(tmp_path, monkeypatch):
     mod = _dispatch()
     monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_registry(tmp_path, missing=True)))
@@ -430,3 +475,54 @@ def test_dispatch_other_harnesses_derive_identity(tmp_path, monkeypatch, platfor
     assert result == 0
     args, env = calls[0]
     assert env["HAPAX_CLAUDE_MODEL" if platform == "claude" else "VIBE_ACTIVE_MODEL"] == "gpt-5.5"
+
+
+@pytest.mark.parametrize("launcher", LAUNCHERS)
+@pytest.mark.parametrize(
+    "binding", ["default_activation", "explicit_activation", "missing_activation"]
+)
+def test_installed_codex_identity_uses_activated_source_before_provider(
+    tmp_path, launcher, binding
+):
+    env, calls = _env_with_fake_codex(tmp_path)
+    native_home = Path(env["HOME"])
+    installed = native_home / ".local/bin" / launcher.name
+    installed.parent.mkdir(parents=True)
+    installed.write_bytes(launcher.read_bytes())
+    installed.chmod(0o755)
+    # Match the existing installed launcher's sibling library, without invoking
+    # credentials. This library is sourced before interactive argument parsing.
+    (installed.parent / "lib").mkdir(exist_ok=True)
+    (installed.parent / "lib/secret.sh").write_bytes(
+        (REPO_ROOT / "scripts/lib/secret.sh").read_bytes()
+    )
+    env.pop("HAPAX_COUNCIL_DIR")
+    env.pop("HAPAX_CODEX_HEADLESS_ALLOW")
+    activation = native_home / ".cache/hapax/source-activation/worktree"
+    activation.parent.mkdir(parents=True)
+    if binding != "missing_activation":
+        activation.symlink_to(REPO_ROOT, target_is_directory=True)
+    if binding == "explicit_activation":
+        # The declared activation must not inherit the legacy primary's runtime.
+        env["HAPAX_COUNCIL_DIR"] = str(tmp_path / "stale-primary")
+        env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(activation)
+    if launcher == HEADLESS:
+        args = ["--task", "fixture-only", "cx-amber", ""]
+        expected = "governed initial message required"
+        rc = 5
+    else:
+        args = ["--session", "not-a-codex-lane", "--terminal", "none"]
+        expected = "invalid session"
+        rc = 2
+    result = subprocess.run(
+        [str(installed), *args], env=env, cwd=tmp_path, text=True, capture_output=True
+    )
+    if binding == "missing_activation":
+        assert result.returncode == 9
+        assert "identity source unavailable" in result.stderr
+        assert "hapax-source-activate" in result.stderr
+    else:
+        assert result.returncode == rc, result.stderr
+        assert expected in result.stderr
+    assert not calls.exists()
+    assert not calls.with_suffix(".calls").exists()

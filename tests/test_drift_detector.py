@@ -810,6 +810,103 @@ class TestDetectDrift:
 
 
 class TestLoadDocs:
+    @pytest.mark.parametrize(
+        ("authored_global", "legacy_global"),
+        [(True, True), (False, True), (False, False)],
+    )
+    def test_authored_sources_and_legacy_fallback(
+        self, tmp_path, monkeypatch, authored_global, legacy_global
+    ):
+        from agents.drift_detector import docs as docs_module
+
+        council = tmp_path / "projects/council"
+        modern = tmp_path / "projects/modern"
+        legacy = tmp_path / "projects/legacy"
+        claude_config = tmp_path / ".claude"
+        policies = {
+            "projects/council/AGENTS.md": "MUST preserve repository authority.",
+            "projects/council/config/agent-instructions/native/claude.md": (
+                "MUST preserve native policy."
+            ),
+            "projects/council/docs/runbooks/council-domain-context.md": (
+                "MUST preserve domain policy."
+            ),
+            "projects/modern/AGENTS.md": "MUST include AGENTS-only repositories.",
+            "projects/legacy/CLAUDE.md": "MUST include legacy repositories.",
+        }
+        shared = "projects/council/config/agent-instructions/AGENTS.md"
+        if authored_global:
+            policies[shared] = "NEVER bypass authored shared policy."
+
+        files = {
+            **policies,
+            "projects/council/docs/logos-design-language.md": "Existing selected documentation.",
+            "projects/council/systemd/README.md": "Existing systemd documentation.",
+            "projects/legacy/agent-architecture.md": "Existing architecture documentation.",
+            "projects/legacy/operations-manual.md": "Existing operations documentation.",
+            "projects/legacy/README.md": "Existing repository documentation.",
+            "projects/council/docs/ordinary.md": "MUST NOT discover arbitrary documentation.",
+            "projects/council/docs/runbooks/evidence/generated.md": (
+                "MUST NOT discover generated evidence."
+            ),
+            "projects/council/config/agent-instructions/evidence/generated.md": (
+                "MUST NOT discover generated instruction evidence."
+            ),
+            "projects/unselected/AGENTS.md": "MUST NOT discover unselected repositories.",
+        }
+        if legacy_global:
+            files[".claude/CLAUDE.md"] = "Legacy global policy."
+        for relative, text in files.items():
+            path = tmp_path / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+        (council / "CLAUDE.md").symlink_to("AGENTS.md")
+        (council / "config/agent-instructions/native/alias.md").symlink_to("claude.md")
+
+        monkeypatch.setattr(docs_module, "HAPAX_HOME", tmp_path)
+        monkeypatch.setattr(docs_module, "AI_AGENTS_DIR", council)
+        monkeypatch.setattr(docs_module, "HAPAXROMANA_DIR", legacy)
+        monkeypatch.setattr(docs_module, "CLAUDE_CONFIG_DIR", claude_config)
+        monkeypatch.setattr(docs_module, "HAPAX_REPO_DIRS", [council, modern, legacy])
+        monkeypatch.setattr(docs_module, "DOC_FILES", docs_module._doc_files())
+
+        expected = {f"~/{relative}": text for relative, text in policies.items()}
+        expected["~/projects/council/docs/logos-design-language.md"] = (
+            "Existing selected documentation."
+        )
+        for relative in (
+            "projects/council/systemd/README.md",
+            "projects/legacy/agent-architecture.md",
+            "projects/legacy/operations-manual.md",
+            "projects/legacy/README.md",
+        ):
+            expected[f"~/{relative}"] = files[relative]
+        if legacy_global and not authored_global:
+            expected["~/.claude/CLAUDE.md"] = "Legacy global policy."
+        assert load_docs() == expected
+
+    def test_loader_reads_alias_target_once(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from agents.drift_detector import docs as docs_module
+
+        canonical = tmp_path / "AGENTS.md"
+        canonical.write_text("MUST preserve canonical policy.", encoding="utf-8")
+        alias = tmp_path / "CLAUDE.md"
+        alias.symlink_to("AGENTS.md")
+        monkeypatch.setattr(docs_module, "HAPAX_HOME", tmp_path)
+        monkeypatch.setattr(docs_module, "DOC_FILES", [alias, canonical])
+        reads = []
+        read_text = Path.read_text
+
+        def record_read(path, *args, **kwargs):
+            reads.append(path)
+            return read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", record_read)
+        assert load_docs() == {"~/AGENTS.md": "MUST preserve canonical policy."}
+        assert reads == [canonical.resolve()]
+
     def test_returns_dict(self):
         """load_docs returns a dict (may be empty if files not found)."""
         result = load_docs()
