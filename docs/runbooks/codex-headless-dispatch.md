@@ -114,6 +114,9 @@ tests/shared/test_gate0b_claim_publication_machinery.py`.
 Lifecycle ownership remains a receipt claim. Existing coordination replay does
 not exclude concurrent or interrupted inflight launches. This local reader's
 absolute paths are not a portable artifact resolver for arbitrary remote workers.
+A null result reference does not distinguish an absent collector from failed
+collection; consult the collector warning and native diagnostics. Neither case
+changes the already observed launcher outcome or establishes identity agreement.
 
 The contract test includes a redacted field projection from a captured native
 Codex0.155.1 rollout, with original event/file hashes and provenance in

@@ -384,7 +384,7 @@ def test_identity_helper_refuses_malformed_resolver_output(tmp_path, output):
     assert "next action:" in result.stderr.lower()
 
 
-def _identity_helper_output(tmp_path, output):
+def _identity_helper_output(tmp_path, output, *, inspect_binding=False):
     runtime = tmp_path / "runtime"
     (runtime / "scripts").mkdir(parents=True)
     helper = runtime / "scripts/capability-execution.sh"
@@ -401,7 +401,13 @@ def _identity_helper_output(tmp_path, output):
         [
             "bash",
             "-c",
-            'source "$1"; EXECUTION_ROUTE=fixture; CODEX_EXTRA=(); bind_codex_execution',
+            'source "$1"; EXECUTION_ROUTE=fixture; CODEX_EXTRA=(); bind_codex_execution || exit $?; '
+            + (
+                'printf "%s\\n" "$HAPAX_CODEX_EXECUTION_ARGS" '
+                '"$HAPAX_CODEX_EXECUTION_DESCRIPTOR" "${CODEX_EXECUTION_ARGS[@]}"'
+                if inspect_binding
+                else ""
+            ),
             "fixture",
             str(helper),
         ],
@@ -843,3 +849,16 @@ def test_installed_codex_identity_uses_activated_source_before_provider(
         assert expected in result.stderr
     assert not calls.exists()
     assert not calls.with_suffix(".calls").exists()
+
+
+def test_identity_helper_exports_one_binding_to_env_and_argv(tmp_path):
+    descriptor = ExecutionDescriptor(model_id="gpt-5.5", effort="low").model_dump(mode="json")
+    argv = ["-c", 'model="gpt-5.5"', "-c", 'model_reasoning_effort="low"']
+    result = _identity_helper_output(
+        tmp_path, json.dumps({"argv": argv, "descriptor": descriptor}), inspect_binding=True
+    )
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert json.loads(lines[0]) == argv
+    assert json.loads(lines[1]) == descriptor
+    assert lines[2:] == argv

@@ -201,3 +201,59 @@ def test_remote_identity_remains_unverified_even_with_claimed_match(tmp_path):
     assert observed["complete"] is False
     assert observed["execution_identity"]["status"] == "unverified"
     assert observed["execution_identity"]["may_authorize"] is False
+
+
+@pytest.mark.parametrize("returncode", [0, 7])
+def test_producer_identity_exception_preserves_native_exit(tmp_path, monkeypatch, returncode):
+    from shared import codex_execution_receipt, execution_observer
+
+    stream = tmp_path / "native.jsonl"
+    stream.write_text(
+        json.dumps({"type": "thread.started", "thread_id": SID})
+        + "\n"
+        + json.dumps({"type": "turn.completed"})
+        + "\n"
+    )
+    receipt = tmp_path / "receipt.json"
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("private exception detail must not enter receipt")
+
+    monkeypatch.setattr(codex_execution_receipt, "observe_codex_run_identity", unavailable)
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "observer",
+            "--stream",
+            str(stream),
+            "--diagnostics",
+            str(tmp_path / "stderr"),
+            "--receipt",
+            str(receipt),
+            "--returncode",
+            str(returncode),
+            "--local-child",
+            "--execution-descriptor",
+            DESC.model_dump_json(),
+            "--execution-route",
+            "codex.headless.full",
+            "--native-home",
+            str(tmp_path),
+            "--workdir",
+            str(tmp_path),
+            "--launch-started-at",
+            "2026-09-21T07:00:00Z",
+        ],
+    )
+    assert execution_observer._native_receipt_main() == 0
+    observed = json.loads(receipt.read_text())
+    assert observed["process_returncode"] == returncode
+    assert observed["complete"] is (returncode == 0)
+    assert observed["execution_identity"] == {
+        "status": "unverified",
+        "may_authorize": False,
+        "reason_codes": ["native_identity_observer_failed:RuntimeError"],
+    }
+    assert "private exception detail" not in receipt.read_text()

@@ -34,10 +34,6 @@ def observe_native_lifecycle(
     owned native process (not an interactive launcher or remote SSH transport).
     Readiness of instructions/services remains separately unobserved. This is
     support evidence, not task acceptance or a provider-side attestation.
-
-    For codex-app-server, RPC replies are not lifecycle notifications. A
-    successful terminal must match an observed turn in one native thread.
-    Owned process exit after cancellation does not attest provider cancellation.
     """
     result: dict[str, Any] = {
         "platform": platform,
@@ -54,7 +50,7 @@ def observe_native_lifecycle(
         "malformed_lines": 0,
         "may_authorize": False,
     }
-    if platform not in {"claude", "codex", "codex-app-server"}:
+    if platform not in {"claude", "codex"}:
         result["reason"] = "native_lifecycle_mapping_unimplemented"
         return result
     if offset < 0:
@@ -72,8 +68,6 @@ def observe_native_lifecycle(
     terminal_success = False
     native_failed = False
     session_ids: set[str] = set()
-    active_turn_id: str | None = None
-    seen_turn_ids: set[str] = set()
     for number, line in enumerate(lines):
         try:
             event = json.loads(line)
@@ -86,77 +80,7 @@ def observe_native_lifecycle(
         kind = event.get("type")
         phase = None
         session_id = None
-        if platform == "codex-app-server":
-            # A response (including a repeated turn/start response) cannot
-            # establish identity, start a turn, or witness its completion.
-            if "method" not in event:
-                if event.get("error") is not None:
-                    native_failed = True
-                    result["phase"] = "failed"
-                continue
-            if "id" in event:
-                continue  # Server requests are not lifecycle notifications.
-            kind = event["method"]
-            params = event.get("params")
-            if not isinstance(kind, str) or not isinstance(params, dict):
-                result["malformed_lines"] += 1
-                continue
-            session_id = params.get("threadId")
-            if kind == "thread/started":
-                thread = params.get("thread")
-                session_id = thread.get("id") if isinstance(thread, dict) else None
-                if not isinstance(session_id, str) or not session_id.strip():
-                    result["malformed_lines"] += 1
-                    continue
-                if active_turn_id is not None and not terminal_success:
-                    native_failed = True
-                active_turn_id = None
-                phase = "initialized"
-            elif kind in {"turn/started", "turn/completed"}:
-                turn = params.get("turn")
-                turn_id = turn.get("id") if isinstance(turn, dict) else None
-                if (
-                    not isinstance(session_id, str)
-                    or not session_id.strip()
-                    or not isinstance(turn_id, str)
-                    or not turn_id.strip()
-                ):
-                    result["malformed_lines"] += 1
-                    continue
-                if kind == "turn/started":
-                    if turn_id in seen_turn_ids or (
-                        active_turn_id is not None and not terminal_success
-                    ):
-                        native_failed = True
-                    seen_turn_ids.add(turn_id)
-                    active_turn_id = turn_id
-                    phase = "running"
-                else:
-                    terminal_success = (
-                        active_turn_id is not None
-                        and turn_id == active_turn_id
-                        and turn.get("status") == "completed"
-                        and turn.get("error") is None
-                    )
-                    native_failed = native_failed or not terminal_success
-                    phase = "turn_complete" if terminal_success else "failed"
-            elif kind == "error":
-                phase, native_failed = "failed", True
-            # Check correlation on scoped notifications, including tool items
-            # and deltas. Item failure is not task failure: a turn can recover.
-            if "threadId" in params and (
-                not isinstance(params["threadId"], str)
-                or not params["threadId"].strip()
-                or session_ids != {params["threadId"]}
-            ):
-                phase, native_failed = "failed", True
-            if "turnId" in params and (
-                not isinstance(params["turnId"], str)
-                or not params["turnId"].strip()
-                or params["turnId"] != active_turn_id
-            ):
-                phase, native_failed = "failed", True
-        elif platform == "codex":
+        if platform == "codex":
             if kind == "thread.started":
                 session_id = event.get("thread_id")
                 phase = "initialized"
@@ -201,12 +125,7 @@ def observe_native_lifecycle(
         )
     # subprocess wait's negative signal return code witnesses termination. An
     # arbitrary positive failure after a cancel request does not prove cancellation.
-    if (
-        platform != "codex-app-server"
-        and cancellation_requested
-        and process_returncode is not None
-        and process_returncode < 0
-    ):
+    if cancellation_requested and process_returncode is not None and process_returncode < 0:
         result["cancel_confirmed"] = True
         result["phase"] = "cancelled"
     elif process_returncode is not None:
@@ -217,7 +136,6 @@ def observe_native_lifecycle(
             and len(session_ids) == 1
             and result["malformed_lines"] == 0
             and result["resume"] != "session_mismatch"
-            and not (platform == "codex-app-server" and cancellation_requested)
         )
         result["phase"] = (
             "complete"

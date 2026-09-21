@@ -172,7 +172,11 @@ def run_atomic_dispatch_launch(
         except Exception as exc:
             # The launcher has already returned. Evidence failure must not
             # discard its result or prevent MQ cleanup and terminal recording.
-            _LOG.warning("dispatch_result_reference_unobserved:%s", type(exc).__name__)
+            _LOG.warning(
+                "dispatch_result_reference_unobserved:%s; next action: inspect the "
+                "owned native receipt and collector diagnostics before reusing its evidence",
+                type(exc).__name__,
+            )
 
     if returncode == 0:
         cleanup_state: Literal["processed", "deferred"] = "processed"
