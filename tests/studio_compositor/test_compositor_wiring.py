@@ -179,31 +179,24 @@ class TestStartLayoutOnly:
             "agents.studio_compositor.source_registry.SourceRegistry.start_all",
             autospec=True,
         ) as start_all:
-            try:
-                compositor.start_layout_only()
+            compositor.start_layout_only()
 
-                assert compositor.layout_state is not None
-                assert compositor.source_registry is not None
-                layout = compositor.layout_state.get()
-                registered = set(compositor.source_registry.ids())
-                expected = {
-                    assignment.source
-                    for assignment in layout.assignments
-                    if assignment.render_stage == "pre_fx"
-                    and layout_source_enabled(assignment.source)
-                } & registered
-                actual = set(start_all.call_args.args[1])
-                assert actual == expected
-                assert all(
-                    assignment.render_stage == "pre_fx"
-                    for assignment in layout.assignments
-                    if assignment.source in actual
-                )
-            finally:
-                try:
-                    compositor.stop()
-                except Exception:
-                    pass
+            assert compositor.layout_state is not None
+            assert compositor.source_registry is not None
+            layout = compositor.layout_state.get()
+            registered = set(compositor.source_registry.ids())
+            expected = {
+                assignment.source
+                for assignment in layout.assignments
+                if assignment.render_stage == "pre_fx" and layout_source_enabled(assignment.source)
+            } & registered
+            actual = set(start_all.call_args.args[1])
+            assert actual == expected
+            assert all(
+                assignment.render_stage == "pre_fx"
+                for assignment in layout.assignments
+                if assignment.source in actual
+            )
 
     def test_start_layout_only_does_not_start_layout_sierpinski_when_base_gate_disabled(
         self, make_compositor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -217,17 +210,11 @@ class TestStartLayoutOnly:
             "agents.studio_compositor.source_registry.SourceRegistry.start_all",
             autospec=True,
         ) as start_all:
-            try:
-                compositor.start_layout_only()
+            compositor.start_layout_only()
 
-                assert compositor.source_registry is not None
-                assert "sierpinski" in set(compositor.source_registry.ids())
-                assert "sierpinski" not in set(start_all.call_args.args[1])
-            finally:
-                try:
-                    compositor.stop()
-                except Exception:
-                    pass
+            assert compositor.source_registry is not None
+            assert "sierpinski" in set(compositor.source_registry.ids())
+            assert "sierpinski" not in set(start_all.call_args.args[1])
 
     def test_start_layout_only_starts_no_layout_sources_when_both_stages_disabled(
         self, make_compositor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -242,15 +229,9 @@ class TestStartLayoutOnly:
             "agents.studio_compositor.source_registry.SourceRegistry.start_all",
             autospec=True,
         ) as start_all:
-            try:
-                compositor.start_layout_only()
+            compositor.start_layout_only()
 
-                assert start_all.call_args.args[1] == []
-            finally:
-                try:
-                    compositor.stop()
-                except Exception:
-                    pass
+            assert start_all.call_args.args[1] == []
 
     def test_missing_layout_file_resolves_to_fallback(
         self, make_compositor, tmp_path: Path
@@ -482,11 +463,14 @@ class TestStartLayoutOnly:
         assert compositor._layout_file_watcher is not None, (
             "LayoutFileWatcher must be wired into start_layout_only"
         )
-        # Threads should be running.
-        assert compositor._layout_autosaver._thread is not None
-        assert compositor._layout_autosaver._thread.is_alive()
-        assert compositor._layout_file_watcher._thread is not None
-        assert compositor._layout_file_watcher._thread.is_alive()
+        # This test explicitly stops before fixture teardown. Retain the actual
+        # handles before stop() clears their owners, even on a failed bounded join.
+        workers = (
+            compositor._layout_autosaver._thread,
+            compositor._layout_file_watcher._thread,
+            compositor._command_server._thread,
+        )
+        assert all(isinstance(worker, Thread) and worker.is_alive() for worker in workers)
 
         # Stopping without the full lifecycle attached still has to
         # tear down the persistence threads cleanly. The lifecycle
@@ -502,6 +486,8 @@ class TestStartLayoutOnly:
 
         assert compositor._layout_autosaver is None
         assert compositor._layout_file_watcher is None
+        for worker in workers:
+            assert not worker.is_alive(), f"early stop left owned worker alive: {worker.name}"
 
     def test_stop_exceptions_increment_teardown_counter(self, monkeypatch) -> None:
         from agents.studio_compositor import metrics
