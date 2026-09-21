@@ -30,7 +30,7 @@ def _consumer():
     return module
 
 
-def _receipt(tmp_path, *, model="gpt-5.5", local=True):
+def _receipt(tmp_path, *, model="gpt-5.5", local=True, with_descriptor=True):
     native = tmp_path / "native"
     work = tmp_path / "work"
     work.mkdir()
@@ -80,7 +80,7 @@ def _receipt(tmp_path, *, model="gpt-5.5", local=True):
             "0",
             *(["--local-child"] if local else []),
             "--execution-descriptor",
-            DESC.model_dump_json(),
+            DESC.model_dump_json() if with_descriptor else "",
             "--execution-route",
             "codex.headless.full",
             "--native-home",
@@ -260,7 +260,9 @@ def test_producer_identity_exception_preserves_native_exit(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("platform", ["claude", "codex-app-server", "vibe"])
-def test_consumer_rejects_unimplemented_identity_platforms(tmp_path, platform):
+def test_consumer_keeps_lifecycle_separate_from_unimplemented_identity(
+    tmp_path, monkeypatch, platform
+):
     from shared.execution_observer import observe_native_lifecycle
 
     stream = tmp_path / "native.jsonl"
@@ -280,9 +282,49 @@ def test_consumer_rejects_unimplemented_identity_platforms(tmp_path, platform):
         execution_identity={"status": "matched", "may_authorize": True},
     )
     receipt.write_text(json.dumps(claimed))
-    observed, reference = _consumer().read_native_lifecycle_receipt(receipt, platform=platform)
-    assert reference is None
-    assert observed["phase"] == "unobserved"
-    assert observed["reason"] == "native_receipt_platform_unsupported"
+    module = _consumer()
+    observed, reference = module.read_native_lifecycle_receipt(receipt, platform=platform)
     assert observed["may_authorize"] is False
-    assert "execution_identity" not in observed
+    if platform == "claude":
+        assert reference is not None
+        assert observed["phase"] == "complete" and observed["complete"] is True
+        assert observed["execution_identity"] == {
+            "status": "unverified",
+            "may_authorize": False,
+            "reason_codes": ["native_identity_mapping_unimplemented"],
+        }
+    else:
+        assert reference is None
+        assert observed["phase"] == "unobserved"
+        assert observed["reason"] == "native_receipt_platform_unsupported"
+        assert "execution_identity" not in observed
+    monkeypatch.setattr(module, "orchestration_ledger_dir", lambda: tmp_path / "ledger")
+    ledger = module.write_receipt(
+        task_id="fixture",
+        lane="fixture",
+        platform=platform,
+        mode="headless",
+        profile="full",
+        route=None,
+        validation=module.Validation(True, "fixture", None),
+        prompt=None,
+        launched=True,
+        launch_returncode=0,
+        native_lifecycle=observed,
+        result_ref=reference,
+    )
+    recorded = json.loads(ledger.read_text())
+    assert recorded["native_lifecycle"] == observed
+    assert recorded["result_ref"] == (reference.model_dump(mode="json") if reference else None)
+    assert recorded["launch_returncode"] == 0
+
+
+def test_standalone_producer_without_descriptor_keeps_completion(tmp_path):
+    receipt, _ = _receipt(tmp_path, with_descriptor=False)
+    observed = json.loads(receipt.read_text())
+    assert observed["complete"] is True and observed["process_returncode"] == 0
+    assert observed["execution_identity"] == {
+        "status": "unverified",
+        "may_authorize": False,
+        "reason_codes": ["native_launch_descriptor_unavailable"],
+    }

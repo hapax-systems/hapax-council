@@ -135,8 +135,13 @@ Lifecycle ownership remains a receipt claim. Existing coordination replay does
 not exclude concurrent or interrupted inflight launches. This local reader's
 absolute paths are not a portable artifact resolver for arbitrary remote workers.
 A null result reference does not distinguish an absent collector from failed
-collection; consult the collector warning and native diagnostics. Neither case
+collection. Collector warnings go to the process logging output; consult them
+and native diagnostics if retained. The terminal event does not retain that
+failure reason, so a later replay cannot reconstruct it from null alone. Neither case
 changes the already observed launcher outcome or establishes identity agreement.
+The shared reader preserves validated Claude lifecycle evidence, but replaces
+receipt-carried Claude model identity with `unverified` until an implemented
+checker can revalidate it. Other lifecycle mappings remain unsupported.
 
 The contract test includes a redacted field projection from a captured native
 Codex0.155.1 rollout, with original event/file hashes and provenance in

@@ -1247,7 +1247,7 @@ def read_native_lifecycle_receipt(
     platform: str,
     result_ref: ContentAddress | None = None,
 ) -> tuple[dict[str, Any], ContentAddress | None]:
-    """Validate the implemented Codex receipt path without asserting ownership.
+    """Validate receipt/stream consistency without asserting runtime ownership.
 
     A supplied reference pins replay to the original receipt bytes. The
     ownership flag and waited status remain receipt claims, not independent
@@ -1263,7 +1263,7 @@ def read_native_lifecycle_receipt(
             "may_authorize": False,
         }, None
 
-    if platform != "codex":
+    if platform not in {"codex", "claude"}:
         return unobserved("native_receipt_platform_unsupported")
     if path is None:
         return unobserved("native_receipt_reference_unavailable")
@@ -1340,10 +1340,18 @@ def read_native_lifecycle_receipt(
             ) != json.dumps(value, sort_keys=True, allow_nan=False):
                 return unobserved(f"native_lifecycle_mismatch:{name}")
         frozen_ref = result_ref or ContentAddress(ref=str(path), sha256=receipt_hash)
-        observed["execution_identity"] = recheck_codex_run_identity(
-            observed.get("execution_identity"),
-            session_id=recomputed.get("session_id"),
-            owned_native_process=owned,
+        observed["execution_identity"] = (
+            recheck_codex_run_identity(
+                observed.get("execution_identity"),
+                session_id=recomputed.get("session_id"),
+                owned_native_process=owned,
+            )
+            if platform == "codex"
+            else {
+                "status": "unverified",
+                "may_authorize": False,
+                "reason_codes": ["native_identity_mapping_unimplemented"],
+            }
         )
         if path.read_bytes() != receipt_bytes:
             return unobserved("native_receipt_changed_during_readback")
