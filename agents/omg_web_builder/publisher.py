@@ -88,7 +88,10 @@ def publish(
 
     client = (client_factory or _default_client_factory)()
     if not getattr(client, "enabled", True):
-        log.error("omg.lol client disabled (no API key in pass store)")
+        log.error(
+            "omg.lol client disabled (no API key in the FileStore). "
+            "Next action: hapax-secret --where omg-lol/api-key"
+        )
         return 1
 
     # AUDIT-05: scan static HTML for legal-name leak before publishing

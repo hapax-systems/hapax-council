@@ -251,7 +251,10 @@ def _send_email(
 ) -> str:
     service = _build_gmail_service_from_pass()
     if service is None:
-        raise RuntimeError("could not build Gmail service from pass-backed credentials")
+        raise RuntimeError(
+            "could not build Gmail service from FileStore-backed credentials. "
+            "Next action: uv run python -m agents.mail_monitor.oauth --verify"
+        )
 
     profile = service.users().getProfile(userId="me").execute()
     from_addr = str(profile.get("emailAddress", ""))

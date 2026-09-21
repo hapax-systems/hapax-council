@@ -17,7 +17,7 @@ _hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf
 # git, writes JSON + markdown report to the observatory directory.
 #
 # Schedule: daily at 23:55 via systemd timer
-# Auth: uses GITHUB_TOKEN from pass or environment
+# Auth: uses GITHUB_TOKEN from the FileStore or environment
 
 REPO="hapax-systems/hapax-council"
 REPORT_DIR="${HAPAX_OBSERVATORY_DIR:-$HOME/Documents/Personal/20-projects/hapax-observatory}"

@@ -147,7 +147,7 @@ command -v claude >/dev/null 2>&1 || {
 
 case "$-" in
   *x*)
-    # Once the pass-backed token enters the environment, keep shell tracing off
+    # Once the FileStore-backed token enters the environment, keep shell tracing off
     # for this process. The wrapper execs Claude Code, so there is no caller
     # shell state to restore.
     set +x

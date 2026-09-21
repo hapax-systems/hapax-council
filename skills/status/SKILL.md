@@ -3,7 +3,7 @@ name: status
 description: "Run the health monitor and report results. Auto-run when: session-context shows health is degraded or failed, after infrastructure changes (docker, systemd), when a service appears unreachable, or user asks about system health. Invoke proactively without asking."
 ---
 
-Run the health monitor and report results. Unset `LITELLM_API_KEY` so the check falls through to `pass` (avoids stale shell env overriding the correct key):
+Run the health monitor and report results. Unset `LITELLM_API_KEY` so the check falls through to the FileStore (avoids stale shell env overriding the correct key):
 
 ```bash
 cd ~/projects/hapax-council && env -u LITELLM_API_KEY uv run python -m agents.health_monitor 2>&1 | grep -v -e "LITELLM_API_KEY is not set" -e "warnings.warn("
@@ -19,11 +19,11 @@ For items `--fix` cannot resolve, investigate using the patterns below.
 
 ### auth.litellm FAILED (HTTP 0 or 401)
 
-The most common cause is an env var overriding `pass` with a bad value. Check in order:
+The most common cause is an env var overriding the FileStore with a bad value. Check in order:
 
 1. **Fish universal variables** — `grep LITELLM ~/.config/fish/fish_variables`. If the value is missing the `sk-` prefix, remove it: `fish -c "set -Ue LITELLM_API_KEY"`
 2. **direnv not loaded** — `direnv status` in hapax-council. If `.envrc` is not loaded, the env may have a stale value from session init.
-3. **pass store** — `pass show litellm/master-key` should return `sk-...` (67 chars). If not, the key itself needs updating.
+3. **FileStore** — `hapax-secret litellm/master-key` should return `sk-...` (67 chars). If not, the key itself needs updating.
 4. **LiteLLM container** — `curl -s -o /dev/null -w "%{http_code}" http://localhost:4000/health` should return 200 (even without auth).
 
 ### Stale sync agents (gdrive, gmail, youtube >24h)

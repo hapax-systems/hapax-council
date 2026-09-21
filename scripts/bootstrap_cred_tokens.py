@@ -40,7 +40,7 @@ from typing import Literal
 from shared.secrets import has_secret, put_secret
 from shared.url_safety import host_matches_domain
 
-# Pass-store keys per service
+# FileStore secret names per service
 KEYS = {
     "zenodo": ["zenodo/api-token"],
     "osf": ["osf/api-token"],

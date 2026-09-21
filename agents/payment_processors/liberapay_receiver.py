@@ -137,7 +137,10 @@ class LiberapayReceiver:
         if response.status_code == 401:
             self._disable_with_refusal(
                 surface="liberapay-401",
-                reason="Liberapay 401; password rotated? Re-insert via pass and restart.",
+                reason=(
+                    "Liberapay 401; password rotated? Re-put liberapay/password with "
+                    "`hapax-secret` (TTY put) and restart."
+                ),
             )
             return 0
         if response.status_code == 403:

@@ -868,7 +868,7 @@ All services are managed by systemd user units (lingering enabled). No process s
 **Boot sequence** (after kernel + greetd autologin):
 
 ```
-hapax-secrets.service          (oneshot) Load all credentials from pass store
+hapax-secrets.service          (oneshot) Load all credentials from the FileStore
 ├─► llm-stack.service          (oneshot) docker compose --profile full up -d
 │   ├─► llm-stack-analytics    (oneshot) docker compose --profile analytics up -d [60s delay]
 │   ├─► logos-api.service      FastAPI on :8051
@@ -881,7 +881,7 @@ hapax-secrets.service          (oneshot) Load all credentials from pass store
 └─► 31 timers                  Sync agents, health monitor, VRAM watchdog, backups
 ```
 
-**Secrets**: Single `hapax-secrets.service` (oneshot, RemainAfterExit=yes) writes all credentials to `/run/user/1000/hapax-secrets.env`. All services declare `Requires=hapax-secrets.service`. No inline `pass show` calls in individual services. No race conditions.
+**Secrets**: Single `hapax-secrets.service` (oneshot, RemainAfterExit=yes) writes all credentials to `/run/user/1000/hapax-secrets.env`. All services declare `Requires=hapax-secrets.service`. No inline secret reads in individual services. No race conditions.
 
 **Resource isolation**: Each service has its own cgroup with explicit MemoryMax, OOMScoreAdjust, Nice, and CPUWeight. Priority tiers:
 - Tier 0 (real-time): studio-compositor (CPUWeight=500)

@@ -158,7 +158,7 @@ class OmgLolClient:
 
     @property
     def api_key(self) -> str | None:
-        """Bearer token loaded from pass, for publication-bus adapters."""
+        """Bearer token loaded from the FileStore, for publication-bus adapters."""
         return self._api_key
 
     def _headers(self) -> dict[str, str]:

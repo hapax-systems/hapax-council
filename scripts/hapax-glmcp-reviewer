@@ -309,7 +309,7 @@ def load_config() -> ReviewConfig:
             )
         if not normalized_payg_base.startswith("https://api.z.ai/"):
             raise ConfigError(
-                "refused PAYG base URL; this adapter only sends the pass-backed token to "
+                "refused PAYG base URL; this adapter only sends the FileStore-backed token to "
                 "https://api.z.ai/. Use a reviewed Z.ai endpoint or a separate adapter."
             )
     if thinking not in {"disabled", "enabled"}:
