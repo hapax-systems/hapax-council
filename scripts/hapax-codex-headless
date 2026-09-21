@@ -781,6 +781,7 @@ if [[ ! -r "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh" ]]; then
   exit 9
 fi
 # shellcheck source=scripts/capability-execution.sh
+EXECUTION_SOURCE_ROOT="$(cd -- "$EXECUTION_SOURCE_ROOT" && pwd -P)" || exit 9
 . "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh"
 bind_codex_execution || exit 9
 
@@ -1166,10 +1167,9 @@ write_native_lifecycle() {
   local receipt="${HAPAX_NATIVE_LIFECYCLE_RECEIPT:-${NATIVE_LOG_FILE%.jsonl}.receipt.json}"
   # hapax-source-activate owns this binding and promotes the complete source
   # tree; hapax-post-merge-deploy publishes scripts/hapax-* as installed copies.
-  # Resolve only this dependency through activation, independently of legacy
-  # COUNCIL_DIR and the child cwd. The override is the activator's existing
-  # deployment binding, not an implicit developer-checkout fallback.
-  local observer_root="${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}"
+  # Use the source already selected for identity resolution, even if activation
+  # advances while the native child runs. Keep its provisioned interpreter too.
+  local observer_root="$EXECUTION_SOURCE_ROOT"
   local local_args=()
   # Observation runs on the caller, including for SSH dispatch. SSH wait status
   # does not establish remote native exit, cancellation, or completion.
@@ -1177,7 +1177,7 @@ write_native_lifecycle() {
   # Old modules without the receipt CLI exit successfully without observing.
   # Require a newly created, nonempty regular receipt; preserve predecessors.
   if [[ -e "$receipt" || -L "$receipt" ]] \
-    || ! python3 -I "$observer_root/shared/execution_observer.py" \
+    || ! "$observer_root/.venv/bin/python" -I "$observer_root/shared/execution_observer.py" \
     --stream "$NATIVE_LOG_FILE" --diagnostics "$DIAGNOSTICS_FILE" --receipt "$receipt" \
     --returncode "$EXIT_CODE" --cancel-signal "$CANCEL_SIGNAL" "${local_args[@]}" \
     2>>"$DIAGNOSTICS_FILE" \

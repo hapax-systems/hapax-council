@@ -287,7 +287,9 @@ exit 0
 
 @pytest.mark.parametrize("activation_override", [False, True])
 @pytest.mark.parametrize("remote", [False, True])
-@pytest.mark.parametrize("case", ["current", "no_cli", "missing", "unsupported", "preexisting"])
+@pytest.mark.parametrize(
+    "case", ["current", "no_cli", "missing", "unsupported", "preexisting", "advance_activation"]
+)
 def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     tmp_path: Path, activation_override: bool, remote: bool, case: str
 ) -> None:
@@ -313,7 +315,13 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
 
     default_activation = cache / "source-activation/worktree"
     activation = tmp_path / "configured-activation" if activation_override else default_activation
-    _write_descriptor_runtime(activation)
+    if case == "advance_activation":
+        initial_release = tmp_path / "initial-release"
+        _write_descriptor_runtime(initial_release)
+        activation.parent.mkdir(parents=True, exist_ok=True)
+        activation.symlink_to(initial_release, target_is_directory=True)
+    else:
+        _write_descriptor_runtime(activation)
     # The activated identity resolver is now an actual launch dependency. Keep
     # it provisioned while independently varying only the lifecycle observer.
     # Never poison the shared source symlink used by the resolver fixture.
@@ -327,7 +335,7 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
         (default_activation / "shared").mkdir(parents=True)
         (default_activation / "shared/execution_observer.py").write_text(stale_module)
     observer = activation / "shared/execution_observer.py"
-    if case in {"current", "unsupported"}:
+    if case in {"current", "unsupported", "advance_activation"}:
         shutil.copy2(REPO_ROOT / "shared/execution_observer.py", observer)
     elif case != "missing":
         observer.write_text(stale_module)
@@ -349,9 +357,14 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     )
     event_args = " ".join(f"'{json.dumps(event)}'" for event in events)
     child_exit = 23 if case == "missing" else 0
+    advance = (
+        f'rm "{activation}"\nln -s "{primary}" "{activation}"\n'
+        if case == "advance_activation"
+        else ""
+    )
     _write_executable(
         bin_dir / "codex",
-        f"printf '%s\\n' {event_args}\necho 'native diagnostic' >&2\nexit {child_exit}\n",
+        advance + f"printf '%s\\n' {event_args}\necho 'native diagnostic' >&2\nexit {child_exit}\n",
     )
     _write_executable(bin_dir / "getent", "exit 2\n")
     _write_executable(
@@ -414,7 +427,7 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     assert observed["diagnostics_path"] == str(diagnostic)
     assert observed["owned_native_process"] is (not remote)
     assert observed["process_returncode"] == (None if remote else child_exit)
-    assert observed["complete"] is (case == "current" and not remote)
+    assert observed["complete"] is (case in {"current", "advance_activation"} and not remote)
     assert observed["cancel_confirmed"] is False
     assert observed["readiness"] == "unobserved"
     assert observed["may_authorize"] is False

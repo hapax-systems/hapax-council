@@ -19,12 +19,16 @@ import json,sys
 try:
     args = json.loads(sys.argv[1])
     valid = (
-        isinstance(args, list) and len(args) >= 2 and len(args) % 2 == 0
-        and args[0] == "-c"
+        isinstance(args, list) and len(args) == 4 and args[::2] == ["-c", "-c"]
         and all(isinstance(arg, str) and arg and not any(c in arg for c in "\n\r\0") for arg in args)
     )
     if not valid:
         raise ValueError("invalid argument list")
+    values = {key: json.loads(value) for key, value in (arg.split("=", 1) for arg in args[1::2])}
+    if set(values) != {"model", "model_reasoning_effort"} or not all(
+        isinstance(value, str) and value for value in values.values()
+    ):
+        raise ValueError("missing concrete identity arguments")
 except (ValueError, TypeError):
     sys.exit("refusing malformed descriptor arguments; next action: restore the selected release resolver and retry")
 print("\n".join(args))

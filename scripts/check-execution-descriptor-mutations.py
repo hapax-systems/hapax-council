@@ -111,6 +111,13 @@ MUTATIONS = (
         "test_identity_helper_refuses_malformed_resolver_output",
     ),
     (
+        "decode identity-free argument pairs",
+        "scripts/capability-execution.sh",
+        'set(values) != {"model", "model_reasoning_effort"}',
+        "False",
+        "test_identity_helper_refuses_malformed_resolver_output",
+    ),
+    (
         "decode with ambient Python modules",
         "scripts/capability-execution.sh",
         'execution_lines="$("$execution_python" -I -c',
@@ -146,6 +153,22 @@ MUTATIONS = (
         "test_interactive_reentry_keeps_selected_source_release",
     ),
     (
+        "headless follows changed activation symlink",
+        "scripts/hapax-codex-headless",
+        'EXECUTION_SOURCE_ROOT="$(cd -- "$EXECUTION_SOURCE_ROOT" && pwd -P)" || exit 9',
+        ": # physical source selection removed",
+        "tests/scripts/test_hapax_codex_headless.py::"
+        "test_installed_headless_observer_uses_activation_and_requires_fresh_receipt",
+    ),
+    (
+        "observer reloads activation after native exit",
+        "scripts/hapax-codex-headless",
+        'local observer_root="$EXECUTION_SOURCE_ROOT"',
+        'local observer_root="${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}"',
+        "tests/scripts/test_hapax_codex_headless.py::"
+        "test_installed_headless_observer_uses_activation_and_requires_fresh_receipt",
+    ),
+    (
         "watchdog depends on model footer",
         "scripts/hapax-lane-idle-watchdog",
         '    # Idle if we see the "› " prompt line without Working above it',
@@ -158,8 +181,9 @@ MUTATIONS = (
 
 
 def run_tests(test: str) -> subprocess.CompletedProcess[str]:
+    target = test if "::" in test else f"{TEST}::{test}"
     return subprocess.run(
-        [sys.executable, "-B", "-m", "pytest", f"{TEST}::{test}", "-q", "--tb=short"],
+        [sys.executable, "-B", "-m", "pytest", target, "-q", "--tb=short"],
         cwd=ROOT,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
         text=True,

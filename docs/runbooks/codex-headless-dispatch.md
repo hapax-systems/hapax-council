@@ -35,11 +35,13 @@ A missing runtime, registry, route or concrete descriptor refuses with exit9
 before native invocation; it never falls back to the user's default model.
 `--execution-route` selects a declared Codex route; it is not admission to it.
 
-The resolver imports only from the selected release, with Python isolated from
-the caller's cwd and `PYTHONPATH`. Interactive runners carry its resolved physical
-path and launcher into tmux re-entry, even if the activation symlink advances meanwhile.
-Malformed resolver output refuses before native invocation. Recheck those
-boundaries without provider calls:
+Resolver and decoder Python imports are isolated from the caller's cwd and
+`PYTHONPATH`. Both launchers preserve the selected release's physical path.
+Interactive runners carry that path and launcher into tmux re-entry; headless
+lifecycle observation uses that release and its interpreter after native exit,
+even if the activation symlink advances meanwhile. Decoded arguments must carry
+both model and effort; malformed or identity-free output refuses before native
+invocation. Recheck those boundaries without provider calls:
 
 ```bash
 uv run pytest tests/scripts/test_capability_execution_contract.py -q

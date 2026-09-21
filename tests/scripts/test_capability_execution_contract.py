@@ -324,7 +324,23 @@ def test_receipt_cli_failure_names_next_action(tmp_path, capsys, contents):
     assert "next action:" in capsys.readouterr().err.lower()
 
 
-@pytest.mark.parametrize("output", ["[]", '[""]', "{}", "broken", '["-c", 3]', '["-c", "a\\nb"]'])
+@pytest.mark.parametrize(
+    "output",
+    [
+        "[]",
+        '[""]',
+        "{}",
+        "broken",
+        '["-c", 3]',
+        '["-c", "a\\nb"]',
+        json.dumps(["-c", 'approval_policy="never"']),
+        json.dumps(["-c", 'model="named"', "-c", 'approval_policy="never"']),
+        json.dumps(["-c", 'model="named"', "-c", 'model="named"']),
+        json.dumps(["-c", 'model="named"', "--other", 'model_reasoning_effort="low"']),
+        json.dumps(["-c", 'model=""', "-c", 'model_reasoning_effort="low"']),
+        json.dumps(["-c", 'model="named"', "-c", "model_reasoning_effort=null"]),
+    ],
+)
 def test_identity_helper_refuses_malformed_resolver_output(tmp_path, output):
     runtime = tmp_path / "runtime"
     (runtime / "scripts").mkdir(parents=True)
