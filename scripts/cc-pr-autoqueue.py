@@ -1458,6 +1458,56 @@ def _reconciled_pr(
         failures.pop(number, None)
 
 
+def _hydrate_selected_pr(
+    listed: dict[str, Any],
+    route: ListingRoute,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> PullRequest:
+    """Hydrate one selected identity without replacing its branch observations."""
+    if route.transport == "rest":
+        # Seed only listing evidence. If the detail read fails, no old head or
+        # status can masquerade as a fresh hydration of this selected identity.
+        row = _pull_status_row_from_rest(
+            {
+                "number": listed["number"],
+                "base": {
+                    "ref": listed.get("baseRefName"),
+                    "repo": {"default_branch": listed.get("baseRepoDefaultBranch")},
+                },
+            },
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            include_files=True,
+            include_review_decision=True,
+        )
+    else:
+        row = get_pr_status_graphql(
+            listed["number"],
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            expected_head_sha=listed.get("headRefOid"),
+        )
+        if row is None:
+            raise RestIndeterminateError("selected_pr_hydration_failed")
+        row["baseRefNameDetail"] = row.get("baseRefName")
+        row["refEvidenceReasons"] = pr_reference_reasons(
+            {**listed, "refEvidenceReasons": pr_reference_reasons(row)}
+        )
+        row["baseRefName"] = read_ref_name(listed.get("baseRefName")) or row.get("baseRefName")
+        row["baseRepoDefaultBranch"] = listed.get("baseRepoDefaultBranch")
+    if not row.get("headRefOid") or row["headRefOid"] != listed.get("headRefOid"):
+        raise RestIndeterminateError("selected_pr_hydration_head_changed")
+    hydrated, _ = _hydrate_open_prs([row], route, repo=repo, repo_root=repo_root, runner=runner)
+    if len(hydrated) != 1 or hydrated[0].number != listed["number"]:
+        raise RestIndeterminateError("selected_pr_hydration_identity_invalid")
+    return hydrated[0]
+
+
 def fetch_rotating_open_prs(
     *, repo: str, repo_root: Path, limit: int, state_path: Path, persist: bool, runner: Any
 ) -> tuple[list[PullRequest], ListingRoute, int, dict[int, dict[str, Any]]]:
@@ -1494,32 +1544,50 @@ def fetch_rotating_open_prs(
     prs = []
     for item in selected:
         try:
+            listed = item
             if transport == "rest":
-                row = _pull_status_row_from_rest(
-                    item,
-                    repo=repo,
-                    repo_root=repo_root,
-                    runner=runner,
-                    include_files=True,
-                    include_review_decision=True,
+                base = item.get("base") or {}
+                listed = {
+                    "number": item["number"],
+                    "headRefOid": (item.get("head") or {}).get("sha"),
+                    "headRefName": (item.get("head") or {}).get("ref"),
+                    "baseRefName": base.get("ref"),
+                    "baseRepoDefaultBranch": (base.get("repo") or {}).get("default_branch"),
+                }
+            try:
+                hydrated = _hydrate_selected_pr(
+                    listed, route, repo=repo, repo_root=repo_root, runner=runner
                 )
-            else:
-                row = get_pr_status_graphql(
+            except (
+                OSError,
+                subprocess.SubprocessError,
+                ValueError,
+                TypeError,
+                KeyError,
+                AttributeError,
+            ):
+                fallback = "rest" if transport == "graphql" else "graphql"
+                if (fallback == "rest" and rest_blocked) or (
+                    fallback == "graphql" and graphql_pool_blocked(snapshot) is not None
+                ):
+                    raise
+                LOG.warning(
+                    "PR #%s %s hydration failed; trying eligible %s",
                     item["number"],
+                    transport,
+                    fallback,
+                )
+                hydrated = _hydrate_selected_pr(
+                    listed,
+                    ListingRoute(
+                        transport=fallback,
+                        rest_blocked=rest_blocked,
+                        reason=f"{transport}_hydration_failed_{fallback}_fallback",
+                    ),
                     repo=repo,
                     repo_root=repo_root,
                     runner=runner,
-                    expected_head_sha=item.get("headRefOid"),
                 )
-                if row is None:
-                    raise RestIndeterminateError("selected_pr_hydration_failed")
-                row.update({key: item.get(key) for key in ("baseRefName", "baseRepoDefaultBranch")})
-                row["refEvidenceReasons"] = pr_reference_reasons(item)
-            hydrated, _ = _hydrate_open_prs(
-                [row], route, repo=repo, repo_root=repo_root, runner=runner
-            )
-            if len(hydrated) != 1 or hydrated[0].number != item["number"]:
-                raise RestIndeterminateError("selected_pr_hydration_identity_invalid")
         except (
             OSError,
             subprocess.SubprocessError,
@@ -1542,7 +1610,7 @@ def fetch_rotating_open_prs(
                 failure["consecutive_failures"],
             )
             continue
-        prs.extend(hydrated)
+        prs.append(hydrated)
     return prs, route, len(rows), failures
 
 
