@@ -8,6 +8,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agentgov.consent import IdentityMigrationUnavailable
+from agentgov.revocation import PurgeResult
+
+from shared.governance.consent import estate_identity_operation, resolve_contract_id
+
 from .config import CONSENT_AUDIT_PATH
 
 log = logging.getLogger(__name__)
@@ -94,69 +99,95 @@ def enable_persistence(compositor: Any) -> None:
             log.debug("Failed to set consent tags on %s", role)
 
 
-def purge_video_recordings(compositor: Any, contract_id: str) -> int:
-    """Purge video recording segments associated with a revoked consent contract."""
-    purged = 0
-    rec_dir = Path(compositor.config.recording.output_dir)
-
-    active_ranges: list[tuple[str, str | None]] = []
-    current_start: str | None = None
-
+def purge_video_recordings(compositor: Any, contract_id: str) -> PurgeResult:
+    """Report completed deletions and every failure, including unavailable custody."""
     try:
-        if CONSENT_AUDIT_PATH.exists():
-            for line in CONSENT_AUDIT_PATH.read_text().splitlines():
-                if not line.strip():
-                    continue
-                entry = json.loads(line)
-                if contract_id in entry.get("active_contracts", []):
-                    if entry["event"] == "recording_resumed" and current_start is None:
-                        current_start = entry["timestamp"]
-                    elif entry["event"] == "recording_paused" and current_start:
-                        active_ranges.append((current_start, entry["timestamp"]))
-                        current_start = None
-            if current_start:
-                active_ranges.append((current_start, None))
+        with estate_identity_operation():
+            return _purge_video_recordings(compositor, contract_id)
+    except IdentityMigrationUnavailable as exc:
+        return PurgeResult("recordings", 0, failures=(exc.reason,))
+
+
+def _purge_video_recordings(compositor: Any, contract_id: str) -> PurgeResult:
+    contract_id = resolve_contract_id(contract_id) or contract_id
+    purged = 0
+    failures: list[str] = []
+    active_ranges: list[tuple[datetime, datetime | None]] = []
+    current_start: datetime | None = None
+    try:
+        # Missing audit data is unavailable evidence, even when no ranges can be found.
+        for line in CONSENT_AUDIT_PATH.read_text().splitlines():
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            contracts = entry.get("active_contracts", [])
+            if not isinstance(contracts, list) or any(
+                not isinstance(cid, str) for cid in contracts
+            ):
+                raise ValueError("audit_malformed")
+            if contract_id in {resolve_contract_id(cid) or cid for cid in contracts}:
+                stamp = datetime.fromisoformat(entry["timestamp"])
+                if stamp.tzinfo is None:
+                    raise ValueError("audit_malformed")
+                if entry["event"] == "recording_resumed" and current_start is None:
+                    current_start = stamp
+                elif entry["event"] == "recording_paused" and current_start:
+                    if stamp < current_start:
+                        raise ValueError("audit_malformed")
+                    active_ranges.append((current_start, stamp))
+                    current_start = None
+        if current_start:
+            active_ranges.append((current_start, None))
+    except IdentityMigrationUnavailable:
+        raise
     except Exception:
-        log.warning("Failed to read consent audit for purge")
-        return 0
+        return PurgeResult("recordings", purged, failures=("recording_audit_unreadable",))
 
     if not active_ranges:
-        return 0
+        return PurgeResult("recordings", purged)
 
-    if rec_dir.exists():
-        for role_dir in rec_dir.iterdir():
+    def in_range(stamp: datetime) -> bool:
+        return any(stamp >= start and (end is None or stamp <= end) for start, end in active_ranges)
+
+    try:
+        rec_dir = Path(compositor.config.recording.output_dir)
+        hls_dir = Path(compositor.config.hls.output_dir)
+    except Exception:
+        return PurgeResult("recordings", purged, failures=("recording_config_invalid",))
+    try:
+        roles = list(rec_dir.iterdir()) if rec_dir.exists() else []
+        for role_dir in roles:
             if not role_dir.is_dir():
                 continue
-            for mkv_file in role_dir.glob("*.mkv"):
-                try:
-                    name_parts = mkv_file.stem.split("_")
-                    ts_str = name_parts[-2]
-                    file_time = datetime.strptime(ts_str, "%Y%m%d-%H%M%S").replace(tzinfo=UTC)
-                    file_iso = file_time.isoformat()
-                    for start, end in active_ranges:
-                        if file_iso >= start and (end is None or file_iso <= end):
-                            mkv_file.unlink()
-                            purged += 1
-                            log.info(
-                                "Purged recording: %s (contract %s revoked)", mkv_file, contract_id
-                            )
-                            break
-                except (ValueError, IndexError):
-                    continue
-
-    hls_dir = Path(compositor.config.hls.output_dir)
-    if hls_dir.exists():
-        for ts_file in hls_dir.glob("*.ts"):
             try:
-                mtime = datetime.fromtimestamp(ts_file.stat().st_mtime, tz=UTC)
-                mtime_iso = mtime.isoformat()
-                for start, end in active_ranges:
-                    if mtime_iso >= start and (end is None or mtime_iso <= end):
-                        ts_file.unlink()
-                        purged += 1
-                        log.info("Purged HLS segment: %s", ts_file)
-                        break
+                recordings = [path for path in role_dir.iterdir() if path.suffix == ".mkv"]
+                for recording in recordings:
+                    try:
+                        stamp = datetime.strptime(recording.stem.split("_")[-2], "%Y%m%d-%H%M%S")
+                        if in_range(stamp.replace(tzinfo=UTC)):
+                            recording.unlink()
+                            purged += 1
+                    except (ValueError, IndexError):
+                        failures.append("recording_timestamp_invalid")
+                    except OSError:
+                        failures.append("recording_delete_failed")
             except OSError:
-                continue
+                failures.append("recording_scan_failed")
+    except OSError:
+        failures.append("recording_scan_failed")
 
-    return purged
+    try:
+        segments = (
+            [path for path in hls_dir.iterdir() if path.suffix == ".ts"] if hls_dir.exists() else []
+        )
+        for segment in segments:
+            try:
+                stamp = datetime.fromtimestamp(segment.stat().st_mtime, tz=UTC)
+                if in_range(stamp):
+                    segment.unlink()
+                    purged += 1
+            except OSError:
+                failures.append("hls_delete_failed")
+    except OSError:
+        failures.append("hls_scan_failed")
+    return PurgeResult("recordings", purged, failures=tuple(failures))

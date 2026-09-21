@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .consent import ConsentContract
+from shared.governance.consent import estate_identity_operation
+
+from .consent import ConsentContract, resolve_principal_id
 
 
 @dataclass(frozen=True)
@@ -39,7 +41,18 @@ class ConsentLabel:
         Data can flow to a target if the target's policies are a superset
         of (at least as restrictive as) this label's policies.
         """
-        return self.policies <= target.policies
+        with estate_identity_operation():
+            source_policies, target_policies = (
+                frozenset(
+                    (
+                        resolve_principal_id(owner),
+                        frozenset(resolve_principal_id(r) for r in readers),
+                    )
+                    for owner, readers in label.policies
+                )
+                for label in (self, target)
+            )
+            return source_policies <= target_policies
 
     @staticmethod
     def bottom() -> ConsentLabel:
