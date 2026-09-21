@@ -306,10 +306,10 @@ Unsupported descriptor axes or missing/malformed resolver output refuse before
 the native process starts. Provision the physical release runtime to repair a
 missing resolver; do not fall back to native defaults or a caller's checkout.
 
-The environment binding matters: an offline Claude Code2.1.278 request fixture
-on2026-09-21 observed CLI `xhigh` with environment `low` send `low`, while matching
+The environment binding matters: an offline Claude Code 2.1.278 request fixture
+on 2026-09-21 observed CLI `xhigh` with environment `low` send `low`, while matching
 both sent `xhigh`. Per-model `high` also overrode global `low` in the settings-only
-case. Each request deliberately received HTTP400; the client's native OTel
+case. Each request deliberately received HTTP 400; the client's native OTel
 `api_error` event matched the request's model and effort. These are request
 construction observations, not successful inference, saved-subscription
 qualification or provider-side attestation. The [model configuration reference](https://code.claude.com/docs/en/model-config)
