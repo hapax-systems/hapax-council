@@ -35,3 +35,30 @@ def test_reference_cannot_add_fields_or_change_after_validation():
     address = ContentAddress(ref="result.json", sha256="a" * 64)
     with pytest.raises(ValidationError):
         address.ref = "replacement.json"
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "plain",
+        "résultat",
+        "inside\nnewline",
+        "inside\0nul",
+        "inside\ttab",
+        "",
+        " ",
+        "\tref",
+        "ref\n",
+        chr(0xD800),
+    ],
+)
+def test_extraction_agrees_with_existing_wire_string_rule(ref):
+    from shared.execution_admission import _nonblank
+
+    try:
+        expected = _nonblank(ref)
+    except ValueError:
+        with pytest.raises(ValidationError):
+            ContentAddress(ref=ref, sha256="a" * 64)
+    else:
+        assert ContentAddress(ref=ref, sha256="a" * 64).ref == expected

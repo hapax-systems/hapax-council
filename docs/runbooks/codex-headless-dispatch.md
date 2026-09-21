@@ -111,6 +111,26 @@ new source activation requires the normal shipped-installer migration. Recheck
 that contract with `uv run --no-sync pytest -q tests/shared/test_content_address.py
 tests/shared/test_gate0b_claim_publication_machinery.py`.
 
+After merge, verify the source activation's Git HEAD against the merged commit
+and compare the installed `hapax-codex-headless` and
+`hapax-methodology-dispatch` bytes with that release. Refresh the changed claim
+source closure with the shipped `install_claim_publication_composition` in
+`shared/gate0b_claim_publication_install.py`, preserving the prior receipt and
+manifest, declared roots, authority bindings and non-authorizing flags. Verify
+the resulting installation using the default-path checks in
+[the claim-publication runbook](gate0b-claim-publication-fallback.md#default-recheck).
+Run the producer/result-reader recheck above from the activated physical release
+with its pinned interpreter. These checks establish source and installed-byte
+activation for this consumer, not a production container migration or proof of
+every native invocation.
+
+```bash
+release_root="$(readlink -f "$HOME/.cache/hapax/source-activation/worktree")"
+git -C "$release_root" rev-parse HEAD  # Compare with the PR's actual merge SHA.
+cmp "$HOME/.local/bin/hapax-codex-headless" "$release_root/scripts/hapax-codex-headless"
+cmp "$HOME/.local/bin/hapax-methodology-dispatch" "$release_root/scripts/hapax-methodology-dispatch"
+```
+
 Lifecycle ownership remains a receipt claim. Existing coordination replay does
 not exclude concurrent or interrupted inflight launches. This local reader's
 absolute paths are not a portable artifact resolver for arbitrary remote workers.

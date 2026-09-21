@@ -862,3 +862,25 @@ def test_identity_helper_exports_one_binding_to_env_and_argv(tmp_path):
     assert json.loads(lines[0]) == argv
     assert json.loads(lines[1]) == descriptor
     assert lines[2:] == argv
+
+
+@pytest.mark.parametrize("with_descriptor", [False, True])
+def test_resolver_cli_preserves_argv_only_wire_format(
+    tmp_path, monkeypatch, capsys, with_descriptor
+):
+    from shared.capability_execution import main
+
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_registry(tmp_path)))
+    args = ["--route", "codex.headless.full"]
+    if with_descriptor:
+        args.append("--with-descriptor")
+    assert main(args) == 0
+    output = json.loads(capsys.readouterr().out)
+    expected = ["-c", 'model="gpt-5.5"', "-c", 'model_reasoning_effort="low"']
+    if with_descriptor:
+        assert output["argv"] == expected
+        assert output["descriptor"] == ExecutionDescriptor(
+            model_id="gpt-5.5", effort="low"
+        ).model_dump(mode="json")
+    else:
+        assert output == expected

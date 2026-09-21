@@ -1247,7 +1247,7 @@ def read_native_lifecycle_receipt(
     platform: str,
     result_ref: ContentAddress | None = None,
 ) -> tuple[dict[str, Any], ContentAddress | None]:
-    """Validate receipt/stream consistency without asserting runtime ownership.
+    """Validate the implemented Codex receipt path without asserting ownership.
 
     A supplied reference pins replay to the original receipt bytes. The
     ownership flag and waited status remain receipt claims, not independent
@@ -1263,6 +1263,8 @@ def read_native_lifecycle_receipt(
             "may_authorize": False,
         }, None
 
+    if platform != "codex":
+        return unobserved("native_receipt_platform_unsupported")
     if path is None:
         return unobserved("native_receipt_reference_unavailable")
     if result_ref is not None and result_ref.ref != str(path):
@@ -1281,10 +1283,7 @@ def read_native_lifecycle_receipt(
             return unobserved("native_receipt_not_mapping")
         if observed.get("receipt_path") != str(path):
             return unobserved("native_receipt_path_mismatch")
-        if (
-            platform not in {"claude", "codex", "codex-app-server"}
-            or observed.get("platform") != platform
-        ):
+        if observed.get("platform") != platform:
             return unobserved("native_receipt_platform_mismatch")
         if observed.get("may_authorize") is not False:
             return unobserved("native_receipt_authority_escalation")
@@ -1341,14 +1340,13 @@ def read_native_lifecycle_receipt(
             ) != json.dumps(value, sort_keys=True, allow_nan=False):
                 return unobserved(f"native_lifecycle_mismatch:{name}")
         frozen_ref = result_ref or ContentAddress(ref=str(path), sha256=receipt_hash)
-        if platform == "codex":
-            observed["execution_identity"] = recheck_codex_run_identity(
-                observed.get("execution_identity"),
-                session_id=recomputed.get("session_id"),
-                owned_native_process=owned,
-            )
-            if path.read_bytes() != receipt_bytes:
-                return unobserved("native_receipt_changed_during_readback")
+        observed["execution_identity"] = recheck_codex_run_identity(
+            observed.get("execution_identity"),
+            session_id=recomputed.get("session_id"),
+            owned_native_process=owned,
+        )
+        if path.read_bytes() != receipt_bytes:
+            return unobserved("native_receipt_changed_during_readback")
         return {**observed, "may_authorize": False}, frozen_ref
     except (ValueError, TypeError, UnicodeError):
         return unobserved("native_receipt_malformed")

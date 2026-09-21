@@ -257,3 +257,32 @@ def test_producer_identity_exception_preserves_native_exit(tmp_path, monkeypatch
         "reason_codes": ["native_identity_observer_failed:RuntimeError"],
     }
     assert "private exception detail" not in receipt.read_text()
+
+
+@pytest.mark.parametrize("platform", ["claude", "codex-app-server", "vibe"])
+def test_consumer_rejects_unimplemented_identity_platforms(tmp_path, platform):
+    from shared.execution_observer import observe_native_lifecycle
+
+    stream = tmp_path / "native.jsonl"
+    stream.write_text(
+        json.dumps({"type": "system", "subtype": "init", "session_id": "owned"})
+        + "\n"
+        + json.dumps({"type": "result", "subtype": "success"})
+        + "\n"
+    )
+    receipt = tmp_path / "receipt.json"
+    claimed = observe_native_lifecycle(stream, platform=platform, process_returncode=0)
+    claimed.update(
+        receipt_path=str(receipt),
+        stream_path=str(stream),
+        stream_sha256=hashlib.sha256(stream.read_bytes()).hexdigest(),
+        owned_native_process=True,
+        execution_identity={"status": "matched", "may_authorize": True},
+    )
+    receipt.write_text(json.dumps(claimed))
+    observed, reference = _consumer().read_native_lifecycle_receipt(receipt, platform=platform)
+    assert reference is None
+    assert observed["phase"] == "unobserved"
+    assert observed["reason"] == "native_receipt_platform_unsupported"
+    assert observed["may_authorize"] is False
+    assert "execution_identity" not in observed
