@@ -163,3 +163,63 @@ def test_descriptor_reaches_native_child_through_real_claude_launcher(tmp_path, 
     efforts = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--effort"]
     assert models and models[-1] == descriptor.model_id
     assert efforts and efforts[-1] == descriptor.effort
+
+
+@pytest.mark.parametrize("missing_route", [False, True])
+def test_descriptor_reaches_vibe_runner_or_refuses_before_launch(tmp_path, missing_route):
+    from types import SimpleNamespace
+
+    from tests.scripts.test_vbe_dispatch import _base_env
+
+    env, bin_dir, _ = _base_env(tmp_path)
+    workdir = Path(env["HAPAX_VIBE_WORKTREE_ROOT"]) / "hapax-council--vbe-contract"
+    workdir.mkdir()
+    (workdir / "AGENTS.md").write_text("Fixture instructions.\n")
+    native = tmp_path / "native-model.txt"
+    vibe = bin_dir / "vibe"
+    vibe.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "--version" ]; then echo "vibe-test"; exit 0; fi\n'
+        'printf "%s\\n" "${VIBE_ACTIVE_MODEL:-}" > "$HAPAX_TEST_NATIVE_MODEL"\n'
+    )
+    vibe.chmod(0o755)
+    tmux = bin_dir / "tmux"
+    tmux.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$1" in\n'
+        "  has-session) exit 1 ;;\n"
+        # A pre-existing tmux server need not carry the new caller's environment.
+        '  new-session) for runner; do :; done; unset VIBE_ACTIVE_MODEL; exec "$runner" ;;\n'
+        "  *) exit 0 ;;\nesac\n"
+    )
+    tmux.chmod(0o755)
+    env.update(
+        HAPAX_METHODOLOGY_VIBE_LAUNCHER=str(REPO_ROOT / "scripts/hapax-vibe"),
+        HAPAX_TEST_NATIVE_MODEL=str(native),
+        VIBE_ACTIVE_MODEL="ambient-default-must-not-win",
+    )
+
+    def launch(argv, env):
+        result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=20)
+        assert result.returncode == 0, result.stdout + result.stderr
+        return result.returncode
+
+    validation = SimpleNamespace(task=SimpleNamespace(fields={"status": "in_progress"}))
+    with (
+        patch.dict(os.environ, env, clear=True),
+        patch.object(mod, "_sliced_call", side_effect=launch),
+    ):
+        rc = mod.launch_vibe_headless(
+            "test-task",
+            "vbe-contract",
+            "inspect source",
+            validation,
+            execution_route="vibe.headless.absent" if missing_route else "vibe.headless.full",
+        )
+    if missing_route:
+        assert rc == 9
+        assert not native.exists()
+    else:
+        assert rc == 0
+        descriptor = mod.resolve_execution_descriptor("vibe.headless.full")
+        assert native.read_text().strip() == descriptor.model_id
