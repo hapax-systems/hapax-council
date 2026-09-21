@@ -118,9 +118,35 @@ def test_claude_reviewer_pins_opus_and_disables_tools(tmp_path: Path) -> None:
     # Safe mode retains managed-policy hooks; an empty hook claim would exceed
     # the wrapper's evidence. No native load observation is made by this stub.
     assert declared.hooks is None
-    assert declared.loading_flags
-    assert set(declared.loading_flags) <= set(argv)
-    assert "--safe-mode" in declared.loading_flags
+    assert declared.loading_flags == [
+        "--safe-mode",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--strict-mcp-config",
+    ]
+    # Review every argument at this boundary: an added setting, directory or
+    # instruction option must not pass just because the declared flags remain.
+    assert argv == [
+        "-p",
+        "--model",
+        "opus",
+        "--tools",
+        "",
+        "--allowedTools",
+        "",
+        "--disallowedTools",
+        disallowed,
+        "--permission-mode",
+        "manual",
+        "--safe-mode",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--mcp-config",
+        '{"mcpServers":{}}',
+        "--strict-mcp-config",
+        "--append-system-prompt",
+        system_prompt,
+    ]
     assert "scripts/hapax-claude-reviewer" in declared.source_refs
 
 
