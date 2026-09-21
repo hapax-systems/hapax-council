@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from shared.execution_observer import (
     FallbackEvent,
@@ -118,6 +121,318 @@ def test_partial_or_malformed_native_stream_never_claims_complete(tmp_path):
     result = observe_native_lifecycle(path, platform="codex", process_returncode=0)
     assert result["malformed_lines"] == 1
     assert not result["complete"]
+
+
+@pytest.fixture
+def app_server_events():
+    # Reduced native notification shapes; no prompts or command output.
+    return [
+        {
+            "method": "thread/started",
+            "params": {"thread": {"id": "owned", "status": {"type": "idle"}}},
+        },
+        {
+            "method": "turn/started",
+            "params": {
+                "threadId": "owned",
+                "turn": {"id": "turn-1", "status": "inProgress", "error": None},
+            },
+        },
+        {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "owned",
+                "turn": {"id": "turn-1", "status": "completed", "error": None},
+            },
+        },
+    ]
+
+
+def test_app_server_success_requires_owned_exit(tmp_path, app_server_events):
+    path = _write(tmp_path / "native.jsonl", app_server_events)
+    running = observe_native_lifecycle(path, platform="codex-app-server")
+    assert running["phase"] == "turn_complete"
+    assert not running["complete"]
+    for rc in (0, 1, -15):
+        result = observe_native_lifecycle(path, platform="codex-app-server", process_returncode=rc)
+        assert result["complete"] is (rc == 0)
+        assert result["session_id"] == "owned"
+        assert result["session_identity"] == "single_native_session"
+        assert result["readiness"] == "unobserved"
+        assert result["may_authorize"] is False
+        assert [event["type"] for event in result["evidence"]] == [
+            "thread/started",
+            "turn/started",
+            "turn/completed",
+        ]
+
+
+def test_app_server_failed_command_can_be_corrected(tmp_path, app_server_events):
+    items = [
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "owned",
+                "turnId": "turn-1",
+                "item": {
+                    "id": "command-1",
+                    "type": "commandExecution",
+                    "status": "failed",
+                    "exitCode": 127,
+                },
+            },
+        },
+        {
+            "method": "item/completed",
+            "params": {
+                "threadId": "owned",
+                "turnId": "turn-1",
+                "item": {
+                    "id": "command-2",
+                    "type": "commandExecution",
+                    "status": "completed",
+                    "exitCode": 0,
+                },
+            },
+        },
+    ]
+    path = _write(
+        tmp_path / "native.jsonl",
+        app_server_events[:2] + items + app_server_events[2:],
+    )
+    result = observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)
+    assert result["complete"]
+
+
+def test_app_server_duplicate_rpc_response_is_not_terminal(tmp_path, app_server_events):
+    reply = {"id": 7, "result": {"turn": app_server_events[2]["params"]["turn"]}}
+    path = _write(tmp_path / "native.jsonl", app_server_events[:2] + [reply, reply])
+    assert not observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)[
+        "complete"
+    ]
+    _write(path, app_server_events + [reply, reply])
+    result = observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)
+    assert result["complete"]
+    assert len(result["evidence"]) == 3
+
+
+@pytest.mark.parametrize("omitted", [0, 1, 2])
+def test_app_server_requires_each_lifecycle_notification(tmp_path, app_server_events, omitted):
+    events = app_server_events[:omitted] + app_server_events[omitted + 1 :]
+    path = _write(tmp_path / "native.jsonl", events)
+    assert not observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)[
+        "complete"
+    ]
+
+
+@pytest.mark.parametrize("finish_new_turn", [False, True])
+def test_app_server_new_turn_invalidates_previous_terminal(
+    tmp_path, app_server_events, finish_new_turn
+):
+    new_start = deepcopy(app_server_events[1])
+    new_start["params"]["turn"]["id"] = "turn-2"
+    new_terminal = deepcopy(app_server_events[2])
+    new_terminal["params"]["turn"]["id"] = "turn-2"
+    events = app_server_events + [new_start]
+    if finish_new_turn:
+        events.append(new_terminal)
+    path = _write(tmp_path / "native.jsonl", events)
+    result = observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)
+    assert result["complete"] is finish_new_turn
+
+
+def test_app_server_stale_terminal_cannot_complete_new_turn(tmp_path, app_server_events):
+    new_start = deepcopy(app_server_events[1])
+    new_start["params"]["turn"]["id"] = "turn-2"
+    new_terminal = deepcopy(app_server_events[2])
+    new_terminal["params"]["turn"]["id"] = "turn-2"
+    path = _write(
+        tmp_path / "native.jsonl",
+        app_server_events + [new_start, app_server_events[2], new_terminal],
+    )
+    assert not observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)[
+        "complete"
+    ]
+
+
+@pytest.mark.parametrize("index", [1, 2])
+def test_app_server_wrong_thread_stays_incomplete(tmp_path, app_server_events, index):
+    valid_terminal = deepcopy(app_server_events[2])
+    app_server_events[index]["params"]["threadId"] = "other"
+    path = _write(tmp_path / "native.jsonl", app_server_events + [valid_terminal])
+    result = observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)
+    assert not result["complete"]
+    assert result["session_identity"] == "ambiguous"
+
+
+def test_app_server_wrong_terminal_turn_stays_incomplete(tmp_path, app_server_events):
+    wrong_terminal = deepcopy(app_server_events[2])
+    wrong_terminal["params"]["turn"]["id"] = "other"
+    path = _write(
+        tmp_path / "native.jsonl",
+        app_server_events[:2] + [wrong_terminal, app_server_events[2]],
+    )
+    assert not observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)[
+        "complete"
+    ]
+
+
+@pytest.mark.parametrize("field", ["threadId", "turnId"])
+def test_app_server_item_mismatch_stays_incomplete(tmp_path, app_server_events, field):
+    item = {
+        "method": "item/completed",
+        "params": {
+            "threadId": "owned",
+            "turnId": "turn-1",
+            "item": {"type": "commandExecution", "status": "completed", "exitCode": 0},
+        },
+    }
+    item["params"][field] = "other"
+    path = _write(tmp_path / "native.jsonl", app_server_events[:2] + [item] + app_server_events[2:])
+    assert not observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)[
+        "complete"
+    ]
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+@pytest.mark.parametrize("identity", [None, "", " ", 7])
+def test_app_server_invalid_native_id_never_completes(tmp_path, app_server_events, index, identity):
+    key = "thread" if index == 0 else "turn"
+    app_server_events[index]["params"][key]["id"] = identity
+    path = _write(tmp_path / "native.jsonl", app_server_events)
+    result = observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)
+    assert not result["complete"]
+    assert result["malformed_lines"] == 1
+
+
+@pytest.mark.parametrize("index", [1, 2])
+def test_app_server_missing_turn_id_never_completes(tmp_path, app_server_events, index):
+    del app_server_events[index]["params"]["turn"]["id"]
+    path = _write(tmp_path / "native.jsonl", app_server_events)
+    assert not observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)[
+        "complete"
+    ]
+
+
+@pytest.mark.parametrize("index", [1, 2])
+def test_app_server_missing_thread_id_never_completes(tmp_path, app_server_events, index):
+    del app_server_events[index]["params"]["threadId"]
+    path = _write(tmp_path / "native.jsonl", app_server_events)
+    assert not observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)[
+        "complete"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [
+        ("failed", {"message": "failed"}),
+        ("interrupted", None),
+        ("inProgress", None),
+        (None, None),
+        ("completed", {"message": "terminal error"}),
+    ],
+)
+def test_app_server_unsuccessful_terminal_is_sticky(tmp_path, app_server_events, status, error):
+    unsuccessful = deepcopy(app_server_events[2])
+    unsuccessful["params"]["turn"].update(status=status, error=error)
+    path = _write(
+        tmp_path / "native.jsonl",
+        app_server_events[:2] + [unsuccessful, app_server_events[2]],
+    )
+    assert not observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)[
+        "complete"
+    ]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"id": 8, "error": {"code": -32603, "message": "failed"}},
+        {
+            "method": "error",
+            "params": {
+                "threadId": "owned",
+                "turnId": "turn-1",
+                "error": {"message": "failed"},
+                "willRetry": True,
+            },
+        },
+    ],
+)
+def test_app_server_error_blocks_later_success(tmp_path, app_server_events, error):
+    path = _write(
+        tmp_path / "native.jsonl", app_server_events[:2] + [error] + app_server_events[2:]
+    )
+    assert not observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)[
+        "complete"
+    ]
+
+
+@pytest.mark.parametrize("tail", ['{"method":', "[]", '{"method":"turn/completed","params":null}'])
+def test_app_server_malformed_stream_blocks_success(tmp_path, app_server_events, tail):
+    path = _write(tmp_path / "native.jsonl", app_server_events)
+    with path.open("a") as out:
+        out.write(tail + "\n")
+    result = observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)
+    assert result["malformed_lines"] == 1
+    assert not result["complete"]
+
+
+@pytest.mark.parametrize("overlap", [False, True])
+def test_app_server_reused_or_overlapping_turn_is_incomplete(tmp_path, app_server_events, overlap):
+    start = deepcopy(app_server_events[1])
+    terminal = deepcopy(app_server_events[2])
+    if overlap:
+        start["params"]["turn"]["id"] = "turn-2"
+        terminal["params"]["turn"]["id"] = "turn-2"
+    events = (app_server_events[:2] if overlap else app_server_events) + [start, terminal]
+    path = _write(tmp_path / "native.jsonl", events)
+    assert not observe_native_lifecycle(path, platform="codex-app-server", process_returncode=0)[
+        "complete"
+    ]
+
+
+@pytest.mark.parametrize("expected", ["owned", "other"])
+def test_app_server_resume_identity(tmp_path, app_server_events, expected):
+    path = _write(tmp_path / "native.jsonl", app_server_events)
+    result = observe_native_lifecycle(
+        path,
+        platform="codex-app-server",
+        process_returncode=0,
+        expected_resume_id=expected,
+    )
+    assert result["complete"] is (expected == "owned")
+    assert result["resume"] == (
+        "same_native_session" if expected == "owned" else "session_mismatch"
+    )
+
+
+def test_app_server_offset_excludes_prior_lifecycle(tmp_path, app_server_events):
+    path = _write(tmp_path / "native.jsonl", app_server_events)
+    offset = path.stat().st_size
+    with path.open("a") as out:
+        out.write(json.dumps(app_server_events[2]) + "\n")
+    result = observe_native_lifecycle(
+        path, platform="codex-app-server", offset=offset, process_returncode=0
+    )
+    assert not result["complete"]
+
+
+@pytest.mark.parametrize("rc", [None, 0, 1, 143, -15])
+def test_app_server_owned_exit_does_not_confirm_provider_cancel(tmp_path, app_server_events, rc):
+    path = _write(tmp_path / "native.jsonl", app_server_events)
+    result = observe_native_lifecycle(
+        path,
+        platform="codex-app-server",
+        process_returncode=rc,
+        cancellation_requested=True,
+    )
+    assert result["cancel_requested"]
+    assert not result["cancel_confirmed"]
+    assert not result["complete"]
+    assert result["readiness"] == "unobserved"
+    assert result["may_authorize"] is False
 
 
 def _write(path: Path, records: list[dict]) -> Path:

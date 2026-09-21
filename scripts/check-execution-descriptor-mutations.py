@@ -111,11 +111,11 @@ MUTATIONS = (
         "test_identity_helper_refuses_malformed_resolver_output",
     ),
     (
-        "decode identity-free argument pairs",
+        "allow empty or nonstring identity values",
         "scripts/capability-execution.sh",
-        'set(values) != {"model", "model_reasoning_effort"}',
-        "False",
-        "test_identity_helper_refuses_malformed_resolver_output",
+        "if not all(",
+        "if False and not all(",
+        "test_identity_helper_refuses_consistent_invalid_identity",
     ),
     (
         "decode with ambient Python modules",
@@ -167,6 +167,111 @@ MUTATIONS = (
         'local observer_root="${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}"',
         "tests/scripts/test_hapax_codex_headless.py::"
         "test_installed_headless_observer_uses_activation_and_requires_fresh_receipt",
+    ),
+    (
+        "allow snapshot and argv disagreement",
+        "scripts/capability-execution.sh",
+        'if not isinstance(descriptor, dict) or descriptor.get("model_id") != values["model"] or descriptor.get("effort") != values["model_reasoning_effort"]:',
+        "if False:",
+        "test_identity_helper_refuses_inconsistent_launch_snapshot",
+    ),
+    (
+        "reload declaration after execution",
+        "scripts/hapax-codex-headless",
+        '  local observer_root="$EXECUTION_SOURCE_ROOT"',
+        '  bind_codex_execution || return 9\n  local observer_root="$EXECUTION_SOURCE_ROOT"',
+        "test_headless_identity_reaches_result_reader_with_frozen_declaration",
+    ),
+    (
+        "trust receipt-carried identity",
+        "scripts/hapax-methodology-dispatch",
+        'observed["execution_identity"] = recheck_codex_run_identity(\n'
+        '                observed.get("execution_identity"),\n'
+        '                session_id=recomputed.get("session_id"),\n'
+        "                owned_native_process=owned,\n"
+        "            )",
+        'observed["execution_identity"] = observed.get("execution_identity")',
+        "tests/scripts/test_codex_identity_consumer.py::"
+        "test_consumer_retains_native_mismatch_against_forged_match",
+    ),
+    (
+        "replay whole current rollout instead of saved prefix",
+        "shared/codex_execution_receipt.py",
+        'expected_rollout=reported["rollout"],',
+        "expected_rollout=None,",
+        "tests/scripts/test_codex_identity_consumer.py::"
+        "test_consumer_recomputes_frozen_identity_and_prefix_replay",
+    ),
+    (
+        "ignore native prefix hash mismatch",
+        "shared/codex_execution_receipt.py",
+        'expected_rollout.get("sha256") != digest',
+        "False",
+        "tests/scripts/test_codex_identity_consumer.py::"
+        "test_consumer_never_promotes_unavailable_identity",
+    ),
+    (
+        "ignore native session mismatch",
+        "shared/codex_execution_receipt.py",
+        'payload.get("id") != session_id',
+        "False",
+        "test_headless_identity_reaches_result_reader_with_frozen_declaration",
+    ),
+    (
+        "erase correlated evidence after prelaunch turn",
+        "shared/codex_execution_receipt.py",
+        '                if "native_turn_predates_launch" not in result["reason_codes"]:\n'
+        '                    result["reason_codes"].append("native_turn_predates_launch")\n'
+        "                continue",
+        '                return refuse("native_turn_predates_launch")',
+        "tests/shared/test_codex_run_identity.py::"
+        "test_prelaunch_turn_does_not_erase_correlated_evidence",
+    ),
+    (
+        "discard emitted mismatch on later malformed line",
+        "shared/codex_execution_receipt.py",
+        "for receipt in check_rollout(args.rollout, descriptor, route_id=args.route):",
+        "for receipt in list(check_rollout(args.rollout, descriptor, route_id=args.route)):",
+        "test_checker_emits_known_mismatch_before_later_malformed_line",
+    ),
+    (
+        "allow cross-route identity selection",
+        "scripts/hapax-methodology-dispatch",
+        'if selected.split("#", 1)[0] != route_id:',
+        "if False:",
+        "test_dispatch_refuses_cross_route_identity_with_next_action",
+    ),
+    (
+        "promote unavailable result identity",
+        "shared/codex_execution_receipt.py",
+        'return {"status": "unverified", "reason_codes": [reason], "may_authorize": False}',
+        'return {"status": "matched", "reason_codes": [reason], "may_authorize": False}',
+        "tests/scripts/test_codex_identity_consumer.py::"
+        "test_consumer_never_promotes_unavailable_identity",
+    ),
+    (
+        "retain relative native bindings",
+        "shared/codex_execution_receipt.py",
+        "native_home, workdir = native_home.resolve(), workdir.resolve()",
+        "pass # physical binding removed",
+        "tests/shared/test_codex_run_identity.py::"
+        "test_relative_bindings_are_frozen_as_physical_absolute_paths",
+    ),
+    (
+        "promote contradictory receipt to matched",
+        "shared/codex_execution_receipt.py",
+        'if recomputed["status"] == "matched":',
+        "if False:",
+        "tests/scripts/test_codex_identity_consumer.py::"
+        "test_consumer_classifies_inconsistent_matching_receipt_as_unverified",
+    ),
+    (
+        "erase completion after native path resolution failure",
+        "shared/codex_execution_receipt.py",
+        "except (ValueError, KeyError, TypeError, OSError, RuntimeError):",
+        "except (ValueError, KeyError, TypeError, OSError):",
+        "tests/scripts/test_codex_identity_consumer.py::"
+        "test_consumer_never_promotes_unavailable_identity[native_home_symlink_loop]",
     ),
     (
         "watchdog depends on model footer",

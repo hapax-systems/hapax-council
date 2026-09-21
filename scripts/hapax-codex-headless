@@ -1163,6 +1163,9 @@ OUTPUT_ALIAS="${NATIVE_LOG_FILE%.jsonl}.alias"
 ln -s "$(basename "$NATIVE_LOG_FILE")" "$OUTPUT_ALIAS"
 mv -Tf "$OUTPUT_ALIAS" "$LOG_FILE"
 CANCEL_SIGNAL=0
+# Native records use millisecond UTC timestamps; capture before this fresh exec.
+NATIVE_LAUNCH_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)"
+NATIVE_LAUNCH_HOME="${CODEX_HOME:-$HOME/.codex}"
 write_native_lifecycle() {
   local receipt="${HAPAX_NATIVE_LIFECYCLE_RECEIPT:-${NATIVE_LOG_FILE%.jsonl}.receipt.json}"
   # hapax-source-activate owns this binding and promotes the complete source
@@ -1180,6 +1183,9 @@ write_native_lifecycle() {
     || ! "$observer_root/.venv/bin/python" -I "$observer_root/shared/execution_observer.py" \
     --stream "$NATIVE_LOG_FILE" --diagnostics "$DIAGNOSTICS_FILE" --receipt "$receipt" \
     --returncode "$EXIT_CODE" --cancel-signal "$CANCEL_SIGNAL" "${local_args[@]}" \
+    --execution-descriptor "$HAPAX_CODEX_EXECUTION_DESCRIPTOR" --execution-route "$EXECUTION_ROUTE" \
+    --native-home "$NATIVE_LAUNCH_HOME" --workdir "$WORKDIR" \
+    --launch-started-at "$NATIVE_LAUNCH_STARTED_AT" \
     2>>"$DIAGNOSTICS_FILE" \
     || [[ ! -f "$receipt" || ! -s "$receipt" ]]; then
     echo "hapax-codex-headless: native lifecycle observation unavailable (producer failed or no fresh receipt at $receipt); next action: inspect $NATIVE_LOG_FILE and $DIAGNOSTICS_FILE, verify the observer CLI under $observer_root through governed hapax-source-activate, then replay observation to a fresh receipt before relying on completion" >&2

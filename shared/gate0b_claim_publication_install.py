@@ -471,6 +471,7 @@ def _generation_roots(activation_generation: ContentAddress) -> tuple[ContentAdd
     roots = [activation_generation]
     for name in (
         "coord_projection.py",
+        "content_address.py",
         "execution_admission.py",
         "gate0b_claim_publication_install.py",
         "gate0b_claim_publication_lease.py",

@@ -34,6 +34,9 @@ through `hapax-source-activate` or the existing Council `uv` provisioning workfl
 A missing runtime, registry, route or concrete descriptor refuses with exit9
 before native invocation; it never falls back to the user's default model.
 `--execution-route` selects a declared Codex route; it is not admission to it.
+Without that option, the named `codex.headless.full` route remains the launcher
+default. Its registry descriptor is still required; this does not select a
+native client's undeclared model default.
 
 Resolver and decoder Python imports are isolated from the caller's cwd and
 `PYTHONPATH`. Both launchers preserve the selected release's physical path.
@@ -63,9 +66,25 @@ uv run --no-sync python -m shared.codex_execution_receipt \
 
 The checker emits one declared/observed comparison per `turn_context`, including
 mid-session changes. Missing observations remain unverified; mismatches remain
-misattributed. It does not prove provider-side identity or work quality, and
-this source slice does not yet automatically consume every estate rollout in
-quota telemetry. That integration remains a separate, explicit obligation.
+misattributed. Valid comparisons are printed as they are read, so a later malformed
+line cannot discard an already observed mismatch. A parsing error still exits2
+and names the next action; output before that error is partial evidence.
+
+Fresh local headless dispatch also captures the descriptor and argv from one
+resolution. At native exit, the lifecycle observer correlates the stream's native
+session ID with its owned session store, cwd and launch time, and records the
+observed rollout byte prefix. The existing methodology result reader recomputes
+identity from that prefix and frozen declaration, including on result replay.
+It never substitutes a later registry value or trusts a receipt's `matched` flag.
+A later append does not rewrite the earlier result; changed prefix bytes,
+missing evidence and wrong-session records cannot establish a match.
+
+Process completion and identity agreement remain separate. The declaration and
+ownership fields are producer claims; byte checks do not attest provider identity,
+ownership or work quality. Remote runs and old receipts without the correlation
+inputs retain unverified identity. Interactive and bare vendor runs are not
+automatically consumed by this fresh-local-headless path, and quota telemetry
+integration across all estate runs remains unfinished.
 
 The contract test includes a redacted field projection from a captured native
 Codex0.155.1 rollout, with original event/file hashes and provenance in

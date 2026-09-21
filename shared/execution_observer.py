@@ -34,6 +34,10 @@ def observe_native_lifecycle(
     owned native process (not an interactive launcher or remote SSH transport).
     Readiness of instructions/services remains separately unobserved. This is
     support evidence, not task acceptance or a provider-side attestation.
+
+    For codex-app-server, RPC replies are not lifecycle notifications. A
+    successful terminal must match an observed turn in one native thread.
+    Owned process exit after cancellation does not attest provider cancellation.
     """
     result: dict[str, Any] = {
         "platform": platform,
@@ -50,7 +54,7 @@ def observe_native_lifecycle(
         "malformed_lines": 0,
         "may_authorize": False,
     }
-    if platform not in {"claude", "codex"}:
+    if platform not in {"claude", "codex", "codex-app-server"}:
         result["reason"] = "native_lifecycle_mapping_unimplemented"
         return result
     if offset < 0:
@@ -68,6 +72,8 @@ def observe_native_lifecycle(
     terminal_success = False
     native_failed = False
     session_ids: set[str] = set()
+    active_turn_id: str | None = None
+    seen_turn_ids: set[str] = set()
     for number, line in enumerate(lines):
         try:
             event = json.loads(line)
@@ -80,7 +86,77 @@ def observe_native_lifecycle(
         kind = event.get("type")
         phase = None
         session_id = None
-        if platform == "codex":
+        if platform == "codex-app-server":
+            # A response (including a repeated turn/start response) cannot
+            # establish identity, start a turn, or witness its completion.
+            if "method" not in event:
+                if event.get("error") is not None:
+                    native_failed = True
+                    result["phase"] = "failed"
+                continue
+            if "id" in event:
+                continue  # Server requests are not lifecycle notifications.
+            kind = event["method"]
+            params = event.get("params")
+            if not isinstance(kind, str) or not isinstance(params, dict):
+                result["malformed_lines"] += 1
+                continue
+            session_id = params.get("threadId")
+            if kind == "thread/started":
+                thread = params.get("thread")
+                session_id = thread.get("id") if isinstance(thread, dict) else None
+                if not isinstance(session_id, str) or not session_id.strip():
+                    result["malformed_lines"] += 1
+                    continue
+                if active_turn_id is not None and not terminal_success:
+                    native_failed = True
+                active_turn_id = None
+                phase = "initialized"
+            elif kind in {"turn/started", "turn/completed"}:
+                turn = params.get("turn")
+                turn_id = turn.get("id") if isinstance(turn, dict) else None
+                if (
+                    not isinstance(session_id, str)
+                    or not session_id.strip()
+                    or not isinstance(turn_id, str)
+                    or not turn_id.strip()
+                ):
+                    result["malformed_lines"] += 1
+                    continue
+                if kind == "turn/started":
+                    if turn_id in seen_turn_ids or (
+                        active_turn_id is not None and not terminal_success
+                    ):
+                        native_failed = True
+                    seen_turn_ids.add(turn_id)
+                    active_turn_id = turn_id
+                    phase = "running"
+                else:
+                    terminal_success = (
+                        active_turn_id is not None
+                        and turn_id == active_turn_id
+                        and turn.get("status") == "completed"
+                        and turn.get("error") is None
+                    )
+                    native_failed = native_failed or not terminal_success
+                    phase = "turn_complete" if terminal_success else "failed"
+            elif kind == "error":
+                phase, native_failed = "failed", True
+            # Check correlation on scoped notifications, including tool items
+            # and deltas. Item failure is not task failure: a turn can recover.
+            if "threadId" in params and (
+                not isinstance(params["threadId"], str)
+                or not params["threadId"].strip()
+                or session_ids != {params["threadId"]}
+            ):
+                phase, native_failed = "failed", True
+            if "turnId" in params and (
+                not isinstance(params["turnId"], str)
+                or not params["turnId"].strip()
+                or params["turnId"] != active_turn_id
+            ):
+                phase, native_failed = "failed", True
+        elif platform == "codex":
             if kind == "thread.started":
                 session_id = event.get("thread_id")
                 phase = "initialized"
@@ -125,7 +201,12 @@ def observe_native_lifecycle(
         )
     # subprocess wait's negative signal return code witnesses termination. An
     # arbitrary positive failure after a cancel request does not prove cancellation.
-    if cancellation_requested and process_returncode is not None and process_returncode < 0:
+    if (
+        platform != "codex-app-server"
+        and cancellation_requested
+        and process_returncode is not None
+        and process_returncode < 0
+    ):
         result["cancel_confirmed"] = True
         result["phase"] = "cancelled"
     elif process_returncode is not None:
@@ -136,6 +217,7 @@ def observe_native_lifecycle(
             and len(session_ids) == 1
             and result["malformed_lines"] == 0
             and result["resume"] != "session_mismatch"
+            and not (platform == "codex-app-server" and cancellation_requested)
         )
         result["phase"] = (
             "complete"
@@ -398,6 +480,11 @@ def _native_receipt_main() -> int:
     parser.add_argument("--returncode", type=int, required=True)
     parser.add_argument("--local-child", action="store_true")
     parser.add_argument("--cancel-signal", type=int, default=0)
+    parser.add_argument("--execution-descriptor")
+    parser.add_argument("--execution-route")
+    parser.add_argument("--native-home", type=Path)
+    parser.add_argument("--workdir", type=Path)
+    parser.add_argument("--launch-started-at")
     args = parser.parse_args()
     # Bash wait conflates signal termination with an explicit exit(128+signal).
     # Do not manufacture a negative subprocess wait witness from that value.
@@ -420,6 +507,44 @@ def _native_receipt_main() -> int:
             "owned_exit_after_cancel": bool(args.cancel_signal and args.local_child),
         }
     )
+    identity = {
+        "status": "unverified",
+        "may_authorize": False,
+        "reason_codes": ["native_launch_descriptor_unavailable"],
+    }
+    if not args.local_child:
+        identity["reason_codes"] = ["remote_native_identity_unobserved"]
+    elif all(
+        (
+            args.execution_descriptor,
+            args.execution_route,
+            args.native_home,
+            args.workdir,
+            args.launch_started_at,
+        )
+    ):
+        try:
+            # This file is selected from the activated source release. -I
+            # isolates ambient paths; use that same explicit root for imports.
+            import sys
+
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+            from shared.codex_execution_receipt import observe_codex_run_identity
+            from shared.platform_capability_registry import ExecutionDescriptor
+
+            descriptor = ExecutionDescriptor.model_validate_json(args.execution_descriptor)
+            identity = observe_codex_run_identity(
+                descriptor,
+                route_id=args.execution_route,
+                session_id=observed["session_id"],
+                native_home=args.native_home,
+                workdir=args.workdir,
+                launch_started_at=args.launch_started_at,
+            )
+        except Exception as exc:
+            # Evidence failure cannot overwrite the waited native exit status.
+            identity["reason_codes"] = [f"native_identity_observer_failed:{type(exc).__name__}"]
+    observed["execution_identity"] = identity
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     with args.receipt.open("x") as out:
         out.write(json.dumps(observed, sort_keys=True) + "\n")
