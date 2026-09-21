@@ -99,6 +99,30 @@ def test_claude_reviewer_pins_opus_and_disables_tools(tmp_path: Path) -> None:
     assert "invalid-output" in system_prompt
     assert "Do all reasoning silently" in system_prompt
 
+    # Join the actual subprocess arguments to the declared route. Blind review
+    # deliberately excludes the ambient instructions used by worker sessions.
+    from shared.platform_capability_registry import NativeLoadSet
+
+    registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+    route = next(item for item in registry["routes"] if item["route_id"] == "claude.review.opus")
+    declared = NativeLoadSet.model_validate(route["native_load_set"])
+    assert len(declared.files) == 1
+    configured = declared.files[0]
+    assert (configured.root, configured.path, configured.kind) == (
+        "native_home",
+        "settings.json",
+        "configuration",
+    )
+    assert configured.sha256 is None and configured.required is False
+    assert declared.plugins == declared.skills == declared.mcp == []
+    # Safe mode retains managed-policy hooks; an empty hook claim would exceed
+    # the wrapper's evidence. No native load observation is made by this stub.
+    assert declared.hooks is None
+    assert declared.loading_flags
+    assert set(declared.loading_flags) <= set(argv)
+    assert "--safe-mode" in declared.loading_flags
+    assert "scripts/hapax-claude-reviewer" in declared.source_refs
+
 
 def test_claude_reviewer_prefers_hapax_claude_bin_over_legacy_env(tmp_path: Path) -> None:
     preferred = tmp_path / "preferred-claude"

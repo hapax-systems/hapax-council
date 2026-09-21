@@ -2612,35 +2612,27 @@
         "files": [
           {
             "root": "native_home",
-            "path": "CLAUDE.md",
-            "kind": "instructions",
-            "sha256": "bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727", "digest_description": "Public SHA-256 of claude global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
-            "required": true
-          },
-          {
-            "root": "project",
-            "path": "AGENTS.md",
-            "kind": "instructions",
-            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
-            "required": true
-          },
-          {
-            "root": "native_home",
             "path": "settings.json",
             "kind": "configuration",
             "sha256": null,
             "required": false
           }
         ],
-        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
-        "plugins": null,
-        "skills": null,
+        "memory_scope": "Blind review: safe-mode disables auto-memory; --no-session-persistence requested. Managed policy and effective native inputs remain unobserved.",
+        "plugins": [],
+        "skills": [],
         "hooks": null,
-        "mcp": null,
-        "loading_flags": null,
+        "mcp": [],
+        "loading_flags": [
+          "--safe-mode",
+          "--disable-slash-commands",
+          "--no-session-persistence",
+          "--strict-mcp-config"
+        ],
         "source_refs": [
-          "config/agent-instructions/bindings.json",
+          "scripts/hapax-claude-reviewer",
           "docs/runbooks/agent-instruction-binding.md",
+          "https://code.claude.com/docs/en/cli-reference",
           "task:capability-declared-load-set-20260919"
         ]
       },

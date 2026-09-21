@@ -244,7 +244,7 @@ authorship boundary.
 ## Declared inputs and native lifecycle
 
 `PlatformCapabilityRoute.native_load_set` extends the existing registry. Eleven
-native routes declare instruction digests, optional configuration paths, native
+native routes declare instruction inputs, optional configuration paths, native
 home selection, memory scope and loading flags. `null` extension sets mean
 unobserved, not empty. API/tool routes are not forced into a native-file model.
 Digests pin authored expectations, rather than adopting whatever bytes happen
@@ -256,6 +256,28 @@ Run that specific re-render comparison in the same policy-change PR:
 ```bash
 uv run pytest tests/shared/test_capability_load_set.py::test_registry_instruction_hashes_match_authored_payloads -q
 ```
+
+The blind `claude.review.opus` route deliberately declares no ambient instruction
+files. Its existing wrapper requests safe mode, disabled skills, no session
+persistence and strict empty MCP configuration, then supplies the review packet
+and appended review prompt. It must not inherit the worker routes' required
+global `CLAUDE.md` and project `AGENTS.md` declaration. The optional native
+settings-file observation remains: safe mode does not remove authentication,
+model selection or permissions. Plugins, skills and MCP are declared empty,
+while hooks remain unknown because managed-policy hooks can still apply
+in [Claude safe mode](https://code.claude.com/docs/en/cli-reference).
+`source_refs` names the wrapper containing the appended prompt; this is not a
+complete digest of the provider's effective context. Built-in tools also retain
+their native behavior; the wrapper separately requests empty tool lists.
+
+The real wrapper argv is checked against this declaration in
+`tests/scripts/test_hapax_claude_reviewer.py::test_claude_reviewer_pins_opus_and_disables_tools`.
+That subprocess test uses a stub native executable: it verifies launch inputs,
+not native consumption, managed policy, or semantic uptake. A declaration with
+only configuration files plus an empty native receipt list does not prove that
+nothing loaded. The host observer keeps that case incomplete and separately
+reports ambient instruction files that are present. Effective per-invocation inputs still
+need observations from the actual native loading boundary.
 
 `hapax-platform-capability-receipts` attaches host-side observations to its existing
 receipt. Presence and matching bytes do not establish native delivery.
