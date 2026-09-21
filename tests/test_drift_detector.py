@@ -841,6 +841,10 @@ class TestLoadDocs:
         files = {
             **policies,
             "projects/council/docs/logos-design-language.md": "Existing selected documentation.",
+            "projects/council/systemd/README.md": "Existing systemd documentation.",
+            "projects/legacy/agent-architecture.md": "Existing architecture documentation.",
+            "projects/legacy/operations-manual.md": "Existing operations documentation.",
+            "projects/legacy/README.md": "Existing repository documentation.",
             "projects/council/docs/ordinary.md": "MUST NOT discover arbitrary documentation.",
             "projects/council/docs/runbooks/evidence/generated.md": (
                 "MUST NOT discover generated evidence."
@@ -870,6 +874,13 @@ class TestLoadDocs:
         expected["~/projects/council/docs/logos-design-language.md"] = (
             "Existing selected documentation."
         )
+        for relative in (
+            "projects/council/systemd/README.md",
+            "projects/legacy/agent-architecture.md",
+            "projects/legacy/operations-manual.md",
+            "projects/legacy/README.md",
+        ):
+            expected[f"~/{relative}"] = files[relative]
         if legacy_global and not authored_global:
             expected["~/.claude/CLAUDE.md"] = "Legacy global policy."
         assert load_docs() == expected

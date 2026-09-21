@@ -112,6 +112,9 @@ def test_monthly_audit_falls_back_to_working_tree(
     assert result.returncode == int(rotten), result.stdout + result.stderr
     assert "fetch origin/main" in result.stderr
     assert "Trying working-tree content" in result.stderr
+    assert "working-tree-fallback (origin/main comparison unobserved)" in (
+        result.stderr if rotten else result.stdout
+    )
     assert notification_log.exists() == rotten
     if rotten:
         assert "/council/AGENTS.md: [broken-claim] 1:" in result.stderr

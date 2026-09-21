@@ -91,7 +91,14 @@ def instruction_setting(
                 "before retrying instruction installation"
             ) from exc
         expected = copy.deepcopy(before)
-        expected.setdefault("compat", {}).setdefault("claude", {})["agents"] = False
+        compat = expected.setdefault("compat", {})
+        if not isinstance(compat, dict) or not isinstance(compat.get("claude", {}), dict):
+            raise ValueError(
+                f"invalid native TOML structure in {target}: compat and compat.claude must be "
+                "TOML tables; next action: repair these tables while preserving other settings, "
+                "then retry instruction installation"
+            )
+        compat.setdefault("claude", {})["agents"] = False
         section = re.search(r"(?m)^\[compat\.claude\][ \t]*(?:#[^\n]*)?\n", body)
         if section:
             next_section = re.search(r"(?m)^\[", body[section.end() :])

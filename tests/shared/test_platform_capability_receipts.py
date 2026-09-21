@@ -558,6 +558,33 @@ def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
     assert route.tool_state[0].evidence_ref.startswith("platform-capability-receipt:codex:")
 
 
+@pytest.mark.parametrize("names_route", [True, False])
+def test_observed_quota_preserves_reported_blockers_through_registry_overlay(
+    tmp_path: Path, names_route: bool
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_codex_exec_success(bin_dir / "codex", tmp_path / "codex-used")
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)})
+    assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
+    receipt_path = tmp_path / "codex.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["quota"]["reason_codes"] = ["quota_window_exhausted"]
+    if not names_route:
+        receipt["quota"]["evidence_refs"].remove(
+            "platform-capability-registry:codex.headless.full:quota:observed"
+        )
+    receipt_path.write_text(json.dumps(receipt))
+    route = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path, now=NOW_DT).require(
+        "codex.headless.full"
+    )
+    assert "quota_window_exhausted" in route.freshness.evidence.quota.blocked_reasons
+    assert "quota_window_exhausted" in route.blocked_reasons
+    assert route.route_state.value == "blocked"
+    assert ("account_live_quota_receipt_absent" in route.blocked_reasons) is (not names_route)
+
+
 def test_codex_receipt_without_exec_auth_probe_fails_closed(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()

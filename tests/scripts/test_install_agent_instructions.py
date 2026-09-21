@@ -106,6 +106,20 @@ def test_invalid_existing_toml_names_its_path_and_repair_before_publication(tmp_
     assert not (tmp_path / ".config/hapax/agent-instructions").exists()
 
 
+@pytest.mark.parametrize("body", ["compat = false\n", "[compat]\nclaude = false\n"])
+def test_invalid_native_table_types_name_path_and_repair_before_publication(tmp_path, body):
+    grok = tmp_path / ".grok/config.toml"
+    grok.parent.mkdir()
+    grok.write_text(body)
+    with pytest.raises(ValueError) as error:
+        installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    assert str(grok) in str(error.value)
+    assert "compat and compat.claude must be TOML tables" in str(error.value)
+    assert "next action" in str(error.value)
+    assert grok.read_text() == body
+    assert not (tmp_path / ".config/hapax/agent-instructions").exists()
+
+
 @pytest.mark.parametrize("installed", [False, True])
 def test_native_settings_change_between_render_and_lock_refuses(tmp_path, monkeypatch, installed):
     grok = tmp_path / ".grok/config.toml"

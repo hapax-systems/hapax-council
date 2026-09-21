@@ -2176,14 +2176,18 @@ def _apply_receipt_to_route_payload(
     # not clear the quota blockers of its siblings (review finding on #4616).
     quota_observed_for_route = _receipt_quota_names_route(receipt, route_payload)
     if receipt.quota.status is EvidenceStatus.OBSERVED and not quota_observed_for_route:
-        quota_reason_codes = ["account_live_quota_receipt_absent"]
+        quota_reason_codes = list(
+            dict.fromkeys([*quota_reason_codes, "account_live_quota_receipt_absent"])
+        )
     _apply_surface(
         freshness,
         "quota",
         checked_at=observed_at,
         stale_after=quota_stale_after,
         evidence_refs=[*receipt.quota.evidence_refs, receipt_ref],
-        reason_codes=quota_reason_codes if not quota_observed_for_route else [],
+        # Observing quota (including exhausted quota) is not an availability
+        # verdict. Route correlation cannot discard reported blockers.
+        reason_codes=quota_reason_codes,
         removable_reasons=_quota_unobservable_removable_reasons(route_payload)
         if quota_unobservable_nonblocking
         else (
@@ -2220,8 +2224,6 @@ def _apply_receipt_to_route_payload(
         top_blockers.extend(capability_reason_codes)
     if resource_status is not EvidenceStatus.OBSERVED:
         top_blockers.extend(resource_reason_codes)
-    if not quota_observed_for_route and not quota_unobservable_nonblocking:
-        top_blockers.extend(quota_reason_codes)
 
     removable_top_blockers = {"provider_docs_evidence_absent"}
     if capability_status is EvidenceStatus.OBSERVED:
@@ -2276,6 +2278,10 @@ def _apply_receipt_to_route_payload(
                 reason for reason in quota_evidence.get("blocked_reasons", []) if reason != blocker
             ]
     top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
+    # Project the final quota surface after clearing historical top-level
+    # blockers. A current reason must survive even if an older instance of
+    # that reason was eligible for removal.
+    top_blockers.extend(freshness["evidence"]["quota"]["blocked_reasons"])
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
     route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
 

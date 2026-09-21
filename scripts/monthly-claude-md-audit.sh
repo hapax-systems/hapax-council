@@ -44,15 +44,19 @@ canonical_dir=$(mktemp -d)
 trap 'rm -rf "$canonical_dir"' EXIT
 
 canonical_from_git=1
+canonical_label="origin/main"
+vscode_label="origin/main"
 mkdir -p "$canonical_dir/council/vscode"
 if ! git -C "$COUNCIL_CANONICAL" show origin/main:AGENTS.md > "$canonical_dir/council/AGENTS.md" 2>/dev/null; then
     echo "monthly-claude-md-audit: git show origin/main:AGENTS.md failed; verify COUNCIL_CANONICAL=$COUNCIL_CANONICAL, fetch origin/main in that checkout if appropriate, then retry. Trying working-tree content." >&2
     canonical_from_git=0
+    canonical_label="working-tree-fallback (origin/main comparison unobserved)"
     # Fall back to the working tree.
     cp "$COUNCIL_CANONICAL/AGENTS.md" "$canonical_dir/council/AGENTS.md" 2>/dev/null \
         || { echo "monthly-claude-md-audit: working-tree fallback also failed; restore AGENTS.md in the verified COUNCIL_CANONICAL checkout, then retry." >&2; exit 2; }
 fi
 if ! git -C "$COUNCIL_CANONICAL" show origin/main:vscode/CLAUDE.md > "$canonical_dir/council/vscode/CLAUDE.md" 2>/dev/null; then
+    vscode_label="working-tree-fallback (origin/main comparison unobserved)"
     cp "$COUNCIL_CANONICAL/vscode/CLAUDE.md" "$canonical_dir/council/vscode/CLAUDE.md" 2>/dev/null \
         || { echo "monthly-claude-md-audit: vscode/CLAUDE.md fallback failed" >&2; exit 2; }
 fi
@@ -158,6 +162,7 @@ fi
 
 if [[ ${#failed[@]} -gt 0 ]]; then
     body=$(printf 'Monthly CLAUDE.md audit found issues: %s\n\n' "${failed[*]}")
+    body+=$(printf '\nSources: core=%s; vscode=%s\n' "$canonical_label" "$vscode_label")
     body+=$(cat "$fail_log")
 
     if command -v curl >/dev/null 2>&1; then
@@ -172,3 +177,4 @@ fi
 
 # Quiet success — log only at info.
 printf 'monthly-claude-md-audit: %d file(s) clean.\n' "${#targets[@]}"
+printf 'Sources: core=%s; vscode=%s\n' "$canonical_label" "$vscode_label"
