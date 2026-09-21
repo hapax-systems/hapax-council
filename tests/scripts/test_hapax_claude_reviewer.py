@@ -17,6 +17,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = REPO_ROOT / "scripts" / "hapax-claude-reviewer"
 
 
+@pytest.fixture(autouse=True)
+def _select_test_release(monkeypatch):
+    monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
+
+
 def _fake_claude(path: Path) -> None:
     path.write_text(
         "#!/usr/bin/env python3\n"
@@ -297,7 +302,65 @@ def test_review_refuses_invalid_or_unmapped_descriptor_before_native_spawn(tmp_p
     assert result.stdout == ""
 
 
-def test_installed_review_wrapper_resolves_its_physical_release(tmp_path):
+@pytest.mark.parametrize(
+    "binding",
+    ["default", "explicit", "legacy_explicit", "missing", "invalid_explicit", "invalid_legacy"],
+)
+def test_copied_installed_reviewer_uses_declared_source(tmp_path, binding):
+    home = tmp_path / "home"
+    installed = home / ".local/bin/hapax-claude-reviewer"
+    installed.parent.mkdir(parents=True)
+    shutil.copy2(WRAPPER, installed)
+    assert not installed.is_symlink()
+    activation = home / ".cache/hapax/source-activation/worktree"
+    activation.parent.mkdir(parents=True)
+    if binding != "missing":
+        activation.symlink_to(REPO_ROOT, target_is_directory=True)
+    # A usable legacy primary must never substitute for a missing activation.
+    primary = home / "projects/hapax-council"
+    primary.parent.mkdir()
+    primary.symlink_to(REPO_ROOT, target_is_directory=True)
+    fake = tmp_path / "claude"
+    _fake_claude(fake)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "HAPAX_FAKE_CLAUDE_ARGV": str(tmp_path / "argv.json"),
+        "HAPAX_FAKE_CLAUDE_STDIN": str(tmp_path / "stdin.txt"),
+    }
+    for key in ("HAPAX_SOURCE_ACTIVATE_WORKTREE", "HAPAX_COUNCIL_DIR"):
+        env.pop(key, None)
+    if binding == "explicit":
+        env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(activation)
+        env["HAPAX_COUNCIL_DIR"] = str(tmp_path / "unprovisioned-primary")
+    elif binding == "legacy_explicit":
+        activation.rename(home / "explicit-release")
+        env["HAPAX_COUNCIL_DIR"] = str(home / "explicit-release")
+    elif binding == "invalid_explicit":
+        env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(tmp_path / "unprovisioned-explicit")
+        env["HAPAX_COUNCIL_DIR"] = str(activation)
+    elif binding == "invalid_legacy":
+        env["HAPAX_COUNCIL_DIR"] = str(tmp_path / "unprovisioned-explicit")
+    result = subprocess.run(
+        [sys.executable, str(installed), "--claude-bin", str(fake)],
+        input="installed review packet",
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+        timeout=20,
+    )
+    if binding in {"missing", "invalid_explicit", "invalid_legacy"}:
+        assert result.returncode == 9
+        assert "missing descriptor runtime" in result.stderr
+        assert not (tmp_path / "argv.json").exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "stdin.txt").read_text() == "installed review packet"
+        assert (tmp_path / "argv.json").exists()
+
+
+def test_review_resolver_isolates_imports_in_selected_physical_release(tmp_path):
     launcher = tmp_path / "reviewer"
     launcher.symlink_to(WRAPPER)
     poison = tmp_path / "shared"
@@ -334,6 +397,31 @@ def test_installed_review_wrapper_resolves_its_physical_release(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "argv.json").exists()
     assert not imported.exists()
+
+
+def test_review_resolver_freezes_activation_target_before_subprocess(tmp_path, monkeypatch):
+    activation = tmp_path / "activation"
+    activation.symlink_to(REPO_ROOT, target_is_directory=True)
+    monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(activation))
+    loader = importlib.machinery.SourceFileLoader("reviewer_activation_test", str(WRAPPER))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    original_run = subprocess.run
+    calls = []
+
+    def move_activation_then_run(command, **kwargs):
+        calls.append(command)
+        activation.unlink()
+        activation.symlink_to(tmp_path / "unprovisioned-next-release", target_is_directory=True)
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "run", move_activation_then_run)
+    binding = module._execution_binding()
+    assert len(calls) == 1
+    assert calls[0][0] == str(REPO_ROOT / ".venv/bin/python")
+    assert calls[0][4] == str(REPO_ROOT)
+    assert binding["argv"] == ["--model", "claude-opus-4-8", "--effort", "xhigh"]
 
 
 @pytest.mark.parametrize(
@@ -378,6 +466,7 @@ def test_review_refuses_missing_runtime_or_malformed_binding(tmp_path, resolver_
         input="review packet",
         capture_output=True,
         text=True,
+        env={**os.environ, "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(root)},
         timeout=20,
     )
     assert result.returncode == 9, result.stderr
@@ -420,7 +509,12 @@ def test_resolver_nonzero_without_diagnostic_refuses_with_remedy(tmp_path):
     python.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(8)\n")
     python.chmod(0o700)
     result = subprocess.run(
-        [sys.executable, str(wrapper)], capture_output=True, text=True, input="packet", timeout=20
+        [sys.executable, str(wrapper)],
+        capture_output=True,
+        text=True,
+        input="packet",
+        env={**os.environ, "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(root)},
+        timeout=20,
     )
     assert result.returncode == 9
     assert "descriptor resolver failed without a diagnostic" in result.stderr

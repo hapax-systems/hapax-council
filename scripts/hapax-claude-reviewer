@@ -126,9 +126,14 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _execution_binding() -> dict:
-    # Keep this wrapper stdlib-only. The physical release supplies the registry
-    # reader and its pinned dependencies, even through an installed symlink.
-    root = Path(__file__).resolve().parents[1]
+    # Use the same explicit source binding as the Codex launchers. Deployment
+    # installs a regular copy, so __file__ does not identify a Council release.
+    # Freeze the physical target before launching the isolated resolver.
+    root = Path(
+        os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+        or os.environ.get("HAPAX_COUNCIL_DIR")
+        or Path.home() / ".cache/hapax/source-activation/worktree"
+    ).resolve()
     python = root / ".venv/bin/python"
     if not python.is_file() or not os.access(python, os.X_OK):
         raise ValueError(
