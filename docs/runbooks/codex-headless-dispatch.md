@@ -32,6 +32,12 @@ A missing runtime, registry, route or concrete descriptor refuses with exit9
 before native invocation; it never falls back to the user's default model.
 `--execution-route` selects a declared Codex route; it is not admission to it.
 
+This refusal applies to the governed launchers. A bare `codex` or `codex exec`
+can still use the vendor built-in default; removing the repository config
+default does not intercept that path. Such calls are unbound and are not
+descriptor-conforming estate runs. Automatic detection/consumer integration
+remains outstanding; this PR does not claim to enforce every direct CLI call.
+
 Compare a real native rollout using the supplied checker:
 
 ```bash
@@ -62,6 +68,13 @@ is not this observation. The source tests establish concrete argument delivery;
 this PR does not claim new provider availability measurements for every profile.
 The printed Claude path templates now use this governed entrypoint, preserving
 the selected profile rather than suggesting an unbound direct launch.
+
+A bounded native check on 2026-09-21 at05:36Z used Claude Code2.1.278, the
+declared `claude-opus-4-8` / `xhigh`, one turn, no tools or MCP, and saved
+subscription authentication. It exited0 with the requested sentinel; both
+native initialization and the assistant event reported `claude-opus-4-8`.
+This verifies concrete-id acceptance for that invocation, not all profiles,
+provider-side identity, or an independently observed reasoning effort.
 
 Retired or wound-down relays stay fail-closed by default. Direct, read-only, or
 advisory-only headless launches must not pass `--force`; they should fail at the
