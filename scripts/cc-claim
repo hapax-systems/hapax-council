@@ -330,8 +330,30 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   case "$existing_status" in
     done|completed|closed|withdrawn|superseded) continue ;;
   esac
+  child_note=""
+  for c in "$vault_root_check/active/$task_id-"*.md "$vault_root_check/active/$task_id.md"; do
+    [[ -f "$c" ]] && child_note="$c" && break
+  done
+  if [[ -n "$child_note" ]] && \
+    EXISTING_NOTE="$existing_note" CHILD_NOTE="$child_note" CHARTER_REPO="$SCRIPT_DIR/.." \
+    "$python_runner" -I -c '
+import os, sys
+sys.path.insert(0, os.environ["CHARTER_REPO"])
+from shared.charter_claim import child_may_mint
+from pathlib import Path
+ok = child_may_mint(Path(os.environ["EXISTING_NOTE"]).read_text(), Path(os.environ["CHILD_NOTE"]).read_text())
+sys.exit(0 if ok else 1)
+'; then
+    echo "cc-claim: charter '$existing_task' covers '$task_id'. Minting the sub-claim. The charter stays. No operator widen." >&2
+    export HAPAX_CHARTER_KEEP_TASK="$existing_task"
+    continue
+  fi
   echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
-  echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+  if [[ -f "$HOME/.cache/hapax/cc-active-charter-$role${session_id:+-$session_id}" ]]; then
+    echo "  A charter is held. Next action: cc-close $existing_task if that child is terminal, then cc-claim the next child. Do not ask for a widen inside the charter scope." >&2
+  else
+    echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+  fi
   if [[ "$canon_enforced" == "0" ]]; then
     echo "  Legacy fallback only: cc-claim --force $task_id" >&2
   fi
@@ -373,7 +395,7 @@ claim_epoch="$(date +%s)"
   "$canon_enforced" "$HOME/.cache/hapax" "$claim_epoch" \
   "$dispatch_message_id" "$dispatch_binding_hash" "$dispatch_platform" \
   "$dispatch_mode" "$dispatch_profile" "$dispatch_authority_case" \
-  "$dispatch_idempotency_key" <<'PYEOF'
+  "$dispatch_idempotency_key" "${HAPAX_CHARTER_KEEP_TASK:-}" <<'PYEOF'
 import hashlib
 import json
 import re
@@ -1284,6 +1306,16 @@ if not canon_enforced:
             f"{task_id}\n",
             encoding="utf-8",
         )
+        charter_keep = sys.argv[16] if len(sys.argv) > 16 else ""
+        if charter_keep.strip():
+            (cache_dir / f"cc-active-charter-{role}-{session_id}").write_text(
+                f"{charter_keep.strip()}\n",
+                encoding="utf-8",
+            )
+            print(
+                f"cc-claim: charter {charter_keep.strip()} remains; "
+                f"'{task_id}' is its sub-claim"
+            )
         print(result_message)
         print(
             f"cc-claim: wrote {cache_dir / f'cc-active-task-{role}-{session_id}'} "
