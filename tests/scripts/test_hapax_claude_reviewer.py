@@ -22,7 +22,8 @@ def _fake_claude(path: Path) -> None:
         "Path = __import__('pathlib').Path\n"
         "argv = sys.argv[1:]\n"
         "required_pairs = {\n"
-        "    '--model': 'opus',\n"
+        "    '--model': os.environ.get('HAPAX_FAKE_EXPECTED_MODEL', 'claude-opus-4-8'),\n"
+        "    '--effort': os.environ.get('HAPAX_FAKE_EXPECTED_EFFORT', 'xhigh'),\n"
         "    '--tools': '',\n"
         "    '--allowedTools': '',\n"
         "    '--permission-mode': 'manual',\n"
@@ -45,6 +46,8 @@ def _fake_claude(path: Path) -> None:
         "Path(os.environ['HAPAX_FAKE_CLAUDE_STDIN']).write_text(\n"
         "    sys.stdin.read(), encoding='utf-8'\n"
         ")\n"
+        "if os.environ.get('HAPAX_FAKE_CLAUDE_ENV'):\n"
+        "    Path(os.environ['HAPAX_FAKE_CLAUDE_ENV']).write_text(json.dumps({k:os.environ.get(k) for k in ['CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_DISABLE_FAST_MODE']}))\n"
         "print('```yaml')\n"
         "print('verdict: accept')\n"
         "print('findings: []')\n"
@@ -55,7 +58,7 @@ def _fake_claude(path: Path) -> None:
     path.chmod(0o700)
 
 
-def test_claude_reviewer_pins_opus_and_disables_tools(tmp_path: Path) -> None:
+def test_claude_reviewer_binds_declared_identity_and_disables_tools(tmp_path: Path) -> None:
     fake = tmp_path / "claude"
     argv_path = tmp_path / "argv.json"
     stdin_path = tmp_path / "stdin.txt"
@@ -79,7 +82,7 @@ def test_claude_reviewer_pins_opus_and_disables_tools(tmp_path: Path) -> None:
     assert result.stdout == "```yaml\nverdict: accept\nfindings: []\nchecklist: {}\n```\n"
     assert stdin_path.read_text(encoding="utf-8") == "review packet"
     argv = json.loads(argv_path.read_text(encoding="utf-8"))
-    assert argv[:3] == ["-p", "--model", "opus"]
+    assert argv[:5] == ["-p", "--model", "claude-opus-4-8", "--effort", "xhigh"]
     assert argv[argv.index("--tools") + 1] == ""
     assert argv[argv.index("--allowedTools") + 1] == ""
     disallowed = argv[argv.index("--disallowedTools") + 1]
@@ -129,7 +132,9 @@ def test_claude_reviewer_pins_opus_and_disables_tools(tmp_path: Path) -> None:
     assert argv == [
         "-p",
         "--model",
-        "opus",
+        "claude-opus-4-8",
+        "--effort",
+        "xhigh",
         "--tools",
         "",
         "--allowedTools",
@@ -193,8 +198,178 @@ def test_claude_reviewer_rejects_model_override(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 64
-    assert "pinned to opus" in result.stderr
-    assert "with --model opus" in result.stderr
+    assert "model must match the review route descriptor" in result.stderr
+    assert "rerun without --model" in result.stderr
+
+
+@pytest.mark.parametrize("effort", ["low", "high"])
+def test_review_child_uses_descriptor_despite_stale_text_and_environment(tmp_path, effort):
+    registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+    route = next(item for item in registry["routes"] if item["route_id"] == "claude.review.opus")
+    # Change only the declaration. The wrapper must not use the profile name,
+    # the registry's free text, the caller's effort, or its cwd as identity.
+    route["execution_descriptor"]["effort"] = effort
+    route["execution_descriptor"]["model_id"] = "claude-sonnet-4-6"
+    config = tmp_path / "registry.json"
+    config.write_text(json.dumps(registry))
+    fake = tmp_path / "claude"
+    _fake_claude(fake)
+    captured = tmp_path / "env.json"
+    argv_path = tmp_path / "argv.json"
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(config),
+            "CLAUDE_CODE_EFFORT_LEVEL": "max",
+            "CLAUDE_CODE_DISABLE_FAST_MODE": "0",
+            "HAPAX_FAKE_EXPECTED_EFFORT": effort,
+            "HAPAX_FAKE_EXPECTED_MODEL": "claude-sonnet-4-6",
+            "HAPAX_FAKE_CLAUDE_ENV": str(captured),
+            "HAPAX_FAKE_CLAUDE_ARGV": str(argv_path),
+            "HAPAX_FAKE_CLAUDE_STDIN": str(tmp_path / "stdin.txt"),
+        },
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(captured.read_text()) == {
+        "CLAUDE_CODE_EFFORT_LEVEL": effort,
+        "CLAUDE_CODE_DISABLE_FAST_MODE": "1",
+    }
+    argv = json.loads(argv_path.read_text())
+    assert argv[argv.index("--effort") + 1] == effort
+    assert argv[argv.index("--model") + 1] == "claude-sonnet-4-6"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("execution_descriptor", None),
+        ("model_id", "gpt-6-astra"),
+        ("effort", "none"),
+        ("context_mode", "extended_1m"),
+        ("fast_mode", "fast"),
+        ("quantization", "exl3_4_0bpw"),
+    ],
+)
+def test_review_refuses_invalid_or_unmapped_descriptor_before_native_spawn(tmp_path, field, value):
+    registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+    route = next(item for item in registry["routes"] if item["route_id"] == "claude.review.opus")
+    if field == "execution_descriptor":
+        route.pop(field)
+    else:
+        route["execution_descriptor"][field] = value
+    config = tmp_path / "registry.json"
+    config.write_text(json.dumps(registry))
+    fake = tmp_path / "claude"
+    marker = tmp_path / "native-called"
+    fake.write_text(
+        f"#!/usr/bin/env python3\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n"
+    )
+    fake.chmod(0o700)
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(config)},
+        timeout=20,
+    )
+    assert result.returncode == 9, result.stderr
+    assert "refusing undeclared invocation" in result.stderr
+    assert not marker.exists()
+    assert result.stdout == ""
+
+
+def test_installed_review_wrapper_resolves_its_physical_release(tmp_path):
+    launcher = tmp_path / "reviewer"
+    launcher.symlink_to(WRAPPER)
+    poison = tmp_path / "shared"
+    poison.mkdir()
+    (poison / "__init__.py").write_text("raise RuntimeError('ambient shared imported')\n")
+    imported = tmp_path / "ambient-startup-imported"
+    (tmp_path / "sitecustomize.py").write_text(
+        "import sys\nfrom pathlib import Path\n"
+        f"if '-c' in sys.orig_argv: Path({str(imported)!r}).touch()\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(tmp_path)}
+    # Prove the startup fixture runs without isolation before testing that the
+    # actual wrapper's resolver excludes it. A dormant poison proves nothing.
+    subprocess.run([sys.executable, "-c", "pass"], env=env, check=True, timeout=10)
+    assert imported.exists()
+    imported.unlink()
+    fake = tmp_path / "claude"
+    _fake_claude(fake)
+    result = subprocess.run(
+        [sys.executable, str(launcher), "--claude-bin", str(fake)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={
+            **env,
+            "HAPAX_FAKE_CLAUDE_ARGV": str(tmp_path / "argv.json"),
+            "HAPAX_FAKE_CLAUDE_STDIN": str(tmp_path / "stdin.txt"),
+        },
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "argv.json").exists()
+    assert not imported.exists()
+
+
+@pytest.mark.parametrize(
+    "resolver_output",
+    [
+        None,
+        "[]",
+        '{"argv":["--model","opus"]}',
+        json.dumps(
+            {
+                "descriptor": {
+                    "model_id": "claude-opus-4-8",
+                    "effort": "xhigh",
+                    "context_mode": "standard",
+                    "fast_mode": "off",
+                    "quantization": "none",
+                },
+                "argv": ["--model", "claude-opus-4-8", "--effort", "xhigh"],
+                "env": {"CLAUDE_CODE_EFFORT_LEVEL": "low", "CLAUDE_CODE_DISABLE_FAST_MODE": "1"},
+            }
+        ),
+    ],
+)
+def test_review_refuses_missing_runtime_or_malformed_binding(tmp_path, resolver_output):
+    root = tmp_path / "release"
+    script = root / "scripts/hapax-claude-reviewer"
+    script.parent.mkdir(parents=True)
+    shutil.copy2(WRAPPER, script)
+    if resolver_output is not None:
+        python = root / ".venv/bin/python"
+        python.parent.mkdir(parents=True)
+        python.write_text(f"#!{sys.executable}\nprint({resolver_output!r})\n")
+        python.chmod(0o700)
+    native = tmp_path / "native"
+    marker = tmp_path / "native-called"
+    native.write_text(
+        f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n"
+    )
+    native.chmod(0o700)
+    result = subprocess.run(
+        [sys.executable, str(script), "--claude-bin", str(native)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 9, result.stderr
+    assert "refusing undeclared invocation" in result.stderr
+    assert not marker.exists()
+    assert result.stdout == ""
 
 
 def test_claude_reviewer_missing_binary_path_is_legible(tmp_path: Path) -> None:
@@ -503,7 +678,9 @@ def test_claude_cli_reports_empty_tools_with_wrapper_equivalent_flags() -> None:
         "-p",
         "--verbose",
         "--model",
-        "opus",
+        "claude-opus-4-8",
+        "--effort",
+        "xhigh",
         "--safe-mode",
         "--disable-slash-commands",
         "--no-session-persistence",

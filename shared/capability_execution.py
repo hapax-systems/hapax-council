@@ -95,13 +95,50 @@ def reject_codex_identity_overrides(args: list[str]) -> None:
                 )
 
 
+def claude_execution_binding(descriptor: ExecutionDescriptor) -> dict:
+    """Bind request controls; native execution observation remains separate.
+
+    Claude's effort environment variable takes precedence over --effort. Both
+    must come from this same frozen descriptor rather than the caller's settings.
+    """
+    if (
+        not descriptor.model_id.startswith("claude-")
+        or descriptor.effort not in {"low", "medium", "high", "xhigh", "max"}
+        or descriptor.context_mode != "standard"
+        or descriptor.fast_mode != "off"
+        or descriptor.quantization != "none"
+    ):
+        raise ExecutionIdentityError(
+            "refusing unsupported Claude ExecutionDescriptor; remedy: add a governed "
+            "invocation mapping for its declared axes before launching"
+        )
+    return {
+        "argv": ["--model", str(descriptor.model_id), "--effort", str(descriptor.effort)],
+        "env": {
+            "CLAUDE_CODE_EFFORT_LEVEL": str(descriptor.effort),
+            "CLAUDE_CODE_DISABLE_FAST_MODE": "1",
+        },
+        "descriptor": descriptor.model_dump(mode="json"),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--route", required=True)
     parser.add_argument("--with-descriptor", action="store_true")
+    parser.add_argument("--harness", choices=("codex", "claude"), default="codex")
     parser.add_argument("extra", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     try:
+        if args.harness == "claude":
+            if not args.route.startswith("claude.") or args.extra:
+                raise ExecutionIdentityError(
+                    "refusing non-Claude route or extra identity arguments; remedy: "
+                    "select the declared Claude route without overrides"
+                )
+            descriptor = resolve_execution_descriptor(args.route)
+            print(json.dumps(claude_execution_binding(descriptor)))
+            return 0
         if not args.route.startswith("codex."):
             raise ExecutionIdentityError("refusing non-Codex route in Codex launcher")
         reject_codex_identity_overrides(args.extra)

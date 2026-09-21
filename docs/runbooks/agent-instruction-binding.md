@@ -274,14 +274,14 @@ complete digest of the provider's effective context. Built-in tools also retain
 their native behavior; the wrapper separately requests empty tool lists.
 
 The real wrapper argv is checked against this declaration in
-`tests/scripts/test_hapax_claude_reviewer.py::test_claude_reviewer_pins_opus_and_disables_tools`.
+`tests/scripts/test_hapax_claude_reviewer.py::test_claude_reviewer_binds_declared_identity_and_disables_tools`.
 It checks every argument, including the empty tool/MCP configuration, so an
 added undeclared instruction or configuration option requires review. Recheck
 the launch declaration and its independent registry byte pin with:
 
 ```bash
 uv run --no-sync pytest -q \
-  tests/scripts/test_hapax_claude_reviewer.py::test_claude_reviewer_pins_opus_and_disables_tools \
+  tests/scripts/test_hapax_claude_reviewer.py::test_claude_reviewer_binds_declared_identity_and_disables_tools \
   tests/docs/test_platform_capability_registry_contract.py::test_registry_bytes_are_pinned
 ```
 
@@ -291,6 +291,47 @@ only configuration files plus an empty native receipt list does not prove that
 nothing loaded. The host observer keeps that case incomplete and separately
 reports ambient instruction files that are present. Effective per-invocation
 inputs still need observations from the actual native loading boundary.
+
+The reviewer resolves `claude.review.opus` once through
+`shared.capability_execution` in its physical release's `.venv/bin/python -I`.
+That binding supplies the concrete model and effort arguments, plus the child
+environment's `CLAUDE_CODE_EFFORT_LEVEL` and fast-mode disable setting. Neither
+the moving `opus` alias nor ambient effort selects the review identity anymore.
+The current declaration is `claude-opus-4-8` / `xhigh`; this is a material change
+from the old alias, not evidence of review-quality equivalence with the model
+the alias happened to select. Route admission and quality assessment remain
+the review dispatcher's responsibility. `--model`, if supplied, is only an
+assertion matching the declaration; it cannot select a different model.
+Unsupported descriptor axes or missing/malformed resolver output refuse before
+the native process starts. Provision the physical release runtime to repair a
+missing resolver; do not fall back to native defaults or a caller's checkout.
+
+The environment binding matters: an offline Claude Code2.1.278 request fixture
+on2026-09-21 observed CLI `xhigh` with environment `low` send `low`, while matching
+both sent `xhigh`. Per-model `high` also overrode global `low` in the settings-only
+case. Each request deliberately received HTTP400; the client's native OTel
+`api_error` event matched the request's model and effort. These are request
+construction observations, not successful inference, saved-subscription
+qualification or provider-side attestation. The [model configuration reference](https://code.claude.com/docs/en/model-config)
+describes precedence and managed effort caps; [monitoring documentation](https://code.claude.com/docs/en/monitoring-usage)
+describes the client request/error fields. No telemetry collector is deployed
+by this wrapper change, and native remaps, managed caps and effective context
+remain separately unobserved here. Existing native identity-consumer work is
+still required before calling a completed review's execution verified.
+The redacted capture projection, native-client/image hashes and per-cell raw
+capture hashes are in
+`tests/fixtures/claude-native-request-controls-2.1.278.json`. Raw captures and
+the offline driver are retained at
+`~/.local/share/hapax/harness-trials/20260921-cx-blue/claude-request-controls-20260921T1917Z/`.
+The local fixture endpoint returned errors rather than proxying requests;
+no real credential or external network was available to those containers.
+
+Recheck request construction, environment isolation, refusal, output and
+process-group cancellation without provider calls:
+
+```bash
+uv run --no-sync pytest tests/scripts/test_hapax_claude_reviewer.py -q
+```
 
 `hapax-platform-capability-receipts` attaches host-side observations to its existing
 receipt. Presence and matching bytes do not establish native delivery.
