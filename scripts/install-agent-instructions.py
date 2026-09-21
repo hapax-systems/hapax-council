@@ -225,6 +225,16 @@ def recover_pending(state: Path, backup: Path) -> None:
     (state / "pending.json").unlink()
 
 
+def parse_current_receipt(body: bytes, path: Path) -> dict:
+    current = json.loads(body)
+    if not isinstance(current, dict):
+        raise ValueError(
+            f"{path}: receipt must be a JSON object; "
+            "next action: reconcile the receipt with the retained install backup before retrying"
+        )
+    return current
+
+
 def check_bindings(receipt: dict, home: Path) -> dict:
     """Read-only comparison with rendered expectations, never a loading claim."""
     result = copy.deepcopy(receipt)
@@ -236,12 +246,11 @@ def check_bindings(receipt: dict, home: Path) -> dict:
         item["matches"] = not path.is_symlink() and observed == item["sha256"]
     state = home / ".config/hapax/agent-instructions"
     current_path = state / "current.json"
-    current = json.loads(current_path.read_text()) if current_path.is_file() else {}
-    if not isinstance(current, dict):
-        raise ValueError(
-            f"{current_path}: receipt must be a JSON object; "
-            "next action: reconcile the receipt with the retained install backup before retrying"
-        )
+    current = (
+        parse_current_receipt(current_path.read_bytes(), current_path)
+        if current_path.is_file()
+        else {}
+    )
     result["receipt_matches"] = (
         current.get("source_revision") == receipt["source_revision"]
         and current.get("files") == receipt["files"]
@@ -443,7 +452,7 @@ def main() -> int:
                     return 0
                 current_path = state / "current.json"
                 current_body = current_path.read_bytes()
-                current = json.loads(current_body)
+                current = parse_current_receipt(current_body, current_path)
                 if Path(current["rollback"]).resolve() != args.restore_backup.resolve():
                     raise ValueError(
                         "backup is not the current install; inspect the successor first"

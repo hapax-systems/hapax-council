@@ -910,3 +910,22 @@ def test_receipt_readback_preserves_unknown_postpublication_bytes(tmp_path, monk
     assert injected
     assert current.read_bytes() == foreign
     assert (state / "pending.json").is_file()
+
+
+@pytest.mark.parametrize("malformed", [[], None, 42, "receipt"])
+def test_rollback_receipt_shape_reports_reconciliation(tmp_path, monkeypatch, capsys, malformed):
+    receipt = installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    state = tmp_path / ".config/hapax/agent-instructions"
+    current = state / "current.json"
+    body = json.dumps(malformed).encode()
+    current.write_bytes(body)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["installer", "--home", str(tmp_path), "--restore-backup", receipt["rollback"]],
+    )
+    assert installer.main() == 1
+    error = capsys.readouterr().err
+    assert str(current) in error
+    assert "receipt must be a JSON object" in error and "reconcile" in error
+    assert current.read_bytes() == body
+    assert not (state / "pending.json").exists()

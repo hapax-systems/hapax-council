@@ -559,8 +559,9 @@ def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
 
 
 @pytest.mark.parametrize("names_route", [True, False])
+@pytest.mark.parametrize("reason", ["quota_window_exhausted", "quota_telemetry_unknown"])
 def test_observed_quota_preserves_reported_blockers_through_registry_overlay(
-    tmp_path: Path, names_route: bool
+    tmp_path: Path, names_route: bool, reason: str
 ) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -570,7 +571,7 @@ def test_observed_quota_preserves_reported_blockers_through_registry_overlay(
     _mark_platform_receipt_account_live_quota_observed(tmp_path)
     receipt_path = tmp_path / "codex.json"
     receipt = json.loads(receipt_path.read_text())
-    receipt["quota"]["reason_codes"] = ["quota_window_exhausted"]
+    receipt["quota"]["reason_codes"] = [reason]
     if not names_route:
         receipt["quota"]["evidence_refs"].remove(
             "platform-capability-registry:codex.headless.full:quota:observed"
@@ -579,8 +580,8 @@ def test_observed_quota_preserves_reported_blockers_through_registry_overlay(
     route = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path, now=NOW_DT).require(
         "codex.headless.full"
     )
-    assert "quota_window_exhausted" in route.freshness.evidence.quota.blocked_reasons
-    assert "quota_window_exhausted" in route.blocked_reasons
+    assert reason in route.freshness.evidence.quota.blocked_reasons
+    assert reason in route.blocked_reasons
     assert route.route_state.value == "blocked"
     assert ("account_live_quota_receipt_absent" in route.blocked_reasons) is (not names_route)
 
