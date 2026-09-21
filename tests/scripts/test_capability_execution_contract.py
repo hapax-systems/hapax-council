@@ -172,13 +172,22 @@ def test_invocation_carries_exact_descriptor(tmp_path, launcher, route):
 
 
 @pytest.mark.parametrize("launcher", LAUNCHERS)
-@pytest.mark.parametrize("failure", ["missing_descriptor", "missing_registry", "unknown_route"])
+@pytest.mark.parametrize(
+    "failure", ["missing_descriptor", "missing_registry", "unknown_route", "missing_runtime"]
+)
 def test_missing_descriptor_is_refused_before_invocation(tmp_path, launcher, failure):
     env, args_file = _env_with_fake_codex(tmp_path)
     path = _registry(tmp_path, missing=failure == "missing_descriptor")
     if failure == "missing_registry":
         path.unlink()
     env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(path)
+    if failure == "missing_runtime":
+        council = tmp_path / "unprovisioned-council"
+        (council / "scripts").mkdir(parents=True)
+        (council / "scripts/capability-execution.sh").write_bytes(
+            (REPO_ROOT / "scripts/capability-execution.sh").read_bytes()
+        )
+        env["HAPAX_COUNCIL_DIR"] = str(council)
     route = "codex.headless.absent" if failure == "unknown_route" else "codex.headless.full"
     result = _launch(launcher, env, route)
     assert result.returncode == 9, result.stderr
