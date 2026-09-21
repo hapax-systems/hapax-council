@@ -40,13 +40,19 @@ CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
     {"claude.headless.full", "claude.review.opus"}
 )
 RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
-    {"agy.review.direct", "glmcp.review.direct", *CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES}
+    {
+        "agy.review.direct",
+        "glmcp.review.direct",
+        "kimi.interactive.lane",
+        *CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES,
+    }
 )
 RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "agy.review.direct": "google-antigravity-cli-agy",
     "glmcp.review.direct": "z_ai-glm-coding-plan",
     "claude.headless.full": "anthropic-claude-subscription",
     "claude.review.opus": "anthropic-claude-subscription",
+    "kimi.interactive.lane": "moonshot-kimi-code-managed",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
 AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
@@ -64,6 +70,21 @@ AGY_ADMISSION_SECRETISH_RE = re.compile(
     re.IGNORECASE,
 )
 AGY_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
+KIMI_ADMISSION_SUPPORTED_TOOL = "hapax-kimi-quota-admission"
+KIMI_ADMISSION_MODEL = "kimi-code/k3"
+KIMI_ADMISSION_MODELS = frozenset({KIMI_ADMISSION_MODEL})
+KIMI_ADMISSION_RECEIPT_LABEL_RE = re.compile(
+    r"\Arelay-receipt:"
+    r"(?:[a-z0-9_.+-]*kimi-quota-admission[a-z0-9_.+-]*\.yaml|"
+    r"unsafe-receipt-name-sha256:[0-9a-f]{16})"
+    r":witness:"
+)
+KIMI_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+KIMI_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+KIMI_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
 # Claude subscription-quota admission (scripts/hapax-claude-subscription-quota-admission →
 # hapax-quota-telemetry-writer). The composite ledger evidence ref MUST end in the account-live
 # suffix so the availability guarantor's _account_live_quota_observed_ref attests; lane/session
@@ -244,6 +265,7 @@ class ModelId(StrEnum):
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
+    KIMI_K3 = "kimi-code/k3"
     UNKNOWN = "unknown"
 
 
@@ -1469,6 +1491,8 @@ def _subscription_quota_missing_required_admission_evidence(
         return not any(_is_agy_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
         return not any(_is_claude_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    if normalized_route_id == "kimi.interactive.lane":
+        return not any(_is_kimi_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     return True
 
 
@@ -1480,6 +1504,8 @@ def _subscription_quota_untrusted_admission_evidence_reason(snapshot: QuotaSnaps
         return "untrusted_agy_admission_evidence"
     if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
         return "untrusted_claude_admission_evidence"
+    if normalized_route_id == "kimi.interactive.lane":
+        return "untrusted_kimi_admission_evidence"
     return "untrusted_route_admission_evidence"
 
 
@@ -1532,6 +1558,17 @@ def _is_agy_admission_evidence_ref(ref: str) -> bool:
         and _has_safe_agy_admission_witness(ref)
         and f":supported_tool:{AGY_ADMISSION_SUPPORTED_TOOL}:" in ref
         and any(f":model:{model}:" in ref for model in AGY_ADMISSION_MODELS)
+        and ":observed_at:" in ref
+        and ":fresh_until:" in ref
+    )
+
+
+def _is_kimi_admission_evidence_ref(ref: str) -> bool:
+    return (
+        KIMI_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
+        and _has_safe_kimi_admission_witness(ref)
+        and f":supported_tool:{KIMI_ADMISSION_SUPPORTED_TOOL}:" in ref
+        and any(f":model:{model}:" in ref for model in KIMI_ADMISSION_MODELS)
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
     )
@@ -1798,6 +1835,23 @@ def _has_safe_agy_admission_witness(ref: str) -> bool:
     return (
         AGY_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
         and AGY_ADMISSION_SECRETISH_RE.search(witness) is None
+    )
+
+
+def _has_safe_kimi_admission_witness(ref: str) -> bool:
+    witness_matches = KIMI_ADMISSION_WITNESS_REF_RE.findall(ref)
+    if len(witness_matches) != 1:
+        return False
+    witness = witness_matches[0]
+    label = ref.removeprefix("relay-receipt:").split(":witness:", maxsplit=1)[0]
+    label_stem = label.removesuffix(".yaml")
+    return (
+        KIMI_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
+        and KIMI_ADMISSION_SECRETISH_RE.search(witness) is None
+        and (
+            label.startswith("unsafe-receipt-name-sha256:")
+            or KIMI_ADMISSION_SECRETISH_RE.search(label_stem) is None
+        )
     )
 
 

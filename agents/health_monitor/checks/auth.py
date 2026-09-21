@@ -26,8 +26,8 @@ async def check_litellm_auth() -> list[CheckResult]:
                 name="auth.litellm",
                 group="auth",
                 status=Status.DEGRADED,
-                message="LITELLM_API_KEY not available (env or pass)",
-                detail="Set via: export LITELLM_API_KEY=$(pass show litellm/master-key)",
+                message="LITELLM_API_KEY not available (env or FileStore)",
+                detail="Set via: export LITELLM_API_KEY=$(hapax-secret litellm/master-key)",
                 duration_ms=_u._timed(t),
             )
         ]
@@ -79,7 +79,7 @@ async def check_litellm_auth() -> list[CheckResult]:
             status=Status.FAILED,
             message=f"auth failed (HTTP {code})",
             detail=body[:200] if body else None,
-            remediation="pass show litellm/master-key",
+            remediation="hapax-secret litellm/master-key  # verify the stored key; re-put it if rotated",
             duration_ms=_u._timed(t),
         )
     ]

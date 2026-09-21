@@ -3836,10 +3836,10 @@ printf '%s\\n' "$@" > {launcher_args}
 def test_glmcp_platform_receipt_uses_sanctioned_review_wrapper_check(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True)
-    pass_stub = bin_dir / "pass"
-    pass_stub.write_text(
+    secret_stub = bin_dir / "hapax-secret"
+    secret_stub.write_text(
         """#!/usr/bin/env bash
-if [ "$1" = "show" ] && [ "$2" = "glmcp/api-key" ]; then
+if [ "$1" = "glmcp/api-key" ]; then
   printf '%s\n' 'test-secret-token'
   exit 0
 fi
@@ -3847,7 +3847,7 @@ exit 1
 """,
         encoding="utf-8",
     )
-    pass_stub.chmod(0o755)
+    secret_stub.chmod(0o755)
     receipt_dir = tmp_path / "receipts"
 
     result = subprocess.run(
@@ -3862,7 +3862,11 @@ exit 1
             "glmcp",
             "--json",
         ],
-        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "REINS_SECRET_STORE": str(tmp_path / "empty-secrets"),
+        },
         text=True,
         capture_output=True,
         check=False,
@@ -3877,7 +3881,7 @@ exit 1
     assert receipt["platform"] == "glmcp"
     assert receipt["routes"] == ["glmcp.review.direct"]
     assert receipt["cli"]["binary"] == "scripts/hapax-glmcp-reviewer"
-    assert "model=glm-5.2" in receipt["cli"]["version"]
+    assert "model=glm-5.3" in receipt["cli"]["version"]
     assert "payg_fallback=enabled" in receipt["cli"]["version"]
     receipt_text = json.dumps(receipt)
     assert "test-secret-token" not in receipt_text

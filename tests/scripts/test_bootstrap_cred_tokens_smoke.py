@@ -2,7 +2,7 @@
 
 Imports + CLI plumbing only — actual browser flow requires an operator-
 interactive Playwright session and lives outside CI scope. The token
-values flow through subprocess pipe, so by-design the script can't be
+values flow straight into the FileStore, so by design the script can't be
 end-to-end tested without compromising the security model.
 """
 
@@ -29,7 +29,7 @@ def mod():
 
 
 def test_keys_registry_covers_six_keys(mod):
-    # 6 pass-store entries across 5 services (IA + Bluesky have 2 each)
+    # entries across 5 services (IA + Bluesky have 2 each)
     flat = [k for ks in mod.KEYS.values() for k in ks]
     assert sorted(flat) == [
         "bluesky/operator-app-password",
@@ -53,13 +53,10 @@ def test_philarchive_cookie_domain_uses_hostname_boundary(mod):
     assert not mod._is_philarchive_cookie_domain("philarchive.org.evil.test")
 
 
-def test_pass_has_returns_false_for_unknown(mod):
-    # Sentinel key the operator's pass-store will NEVER contain
-    import shutil
-
-    if shutil.which("pass") is None:
-        pytest.skip("pass CLI not available in this environment")
-    assert mod.pass_has("hapax-test/sentinel-never-set") is False
+def test_secret_present_is_false_for_an_unknown_name(mod, tmp_path, monkeypatch):
+    # A throwaway FileStore root: presence is probed there, never in the operator's store.
+    monkeypatch.setenv("REINS_SECRET_STORE", str(tmp_path / "secrets"))
+    assert mod.secret_present("hapax-test/sentinel-never-set") is False
 
 
 def test_main_help_runs(mod, capsys):
@@ -73,23 +70,15 @@ def test_main_help_runs(mod, capsys):
     assert "--force" in out
 
 
-def test_pass_insert_no_token_in_stdout(mod, monkeypatch, capsys):
-    # The contract: when pass insert succeeds (or fails), the token
-    # bytes must not echo to our stdout/stderr.
+def test_store_secret_never_echoes_the_token(mod, monkeypatch, capsys):
+    # The contract: the token bytes reach the FileStore writer as bytes and
+    # never echo to our stdout/stderr.
     sentinel = b"super-secret-token-do-not-print"
+    seen: dict[str, bytes] = {}
 
-    class FakeProc:
-        returncode = 0
-
-    def fake_run(*args, **kwargs):
-        # Verify the token reaches subprocess.run via stdin, not via
-        # any logged path
-        assert kwargs.get("input") == sentinel
-        assert kwargs.get("capture_output") is True
-        return FakeProc()
-
-    monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    mod.pass_insert("hapax-test/sentinel", sentinel)
+    monkeypatch.setattr(mod, "put_secret", lambda key, value: seen.__setitem__(key, value))
+    mod.store_secret("hapax-test/sentinel", sentinel)
+    assert seen == {"hapax-test/sentinel": sentinel}
     captured = capsys.readouterr()
     assert sentinel.decode() not in captured.out
     assert sentinel.decode() not in captured.err

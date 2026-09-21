@@ -1407,6 +1407,8 @@ def get_pr_status_graphql(
         "mergedAt": item.get("mergedAt"),
         "headRefName": str(item.get("headRefName") or ""),
         "headRefOid": head_sha,
+        "baseRefName": read_ref_name(item.get("baseRefName")),
+        "refEvidenceReasons": pr_reference_reasons(item),
         "changedFiles": item.get("changedFiles") if item.get("changedFiles") is not None else None,
         "files": files or None,
         "isDraft": bool(item.get("isDraft")),

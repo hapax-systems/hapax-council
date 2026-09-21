@@ -10,10 +10,11 @@ def test_llm_cost_alert_waits_for_secrets_and_skips_when_dependencies_unready() 
     assert "Wants=hapax-secrets.service" in text
     assert "After=network-online.target docker.service hapax-secrets.service" in text
     assert "EnvironmentFile=-%t/hapax-secrets.env" in text
-    assert "Environment=GNUPGHOME=%h/.gnupg" in text
-    assert "Environment=PASSWORD_STORE_DIR=%h/.password-store" in text
-    assert "pass show langfuse/public-key >/dev/null" in text
-    assert "pass show langfuse/secret-key >/dev/null" in text
+    assert "PASSWORD_STORE_DIR" not in text
+    assert "GNUPGHOME" not in text
+    assert "pass show" not in text
+    assert 'grep -q "^LANGFUSE_PUBLIC_KEY=." %t/hapax-secrets.env' in text
+    assert 'grep -q "^LANGFUSE_SECRET_KEY=." %t/hapax-secrets.env' in text
     assert "degraded readiness: Langfuse credentials unavailable" in text
     assert "deadline=$((SECONDS + 60))" in text
     assert "curl -s --connect-timeout 1 --max-time 2" in text

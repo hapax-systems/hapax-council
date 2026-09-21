@@ -19,7 +19,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from agents.mail_monitor.oauth import _pass_show
+from agents.mail_monitor.oauth import _read_secret
 from agents.mail_monitor.pubsub_bootstrap import (
     PUBSUB_SA_EMAIL_PASS_KEY,
     WEBHOOK_URL_PASS_KEY,
@@ -52,7 +52,7 @@ def _env_or_pass(env_name: str, pass_key: str) -> str | None:
     value = os.environ.get(env_name)
     if value:
         return value
-    return _pass_show(pass_key)
+    return _read_secret(pass_key)
 
 
 def expected_audience() -> str | None:

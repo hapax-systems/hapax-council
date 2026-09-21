@@ -66,6 +66,9 @@ from github_pr_status import (  # noqa: E402
 )
 
 from shared import public_gate_receipts  # noqa: E402
+from shared.platform_capability_registry import (  # noqa: E402
+    _route_specific_quota_admission_fresh,
+)
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
@@ -356,8 +359,9 @@ def _sign_public_gate_authority_evidence(data: dict[str, Any]) -> None:
     if not secret:
         LOG.warning(
             "public-gate authority evidence left unsigned; signing credential is unset; "
-            "next action: restore the public-gate authority signing credential from pass "
-            "before relying on public-gate receipts",
+            "next action: restore the public-gate authority signing credential from the "
+            "FileStore (hapax-public-gate-authority-hmac-key) before relying on public-gate "
+            "receipts",
         )
         return
     data["authority_issuer"] = _review_team_authority_issuer(
@@ -524,8 +528,9 @@ PARSEABLE_VERDICTS = {"accept", "accept-with-findings", "block"}
 
 #: Family quota-wall state (postmortem 2026-06-12, failure class #1): a
 #: family whose seats ALL hit a provider wall in a round is OUT for the next
-#: constitutions until a seat answers again or the TTL lapses. The TTL keeps
-#: a stale outage from degrading reviews after a quiet recovery.
+#: constitutions until a seat answers again, an explicit ``until`` lapses, or
+#: (when ``until`` is absent) the TTL lapses. An explicit ``until`` is
+#: authoritative; TTL is the re-probe interval, not recovery.
 FAMILY_OUTAGE_STATE = review_team.FAMILY_OUTAGE_STATE  # canonical path lives with the validator
 DEGRADED_MERGES_LEDGER = Path.home() / ".cache" / "hapax" / "review-team" / "degraded-merges.jsonl"
 FAMILY_OUTAGE_TTL_S = review_team.FAMILY_OUTAGE_TTL_S
@@ -566,6 +571,25 @@ def _parse_aware_datetime(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed
+
+
+def _copy_until_note(existing: Any, entry: dict[str, Any]) -> None:
+    """Preserve operator-authored until/note; never invent until."""
+    if not isinstance(existing, dict):
+        return
+    if "until" in existing:
+        entry["until"] = existing["until"]
+    if "note" in existing:
+        entry["note"] = existing["note"]
+
+
+def _family_until_still_active(existing: Any, now_iso: str) -> bool:
+    """True when a dict entry has parseable until and now < until."""
+    if not isinstance(existing, dict):
+        return False
+    until_dt = _parse_aware_datetime(str(existing.get("until") or ""))
+    now_aware = _parse_aware_datetime(now_iso)
+    return until_dt is not None and now_aware is not None and now_aware < until_dt
 
 
 def _route_admission_observed_at(ref: str) -> datetime | None:
@@ -633,19 +657,141 @@ def _route_post_outage_admission_witness_result(
     return False, "post_outage_observed_at_not_after_outage"
 
 
-def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> dict[str, str]:
-    """TTL-live outage witness timestamps by family."""
+CLAUDE_SUBSCRIPTION_WEEKLY_LIMIT_WALL_NAME = "claude-subscription-weekly-limit-quota-wall.yaml"
+GLM_CODING_PLAN_WEEKLY_LIMIT_WALL_NAME = "glm-coding-plan-weekly-limit-quota-wall.yaml"
+
+
+def _relay_receipts_dir() -> Path:
+    """Receipts dir used by glmcp/claude walls: HAPAX_RELAY_RECEIPTS, else HAPAX_RELAY_RECEIPT_DIR."""
+
+    raw = os.environ.get("HAPAX_RELAY_RECEIPTS") or os.environ.get("HAPAX_RELAY_RECEIPT_DIR")
+    if raw and str(raw).strip():
+        return Path(str(raw).strip())
+    return Path.home() / ".cache" / "hapax" / "relay" / "receipts"
+
+
+def _claude_subscription_weekly_limit_wall_path() -> Path:
+    return _relay_receipts_dir() / CLAUDE_SUBSCRIPTION_WEEKLY_LIMIT_WALL_NAME
+
+
+def _receipt_iso_text(value: Any) -> str | None:
+    """Stringify a wall-receipt timestamp (PyYAML may load unquoted ISO as datetime)."""
+
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        iso = dt.isoformat()
+        if iso.endswith("+00:00"):
+            return f"{iso[:-6]}Z"
+        return iso
+    text = str(value).strip()
+    return text or None
+
+
+def _is_glm_coding_plan_wall(path: Path, receipt: dict[str, Any]) -> bool:
+    """True when the receipt is a glm Coding Plan wall (not claude family death)."""
+
+    if path.name == GLM_CODING_PLAN_WEEKLY_LIMIT_WALL_NAME:
+        return True
+    role = str(receipt.get("role") or "")
+    schema = str(receipt.get("schema") or "")
+    route_id = str(receipt.get("route_id") or "")
+    provider = str(receipt.get("provider") or "")
+    billing = str(receipt.get("billing_mode") or "")
+    if role == "glm-coding-plan-weekly-limit" or "glm-coding-plan" in role:
+        return True
+    if "glmcp_quota_hold" in schema:
+        return True
+    if route_id.startswith("glmcp."):
+        return True
+    if "glm-coding-plan" in provider:
+        return True
+    return billing == "coding_plan_subscription"
+
+
+def _claude_weekly_limit_wall_hold(
+    now_aware: datetime,
+    wall_receipt_path: Path | None = None,
+) -> tuple[datetime, str] | None:
+    """Return (resets_at, observed_iso) when the claude weekly-limit wall is active.
+
+    Reads one receipt path (no directory scrape). A glm coding-plan wall is never
+    treated as family death — PAYG is the live glm review route.
+    """
+
+    path = wall_receipt_path or _claude_subscription_weekly_limit_wall_path()
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    if _is_glm_coding_plan_wall(path, loaded):
+        return None
+    if str(loaded.get("status") or "").strip() != "quota_blocked":
+        return None
+    resets_at = _parse_aware_datetime(_receipt_iso_text(loaded.get("resets_at")) or "")
+    if resets_at is None or now_aware >= resets_at:
+        return None
+    observed_iso = _receipt_iso_text(loaded.get("observed_at")) or _receipt_iso_text(
+        loaded.get("detected_at")
+    )
+    if not observed_iso:
+        observed_iso = _receipt_iso_text(loaded.get("resets_at"))
+    if not observed_iso:
+        return None
+    return resets_at, observed_iso
+
+
+def load_family_outage_witness(
+    now_iso: str,
+    state_path: Path | None = None,
+    *,
+    wall_receipt_path: Path | None = None,
+) -> dict[str, str]:
+    """Live outage witness timestamps by family.
+
+    An explicit parseable ``until`` on a dict entry is authoritative: the family
+    stays OUT while ``now < until``, even if ``observed_at`` is older than
+    ``FAMILY_OUTAGE_TTL_S``. Once ``now >= until``, the family is IN — TTL does
+    not revive an expired ``until``. When ``until`` is absent, TTL is the
+    re-probe interval (not recovery).
+
+    A claude-subscription weekly-limit wall receipt (``status: quota_blocked``
+    and parseable future ``resets_at``) fills claude when json ``until`` is
+    missing or expired. Json ``until`` later than the receipt still wins. Do
+    not require the json key. A glm coding-plan wall is not glm-family death
+    and is never applied here.
+    """
 
     state_path = state_path or FAMILY_OUTAGE_STATE
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        state = {}
     if not isinstance(state, dict):
-        return {}
+        state = {}
     now = datetime.fromisoformat(now_iso)
+    now_aware = _parse_aware_datetime(now_iso)
+    if now_aware is None:
+        now_aware = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
     out: dict[str, str] = {}
+    claude_json_until: datetime | None = None
     for family, observed in state.items():
+        family_key = str(family)
+        if family_key == "claude" and isinstance(observed, dict):
+            parsed_until = _parse_aware_datetime(str(observed.get("until") or ""))
+            if parsed_until is not None:
+                claude_json_until = parsed_until
+        if isinstance(observed, dict):
+            until_dt = _parse_aware_datetime(str(observed.get("until") or ""))
+            if until_dt is not None:
+                if now_aware < until_dt:
+                    observed_iso = _witness_observed_at(observed)
+                    if observed_iso is not None:
+                        out[family_key] = observed_iso
+                continue
         observed_iso = _witness_observed_at(observed)
         if observed_iso is None:
             continue
@@ -660,7 +806,19 @@ def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> 
         except (TypeError, ValueError):
             continue
         if 0 <= age <= FAMILY_OUTAGE_TTL_S:
-            out[str(family)] = observed_iso
+            out[family_key] = observed_iso
+    json_until_active = claude_json_until is not None and now_aware < claude_json_until
+    hold = _claude_weekly_limit_wall_hold(now_aware, wall_receipt_path)
+    if hold is not None:
+        resets_at, receipt_observed = hold
+        # Json until later than the receipt still wins; receipt fills when json
+        # until is missing or expired. A still-future json until already has
+        # claude OUT, so keep json observed_at.
+        json_until_wins = json_until_active and (
+            (claude_json_until is not None and claude_json_until >= resets_at) or "claude" in out
+        )
+        if not json_until_wins:
+            out["claude"] = receipt_observed
     return out
 
 
@@ -672,10 +830,78 @@ def send_session_for_lane(lane: str) -> str:
     return SEND_SESSION_ALIASES.get(lane, lane)
 
 
-def load_family_outage(now_iso: str, state_path: Path | None = None) -> frozenset[str]:
-    """Families currently out on an observed quota wall (TTL-bounded)."""
+def load_family_outage(
+    now_iso: str,
+    state_path: Path | None = None,
+    *,
+    wall_receipt_path: Path | None = None,
+) -> frozenset[str]:
+    """Families currently out on an observed quota wall (until- or TTL-bounded)."""
 
-    return frozenset(load_family_outage_witness(now_iso, state_path))
+    return frozenset(
+        load_family_outage_witness(now_iso, state_path, wall_receipt_path=wall_receipt_path)
+    )
+
+
+def _family_outage_entry_has_until(existing: Any) -> bool:
+    """True when a dict outage entry carries an operator-authored until key."""
+
+    return isinstance(existing, dict) and "until" in existing
+
+
+def _glmcp_payg_transition_budget_active(now: datetime | None) -> bool:
+    """True when a live TransitionBudget is active for glmcp-review-direct / z_ai."""
+
+    try:
+        resolved = review_team.load_quota_spend_ledger_resolved()
+    except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
+        return False
+    if getattr(resolved, "source", None) != "live":
+        return False
+    ledger = getattr(resolved, "ledger", None)
+    if ledger is None:
+        return False
+    try:
+        budgets = ledger.active_paid_budgets(now=now)
+    except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
+        return False
+    provider = review_team.GLMCP_PAYG_BUDGET_PROVIDER
+    profile = review_team.GLMCP_PAYG_BUDGET_PROFILE
+    return any(
+        provider in getattr(budget, "providers_allowed", ())
+        and profile in getattr(budget, "profiles_allowed", ())
+        for budget in budgets
+    )
+
+
+def _glmcp_review_direct_quota_admission_fresh(now: datetime | None) -> bool:
+    """True when glmcp.review.direct has a fresh route-specific quota admission."""
+
+    try:
+        fresh, _refs = _route_specific_quota_admission_fresh(
+            {"route_id": review_team.GLMCP_PAYG_BUDGET_ROUTE_ID},
+            now=now,
+        )
+    except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
+        return False
+    return bool(fresh)
+
+
+def _glmcp_payg_review_route_eligible(now_iso: str) -> bool:
+    """True when glmcp.review.direct PAYG is a live glm review route.
+
+    A Coding Plan wall is not glm-family death. PAYG stays eligible when a live
+    TransitionBudget is active for glmcp-review-direct / z_ai, or when
+    glmcp.review.direct has a fresh route-specific quota admission.
+    """
+
+    now = _parse_aware_datetime(now_iso)
+    try:
+        if _glmcp_payg_transition_budget_active(now):
+            return True
+        return _glmcp_review_direct_quota_admission_fresh(now)
+    except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
+        return False
 
 
 def update_family_outage(
@@ -685,9 +911,15 @@ def update_family_outage(
 ) -> frozenset[str]:
     """Fold a round's seat verdicts into the outage state.
 
-    All seats of a family walled -> family OUT (stamped now). Any parseable
-    verdict or invalid-output from a family -> family back (cleared), because
-    the family is responding even if its reply is unusable.
+    All seats of a family walled -> family OUT (stamped now). Restamp
+    preserves operator-authored until/note and never invents until. A
+    parseable verdict or invalid-output clears the family only when until
+    is absent or now >= until; a still-future until keeps the family OUT.
+
+    Family ``glm`` is the exception when glmcp.review.direct PAYG is
+    eligible: a Coding Plan wall is not glm-family death, so glm is not
+    inserted or restamped, and a no-until glm latch is popped. claude and
+    codex are never popped by this PAYG path.
     """
 
     state_path = state_path or FAMILY_OUTAGE_STATE
@@ -706,15 +938,34 @@ def update_family_outage(
             for r in reviews:
                 by_family.setdefault(str(r.get("family")), []).append(str(r.get("verdict")))
             available_verdicts = PARSEABLE_VERDICTS | {"invalid-output"}
+            glm_payg_eligible = _glmcp_payg_review_route_eligible(now_iso)
             for family, verdicts in by_family.items():
                 if all(v in review_team.FAMILY_OUTAGE_VERDICTS for v in verdicts):
+                    if family == "glm" and glm_payg_eligible:
+                        # Coding Plan wall ≠ glm-family death. Do not insert/restamp glm.
+                        continue
                     # Sustained outage: preserve the STABLE outage_started_at (set when this
                     # outage began) and only advance observed_at. Legacy str entries seed
                     # started == the old timestamp; a brand-new outage seeds started == now.
-                    started = _outage_started_at(state.get(family), now_iso)
-                    state[family] = {"observed_at": now_iso, "outage_started_at": started}
+                    # Preserve operator-authored until/note on restamp; never invent until.
+                    existing = state.get(family)
+                    started = _outage_started_at(existing, now_iso)
+                    entry: dict[str, Any] = {
+                        "observed_at": now_iso,
+                        "outage_started_at": started,
+                    }
+                    _copy_until_note(existing, entry)
+                    state[family] = entry
                 elif any(v in available_verdicts for v in verdicts):
+                    existing = state.get(family)
+                    if _family_until_still_active(existing, now_iso):
+                        # Stay OUT until operator until. Do not pop until/note.
+                        continue
                     state.pop(family, None)
+            if glm_payg_eligible:
+                existing_glm = state.get("glm")
+                if existing_glm is not None and not _family_outage_entry_has_until(existing_glm):
+                    state.pop("glm", None)
             with tempfile.NamedTemporaryFile(
                 "w",
                 encoding="utf-8",
@@ -746,8 +997,11 @@ def clear_route_recovered_family_outage(
     receipt is a recovery witness for that backing route; if the route is still
     blocked, the outage latch stays intact. The route_blocked_families input is
     the operational killswitch for a bad recovery detector: route-block the
-    family and this helper will not clear its outage latch. Legacy one-line
-    outage entries remain explicit family outages and are not route-cleared.
+    family and this helper will not clear its outage latch. A parseable until
+    still in the future is not recovery: a post-outage route admission must
+    not pop that family. After until lapses, or when until is absent,
+    route-admission recovery is unchanged. Legacy one-line outage entries
+    remain explicit family outages and are not route-cleared.
     """
 
     if not outage_witness:
@@ -769,6 +1023,10 @@ def clear_route_recovered_family_outage(
         if family in structured_outage_families
         and family in route_ids
         and family not in route_blocked_families
+        and not _family_until_still_active(
+            raw_state.get(family),
+            now_iso or datetime.now(UTC).isoformat(),
+        )
         and _route_has_post_outage_admission_witness(
             route_ids[family],
             observed_at,

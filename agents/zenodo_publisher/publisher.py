@@ -213,7 +213,7 @@ def _render_creators(artifact: PreprintArtifact) -> list[dict]:
     """Map ``co_authors`` to Zenodo's ``creators`` array.
 
     Each creator: ``{"name": str}`` minimum. The operator's ORCID iD
-    (loaded from ``pass show orcid/orcid`` via ``shared.orcid``) is
+    (loaded through ``shared.orcid.operator_orcid``: env, then the FileStore) is
     attached to the operator's creator entry — recognized by the
     ``Oudepode`` alias / ``operator`` role — so the DOI metadata
     carries the formal-context citation identifier. Zenodo supports

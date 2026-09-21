@@ -7,10 +7,9 @@ payment-event log.
 
 Liberapay uses HTTP Basic auth with the operator's web-UI username
 and password (no API token product, per the spec). Credentials are
-stored in pass:
+stored in the FileStore:
 
-    pass insert liberapay/username
-    pass insert liberapay/password
+    hapax-secret   # TTY put dialogue; names liberapay/username, liberapay/password
 
 READ-ONLY contract:
     This receiver never calls payout/withdraw/transfer endpoints. The
@@ -121,8 +120,8 @@ class LiberapayReceiver:
             self._disable_with_refusal(
                 surface="liberapay-credentials-bootstrap",
                 reason=(
-                    "No liberapay/username + liberapay/password in pass; "
-                    "rail disabled until pass insert."
+                    "No liberapay/username + liberapay/password in the FileStore; "
+                    "rail disabled until both are put."
                 ),
             )
             return 0

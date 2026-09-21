@@ -1585,9 +1585,42 @@ text = re.sub(
 text = _insert_session_log(text, log_line)
 
 if not canon_enforced:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
+    # The legacy writer, reached only via HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1. The admitted
+    # path takes the projection lock inside shared/sdlc_claim._claim_publication_lock; this
+    # fallback must too, or the documented emergency route would be the one way to write a task
+    # note while a transition holds it — a killswitch that does something *else* rather than
+    # less, which is the shape this estate refuses.
+    from shared.task_note_lock import TaskNoteLockError, projected_path_lock
+
+    try:
+        with projected_path_lock(task_id, (path,)):
+            # PREIMAGE CHECK, not just an existence check. `text` was derived from
+            # `note_before`, read ~800 lines above this lock, and every decision between them —
+            # claimability, status, dependency validity, the session-log insertion — was taken
+            # against those bytes. Locking only the write leaves that whole chain resting on a
+            # snapshot another writer may already have replaced, and `path.is_file()` sees a
+            # relocation but not a modification: the claim would be written over a note that
+            # had moved on, silently. Refuse on any change and let the caller re-derive, which
+            # is what the admitted path's own `_locked_preflight` does.
+            try:
+                note_now = path.read_bytes()
+            except FileNotFoundError:
+                note_now = None
+            if note_now != note_before:
+                moved = "moved" if note_now is None else "changed"
+                print(
+                    f"cc-claim: REFUSED — '{task_id}' {moved} while acquiring its lock; "
+                    "the claim was computed from the earlier bytes. Rerun to act on its "
+                    "current position",
+                    file=sys.stderr,
+                )
+                sys.exit(3)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(text, encoding="utf-8")
+            tmp.replace(path)
+    except TaskNoteLockError as exc:
+        print(f"cc-claim: REFUSED — {exc}", file=sys.stderr)
+        sys.exit(3)
     cache_dir.mkdir(parents=True, exist_ok=True)
     # The `cc-claim-epoch-*` SIDECAR records the claim time out-of-band:
     # several consumers read the claim file's FULL content as the task id, so

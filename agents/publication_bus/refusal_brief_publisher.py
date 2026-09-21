@@ -238,7 +238,7 @@ class RefusalBriefPublisher(Publisher):
                 refused=True,
                 detail=(
                     "missing Zenodo credentials "
-                    "(operator-action queue: configure Zenodo PAT in pass)"
+                    "(operator-action: put zenodo/api-token with hapax-secret)"
                 ),
             )
         if requests is None:

@@ -52,6 +52,9 @@ dispatch = _load("cc_pr_review_dispatch", "cc-pr-review-dispatch.py")
 def _isolate_outage_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(dispatch, "FAMILY_OUTAGE_STATE", tmp_path / "family-outage.json")
     monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", tmp_path / "degraded-merges.jsonl")
+    receipts = tmp_path / "relay-receipts"
+    receipts.mkdir(exist_ok=True)
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPTS", str(receipts))
 
 
 def _make_vault(tmp_path: Path) -> Path:
@@ -2870,8 +2873,8 @@ public_gate_authority:
 
         assert result["status"] == "dispatched"
         assert (
-            "next action: restore the public-gate authority signing credential from pass"
-            in caplog.text
+            "next action: restore the public-gate authority signing credential from the "
+            "FileStore" in caplog.text
         )
         assert dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV not in caplog.text
 
@@ -3386,6 +3389,11 @@ class TestFamilyOutageDegradation:
         ledger = tmp_path / "degraded-merges.jsonl"
         monkeypatch.setattr(dispatch, "FAMILY_OUTAGE_STATE", state)
         monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", ledger)
+        monkeypatch.setattr(
+            dispatch,
+            "_glmcp_payg_review_route_eligible",
+            lambda _now_iso: False,
+        )
         return state, ledger
 
     @staticmethod
@@ -4084,6 +4092,109 @@ class TestFamilyOutageDegradation:
         assert witness == {}
         assert json.loads(state.read_text(encoding="utf-8")) == {}
 
+    def test_route_admission_with_future_until_does_not_clear_structured_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """A post-outage route admission is not recovery while operator until is future."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        entry = {
+            "observed_at": observed,
+            "outage_started_at": "2026-06-11T20:55:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        state.write_text(json.dumps({"claude": entry}), encoding="utf-8")
+
+        class Resolved:
+            source = "live"
+            live_error = None
+            ledger = object()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "subscription_quota_state_for_route",
+            lambda _ledger, _route_id, *, now: (
+                SubscriptionQuotaState.FRESH,
+                (
+                    "relay-receipt:claude-subscription-quota-admission.yaml:"
+                    "observed_at:2026-06-11T20:56:00Z:"
+                    "fresh_until:2026-06-11T21:11:00Z",
+                ),
+            ),
+        )
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"claude": observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            now_iso="2026-06-11T21:00:00+00:00",
+            state_path=state,
+        )
+
+        assert witness == {"claude": observed}
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded["claude"] == entry
+
+    def test_route_admission_with_past_until_clears_structured_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Expired until yields to route-admission recovery."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": observed,
+                        "outage_started_at": "2026-06-11T20:55:00+00:00",
+                        "until": "2026-06-11T20:00:00Z",
+                        "note": "weekly reset",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        class Resolved:
+            source = "live"
+            live_error = None
+            ledger = object()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "subscription_quota_state_for_route",
+            lambda _ledger, _route_id, *, now: (
+                SubscriptionQuotaState.FRESH,
+                (
+                    "relay-receipt:claude-subscription-quota-admission.yaml:"
+                    "observed_at:2026-06-11T20:56:00Z:"
+                    "fresh_until:2026-06-11T21:11:00Z",
+                ),
+            ),
+        )
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"claude": observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            now_iso="2026-06-11T21:00:00+00:00",
+            state_path=state,
+        )
+
+        assert witness == {}
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
     @pytest.mark.parametrize(
         ("family", "route_id", "evidence_ref"),
         [
@@ -4447,6 +4558,502 @@ payg_fallback: false
         witness = dispatch.load_family_outage_witness("2026-06-12T21:00:00+00:00", state)
 
         assert witness == {"claude": "2026-06-12T20:59:00"}
+
+    def test_stale_observed_at_with_future_until_keeps_family_out(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """observed_at older than TTL still OUT while explicit until is in the future."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-12T18:00:00+00:00"  # 3h before now
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": observed,
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                        "until": "2026-06-13T00:00:00Z",
+                        "note": "weekly reset",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        now = "2026-06-12T21:00:00+00:00"
+        assert dispatch.load_family_outage(now, state) == frozenset({"claude"})
+        assert dispatch.load_family_outage_witness(now, state) == {"claude": observed}
+
+    def test_stale_observed_at_with_past_until_returns_family_in(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Expired until is authoritative: family is IN even if observed_at is stale."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-12T18:00:00+00:00",
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                        "until": "2026-06-12T20:00:00Z",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert dispatch.load_family_outage("2026-06-12T21:00:00+00:00", state) == frozenset()
+
+    def test_stale_observed_at_without_until_expires_after_ttl(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """No until: 3h-old observed_at is past FAMILY_OUTAGE_TTL_S, family IN."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-12T18:00:00+00:00",
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert dispatch.load_family_outage("2026-06-12T21:00:00+00:00", state) == frozenset()
+
+    def test_recent_observed_at_without_until_keeps_family_out(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """No until: 1h-old observed_at is inside TTL, family OUT."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-12T20:00:00+00:00"
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": observed,
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        now = "2026-06-12T21:00:00+00:00"
+        assert dispatch.load_family_outage(now, state) == frozenset({"claude"})
+        assert dispatch.load_family_outage_witness(now, state) == {"claude": observed}
+
+    @staticmethod
+    def _write_wall_receipt(
+        path: Path,
+        *,
+        resets_at: str,
+        observed_at: str,
+        status: str = "quota_blocked",
+        role: str = "claude-subscription-weekly-limit",
+        schema: str = "hapax.claude_quota_hold.v1",
+        provider: str = "anthropic-claude-subscription",
+        route_id: str = "claude.headless.full",
+        billing_mode: str = "operator_session_subscription",
+    ) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\n".join(
+                [
+                    f"schema: {schema}",
+                    f"status: {status}",
+                    f"role: {role}",
+                    f"provider: {provider}",
+                    f"route_id: {route_id}",
+                    f"billing_mode: {billing_mode}",
+                    f'observed_at: "{observed_at}"',
+                    f'resets_at: "{resets_at}"',
+                    "secret_value_persisted: false",
+                    "prompt_or_output_persisted: false",
+                    "positive_admission: false",
+                    "payg_fallback: false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_claude_wall_receipt_marks_out_when_json_missing(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Json missing claude; weekly-limit wall resets_at in the future → claude OUT."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        wall = tmp_path / "relay-receipts" / "claude-subscription-weekly-limit-quota-wall.yaml"
+        observed = "2026-09-17T19:40:00Z"
+        self._write_wall_receipt(
+            wall,
+            resets_at="2026-09-18T22:00:00Z",
+            observed_at=observed,
+        )
+        now = "2026-09-17T20:00:00+00:00"
+        assert dispatch.load_family_outage(now, state, wall_receipt_path=wall) == frozenset(
+            {"claude"}
+        )
+        assert dispatch.load_family_outage_witness(now, state, wall_receipt_path=wall) == {
+            "claude": observed
+        }
+
+    def test_expired_json_until_fills_claude_from_wall_receipt(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Json until in the past; receipt resets_at in the future → claude OUT from receipt."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-09-17T10:00:00+00:00",
+                        "outage_started_at": "2026-09-17T10:00:00+00:00",
+                        "until": "2026-09-17T12:00:00Z",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        wall = tmp_path / "relay-receipts" / "claude-subscription-weekly-limit-quota-wall.yaml"
+        observed = "2026-09-17T19:40:00Z"
+        self._write_wall_receipt(
+            wall,
+            resets_at="2026-09-18T22:00:00Z",
+            observed_at=observed,
+        )
+        now = "2026-09-17T20:00:00+00:00"
+        assert dispatch.load_family_outage(now, state, wall_receipt_path=wall) == frozenset(
+            {"claude"}
+        )
+        assert dispatch.load_family_outage_witness(now, state, wall_receipt_path=wall) == {
+            "claude": observed
+        }
+
+    def test_past_wall_receipt_does_not_force_claude_out(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Receipt resets_at in the past → claude is not forced OUT by the receipt."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        wall = tmp_path / "relay-receipts" / "claude-subscription-weekly-limit-quota-wall.yaml"
+        self._write_wall_receipt(
+            wall,
+            resets_at="2026-09-16T22:00:00Z",
+            observed_at="2026-09-16T19:40:00Z",
+        )
+        now = "2026-09-17T20:00:00+00:00"
+        assert dispatch.load_family_outage(now, state, wall_receipt_path=wall) == frozenset()
+        assert dispatch.load_family_outage_witness(now, state, wall_receipt_path=wall) == {}
+
+    def test_glm_coding_plan_wall_does_not_add_glm(self, monkeypatch: Any, tmp_path: Path) -> None:
+        """A glm coding-plan wall is not glm-family death (PAYG is the live glm route)."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        wall = tmp_path / "relay-receipts" / "glm-coding-plan-weekly-limit-quota-wall.yaml"
+        self._write_wall_receipt(
+            wall,
+            resets_at="2026-09-20T11:37:24Z",
+            observed_at="2026-09-17T04:51:46Z",
+            role="glm-coding-plan-weekly-limit",
+            schema="hapax.glmcp_quota_hold.v1",
+            provider="z_ai-glm-coding-plan",
+            route_id="glmcp.review.direct",
+            billing_mode="coding_plan_subscription",
+        )
+        now = "2026-09-17T20:00:00+00:00"
+        assert dispatch.load_family_outage(now, state, wall_receipt_path=wall) == frozenset()
+        witness = dispatch.load_family_outage_witness(now, state, wall_receipt_path=wall)
+        assert "glm" not in witness
+        assert "claude" not in witness
+
+    def test_family_outage_restamp_preserves_until_and_note(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Restamp advances observed_at and keeps until/note; it does not invent until."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-12T18:00:00+00:00",
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                        "until": "2026-06-13T00:00:00Z",
+                        "note": "weekly reset",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        dispatch.update_family_outage(
+            [
+                {"family": "claude", "verdict": "quota-wall"},
+                {"family": "glm", "verdict": "provider-outage"},
+            ],
+            "2026-06-12T21:00:00+00:00",
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded["claude"] == {
+            "observed_at": "2026-06-12T21:00:00+00:00",
+            "outage_started_at": "2026-06-12T12:00:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        assert recorded["glm"] == {
+            "observed_at": "2026-06-12T21:00:00+00:00",
+            "outage_started_at": "2026-06-12T21:00:00+00:00",
+        }
+        # After restamp, observed_at can age past TTL while until is still future.
+        later = "2026-06-12T23:30:00+00:00"
+        assert dispatch.load_family_outage(later, state) == frozenset({"claude"})
+
+    def test_glm_quota_wall_does_not_stamp_family_outage_when_payg_eligible(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Coding Plan walls are not glm-family death while PAYG is the live route."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            dispatch,
+            "_glmcp_payg_review_route_eligible",
+            lambda _now_iso: True,
+        )
+        state.write_text(
+            json.dumps(
+                {
+                    "glm": {
+                        "observed_at": "2026-09-17T17:00:00+00:00",
+                        "outage_started_at": "2026-09-17T16:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        out = dispatch.update_family_outage(
+            [
+                {"family": "glm", "verdict": "quota-wall"},
+                {"family": "glm", "verdict": "quota-wall"},
+            ],
+            "2026-09-17T18:05:45+00:00",
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert "glm" not in recorded
+        assert out == frozenset()
+
+    def test_glm_quota_wall_stamps_family_outage_when_payg_ineligible(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Without PAYG, Coding Plan is the only glm path and the family is OUT."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-09-17T18:13:26+00:00"
+        out = dispatch.update_family_outage(
+            [
+                {"family": "glm", "verdict": "quota-wall"},
+                {"family": "glm", "verdict": "quota-wall"},
+            ],
+            now,
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {
+            "glm": {
+                "observed_at": now,
+                "outage_started_at": now,
+            }
+        }
+        assert out == frozenset({"glm"})
+
+    def test_glm_payg_eligible_preserves_claude_until(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """PAYG recovery pops no-until glm and must not pop claude until/note."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            dispatch,
+            "_glmcp_payg_review_route_eligible",
+            lambda _now_iso: True,
+        )
+        claude_entry = {
+            "observed_at": "2026-06-12T18:00:00+00:00",
+            "outage_started_at": "2026-06-12T12:00:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": claude_entry,
+                    "codex": {
+                        "observed_at": "2026-06-12T20:00:00+00:00",
+                        "outage_started_at": "2026-06-12T19:00:00+00:00",
+                    },
+                    "glm": {
+                        "observed_at": "2026-09-17T17:00:00+00:00",
+                        "outage_started_at": "2026-09-17T16:00:00+00:00",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        now = "2026-06-12T21:00:00+00:00"
+        dispatch.update_family_outage(
+            [
+                {"family": "claude", "verdict": "quota-wall"},
+                {"family": "glm", "verdict": "quota-wall"},
+            ],
+            now,
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded["claude"] == {
+            "observed_at": now,
+            "outage_started_at": "2026-06-12T12:00:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        assert recorded["codex"] == {
+            "observed_at": "2026-06-12T20:00:00+00:00",
+            "outage_started_at": "2026-06-12T19:00:00+00:00",
+        }
+        assert "glm" not in recorded
+
+    def test_glmcp_payg_review_route_eligible_with_live_transition_budget(
+        self, monkeypatch: Any
+    ) -> None:
+        class Budget:
+            providers_allowed = ("z_ai",)
+            profiles_allowed = ("glmcp-review-direct",)
+
+        class Ledger:
+            def active_paid_budgets(self, now: Any = None) -> tuple[Any, ...]:
+                return (Budget(),)
+
+        class Resolved:
+            source = "live"
+            ledger = Ledger()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch,
+            "_glmcp_review_direct_quota_admission_fresh",
+            lambda _now: False,
+        )
+        assert dispatch._glmcp_payg_review_route_eligible("2026-09-17T18:05:45+00:00") is True
+
+    def test_glmcp_payg_review_route_eligible_when_route_admission_fresh(
+        self, monkeypatch: Any
+    ) -> None:
+        class Resolved:
+            source = "fixtures"
+            ledger = None
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch,
+            "_route_specific_quota_admission_fresh",
+            lambda _payload, *, now: (
+                True,
+                ("spend-gate:glmcp.review.direct:eligible_active_budget",),
+            ),
+        )
+        assert dispatch._glmcp_payg_review_route_eligible("2026-09-17T18:05:45+00:00") is True
+
+    def test_glmcp_payg_review_route_ineligible_without_live_payg(self, monkeypatch: Any) -> None:
+        class Ledger:
+            def active_paid_budgets(self, now: Any = None) -> tuple[Any, ...]:
+                return ()
+
+        class Resolved:
+            source = "live"
+            ledger = Ledger()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch,
+            "_route_specific_quota_admission_fresh",
+            lambda _payload, *, now: (False, ()),
+        )
+        assert dispatch._glmcp_payg_review_route_eligible("2026-09-17T18:13:26+00:00") is False
+
+    def test_invalid_output_with_future_until_keeps_family_out(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """A seated invalid-output must not pop an operator until still in the future."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        entry = {
+            "observed_at": "2026-06-12T18:00:00+00:00",
+            "outage_started_at": "2026-06-12T12:00:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        state.write_text(json.dumps({"claude": entry}), encoding="utf-8")
+        now = "2026-06-12T21:00:00+00:00"
+        out = dispatch.update_family_outage(
+            [{"family": "claude", "verdict": "invalid-output"}],
+            now,
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded["claude"] == entry
+        assert out == frozenset({"claude"})
+        assert dispatch.load_family_outage(now, state) == frozenset({"claude"})
+
+    def test_invalid_output_with_past_until_clears_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Expired until yields to clear-on-verdict."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-12T18:00:00+00:00",
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                        "until": "2026-06-12T20:00:00Z",
+                        "note": "weekly reset",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        dispatch.update_family_outage(
+            [{"family": "claude", "verdict": "invalid-output"}],
+            "2026-06-12T21:00:00+00:00",
+            state,
+        )
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
+    def test_valid_verdict_without_until_clears_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """No until: a parseable verdict still clears the family."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-12T20:00:00+00:00",
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        dispatch.update_family_outage(
+            [{"family": "claude", "verdict": "accept"}],
+            "2026-06-12T21:00:00+00:00",
+            state,
+        )
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
 
     def test_family_offline_simulation_degrades_and_flows(
         self, monkeypatch: Any, tmp_path: Path

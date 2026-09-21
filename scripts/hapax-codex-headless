@@ -506,7 +506,6 @@ for name in (
     "HAPAX_IDLE_UPDATE_SECONDS",
     "HAPAX_CODEX_BIN_PATH",
     "NPM_CONFIG_PREFIX",
-    "PASSWORD_STORE_DIR",
     # The condition vector travels with the launch it describes. Remote exec starts
     # `codex` directly, so no launcher runs on the exec host to re-derive these, and
     # without them a remote lane's claims record no capability shape at all — the
@@ -516,6 +515,15 @@ for name in (
     # is left is either addressed to this launcher or absent.
     "HAPAX_CAPABILITY_ROUTE",
     "HAPAX_CAPABILITY_MODEL",
+    # MERGE NOTE (2026-09-21, #4668 x main): this branch also forwarded
+    # "PASSWORD_STORE_DIR" here. Dropped. `pass`/`gopass` are RETIRED in favour of the
+    # FileStore (operator ruling, 2026-09-16: "all pass/gopass -> FileStore, uninstall,
+    # never again"), and main carries no reference to it anywhere under scripts/. The
+    # branch predates that retirement; forwarding the variable would re-introduce a
+    # retired secret backend into every remote lane launch. The capability vars above
+    # are kept — this branch adds them to hapax-claude-headless too, so the comment's
+    # claim about the sibling path is true within the branch even though it is not true
+    # of main alone.
 ):
     value = os.environ.get(name)
     if value is not None:
@@ -1012,7 +1020,6 @@ export HAPAX_WORKTREE_ROLE="$HAPAX_AGENT_SLOT"
 export HAPAX_SESSION_ID="$SESSION_UUID"
 export CLAUDE_ROLE="${CLAUDE_ROLE:-$SESSION}"
 export HAPAX_IDLE_UPDATE_SECONDS="${HAPAX_IDLE_UPDATE_SECONDS:-270}"
-export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
 export LOGOS_BASE_URL
 export COCKPIT_BASE_URL
 

@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Secrets come from the FileStore through the one shared helper, never from pass.
+# Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
+# The installed entry points are ~/.local/bin symlinks into the release tree, and BASH_SOURCE is
+# the symlink path — so the lib lives beside the TARGET and must be resolved first (measured:
+# invoked through the symlink, `${BASH_SOURCE[0]%/*}/lib` was ~/.local/bin/lib, absent, rc=1).
+# /usr/bin/readlink by absolute path keeps this independent of PATH; the fallback keeps a host
+# without coreutils on the direct-invocation behaviour rather than dying here.
+_hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+. "${_hapax_self%/*}/lib/secret.sh"
+
 # Bounded critical-artifact offsite backup while broad Tier 2 B2 is blocked.
 # This script does not create live database dumps, create Qdrant snapshots,
 # upload live MinIO backing stores, or run destructive restic prune. It does
@@ -71,12 +81,12 @@ log() { echo "[$(date -Iseconds)] $*" >&2; }
 
 restic_password() {
     local password
-    password="$(pass show "$PASSWORD_ENTRY" 2>/dev/null | sed -n '1p')" || {
-        echo "ERROR: cannot read restic password pass entry '$PASSWORD_ENTRY'" >&2
+    password="$(hapax_secret_read "$PASSWORD_ENTRY")" || {
+        echo "ERROR: cannot read the restic password '$PASSWORD_ENTRY' from the FileStore. Next action: put it with \`hapax-secret $PASSWORD_ENTRY\`." >&2
         return 1
     }
     if [[ -z "$password" ]]; then
-        echo "ERROR: restic password pass entry '$PASSWORD_ENTRY' is empty" >&2
+        echo "ERROR: the restic password '$PASSWORD_ENTRY' is empty. Next action: re-put it with \`hapax-secret $PASSWORD_ENTRY\`." >&2
         return 1
     fi
     printf '%s' "$password"
@@ -111,9 +121,9 @@ materialize_validated_dump() {
     # /tmp; we refuse to point the manifest there. Fail closed if NAS has no dump.
     mkdir -p "$(dirname "$POSTGRES_DUMP_PATH")"
     local password
-    password="$(pass show "$TIER1_PASSWORD_ENTRY" 2>/dev/null | sed -n '1p')" || {
-        echo "ERROR: cannot read Tier-1 restic password ($TIER1_PASSWORD_ENTRY)" >&2
-        echo "Next: unlock pass and re-run" >&2
+    password="$(hapax_secret_read "$TIER1_PASSWORD_ENTRY")" || {
+        echo "ERROR: cannot read the Tier-1 restic password ($TIER1_PASSWORD_ENTRY) from the FileStore" >&2
+        echo "Next action: put it with \`hapax-secret $TIER1_PASSWORD_ENTRY\`, then re-run" >&2
         exit 1
     }
     [[ -n "$password" ]] || {

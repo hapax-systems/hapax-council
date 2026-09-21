@@ -767,7 +767,6 @@ route_metadata:
     static_checks: [ruff]
     runtime_observation: true
   route_constraints:
-    preferred_platforms: [codex]
     allowed_platforms: [codex, claude]
     prohibited_platforms: []
   review_requirement:

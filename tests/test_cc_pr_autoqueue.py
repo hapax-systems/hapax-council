@@ -11079,3 +11079,199 @@ def test_graphql_malformed_references_refuse_governance_without_rest(
     assert governance.reason == f"auto_merge_method_unverified:{reason}"
     assert governance.method is None
     assert not any(cmd[:4] == ["gh", "api", "--method", "GET"] for cmd in calls)
+
+
+# --- Transient rulesets-fetch transport window: HOLD a queued entry, never dequeue ---------- #
+# Regression: cc-pr-autoqueue dequeued accepted PR #4672 repeatedly on 2026-09-16 because its
+# own rulesets fetch was rate-limited (a 403 secondary/burst limit), and it treated the
+# unreadable merge-method as a dequeue-worthy blocker — acting on evidence it could not read.
+# A transient transport window (rate-limit / 429 / 5xx) says nothing about the PR: a queued
+# entry must be HELD (not dequeued) and NO failure admission status may be written (that fails
+# the required hapax/autoqueue-admission check and makes GitHub drop the queue entry).
+
+
+def test_queued_pr_holds_on_transient_rate_limited_rulesets_fetch(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queued-rulesets-rate-limited", pr=80)
+    runner = _FakeRunner()
+    runner.queued_prs = {80}
+    runner.open_prs = [_pr(80, auto_merge=True)]
+    runner.rulesets_error = "API rate limit exceeded for user ID 418460"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["action"] == "hold"
+    assert report["counts"]["dequeue"] == 0
+    assert report["counts"]["disable_auto_merge"] == 0
+    assert decision["reasons"] == [
+        "auto_merge_method_unverified:transient_transport:source=rulesets_fetch_failed:"
+        "API rate limit exceeded for user ID 418460"
+    ]
+    # No dequeue mutation.
+    assert not any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+    # No admission-status write — the failure write is what drops the queue entry.
+    assert not any(
+        call[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in call[4] for call in runner.calls
+    )
+
+
+def test_queued_pr_holds_on_transient_unavailable_rulesets_fetch(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="queued-rulesets-5xx", pr=81)
+    runner = _FakeRunner()
+    runner.queued_prs = {81}
+    runner.open_prs = [_pr(81, auto_merge=True)]
+    runner.rulesets_error = "gh api failed: HTTP 502 Bad Gateway"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["action"] == "hold"
+    assert report["counts"]["dequeue"] == 0
+    assert decision["reasons"][0].startswith(
+        "auto_merge_method_unverified:transient_transport:source=rulesets_fetch_failed:"
+    )
+    assert not any(
+        call[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in call[4] for call in runner.calls
+    )
+
+
+def test_non_queued_pr_blocks_not_dequeues_on_transient_rulesets_fetch(tmp_path: Path) -> None:
+    # Armed but NOT in the queue: nothing to hold in a queue, so the transient blocker keeps the
+    # PR blocked (fail-closed) — never a dequeue, and still no failure admission status.
+    vault = _make_vault(tmp_path)
+    _write_task(vault, task_id="non-queued-rulesets-rate-limited", pr=82)
+    runner = _FakeRunner()
+    runner.open_prs = [_pr(82, auto_merge=True)]
+    runner.rulesets_error = "API rate limit exceeded for user ID 418460"
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["action"] == "blocked"
+    assert report["counts"]["dequeue"] == 0
+    assert report["counts"]["disable_auto_merge"] == 0
+    assert decision["reasons"][0].startswith(
+        "auto_merge_method_unverified:transient_transport:source=rulesets_fetch_failed:"
+    )
+    assert not any(
+        call[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in call[4] for call in runner.calls
+    )
+
+
+# --- Missing vault note must not fail hapax/autoqueue-admission (overnight 2026-09-17) ---
+# Regression: autoqueue rewrote `failure` on CI-green PRs whose only blocker was
+# `missing_cc_task_link`. GitHub treats that required check failure as a dequeue
+# (#4680-#4686, #4673, #4665). Same shape as the #4672 transport-hold: classify
+# the missing-note-only case once, and never post failure for it. Pending does
+# not fail the required check.
+
+
+def _blocked_admission_decision(*, reasons: tuple[str, ...], action: str = "blocked") -> Any:
+    pr = autoqueue._parse_pr(_pr(50))
+    assert pr is not None
+    return autoqueue.Decision(pr=pr, action=action, reasons=reasons)
+
+
+def test_admission_status_missing_note_only_is_pending_not_failure() -> None:
+    decision = _blocked_admission_decision(reasons=("missing_cc_task_link",), action="blocked")
+    status = autoqueue._admission_status_for(decision)
+    assert status is not None
+    state, description = status
+    assert state == "pending"
+    assert state != "failure"
+    assert "missing_cc_task_link" in description
+
+
+def test_admission_status_missing_note_unparseable_variant_is_pending() -> None:
+    reason = (
+        "missing_cc_task_link (NOTE: 1 unparseable task note(s): broken.md — "
+        "fix or run scripts/cc-task-lint)"
+    )
+    decision = _blocked_admission_decision(reasons=(reason,), action="blocked")
+    status = autoqueue._admission_status_for(decision)
+    assert status is not None
+    state, description = status
+    assert state == "pending"
+    assert state != "failure"
+    assert "missing_cc_task_link" in description
+    assert "broken.md" in description
+
+
+def test_admission_status_missing_note_with_other_blocker_is_failure() -> None:
+    decision = _blocked_admission_decision(
+        reasons=("missing_cc_task_link", "unresolved_critical"),
+        action="blocked",
+    )
+    status = autoqueue._admission_status_for(decision)
+    assert status is not None
+    state, description = status
+    assert state == "failure"
+    assert "missing_cc_task_link" in description
+    assert "unresolved_critical" in description
+
+
+def test_admission_status_transport_only_still_skips_write() -> None:
+    decision = _blocked_admission_decision(
+        reasons=(
+            autoqueue.TRANSIENT_TRANSPORT_UNVERIFIED_PREFIX
+            + "source=rulesets_fetch_failed:API rate limit exceeded",
+        ),
+        action="hold",
+    )
+    assert autoqueue._admission_status_for(decision) is None
+
+
+def test_queued_pr_missing_note_only_holds_and_posts_pending(tmp_path: Path) -> None:
+    vault = _make_vault(tmp_path)
+    runner = _FakeRunner()
+    runner.queued_prs = {90}
+    runner.open_prs = [_pr(90)]
+
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=vault,
+        apply=True,
+        runner=runner,
+    )
+
+    decision = report["decisions"][0]
+    assert decision["action"] == "hold"
+    assert report["counts"]["dequeue"] == 0
+    assert decision["reasons"] == ["missing_cc_task_link"]
+    assert not any(
+        call[:3] == ["gh", "api", "graphql"] and any("dequeuePullRequest" in part for part in call)
+        for call in runner.calls
+    )
+    posts = [
+        call
+        for call in runner.calls
+        if call[:4] == ["gh", "api", "-X", "POST"] and "/statuses/" in call[4]
+    ]
+    assert posts
+    assert "state=pending" in posts[0]
+    assert "state=failure" not in posts[0]
+    assert any("vault task note" in part or "missing_cc_task_link" in part for part in posts[0])

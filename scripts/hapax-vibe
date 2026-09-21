@@ -335,7 +335,6 @@ if [ -n "$TASK_ID" ] && [ "$CLAIM_TASK" -eq 1 ]; then
   fi
 fi
 
-export PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
 export LOGOS_BASE_URL="${LOGOS_BASE_URL:-http://localhost:8051/api}"
 
 collect_relay_inflections() {

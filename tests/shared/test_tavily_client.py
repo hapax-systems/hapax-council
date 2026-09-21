@@ -55,21 +55,26 @@ def _now() -> datetime:
 
 
 def test_load_tavily_api_key_prefers_env(monkeypatch) -> None:
-    monkeypatch.setattr("shared.tavily_client.pass_first_line", lambda name: "pass-token")
+    monkeypatch.setattr(
+        "shared.tavily_client.get_secret",
+        lambda name, *, env=None, required=True: "store-token",
+    )
 
     assert load_tavily_api_key({"TAVILY_API_KEY": "env-token"}) == "env-token"
 
 
-def test_load_tavily_api_key_falls_back_to_expected_pass_entries(monkeypatch) -> None:
+def test_load_tavily_api_key_falls_back_to_the_filestore(monkeypatch) -> None:
+    """CONTRACT CHANGE 2026-09-16: the fallback is the reins FileStore, not pass. Operator
+    ruling: pass and gopass are not used to manage secrets going forward."""
     seen: list[str] = []
 
-    def fake_pass_first_line(name: str) -> str:
+    def fake_get_secret(name: str, *, env=None, required=True) -> str | None:
         seen.append(name)
-        return "pass-token" if name == "tavily/api-key" else ""
+        return "store-token" if name == "tavily/api-key" else None
 
-    monkeypatch.setattr("shared.tavily_client.pass_first_line", fake_pass_first_line)
+    monkeypatch.setattr("shared.tavily_client.get_secret", fake_get_secret)
 
-    assert load_tavily_api_key({}) == "pass-token"
+    assert load_tavily_api_key({}) == "store-token"
     assert seen == ["tavily/api-key"]
 
 

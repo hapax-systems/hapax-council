@@ -26,19 +26,25 @@ def _base_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
     return env, bin_dir
 
 
-def _install_pass_stub(
+def _install_secret_stub(
     bin_dir: Path,
-    token: str = "test-secret-token",
+    token: str = "test-secret-token",  # pragma: allowlist secret
     entry: str = "glmcp/api-key",
 ) -> None:
+    """A fake `hapax-secret` — the FileStore CLI this launcher reads through.
+
+    CONTRACT CHANGE 2026-09-16: this suite used to stub `pass`. Operator ruling: pass and
+    gopass are not used to manage secrets going forward, so the launcher resolves through
+    `scripts/lib/secret.sh` -> `hapax-secret`, and the stub follows it.
+    """
     _write_executable(
-        bin_dir / "pass",
+        bin_dir / "hapax-secret",
         f"""
-        if [[ "$1" == "show" && "$2" == "{entry}" ]]; then
+        if [[ "$1" == "{entry}" ]]; then
           printf '%s\\n' {token!r}
           exit 0
         fi
-        printf 'missing entry: %s\\n' "$2" >&2
+        printf 'not found: %s\\n' "$1" >&2
         exit 1
         """,
     )
@@ -48,7 +54,7 @@ def test_check_mode_sets_coding_plan_environment_without_printing_secret(
     tmp_path: Path,
 ) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir)
+    _install_secret_stub(bin_dir)
     env_file = tmp_path / "claude-env.txt"
     _write_executable(
         bin_dir / "claude",
@@ -99,7 +105,7 @@ def test_check_mode_sets_coding_plan_environment_without_printing_secret(
 
 def test_exec_path_preserves_claude_arguments(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir)
+    _install_secret_stub(bin_dir)
     args_file = tmp_path / "claude-args.txt"
     env_file = tmp_path / "claude-env.txt"
     _write_executable(
@@ -137,7 +143,7 @@ def test_launcher_uses_exact_positional_argument_expansion() -> None:
 
 def test_exec_path_propagates_claude_failure(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir)
+    _install_secret_stub(bin_dir)
     _write_executable(
         bin_dir / "claude",
         """
@@ -161,7 +167,7 @@ def test_exec_path_propagates_claude_failure(tmp_path: Path) -> None:
 
 def test_rejects_non_coding_plan_primary_model_by_default(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir)
+    _install_secret_stub(bin_dir)
     _write_executable(bin_dir / "claude", "exit 0\n")
     env["HAPAX_GLMCP_MODEL"] = "glm-4.5"
 
@@ -180,7 +186,7 @@ def test_rejects_non_coding_plan_primary_model_by_default(tmp_path: Path) -> Non
 
 def test_rejects_previous_glm5_primary_model_by_default(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir)
+    _install_secret_stub(bin_dir)
     _write_executable(bin_dir / "claude", "exit 0\n")
     env["HAPAX_GLMCP_MODEL"] = "glm-5"
 
@@ -201,7 +207,7 @@ def test_rejects_previous_glm5_primary_model_by_default(tmp_path: Path) -> None:
 
 def test_allows_non_coding_plan_primary_model_only_with_explicit_gate(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir)
+    _install_secret_stub(bin_dir)
     _write_executable(bin_dir / "claude", "printf 'claude 0.0-test\\n'\n")
     env["HAPAX_GLMCP_MODEL"] = "glm-4.5"
     env["HAPAX_GLMCP_ALLOW_NON_CODING_PLAN_MODEL"] = "1"
@@ -221,7 +227,7 @@ def test_allows_non_coding_plan_primary_model_only_with_explicit_gate(tmp_path: 
 
 def test_rejects_secret_entry_override_without_gate(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir, entry="glmcp/alt-key")
+    _install_secret_stub(bin_dir, entry="glmcp/alt-key")
     _write_executable(bin_dir / "claude", "printf 'claude 0.0-test\\n'\n")
     env["HAPAX_GLMCP_SECRET_ENTRY"] = "glmcp/alt-key"
 
@@ -235,12 +241,12 @@ def test_rejects_secret_entry_override_without_gate(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 8
-    assert "refusing pass entry 'glmcp/alt-key'" in result.stderr
+    assert "refusing secret name 'glmcp/alt-key'" in result.stderr
 
 
 def test_secret_entry_override_is_limited_to_glmcp_prefix(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir, entry="other/api-key")
+    _install_secret_stub(bin_dir, entry="other/api-key")
     _write_executable(bin_dir / "claude", "printf 'claude 0.0-test\\n'\n")
     env["HAPAX_GLMCP_SECRET_ENTRY"] = "other/api-key"
     env["HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE"] = "1"
@@ -260,7 +266,7 @@ def test_secret_entry_override_is_limited_to_glmcp_prefix(tmp_path: Path) -> Non
 
 def test_secret_entry_override_requires_exact_glmcp_slash_prefix(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir, entry="glmcp-malicious/api-key")
+    _install_secret_stub(bin_dir, entry="glmcp-malicious/api-key")
     _write_executable(bin_dir / "claude", "printf 'claude 0.0-test\\n'\n")
     env["HAPAX_GLMCP_SECRET_ENTRY"] = "glmcp-malicious/api-key"
     env["HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE"] = "1"
@@ -280,7 +286,7 @@ def test_secret_entry_override_requires_exact_glmcp_slash_prefix(tmp_path: Path)
 
 def test_secret_entry_override_rejects_traversal_segments(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir, entry="glmcp/../other/api-key")
+    _install_secret_stub(bin_dir, entry="glmcp/../other/api-key")
     _write_executable(bin_dir / "claude", "printf 'claude 0.0-test\\n'\n")
     env["HAPAX_GLMCP_SECRET_ENTRY"] = "glmcp/../other/api-key"
     env["HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE"] = "1"
@@ -300,7 +306,7 @@ def test_secret_entry_override_rejects_traversal_segments(tmp_path: Path) -> Non
 
 def test_secret_entry_override_rejects_namespace_root(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir, entry="glmcp/")
+    _install_secret_stub(bin_dir, entry="glmcp/")
     _write_executable(bin_dir / "claude", "printf 'claude 0.0-test\\n'\n")
     env["HAPAX_GLMCP_SECRET_ENTRY"] = "glmcp/"
     env["HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE"] = "1"
@@ -320,7 +326,7 @@ def test_secret_entry_override_rejects_namespace_root(tmp_path: Path) -> None:
 
 def test_allows_reviewed_glmcp_secret_entry_override(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir, token="alt-secret-token", entry="glmcp/alt-key")
+    _install_secret_stub(bin_dir, token="alt-secret-token", entry="glmcp/alt-key")
     _write_executable(bin_dir / "claude", "printf 'claude 0.0-test\\n'\n")
     env["HAPAX_GLMCP_SECRET_ENTRY"] = "glmcp/alt-key"
     env["HAPAX_GLMCP_ALLOW_SECRET_ENTRY_OVERRIDE"] = "1"
@@ -343,7 +349,7 @@ def test_allows_reviewed_glmcp_secret_entry_override(tmp_path: Path) -> None:
 
 def test_rejects_token_endpoint_override(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir)
+    _install_secret_stub(bin_dir)
     _write_executable(bin_dir / "claude", "exit 0\n")
     env["HAPAX_GLMCP_ANTHROPIC_BASE_URL"] = "https://example.invalid/api/anthropic"
 
@@ -363,7 +369,7 @@ def test_rejects_token_endpoint_override(tmp_path: Path) -> None:
 
 def test_rejects_non_zai_endpoint_even_with_override_gate(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir)
+    _install_secret_stub(bin_dir)
     _write_executable(bin_dir / "claude", "exit 0\n")
     env["HAPAX_GLMCP_ALLOW_BASE_URL_OVERRIDE"] = "1"
     env["HAPAX_GLMCP_ANTHROPIC_BASE_URL"] = "https://example.invalid/api/anthropic"
@@ -378,13 +384,13 @@ def test_rejects_non_zai_endpoint_even_with_override_gate(tmp_path: Path) -> Non
     )
 
     assert result.returncode == 7
-    assert "only sends the pass-backed token to https://api.z.ai/" in result.stderr
+    assert "only sends the FileStore-backed token to https://api.z.ai/" in result.stderr
     assert "test-secret-token" not in result.stderr
 
 
 def test_explicit_endpoint_override_is_limited_to_zai_api_host(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir)
+    _install_secret_stub(bin_dir)
     env_file = tmp_path / "claude-env.txt"
     _write_executable(
         bin_dir / "claude",
@@ -442,13 +448,13 @@ def test_missing_pass_reports_next_action(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 3
-    assert "pass is not on PATH" in result.stderr
+    assert "hapax-secret is not on PATH" in result.stderr
 
 
 def test_missing_claude_reports_next_action(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
     env["PATH"] = str(bin_dir)
-    _install_pass_stub(bin_dir)
+    _install_secret_stub(bin_dir)
 
     result = subprocess.run(
         ["/usr/bin/bash", str(SCRIPT), "--check"],
@@ -463,10 +469,13 @@ def test_missing_claude_reports_next_action(tmp_path: Path) -> None:
     assert "claude is not on PATH" in result.stderr
 
 
-def test_empty_pass_first_line_is_rejected(tmp_path: Path) -> None:
+def test_empty_stored_secret_is_rejected(tmp_path: Path) -> None:
+    """Exit 6: the secret was READ and is empty — distinct from 5, which is "could not
+    read it at all". Different operator actions: re-put a wrong value, versus put a
+    missing one."""
     env, bin_dir = _base_env(tmp_path)
     _write_executable(
-        bin_dir / "pass",
+        bin_dir / "hapax-secret",
         """
         printf '\\n'
         exit 0
@@ -484,16 +493,18 @@ def test_empty_pass_first_line_is_rejected(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 6
-    assert "returned an empty first line" in result.stderr
+    assert "is empty" in result.stderr
 
 
-def test_pass_failure_reports_next_action_without_pass_stderr(tmp_path: Path) -> None:
+def test_read_failure_reports_next_action_without_underlying_stderr(tmp_path: Path) -> None:
+    """Exit 5, and the CLI's own stderr never replayed: it is entitled to mention names and
+    paths this process should not echo into a log."""
     env, bin_dir = _base_env(tmp_path)
     env["TMPDIR"] = str(tmp_path)
     _write_executable(
-        bin_dir / "pass",
+        bin_dir / "hapax-secret",
         """
-        printf 'gpg: decryption failed\\n' >&2
+        printf 'filestore: blob did not verify\\n' >&2
         exit 1
         """,
     )
@@ -509,17 +520,15 @@ def test_pass_failure_reports_next_action_without_pass_stderr(tmp_path: Path) ->
     )
 
     assert result.returncode == 5
-    assert "check: pass show 'glmcp/api-key' >/dev/null" in result.stderr
-    assert "run: pass show 'glmcp/api-key'" not in result.stderr
-    assert "pass returned an error" in result.stderr
-    assert "gpg: decryption failed" not in result.stderr
-    assert "pass said:" not in result.stderr
+    assert "could not read the secret 'glmcp/api-key'" in result.stderr
+    assert "hapax-secret glmcp/api-key" in result.stderr
+    assert "filestore: blob did not verify" not in result.stderr
     assert not list(tmp_path.glob("hapax-glmcp-pass.*"))
 
 
 def test_check_mode_does_not_print_ok_when_claude_version_fails(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir)
+    _install_secret_stub(bin_dir)
     _write_executable(
         bin_dir / "claude",
         """
@@ -544,7 +553,7 @@ def test_check_mode_does_not_print_ok_when_claude_version_fails(tmp_path: Path) 
 
 def test_xtrace_does_not_disclose_token(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    _install_pass_stub(bin_dir)
+    _install_secret_stub(bin_dir)
     _write_executable(bin_dir / "claude", "printf 'claude 0.0-test\\n'\n")
 
     result = subprocess.run(
@@ -565,13 +574,13 @@ def test_xtrace_does_not_disclose_token(tmp_path: Path) -> None:
 
 def test_signal_during_secret_read_exits_without_execing_claude(tmp_path: Path) -> None:
     env, bin_dir = _base_env(tmp_path)
-    pass_started = tmp_path / "pass-started"
+    secret_read_started = tmp_path / "pass-started"
     claude_executed = tmp_path / "claude-executed"
     _write_executable(
-        bin_dir / "pass",
+        bin_dir / "hapax-secret",
         f"""
-        if [[ "$1" == "show" && "$2" == "glmcp/api-key" ]]; then
-          touch {pass_started}
+        if [[ "$1" == "glmcp/api-key" ]]; then
+          touch {secret_read_started}
           sleep 2
           printf '%s\\n' test-secret-token
           exit 0
@@ -595,10 +604,10 @@ def test_signal_during_secret_read_exits_without_execing_claude(tmp_path: Path) 
         stderr=subprocess.PIPE,
     )
     for _ in range(50):
-        if pass_started.exists():
+        if secret_read_started.exists():
             break
         time.sleep(0.05)
-    assert pass_started.exists()
+    assert secret_read_started.exists()
 
     proc.terminate()
     stdout, stderr = proc.communicate(timeout=10)

@@ -2,7 +2,7 @@
 
 Covers the OAuth bootstrap + refresh-token loader for cc-task
 ``mail-monitor-002-oauth-bootstrap``. Each test patches the
-``subprocess.run`` calls that hit ``pass(1)`` and the
+``shared.secrets`` resolver calls (FileStore, never pass) and the
 ``Credentials.refresh`` call that hits Google's token endpoint, so
 the test suite stays hermetic.
 """
@@ -10,7 +10,6 @@ the test suite stays hermetic.
 from __future__ import annotations
 
 import json
-import subprocess
 import types
 from typing import Any
 from unittest import mock
@@ -19,16 +18,7 @@ import pytest
 from prometheus_client import REGISTRY
 
 from agents.mail_monitor import oauth
-
-
-def _completed(stdout: str = "", stderr: str = "", returncode: int = 0) -> Any:
-    """Build a stand-in for ``subprocess.run`` return value."""
-    return subprocess.CompletedProcess(
-        args=[],
-        returncode=returncode,
-        stdout=stdout,
-        stderr=stderr,
-    )
+from shared.secrets import SecretIntegrityFailed, SecretUnavailable
 
 
 def _counter(result: str) -> float:
@@ -39,97 +29,87 @@ def _counter(result: str) -> float:
     return val or 0.0
 
 
-# ── _pass_show ────────────────────────────────────────────────────────
+# ── _read_secret ──────────────────────────────────────────────────────
 
 
-def test_pass_show_returns_first_line_stripped() -> None:
-    with mock.patch.object(subprocess, "run", return_value=_completed(stdout="my-secret-value\n")):
-        assert oauth._pass_show("any/key") == "my-secret-value"
+def test_read_secret_returns_first_line_stripped() -> None:
+    with mock.patch.object(oauth, "get_secret", return_value="my-secret-value\nsecond-line\n"):
+        assert oauth._read_secret("any/key") == "my-secret-value"
 
 
-def test_pass_show_returns_none_on_nonzero_exit() -> None:
-    with mock.patch.object(
-        subprocess, "run", return_value=_completed(returncode=1, stderr="not in store")
-    ):
-        assert oauth._pass_show("missing/key") is None
+def test_read_secret_returns_none_when_absent() -> None:
+    with mock.patch.object(oauth, "get_secret", return_value=None):
+        assert oauth._read_secret("missing/key") is None
 
 
-def test_pass_show_logs_redacted_key_and_no_stderr(caplog: pytest.LogCaptureFixture) -> None:
-    raw_key = oauth.CLIENT_SECRET_PASS_KEY
-    stderr = "secret-value-from-gpg"
+def test_read_secret_logs_redacted_key_and_no_reason_text(caplog: pytest.LogCaptureFixture) -> None:
+    raw_key = oauth.REFRESH_TOKEN_PASS_KEY
+    reason = "refresh-token-material"
     with (
-        mock.patch.object(subprocess, "run", return_value=_completed(returncode=1, stderr=stderr)),
-        caplog.at_level("DEBUG", logger=oauth.__name__),
+        mock.patch.object(oauth, "get_secret", side_effect=SecretUnavailable(raw_key, reason)),
+        caplog.at_level("WARNING", logger=oauth.__name__),
     ):
-        assert oauth._pass_show(raw_key) is None
+        assert oauth._read_secret(raw_key) is None
 
     assert raw_key not in caplog.text
-    assert stderr not in caplog.text
+    assert reason not in caplog.text
     assert oauth._credential_ref(raw_key) in caplog.text
 
 
-def test_pass_show_returns_none_on_timeout() -> None:
-    with mock.patch.object(
-        subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd=["pass"], timeout=5.0)
-    ):
-        assert oauth._pass_show("any/key") is None
+def test_read_secret_strips_blank_values() -> None:
+    with mock.patch.object(oauth, "get_secret", return_value="   \n\n"):
+        assert oauth._read_secret("any/key") is None
 
 
-def test_pass_show_returns_none_when_pass_missing() -> None:
-    with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError("no pass")):
-        assert oauth._pass_show("any/key") is None
-
-
-def test_pass_show_strips_blank_outputs() -> None:
-    with mock.patch.object(subprocess, "run", return_value=_completed(stdout="   \n\n")):
-        assert oauth._pass_show("any/key") is None
-
-
-# ── _pass_insert ──────────────────────────────────────────────────────
-
-
-def test_pass_insert_returns_true_on_success() -> None:
-    with mock.patch.object(subprocess, "run", return_value=_completed()) as run_mock:
-        ok = oauth._pass_insert("mail-monitor/google-refresh-token", "abc123")
-    assert ok is True
-    args, kwargs = run_mock.call_args
-    assert args[0][:3] == ["pass", "insert", "-m"]
-    assert "mail-monitor/google-refresh-token" in args[0]
-    assert kwargs["input"] == "abc123"
-
-
-def test_pass_insert_returns_false_on_nonzero_exit() -> None:
-    with mock.patch.object(
-        subprocess, "run", return_value=_completed(returncode=1, stderr="gpg failed")
-    ):
-        assert oauth._pass_insert("mail-monitor/google-refresh-token", "abc") is False
-
-
-def test_pass_insert_logs_redacted_key_and_no_stderr(caplog: pytest.LogCaptureFixture) -> None:
-    raw_key = oauth.REFRESH_TOKEN_PASS_KEY
-    stderr = "refresh-token-material"
+def test_read_secret_propagates_an_integrity_failure() -> None:
+    """A blob that is present but will not verify is tampering or corruption, not absence —
+    it must not read as 'the operator has not bootstrapped yet'."""
     with (
-        mock.patch.object(subprocess, "run", return_value=_completed(returncode=1, stderr=stderr)),
+        mock.patch.object(oauth, "get_secret", side_effect=SecretIntegrityFailed("any/key")),
+        pytest.raises(SecretIntegrityFailed),
+    ):
+        oauth._read_secret("any/key")
+
+
+# ── _write_secret ─────────────────────────────────────────────────────
+
+
+def test_write_secret_puts_utf8_bytes_through_the_resolver() -> None:
+    with mock.patch.object(oauth, "put_secret") as put_mock:
+        ok = oauth._write_secret("mail-monitor/google-refresh-token", "abc123")
+    assert ok is True
+    put_mock.assert_called_once_with("mail-monitor/google-refresh-token", b"abc123")
+
+
+def test_write_secret_returns_false_when_the_store_is_unavailable() -> None:
+    with mock.patch.object(
+        oauth, "put_secret", side_effect=SecretUnavailable("mail-monitor/google-refresh-token", "x")
+    ):
+        assert oauth._write_secret("mail-monitor/google-refresh-token", "abc") is False
+
+
+def test_write_secret_logs_redacted_key_and_neither_value_nor_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw_key = oauth.REFRESH_TOKEN_PASS_KEY
+    reason = "store-reason-text"
+    with (
+        mock.patch.object(oauth, "put_secret", side_effect=SecretUnavailable(raw_key, reason)),
         caplog.at_level("ERROR", logger=oauth.__name__),
     ):
-        assert oauth._pass_insert(raw_key, "refresh-token-value") is False
+        assert oauth._write_secret(raw_key, "refresh-token-value") is False
 
     assert raw_key not in caplog.text
-    assert stderr not in caplog.text
+    assert reason not in caplog.text
     assert "refresh-token-value" not in caplog.text
     assert oauth._credential_ref(raw_key) in caplog.text
-
-
-def test_pass_insert_returns_false_when_pass_missing() -> None:
-    with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError):
-        assert oauth._pass_insert("mail-monitor/google-refresh-token", "abc") is False
 
 
 # ── _client_config ────────────────────────────────────────────────────
 
 
 def test_client_config_returns_installed_dict_when_creds_present() -> None:
-    with mock.patch.object(oauth, "_pass_show", side_effect=["my-id", "my-secret"]):
+    with mock.patch.object(oauth, "_read_secret", side_effect=["my-id", "my-secret"]):
         config = oauth._client_config()
     assert config is not None
     assert config["installed"]["client_id"] == "my-id"
@@ -139,12 +119,12 @@ def test_client_config_returns_installed_dict_when_creds_present() -> None:
 
 
 def test_client_config_returns_none_when_id_missing() -> None:
-    with mock.patch.object(oauth, "_pass_show", side_effect=[None, "secret"]):
+    with mock.patch.object(oauth, "_read_secret", side_effect=[None, "secret"]):
         assert oauth._client_config() is None
 
 
 def test_client_config_returns_none_when_secret_missing() -> None:
-    with mock.patch.object(oauth, "_pass_show", side_effect=["id", None]):
+    with mock.patch.object(oauth, "_read_secret", side_effect=["id", None]):
         assert oauth._client_config() is None
 
 
@@ -168,7 +148,7 @@ def test_run_first_consent_writes_refresh_token_to_pass() -> None:
     with (
         mock.patch.object(oauth, "_client_config", return_value={"installed": {}}),
         mock.patch.dict("sys.modules", {"google_auth_oauthlib.flow": fake_module}),
-        mock.patch.object(oauth, "_pass_insert", return_value=True) as insert_mock,
+        mock.patch.object(oauth, "_write_secret", return_value=True) as insert_mock,
     ):
         ok = oauth.run_first_consent(port=0)
 
@@ -192,7 +172,7 @@ def test_run_first_consent_can_open_browser_when_requested() -> None:
     with (
         mock.patch.object(oauth, "_client_config", return_value={"installed": {}}),
         mock.patch.dict("sys.modules", {"google_auth_oauthlib.flow": fake_module}),
-        mock.patch.object(oauth, "_pass_insert", return_value=True),
+        mock.patch.object(oauth, "_write_secret", return_value=True),
     ):
         assert oauth.run_first_consent(port=8765, open_browser=True) is True
 
@@ -225,7 +205,7 @@ def test_run_first_consent_aborts_when_flow_returns_no_refresh_token() -> None:
     with (
         mock.patch.object(oauth, "_client_config", return_value={"installed": {}}),
         mock.patch.dict("sys.modules", {"google_auth_oauthlib.flow": fake_module}),
-        mock.patch.object(oauth, "_pass_insert") as insert_mock,
+        mock.patch.object(oauth, "_write_secret") as insert_mock,
     ):
         ok = oauth.run_first_consent()
 
@@ -233,7 +213,7 @@ def test_run_first_consent_aborts_when_flow_returns_no_refresh_token() -> None:
     insert_mock.assert_not_called()
 
 
-def test_run_first_consent_returns_false_when_pass_insert_fails() -> None:
+def test_run_first_consent_returns_false_when_the_write_fails() -> None:
     flow = _flow_double()
     fake_module = mock.Mock()
     fake_module.InstalledAppFlow.from_client_config = mock.Mock(return_value=flow)
@@ -241,7 +221,7 @@ def test_run_first_consent_returns_false_when_pass_insert_fails() -> None:
     with (
         mock.patch.object(oauth, "_client_config", return_value={"installed": {}}),
         mock.patch.dict("sys.modules", {"google_auth_oauthlib.flow": fake_module}),
-        mock.patch.object(oauth, "_pass_insert", return_value=False),
+        mock.patch.object(oauth, "_write_secret", return_value=False),
     ):
         assert oauth.run_first_consent() is False
 
@@ -258,7 +238,7 @@ def test_load_credentials_success_increments_success_metric() -> None:
     fake_credentials_cls = mock.Mock(return_value=fake_creds)
 
     with (
-        mock.patch.object(oauth, "_pass_show", side_effect=["id", "secret", "refresh"]),
+        mock.patch.object(oauth, "_read_secret", side_effect=["id", "secret", "refresh"]),
         mock.patch("google.oauth2.credentials.Credentials", fake_credentials_cls),
         mock.patch("google.auth.transport.requests.Request"),
     ):
@@ -269,9 +249,9 @@ def test_load_credentials_success_increments_success_metric() -> None:
     assert _counter("success") - before == 1.0
 
 
-def test_load_credentials_missing_pass_entries_increments_missing_metric() -> None:
+def test_load_credentials_missing_entries_increments_missing_metric() -> None:
     before = _counter("missing_credential")
-    with mock.patch.object(oauth, "_pass_show", side_effect=["id", "secret", None]):
+    with mock.patch.object(oauth, "_read_secret", side_effect=["id", "secret", None]):
         assert oauth.load_credentials() is None
     assert _counter("missing_credential") - before == 1.0
 
@@ -286,7 +266,7 @@ def test_load_credentials_invalid_grant_marks_revoked() -> None:
     fake_creds.refresh = mock.Mock(side_effect=RefreshError("invalid_grant: revoked"))
 
     with (
-        mock.patch.object(oauth, "_pass_show", side_effect=["id", "secret", "refresh"]),
+        mock.patch.object(oauth, "_read_secret", side_effect=["id", "secret", "refresh"]),
         mock.patch("google.oauth2.credentials.Credentials", mock.Mock(return_value=fake_creds)),
         mock.patch("google.auth.transport.requests.Request"),
     ):
@@ -305,7 +285,7 @@ def test_load_credentials_other_refresh_error_marks_transport() -> None:
     fake_creds.refresh = mock.Mock(side_effect=RefreshError("server_error 500"))
 
     with (
-        mock.patch.object(oauth, "_pass_show", side_effect=["id", "secret", "refresh"]),
+        mock.patch.object(oauth, "_read_secret", side_effect=["id", "secret", "refresh"]),
         mock.patch("google.oauth2.credentials.Credentials", mock.Mock(return_value=fake_creds)),
         mock.patch("google.auth.transport.requests.Request"),
     ):
@@ -323,7 +303,7 @@ def test_load_credentials_transport_error_marks_transport() -> None:
     fake_creds.refresh = mock.Mock(side_effect=TransportError("connection reset"))
 
     with (
-        mock.patch.object(oauth, "_pass_show", side_effect=["id", "secret", "refresh"]),
+        mock.patch.object(oauth, "_read_secret", side_effect=["id", "secret", "refresh"]),
         mock.patch("google.oauth2.credentials.Credentials", mock.Mock(return_value=fake_creds)),
         mock.patch("google.auth.transport.requests.Request"),
     ):
@@ -342,7 +322,7 @@ def test_scope_is_minimal_gmail_pair() -> None:
     ]
 
 
-def test_pass_keys_match_cc_task_spec() -> None:
+def test_secret_names_match_cc_task_spec() -> None:
     assert oauth.CLIENT_ID_PASS_KEY == "mail-monitor/google-client-id"
     assert oauth.CLIENT_SECRET_PASS_KEY == "mail-monitor/google-client-secret"
     assert oauth.REFRESH_TOKEN_PASS_KEY == "mail-monitor/google-refresh-token"

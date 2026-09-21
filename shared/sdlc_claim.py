@@ -63,6 +63,7 @@ from shared.sdlc_task_store import (
     load_claim_dispatch_binding,
     resolve_task_note,
 )
+from shared.task_note_lock import held_by_current_thread, projected_path_lock
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -2431,6 +2432,21 @@ def _claim_publication_lock(
     *,
     lock_root: Path | None,
 ) -> Iterator[None]:
+    # Direction, checked at the moment of use. This lock takes a projected-path lock INSIDE
+    # it, so a caller that already holds one and asks for this is hold-and-wait across two
+    # lock domains: it would sit on the role lock while a publisher on the other side sits on
+    # its note. Both waits are bounded, so the failure is mutual refusal rather than a wedge —
+    # but "bounded" is not "safe", and a count of acquisition sites cannot see this shape at
+    # all, because it needs no new site: an existing note-holder calling onward into claim
+    # publication is enough. Refuse before opening anything.
+    held = held_by_current_thread()
+    if held:
+        raise ClaimPublicationError(
+            "claim_publication_lock_order_inversion",
+            "release the projected-path lock before publishing a claim; the role lock is "
+            "taken first and the note lock inside it, never the reverse",
+            ", ".join(f"{lock_root_}:{name}" for lock_root_, name in held),
+        )
     root = _lock_root(lock_root)
     _ensure_claim_private_directory(root)
     digest = _claim_publication_role_lock_digest(intent.role)
@@ -2475,7 +2491,18 @@ def _claim_publication_lock(
                         str(path),
                     ) from exc
                 time.sleep(_CLAIM_PUBLICATION_LOCK_RETRY_SECONDS)
-        yield
+        # The role lock above serializes one role's publications against each other. It does
+        # NOT exclude a lifecycle transition over this task's note: it is keyed by the role,
+        # not by the note, and it lives under a different root. So the publication's
+        # _apply_projections calls — which take no lock of their own — could land between a
+        # transition's preimage pin and its atomic install. Take the projection lock too.
+        #
+        # Order is role-then-note, always. One direction only means no cycle — and the
+        # direction is enforced at the top of this function, not inferred from the number of
+        # places the role lock is taken: the guard refuses when the calling thread already holds
+        # any projected-path lock. tests/shared/test_task_note_lock.py drives both orders.
+        with projected_path_lock(intent.task_id, (intent.note_path,)):
+            yield
     finally:
         if locked:
             try:
@@ -4887,6 +4914,32 @@ def _content_address_for_file(path: Path, content: bytes) -> ContentAddress:
 
 
 _CLAIM_PUBLICATION_DIRECTORY_RE = re.compile(r"^claim-pub-[0-9a-f]{64}$")
+#: A journal an operator has already quarantined in place.
+#:
+#: Deliberately tolerant after the suffix, because **no code in this estate
+#: produces this name.** Every "quarantine …" string in this module and in
+#: ``coord_projection`` is a *repair action* addressed to a person, so the suffix
+#: is a hand-applied convention and the four journals on disk carry three
+#: different shapes (``.quarantined-20260821``, ``.quarantined-20260905T0041Z``,
+#: ``.quarantined-20260913T205924Z``). A regex pinning any one timestamp grammar
+#: would leave the others holding forever, so this matches the marker and not the
+#: stamp. Tightening it requires first giving the estate a quarantine *verb* —
+#: filed separately, not assumed here.
+#:
+#: "No code produces this name" is the SOLE rationale for a deliberately loose pattern that
+#: skips inspection, so it is recheckable rather than asserted. From the repo root::
+#:
+#:     rg -n 'quarantined-' --glob '!*.md' -- scripts shared agents hooks
+#:
+#: Expected as of 2026-09-15, and stated so the output DECIDES something rather than merely
+#: printing: four hits in this file (this comment and the pattern itself) plus exactly one
+#: unrelated hit, ``scripts/hapax-audio-topology`` returning the audio-domain constant
+#: ``"quarantined-declared-inactive"``. **No hit renames, creates or otherwise emits a
+#: ``claim-pub-<sha>.quarantined-<stamp>`` directory.** If that ever changes, this pattern can
+#: and should be tightened to the grammar the new producer emits.
+_CLAIM_PUBLICATION_QUARANTINED_DIRECTORY_RE = re.compile(
+    r"^claim-pub-[0-9a-f]{64}\.quarantined-\S+$"
+)
 _CLAIM_PUBLICATION_BLOB_RE = re.compile(r"^[0-9]{4}\.(?:before|after)$")
 _MAX_CLAIM_PUBLICATIONS = 4096
 _MAX_CLAIM_JOURNAL_CHILDREN = 32
@@ -5045,6 +5098,16 @@ def _capture_claim_journals(
     root_frontier = (listing, _directory_address(directory))
     for name in names:
         if _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(name) is None:
+            if _CLAIM_PUBLICATION_QUARANTINED_DIRECTORY_RE.fullmatch(name) is not None:
+                # An already-quarantined journal is the completed remedy, not an
+                # unknown entry. Holding on it prescribed "quarantine every entry
+                # outside the exact grammar" — the very act that produced this
+                # name — so the hold demanded its own cause and could only be
+                # cleared by moving the journal out of the scan root by hand
+                # (measured 2026-09-13: cx-p0 had to do exactly that). The names
+                # stay in the content-addressed listing above, so skipping the
+                # hold drops the verdict, not the evidence.
+                continue
             entries.append(
                 _ClaimJournalCaptureFailure(
                     name,
