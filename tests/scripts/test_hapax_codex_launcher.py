@@ -85,8 +85,11 @@ printf 'OPENAI_API_KEY_PRESENT=%s\\n' "${{OPENAI_API_KEY:+yes}}" >> {env_file}
 
 def _write_descriptor_runtime(path: Path) -> None:
     (path / "scripts").mkdir(parents=True, exist_ok=True)
-    for directory in ("shared", "config", ".venv"):
+    for directory in ("shared", "config"):
         (path / directory).symlink_to(REPO_ROOT / directory, target_is_directory=True)
+    runtime = Path(sys.executable).parent.parent
+    assert (runtime / "bin/python").is_file(), "fixture requires a provisioned Python runtime"
+    (path / ".venv").symlink_to(runtime, target_is_directory=True)
     shutil.copy2(
         REPO_ROOT / "scripts/capability-execution.sh", path / "scripts/capability-execution.sh"
     )

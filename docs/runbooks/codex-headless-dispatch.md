@@ -35,6 +35,17 @@ A missing runtime, registry, route or concrete descriptor refuses with exit9
 before native invocation; it never falls back to the user's default model.
 `--execution-route` selects a declared Codex route; it is not admission to it.
 
+The resolver imports only from the selected release, with Python isolated from
+the caller's cwd and `PYTHONPATH`. Interactive runners carry its resolved physical
+path and launcher into tmux re-entry, even if the activation symlink advances meanwhile.
+Malformed resolver output refuses before native invocation. Recheck those
+boundaries without provider calls:
+
+```bash
+uv run pytest tests/scripts/test_capability_execution_contract.py -q
+uv run --no-sync python scripts/check-execution-descriptor-mutations.py
+```
+
 This refusal applies to the governed launchers. A bare `codex` or `codex exec`
 can still use the vendor built-in default; removing the repository config
 default does not intercept that path. Such calls are unbound and are not
@@ -53,6 +64,11 @@ mid-session changes. Missing observations remain unverified; mismatches remain
 misattributed. It does not prove provider-side identity or work quality, and
 this source slice does not yet automatically consume every estate rollout in
 quota telemetry. That integration remains a separate, explicit obligation.
+
+The contract test includes a redacted field projection from a captured native
+Codex0.155.1 rollout, with original event/file hashes and provenance in
+`tests/fixtures/codex-native-turn-context-0.155.1.md`. It pins the observed
+`model`/`effort` field names independently of generated checker fixtures.
 
 Governed Claude and Vibe dispatch likewise passes descriptor-derived values.
 Vibe dispatch refuses missing identity or an effort without a native mapping;

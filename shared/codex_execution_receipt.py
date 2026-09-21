@@ -69,10 +69,18 @@ def main(argv: list[str] | None = None) -> int:
         for receipt in receipts:
             print(json.dumps(receipt, sort_keys=True))
         if not receipts:
-            print("unverified: rollout contains no turn_context", file=sys.stderr)
+            print(
+                "unverified: rollout contains no turn_context; next action: select the owned "
+                "native rollout under CODEX_HOME/sessions after a model turn, then retry",
+                file=sys.stderr,
+            )
         return 0 if receipts and all(r["status"] == "matched" for r in receipts) else 1
     except (ExecutionIdentityError, OSError, ValueError, KeyError) as exc:
-        print(f"unverified execution receipt: {exc}", file=sys.stderr)
+        print(
+            f"unverified execution receipt: {exc}; next action: verify the route declaration "
+            "and readable native rollout under CODEX_HOME/sessions, then retry",
+            file=sys.stderr,
+        )
         return 2
 
 

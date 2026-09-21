@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -24,7 +25,7 @@ from shared.capability_execution import (
 )
 from shared.codex_execution_receipt import check_rollout
 from shared.codex_execution_receipt import main as receipt_main
-from shared.platform_capability_registry import ModelId
+from shared.platform_capability_registry import ExecutionDescriptor, ModelId
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HEADLESS = REPO_ROOT / "scripts/hapax-codex-headless"
@@ -192,6 +193,8 @@ def test_missing_descriptor_is_refused_before_invocation(tmp_path, launcher, fai
     result = _launch(launcher, env, route)
     assert result.returncode == 9, result.stderr
     assert "remedy:" in result.stderr
+    if failure == "missing_runtime":
+        assert str(council / ".venv/bin/python") in result.stderr
     assert not args_file.with_suffix(".calls").exists()
 
 
@@ -199,6 +202,7 @@ def test_missing_descriptor_is_refused_before_invocation(tmp_path, launcher, fai
     "args",
     [
         ["--model", "external"],
+        ["-m", "external"],
         ["-mexternal"],
         ["--model=external"],
         ["-c", 'model="external"'],
@@ -207,6 +211,8 @@ def test_missing_descriptor_is_refused_before_invocation(tmp_path, launcher, fai
         ["-c=model=external"],
         ["-c=model_reasoning_effort=low"],
         ["--profile", "external"],
+        ["-p", "external"],
+        ["-pexternal"],
         ["--oss"],
         ["-c", 'profiles.test."model"="external"'],
     ],
@@ -214,6 +220,16 @@ def test_missing_descriptor_is_refused_before_invocation(tmp_path, launcher, fai
 def test_model_and_effort_overrides_are_refused(args):
     with pytest.raises(ExecutionIdentityError, match="remedy:"):
         reject_codex_identity_overrides(args)
+
+
+@pytest.mark.parametrize("launcher", LAUNCHERS)
+def test_launcher_preserves_non_identity_arguments(tmp_path, launcher):
+    env, args_file = _env_with_fake_codex(tmp_path)
+    extra = ["--sandbox", "workspace-write", "-c", "features.web_search_request=true"]
+    result = _launch(launcher, env, extra=extra)
+    assert result.returncode == 0, result.stderr
+    argv = args_file.read_text().splitlines()
+    assert any(argv[index : index + len(extra)] == extra for index in range(len(argv)))
 
 
 @pytest.mark.parametrize("launcher", LAUNCHERS)
@@ -284,6 +300,141 @@ def test_incomplete_receipt_never_claims_a_match(tmp_path, contents):
     rollout = tmp_path / "rollout.jsonl"
     rollout.write_text(contents)
     assert receipt_main(["--route", "codex.headless.full", "--rollout", str(rollout)]) != 0
+
+
+def test_captured_native_turn_context_uses_observed_field_names():
+    rollout = REPO_ROOT / "tests/fixtures/codex-native-turn-context-0.155.1.jsonl"
+    events = [json.loads(line) for line in rollout.read_text().splitlines()]
+    assert events[0]["payload"]["cli_version"] == "0.155.1"
+    descriptor = ExecutionDescriptor(model_id="gpt-6-astra", effort="xhigh")
+    receipt = next(check_rollout(rollout, descriptor, route_id="captured-native-trial"))
+    assert receipt["status"] == "matched"
+    assert receipt["observed"] == {"model": "gpt-6-astra", "effort": "xhigh"}
+    changed = descriptor.model_copy(update={"effort": "low"})
+    mismatch = next(check_rollout(rollout, changed, route_id="captured-native-trial"))
+    assert mismatch["status"] == "misattributed"
+
+
+@pytest.mark.parametrize("contents", [None, "", "broken\n"])
+def test_receipt_cli_failure_names_next_action(tmp_path, capsys, contents):
+    rollout = tmp_path / "rollout.jsonl"
+    if contents is not None:
+        rollout.write_text(contents)
+    assert receipt_main(["--route", "codex.headless.full", "--rollout", str(rollout)]) != 0
+    assert "next action:" in capsys.readouterr().err.lower()
+
+
+@pytest.mark.parametrize("output", ["[]", '[""]', "{}", "broken", '["-c", 3]', '["-c", "a\\nb"]'])
+def test_identity_helper_refuses_malformed_resolver_output(tmp_path, output):
+    runtime = tmp_path / "runtime"
+    (runtime / "scripts").mkdir(parents=True)
+    helper = runtime / "scripts/capability-execution.sh"
+    helper.write_bytes((REPO_ROOT / "scripts/capability-execution.sh").read_bytes())
+    python = runtime / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text(
+        '#!/usr/bin/env bash\nif [[ "$1" == -I && "${3:-}" == *runpy.run_module* ]]; then\n'
+        f"  printf '%s' {shlex.quote(output)}\n  exit 0\nfi\n"
+        f'exec {shlex.quote(sys.executable)} "$@"\n'
+    )
+    python.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; EXECUTION_ROUTE=fixture; CODEX_EXTRA=(); bind_codex_execution',
+            "fixture",
+            str(helper),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 9
+    assert "next action:" in result.stderr.lower()
+
+
+def test_identity_helper_ignores_caller_python_modules(tmp_path):
+    env, _ = _env_with_fake_codex(tmp_path)
+    env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(_registry(tmp_path))
+    (tmp_path / "json.py").write_text('raise RuntimeError("ambient JSON module loaded")\n')
+    env["PYTHONPATH"] = str(tmp_path)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; EXECUTION_ROUTE=codex.headless.full; CODEX_EXTRA=(); '
+            'bind_codex_execution || exit $?; printf "%s\\n" "${CODEX_EXECUTION_ARGS[@]}"',
+            "fixture",
+            str(REPO_ROOT / "scripts/capability-execution.sh"),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert 'model="gpt-5.5"' in result.stdout.splitlines()
+    assert 'model_reasoning_effort="low"' in result.stdout.splitlines()
+
+
+def test_interactive_reentry_keeps_selected_source_release(tmp_path):
+    env, calls = _env_with_fake_codex(tmp_path)
+    activation = tmp_path / "selected-release"
+    (activation / "scripts").mkdir(parents=True)
+    shutil.copytree(
+        REPO_ROOT / "shared",
+        activation / "shared",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    (activation / "config").mkdir()
+    shutil.copy2(_registry(tmp_path), activation / "config/platform-capability-registry.json")
+    (activation / ".venv").symlink_to(Path(sys.executable).parent.parent, target_is_directory=True)
+    shutil.copy2(
+        REPO_ROOT / "scripts/capability-execution.sh",
+        activation / "scripts/capability-execution.sh",
+    )
+    shutil.copy2(INTERACTIVE, activation / "scripts/hapax-codex")
+    (activation / "scripts/lib").mkdir()
+    shutil.copy2(REPO_ROOT / "scripts/lib/secret.sh", activation / "scripts/lib/secret.sh")
+    binding = tmp_path / "activation-link"
+    binding.symlink_to(activation, target_is_directory=True)
+    env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(binding)
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    tmux = tmp_path / "bin/tmux"
+    runner_copy = tmp_path / "observed-runner"
+    tmux.write_text(
+        '#!/usr/bin/env bash\ncase "$1" in\nhas-session) exit 1;;\nnew-session)\n'
+        f'  cp "${{@: -1}}" {shlex.quote(str(runner_copy))}\n'
+        # Deployment advances between parent validation and child re-entry.
+        f"  rm {shlex.quote(str(binding))}\n"
+        f"  ln -s {shlex.quote(str(REPO_ROOT))} {shlex.quote(str(binding))}\n"
+        # A pre-existing server does not inherit the invoking client's override.
+        '  env -u HAPAX_SOURCE_ACTIVATE_WORKTREE bash "${@: -1}";;\n*) exit 0;;\nesac\n'
+    )
+    tmux.chmod(0o755)
+    result = subprocess.run(
+        [
+            str(INTERACTIVE),
+            "--session",
+            "cx-amber",
+            "--slot",
+            "alpha",
+            "--cd",
+            str(REPO_ROOT),
+            "--terminal",
+            "tmux",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    argv = calls.read_text().splitlines()
+    assert 'model="gpt-5.5"' in argv
+    assert 'model_reasoning_effort="low"' in argv
+    child = next(line for line in runner_copy.read_text().splitlines() if line.startswith("exec "))
+    assert shlex.split(child)[1] == str(activation / "scripts/hapax-codex")
 
 
 def _codex_idle(pane):

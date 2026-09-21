@@ -1040,6 +1040,7 @@ if [[ ! -r "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh" ]]; then
   exit 9
 fi
 # shellcheck source=scripts/capability-execution.sh
+EXECUTION_SOURCE_ROOT="$(cd -- "$EXECUTION_SOURCE_ROOT" && pwd -P)" || exit 9
 . "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh"
 bind_codex_execution || exit 9
 
@@ -1575,11 +1576,12 @@ else
     # uuid (reform Phase 1, FM-2) instead of minting a fresh one.
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
     printf 'export HAPAX_COUNCIL_DIR=%q\n' "$COUNCIL_DIR"
+    printf 'export HAPAX_SOURCE_ACTIVATE_WORKTREE=%q\n' "$EXECUTION_SOURCE_ROOT"
     if [ -n "${HAPAX_PLATFORM_CAPABILITY_REGISTRY:-}" ]; then
       printf 'export HAPAX_PLATFORM_CAPABILITY_REGISTRY=%q\n' "$HAPAX_PLATFORM_CAPABILITY_REGISTRY"
     fi
     printf 'cd %q\n' "$WORKDIR"
-    printf 'exec %q' "$COUNCIL_DIR/scripts/hapax-codex"
+    printf 'exec %q' "$EXECUTION_SOURCE_ROOT/scripts/hapax-codex"
     for arg in "${CHILD_ARGS[@]}"; do
       printf ' %q' "$arg"
     done
