@@ -86,6 +86,35 @@ inputs retain unverified identity. Interactive and bare vendor runs are not
 automatically consumed by this fresh-local-headless path, and quota telemetry
 integration across all estate runs remains unfinished.
 
+Recheck the actual producer, result reader and terminal-event replay with:
+
+```bash
+uv run --no-sync pytest -q \
+  tests/scripts/test_capability_execution_contract.py::test_headless_identity_reaches_result_reader_with_frozen_declaration \
+  tests/scripts/test_codex_identity_consumer.py \
+  tests/shared/test_codex_run_identity.py \
+  tests/scripts/test_hapax_methodology_dispatch.py::test_launch_idempotency_replays_without_second_launcher_call
+```
+
+The last test runs a successful first dispatch and verifies the serialized
+terminal event and result reference on replay without another launcher call;
+it also exercises missing, modified and legacy evidence. A content reference
+does not retain its target. If receipt or native bytes were pruned, readback
+stays unobserved; the retained reference identifies the unavailable original
+and never licenses a replacement provider call.
+
+`DispatchLaunchResult.result_ref` reuses the existing immutable `ContentAddress`
+contract. Its lightweight module avoids importing the admission dependency graph
+into standalone receipt readers; the original admission import remains supported.
+The claim-publisher's bound source closure includes the extracted module, so a
+new source activation requires the normal shipped-installer migration. Recheck
+that contract with `uv run --no-sync pytest -q tests/shared/test_content_address.py
+tests/shared/test_gate0b_claim_publication_machinery.py`.
+
+Lifecycle ownership remains a receipt claim. Existing coordination replay does
+not exclude concurrent or interrupted inflight launches. This local reader's
+absolute paths are not a portable artifact resolver for arbitrary remote workers.
+
 The contract test includes a redacted field projection from a captured native
 Codex0.155.1 rollout, with original event/file hashes and provenance in
 `tests/fixtures/codex-native-turn-context-0.155.1.md`. It pins the observed

@@ -308,11 +308,9 @@ class WorkerAdapter(CapabilityAdapter):
         """
 
         _require_launch_authority(decision, op="launch")
-        if collect_result_ref is not None:
-            return run_atomic_dispatch_launch(
-                request, launch_callable, collect_result_ref=collect_result_ref
-            )
-        return run_atomic_dispatch_launch(request, launch_callable)
+        return run_atomic_dispatch_launch(
+            request, launch_callable, collect_result_ref=collect_result_ref
+        )
 
 
 # --- SESSION-gate send: receipts bus + canonical relay table ------------------------------------

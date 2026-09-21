@@ -258,7 +258,9 @@ def test_launch_happy_path_delegates_to_coord_dispatch() -> None:
     with mock.patch(f"{_MOD}.run_atomic_dispatch_launch", return_value=sentinel_result) as spawn:
         result = CodexAdapter().launch(decision, request, launch_callable)  # type: ignore[arg-type]
     assert result is sentinel_result
-    spawn.assert_called_once_with(request, launch_callable)
+    spawn.assert_called_once()
+    assert spawn.call_args.args == (request, launch_callable)
+    assert spawn.call_args.kwargs.get("collect_result_ref") is None
 
 
 def test_launch_forwards_optional_result_reference_callback() -> None:
@@ -288,7 +290,9 @@ def test_new_worker_adapters_inherit_launch_gate(adapter_cls: type[WorkerAdapter
     with mock.patch(f"{_MOD}.run_atomic_dispatch_launch", return_value=sentinel_result) as spawn:
         result = adapter_cls().launch(decision, request, launch_callable)  # type: ignore[arg-type]
     assert result is sentinel_result
-    spawn.assert_called_once_with(request, launch_callable)
+    spawn.assert_called_once()
+    assert spawn.call_args.args == (request, launch_callable)
+    assert spawn.call_args.kwargs.get("collect_result_ref") is None
 
 
 def test_vibe_adapter_marks_registered_send_surface() -> None:

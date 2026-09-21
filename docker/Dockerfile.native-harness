@@ -1,6 +1,6 @@
 # Build with an isolated context containing only this file, config/agent-instructions,
-# scripts/install-agent-instructions.py, docker/native-codex.toml and the verified
-# Claude/Codex client artifacts plus Codex's matching code-mode-host companion.
+# scripts/install-agent-instructions.py, docker/native-codex.toml and the two
+# verified client artifacts.
 # No workstation HOME, secrets, hooks or general launcher scripts enter the image.
 FROM debian@sha256:04634311a8d5fc442b6eb06d792293c4f3e2268652ca7634e00ce8ef5cc0a28a AS base
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
@@ -34,7 +34,7 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/claude"]
 
 FROM base AS codex
 USER root
-RUN apt-get update -qq && apt-get install -y --no-install-recommends bubblewrap=0.12.0-1~deb13u1 ripgrep=14.1.1-1+b4 \
+RUN apt-get update -qq && apt-get install -y --no-install-recommends bubblewrap=0.12.0-1~deb13u1 \
     && rm -rf /var/lib/apt/lists/* \
     && dpkg-query -W > /opt/hapax/os-packages.txt \
     && ln -s /state/installation_id /opt/hapax-agent/.codex/installation_id \
@@ -43,8 +43,6 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends bubblewrap=
     && ln -s /state/thread-writer-locks /opt/hapax-agent/.codex/thread-writer-locks
 USER 1000:1000
 COPY --chmod=0555 artifacts/codex /usr/local/bin/codex
-COPY --chmod=0555 artifacts/codex-code-mode-host /usr/local/bin/codex-code-mode-host
-RUN echo '210ab8ebaebf4bc1421d9e30339c858354ca35fa91e2f87f4c6204e5382f8a63  /usr/local/bin/codex-code-mode-host' | sha256sum -c -
 ENV CODEX_SQLITE_HOME=/state
 COPY docker/native-codex.toml /opt/hapax-agent/.codex/config.toml
 # Public artifact digest, not a credential.

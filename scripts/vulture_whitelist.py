@@ -4254,6 +4254,12 @@ from shared.gate_event_producer import build_gate_event  # noqa: E402
 
 build_gate_event
 
+# Called by read_native_lifecycle_receipt in the extensionless methodology
+# dispatcher; tests/scripts/test_codex_identity_consumer.py executes that caller.
+from shared.codex_execution_receipt import recheck_codex_run_identity  # noqa: E402
+
+recheck_codex_run_identity
+
 # Additive measurement-loop keystone (CCEF/H STEP 7): the witnessed-outcome producer's public
 # API — callers (witnessed cc-task-gate / CI / review verdict sites) wire in a follow-on, like
 # build_gate_event above. Referenced here so the vulture gate does not flag the as-yet caller-less
