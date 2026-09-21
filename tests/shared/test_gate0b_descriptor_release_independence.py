@@ -12,6 +12,7 @@ from shared.execution_admission import ContentAddress, ExecutorDescriptor
 
 MODULE_NAMES = (
     "coord_projection.py",
+    "content_address.py",
     "execution_admission.py",
     "gate0b_claim_publication_install.py",
     "gate0b_claim_publication_lease.py",
@@ -37,7 +38,9 @@ def _write_tree(root: Path, source_bytes: dict[str, bytes]) -> Path:
 
 
 def _descriptor(root: Path, monkeypatch: pytest.MonkeyPatch) -> ExecutorDescriptor:
-    monkeypatch.setattr(install, "__file__", str(root / "shared" / MODULE_NAMES[2]))
+    monkeypatch.setattr(
+        install, "__file__", str(root / "shared" / "gate0b_claim_publication_install.py")
+    )
     return install._build_executor_descriptor(ACTIVATION, installed_at=INSTALLED_AT)
 
 
@@ -118,11 +121,15 @@ def test_descriptor_binds_source_bytes_to_relative_paths(
     assert _descriptor(root, monkeypatch).descriptor_hash != first.descriptor_hash
 
 
+@pytest.mark.parametrize("module_name", MODULE_NAMES)
 def test_missing_source_fails_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source_bytes: dict[str, bytes]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_bytes: dict[str, bytes],
+    module_name: str,
 ) -> None:
     root = _write_tree(tmp_path / "release", source_bytes)
-    (root / "shared" / "sdlc_claim.py").unlink()
+    (root / "shared" / module_name).unlink()
 
     with pytest.raises(ValueError, match="stable owner-bound regular bytes"):
         _descriptor(root, monkeypatch)

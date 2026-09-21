@@ -108,8 +108,13 @@ contract. Its lightweight module avoids importing the admission dependency graph
 into standalone receipt readers; the original admission import remains supported.
 The claim-publisher's bound source closure includes the extracted module, so a
 new source activation requires the normal shipped-installer migration. Recheck
-that contract with `uv run --no-sync pytest -q tests/shared/test_content_address.py
-tests/shared/test_gate0b_claim_publication_machinery.py`.
+that contract, including identical and changed sources across release paths:
+
+```bash
+uv run --no-sync pytest -q tests/shared/test_content_address.py \
+  tests/shared/test_gate0b_claim_publication_machinery.py \
+  tests/shared/test_gate0b_descriptor_release_independence.py
+```
 
 After merge, verify the source activation's Git HEAD against the merged commit
 and compare the installed `hapax-codex-headless` and
