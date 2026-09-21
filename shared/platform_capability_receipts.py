@@ -165,6 +165,9 @@ class PlatformCapabilityReceipt(StrictReceiptModel):
     wrapper: WrapperEvidence
     route_wrappers: dict[str, WrapperEvidence] = Field(default_factory=dict)
     config_refs: list[ConfigEvidence] = Field(default_factory=list)
+    # Support observations only; these never establish route eligibility or
+    # semantic compliance. Native loading stays unobserved without loader receipts.
+    load_sets: dict[str, dict[str, Any]] = Field(default_factory=dict)
     tool_state: list[ToolEvidence] = Field(default_factory=list)
     mcp_status: list[str] = Field(default_factory=list)
     capability: SurfaceEvidence

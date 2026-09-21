@@ -16,6 +16,8 @@ exists for that sensitive class.
 
 from __future__ import annotations
 
+import pytest
+
 from shared.release_gate import (
     LIVE_EGRESS_MITIGATION_CHECKS,
     assess_release_auto_arm_estate,
@@ -406,6 +408,59 @@ def test_sensitive_path_matches_claude_md_file_segment() -> None:
     fm = _eligible_frontmatter(mutation_scope_refs=["hapax-council/CLAUDE.md"])
     assessment = assess_release_auto_arm(fm)
     assert any("sensitive_path" in blocker for blocker in assessment.blockers)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "AGENTS.md",
+        "nested/AGENTS.md",
+        "CLAUDE.md",
+        "nested/CLAUDE.md",
+        "config/agent-instructions/AGENTS.md",
+        "config/agent-instructions/native/claude.md",
+        "config/agent-instructions/native/grok.md",
+        "config/agent-instructions/native/kimi.md",
+        "config/agent-instructions/native/vibe.md",
+        "config/agent-instructions/native/future-client.md",
+        "config/agent-instructions/bindings.json",
+        "docs/runbooks/council-domain-context.md",
+        "scripts/install-agent-instructions.py",
+    ],
+)
+@pytest.mark.parametrize("prefix", ["", "hapax-council/", "/abs/repo/"])
+def test_sensitive_path_matches_instruction_sources(path: str, prefix: str) -> None:
+    path = prefix + path
+    assessment = assess_release_auto_arm(_eligible_frontmatter(mutation_scope_refs=[path]))
+    assert assessment.eligible is False
+    assert f"sensitive_path:{path}" in assessment.blockers
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docs/AGENTS.md.example",
+        "docs/CLAUDE.md.example",
+        "docs/runbooks/ordinary.md",
+        "config/ordinary.yaml",
+        "config/agent-instructions/README.md",
+        "config/agent-instructions/native-extra/grok.md",
+        "config/agent-instructions/bindings.json.example",
+        "config/agent-instructions-extra/bindings.json",
+        "other-config/agent-instructions/native/grok.md",
+        "docs/runbooks/council-domain-context.md.example",
+        "docs/runbooks/other-council-domain-context.md",
+        "other-docs/runbooks/council-domain-context.md",
+        "scripts/install-agent-instructions.py.example",
+        "scripts/other-install-agent-instructions.py",
+        "other-scripts/install-agent-instructions.py",
+    ],
+)
+@pytest.mark.parametrize("prefix", ["", "hapax-council/", "/abs/repo/"])
+def test_instruction_lookalikes_and_ordinary_docs_are_not_sensitive(path: str, prefix: str) -> None:
+    assessment = assess_release_auto_arm(_eligible_frontmatter(mutation_scope_refs=[prefix + path]))
+    assert assessment.eligible is True
+    assert assessment.blockers == ()
 
 
 def test_ineligible_when_public_current_already_true() -> None:

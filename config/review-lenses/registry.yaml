@@ -24,7 +24,17 @@ surface_lenses:
     globs: ["agents/hapax_daimonion/**"]
     lenses: [correctness, live-runtime-composition, voice-doctrine]
   - surface: governance
-    globs: ["shared/governance/**", "axioms/**"]
+    globs:
+      - "shared/governance/**"
+      - "axioms/**"
+      - "AGENTS.md"
+      - "**/AGENTS.md"
+      - "CLAUDE.md"
+      - "**/CLAUDE.md"
+      - "config/agent-instructions/native/*.md"
+      - "config/agent-instructions/bindings.json"
+      - "docs/runbooks/council-domain-context.md"
+      - "scripts/install-agent-instructions.py"
     lenses: [axiom-compliance, formal-soundness, consent-provenance]
   - surface: audio
     globs: ["config/pipewire/**", "config/audio-*", "scripts/*audio*"]
@@ -68,6 +78,14 @@ sizing:
 t1_surface_globs:
   - "shared/governance/**"
   - "axioms/**"
+  - "AGENTS.md"
+  - "**/AGENTS.md"
+  - "CLAUDE.md"
+  - "**/CLAUDE.md"
+  - "config/agent-instructions/native/*.md"
+  - "config/agent-instructions/bindings.json"
+  - "docs/runbooks/council-domain-context.md"
+  - "scripts/install-agent-instructions.py"
   - "config/pipewire/**"
   - "systemd/**"
   - "scripts/*deploy*"

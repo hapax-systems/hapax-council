@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import runpy
@@ -12,9 +13,9 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from shared.dispatcher_policy import (
@@ -43,8 +44,181 @@ API_NOW = "2026-06-04T16:00:00Z"
 API_NOW_DT = datetime.fromisoformat(API_NOW.replace("Z", "+00:00"))
 SECRET = "sk-live-secret-value"
 
-if TYPE_CHECKING:
-    import pytest
+
+def _receipt_source_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding: str,
+) -> tuple[Path, Path, Path]:
+    home = tmp_path / "home"
+    installed = home / ".local/bin/hapax-platform-capability-receipts"
+    child = home / "projects/hapax-council--child"
+    child_script = child / "scripts/hapax-platform-capability-receipts"
+    for script in (installed, child_script):
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_bytes(SCRIPT.read_bytes())
+    (child / "shared").symlink_to(REPO_ROOT / "shared", target_is_directory=True)
+    for root in (home / "projects/hapax-council", child, home / ".local"):
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "AGENTS.md").write_text(f"stale instructions from {root}\n")
+
+    default = home / ".cache/hapax/source-activation/worktree"
+    default.parent.mkdir(parents=True)
+    default_source = tmp_path / "default-release"
+    default.symlink_to(default_source, target_is_directory=True)
+    selected = default
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", raising=False)
+    if binding == "empty":
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", "")
+    elif binding == "override":
+        # A populated default must not substitute for a missing override.
+        default_source.mkdir()
+        (default_source / "AGENTS.md").write_text("stale default activation\n")
+        selected = home / "selected-activation"
+        selected.symlink_to(tmp_path / "override-release", target_is_directory=True)
+        monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", "~/selected-activation")
+
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    (unrelated / "AGENTS.md").write_text("stale cwd instructions\n")
+    monkeypatch.chdir(unrelated)
+    # run_path mutates sys.path through the script; restore it after each case.
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    return installed, child_script, selected
+
+
+@pytest.mark.parametrize("binding", ["default", "empty", "override"])
+@pytest.mark.parametrize("installed_copy", [True, False], ids=["installed", "checkout"])
+@pytest.mark.parametrize("activation_present", [True, False], ids=["present", "missing"])
+def test_receipt_observes_selected_activation_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding: str,
+    installed_copy: bool,
+    activation_present: bool,
+) -> None:
+    installed, child_script, selected = _receipt_source_fixture(tmp_path, monkeypatch, binding)
+    source = selected.resolve()
+    body = b"selected activation instructions\n"
+    digest = hashlib.sha256(body).hexdigest()
+    if activation_present:
+        source.mkdir()
+        (source / "AGENTS.md").write_bytes(body)
+
+    # Supply implementation dependencies even when activation is absent.
+    # This must never cause the observed project to become this checkout.
+    monkeypatch.syspath_prepend(str(REPO_ROOT))
+    script = installed if installed_copy else child_script
+    assert script.is_file() and not script.is_symlink()
+    namespace = runpy.run_path(str(script), run_name="__test__")
+    assert namespace["REPO_ROOT"] == (source if installed_copy else child_script.parents[1])
+
+    payload = next(
+        route
+        for route in json.loads(REGISTRY.read_text())["routes"]
+        if route["route_id"] == "codex.headless.full"
+    )
+    payload["native_load_set"] = {
+        "native_home": ".codex",
+        "memory_scope": "session",
+        "source_refs": ["fixture:selected-activation"],
+        "files": [
+            {
+                "root": "project",
+                "path": "AGENTS.md",
+                "kind": "instructions",
+                "sha256": digest,
+            }
+        ],
+    }
+    route = namespace["PlatformCapabilityRoute"].model_validate(payload)
+    quota = namespace["surface_evidence"](
+        status=namespace["EvidenceStatus"].UNOBSERVABLE,
+        source="fixture",
+        observed_at=NOW_DT,
+        stale_after="24h",
+        reason_codes=["fixture_no_quota_observation"],
+    )
+    globals_ = namespace["build_receipt"].__globals__
+    monkeypatch.setitem(
+        globals_,
+        "observe_cli",
+        lambda *args, **kwargs: namespace["CliEvidence"](binary="codex", available=False),
+    )
+    monkeypatch.setitem(globals_, "observe_quota", lambda *args, **kwargs: quota)
+    with patch("subprocess.run", side_effect=AssertionError("unexpected live probe")):
+        receipt = namespace["build_receipt"](
+            platform="codex",
+            routes=[route],
+            observed_at=NOW_DT,
+            stale_after="24h",
+            provider_docs_stale_after="24h",
+            timeout=1,
+            codex_exec_auth_timeout=1,
+            codex_exec_auth_probe=False,
+        )
+
+    observation = receipt.load_sets[route.route_id]
+    assert observation["resolved_roots"]["project"] == str(source)
+    assert observation["files"] == [
+        {
+            "root": "project",
+            "path": "AGENTS.md",
+            "observed_path": str(source / "AGENTS.md"),
+            "state": "match" if activation_present else "missing",
+            "sha256": digest if activation_present else None,
+        }
+    ]
+    assert observation["problems"] == ([] if activation_present else ["missing:project:AGENTS.md"])
+    assert observation["native_loading"] == "unobserved"
+    assert observation["boundary"] == "host_observation"
+    assert observation["may_authorize"] is False
+    assert receipt.quota.status.value == "unobservable"
+
+
+@pytest.mark.parametrize("binding", ["default", "empty", "override"])
+def test_installed_receipt_imports_from_activation_without_checkout_pythonpath(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding: str,
+) -> None:
+    installed, _, selected = _receipt_source_fixture(tmp_path, monkeypatch, binding)
+    source = selected.resolve()
+    source.mkdir()
+    (source / "shared").symlink_to(REPO_ROOT / "shared", target_is_directory=True)
+    env = {"HOME": str(tmp_path / "home"), "PATH": os.defpath}
+    if binding != "default":
+        env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = os.environ["HAPAX_SOURCE_ACTIVATE_WORKTREE"]
+    # Fresh isolated interpreter: no pytest module cache, cwd imports or PYTHONPATH.
+    # Loading definitions does not execute main() or run any receipt probes.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            (
+                "import json, runpy, sys\n"
+                "namespace = runpy.run_path(sys.argv[1], run_name='__test__')\n"
+                "import shared.platform_capability_receipts as receipts\n"
+                "print(json.dumps({"
+                "'root': str(namespace['REPO_ROOT']), "
+                "'module': receipts.__file__}))\n"
+            ),
+            str(installed),
+        ],
+        cwd=tmp_path / "unrelated",
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    imported = json.loads(result.stdout)
+    assert imported["root"] == str(source)
+    assert Path(imported["module"]) == source / "shared/platform_capability_receipts.py"
 
 
 def _run_receipts(
@@ -328,6 +502,11 @@ def test_receipt_refresh_redacts_secret_env_and_records_missing_cli(tmp_path: Pa
     assert receipt["cli"]["available"] is False
     assert "cli_missing_or_unusable" in receipt["capability"]["reason_codes"]
     assert all(item["redacted"] is True for item in receipt["config_refs"])
+    assert len(receipt["load_sets"]) == 2
+    for observation in receipt["load_sets"].values():
+        assert observation["declaration"] == "present"
+        assert observation["native_loading"] == "unobserved"
+        assert observation["may_authorize"] is False
 
 
 def test_receipt_refresh_fails_local_on_unrelated_observation_metadata(
@@ -377,6 +556,34 @@ def test_fresh_subscription_receipt_clears_account_live_quota_blocker(
         for ref in route.freshness.evidence.quota.evidence_refs
     )
     assert route.tool_state[0].evidence_ref.startswith("platform-capability-receipt:codex:")
+
+
+@pytest.mark.parametrize("names_route", [True, False])
+@pytest.mark.parametrize("reason", ["quota_window_exhausted", "quota_telemetry_unknown"])
+def test_observed_quota_preserves_reported_blockers_through_registry_overlay(
+    tmp_path: Path, names_route: bool, reason: str
+) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _fake_codex_exec_success(bin_dir / "codex", tmp_path / "codex-used")
+    result = _run_receipts(tmp_path, env={"PATH": str(bin_dir)})
+    assert result.returncode == 0, result.stderr
+    _mark_platform_receipt_account_live_quota_observed(tmp_path)
+    receipt_path = tmp_path / "codex.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["quota"]["reason_codes"] = [reason]
+    if not names_route:
+        receipt["quota"]["evidence_refs"].remove(
+            "platform-capability-registry:codex.headless.full:quota:observed"
+        )
+    receipt_path.write_text(json.dumps(receipt))
+    route = load_platform_capability_registry(REGISTRY, receipt_dir=tmp_path, now=NOW_DT).require(
+        "codex.headless.full"
+    )
+    assert reason in route.freshness.evidence.quota.blocked_reasons
+    assert reason in route.blocked_reasons
+    assert route.route_state.value == "blocked"
+    assert ("account_live_quota_receipt_absent" in route.blocked_reasons) is (not names_route)
 
 
 def test_codex_receipt_without_exec_auth_probe_fails_closed(tmp_path: Path) -> None:

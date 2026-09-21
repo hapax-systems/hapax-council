@@ -1,0 +1,50 @@
+# Build with an isolated context containing only this file, config/agent-instructions,
+# scripts/install-agent-instructions.py, docker/native-codex.toml and the two
+# verified client artifacts.
+# No workstation HOME, secrets, hooks or general launcher scripts enter the image.
+FROM debian@sha256:04634311a8d5fc442b6eb06d792293c4f3e2268652ca7634e00ce8ef5cc0a28a AS base
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+    python3=3.13.5-1 git=1:2.47.3-0+deb13u1 \
+    ca-certificates=20250419 tini=0.19.0-3+b8 \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /opt/hapax /opt/hapax-agent /work /state \
+    && dpkg-query -W > /opt/hapax/os-packages.txt \
+    && useradd --uid 1000 --home-dir /opt/hapax-agent --no-create-home agent \
+    && chown agent:agent /state /work
+COPY config/agent-instructions /opt/hapax/config/agent-instructions
+COPY scripts/install-agent-instructions.py /opt/hapax/scripts/install-agent-instructions.py
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.source="https://github.com/hapax-systems/hapax-council" \
+    org.opencontainers.image.revision="$SOURCE_REVISION"
+RUN test -n "$SOURCE_REVISION" && python3 /opt/hapax/scripts/install-agent-instructions.py \
+    --source /opt/hapax --home /opt/hapax-agent --source-revision "$SOURCE_REVISION" \
+    --binding claude --binding codex --apply > /opt/hapax/instruction-install.json \
+    && chmod -R a+rX /opt/hapax-agent /opt/hapax \
+    && mkdir -p /opt/hapax-agent/.codex/sessions /opt/hapax-agent/.claude/projects
+ENV HOME=/opt/hapax-agent PATH=/usr/local/bin:/usr/bin:/bin \
+    DISABLE_AUTOUPDATER=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+WORKDIR /work
+USER 1000:1000
+
+FROM base AS claude
+COPY --chmod=0555 artifacts/claude /usr/local/bin/claude
+# Public artifact digest, not a credential.
+RUN echo '722210f05ba494d8f6df69423c4d4f2960900f7a007d0532851c7a36e375cab7  /usr/local/bin/claude' | sha256sum -c -
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/claude"]
+
+FROM base AS codex
+USER root
+RUN apt-get update -qq && apt-get install -y --no-install-recommends bubblewrap=0.12.0-1~deb13u1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && dpkg-query -W > /opt/hapax/os-packages.txt \
+    && ln -s /state/installation_id /opt/hapax-agent/.codex/installation_id \
+    && ln -s /tmp /opt/hapax-agent/.codex/tmp \
+    && ln -s /tmp /opt/hapax-agent/.codex/.tmp \
+    && ln -s /state/thread-writer-locks /opt/hapax-agent/.codex/thread-writer-locks
+USER 1000:1000
+COPY --chmod=0555 artifacts/codex /usr/local/bin/codex
+ENV CODEX_SQLITE_HOME=/state
+COPY docker/native-codex.toml /opt/hapax-agent/.codex/config.toml
+# Public artifact digest, not a credential.
+RUN echo '0753dfe1d8b87a52436deb13eb1c549661ef4c84fee2c5aa688385eebeccb761  /usr/local/bin/codex' | sha256sum -c -
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/codex"]

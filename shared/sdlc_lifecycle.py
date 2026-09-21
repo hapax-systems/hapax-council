@@ -518,6 +518,12 @@ SENSITIVE_PATH_MARKERS = (
     "config/pipewire/",
     "codeowners",
     "claude.md",
+    "agents.md",
+    # Native instruction sources use the existing directory-marker seam.
+    "config/agent-instructions/native/",
+    "config/agent-instructions/bindings.json",
+    "docs/runbooks/council-domain-context.md",
+    "scripts/install-agent-instructions.py",
     "hapax-constitution",
     # Operator-coupled broadcast/visual surfaces (operator directive 2026-06-10):
     # correctness depends on continuous operator aesthetic/directorial judgment,
@@ -1427,7 +1433,7 @@ def _path_matches_sensitive_marker(ref: str, marker: str) -> bool:
 
     Directory markers (e.g. ``axioms/``, ``shared/governance/``) match a
     consecutive run of path segments; bare-file markers (``codeowners``,
-    ``claude.md``, ``hapax-constitution``) match a whole path segment. This
+    ``claude.md``, ``agents.md``, ``hapax-constitution``) match a whole path segment. This
     replaces a raw substring test that false-vetoed refs which merely contain a
     marker as a substring — e.g. ``scripts/sync-codeowners.py`` (not the
     CODEOWNERS file) or ``research/meta-axioms/notes.md`` (not axioms/).

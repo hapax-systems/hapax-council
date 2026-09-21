@@ -864,6 +864,46 @@ class SupplyVector(StrictModel):
     supply_descriptor: SupplyDescriptor | None = None
 
 
+class NativeLoadFile(StrictModel):
+    """One declared input. An unknown digest is explicit, never a match."""
+
+    root: Literal["native_home", "project"]
+    path: str = Field(min_length=1)
+    kind: Literal["instructions", "configuration"]
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    digest_description: str | None = None
+    required: bool = True
+
+    @model_validator(mode="after")
+    def _relative_binding(self) -> Self:
+        from pathlib import PurePosixPath
+
+        path = PurePosixPath(self.path)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("load-set paths must stay within their declared root")
+        return self
+
+
+class NativeLoadSet(StrictModel):
+    """Declared native inputs within the existing route contract.
+
+    Null extension lists mean unobserved, whereas [] deliberately declares none.
+    Host observations do not enforce isolation. OCI construction may constrain
+    inputs, but still cannot attest that a model used delivered instructions.
+    """
+
+    native_home: str = Field(min_length=1)
+    home_env: str | None = None
+    files: list[NativeLoadFile] = Field(min_length=1)
+    memory_scope: str = Field(min_length=1)
+    plugins: list[str] | None = None
+    skills: list[str] | None = None
+    hooks: list[str] | None = None
+    mcp: list[str] | None = None
+    loading_flags: list[str] | None = None
+    source_refs: list[str] = Field(min_length=1)
+
+
 class PlatformCapabilityRoute(StrictModel):
     registry_schema: Literal[1] = 1
     route_id: str
@@ -878,6 +918,7 @@ class PlatformCapabilityRoute(StrictModel):
     blocked_reasons: list[str] = Field(default_factory=list)
     model_or_engine: str | None
     execution_descriptor: ExecutionDescriptor
+    native_load_set: NativeLoadSet | None = None
     descriptor_variants: list[DescriptorVariant] = Field(default_factory=list)
     paid_provider: str | None = None
     paid_profile: str | None = None
@@ -2135,14 +2176,18 @@ def _apply_receipt_to_route_payload(
     # not clear the quota blockers of its siblings (review finding on #4616).
     quota_observed_for_route = _receipt_quota_names_route(receipt, route_payload)
     if receipt.quota.status is EvidenceStatus.OBSERVED and not quota_observed_for_route:
-        quota_reason_codes = ["account_live_quota_receipt_absent"]
+        quota_reason_codes = list(
+            dict.fromkeys([*quota_reason_codes, "account_live_quota_receipt_absent"])
+        )
     _apply_surface(
         freshness,
         "quota",
         checked_at=observed_at,
         stale_after=quota_stale_after,
         evidence_refs=[*receipt.quota.evidence_refs, receipt_ref],
-        reason_codes=quota_reason_codes if not quota_observed_for_route else [],
+        # Observing quota (including exhausted quota) is not an availability
+        # verdict. Route correlation cannot discard reported blockers.
+        reason_codes=quota_reason_codes,
         removable_reasons=_quota_unobservable_removable_reasons(route_payload)
         if quota_unobservable_nonblocking
         else (
@@ -2179,8 +2224,6 @@ def _apply_receipt_to_route_payload(
         top_blockers.extend(capability_reason_codes)
     if resource_status is not EvidenceStatus.OBSERVED:
         top_blockers.extend(resource_reason_codes)
-    if not quota_observed_for_route and not quota_unobservable_nonblocking:
-        top_blockers.extend(quota_reason_codes)
 
     removable_top_blockers = {"provider_docs_evidence_absent"}
     if capability_status is EvidenceStatus.OBSERVED:
@@ -2235,6 +2278,10 @@ def _apply_receipt_to_route_payload(
                 reason for reason in quota_evidence.get("blocked_reasons", []) if reason != blocker
             ]
     top_blockers = [reason for reason in top_blockers if reason not in removable_top_blockers]
+    # Project the final quota surface after clearing historical top-level
+    # blockers. A current reason must survive even if an older instance of
+    # that reason was eligible for removal.
+    top_blockers.extend(freshness["evidence"]["quota"]["blocked_reasons"])
     route_payload["blocked_reasons"] = list(dict.fromkeys(top_blockers))
     route_payload["route_state"] = "blocked" if route_payload["blocked_reasons"] else "active"
 

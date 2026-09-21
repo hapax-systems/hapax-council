@@ -1,0 +1,158 @@
+# Historical first-slice observations at the source revision below.
+# Current compact policy and substrate replay: native-harness-reductions-20260920.yaml.
+recorded_date: '2026-09-20'
+scope: Isolated Linux compatibility binding; native startup receipts, no model request
+  or semantic-compliance claim.
+probe: scripts/probe-claude-instruction-binding.py
+claude:
+- source_head: efbfd68b9d2766ccc9bf65062860014e5c296b56  # pragma: allowlist secret — public Git/content digest
+  source_path: AGENTS.md
+  source_matches_head: true
+  canonical_bytes: 19833
+  canonical_sha256: 3759814ffacd97c51908f2cd001f351c724f1f42d42bea157b6c159963c1bcc0  # pragma: allowlist secret — public Git/content digest
+  client_version: 2.1.277 (Claude Code)
+  client_sha256: 722210f05ba494d8f6df69423c4d4f2960900f7a007d0532851c7a36e375cab7  # pragma: allowlist secret — public Git/content digest
+  environment:
+    PATH: /bin:/usr/bin
+    HOME: <fixture>/home
+    DISABLE_AUTOUPDATER: '1'
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+  user_turns: 0
+  initialize_receipt_timeout_seconds: 10
+  cells:
+  - cwd: root
+    exit_code: 0
+    passed: true
+    command:
+    - <claude>
+    - -p
+    - --input-format
+    - stream-json
+    - --output-format
+    - stream-json
+    - --verbose
+    - --tools
+    - ''
+    - --strict-mcp-config
+    - --mcp-config
+    - '{"mcpServers":{}}'
+    - --setting-sources
+    - project
+    - --settings
+    - <fixture>/root-settings.json
+    - --no-session-persistence
+    events:
+    - hook_event_name: InstructionsLoaded
+      file_path: <fixture>/project/CLAUDE.md
+      memory_type: Project
+      load_reason: session_start
+      observed_file_bytes: '19833'
+      observed_file_sha256: 3759814ffacd97c51908f2cd001f351c724f1f42d42bea157b6c159963c1bcc0  # pragma: allowlist secret — public Git/content digest
+  - cwd: nested
+    exit_code: 0
+    passed: true
+    command:
+    - <claude>
+    - -p
+    - --input-format
+    - stream-json
+    - --output-format
+    - stream-json
+    - --verbose
+    - --tools
+    - ''
+    - --strict-mcp-config
+    - --mcp-config
+    - '{"mcpServers":{}}'
+    - --setting-sources
+    - project
+    - --settings
+    - <fixture>/nested-settings.json
+    - --no-session-persistence
+    events:
+    - hook_event_name: InstructionsLoaded
+      file_path: <fixture>/project/CLAUDE.md
+      memory_type: Project
+      load_reason: session_start
+      observed_file_bytes: '19833'
+      observed_file_sha256: 3759814ffacd97c51908f2cd001f351c724f1f42d42bea157b6c159963c1bcc0  # pragma: allowlist secret — public Git/content digest
+- source_head: efbfd68b9d2766ccc9bf65062860014e5c296b56  # pragma: allowlist secret — public Git/content digest
+  source_path: AGENTS.md
+  source_matches_head: true
+  canonical_bytes: 19833
+  canonical_sha256: 3759814ffacd97c51908f2cd001f351c724f1f42d42bea157b6c159963c1bcc0  # pragma: allowlist secret — public Git/content digest
+  client_version: 2.1.219 (Claude Code)
+  client_sha256: 22cfd6f5b3061c0391ba84e9cf8c9deaa37783aac18b004d42ec061e98f00691  # pragma: allowlist secret — public Git/content digest
+  environment:
+    PATH: /bin:/usr/bin
+    HOME: <fixture>/home
+    DISABLE_AUTOUPDATER: '1'
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+  user_turns: 0
+  initialize_receipt_timeout_seconds: 10
+  cells:
+  - cwd: root
+    exit_code: 0
+    passed: true
+    command:
+    - <claude>
+    - -p
+    - --input-format
+    - stream-json
+    - --output-format
+    - stream-json
+    - --verbose
+    - --tools
+    - ''
+    - --strict-mcp-config
+    - --mcp-config
+    - '{"mcpServers":{}}'
+    - --setting-sources
+    - project
+    - --settings
+    - <fixture>/root-settings.json
+    - --no-session-persistence
+    events:
+    - hook_event_name: InstructionsLoaded
+      file_path: <fixture>/project/CLAUDE.md
+      memory_type: Project
+      load_reason: session_start
+      observed_file_bytes: '19833'
+      observed_file_sha256: 3759814ffacd97c51908f2cd001f351c724f1f42d42bea157b6c159963c1bcc0  # pragma: allowlist secret — public Git/content digest
+  - cwd: nested
+    exit_code: 0
+    passed: true
+    command:
+    - <claude>
+    - -p
+    - --input-format
+    - stream-json
+    - --output-format
+    - stream-json
+    - --verbose
+    - --tools
+    - ''
+    - --strict-mcp-config
+    - --mcp-config
+    - '{"mcpServers":{}}'
+    - --setting-sources
+    - project
+    - --settings
+    - <fixture>/nested-settings.json
+    - --no-session-persistence
+    events:
+    - hook_event_name: InstructionsLoaded
+      file_path: <fixture>/project/CLAUDE.md
+      memory_type: Project
+      load_reason: session_start
+      observed_file_bytes: '19833'
+      observed_file_sha256: 3759814ffacd97c51908f2cd001f351c724f1f42d42bea157b6c159963c1bcc0  # pragma: allowlist secret — public Git/content digest
+validation:
+  focused_tests_passed: 311
+  rotation_assertions_passed: 16
+  applied_mutations_killed: 11
+limitations:
+- Not an observation of an active or resumed coordinator session.
+- Early EOF can race the older client loader; probe waits for an actual receipt before
+  closing input.
+- Raw traces remain in task scratch; only sanitized instruction facts are published.
