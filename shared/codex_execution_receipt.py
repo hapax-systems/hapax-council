@@ -24,9 +24,13 @@ def check_turn_context(
 ) -> dict[str, Any]:
     declared = {"model": str(descriptor.model_id), "effort": str(descriptor.effort)}
     observed = {"model": payload.get("model"), "effort": payload.get("effort")}
-    status = "matched" if observed == declared else "misattributed"
-    if any(value is None for value in observed.values()):
+    # Missing evidence on one axis must not erase a mismatch observed on another.
+    if any(value is not None and value != declared[axis] for axis, value in observed.items()):
+        status = "misattributed"
+    elif any(value is None for value in observed.values()):
         status = "unverified"
+    else:
+        status = "matched"
     return {
         "schema": "hapax.codex_execution_identity.v1",
         "route_id": route_id,

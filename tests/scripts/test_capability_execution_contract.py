@@ -250,6 +250,35 @@ def test_turn_context_mismatch_is_misattributed(tmp_path, capsys):
     assert emitted == receipts
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected_status"),
+    [
+        ({"model": "changed-model"}, "misattributed"),
+        ({"effort": "changed-effort"}, "misattributed"),
+        ({"model": "changed-model", "effort": None}, "misattributed"),
+        ({"model": None, "effort": "changed-effort"}, "misattributed"),
+        ({"model": "declared"}, "unverified"),
+        ({"effort": "declared"}, "unverified"),
+        ({}, "unverified"),
+    ],
+)
+def test_partial_turn_observation_preserves_known_mismatch(
+    tmp_path, capsys, payload, expected_status
+):
+    descriptor = resolve_execution_descriptor("codex.headless.full")
+    declared = {"model": str(descriptor.model_id), "effort": str(descriptor.effort)}
+    payload = {
+        key: declared[key] if value == "declared" else value for key, value in payload.items()
+    }
+    rollout = tmp_path / "partial-rollout.jsonl"
+    rollout.write_text(json.dumps({"type": "turn_context", "payload": payload}) + "\n")
+    assert receipt_main(["--route", "codex.headless.full", "--rollout", str(rollout)]) == 1
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["status"] == expected_status
+    assert receipt["observed"] == {axis: payload.get(axis) for axis in ("model", "effort")}
+    assert receipt["declared"] == declared
+
+
 @pytest.mark.parametrize("contents", ["", '{"type":"turn_context","payload":{}}\n', "broken\n"])
 def test_incomplete_receipt_never_claims_a_match(tmp_path, contents):
     rollout = tmp_path / "rollout.jsonl"
