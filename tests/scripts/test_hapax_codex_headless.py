@@ -893,6 +893,44 @@ def test_codex_headless_cancels_and_reaps_its_owned_child(tmp_path, termination)
             process.communicate(timeout=2)
 
 
+def _fixture_process_running(pid: int) -> bool:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        # procfs can lose the process after open(), before read() completes.
+        return False
+    # Orphaned grandchildren need not be reaped promptly by container PID 1.
+    return stat.rsplit(")", 1)[1].split()[0] not in {"Z", "X"}
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError, ProcessLookupError])
+def test_cancellation_probe_handles_process_disappearance(
+    monkeypatch: pytest.MonkeyPatch, error: type[OSError]
+) -> None:
+    def disappeared(path: Path) -> str:
+        assert path == Path("/proc/12345/stat")
+        raise error("fixture process exited during stat read")
+
+    monkeypatch.setattr(Path, "read_text", disappeared)
+    assert _fixture_process_running(12345) is False
+
+
+def test_cancellation_probe_does_not_treat_unreadable_process_as_exited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unreadable(path: Path) -> str:
+        raise PermissionError("fixture stat is unreadable")
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    with pytest.raises(PermissionError):
+        _fixture_process_running(12345)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Uses /proc")
+def test_cancellation_probe_observes_live_process() -> None:
+    assert _fixture_process_running(os.getpid()) is True
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Uses /proc to distinguish exited zombies")
 @pytest.mark.parametrize("wrapper_mode", ["forward", "exit"])
 @pytest.mark.parametrize("cancel_at", ["running", "starting"])
@@ -906,14 +944,6 @@ def test_codex_headless_cancels_wrapper_group(
         while not predicate():
             assert time.monotonic() < deadline
             time.sleep(0.02)
-
-    def running(pid):
-        try:
-            stat = Path(f"/proc/{pid}/stat").read_text()
-        except FileNotFoundError:
-            return False
-        # Orphaned grandchildren need not be reaped promptly by container PID 1.
-        return stat.rsplit(")", 1)[1].split()[0] not in {"Z", "X"}
 
     home = tmp_path / "home"
     (home / ".cache/hapax").mkdir(parents=True)
@@ -1034,17 +1064,17 @@ fi
 
         eventually(term_seen.exists, timeout=3)
         if wrapper_mode == "exit":
-            eventually(lambda: not running(wrapper_pid), timeout=3)
+            eventually(lambda: not _fixture_process_running(wrapper_pid), timeout=3)
             # Establish the exact regression: leader gone, native still live.
-            assert running(native_pid)
+            assert _fixture_process_running(native_pid)
         else:
-            assert running(wrapper_pid)
-            assert running(native_pid)
+            assert _fixture_process_running(wrapper_pid)
+            assert _fixture_process_running(native_pid)
 
         _, err = process.communicate(timeout=10)
         assert process.returncode == 143, err
-        eventually(lambda: not running(native_pid), timeout=2)
-        assert not running(wrapper_pid)
+        eventually(lambda: not _fixture_process_running(native_pid), timeout=2)
+        assert not _fixture_process_running(wrapper_pid)
         assert peer.poll() is None
         if cancel_at == "running":
             assert pid_file.read_text() == f"{peer.pid}\n"
