@@ -115,5 +115,6 @@
       "raw_capture_ref": "sha256:5b508bcbdf3939a621f9a4c2898f1609a4ce2bd490285781d17cd7ac352c9f16"
     }
   ],
-  "client_content_ref": "sha256:5c4735937844e84f8a93306e841a5b0e12252909b07870f789b190468da147ab"
+  "client_content_ref": "sha256:5c4735937844e84f8a93306e841a5b0e12252909b07870f789b190468da147ab",
+  "evidence_kind": "historical_native_capture_not_an_automated_test"
 }

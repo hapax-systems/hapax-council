@@ -325,6 +325,12 @@ the offline driver are retained at
 `~/.local/share/hapax/harness-trials/20260921-cx-blue/claude-request-controls-20260921T1917Z/`.
 The local fixture endpoint returned errors rather than proxying requests;
 no real credential or external network was available to those containers.
+This is a historical native measurement, not an automated test or a claim
+about a later client release. No repository test regenerates or consumes this
+capture. The recheck below validates wrapper construction and refusal only;
+repeating native precedence requires a new bounded observation with its own
+client, configuration and transport evidence. A static fixture assertion would
+not reproduce that behavior.
 
 Recheck request construction, environment isolation, refusal, output and
 process-group cancellation without provider calls:

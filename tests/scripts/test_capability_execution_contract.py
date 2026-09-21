@@ -24,6 +24,9 @@ from shared.capability_execution import (
     reject_codex_identity_overrides,
     resolve_execution_descriptor,
 )
+from shared.capability_execution import (
+    main as execution_main,
+)
 from shared.codex_execution_receipt import check_rollout
 from shared.codex_execution_receipt import main as receipt_main
 from shared.platform_capability_registry import ExecutionDescriptor, ModelId
@@ -40,6 +43,21 @@ IDENTITY_SOURCES = (
     REPO_ROOT / "scripts/hapax-claude-reviewer",
     REPO_ROOT / "scripts/hapax-lane-idle-watchdog",
 )
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--route", "codex.headless.full"],
+        ["--route", "claude.review.opus", "--", "--model", "opus"],
+    ],
+)
+def test_claude_cli_refuses_foreign_route_and_extra_identity_arguments(args, capsys):
+    assert execution_main(["--harness", "claude", *args]) == 9
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "non-Claude route or extra identity arguments" in captured.err
+    assert "remedy:" in captured.err
 
 
 @pytest.mark.parametrize(

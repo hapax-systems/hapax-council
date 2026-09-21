@@ -261,7 +261,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         binding = _execution_binding()
     except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
-        print(f"hapax-claude-reviewer: refusing undeclared invocation: {exc}", file=sys.stderr)
+        print(
+            f"hapax-claude-reviewer: refusing undeclared invocation: {exc}; "
+            "next action: repair the selected release descriptor/runtime and retry the review",
+            file=sys.stderr,
+        )
         return 9
     if args.model is not None and args.model != binding["descriptor"]["model_id"]:
         print(

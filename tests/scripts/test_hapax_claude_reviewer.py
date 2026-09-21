@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import os
 import shutil
@@ -296,6 +298,8 @@ def test_installed_review_wrapper_resolves_its_physical_release(tmp_path):
         "import sys\nfrom pathlib import Path\n"
         f"if '-c' in sys.orig_argv: Path({str(imported)!r}).touch()\n"
     )
+    # The resolver is itself a -c invocation: removing -I must trip this
+    # marker. The wrapper and fake native executable are file invocations.
     env = {**os.environ, "PYTHONPATH": str(tmp_path)}
     # Prove the startup fixture runs without isolation before testing that the
     # actual wrapper's resolver excludes it. A dormant poison proves nothing.
@@ -369,6 +373,48 @@ def test_review_refuses_missing_runtime_or_malformed_binding(tmp_path, resolver_
     assert result.returncode == 9, result.stderr
     assert "refusing undeclared invocation" in result.stderr
     assert not marker.exists()
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "failure", [OSError("fixture launch error"), subprocess.TimeoutExpired("resolver", 15)]
+)
+def test_resolver_system_failure_refuses_with_remedy(monkeypatch, capsys, failure):
+    loader = importlib.machinery.SourceFileLoader("reviewer_failure_test", str(WRAPPER))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    calls = []
+
+    def fail_external_resolution(command, **kwargs):
+        calls.append(command)
+        raise failure
+
+    # Inject at the external subprocess boundary, not the binding predicate.
+    monkeypatch.setattr(module.subprocess, "run", fail_external_resolution)
+    assert module.main([]) == 9
+    assert len(calls) == 1 and "shared.capability_execution" in calls[0][3]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "refusing undeclared invocation" in captured.err
+    assert "next action: repair the selected release descriptor/runtime" in captured.err
+
+
+def test_resolver_nonzero_without_diagnostic_refuses_with_remedy(tmp_path):
+    root = tmp_path / "release"
+    wrapper = root / "scripts/hapax-claude-reviewer"
+    wrapper.parent.mkdir(parents=True)
+    shutil.copy2(WRAPPER, wrapper)
+    python = root / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(8)\n")
+    python.chmod(0o700)
+    result = subprocess.run(
+        [sys.executable, str(wrapper)], capture_output=True, text=True, input="packet", timeout=20
+    )
+    assert result.returncode == 9
+    assert "descriptor resolver failed without a diagnostic" in result.stderr
+    assert "next action: repair the selected release descriptor/runtime" in result.stderr
     assert result.stdout == ""
 
 
