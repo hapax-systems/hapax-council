@@ -178,6 +178,13 @@ and source revision; it deliberately says native loading is unobserved.
 No coordinator restart or trust change is required. Existing sessions are not
 claimed to have reloaded the new body.
 
+After a pre-merge scoped activation, normal deployment republishes from the
+actual merged revision, even when payload bytes are unchanged. Verify all
+selected payloads and the receipt against that revision, confirm no pending
+transaction remains, and update the private recovery guide to the newly
+recorded backup. The pre-merge receipt remains historical evidence; never
+relabel it as proof of the merged revision.
+
 For isolated preparation or a scoped activation, stage the committed source:
 
 ```bash

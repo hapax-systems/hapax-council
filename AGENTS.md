@@ -135,8 +135,10 @@ tick and never carries workloads. Auxiliary vbe-* lanes may not mutate
 Governance derives from `hapax-constitution` / `hapax-sdlc` and
 `axioms/registry.yaml`: one sovereign principal (100); zero-configuration and
 next-action errors (95); employer data stays in employer systems (90);
-no persistent state about another person without consent (88); LLMs prepare,
-humans deliver (85). Operator referents use `shared/operator_referent`.
+no persistent state about another person without consent (88). The management
+domain axiom (85) says LLMs prepare, humans deliver; preserve its declared
+`scope: domain` / `domain: management` rather than applying it to every
+communication. Operator referents use `shared/operator_referent`.
 
 Review source, runtime, provider-spend and public-surface mutations against the
 active task's `authority_case`, non-null `parent_spec`, route metadata and
