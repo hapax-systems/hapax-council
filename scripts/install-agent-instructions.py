@@ -237,6 +237,11 @@ def check_bindings(receipt: dict, home: Path) -> dict:
     state = home / ".config/hapax/agent-instructions"
     current_path = state / "current.json"
     current = json.loads(current_path.read_text()) if current_path.is_file() else {}
+    if not isinstance(current, dict):
+        raise ValueError(
+            f"{current_path}: receipt must be a JSON object; "
+            "next action: reconcile the receipt with the retained install backup before retrying"
+        )
     result["receipt_matches"] = (
         current.get("source_revision") == receipt["source_revision"]
         and current.get("files") == receipt["files"]
@@ -378,15 +383,22 @@ def install(
                 indent=2,
             ).encode(),
         )
+
+        def publish_guarded(index: int, path: Path, body: bytes) -> None:
+            if not matches_preimage(path, originals[index], backup, index):
+                raise OSError(f"instruction destination changed during installation: {path}")
+            atomic_write(path, body)
+
         try:
             for index, (_, path, body) in enumerate(outputs):
-                if not matches_preimage(path, originals[index], backup, index):
-                    raise OSError(f"instruction destination changed during installation: {path}")
-                atomic_write(path, body)
+                publish_guarded(index, path, body)
             for _, path, body in outputs:
                 if path.is_symlink() or path.read_bytes() != body:
                     raise OSError(f"instruction readback failed: {path}")
-            atomic_write(state / "current.json", receipt_body)
+            publish_guarded(len(outputs), state / "current.json", receipt_body)
+            current_path = state / "current.json"
+            if current_path.is_symlink() or current_path.read_bytes() != receipt_body:
+                raise OSError(f"instruction receipt readback failed: {current_path}")
         except BaseException as exc:
             try:
                 # Automatic recovery has the same ownership boundary as the

@@ -200,6 +200,18 @@ chosen roots; do not silently install into another session's alternate home.
 Use `--binding NAME` for a selected substrate. The neutral shared copy is always
 included. The installer changes no provider credentials, trust or running process.
 
+Recovery must use a reviewed installer that preserves the validated receipt
+postimages during rollback and checks saved preimages before publishing both
+payloads and `current.json`. An archived activation stage can predate those
+repairs. Do not run its recorded rollback command without checking its source.
+Next action: stage the repaired installer and its inputs from the reviewed Git
+revision using the archive procedure above, retain that private stage, and use
+its executable with the existing backup. Verify current live bindings read-only
+before recovery; staging the executable does not require reinstalling unchanged
+policy or rewriting the historical install receipt. Preserve the original stage
+as evidence. Existing pending transactions and intervening edits still require
+reconciliation through the installer's normal checks.
+
 To restore the latest install, pass its `current.json` rollback path to
 `--restore-backup PATH --home /absolute/target/home`. This restores original file
 contents, modes, symlinks, absence and the predecessor receipt. The CLI refuses

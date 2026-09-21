@@ -802,3 +802,111 @@ def test_restore_refuses_dangling_pending_transaction(tmp_path, monkeypatch):
     assert installer.main() == 1
     assert pending.is_symlink()
     assert (state / "current.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("upgrade", [False, True])
+def test_receipt_publication_preserves_intervening_edit(tmp_path, monkeypatch, upgrade):
+    if upgrade:
+        installer.install(ROOT, tmp_path, revision="predecessor", apply=True)
+    state = tmp_path / ".config/hapax/agent-instructions"
+    current = state / "current.json"
+    real_write = installer.atomic_write
+    edited = b'{"foreign_edit": true}\n'
+    injected = False
+
+    def write_with_intervening_receipt_edit(path, body):
+        nonlocal injected
+        real_write(path, body)
+        if path == state / "pending.json" and not injected:
+            injected = True
+            current.write_bytes(edited)
+
+    monkeypatch.setattr(installer, "atomic_write", write_with_intervening_receipt_edit)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "installer",
+            "--source",
+            str(ROOT),
+            "--home",
+            str(tmp_path),
+            "--source-revision",
+            "successor",
+            "--apply",
+        ],
+    )
+    assert installer.main() == 1
+    assert injected
+    assert current.read_bytes() == edited
+    pending = json.loads((state / "pending.json").read_text())
+    assert Path(pending["backup"]).is_dir()
+    assert (Path(pending["backup"]) / "preimages.json").is_file()
+    with pytest.raises(ValueError, match="transaction output changed"):
+        installer.recover_pending(state, Path(pending["backup"]))
+    assert current.read_bytes() == edited
+
+
+@pytest.mark.parametrize("malformed", [[], None, 42, "receipt"])
+def test_check_receipt_shape_reports_reconciliation_without_mutation(
+    tmp_path, monkeypatch, capsys, malformed
+):
+    installer.install(ROOT, tmp_path, revision="fixture", apply=True)
+    current = tmp_path / ".config/hapax/agent-instructions/current.json"
+    body = json.dumps(malformed).encode()
+    current.write_bytes(body)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "installer",
+            "--source",
+            str(ROOT),
+            "--home",
+            str(tmp_path),
+            "--source-revision",
+            "fixture",
+            "--check",
+        ],
+    )
+    assert installer.main() == 1
+    error = capsys.readouterr().err
+    assert str(current) in error
+    assert "receipt must be a JSON object" in error
+    assert "reconcile" in error
+    assert current.read_bytes() == body
+
+
+@pytest.mark.parametrize("upgrade", [False, True])
+def test_receipt_readback_preserves_unknown_postpublication_bytes(tmp_path, monkeypatch, upgrade):
+    if upgrade:
+        installer.install(ROOT, tmp_path, revision="predecessor", apply=True)
+    state = tmp_path / ".config/hapax/agent-instructions"
+    current = state / "current.json"
+    real_write = installer.atomic_write
+    foreign = b'{"unexpected_postpublication": true}\n'
+    injected = False
+
+    def corrupt_receipt(path, body):
+        nonlocal injected
+        real_write(path, body)
+        if path == current:
+            injected = True
+            current.write_bytes(foreign)
+
+    monkeypatch.setattr(installer, "atomic_write", corrupt_receipt)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "installer",
+            "--source",
+            str(ROOT),
+            "--home",
+            str(tmp_path),
+            "--source-revision",
+            "successor",
+            "--apply",
+        ],
+    )
+    assert installer.main() == 1
+    assert injected
+    assert current.read_bytes() == foreign
+    assert (state / "pending.json").is_file()
