@@ -398,6 +398,11 @@ def _native_receipt_main() -> int:
     parser.add_argument("--returncode", type=int, required=True)
     parser.add_argument("--local-child", action="store_true")
     parser.add_argument("--cancel-signal", type=int, default=0)
+    parser.add_argument("--execution-descriptor")
+    parser.add_argument("--execution-route")
+    parser.add_argument("--native-home", type=Path)
+    parser.add_argument("--workdir", type=Path)
+    parser.add_argument("--launch-started-at")
     args = parser.parse_args()
     # Bash wait conflates signal termination with an explicit exit(128+signal).
     # Do not manufacture a negative subprocess wait witness from that value.
@@ -420,6 +425,44 @@ def _native_receipt_main() -> int:
             "owned_exit_after_cancel": bool(args.cancel_signal and args.local_child),
         }
     )
+    identity = {
+        "status": "unverified",
+        "may_authorize": False,
+        "reason_codes": ["native_launch_descriptor_unavailable"],
+    }
+    if not args.local_child:
+        identity["reason_codes"] = ["remote_native_identity_unobserved"]
+    elif all(
+        (
+            args.execution_descriptor,
+            args.execution_route,
+            args.native_home,
+            args.workdir,
+            args.launch_started_at,
+        )
+    ):
+        try:
+            # This file is selected from the activated source release. -I
+            # isolates ambient paths; use that same explicit root for imports.
+            import sys
+
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+            from shared.codex_execution_receipt import observe_codex_run_identity
+            from shared.platform_capability_registry import ExecutionDescriptor
+
+            descriptor = ExecutionDescriptor.model_validate_json(args.execution_descriptor)
+            identity = observe_codex_run_identity(
+                descriptor,
+                route_id=args.execution_route,
+                session_id=observed["session_id"],
+                native_home=args.native_home,
+                workdir=args.workdir,
+                launch_started_at=args.launch_started_at,
+            )
+        except Exception as exc:
+            # Evidence failure cannot overwrite the waited native exit status.
+            identity["reason_codes"] = [f"native_identity_observer_failed:{type(exc).__name__}"]
+    observed["execution_identity"] = identity
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     with args.receipt.open("x") as out:
         out.write(json.dumps(observed, sort_keys=True) + "\n")

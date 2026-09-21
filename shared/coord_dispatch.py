@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from shared.coord_event_log import CoordEvent, CoordEventLog, CoordWriter, DuplicateEventError
 from shared.relay_lifecycle import lane_is_retired
 from shared.relay_mq import ensure_schema
+
+if TYPE_CHECKING:
+    from shared.content_address import ContentAddress
+
+_LOG = logging.getLogger(__name__)
 
 TERMINAL_EVENT_TYPES = {
     "coord_dispatch.launch_succeeded",
@@ -83,6 +89,8 @@ class DispatchLaunchResult:
     idempotency_key: str
     event_id: str | None = None
     cleanup_state: Literal["processed", "deferred"] | None = None
+    # Exact execution-receipt bytes; neither completion nor accepted work.
+    result_ref: ContentAddress | None = None
 
 
 def default_idempotency_key(
@@ -112,13 +120,16 @@ def default_idempotency_key(
 def run_atomic_dispatch_launch(
     request: DispatchLaunchRequest,
     launch: Callable[[], int],
+    *,
+    collect_result_ref: Callable[[], ContentAddress | None] | None = None,
 ) -> DispatchLaunchResult:
     """Bind, consume, launch, and record one dispatch as a single operation.
 
     The external launcher cannot participate in SQLite transactions, so this
-    function makes the side effect idempotent: terminal coordination events are
-    replayed before any MQ mutation; nonzero launcher exits return the MQ row to
-    an explicit deferred cleanup state.
+    function replays recorded terminal coordination events before any MQ
+    mutation; nonzero launcher exits return the MQ row to an explicit deferred
+    cleanup state. This does not exclude concurrent or interrupted inflight
+    launches. Receipt collection is optional evidence, never launch authority.
     """
 
     key = request.effective_idempotency_key
@@ -154,6 +165,19 @@ def run_atomic_dispatch_launch(
         _append_dispatch_event(request, idempotency_key=key, outcome="failed", returncode=70)
         raise
 
+    result_ref = None
+    if collect_result_ref is not None:
+        try:
+            result_ref = _parse_result_ref(collect_result_ref())
+        except Exception as exc:
+            # The launcher has already returned. Evidence failure must not
+            # discard its result or prevent MQ cleanup and terminal recording.
+            _LOG.warning(
+                "dispatch_result_reference_unobserved:%s; next action: inspect the "
+                "owned native receipt and collector diagnostics before reusing its evidence",
+                type(exc).__name__,
+            )
+
     if returncode == 0:
         cleanup_state: Literal["processed", "deferred"] = "processed"
         outcome = "succeeded"
@@ -174,6 +198,7 @@ def run_atomic_dispatch_launch(
         idempotency_key=key,
         outcome=outcome,
         returncode=returncode,
+        result_ref=result_ref,
     )
     return DispatchLaunchResult(
         launched=launched,
@@ -184,7 +209,20 @@ def run_atomic_dispatch_launch(
         idempotency_key=key,
         event_id=event_id,
         cleanup_state=cleanup_state,
+        result_ref=result_ref,
     )
+
+
+def _parse_result_ref(value: object) -> ContentAddress | None:
+    if value is None:
+        return None
+    # Keep execution_admission out of the coordination import-time graph.
+    from shared.content_address import ContentAddress
+
+    try:
+        return ContentAddress.model_validate(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def replay_terminal_result(
@@ -215,6 +253,7 @@ def replay_terminal_result(
             idempotency_key=idempotency_key,
             event_id=event.event_id,
             cleanup_state=cleanup_state,
+            result_ref=_parse_result_ref(event.payload.get("result_ref")),
         )
     return None
 
@@ -364,6 +403,7 @@ def _append_dispatch_event(
     idempotency_key: str,
     outcome: Literal["started", "succeeded", "failed"],
     returncode: int | None,
+    result_ref: ContentAddress | None = None,
 ) -> str:
     event_type = f"coord_dispatch.launch_{outcome}"
     event_id = _event_id(idempotency_key, outcome)
@@ -383,6 +423,7 @@ def _append_dispatch_event(
             "profile": request.profile,
             "outcome": outcome,
             "returncode": returncode,
+            "result_ref": result_ref.model_dump(mode="json") if result_ref is not None else None,
         },
     )
     try:

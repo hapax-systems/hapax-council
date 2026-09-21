@@ -34,6 +34,9 @@ through `hapax-source-activate` or the existing Council `uv` provisioning workfl
 A missing runtime, registry, route or concrete descriptor refuses with exit9
 before native invocation; it never falls back to the user's default model.
 `--execution-route` selects a declared Codex route; it is not admission to it.
+Without that option, the named `codex.headless.full` route remains the launcher
+default. Its registry descriptor is still required; this does not select a
+native client's undeclared model default.
 
 Resolver and decoder Python imports are isolated from the caller's cwd and
 `PYTHONPATH`. Both launchers preserve the selected release's physical path.
@@ -63,9 +66,87 @@ uv run --no-sync python -m shared.codex_execution_receipt \
 
 The checker emits one declared/observed comparison per `turn_context`, including
 mid-session changes. Missing observations remain unverified; mismatches remain
-misattributed. It does not prove provider-side identity or work quality, and
-this source slice does not yet automatically consume every estate rollout in
-quota telemetry. That integration remains a separate, explicit obligation.
+misattributed. Valid comparisons are printed as they are read, so a later malformed
+line cannot discard an already observed mismatch. A parsing error still exits2
+and names the next action; output before that error is partial evidence.
+
+Fresh local headless dispatch also captures the descriptor and argv from one
+resolution. At native exit, the lifecycle observer correlates the stream's native
+session ID with its owned session store, cwd and launch time, and records the
+observed rollout byte prefix. The existing methodology result reader recomputes
+identity from that prefix and frozen declaration, including on result replay.
+It never substitutes a later registry value or trusts a receipt's `matched` flag.
+A later append does not rewrite the earlier result; changed prefix bytes,
+missing evidence and wrong-session records cannot establish a match.
+
+Process completion and identity agreement remain separate. The declaration and
+ownership fields are producer claims; byte checks do not attest provider identity,
+ownership or work quality. Remote runs and old receipts without the correlation
+inputs retain unverified identity. Interactive and bare vendor runs are not
+automatically consumed by this fresh-local-headless path, and quota telemetry
+integration across all estate runs remains unfinished.
+
+Recheck the actual producer, result reader and terminal-event replay with:
+
+```bash
+uv run --no-sync pytest -q \
+  tests/scripts/test_capability_execution_contract.py::test_headless_identity_reaches_result_reader_with_frozen_declaration \
+  tests/scripts/test_codex_identity_consumer.py \
+  tests/shared/test_codex_run_identity.py \
+  tests/scripts/test_hapax_methodology_dispatch.py::test_launch_idempotency_replays_without_second_launcher_call
+```
+
+The last test runs a successful first dispatch and verifies the serialized
+terminal event and result reference on replay without another launcher call;
+it also exercises missing, modified and legacy evidence. A content reference
+does not retain its target. If receipt or native bytes were pruned, readback
+stays unobserved; the retained reference identifies the unavailable original
+and never licenses a replacement provider call.
+
+`DispatchLaunchResult.result_ref` reuses the existing immutable `ContentAddress`
+contract. Its lightweight module avoids importing the admission dependency graph
+into standalone receipt readers; the original admission import remains supported.
+The claim-publisher's bound source closure includes the extracted module, so a
+new source activation requires the normal shipped-installer migration. Recheck
+that contract, including identical and changed sources across release paths:
+
+```bash
+uv run --no-sync pytest -q tests/shared/test_content_address.py \
+  tests/shared/test_gate0b_claim_publication_machinery.py \
+  tests/shared/test_gate0b_descriptor_release_independence.py
+```
+
+After merge, verify the source activation's Git HEAD against the merged commit
+and compare the installed `hapax-codex-headless` and
+`hapax-methodology-dispatch` bytes with that release. Refresh the changed claim
+source closure with the shipped `install_claim_publication_composition` in
+`shared/gate0b_claim_publication_install.py`, preserving the prior receipt and
+manifest, declared roots, authority bindings and non-authorizing flags. Verify
+the resulting installation using the default-path checks in
+[the claim-publication runbook](gate0b-claim-publication-fallback.md#default-recheck).
+Run the producer/result-reader recheck above from the activated physical release
+with its pinned interpreter. These checks establish source and installed-byte
+activation for this consumer, not a production container migration or proof of
+every native invocation.
+
+```bash
+release_root="$(readlink -f "$HOME/.cache/hapax/source-activation/worktree")"
+git -C "$release_root" rev-parse HEAD  # Compare with the PR's actual merge SHA.
+cmp "$HOME/.local/bin/hapax-codex-headless" "$release_root/scripts/hapax-codex-headless"
+cmp "$HOME/.local/bin/hapax-methodology-dispatch" "$release_root/scripts/hapax-methodology-dispatch"
+```
+
+Lifecycle ownership remains a receipt claim. Existing coordination replay does
+not exclude concurrent or interrupted inflight launches. This local reader's
+absolute paths are not a portable artifact resolver for arbitrary remote workers.
+A null result reference does not distinguish an absent collector from failed
+collection. Collector warnings go to the process logging output; consult them
+and native diagnostics if retained. The terminal event does not retain that
+failure reason, so a later replay cannot reconstruct it from null alone. Neither case
+changes the already observed launcher outcome or establishes identity agreement.
+The shared reader preserves validated Claude lifecycle evidence, but replaces
+receipt-carried Claude model identity with `unverified` until an implemented
+checker can revalidate it. Other lifecycle mappings remain unsupported.
 
 The contract test includes a redacted field projection from a captured native
 Codex0.155.1 rollout, with original event/file hashes and provenance in

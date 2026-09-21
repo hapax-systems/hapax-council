@@ -174,13 +174,23 @@ def test_invocation_carries_exact_descriptor(tmp_path, launcher, route):
 
 @pytest.mark.parametrize("launcher", LAUNCHERS)
 @pytest.mark.parametrize(
-    "failure", ["missing_descriptor", "missing_registry", "unknown_route", "missing_runtime"]
+    "failure",
+    [
+        "missing_descriptor",
+        "missing_registry",
+        "directory_registry",
+        "unknown_route",
+        "missing_runtime",
+    ],
 )
 def test_missing_descriptor_is_refused_before_invocation(tmp_path, launcher, failure):
     env, args_file = _env_with_fake_codex(tmp_path)
     path = _registry(tmp_path, missing=failure == "missing_descriptor")
     if failure == "missing_registry":
         path.unlink()
+    if failure == "directory_registry":
+        path.unlink()
+        path.mkdir()
     env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(path)
     if failure == "missing_runtime":
         council = tmp_path / "unprovisioned-council"
@@ -266,6 +276,27 @@ def test_turn_context_mismatch_is_misattributed(tmp_path, capsys):
     assert emitted == receipts
 
 
+def test_checker_emits_known_mismatch_before_later_malformed_line(tmp_path, capsys):
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(
+        json.dumps({"type": "turn_context", "payload": {"model": "different", "effort": "low"}})
+        + "\nbroken\n"
+    )
+    assert receipt_main(["--route", "codex.headless.full", "--rollout", str(path)]) == 2
+    captured = capsys.readouterr()
+    emitted = [json.loads(line) for line in captured.out.splitlines()]
+    assert len(emitted) == 1
+    assert emitted[0]["status"] == "misattributed"
+    assert "next action:" in captured.err
+
+
+def test_dispatch_refuses_cross_route_identity_with_next_action():
+    with pytest.raises(ExecutionIdentityError, match="remedy:") as error:
+        _dispatch().launch_descriptor("codex.headless.full", "codex.headless.spark")
+    assert "codex.headless.spark" in str(error.value)
+    assert "codex.headless.full" in str(error.value)
+
+
 @pytest.mark.parametrize(
     ("payload", "expected_status"),
     [
@@ -342,6 +373,18 @@ def test_receipt_cli_failure_names_next_action(tmp_path, capsys, contents):
     ],
 )
 def test_identity_helper_refuses_malformed_resolver_output(tmp_path, output):
+    try:
+        output = json.dumps(
+            {"argv": json.loads(output), "descriptor": {"model_id": "named", "effort": "low"}}
+        )
+    except ValueError:
+        pass
+    result = _identity_helper_output(tmp_path, output)
+    assert result.returncode == 9
+    assert "next action:" in result.stderr.lower()
+
+
+def _identity_helper_output(tmp_path, output, *, inspect_binding=False):
     runtime = tmp_path / "runtime"
     (runtime / "scripts").mkdir(parents=True)
     helper = runtime / "scripts/capability-execution.sh"
@@ -354,17 +397,61 @@ def test_identity_helper_refuses_malformed_resolver_output(tmp_path, output):
         f'exec {shlex.quote(sys.executable)} "$@"\n'
     )
     python.chmod(0o755)
-    result = subprocess.run(
+    return subprocess.run(
         [
             "bash",
             "-c",
-            'source "$1"; EXECUTION_ROUTE=fixture; CODEX_EXTRA=(); bind_codex_execution',
+            'source "$1"; EXECUTION_ROUTE=fixture; CODEX_EXTRA=(); bind_codex_execution || exit $?; '
+            + (
+                'printf "%s\\n" "$HAPAX_CODEX_EXECUTION_ARGS" '
+                '"$HAPAX_CODEX_EXECUTION_DESCRIPTOR" "${CODEX_EXECUTION_ARGS[@]}"'
+                if inspect_binding
+                else ""
+            ),
             "fixture",
             str(helper),
         ],
         capture_output=True,
         text=True,
     )
+
+
+@pytest.mark.parametrize(
+    "descriptor",
+    [
+        None,
+        [],
+        {},
+        {"model_id": "different", "effort": "low"},
+        {"model_id": "named", "effort": "high"},
+    ],
+)
+def test_identity_helper_refuses_inconsistent_launch_snapshot(tmp_path, descriptor):
+    output = json.dumps(
+        {
+            "argv": ["-c", 'model="named"', "-c", 'model_reasoning_effort="low"'],
+            "descriptor": descriptor,
+        }
+    )
+    result = _identity_helper_output(tmp_path, output)
+    assert result.returncode == 9
+    assert "next action:" in result.stderr.lower()
+
+
+@pytest.mark.parametrize("model,effort", [("", "low"), ("named", None), (3, "low")])
+def test_identity_helper_refuses_consistent_invalid_identity(tmp_path, model, effort):
+    output = json.dumps(
+        {
+            "argv": [
+                "-c",
+                f"model={json.dumps(model)}",
+                "-c",
+                f"model_reasoning_effort={json.dumps(effort)}",
+            ],
+            "descriptor": {"model_id": model, "effort": effort},
+        }
+    )
+    result = _identity_helper_output(tmp_path, output)
     assert result.returncode == 9
     assert "next action:" in result.stderr.lower()
 
@@ -391,6 +478,75 @@ def test_identity_helper_ignores_caller_python_modules(tmp_path):
     assert result.returncode == 0, result.stderr
     assert 'model="gpt-5.5"' in result.stdout.splitlines()
     assert 'model_reasoning_effort="low"' in result.stdout.splitlines()
+
+
+@pytest.mark.parametrize(
+    "case", ["matched", "registry_changed", "wrong_session", "mismatched_model"]
+)
+def test_headless_identity_reaches_result_reader_with_frozen_declaration(tmp_path, case):
+    env, _ = _env_with_fake_codex(tmp_path)
+    registry = _registry(tmp_path)
+    env["HAPAX_PLATFORM_CAPABILITY_REGISTRY"] = str(registry)
+    receipt = tmp_path / "lifecycle.json"
+    env["HAPAX_NATIVE_LIFECYCLE_RECEIPT"] = str(receipt)
+    native = tmp_path / "bin/codex"
+    script = native.read_text()
+    # Preserve the controlled authentication sentinel path, then replace only
+    # the actual execution child's exit with native-shaped independent events.
+    prefix, suffix = script.rsplit("exit 0\n", 1)
+    assert not suffix.strip()
+    native.write_text(
+        prefix
+        + f"exec {shlex.quote(sys.executable)} - \"$@\" <<'PY'\n"
+        + f"case = {case!r}\nregistry_path = {str(registry)!r}\n"
+        + """
+import json, os, sys
+from datetime import datetime, timezone
+from pathlib import Path
+sid = "01900000-1234-7000-8000-123456789abc"
+values = dict(arg.split("=", 1) for arg in sys.argv[1:] if arg.startswith(("model=", "model_reasoning_effort=")))
+model = json.loads(values["model"])
+effort = json.loads(values["model_reasoning_effort"])
+if case == "registry_changed":
+    path = Path(registry_path)
+    payload = json.loads(path.read_text())
+    for route in payload["routes"]:
+        if route["route_id"] == "codex.headless.full":
+            route["execution_descriptor"]["model_id"] = "gpt-6-astra"
+            route["execution_descriptor"]["effort"] = "xhigh"
+    path.write_text(json.dumps(payload))
+now = datetime.now(timezone.utc).isoformat()
+path = Path.home() / ".codex/sessions/2026/09/21" / f"rollout-controlled-{sid}.jsonl"
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text("".join(json.dumps(event) + "\\n" for event in [
+    {"type": "session_meta", "timestamp": now,
+     "payload": {"id": "wrong-run" if case == "wrong_session" else sid, "cwd": os.getcwd()}},
+    {"type": "turn_context", "timestamp": now,
+     "payload": {"model": "gpt-6-astra" if case == "mismatched_model" else model, "effort": effort}},
+]))
+for event in [{"type": "thread.started", "thread_id": sid}, {"type": "turn.started"}, {"type": "turn.completed"}]:
+    print(json.dumps(event))
+PY
+"""
+    )
+    result = _launch(HEADLESS, env)
+    assert result.returncode == 0, result.stderr
+    observed, reference = _dispatch().read_native_lifecycle_receipt(receipt, platform="codex")
+    assert observed["complete"] is True
+    identity = observed["execution_identity"]
+    assert (
+        identity["status"]
+        == {
+            "matched": "matched",
+            "registry_changed": "matched",
+            "wrong_session": "unverified",
+            "mismatched_model": "misattributed",
+        }[case]
+    )
+    assert identity["declared"]["model_id"] == "gpt-5.5"
+    assert identity["declared"]["effort"] == "low"
+    assert identity["may_authorize"] is False
+    assert reference is not None
 
 
 def test_interactive_reentry_keeps_selected_source_release(tmp_path):
@@ -693,3 +849,38 @@ def test_installed_codex_identity_uses_activated_source_before_provider(
         assert expected in result.stderr
     assert not calls.exists()
     assert not calls.with_suffix(".calls").exists()
+
+
+def test_identity_helper_exports_one_binding_to_env_and_argv(tmp_path):
+    descriptor = ExecutionDescriptor(model_id="gpt-5.5", effort="low").model_dump(mode="json")
+    argv = ["-c", 'model="gpt-5.5"', "-c", 'model_reasoning_effort="low"']
+    result = _identity_helper_output(
+        tmp_path, json.dumps({"argv": argv, "descriptor": descriptor}), inspect_binding=True
+    )
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert json.loads(lines[0]) == argv
+    assert json.loads(lines[1]) == descriptor
+    assert lines[2:] == argv
+
+
+@pytest.mark.parametrize("with_descriptor", [False, True])
+def test_resolver_cli_preserves_argv_only_wire_format(
+    tmp_path, monkeypatch, capsys, with_descriptor
+):
+    from shared.capability_execution import main
+
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_REGISTRY", str(_registry(tmp_path)))
+    args = ["--route", "codex.headless.full"]
+    if with_descriptor:
+        args.append("--with-descriptor")
+    assert main(args) == 0
+    output = json.loads(capsys.readouterr().out)
+    expected = ["-c", 'model="gpt-5.5"', "-c", 'model_reasoning_effort="low"']
+    if with_descriptor:
+        assert output["argv"] == expected
+        assert output["descriptor"] == ExecutionDescriptor(
+            model_id="gpt-5.5", effort="low"
+        ).model_dump(mode="json")
+    else:
+        assert output == expected

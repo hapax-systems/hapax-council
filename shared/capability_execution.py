@@ -98,6 +98,7 @@ def reject_codex_identity_overrides(args: list[str]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--route", required=True)
+    parser.add_argument("--with-descriptor", action="store_true")
     parser.add_argument("extra", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     try:
@@ -105,7 +106,14 @@ def main(argv: list[str] | None = None) -> int:
             raise ExecutionIdentityError("refusing non-Codex route in Codex launcher")
         reject_codex_identity_overrides(args.extra)
         descriptor = resolve_execution_descriptor(args.route)
-        print(json.dumps(codex_execution_args(descriptor)))
+        argv = codex_execution_args(descriptor)
+        print(
+            json.dumps(
+                {"argv": argv, "descriptor": descriptor.model_dump(mode="json")}
+                if args.with_descriptor
+                else argv
+            )
+        )
     except ExecutionIdentityError as exc:
         print(str(exc), file=sys.stderr)
         return 9

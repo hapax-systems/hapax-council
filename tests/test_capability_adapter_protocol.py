@@ -258,7 +258,27 @@ def test_launch_happy_path_delegates_to_coord_dispatch() -> None:
     with mock.patch(f"{_MOD}.run_atomic_dispatch_launch", return_value=sentinel_result) as spawn:
         result = CodexAdapter().launch(decision, request, launch_callable)  # type: ignore[arg-type]
     assert result is sentinel_result
-    spawn.assert_called_once_with(request, launch_callable)
+    spawn.assert_called_once()
+    assert spawn.call_args.args == (request, launch_callable)
+    assert spawn.call_args.kwargs.get("collect_result_ref") is None
+
+
+def test_launch_forwards_optional_result_reference_callback() -> None:
+    decision = _decision(action=DispatchAction.LAUNCH, launch_allowed=True)
+    request = object()
+    launch_callable = mock.Mock(return_value=0)
+    collect_result_ref = mock.Mock(return_value=None)
+    sentinel_result = object()
+    with mock.patch(f"{_MOD}.run_atomic_dispatch_launch", return_value=sentinel_result) as spawn:
+        result = CodexAdapter().launch(
+            decision,
+            request,  # type: ignore[arg-type]
+            launch_callable,
+            collect_result_ref=collect_result_ref,
+        )
+    assert result is sentinel_result
+    spawn.assert_called_once_with(request, launch_callable, collect_result_ref=collect_result_ref)
+    collect_result_ref.assert_not_called()
 
 
 @pytest.mark.parametrize("adapter_cls", [AgyAdapter, VibeAdapter])
@@ -270,7 +290,9 @@ def test_new_worker_adapters_inherit_launch_gate(adapter_cls: type[WorkerAdapter
     with mock.patch(f"{_MOD}.run_atomic_dispatch_launch", return_value=sentinel_result) as spawn:
         result = adapter_cls().launch(decision, request, launch_callable)  # type: ignore[arg-type]
     assert result is sentinel_result
-    spawn.assert_called_once_with(request, launch_callable)
+    spawn.assert_called_once()
+    assert spawn.call_args.args == (request, launch_callable)
+    assert spawn.call_args.kwargs.get("collect_result_ref") is None
 
 
 def test_vibe_adapter_marks_registered_send_surface() -> None:

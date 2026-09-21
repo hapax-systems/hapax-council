@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import json
 import os
 import re
@@ -43,6 +44,8 @@ from shared.capability_adapter_protocol import (
     WorkerAdapter,
 )
 from shared.capability_execution import ExecutionIdentityError, resolve_execution_descriptor
+from shared.codex_execution_receipt import recheck_codex_run_identity
+from shared.content_address import ContentAddress
 from shared.coord_dispatch import (
     CoordDispatchError,
     DispatchLaunchRequest,
@@ -60,6 +63,7 @@ from shared.dispatcher_policy import (
     route_decision_receipt_payload,
     write_route_decision_receipt,
 )
+from shared.execution_observer import observe_native_lifecycle
 from shared.failure_classification import FailureCode, FailureReceipt
 from shared.frontmatter import parse_frontmatter as parse_document_frontmatter
 from shared.gate_event_producer import build_gate_event
@@ -1237,6 +1241,131 @@ def build_prompt(
     return base
 
 
+def read_native_lifecycle_receipt(
+    path: Path | None,
+    *,
+    platform: str,
+    result_ref: ContentAddress | None = None,
+) -> tuple[dict[str, Any], ContentAddress | None]:
+    """Validate receipt/stream consistency without asserting runtime ownership.
+
+    A supplied reference pins replay to the original receipt bytes. The
+    ownership flag and waited status remain receipt claims, not independent
+    ownership evidence. No launcher or authentication probe runs here.
+    """
+
+    def unobserved(reason: str) -> tuple[dict[str, Any], ContentAddress | None]:
+        return {
+            "platform": platform,
+            "phase": "unobserved",
+            "complete": False,
+            "reason": reason,
+            "may_authorize": False,
+        }, None
+
+    if platform not in {"codex", "claude"}:
+        return unobserved("native_receipt_platform_unsupported")
+    if path is None:
+        return unobserved("native_receipt_reference_unavailable")
+    if result_ref is not None and result_ref.ref != str(path):
+        return unobserved("native_receipt_reference_mismatch")
+    try:
+        receipt_bytes = path.read_bytes()
+    except (OSError, ValueError):
+        return unobserved("native_receipt_unavailable")
+    receipt_hash = hashlib.sha256(receipt_bytes).hexdigest()
+    if result_ref is not None and receipt_hash != result_ref.sha256:
+        return unobserved("native_receipt_hash_mismatch")
+
+    try:
+        observed = json.loads(receipt_bytes)
+        if not isinstance(observed, dict):
+            return unobserved("native_receipt_not_mapping")
+        if observed.get("receipt_path") != str(path):
+            return unobserved("native_receipt_path_mismatch")
+        if observed.get("platform") != platform:
+            return unobserved("native_receipt_platform_mismatch")
+        if observed.get("may_authorize") is not False:
+            return unobserved("native_receipt_authority_escalation")
+
+        owned = observed.get("owned_native_process")
+        returncode = observed.get("process_returncode")
+        cancelled = observed.get("cancel_requested")
+        if type(owned) is not bool or type(cancelled) is not bool:
+            return unobserved("native_receipt_invalid_process_evidence")
+        if returncode is not None and type(returncode) is not int:
+            return unobserved("native_receipt_invalid_returncode")
+        if not owned and returncode is not None:
+            return unobserved("native_receipt_unowned_returncode")
+
+        stream_name = observed.get("stream_path")
+        stream_hash = observed.get("stream_sha256")
+        if (
+            not isinstance(stream_name, str)
+            or not stream_name.strip()
+            or not isinstance(stream_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", stream_hash) is None
+        ):
+            return unobserved("native_receipt_invalid_stream_reference")
+        stream_path = Path(stream_name)
+        try:
+            stream_bytes = stream_path.read_bytes()
+        except OSError:
+            return unobserved("native_stream_unavailable")
+        if hashlib.sha256(stream_bytes).hexdigest() != stream_hash:
+            return unobserved("native_stream_hash_mismatch")
+
+        recomputed = observe_native_lifecycle(
+            stream_path,
+            platform=platform,
+            process_returncode=returncode if owned else None,
+            cancellation_requested=cancelled,
+        )
+        # The observer reads the path itself. Reject evidence that changed
+        # across readback; these checks are not an adversarial ownership proof.
+        if stream_path.read_bytes() != stream_bytes:
+            return unobserved("native_stream_changed_during_readback")
+        if path.read_bytes() != receipt_bytes:
+            return unobserved("native_receipt_changed_during_readback")
+        if recomputed["malformed_lines"]:
+            return unobserved("native_stream_malformed")
+        if recomputed.get("reason") is not None:
+            return unobserved(str(recomputed["reason"]))
+        # Compare every lifecycle field, including evidence offsets and field
+        # types. JSON comparison distinguishes true from 1, including nested
+        # values, which Python mapping equality does not.
+        for name, value in recomputed.items():
+            if name not in observed or json.dumps(
+                observed[name], sort_keys=True, allow_nan=False
+            ) != json.dumps(value, sort_keys=True, allow_nan=False):
+                return unobserved(f"native_lifecycle_mismatch:{name}")
+        frozen_ref = result_ref or ContentAddress(ref=str(path), sha256=receipt_hash)
+        observed["execution_identity"] = (
+            recheck_codex_run_identity(
+                observed.get("execution_identity"),
+                session_id=recomputed.get("session_id"),
+                owned_native_process=owned,
+            )
+            if platform == "codex"
+            else {
+                "status": "unverified",
+                "may_authorize": False,
+                "reason_codes": ["native_identity_mapping_unimplemented"],
+            }
+        )
+        if path.read_bytes() != receipt_bytes:
+            return unobserved("native_receipt_changed_during_readback")
+        return {**observed, "may_authorize": False}, frozen_ref
+    except (ValueError, TypeError, UnicodeError):
+        return unobserved("native_receipt_malformed")
+    except OSError:
+        return unobserved("native_evidence_unavailable_during_readback")
+    except Exception as exc:
+        # Receipt collection follows a completed launch callback. An observer
+        # failure must remain missing evidence, not replace that launch result.
+        return unobserved(f"native_observation_failed:{type(exc).__name__}")
+
+
 def write_receipt(
     *,
     task_id: str,
@@ -1255,6 +1384,7 @@ def write_receipt(
     dispatch_launch: DispatchLaunchResult | None = None,
     route_policy_reason_codes: list[str] | None = None,
     native_lifecycle: dict[str, Any] | None = None,
+    result_ref: ContentAddress | None = None,
 ) -> Path:
     ledger_dir = orchestration_ledger_dir()
     ledger_dir.mkdir(parents=True, exist_ok=True)
@@ -1282,6 +1412,7 @@ def write_receipt(
         "launch_returncode": launch_returncode,
         "prompt": prompt,
         "native_lifecycle": native_lifecycle,
+        "result_ref": result_ref.model_dump(mode="json") if result_ref is not None else None,
     }
     if durable_binding is not None:
         record["durable_mq_dispatch_bound"] = durable_binding.ok
@@ -1289,6 +1420,13 @@ def write_receipt(
         record["durable_mq_reason"] = durable_binding.reason
         record["durable_mq_message_id"] = durable_binding.message_id
     if dispatch_launch is not None:
+        # Preserve the original reference even when its replay readback is
+        # unobserved. Never substitute newly generated receipt bytes.
+        record["result_ref"] = (
+            dispatch_launch.result_ref.model_dump(mode="json")
+            if dispatch_launch.result_ref is not None
+            else None
+        )
         record["coord_dispatch_idempotency_key"] = dispatch_launch.idempotency_key
         record["coord_dispatch_replayed"] = dispatch_launch.replayed
         record["coord_dispatch_reason"] = dispatch_launch.reason
@@ -1524,7 +1662,10 @@ def classify_and_witness_launch(
 def launch_descriptor(route_id: str, execution_route: str | None = None):
     selected = execution_route or route_id
     if selected.split("#", 1)[0] != route_id:
-        raise ExecutionIdentityError("selected descriptor leaf does not belong to launch route")
+        raise ExecutionIdentityError(
+            f"selected descriptor {selected!r} does not belong to launch route {route_id!r}; "
+            f"remedy: select a leaf of {route_id!r} from the capability registry"
+        )
     return resolve_execution_descriptor(selected)
 
 
@@ -2609,9 +2750,10 @@ def main(argv: list[str] | None = None) -> int:
         }
 
         native_lifecycle: dict[str, Any] | None = None
+        result_ref: ContentAddress | None = None
 
         def run_platform_launch() -> int:
-            nonlocal native_lifecycle
+            nonlocal native_lifecycle, result_ref
             launch = launchers.get((args.platform, args.mode))
             if launch is None or not supports_route(args.platform, args.mode):
                 caps = capabilities(args.platform)
@@ -2631,17 +2773,9 @@ def main(argv: list[str] | None = None) -> int:
                 print("\n".join(supported_route_lines()), file=sys.stderr)
                 return 2
             rc = launch()
-            # Consume this launch's create-once observation from the supervisor
-            # that actually waited. Requested host strings cannot prove ownership.
-            native_lifecycle = {"phase": "unobserved", "may_authorize": False}
-            try:
-                observed = json.loads(lifecycle_receipt.read_text())
-                if isinstance(observed, dict) and observed.get("receipt_path") == str(
-                    lifecycle_receipt
-                ):
-                    native_lifecycle = {**observed, "may_authorize": False}
-            except (OSError, ValueError):
-                pass
+            native_lifecycle, result_ref = read_native_lifecycle_receipt(
+                lifecycle_receipt, platform=args.platform
+            )
             return rc
 
         dispatch_launch: DispatchLaunchResult | None = None
@@ -2677,8 +2811,16 @@ def main(argv: list[str] | None = None) -> int:
                         mode=args.mode,
                         profile=args.profile,
                     ),
+                    collect_result_ref=lambda: result_ref,
                 )
                 rc = dispatch_launch.launch_returncode
+                if dispatch_launch.replayed:
+                    result_ref = dispatch_launch.result_ref
+                    native_lifecycle, _ = read_native_lifecycle_receipt(
+                        Path(result_ref.ref) if result_ref is not None else None,
+                        platform=args.platform,
+                        result_ref=result_ref,
+                    )
             except AuthorityViolation as exc:
                 reason = f"capability adapter launch refused: {exc}"
                 blocked = Validation(
@@ -2751,6 +2893,7 @@ def main(argv: list[str] | None = None) -> int:
                 durable_binding=durable_binding,
                 dispatch_launch=dispatch_launch,
                 native_lifecycle=native_lifecycle,
+                result_ref=result_ref,
             )
         return rc
 
