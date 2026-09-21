@@ -14,6 +14,8 @@ Source-registry epic Phase D task 14. See
 from __future__ import annotations
 
 import json
+import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -43,30 +45,50 @@ def _disable_live_director_segment_runner(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("HAPAX_DIRECTOR_SEGMENT_RUNNER_DISABLED", "1")
 
 
-def _make_compositor(layout_path: Path | None = None) -> StudioCompositor:
-    """Construct a compositor with a minimal config, patching load_camera_profiles.
+@pytest.fixture
+def make_compositor(monkeypatch: pytest.MonkeyPatch):
+    """Own the real layout workers while keeping external publishers out of scope."""
+    compositors: list[StudioCompositor] = []
 
-    ``StudioCompositor.__init__`` calls ``load_camera_profiles`` eagerly, which
-    opens ``~/.config/hapax-compositor/profiles.yaml`` if it exists. In CI and
-    on fresh workstations, the file may be absent or carry an unrelated schema
-    — neither is a bug in this test's scope. Patch the loader to a no-op so the
-    test exercises the Layout wiring and nothing else.
-    """
-    with mock.patch(
-        "agents.studio_compositor.compositor.load_camera_profiles",
-        return_value=[],
-    ):
-        return StudioCompositor(_default_config(), layout_path=layout_path)
+    def make(layout_path: Path | None = None) -> StudioCompositor:
+        # Host camera profiles are not part of the layout-wiring contract.
+        with mock.patch(
+            "agents.studio_compositor.compositor.load_camera_profiles",
+            return_value=[],
+        ):
+            compositor = StudioCompositor(_default_config(), layout_path=layout_path)
+        compositors.append(compositor)
+        return compositor
+
+    # Keep the Unix socket short enough for AF_UNIX and off the live control path.
+    with tempfile.TemporaryDirectory(prefix="hc-wiring-") as runtime_dir:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", runtime_dir)
+        monkeypatch.setenv("HAPAX_SCENE_CLASSIFIER_ACTIVE", "0")
+        monkeypatch.setenv("HAPAX_CAMERA_CLASSIFIER_PUBLISHER_ACTIVE", "0")
+        try:
+            yield make
+        finally:
+            with ExitStack() as cleanup:
+                for compositor in compositors:
+                    cleanup.callback(compositor.stop)
+                    cleanup.callback(compositor._overlay_zone_manager.stop)
+                    if compositor.source_registry is not None:
+                        for backend in compositor.source_registry._backends.values():
+                            stop = getattr(backend, "stop", None)
+                            if callable(stop):
+                                cleanup.callback(stop)
 
 
 class TestStartLayoutOnly:
     """Happy-path, fallback, and idempotency coverage."""
 
-    def test_reads_disk_layout_and_populates_state_and_registry(self, tmp_path: Path) -> None:
+    def test_reads_disk_layout_and_populates_state_and_registry(
+        self, make_compositor, tmp_path: Path
+    ) -> None:
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         compositor.start_layout_only()
 
         assert compositor.layout_state is not None
@@ -124,14 +146,14 @@ class TestStartLayoutOnly:
         }
 
     def test_start_layout_only_starts_only_enabled_render_stage_sources(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, make_compositor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
         monkeypatch.setenv("HAPAX_COMPOSITOR_DISABLE_POST_FX_OVERLAY", "1")
         monkeypatch.delenv("HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED", raising=False)
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         with mock.patch(
             "agents.studio_compositor.source_registry.SourceRegistry.start_all",
             autospec=True,
@@ -163,13 +185,13 @@ class TestStartLayoutOnly:
                     pass
 
     def test_start_layout_only_does_not_start_layout_sierpinski_when_base_gate_disabled(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, make_compositor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
         monkeypatch.setenv("HAPAX_SIERPINSKI_BASE_OVERLAY_ENABLED", "0")
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         with mock.patch(
             "agents.studio_compositor.source_registry.SourceRegistry.start_all",
             autospec=True,
@@ -187,14 +209,14 @@ class TestStartLayoutOnly:
                     pass
 
     def test_start_layout_only_starts_no_layout_sources_when_both_stages_disabled(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, make_compositor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
         monkeypatch.setenv("HAPAX_COMPOSITOR_DISABLE_POST_FX_OVERLAY", "1")
         monkeypatch.setenv("HAPAX_PRE_FX_LAYOUT_DRAW_ENABLED", "0")
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         with mock.patch(
             "agents.studio_compositor.source_registry.SourceRegistry.start_all",
             autospec=True,
@@ -209,9 +231,11 @@ class TestStartLayoutOnly:
                 except Exception:
                     pass
 
-    def test_missing_layout_file_resolves_to_fallback(self, tmp_path: Path) -> None:
+    def test_missing_layout_file_resolves_to_fallback(
+        self, make_compositor, tmp_path: Path
+    ) -> None:
         """Missing on-disk layout must NOT stop the compositor from booting."""
-        compositor = _make_compositor(layout_path=tmp_path / "does-not-exist.json")
+        compositor = make_compositor(layout_path=tmp_path / "does-not-exist.json")
         compositor.start_layout_only()
 
         assert compositor.layout_state is not None
@@ -274,22 +298,22 @@ class TestStartLayoutOnly:
             "interactive_lore_query",
         }
 
-    def test_broken_json_resolves_to_fallback(self, tmp_path: Path) -> None:
+    def test_broken_json_resolves_to_fallback(self, make_compositor, tmp_path: Path) -> None:
         broken = tmp_path / "broken.json"
         broken.write_text("{not json")
 
-        compositor = _make_compositor(layout_path=broken)
+        compositor = make_compositor(layout_path=broken)
         compositor.start_layout_only()
 
         assert compositor.layout_state is not None
         assert compositor.layout_state.get().name == "default"
 
-    def test_idempotent_when_called_twice(self, tmp_path: Path) -> None:
+    def test_idempotent_when_called_twice(self, make_compositor, tmp_path: Path) -> None:
         """Calling start_layout_only twice must not re-register sources."""
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         compositor.start_layout_only()
 
         first_state = compositor.layout_state
@@ -300,7 +324,7 @@ class TestStartLayoutOnly:
         assert compositor.layout_state is first_state
         assert compositor.source_registry is first_registry
 
-    def test_default_layout_path_is_absolute_and_resolvable(self) -> None:
+    def test_default_layout_path_is_absolute_and_resolvable(self, make_compositor) -> None:
         """Default layout path is computed from __file__ and points at the real file.
 
         Regression pin for the PR #735 audit finding: the previous default
@@ -313,7 +337,7 @@ class TestStartLayoutOnly:
         in ``test_default_layout_loading.py`` pins the file's existence from
         the other side).
         """
-        compositor = _make_compositor()
+        compositor = make_compositor()
         assert compositor._layout_path.is_absolute(), (
             "default layout path must be absolute so it works from any CWD"
         )
@@ -325,6 +349,7 @@ class TestStartLayoutOnly:
 
     def test_continues_past_broken_source_backend(
         self,
+        make_compositor,
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
         monkeypatch,
@@ -346,7 +371,7 @@ class TestStartLayoutOnly:
         layout_file = tmp_path / "default.json"
         layout_file.write_text(json.dumps(raw))
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         counter = _FakeCounter()
         monkeypatch.setattr(metrics, "COMP_SOURCE_BACKEND_ERRORS_TOTAL", counter)
         caplog.set_level(logging.ERROR, logger="agents.studio_compositor.compositor")
@@ -366,7 +391,7 @@ class TestStartLayoutOnly:
         } in counter.labels_seen
 
     def test_start_layout_only_wires_director_segment_runner(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, make_compositor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
@@ -381,7 +406,7 @@ class TestStartLayoutOnly:
             "agents.studio_compositor.director_segment_runner.maybe_start_director_segment_runner",
             _fake_start,
         )
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
 
         compositor.start_layout_only()
 
@@ -390,12 +415,12 @@ class TestStartLayoutOnly:
         assert calls[0].name == "hapax-compositor-commands.sock"
 
     def test_control_plane_resolves_segment_fragment_over_current_layout(
-        self, tmp_path: Path
+        self, make_compositor, tmp_path: Path
     ) -> None:
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         compositor.start_layout_only()
 
         assert compositor._layout_store is not None
@@ -409,7 +434,9 @@ class TestStartLayoutOnly:
         assert any(source.id == "artifact-detail-panel" for source in resolved.sources)
         assert any(source.id == "token_pole" for source in resolved.sources)
 
-    def test_start_layout_only_wires_autosaver_and_file_watcher(self, tmp_path: Path) -> None:
+    def test_start_layout_only_wires_autosaver_and_file_watcher(
+        self, make_compositor, tmp_path: Path
+    ) -> None:
         """Post-epic audit finding #1 regression pin.
 
         ``LayoutAutoSaver`` and ``LayoutFileWatcher`` existed in
@@ -422,7 +449,7 @@ class TestStartLayoutOnly:
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         assert compositor._layout_autosaver is None
         assert compositor._layout_file_watcher is None
 
@@ -497,12 +524,12 @@ class TestStartDelegatesThroughStartLayoutOnly:
     """The full ``start()`` path must invoke ``start_layout_only()`` before GStreamer."""
 
     def test_start_invokes_layout_loader_before_lifecycle(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, make_compositor, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
 
         calls: list[str] = []
         original_layout_only = compositor.start_layout_only
@@ -542,25 +569,27 @@ class TestStudioCompositorBudgetWiring:
     regression is visible.
     """
 
-    def test_compositor_owns_a_budget_tracker_after_init(self) -> None:
+    def test_compositor_owns_a_budget_tracker_after_init(self, make_compositor) -> None:
         from agents.studio_compositor.budget import BudgetTracker
 
-        compositor = _make_compositor()
+        compositor = make_compositor()
         assert isinstance(compositor._budget_tracker, BudgetTracker)
 
-    def test_overlay_zone_manager_runner_has_tracker_wired(self) -> None:
-        compositor = _make_compositor()
+    def test_overlay_zone_manager_runner_has_tracker_wired(self, make_compositor) -> None:
+        compositor = make_compositor()
         runner = compositor._overlay_zone_manager._runner
         assert runner._budget_tracker is compositor._budget_tracker
 
-    def test_start_layout_only_wires_tracker_to_cairo_backends(self, tmp_path: Path) -> None:
+    def test_start_layout_only_wires_tracker_to_cairo_backends(
+        self, make_compositor, tmp_path: Path
+    ) -> None:
         """Every cairo backend in the SourceRegistry shares the compositor tracker."""
         from agents.studio_compositor.cairo_source import CairoSourceRunner
 
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         compositor.start_layout_only()
 
         assert compositor.source_registry is not None
@@ -575,14 +604,16 @@ class TestStudioCompositorBudgetWiring:
                 f"cairo runner {runner.source_id} is missing tracker wiring"
             )
 
-    def test_tracker_collects_samples_across_runner_ticks(self, tmp_path: Path) -> None:
+    def test_tracker_collects_samples_across_runner_ticks(
+        self, make_compositor, tmp_path: Path
+    ) -> None:
         """After ticking every cairo runner once, the tracker has per-source samples."""
         from agents.studio_compositor.cairo_source import CairoSourceRunner
 
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         compositor.start_layout_only()
 
         assert compositor.source_registry is not None
@@ -598,7 +629,7 @@ class TestStudioCompositorBudgetWiring:
             "wiring is dead, regression of T1/T2 from the delta drop"
         )
 
-    def test_publish_costs_round_trips_to_json(self, tmp_path: Path) -> None:
+    def test_publish_costs_round_trips_to_json(self, make_compositor, tmp_path: Path) -> None:
         """publish_costs(tracker, path) writes a parseable JSON snapshot."""
         from agents.studio_compositor.budget import publish_costs
         from agents.studio_compositor.cairo_source import CairoSourceRunner
@@ -606,7 +637,7 @@ class TestStudioCompositorBudgetWiring:
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         compositor.start_layout_only()
 
         assert compositor.source_registry is not None
@@ -623,11 +654,11 @@ class TestStudioCompositorBudgetWiring:
         assert "sources" in payload
         assert any(source.get("sample_count", 0) > 0 for source in payload["sources"].values())
 
-    def test_publish_degraded_signal_round_trips(self, tmp_path: Path) -> None:
+    def test_publish_degraded_signal_round_trips(self, make_compositor, tmp_path: Path) -> None:
         """publish_degraded_signal writes a parseable degraded-signal JSON."""
         from agents.studio_compositor.budget_signal import publish_degraded_signal
 
-        compositor = _make_compositor()
+        compositor = make_compositor()
         compositor._budget_tracker.record("overlay-zones", 4.5)
         compositor._budget_tracker.record_skip("overlay-zones")
 
@@ -650,17 +681,19 @@ class TestStudioCompositorOutputRouterWiring:
     downstream consumer (diagnostics, future router-driven sinks).
     """
 
-    def test_compositor_initializes_output_router_to_none(self) -> None:
-        compositor = _make_compositor()
+    def test_compositor_initializes_output_router_to_none(self, make_compositor) -> None:
+        compositor = make_compositor()
         assert compositor.output_router is None
 
-    def test_start_layout_only_populates_output_router(self, tmp_path: Path) -> None:
+    def test_start_layout_only_populates_output_router(
+        self, make_compositor, tmp_path: Path
+    ) -> None:
         from agents.studio_compositor.output_router import OutputRouter
 
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         compositor.start_layout_only()
 
         assert isinstance(compositor.output_router, OutputRouter)
@@ -670,12 +703,14 @@ class TestStudioCompositorOutputRouterWiring:
         sink_kinds = {b.sink_kind for b in compositor.output_router}
         assert {"v4l2", "rtmp", "hls"}.issubset(sink_kinds)
 
-    def test_output_router_bindings_cover_every_video_out_surface(self, tmp_path: Path) -> None:
+    def test_output_router_bindings_cover_every_video_out_surface(
+        self, make_compositor, tmp_path: Path
+    ) -> None:
         """Every video_out surface in the layout must yield a binding."""
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
 
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         compositor.start_layout_only()
 
         assert compositor.output_router is not None
@@ -719,7 +754,7 @@ class TestFeatureProbeLog:
     """
 
     def test_log_feature_probes_emits_expected_keys(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, make_compositor, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         import logging as _logging
 
@@ -727,7 +762,7 @@ class TestFeatureProbeLog:
 
         layout_file = tmp_path / "default.json"
         layout_file.write_text(DEFAULT_JSON.read_text())
-        compositor = _make_compositor(layout_path=layout_file)
+        compositor = make_compositor(layout_path=layout_file)
         compositor.start_layout_only()
 
         with caplog.at_level(_logging.INFO, logger="agents.studio_compositor.lifecycle"):
