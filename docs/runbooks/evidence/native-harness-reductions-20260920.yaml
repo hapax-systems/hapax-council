@@ -1,3 +1,66 @@
+diagnostic_regression_replay_20260921:
+  source_revision: 5bb71da4e60d0d1e1a71fad5dc84a723b7670452  # pragma: allowlist secret — public Git/image/content digest
+  scope: Current source and manual-diagnostic regression coverage. Prior replay records remain historical.
+    Full host cell payloads were compared before referencing their unchanged observations.
+  validation:
+    restored_tests_passed: 257
+    controlled_client_tests: 22
+    applied_mutations_caught: 6
+    malformed_rollback_shapes_failed_before_repair: 4
+    ruff: passed
+    pyrefly: passed
+    selected_pre_commit: passed
+  build_context:
+    source_revision: 5bb71da4e60d0d1e1a71fad5dc84a723b7670452  # pragma: allowlist secret — public Git/image/content digest
+    files:
+      artifacts/claude: 722210f05ba494d8f6df69423c4d4f2960900f7a007d0532851c7a36e375cab7  # pragma: allowlist secret — public Git/image/content digest
+      artifacts/codex: 0753dfe1d8b87a52436deb13eb1c549661ef4c84fee2c5aa688385eebeccb761  # pragma: allowlist secret — public Git/image/content digest
+      config/agent-instructions/AGENTS.md: 10c998961118c718e28a24e37e62bb1d64ebbda429550c835ecff5fb5ce5d261  # pragma: allowlist secret — public Git/image/content digest
+      config/agent-instructions/bindings.json: d475051b78e417e76024bdcb8e5eec47d45fd28267e22c66b549bed2a888f14c  # pragma: allowlist secret — public Git/image/content digest
+      config/agent-instructions/native/claude.md: 8fc8398707864e270a6eb89ae10b0c05e8678a73d695eb8db7ac7a1f4a222495  # pragma: allowlist secret — public Git/image/content digest
+      config/agent-instructions/native/grok.md: 0c379c2aa2cb6734687be94863e484df4037d16a5c3ac8132feea471e2fa3b62  # pragma: allowlist secret — public Git/image/content digest
+      config/agent-instructions/native/kimi.md: ec6f020ff7b87c9c956f9b3f43818b5568bfc8d3d281a693a56ea094a0f08ec3  # pragma: allowlist secret — public Git/image/content digest
+      config/agent-instructions/native/vibe.md: 9a57bd74f4dc95a87f3f25707e67d4bc3fdb6c118941628931f5b433cfa8b7df  # pragma: allowlist secret — public Git/image/content digest
+      docker/Dockerfile.native-harness: ccbd48c9420ebdf81f3d493cb47a80adaa11d16e35dd3bbe07ebda190cd189a6  # pragma: allowlist secret — public Git/image/content digest
+      docker/native-codex.toml: 0456219f86181cc2ff42b0b6eaa4fc243c41122c38ad08a8810daf0b0c9e572f  # pragma: allowlist secret — public Git/image/content digest
+      scripts/install-agent-instructions.py: 2034cc19ade9fb909058c01b6262f7f005684f9e7ad8a4feff9b2987a3fa67e0  # pragma: allowlist secret — public Git/image/content digest
+    command: docker build -f <context>/docker/Dockerfile.native-harness --target <claude|codex> --build-arg
+      SOURCE_REVISION=<source_revision> --iidfile <target>.id <context>
+    recheck: git diff --exit-code 5bb71da4e60d0d1e1a71fad5dc84a723b7670452 HEAD -- config/agent-instructions
+      scripts/install-agent-instructions.py docker/Dockerfile.native-harness docker/native-codex.toml
+      scripts/probe-native-harness-container.py
+    recheck_expected: empty diff; the evidence commit changes no tested source
+  images:
+    claude: sha256:24878c7c34ed83c4882fac8187188317e4ab39e56b83c5f5192eb5b0cafb8a54  # pragma: allowlist secret — public Git/image/content digest
+    codex: sha256:af2da22050e42c357b9b9066ffde3aaafe66fd29bdb3c23cb44486d653fea129  # pragma: allowlist secret — public Git/image/content digest
+  hosts:
+  - observer_host: hapax-appendix
+    source_matches_revision: true
+    positive_cells_passed: 4
+    positive_paths_hashes_and_continuation_match: receipt_publication_replay_20260921
+    negative_cells:
+      override_mismatch_detected: true
+      missing_instruction_detected: true
+      wrong_resume_id_rejected: true
+    summary_sha256: 584b1e4ed2fd795a2c56542e4295a89ebc7de192189e17c9546a45de6a20f742  # pragma: allowlist secret — public Git/image/content digest
+  - observer_host: hapax-podium
+    source_matches_revision: null
+    positive_cells_passed: 4
+    positive_paths_hashes_and_continuation_match: receipt_publication_replay_20260921
+    negative_cells:
+      override_mismatch_detected: true
+      missing_instruction_detected: true
+      wrong_resume_id_rejected: true
+    summary_sha256: 1030e7c4a38c0522d184a6065f0575aef4989284c6b9b98bfcf47063452385e5  # pragma: allowlist secret — public Git/image/content digest
+  model_requests: 0
+  provider_credentials: absent
+  network: none
+  may_authorize: false
+  live_policy_mutated: false
+  recheck_tests: uv run pytest tests/scripts/test_native_instruction_probes.py tests/scripts/test_install_agent_instructions.py
+    tests/scripts/test_hapax_post_merge_deploy.py tests/shared/test_capability_load_set.py tests/shared/test_platform_capability_receipts.py::test_observed_quota_preserves_reported_blockers_through_registry_overlay
+    -q
+
 receipt_publication_replay_20260921:
   source_revision: d40222ecaf3f46ac3f79c3e9b4298a8604163793  # pragma: allowlist secret — public Git/image/content digest
   scope: Current installer publication and recovery input revision. This record supersedes the earlier
