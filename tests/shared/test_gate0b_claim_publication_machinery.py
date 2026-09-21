@@ -194,8 +194,11 @@ def test_install_receipt_activates_only_claim_publication_root(tmp_path: Path) -
     assert receipt.operator_inflection_ref == GATE0B_SLICE1_RATIFIED_INFLECTION_REF
     descriptor = claim_publication_executor_descriptor(receipt)
     root_refs = {address.ref for address in descriptor.active_generation_roots}
-    assert module_file_address(Path("shared/sdlc_claim.py").resolve()).ref in root_refs
-    assert module_file_address(Path("shared/coord_projection.py").resolve()).ref in root_refs
+    # The old assertions encoded release-path coupling; require relative refs with real content hashes.
+    for relpath in ("shared/sdlc_claim.py", "shared/coord_projection.py"):
+        address = module_file_address(Path(relpath).resolve())
+        assert f"file:{relpath}@sha256:{address.sha256}" in root_refs
+    assert all("file:/" not in ref for ref in root_refs)
     install.root.require_effect_activation()
     loaded = load_claim_publication_composition(Path(fixture.roots.invocation_store_root))
     assert loaded.receipt == receipt
