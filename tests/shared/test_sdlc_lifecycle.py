@@ -25,8 +25,12 @@ from shared.sdlc_lifecycle import (
     SDLC_STAGE_METADATA,
     SDLC_STAGE_METADATA_PATH,
     STAGE_RE,
+    TASK_ACTIVE_STATUSES,
     TASK_CLAIMABLE_STATUSES,
     TASK_DISPATCHABLE_STATUSES,
+    TASK_ROLE_RELEASING_STATUSES,
+    TASK_TERMINAL_STATUSES,
+    TASK_WORKER_HELD_STATUSES,
     StageMetadataError,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
@@ -937,3 +941,112 @@ class TestAcceptanceReceiptEnforcement:
         )
         frontmatter = frontmatter_from_text(note.read_text(encoding="utf-8"))
         assert acceptance_receipt_blockers(frontmatter, note) == ("missing_acceptance_receipt",)
+
+
+class TestRoleReleaseVocabularyDrift:
+    """Pin cc-claim's bash lease-check to TASK_ROLE_RELEASING_STATUSES.
+
+    The lease-check prelude runs *before* cc-claim's python section and answers a
+    different question — "does this role already hold another task?" — using its own
+    hardcoded case list. It had drifted to `done|completed|closed|withdrawn|superseded`:
+    five of the fifteen canonical terminal statuses, and none of the resumable ones.
+
+    The consequence was not cosmetic. `pr_open`, `merge_queue` and the ready-family are
+    **pipeline-held**, not worker-held: the lane has finished and the system owes a
+    verdict. Counting them against a worker capacity cap made every unmerged PR
+    permanently consume a lane — measured 2026-08-29 at **43 lanes** held by finished
+    work, which is a feedback loop (queue backs up, lanes stay occupied, review
+    throughput falls, queue backs up further) rather than a capacity limit.
+    """
+
+    def _bash_release_statuses(self) -> set[str]:
+        """Extract the statuses cc-claim's lease check treats as releasing the role."""
+        src = (REPO_ROOT / "scripts" / "cc-claim").read_text(encoding="utf-8")
+        marker = "Role-release vocabulary."
+        assert marker in src, "cc-claim lost its role-release marker comment"
+        after = src[src.index(marker) :]
+        # The vocabulary lives in the `_cc_role_release_status` predicate. It was previously
+        # inlined as `case "$existing_status" in` in the claim loop; it moved out when the
+        # release decision was hoisted above the lease-expiry check, because a released task
+        # frees the role whether or not its lease also aged out.
+        case_body = after[after.index('case "$1" in') : after.index("esac")]
+        statuses: set[str] = set()
+        for line in case_body.splitlines():
+            stripped = line.strip()
+            suffix = ") return 0 ;;"
+            if stripped.endswith(suffix):
+                statuses.update(stripped[: -len(suffix)].split("|"))
+        return {s.strip() for s in statuses if s.strip()}
+
+    def test_bash_case_matches_the_ssot_exactly(self) -> None:
+        assert self._bash_release_statuses() == set(TASK_ROLE_RELEASING_STATUSES)
+
+    def test_pipeline_held_states_release_the_role(self) -> None:
+        """The defect this set exists to fix: finished work must not hold a lane."""
+        for status in ("pr_open", "merge_queue", "ci_green", "ready_for_review"):
+            assert status in TASK_ROLE_RELEASING_STATUSES, (
+                f"{status} is pipeline-held — the lane is done and waiting on the system"
+            )
+
+    def test_worker_held_states_do_not_release_the_role(self) -> None:
+        """The cap must still bind while the lane is genuinely engaged."""
+        for status in TASK_WORKER_HELD_STATUSES:
+            assert status not in TASK_ROLE_RELEASING_STATUSES
+
+    def test_worker_held_and_releasing_partition_the_active_vocabulary(self) -> None:
+        """No active status may be both, and none may be neither — `offered` excepted.
+
+        `offered` is unheld by construction (TASK_CLAIMABLE_STATUSES), so it belongs to
+        neither group; every other active status must land in exactly one.
+        """
+        unclassified = (
+            set(TASK_ACTIVE_STATUSES)
+            - set(TASK_WORKER_HELD_STATUSES)
+            - set(TASK_ROLE_RELEASING_STATUSES)
+            - {"offered"}
+        )
+        assert not unclassified, f"active statuses in neither group: {sorted(unclassified)}"
+        assert not (set(TASK_WORKER_HELD_STATUSES) & set(TASK_ROLE_RELEASING_STATUSES))
+
+    def test_every_canonical_terminal_status_releases(self) -> None:
+        """The original drift: ten of fifteen terminal statuses did not release the role."""
+        assert set(TASK_TERMINAL_STATUSES) <= set(TASK_ROLE_RELEASING_STATUSES)
+
+
+class TestActiveStatusWideningBlastRadius:
+    """Answers "untested downstream blast radius" by enumerating it (claude, major).
+
+    `TASK_ACTIVE_STATUSES` gained `backlog` and `merged_awaiting_runtime_witness`. The
+    enumeration is one consumer — `scripts/check-cc-task-vault-shape.py`, which flags any task
+    in `active/` whose status is not in the set — and the effect there is precisely the point:
+    both statuses were found on LIVE tasks in `active/` that belonged to no set at all, so the
+    shape check was flagging real work as malformed.
+    """
+
+    def test_the_two_widened_statuses_are_active(self) -> None:
+        assert "backlog" in TASK_ACTIVE_STATUSES
+        assert "merged_awaiting_runtime_witness" in TASK_ACTIVE_STATUSES
+
+    def test_widening_does_not_bleed_into_terminal_or_closed(self) -> None:
+        """Active and terminal must stay disjoint — the widening adds, it does not blur."""
+        for status in ("backlog", "merged_awaiting_runtime_witness"):
+            assert status not in TASK_TERMINAL_STATUSES, status
+
+    def test_the_vault_shape_check_is_the_only_consumer(self) -> None:
+        """Pins the enumeration, so a second consumer arrives as a failing test.
+
+        The finding was that the blast radius was unknown. It is one call site; a new one must
+        be considered against these two statuses rather than discovered in a review round.
+        """
+        repo_root = Path(__file__).resolve().parents[2]
+        consumers = sorted(
+            path.relative_to(repo_root).as_posix()
+            for path in repo_root.glob("scripts/**/*.py")
+            if "TASK_ACTIVE_STATUSES" in path.read_text(encoding="utf-8")
+        ) + sorted(
+            path.relative_to(repo_root).as_posix()
+            for path in repo_root.glob("shared/**/*.py")
+            if "TASK_ACTIVE_STATUSES" in path.read_text(encoding="utf-8")
+            and path.name != "sdlc_lifecycle.py"
+        )
+        assert consumers == ["scripts/check-cc-task-vault-shape.py"], consumers

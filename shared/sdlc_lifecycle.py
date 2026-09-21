@@ -13,20 +13,35 @@ from typing import Any
 
 import yaml
 
-TASK_ACTIVE_STATUSES = frozenset(
-    {
-        "offered",
-        "claimed",
-        "in_progress",
-        "blocked",
-        "pr_open",
-        "ci_green",
-        "merge_queue",
-        "ready",
-        "ready_for_review",
-        "review_ready",
-        "ready_for_merge",
-    }
+#: Statuses observed in the live active corpus that this vocabulary did not declare.
+#:
+#: Found 2026-08-29 by scanning every active note: `merged_awaiting_runtime_witness` (1 task,
+#: PR #4042) and `backlog` (1 task) appeared in NO set — not active, not terminal, not
+#: resumable. A status in none of them is invisible to every consumer that enumerates by
+#: group and, because the cc-claim role cap releases only on a known-releasing status, it
+#: holds its lane permanently. Declaring them is not a new policy; it is recording statuses
+#: the corpus already carries.
+TASK_POST_MERGE_STATUSES = frozenset({"merged_awaiting_runtime_witness"})
+TASK_PRE_WORK_STATUSES = frozenset({"backlog"})
+
+TASK_ACTIVE_STATUSES = (
+    frozenset(
+        {
+            "offered",
+            "claimed",
+            "in_progress",
+            "blocked",
+            "pr_open",
+            "ci_green",
+            "merge_queue",
+            "ready",
+            "ready_for_review",
+            "review_ready",
+            "ready_for_merge",
+        }
+    )
+    | TASK_POST_MERGE_STATUSES
+    | TASK_PRE_WORK_STATUSES
 )
 
 TASK_FULFILLING_CLOSED_STATUSES = frozenset(
@@ -85,6 +100,43 @@ TASK_MERGE_READY_STATUSES = frozenset({"pr_open", "merge_queue"}) | TASK_READY_F
 
 #: A lane may RESUME (re-claim) an owned task in these states — not a fresh claim.
 TASK_RESUMABLE_STATUSES = TASK_MERGE_READY_STATUSES
+
+#: Statuses in which a task still occupies its ROLE's one-active-task slot.
+#:
+#: The distinction this encodes: `pr_open`, `merge_queue` and the ready-family are
+#: **pipeline-held**, not worker-held. The lane has finished; the system owes a verdict.
+#: Counting those against a *worker* capacity cap conflates "this item is not terminal"
+#: with "this worker is busy" — a boolean over a domain with three cases.
+#:
+#: Measured 2026-08-29, before this set existed: **43 role slots** across the active corpus
+#: were held by finished work (40 `pr_open`, plus `ready`, `ready_for_review`, and one
+#: `merged_awaiting_runtime_witness` — already merged and still holding a lane). That is a
+#: feedback loop, not a capacity limit: the merge queue backs up, workers stay nominally
+#: occupied, review throughput falls, and the queue backs up further. `idle_lanes=0`
+#: alongside `offered=432` is its observable signature.
+TASK_WORKER_HELD_STATUSES = frozenset({"claimed", "in_progress", "blocked"})
+
+#: The complement used by the cc-claim role-cap lease check: a held task in any of these
+#: states releases the role. Terminal states release because the work is over; resumable
+#: states release because the work is done and waiting on the pipeline — the lane can be
+#: given something else and re-claim later via TASK_RESUMABLE_STATUSES.
+#:
+#: `cc-claim`'s bash lease-check prelude MUST match this set. It previously hardcoded
+#: `done|completed|closed|withdrawn|superseded` — five of the fifteen canonical terminal
+#: statuses, and none of the resumable ones — which is exactly the per-consumer subset
+#: drift the "canonical semantic status groups" block above was written to end. Pinned by
+#: tests/shared/test_sdlc_lifecycle.py::TestRoleReleaseVocabularyDrift.
+#: `merged_awaiting_runtime_witness` releases because the PR has already merged — the lane is
+#: waiting on a runtime observation, not working. `backlog` releases because the work has not
+#: started, so no lane is engaged; it is unheld in the same sense `offered` is. Both were cited
+#: as evidence in this change's own measurement while being absent from every set it shipped —
+#: a contradiction three reviewers caught (PR #4611, codex-1/codex-2/claude-1).
+TASK_ROLE_RELEASING_STATUSES = (
+    TASK_TERMINAL_STATUSES
+    | TASK_RESUMABLE_STATUSES
+    | TASK_POST_MERGE_STATUSES
+    | TASK_PRE_WORK_STATUSES
+)
 
 BLOCKED_DEPENDENCY_REASON_PREFIX = "waiting_for_closure_valid_dependencies:"
 BLOCKED_WITNESS_FIELDS = ("blocked_witness", "blocked_witness_path")

@@ -2427,8 +2427,50 @@ def _persist_admitted_receipt(
 
 
 @contextmanager
+def claim_publication_role_lock(
+    role: str,
+    *,
+    lock_root: Path | None,
+) -> Iterator[None]:
+    """Hold the role's claim-publication lock without needing a full intent.
+
+    The lock was reachable only through `_claim_publication_lock`, which requires a
+    `ClaimPublicationIntent` — so anything that mutates the same role's claim projections
+    *outside* a publication (residue archival, for one) had no way to take it and simply raced.
+    A lock only one code path can acquire is a lock the other paths silently do without.
+
+    Same file, same role digest, same timeout as publication itself; this is an accessor, not a
+    second lock, which is the distinction that keeps it from becoming a mitigation-per-hazard.
+    """
+    with _claim_publication_lock_for_role(role, lock_root=lock_root):
+        yield
+
+
+@contextmanager
 def _claim_publication_lock(
     intent: ClaimPublicationIntent,
+    *,
+    lock_root: Path | None,
+) -> Iterator[None]:
+    with _claim_publication_lock_for_role(intent.role, lock_root=lock_root):
+        # The role lock serializes one role's publications against each other. It does NOT
+        # exclude a lifecycle transition over this task's note: it is keyed by the role, not by
+        # the note, and it lives under a different root. So the publication's _apply_projections
+        # calls — which take no lock of their own — could land between a transition's preimage
+        # pin and its atomic install. Take the projection lock too.
+        #
+        # Order is role-then-note, always. One direction only means no cycle — and the direction
+        # is enforced by the guard at the top of `_claim_publication_lock_for_role`, not
+        # inferred from the number of places the role lock is taken: that guard refuses when the
+        # calling thread already holds any projected-path lock.
+        # tests/shared/test_task_note_lock.py drives both orders.
+        with projected_path_lock(intent.task_id, (intent.note_path,)):
+            yield
+
+
+@contextmanager
+def _claim_publication_lock_for_role(
+    role: str,
     *,
     lock_root: Path | None,
 ) -> Iterator[None]:
@@ -2439,6 +2481,15 @@ def _claim_publication_lock(
     # but "bounded" is not "safe", and a count of acquisition sites cannot see this shape at
     # all, because it needs no new site: an existing note-holder calling onward into claim
     # publication is enough. Refuse before opening anything.
+    #
+    # MERGE NOTE (2026-09-21, #4611 x main): main placed this guard in
+    # `_claim_publication_lock`; this branch had already split the body out into
+    # `_claim_publication_lock_for_role` so residue archival could take the same lock without a
+    # full intent. The guard belongs HERE, in the function that actually opens the lock, not in
+    # one of its two callers -- otherwise the accessor path acquires the role lock with no
+    # direction check, and the inversion this refuses becomes reachable again through the door
+    # this branch opened. Keeping both changes is what makes the merge correct; taking either
+    # side alone loses the guard or loses the accessor.
     held = held_by_current_thread()
     if held:
         raise ClaimPublicationError(
@@ -2449,7 +2500,7 @@ def _claim_publication_lock(
         )
     root = _lock_root(lock_root)
     _ensure_claim_private_directory(root)
-    digest = _claim_publication_role_lock_digest(intent.role)
+    digest = _claim_publication_role_lock_digest(role)
     path = root / f"{digest}.lock"
     try:
         fd = os.open(
@@ -2491,18 +2542,17 @@ def _claim_publication_lock(
                         str(path),
                     ) from exc
                 time.sleep(_CLAIM_PUBLICATION_LOCK_RETRY_SECONDS)
-        # The role lock above serializes one role's publications against each other. It does
-        # NOT exclude a lifecycle transition over this task's note: it is keyed by the role,
-        # not by the note, and it lives under a different root. So the publication's
-        # _apply_projections calls — which take no lock of their own — could land between a
-        # transition's preimage pin and its atomic install. Take the projection lock too.
+        # This function holds the ROLE lock only. The note lock that must pair with it is taken
+        # by `_claim_publication_lock` immediately outside this yield — see the note there.
         #
-        # Order is role-then-note, always. One direction only means no cycle — and the
-        # direction is enforced at the top of this function, not inferred from the number of
-        # places the role lock is taken: the guard refuses when the calling thread already holds
-        # any projected-path lock. tests/shared/test_task_note_lock.py drives both orders.
-        with projected_path_lock(intent.task_id, (intent.note_path,)):
-            yield
+        # MERGE NOTE (2026-09-21, #4611 x main): main took the note lock HERE, using
+        # `intent.task_id` / `intent.note_path`. That cannot stand once the body is split for
+        # role-only callers: this function has no intent, by design, because residue archival
+        # mutates a role's projections *without* a note to lock. Keeping main's line here was a
+        # NameError the moment the accessor was exercised, and git merged it without a conflict
+        # — the text agreed, the scope did not. The note lock therefore moves out to the one
+        # caller that has a note; ordering and the direction guard are unchanged.
+        yield
     finally:
         if locked:
             try:

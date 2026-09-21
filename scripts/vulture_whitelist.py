@@ -5123,6 +5123,22 @@ from shared.adjudicator_identity import record_identifies_its_checkout  # noqa: 
 
 _ = (record_identifies_its_checkout,)
 
+# DETECTOR BLIND SPOT, not dead code — the second kind, and a worse case than the 149 scripts.
+# `claim_publication_role_lock` has one production caller: `scripts/cc-claim`, which is a BASH
+# script whose Python runs from a `<<'PYEOF'` heredoc. Vulture cannot see that call under any
+# configuration — the code is a string literal inside a shell file until the moment it executes.
+#
+# It exists because the role claim-publication lock was previously reachable only through
+# `_claim_publication_lock`, which requires a full ClaimPublicationIntent — so the residue
+# archival, which mutates the same role's projections without publishing, had no way to take it
+# and simply raced. Three review families raised that independently (PR #4611).
+#
+# Recheck, since the justification is only worth what it can be checked against:
+#   rg -n "claim_publication_role_lock" scripts/cc-claim
+from shared.sdlc_claim import claim_publication_role_lock  # noqa: E402
+
+_ = (claim_publication_role_lock,)
+
 # Claim Verification Council dossier split (2026-09-02, row
 # cvc-dossier-evidence-not-process-trace-20260902): Pydantic invokes these `model_validator`s
 # dynamically to populate `evidentiary_rationale` / `process_trace` / `execution_receipt` from the
