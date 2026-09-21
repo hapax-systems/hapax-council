@@ -399,6 +399,7 @@ claim_epoch="$(date +%s)"
 import hashlib
 import json
 import re
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -511,10 +512,10 @@ if canon_enforced:
     ) -> None:
         keys_to_check: set[str] = {role, f"{role}-{session_id}"}
         role_dispatch = claim_dispatch_binding_path(cache_dir, role)
-        if role_dispatch.exists() and not (
-            (cache_dir / f"cc-active-task-{role}").exists()
-            or (cache_dir / f"cc-claim-epoch-{role}").exists()
-        ):
+        # A missing active-task file means the lease is not held. Epoch or
+        # dispatch left behind are torn residue, including when the epoch is
+        # still present. The task note is not closed here.
+        if role_dispatch.exists() and not (cache_dir / f"cc-active-task-{role}").exists():
             try:
                 role_binding = load_claim_dispatch_binding(role_dispatch)
             except TaskStoreError:
@@ -527,10 +528,24 @@ if canon_enforced:
             dispatch_path = claim_dispatch_binding_path(cache_dir, claim_key)
             claim_path = cache_dir / f"cc-active-task-{claim_key}"
             epoch_path = cache_dir / f"cc-claim-epoch-{claim_key}"
+            if claim_path.exists():
+                continue
+            if not dispatch_path.exists() and not epoch_path.exists():
+                continue
             if not dispatch_path.exists():
-                continue
-            if claim_path.exists() or epoch_path.exists():
-                continue
+                epoch_task = ""
+                try:
+                    epoch_task = epoch_path.read_text(encoding="utf-8").split()[1]
+                except (OSError, IndexError):
+                    epoch_task = ""
+                print(
+                    "cc-claim: HOLD - epoch without a dispatch binding or active "
+                    f"lease at {epoch_path} (task_id={epoch_task or 'unknown'}). "
+                    "Next action: restore the dispatch binding or archive the epoch "
+                    "through the task lineage before retrying.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
             try:
                 binding = load_claim_dispatch_binding(dispatch_path)
             except TaskStoreError as exc:
@@ -561,7 +576,7 @@ if canon_enforced:
                 )
                 sys.exit(8)
             status = _task_status_for_any_state(vault_root, binding.task_id)
-            if status not in TASK_TERMINAL_STATUSES:
+            if status not in TASK_TERMINAL_STATUSES and claim_path.exists():
                 print(
                     "cc-claim: HOLD - dispatch-only claim residue belongs to a "
                     f"non-terminal or missing task (task_id={binding.task_id}, "
@@ -589,15 +604,20 @@ if canon_enforced:
             )
             lineage_dir.mkdir(parents=True, exist_ok=False)
             destination = lineage_dir / dispatch_path.name
-            dispatch_path.replace(destination)
+            # cache and the vault are different devices; os.replace raises EXDEV.
+            shutil.move(str(dispatch_path), str(destination))
+            epoch_beside = cache_dir / f"cc-claim-epoch-{claim_key}"
+            if epoch_beside.exists():
+                shutil.move(str(epoch_beside), str(lineage_dir / epoch_beside.name))
             (lineage_dir / "README.md").write_text(
-                "Archived dispatch-only claim residue before a fresh admitted claim.\n"
+                "Archived claim residue before a fresh admitted claim.\n"
                 f"task_id: {binding.task_id}\n"
                 f"claim_key: {claim_key}\n"
                 f"source: {dispatch_path}\n"
                 f"archived_at: {observed_at}\n"
-                "reason: normal close removed active/epoch sidecars but preserved "
-                "the dispatch binding spent leg.\n",
+                "reason: the active-task lease file was absent. The dispatch "
+                "binding and any epoch were preserved here. The task note was "
+                "not closed.\n",
                 encoding="utf-8",
             )
             archived.append(str(destination))
