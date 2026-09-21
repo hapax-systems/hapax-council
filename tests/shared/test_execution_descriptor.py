@@ -21,6 +21,7 @@ from shared.platform_capability_registry import (
     PlatformCapabilityRegistry,
     PlatformCapabilityRoute,
     Quantization,
+    build_supply_vector,
     derive_execution_descriptor,
     load_platform_capability_registry,
     materialize_descriptor_leaves,
@@ -207,3 +208,14 @@ def test_registry_rejects_variant_inheriting_unknown_route() -> None:
             ]
     with pytest.raises(ValueError, match="unknown route_id"):
         PlatformCapabilityRegistry.model_validate(data)
+
+
+def test_shipped_routes_all_project_concrete_descriptor_fingerprints() -> None:
+    registry = load_platform_capability_registry()
+    routes = registry.route_map()
+    assert routes
+    for route_id, route in routes.items():
+        assert route.execution_descriptor.model_id != ModelId.UNKNOWN, route_id
+        assert build_supply_vector(route).route.model_fingerprint == str(
+            route.execution_descriptor.model_id
+        ), route_id

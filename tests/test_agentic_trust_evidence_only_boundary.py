@@ -542,6 +542,7 @@ def test_strict_registry_loader_is_confined_to_reporting_not_admission() -> None
         "scripts/hapax-platform-capability-freshness",
         "scripts/hapax-platform-capability-receipts",
         "scripts/review_team.py",
+        "shared/capability_execution.py",
         "shared/cockpit_agent_capabilities.py",
         "shared/dispatcher_policy.py",
     }

@@ -4,6 +4,99 @@
 lanes. It must not create or repair remote worktrees until the local dispatch has
 passed the task/claim gate and the single-live-lane PID guard.
 
+## Declared execution identity
+
+Both Codex launchers resolve identity before any auth probe, claim or spawn.
+`config/platform-capability-registry.json` already contains structured
+`execution_descriptor` values: at this change, `codex.headless.full` selects
+`gpt-6-astra` / `xhigh`, and `codex.headless.spark` selects
+`gpt-5.3-codex-spark` / `xhigh`. This change preserves those existing choices;
+the task’s earlier `gpt-5.5-xhigh` census is historical. Runtime resolution
+reads the structured field, never the legacy `model_or_engine` text.
+
+Recheck the current registry without starting a native client:
+
+```bash
+uv run --no-sync python -m shared.capability_execution --route codex.headless.full --
+uv run --no-sync python -m shared.capability_execution --route codex.headless.spark --
+```
+
+Installed launchers resolve the identity helper from the governed activation
+root, `~/.cache/hapax/source-activation/worktree`, or its explicit
+`HAPAX_SOURCE_ACTIVATE_WORKTREE` binding. An explicit `HAPAX_COUNCIL_DIR` remains
+usable for a provisioned relocated source when no activation override is set.
+The helper resolves its own source release and executable `.venv/bin/python`;
+it does not inherit the legacy primary checkout's runtime. That source must
+contain its `shared/` modules, registry and `scripts/capability-execution.sh`.
+A worktree containing only copied launchers is insufficient. Restore the source
+through `hapax-source-activate` or the existing Council `uv` provisioning workflow. An intentional
+`HAPAX_PLATFORM_CAPABILITY_REGISTRY` override must be readable and valid.
+A missing runtime, registry, route or concrete descriptor refuses with exit9
+before native invocation; it never falls back to the user's default model.
+`--execution-route` selects a declared Codex route; it is not admission to it.
+
+Resolver and decoder Python imports are isolated from the caller's cwd and
+`PYTHONPATH`. Both launchers preserve the selected release's physical path.
+Interactive runners carry that path and launcher into tmux re-entry; headless
+lifecycle observation uses that release and its interpreter after native exit,
+even if the activation symlink advances meanwhile. Decoded arguments must carry
+both model and effort; malformed or identity-free output refuses before native
+invocation. Recheck those boundaries without provider calls:
+
+```bash
+uv run pytest tests/scripts/test_capability_execution_contract.py -q
+uv run --no-sync python scripts/check-execution-descriptor-mutations.py
+```
+
+This refusal applies to the governed launchers. A bare `codex` or `codex exec`
+can still use the vendor built-in default; removing the repository config
+default does not intercept that path. Such calls are unbound and are not
+descriptor-conforming estate runs. Automatic detection/consumer integration
+remains outstanding; this PR does not claim to enforce every direct CLI call.
+
+Compare a real native rollout using the supplied checker:
+
+```bash
+uv run --no-sync python -m shared.codex_execution_receipt \
+  --route codex.headless.full --rollout /absolute/owned/rollout.jsonl
+```
+
+The checker emits one declared/observed comparison per `turn_context`, including
+mid-session changes. Missing observations remain unverified; mismatches remain
+misattributed. It does not prove provider-side identity or work quality, and
+this source slice does not yet automatically consume every estate rollout in
+quota telemetry. That integration remains a separate, explicit obligation.
+
+The contract test includes a redacted field projection from a captured native
+Codex0.155.1 rollout, with original event/file hashes and provenance in
+`tests/fixtures/codex-native-turn-context-0.155.1.md`. It pins the observed
+`model`/`effort` field names independently of generated checker fixtures.
+
+Governed Claude and Vibe dispatch likewise passes descriptor-derived values.
+Vibe dispatch refuses missing identity or an effort without a native mapping;
+it always sets `VIBE_ACTIVE_MODEL`, which its generated terminal runner exports.
+Direct unbound Vibe invocations are outside that dispatch claim and are not
+receipt evidence. Recheck actual controlled native-child delivery with
+`uv run pytest tests/test_methodology_dispatch_model_pin.py -q`.
+
+For an already authorized Claude task/lane, the native availability recheck is
+one ordinary dispatch, for example
+`scripts/hapax-methodology-dispatch --task TASK --lane LANE --platform claude --mode headless --profile opus --launch`.
+Inspect that invocation’s native initialization/transcript model against
+`resolve_execution_descriptor("claude.headless.opus").model_id` and the
+requested effort. A successful launcher exit or controlled argv recorder alone
+is not this observation. The source tests establish concrete argument delivery;
+this PR does not claim new provider availability measurements for every profile.
+The printed Claude path templates now use this governed entrypoint, preserving
+the selected profile rather than suggesting an unbound direct launch.
+
+A bounded native check on 2026-09-21 at05:36Z used Claude Code2.1.278, the
+declared `claude-opus-4-8` / `xhigh`, one turn, no tools or MCP, and saved
+subscription authentication. It exited0 with the requested sentinel; both
+native initialization and the assistant event reported `claude-opus-4-8`.
+This verifies concrete-id acceptance for that invocation, not all profiles,
+provider-side identity, or an independently observed reasoning effort.
+
 Retired or wound-down relays stay fail-closed by default. Direct, read-only, or
 advisory-only headless launches must not pass `--force`; they should fail at the
 relay guard with a recheck command. Mutable unbound launches are blocked earlier

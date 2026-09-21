@@ -2225,7 +2225,9 @@ PY
     # Strictly MQ-bound governed Codex launches may reactivate a clean retired
     # relay. Local fallback remains independently restricted to P0 drain lanes.
     recorded = launcher_args.read_text(encoding="utf-8")
-    assert recorded.startswith("--task\ngoverned-build\n--force\ncx-green\n")
+    assert recorded.startswith(
+        "--execution-route\ncodex.headless.full\n--task\ngoverned-build\n--force\ncx-green\n"
+    )
     assert "SDLC GOVERNED DISPATCH." in recorded
     assert "Task: governed-build" in recorded
     assert "AuthorityCase: CASE-TEST-001" in recorded
@@ -2343,7 +2345,7 @@ printf '%s\\n' "$@" > {launcher_args}
     assert "Profile: full" in recorded
     assert launcher_env.read_text(encoding="utf-8").splitlines() == [
         "host=appendix",
-        "model=opus",
+        "model=claude-opus-4-8",
     ]
 
     receipt = json.loads(
@@ -2754,7 +2756,12 @@ printf '%s\\n' "$@" > {launcher_args}
 
     assert result.returncode == 0, result.stderr
     codex_args = launcher_args.read_text(encoding="utf-8").splitlines()
-    assert codex_args[0:2] == ["--task", "governed-build"]
+    assert codex_args[0:4] == [
+        "--execution-route",
+        "codex.headless.full",
+        "--task",
+        "governed-build",
+    ]
     assert "cx-green" in codex_args
     receipt = json.loads(
         (tmp_path / "ledger" / "methodology-dispatch.jsonl")
@@ -2900,7 +2907,9 @@ printf '%s\\n' "$@" > {launcher_args}
         "fallback=local",
     ]
     recorded = launcher_args.read_text(encoding="utf-8")
-    assert recorded.startswith(f"--task\n{task_id}\n--force\ncx-p0\n")
+    assert recorded.startswith(
+        f"--execution-route\ncodex.headless.full\n--task\n{task_id}\n--force\ncx-p0\n"
+    )
 
 
 def test_codex_p0_incident_local_fallback_force_is_independent_of_reactivation_flag(
@@ -2957,7 +2966,7 @@ printf '%s\\n' "$@" > {launcher_args}
     ]
     recorded = launcher_args.read_text(encoding="utf-8")
     assert recorded.startswith(
-        "--task\np0-incident-sdlc-task-stalled-test\n--force\n--no-claim\ncx-p0\n"
+        "--execution-route\ncodex.headless.full\n--task\np0-incident-sdlc-task-stalled-test\n--force\n--no-claim\ncx-p0\n"
     )
 
 
@@ -3014,7 +3023,9 @@ printf '%s\\n' "$@" > {launcher_args}
 
     assert result.returncode == 0, result.stderr
     recorded = launcher_args.read_text(encoding="utf-8")
-    assert recorded.startswith(f"--task\n{task_id}\n--force\n--no-claim\ncx-fugu\n")
+    assert recorded.startswith(
+        f"--execution-route\ncodex.headless.full\n--task\n{task_id}\n--force\n--no-claim\ncx-fugu\n"
+    )
     assert launcher_env.read_text(encoding="utf-8").splitlines() == [
         "host=appendix",
         "fallback=",
@@ -4280,6 +4291,11 @@ printf '%s\\n' "$@" > {launcher_args}
         "tmux",
         "--task",
         "governed-build",
+        "--",
+        "--model",
+        "claude-opus-4-8",
+        "--effort",
+        "max",
     ]
 
 

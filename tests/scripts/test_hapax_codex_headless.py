@@ -15,12 +15,15 @@ from pathlib import Path
 
 import pytest
 
+from shared.capability_execution import codex_execution_args, resolve_execution_descriptor
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 
 
 @pytest.fixture(autouse=True)
 def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_TASK", raising=False)
     monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "headless-pids"))
     monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
     monkeypatch.delenv("HAPAX_NATIVE_LIFECYCLE_RECEIPT", raising=False)
@@ -258,7 +261,21 @@ def test_resolve_local_codex_bin_skips_directory_candidates(tmp_path: Path) -> N
     assert result.stdout.strip() == str(fallback_codex)
 
 
+def _write_descriptor_runtime(path: Path) -> None:
+    # The launcher now requires a provisioned registry/resolver before provider calls.
+    (path / "scripts").mkdir(parents=True, exist_ok=True)
+    for directory in ("shared", "config"):
+        (path / directory).symlink_to(REPO_ROOT / directory, target_is_directory=True)
+    runtime = Path(sys.executable).parent.parent
+    assert (runtime / "bin/python").is_file(), "fixture requires a provisioned Python runtime"
+    (path / ".venv").symlink_to(runtime, target_is_directory=True)
+    shutil.copy2(
+        REPO_ROOT / "scripts/capability-execution.sh", path / "scripts/capability-execution.sh"
+    )
+
+
 def _write_minimal_council(council_dir: Path, retire_log: Path) -> None:
+    _write_descriptor_runtime(council_dir)
     _write_executable(council_dir / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
     _write_executable(
         council_dir / "scripts" / "hapax-relay-retire",
@@ -270,7 +287,9 @@ exit 0
 
 @pytest.mark.parametrize("activation_override", [False, True])
 @pytest.mark.parametrize("remote", [False, True])
-@pytest.mark.parametrize("case", ["current", "no_cli", "missing", "unsupported", "preexisting"])
+@pytest.mark.parametrize(
+    "case", ["current", "no_cli", "missing", "unsupported", "preexisting", "advance_activation"]
+)
 def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     tmp_path: Path, activation_override: bool, remote: bool, case: str
 ) -> None:
@@ -281,20 +300,42 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     primary = home / "projects/hapax-council"
     workdir = home / "projects/hapax-council--cx-amber"
     _write_minimal_council(primary, tmp_path / "retire.log")
+    # This fixture deliberately poisons the primary observer. The descriptor
+    # fixture shares real modules by symlink; replace that link with an isolated
+    # copy before writing stale bytes, so the test cannot alter repository source.
+    (primary / "shared").unlink()
+    shutil.copytree(
+        REPO_ROOT / "shared", primary / "shared", ignore=shutil.ignore_patterns("__pycache__")
+    )
     stale_module = "# Historical module without a receipt CLI.\n"
     for root in (primary, workdir):
-        (root / "shared").mkdir(parents=True)
+        (root / "shared").mkdir(parents=True, exist_ok=True)
         (root / "shared/__init__.py").write_text("")
         (root / "shared/execution_observer.py").write_text(stale_module)
 
     default_activation = cache / "source-activation/worktree"
     activation = tmp_path / "configured-activation" if activation_override else default_activation
-    (activation / "shared").mkdir(parents=True)
+    if case == "advance_activation":
+        initial_release = tmp_path / "initial-release"
+        _write_descriptor_runtime(initial_release)
+        activation.parent.mkdir(parents=True, exist_ok=True)
+        activation.symlink_to(initial_release, target_is_directory=True)
+    else:
+        _write_descriptor_runtime(activation)
+    # The activated identity resolver is now an actual launch dependency. Keep
+    # it provisioned while independently varying only the lifecycle observer.
+    # Never poison the shared source symlink used by the resolver fixture.
+    (activation / "shared").unlink()
+    shutil.copytree(
+        REPO_ROOT / "shared",
+        activation / "shared",
+        ignore=shutil.ignore_patterns("__pycache__", "execution_observer.py"),
+    )
     if activation_override:
         (default_activation / "shared").mkdir(parents=True)
         (default_activation / "shared/execution_observer.py").write_text(stale_module)
     observer = activation / "shared/execution_observer.py"
-    if case in {"current", "unsupported"}:
+    if case in {"current", "unsupported", "advance_activation"}:
         shutil.copy2(REPO_ROOT / "shared/execution_observer.py", observer)
     elif case != "missing":
         observer.write_text(stale_module)
@@ -316,9 +357,14 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     )
     event_args = " ".join(f"'{json.dumps(event)}'" for event in events)
     child_exit = 23 if case == "missing" else 0
+    advance = (
+        f'rm "{activation}"\nln -s "{primary}" "{activation}"\n'
+        if case == "advance_activation"
+        else ""
+    )
     _write_executable(
         bin_dir / "codex",
-        f"printf '%s\\n' {event_args}\necho 'native diagnostic' >&2\nexit {child_exit}\n",
+        advance + f"printf '%s\\n' {event_args}\necho 'native diagnostic' >&2\nexit {child_exit}\n",
     )
     _write_executable(bin_dir / "getent", "exit 2\n")
     _write_executable(
@@ -381,7 +427,7 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     assert observed["diagnostics_path"] == str(diagnostic)
     assert observed["owned_native_process"] is (not remote)
     assert observed["process_returncode"] == (None if remote else child_exit)
-    assert observed["complete"] is (case == "current" and not remote)
+    assert observed["complete"] is (case in {"current", "advance_activation"} and not remote)
     assert observed["cancel_confirmed"] is False
     assert observed["readiness"] == "unobserved"
     assert observed["may_authorize"] is False
@@ -396,6 +442,7 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
 
 def _init_primary_council_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+    _write_descriptor_runtime(path)
     subprocess.run(
         ["git", "init", "-b", "main", str(path)],
         check=True,
@@ -2248,6 +2295,7 @@ def test_codex_headless_remote_preflight_ignores_token_handoff_payload(
     handoff = Path("/tmp") / f"hapax-codex-token-headless-ttl-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -2287,6 +2335,7 @@ def test_codex_headless_remote_preflight_ignores_invalid_token_handoff_ttl(
     handoff = Path("/tmp") / f"hapax-codex-token-headless-invalid-ttl-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -2321,6 +2370,7 @@ def test_codex_headless_remote_preflight_ignores_world_readable_published_token(
     token = _write_codex_access_token(tmp_path / "oauth", exp=int(time.time()) + 3600)
     token.chmod(0o644)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": [],
@@ -2378,6 +2428,7 @@ exit 0
 """,
     )
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": [],
@@ -2496,6 +2547,7 @@ exit 77
     )
     fake_codex.chmod(0o755)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -2553,6 +2605,7 @@ def test_codex_headless_remote_preflight_does_not_fork_for_token_cleanup(
     handoff = Path("/tmp") / f"hapax-codex-token-headless-fork-fail-{os.getpid()}-{tmp_path.name}"
     handoff.unlink(missing_ok=True)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -2923,6 +2976,7 @@ def test_codex_headless_remote_bootstrap_reports_council_not_git_worktree(
     _write_claim_epoch(cache, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
+    _write_descriptor_runtime(primary)
     _write_executable(primary / "hooks" / "scripts" / "codex-hook-adapter.sh", "exit 0\n")
     workdir = home / "projects" / "hapax-council--cx-amber"
     workdir.mkdir(parents=True)

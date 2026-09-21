@@ -13,6 +13,8 @@ import sys
 import time
 from pathlib import Path
 
+from shared.capability_execution import codex_execution_args, resolve_execution_descriptor
+
 REPO_ROOT = Path(__file__).parent.parent.parent
 LAUNCHER = REPO_ROOT / "scripts" / "hapax-codex"
 SENDER = REPO_ROOT / "scripts" / "hapax-codex-send"
@@ -68,6 +70,7 @@ printf 'OPENAI_API_KEY_PRESENT=%s\\n' "${{OPENAI_API_KEY:+yes}}" >> {env_file}
     # default cc-claim path fails and hapax-codex surfaces it as exit 8.
     env["HAPAX_GATE0B_CLAIM_PUBLICATION_OFF"] = "1"
     env["HAPAX_SESSION_ID"] = "0f9f9f9f-1111-2222-3333-444455556666"
+    env.pop("HAPAX_METHODOLOGY_DISPATCH_TASK", None)
     env.pop("CODEX_THREAD_NAME", None)
     env.pop("CODEX_ROLE", None)
     env.pop("CODEX_SESSION_NAME", None)
@@ -78,6 +81,18 @@ printf 'OPENAI_API_KEY_PRESENT=%s\\n' "${{OPENAI_API_KEY:+yes}}" >> {env_file}
     env.pop("HAPAX_PARENT_AGENT_INTERFACE", None)
     env.pop("HAPAX_PARENT_AGENT_NAME", None)
     return env, args_file, env_file
+
+
+def _write_descriptor_runtime(path: Path) -> None:
+    (path / "scripts").mkdir(parents=True, exist_ok=True)
+    for directory in ("shared", "config"):
+        (path / directory).symlink_to(REPO_ROOT / directory, target_is_directory=True)
+    runtime = Path(sys.executable).parent.parent
+    assert (runtime / "bin/python").is_file(), "fixture requires a provisioned Python runtime"
+    (path / ".venv").symlink_to(runtime, target_is_directory=True)
+    shutil.copy2(
+        REPO_ROOT / "scripts/capability-execution.sh", path / "scripts/capability-execution.sh"
+    )
 
 
 def _thin_launcher_path(tmp_path: Path) -> Path:
@@ -289,6 +304,7 @@ exit 77
     )
     fake_codex.chmod(0o755)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -329,6 +345,7 @@ exit 77
     )
     fake_codex.chmod(0o755)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -383,6 +400,7 @@ exit 77
     )
     fake_codex.chmod(0o755)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -423,6 +441,7 @@ exit 77
     )
     fake_codex.chmod(0o755)
     payload = {
+        "execution_args": codex_execution_args(resolve_execution_descriptor("codex.headless.full")),
         "required_dirs": [],
         "executables": [],
         "binaries": ["codex"],
@@ -720,6 +739,7 @@ exit 0
 def test_launcher_skips_directory_codex_candidates(tmp_path: Path) -> None:
     env, args_file, _env_file = _env_with_fake_codex(tmp_path)
     council = tmp_path / "council"
+    _write_descriptor_runtime(council)
     hook = council / "hooks" / "scripts" / "codex-hook-adapter.sh"
     hook.parent.mkdir(parents=True)
     hook.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
@@ -766,6 +786,7 @@ def test_launcher_missing_codex_reports_next_action(tmp_path: Path) -> None:
     bad_candidate.mkdir()
 
     env["HAPAX_CODEX_BIN_PATH"] = str(bad_candidate)
+    _write_descriptor_runtime(tmp_path / "council")
     env["HAPAX_COUNCIL_DIR"] = str(tmp_path / "council")
     env["HAPAX_SESSION_ID"] = "launcher-missing-codex-session"
     env["NPM_CONFIG_PREFIX"] = ""

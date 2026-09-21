@@ -1713,7 +1713,7 @@ def build_supply_vector(
             lane_id=lane_id,
             mode=route.mode,
             profile=route.profile,
-            model_fingerprint=route.model_or_engine,
+            model_fingerprint=str(route.execution_descriptor.model_id),
             launcher_contract=route.launcher,
             sanctioned_wrapper=route.sanctioned_wrapper,
             approval_posture=route.approval_posture,
