@@ -60,19 +60,25 @@ def _fake_claude(path: Path) -> None:
     path.chmod(0o700)
 
 
-def test_claude_reviewer_binds_declared_identity_and_disables_tools(tmp_path: Path) -> None:
+@pytest.mark.parametrize("model_assertion", [None, "claude-opus-4-8"])
+def test_claude_reviewer_binds_declared_identity_and_disables_tools(
+    tmp_path: Path, model_assertion: str | None
+) -> None:
     fake = tmp_path / "claude"
     argv_path = tmp_path / "argv.json"
     stdin_path = tmp_path / "stdin.txt"
+    env_path = tmp_path / "environment.json"
     _fake_claude(fake)
 
     env = {
         **os.environ,
         "HAPAX_FAKE_CLAUDE_ARGV": str(argv_path),
         "HAPAX_FAKE_CLAUDE_STDIN": str(stdin_path),
+        "HAPAX_FAKE_CLAUDE_ENV": str(env_path),
     }
+    assertion_args = ["--model", model_assertion] if model_assertion is not None else []
     result = subprocess.run(
-        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake), *assertion_args],
         input="review packet",
         capture_output=True,
         text=True,
@@ -83,6 +89,10 @@ def test_claude_reviewer_binds_declared_identity_and_disables_tools(tmp_path: Pa
     assert result.returncode == 0, result.stderr
     assert result.stdout == "```yaml\nverdict: accept\nfindings: []\nchecklist: {}\n```\n"
     assert stdin_path.read_text(encoding="utf-8") == "review packet"
+    assert json.loads(env_path.read_text()) == {
+        "CLAUDE_CODE_EFFORT_LEVEL": "xhigh",
+        "CLAUDE_CODE_DISABLE_FAST_MODE": "1",
+    }
     argv = json.loads(argv_path.read_text(encoding="utf-8"))
     assert argv[:5] == ["-p", "--model", "claude-opus-4-8", "--effort", "xhigh"]
     assert argv[argv.index("--tools") + 1] == ""
