@@ -34,7 +34,7 @@ store = default_store()
 if store.backend_id != "file":
     sys.stderr.write(
         f"secret_env_from_filestore: default_store backend_id={store.backend_id!r} "
-        "is not file. Next action: do not point this unit at PassStore.\n"
+        "is not file. Next action: do not point this unit at the pass backend.\n"
     )
     raise SystemExit(2)
 
@@ -74,6 +74,7 @@ OPTIONAL: dict[str, str] = {
     "HAPAX_ZENODO_TOKEN": "zenodo-api-token",
     "HAPAX_OPERATOR_ORCID": "orcid-orcid",
     "KO_FI_WEBHOOK_VERIFICATION_TOKEN": "kofi-verification-token",
+    "HAPAX_PUBLIC_GATE_AUTHORITY_HMAC_KEY": "hapax-public-gate-authority-hmac-key",
 }
 LITERALS: dict[str, str] = {
     "LITELLM_BASE_URL": _LITELLM,
@@ -94,12 +95,67 @@ def _first_line(raw: bytes) -> str:
     return raw.decode("utf-8", "replace").split("\n", 1)[0]
 
 
+def _integrity_error_types() -> tuple[type[BaseException], ...]:
+    """``SecretIntegrityError`` where the installed reins carries it, else empty.
+
+    Resolved dynamically so this unit works against a reins that predates the typed error
+    and one that has it, with no version check to go stale.
+    """
+
+    from k0 import key_capture
+
+    error = getattr(key_capture, "SecretIntegrityError", None)
+    if isinstance(error, type) and issubclass(error, BaseException):
+        return (error,)
+    return ()
+
+
+_INTEGRITY_ERRORS = _integrity_error_types()
+
+
+def _integrity_failure(name: str) -> None:
+    sys.stderr.write(
+        f"secret_env_from_filestore: integrity_failed: {name}. The stored blob is present "
+        "but did not verify — corruption or tampering, NOT an absent secret. Next action: "
+        "run `hapax-secret --audit`; do not re-put over it until the audit says what "
+        "happened. The previous environment file is left in place.\n"
+    )
+    raise SystemExit(3)
+
+
+def _read_secret(name: str) -> bytes | None:
+    """The stored bytes, ``None`` when genuinely ABSENT, and a refusal when corrupt.
+
+    Two ways a blob fails to verify, and both must be told apart from absence:
+
+    * reins PR 44 and later RAISE ``SecretIntegrityError``;
+    * the reins installed today returns ``None`` for BOTH an absent blob and one that will
+      not unwrap, so a tampered secret is indistinguishable from a missing one — and for an
+      OPTIONAL name it was silently skipped, which is the single outcome an integrity check
+      exists to prevent. ``has()`` is true exactly when the file is on disk, so
+      ``has() and get() is None`` is present-but-unreadable regardless of which reins is
+      installed.
+
+    Exit code 3, distinct from the 2 used for missing/misconfigured: "put this secret" and
+    "audit this store" are different operator actions.
+    """
+
+    try:
+        value = store.get(name)
+    except _INTEGRITY_ERRORS:
+        _integrity_failure(name)
+        raise  # unreachable; keeps the type checker honest about the None-return contract
+    if value is None and store.has(name):
+        _integrity_failure(name)
+    return value
+
+
 uid = os.getuid()
 out = Path(os.environ.get("HAPAX_SECRETS_ENV_PATH", f"/run/user/{uid}/hapax-secrets.env"))
 resolved: dict[str, str] = {}
 missing: list[str] = []
 for env_name, spec in REQUIRED.items():
-    val = store.get(spec)
+    val = _read_secret(spec)
     if val is None:
         missing.append(spec)
         continue
@@ -117,7 +173,7 @@ LITERALS["ANTHROPIC_API_KEY"] = litellm_text
 LITERALS["ANTHROPIC_AUTH_TOKEN"] = litellm_text
 lines: list[str] = [f"{env_name}={resolved[env_name]}" for env_name in REQUIRED]
 for env_name, spec in OPTIONAL.items():
-    val = store.get(spec)
+    val = _read_secret(spec)
     if val is None:
         continue
     lines.append(f"{env_name}={_first_line(val)}")

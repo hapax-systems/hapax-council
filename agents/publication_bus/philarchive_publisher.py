@@ -92,8 +92,8 @@ class PhilArchivePublisher(Publisher):
     Refusal-as-data: missing session cookie or author ID emits
     ``refused`` with ``credentials`` in the detail string. The
     operator-action queue items are
-    ``pass insert philarchive/session-cookie`` and
-    ``pass insert philarchive/author-id``.
+    puts of ``philarchive/session-cookie`` and ``philarchive/author-id``
+    through ``hapax-secret``.
 
     ``requires_legal_name=True`` because PhilArchive's author field
     requires the operator's formal name per ORCID linkage; the
@@ -115,7 +115,7 @@ class PhilArchivePublisher(Publisher):
                 refused=True,
                 detail=(
                     "missing PhilArchive credentials "
-                    "(operator-action queue: pass insert philarchive/session-cookie + author-id)"
+                    "(operator-action: put philarchive/session-cookie and author-id with hapax-secret)"
                 ),
             )
         if requests is None:

@@ -112,20 +112,20 @@ class TestDefaultLlmBackpressure:
 
         assert dl_mod._DIRECTOR_LLM_LOCK.acquire(blocking=False)
         try:
-            with patch("subprocess.run") as mock_pass:
+            with patch("agents.studio_compositor.structural_director.get_secret") as mock_secret:
                 with patch("urllib.request.urlopen") as mock_urlopen:
                     assert sd._default_llm_fn("prompt") == ""
         finally:
             dl_mod._DIRECTOR_LLM_LOCK.release()
 
-        mock_pass.assert_not_called()
+        mock_secret.assert_not_called()
         mock_urlopen.assert_not_called()
 
     def test_default_llm_timeout_releases_local_route_lock(self):
         import agents.studio_compositor.director_loop as dl_mod
 
-        with patch("subprocess.run") as mock_pass:
-            mock_pass.return_value.stdout = "test-key\n"
+        with patch("agents.studio_compositor.structural_director.get_secret") as mock_secret:
+            mock_secret.return_value = "test-key"
             with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
                 with pytest.raises(TimeoutError):
                     sd._default_llm_fn("prompt")

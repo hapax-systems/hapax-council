@@ -6,7 +6,7 @@ Each V5 ``Publisher`` subclass under ``agents/publication_bus/`` is one of:
   composer, sc-attestation runner, etc.) on the prod path. Confirmed via
   ``grep`` for prod callers excluding tests.
 - **CRED_BLOCKED** — substrate complete and tested; awaiting operator
-  credential bootstrap (e.g., ``pass insert <slug>``). When creds arrive,
+  credential bootstrap (a put through ``hapax-secret``). When creds arrive,
   the wire decision flips to WIRED via a follow-up adapter PR.
 - **DELETE** — substrate cannot be reached because the upstream surface
   was retired or replaced. Slated for removal in a follow-up cleanup PR.
@@ -22,10 +22,11 @@ R-5 source: ``~/.cache/hapax/relay/research/2026-04-26-absence-bugs-synthesis-fo
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
+
+from shared.secrets import has_secret
 
 WireStatus = Literal["WIRED", "CRED_BLOCKED", "DELETE"]
 
@@ -427,7 +428,7 @@ PUBLISHER_WIRE_REGISTRY: dict[str, WireEntry] = {
         rationale=(
             "Crossref DOI depositor (sibling to Zenodo). Substrate complete + "
             "tested (agents/attribution/crossref_depositor.py, 223 LOC). "
-            "Operator-action: `pass insert crossref/depositor-credentials` — "
+            "Operator-action: put `crossref/depositor-credentials` with `hapax-secret` — "
             "requires Crossref membership (institutional affiliation OR paid). "
             "Disposition: review-by 2026-08-01 — if creds not bootstrapped by "
             "that date, re-evaluate retire vs continued hold. DataCite mirror "
@@ -486,23 +487,12 @@ def cred_blocked_pass_keys() -> list[str]:
 
 
 def credential_readiness() -> dict[str, bool]:
-    """Probe ``pass`` for each CRED_BLOCKED entry's key without reading values.
+    """Probe presence for each CRED_BLOCKED entry's key without reading values.
 
-    Returns a dict of ``{pass_key: exists}`` where ``exists`` is True when
-    ``pass show <key>`` exits 0 (credential is present in the store).
+    Returns ``{secret_name: exists}``; presence comes from :func:`shared.secrets.has_secret`
+    (FileStore ``has``, or ``hapax-secret --where`` where the module is absent).
     """
-    result: dict[str, bool] = {}
-    for key in cred_blocked_pass_keys():
-        try:
-            proc = subprocess.run(
-                ["pass", "show", key],
-                capture_output=True,
-                timeout=5,
-            )
-            result[key] = proc.returncode == 0
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            result[key] = False
-    return result
+    return {key: has_secret(key) for key in cred_blocked_pass_keys()}
 
 
 _ISO_DATE_RE = re.compile(r"\breview-by\s+(\d{4}-\d{2}-\d{2})\b")

@@ -1663,6 +1663,68 @@ class TestDispatchableLaneSelection:
         assert written[0].lanes_idle == 0
         assert written[0].lanes["dev2"]["dispatchable"] is False
 
+    def test_tick_observe_only_suppresses_dispatch_and_reoffer(self):
+        coordinator = Coordinator()
+        task = Task(
+            task_id="t1",
+            title="test",
+            status="offered",
+            assigned_to="unassigned",
+            wsjf=10.0,
+            effort_class="standard",
+            platform_suitability=("claude",),
+            quality_floor="deterministic_ok",
+            path=Path("/tmp/t1.md"),
+        )
+        lanes = {
+            "beta": LaneState(
+                role="beta",
+                platform="claude",
+                alive=True,
+                idle=True,
+                claimed_task="t1",
+                stalled=True,
+            ),
+        }
+        dispatched: list[tuple[str, str]] = []
+        reoffered: list[str] = []
+        written: list[CoordinatorState] = []
+
+        def capture_state(state: CoordinatorState, **_kwargs: object) -> None:
+            written.append(state)
+
+        with (
+            patch.object(Coordinator, "_scan_tasks", return_value=[task]),
+            patch.object(Coordinator, "_check_lanes", return_value=lanes),
+            patch.object(
+                Coordinator,
+                "_dispatch",
+                side_effect=lambda t, lane: dispatched.append((t.task_id, lane.role)) or (True, ""),
+            ),
+            patch.object(
+                Coordinator,
+                "_reoffer_stalled",
+                side_effect=lambda lane: reoffered.append(lane.role) or True,
+            ),
+            patch.object(
+                Coordinator,
+                "_reoffer_orphaned_claims",
+                side_effect=AssertionError("orphan reoffer must not run in observe-only"),
+            ),
+            patch.object(Coordinator, "_write_state", side_effect=capture_state),
+            patch(
+                "agents.coordinator.core.admission_state",
+                return_value=AdmissionDecision(state="open"),
+            ),
+            patch.dict("os.environ", {"HAPAX_COORDINATOR_OBSERVE_ONLY": "1"}),
+        ):
+            coordinator.tick()
+
+        assert dispatched == []
+        assert reoffered == []
+        assert written, "observe-only still writes the state projection"
+        assert written[0].reoffers_this_tick == 0
+
     def test_tick_does_not_dispatch_retired_codex_relay_lane(self):
         coordinator = Coordinator()
         task = Task(

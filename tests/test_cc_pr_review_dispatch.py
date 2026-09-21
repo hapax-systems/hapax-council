@@ -52,6 +52,9 @@ dispatch = _load("cc_pr_review_dispatch", "cc-pr-review-dispatch.py")
 def _isolate_outage_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(dispatch, "FAMILY_OUTAGE_STATE", tmp_path / "family-outage.json")
     monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", tmp_path / "degraded-merges.jsonl")
+    receipts = tmp_path / "relay-receipts"
+    receipts.mkdir(exist_ok=True)
+    monkeypatch.setenv("HAPAX_RELAY_RECEIPTS", str(receipts))
 
 
 def _make_vault(tmp_path: Path) -> Path:
@@ -179,6 +182,7 @@ class FakeGh:
             "number": self.pr_number,
             "title": f"PR {self.pr_number}",
             "body": "PR body acceptance evidence",
+            "base": {"ref": "main", "sha": self.base_sha},
             "head": {"ref": f"feat/{self.pr_number}", "sha": self.head_sha},
             "draft": False,
             "changed_files": (
@@ -315,6 +319,152 @@ def _review(tmp_path: Path, **overrides: Any) -> tuple[dict, FakeGh, RecordingRe
             dispatch.FAMILY_OUTAGE_STATE = old_dispatch_outage_state
             dispatch.review_team.FAMILY_OUTAGE_STATE = old_review_team_outage_state
     return result, gh, reviewers, note
+
+
+def _make_pr_one_commit_behind_main(tmp_path: Path) -> tuple[Path, str, str, str, str]:
+    """Create base -> {head, current main}; return both tips and the three-dot diff."""
+    repo_root = tmp_path / "repo"
+    remote_root = tmp_path / "remote.git"
+    repo_root.mkdir()
+    subprocess.run(["git", "init", "-q", "--bare", remote_root], check=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote_root)], cwd=repo_root, check=True)
+    target = repo_root / "shared" / "foo.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("value = 'base'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=repo_root, check=True)
+    old_base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    target.write_text("value = 'head'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "head"], cwd=repo_root, check=True)
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    current_base_sha = subprocess.run(
+        [
+            "git",
+            "commit-tree",
+            f"{old_base_sha}^{{tree}}",
+            "-p",
+            old_base_sha,
+            "-m",
+            "main ahead",
+        ],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "push", "-q", "origin", f"{current_base_sha}:refs/heads/main"],
+        cwd=repo_root,
+        check=True,
+    )
+    expected_diff = subprocess.run(
+        ["git", "diff", "--no-ext-diff", "--find-renames", f"{old_base_sha}..{head_sha}"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return repo_root, old_base_sha, current_base_sha, head_sha, expected_diff
+
+
+def _make_pr_with_stale_local_base(tmp_path: Path) -> tuple[Path, str, str, str, str]:
+    """Create a PR whose local tracking ref predates the PR's current merge-base."""
+    repo_root = tmp_path / "repo"
+    remote_root = tmp_path / "remote.git"
+    repo_root.mkdir()
+    subprocess.run(["git", "init", "-q", "--bare", remote_root], check=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo_root, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote_root)], cwd=repo_root, check=True)
+
+    target = repo_root / "shared" / "foo.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("value = 'base'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "stale base"], cwd=repo_root, check=True)
+    stale_base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    already_on_base = repo_root / "shared" / "already_on_base.py"
+    already_on_base.write_text("value = 'shared'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "shared with current base"], cwd=repo_root, check=True)
+    current_merge_base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    target.write_text("value = 'head'\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+    subprocess.run(["git", "commit", "-qm", "head"], cwd=repo_root, check=True)
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    current_base_sha = subprocess.run(
+        [
+            "git",
+            "commit-tree",
+            f"{current_merge_base}^{{tree}}",
+            "-p",
+            current_merge_base,
+            "-m",
+            "current base",
+        ],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "push", "-q", "origin", f"{current_base_sha}:refs/heads/main"],
+        cwd=repo_root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", stale_base_sha],
+        cwd=repo_root,
+        check=True,
+    )
+    expected_diff = subprocess.run(
+        ["git", "diff", "--no-ext-diff", "--find-renames", f"{current_merge_base}..{head_sha}"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return repo_root, stale_base_sha, current_base_sha, head_sha, expected_diff
 
 
 def _write_registry_with_extra_review_descriptor(tmp_path: Path) -> Path:
@@ -515,6 +665,50 @@ class TestDryRun:
 
 
 class TestApply:
+    @pytest.mark.parametrize("field", ["diff_source", "comparison_base", "diff_sha256"])
+    @pytest.mark.parametrize("truncated", [False, True])
+    def test_persisted_dossier_records_refreshed_diff_provenance(
+        self, tmp_path: Path, field: str, truncated: bool
+    ) -> None:
+        comparison_base = "d" * 40
+
+        class LocalDiffGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                if cmd[0] == "git":
+                    self.calls.append(list(cmd))
+                    if cmd[:2] == ["git", "merge-base"] and "--is-ancestor" not in cmd:
+                        return subprocess.CompletedProcess(cmd, 0, comparison_base, "")
+                    if cmd[:2] == ["git", "diff"]:
+                        assert cmd[-1] == f"{comparison_base}..{self.head_sha}"
+                        return subprocess.CompletedProcess(cmd, 0, self.diff, "")
+                    assert cmd[1] in {"fetch", "rev-parse", "cat-file", "merge-base"}
+                    return subprocess.CompletedProcess(cmd, 0, comparison_base, "")
+                return super().__call__(cmd, **kwargs)
+
+        gh = LocalDiffGh(base_sha="b" * 40)
+        gh.diff += "+café\n"
+        if truncated:
+            gh.diff += "+more\n" * 100_000
+            assert dispatch.truncate_diff(gh.diff) != gh.diff
+        result, _, _, note = _review(
+            tmp_path,
+            gh=gh,
+            route=dispatch.ListingRoute("graphql", True, "REST below floor"),
+        )
+        assert result["status"] == "dispatched"
+        assert any(cmd[:3] == ["git", "fetch", "--quiet"] for cmd in gh.calls)
+        persisted = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        expected = {
+            "diff_source": "local-git",
+            "comparison_base": comparison_base,
+            "diff_sha256": sha256(gh.diff.encode("utf-8")).hexdigest(),
+        }
+        assert persisted.get(field) == expected[field], (field, persisted.get(field))
+        assert persisted["head_sha"] == gh.head_sha
+        assert persisted["dossier_schema"] == 1
+
     def test_three_reviewers_cross_family_dossier(self, tmp_path: Path) -> None:
         result, gh, reviewers, note = _review(tmp_path)
         assert result["status"] == "dispatched"
@@ -1497,41 +1691,68 @@ checklist:
         assert any(call[:3] == ["gh", "pr", "diff"] for call in gh.calls)
         assert any("diff --git" in prompt for _, _, prompt in reviewers.invocations)
 
+    @pytest.mark.parametrize(
+        "github_diff_available",
+        [True, False],
+        ids=["rest-diff", "local-merge-base-fallback"],
+    )
+    def test_review_dispatches_pr_one_commit_behind_main_from_merge_base(
+        self, tmp_path: Path, github_diff_available: bool
+    ) -> None:
+        repo_root, old_base_sha, current_base_sha, head_sha, expected_diff = (
+            _make_pr_one_commit_behind_main(tmp_path)
+        )
+
+        class BehindMainGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                if cmd and cmd[0] == "git":
+                    self.calls.append(list(cmd))
+                    return subprocess.run(cmd, **kwargs)
+                if not github_diff_available and (
+                    (
+                        cmd[:5] == ["gh", "api", "--method", "GET", "-H"]
+                        and len(cmd) > 6
+                        and cmd[5] == "Accept: application/vnd.github.v3.diff"
+                    )
+                    or cmd[:3] == ["gh", "pr", "diff"]
+                ):
+                    self.calls.append(list(cmd))
+                    return subprocess.CompletedProcess(cmd, 1, "", "diff rate limited")
+                return super().__call__(cmd, **kwargs)
+
+        gh = BehindMainGh(
+            base_sha=old_base_sha,
+            head_sha=head_sha,
+            files=["shared/foo.py"],
+        )
+        gh.diff = expected_diff
+        result, gh, reviewers, _ = _review(tmp_path, gh=gh, repo_root=repo_root)
+
+        assert result["status"] == "dispatched"
+        assert reviewers.invocations
+        rendered_expected_diff = dispatch.render_untrusted_block(
+            "PR diff", expected_diff, limit=dispatch.MAX_DIFF_CHARS + 500
+        )
+        for _, _, prompt in reviewers.invocations:
+            assert rendered_expected_diff in prompt
+            assert "-value = 'base'" in prompt
+            assert "+value = 'head'" in prompt
+        if github_diff_available:
+            assert not any(call[:2] == ["git", "merge-base"] for call in gh.calls)
+        else:
+            assert result["dossier"]["comparison_base"] == old_base_sha
+            assert result["dossier"]["diff_source"] == "local-git"
+            assert ["git", "merge-base", current_base_sha, head_sha] in gh.calls
+            assert any(
+                call[:5]
+                == ["git", "diff", "--no-ext-diff", "--find-renames", f"{old_base_sha}..{head_sha}"]
+                for call in gh.calls
+            )
+
     def test_pr_diff_falls_back_to_local_git_diff_when_github_diff_unavailable(
         self, tmp_path: Path
     ) -> None:
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo_root, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
-        target = repo_root / "shared" / "foo.py"
-        target.parent.mkdir(parents=True)
-        target.write_text("value = 'base'\n", encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
-        subprocess.run(["git", "commit", "-qm", "base"], cwd=repo_root, check=True)
-        base_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        subprocess.run(
-            ["git", "update-ref", "refs/remotes/origin/main", base_sha],
-            cwd=repo_root,
-            check=True,
-        )
-        target.write_text("value = 'head'\n", encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
-        subprocess.run(["git", "commit", "-qm", "head"], cwd=repo_root, check=True)
-        head_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        repo_root, base_sha, _, head_sha, _ = _make_pr_one_commit_behind_main(tmp_path)
 
         class DiffUnavailableGh(FakeGh):
             def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
@@ -1573,6 +1794,256 @@ checklist:
         assert "+value = 'head'" in diff
         assert any(call[:3] == ["gh", "pr", "diff"] for call in gh.calls)
         assert any(call[:2] == ["git", "diff"] for call in gh.calls)
+
+    @pytest.mark.parametrize("tracking_at_pr_base", [False, True], ids=["tracking-S", "tracking-B"])
+    def test_local_git_diff_fallback_accepts_lagging_base_after_refresh(
+        self, tmp_path: Path, tracking_at_pr_base: bool
+    ) -> None:
+        repo_root, stale_base_sha, current_base_sha, head_sha, expected_diff = (
+            _make_pr_with_stale_local_base(tmp_path)
+        )
+        old_base_sha = subprocess.run(
+            ["git", "rev-parse", f"{head_sha}^"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        # Main is S -> B -> M, head is B -> H, and GitHub still reports B.
+        if tracking_at_pr_base:
+            subprocess.run(
+                ["git", "update-ref", "refs/remotes/origin/main", old_base_sha],
+                cwd=repo_root,
+                check=True,
+            )
+
+        class StaleBaseGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = StaleBaseGh(base_sha=old_base_sha, head_sha=head_sha, files=["shared/foo.py"])
+        diff = dispatch.fetch_pr_diff_from_local(
+            dispatch.PRInfo(
+                number=42,
+                title="PR 42",
+                body="body",
+                base_ref="main",
+                base_sha=old_base_sha,
+                head_ref="feat/42",
+                head_sha=head_sha,
+                changed_file_count=1,
+                is_draft=False,
+                files=("shared/foo.py",),
+            ),
+            repo_root=repo_root,
+            runner=gh,
+        )
+
+        assert diff == expected_diff
+        assert stale_base_sha != current_base_sha
+        assert "already_on_base.py" not in diff
+        fetch = [
+            "git",
+            "fetch",
+            "--quiet",
+            "origin",
+            "+refs/heads/main:refs/remotes/origin/main",
+        ]
+        merge_base = ["git", "merge-base", current_base_sha, head_sha]
+        ancestry = ["git", "merge-base", "--is-ancestor", old_base_sha, current_base_sha]
+        assert fetch in gh.calls
+        assert gh.calls.index(fetch) < gh.calls.index(ancestry) < gh.calls.index(merge_base)
+        assert [
+            "git",
+            "diff",
+            "--no-ext-diff",
+            "--find-renames",
+            f"{old_base_sha}..{head_sha}",
+        ] in gh.calls
+        assert (
+            subprocess.run(
+                ["git", "rev-parse", "origin/main"],
+                cwd=repo_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            == current_base_sha
+        )
+
+    def test_local_git_diff_fallback_rejects_stale_base_when_refresh_fails(
+        self, tmp_path: Path
+    ) -> None:
+        repo_root, _, current_base_sha, head_sha, _ = _make_pr_with_stale_local_base(tmp_path)
+
+        class FailedBaseRefreshGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd[:3] == ["git", "fetch", "--quiet"]:
+                    return subprocess.CompletedProcess(cmd, 1, "", "fetch failed")
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = FailedBaseRefreshGh(
+            base_sha=current_base_sha,
+            head_sha=head_sha,
+            files=["shared/foo.py"],
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha=current_base_sha,
+                    head_ref="feat/42",
+                    head_sha=head_sha,
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=repo_root,
+                runner=gh,
+            )
+
+        assert "cannot establish the current PR base" in str(excinfo.value)
+        assert any(call[:3] == ["git", "fetch", "--quiet"] for call in gh.calls)
+        assert not any(call[:2] == ["git", "merge-base"] for call in gh.calls)
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+
+    def test_local_git_diff_fallback_rejects_fetch_that_does_not_pin_base(
+        self, tmp_path: Path
+    ) -> None:
+        repo_root, _, current_base_sha, head_sha, _ = _make_pr_with_stale_local_base(tmp_path)
+
+        class UnpinnedBaseGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd[:3] == ["git", "fetch", "--quiet"]:
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = UnpinnedBaseGh(
+            base_sha=current_base_sha,
+            head_sha=head_sha,
+            files=["shared/foo.py"],
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha=current_base_sha,
+                    head_ref="feat/42",
+                    head_sha=head_sha,
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=repo_root,
+                runner=gh,
+            )
+
+        assert "not a proven ancestor of refreshed origin/main" in str(excinfo.value)
+        assert not any(
+            call[:2] == ["git", "merge-base"] and call[2] != "--is-ancestor" for call in gh.calls
+        )
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+
+    @pytest.mark.parametrize(
+        "force_pushed_main", [False, True], ids=["foreign-base", "rewritten-main"]
+    )
+    def test_local_git_diff_fallback_rejects_nonancestor_base_with_remedy(
+        self, tmp_path: Path, force_pushed_main: bool
+    ) -> None:
+        repo_root, old_base_sha, current_base_sha, head_sha, _ = _make_pr_one_commit_behind_main(
+            tmp_path
+        )
+        if force_pushed_main:
+            # GitHub still records M after main is force-pushed back to B.
+            base_sha = current_base_sha
+            subprocess.run(
+                ["git", "push", "-q", "origin", f"+{old_base_sha}:refs/heads/main"],
+                cwd=repo_root,
+                check=True,
+            )
+        else:
+            # H is on a foreign branch: it shares B with main but is not its ancestor.
+            base_sha = head_sha
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/main", base_sha],
+            cwd=repo_root,
+            check=True,
+        )
+
+        class NonancestorBaseGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = NonancestorBaseGh(base_sha=base_sha, head_sha=head_sha, files=["shared/foo.py"])
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha=base_sha,
+                    head_ref="feat/42",
+                    head_sha=head_sha,
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=repo_root,
+                runner=gh,
+            )
+
+        message = str(excinfo.value)
+        assert "not a proven ancestor of refreshed origin/main" in message
+        assert 'updatePullRequest(baseRefName: "main")' in message
+        assert "push a merge of main" in message
+        assert not any(
+            call[:2] == ["git", "merge-base"] and call[2] != "--is-ancestor" for call in gh.calls
+        )
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+
+    def test_local_git_diff_fallback_rejects_missing_base_sha(self, tmp_path: Path) -> None:
+        gh = FakeGh()
+
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha="",
+                    head_ref="feat/42",
+                    head_sha="b" * 40,
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=tmp_path,
+                runner=gh,
+            )
+
+        assert "base SHA is unavailable" in str(excinfo.value)
+        assert not any(call[:2] == ["git", "merge-base"] for call in gh.calls)
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
 
     def test_local_git_diff_fallback_rejects_stale_base_ref(self, tmp_path: Path) -> None:
         repo_root = tmp_path / "repo"
@@ -1646,8 +2117,92 @@ checklist:
                 runner=gh,
             )
 
-        assert "expected PR base" in str(excinfo.value)
+        assert "not a proven ancestor of refreshed origin/main" in str(excinfo.value)
         assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+
+    def test_local_git_diff_fallback_reviews_against_the_refreshed_base_when_the_recorded_sha_is_stale(
+        self, tmp_path: Path
+    ) -> None:
+        """The PR metadata's base sha lags the branch (REST reports the tip at the PR's last
+        update). The local base tip is AHEAD of it, so the diff is computed against
+        merge-base(origin/main, head) and records that base — the dispatch timer's own
+        "expected PR base" failure shape on 2026-09-03 (review finding on #4610)."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
+        target = repo_root / "shared" / "foo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("value = 'stale-base'\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+        subprocess.run(["git", "commit", "-qm", "stale-base"], cwd=repo_root, check=True)
+        stale_base_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        target.write_text("value = 'current-base'\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+        subprocess.run(["git", "commit", "-qm", "current-base"], cwd=repo_root, check=True)
+        current_base_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "update-ref", "refs/remotes/origin/main", current_base_sha],
+            cwd=repo_root,
+            check=True,
+        )
+        target.write_text("value = 'head'\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
+        subprocess.run(["git", "commit", "-qm", "head"], cwd=repo_root, check=True)
+        head_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        class FreshLocalGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd[:3] == ["git", "fetch", "--quiet"]:
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = FreshLocalGh(base_sha=stale_base_sha, head_sha=head_sha, files=["shared/foo.py"])
+        diff = dispatch.fetch_pr_diff_from_local(
+            dispatch.PRInfo(
+                number=42,
+                title="PR 42",
+                body="body",
+                base_ref="main",
+                base_sha=stale_base_sha,
+                head_ref="feat/42",
+                head_sha=head_sha,
+                changed_file_count=1,
+                is_draft=False,
+                files=("shared/foo.py",),
+            ),
+            repo_root=repo_root,
+            runner=gh,
+        )
+
+        assert "-value = 'current-base'" in diff
+        assert "+value = 'head'" in diff
+        assert "stale-base" not in diff, "the base's own move must not be reviewed as PR content"
+        assert diff.comparison_base == current_base_sha
+        assert diff.source == "local-git"
+        assert any(call[:3] == ["git", "fetch", "--quiet"] for call in gh.calls)
 
     def test_local_git_diff_fallback_rejects_missing_head_sha(self, tmp_path: Path) -> None:
         gh = FakeGh()
@@ -1674,33 +2229,12 @@ checklist:
         assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
 
     def test_local_git_diff_fallback_names_missing_head_fetch_action(self, tmp_path: Path) -> None:
-        repo_root = tmp_path / "repo"
-        repo_root.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=repo_root, check=True)
-        subprocess.run(["git", "config", "user.email", "t@t"], cwd=repo_root, check=True)
-        subprocess.run(["git", "config", "user.name", "t"], cwd=repo_root, check=True)
-        target = repo_root / "shared" / "foo.py"
-        target.parent.mkdir(parents=True)
-        target.write_text("value = 'base'\n", encoding="utf-8")
-        subprocess.run(["git", "add", "-A"], cwd=repo_root, check=True)
-        subprocess.run(["git", "commit", "-qm", "base"], cwd=repo_root, check=True)
-        base_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        subprocess.run(
-            ["git", "update-ref", "refs/remotes/origin/main", base_sha],
-            cwd=repo_root,
-            check=True,
-        )
+        repo_root, _, base_sha, _, _ = _make_pr_one_commit_behind_main(tmp_path)
 
         class MissingHeadFetchGh(FakeGh):
             def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
                 self.calls.append(list(cmd))
-                if cmd[:3] == ["git", "fetch", "--quiet"]:
+                if cmd[:3] == ["git", "fetch", "--quiet"] and cmd[-1] == "pull/42/head":
                     return subprocess.CompletedProcess(cmd, 1, "", "fetch failed")
                 if cmd and cmd[0] == "git":
                     return subprocess.run(cmd, **kwargs)
@@ -1731,7 +2265,7 @@ checklist:
         assert "fetch pull/42/head before review dispatch" in message
         assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
 
-    def test_local_git_diff_fallback_rejects_head_missing_current_base(
+    def test_local_git_diff_fallback_reviews_a_behind_pr_against_its_merge_base(
         self, tmp_path: Path
     ) -> None:
         repo_root = tmp_path / "repo"
@@ -1781,11 +2315,73 @@ checklist:
         class DivergedBaseGh(FakeGh):
             def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
                 self.calls.append(list(cmd))
+                if cmd[:3] == ["git", "fetch", "--quiet"]:
+                    return subprocess.CompletedProcess(cmd, 0, "", "")
                 if cmd and cmd[0] == "git":
                     return subprocess.run(cmd, **kwargs)
                 return super().__call__(cmd, **kwargs)
 
         gh = DivergedBaseGh(base_sha=current_base_sha, head_sha=head_sha, files=["shared/foo.py"])
+        # A PR behind main is the NORMAL shape of a PR: its merge base with the current base tip
+        # is older than that tip. GitHub's diff endpoint reviews `merge-base(base, head)..head`;
+        # the local path must do the same instead of refusing. Refusing here, with REST measured
+        # empty, produced a per-cycle error instead of a dossier for every behind PR (#4610 review).
+        diff = dispatch.fetch_pr_diff_from_local(
+            dispatch.PRInfo(
+                number=42,
+                title="PR 42",
+                body="body",
+                base_ref="main",
+                base_sha=current_base_sha,
+                head_ref="feat/42",
+                head_sha=head_sha,
+                changed_file_count=1,
+                is_draft=False,
+                files=("shared/foo.py",),
+            ),
+            repo_root=repo_root,
+            runner=gh,
+        )
+
+        assert "+value = 'head'" in diff and "-value = 'base'" in diff
+        assert "current-base" not in diff, "the base's later commit is not the PR's change"
+        diff_calls = [call for call in gh.calls if call[:2] == ["git", "diff"]]
+        assert diff_calls and diff_calls[0][-1] == f"{base_sha}..{head_sha}", (
+            "the diff must be pinned to the merge base, which is the original base commit here"
+        )
+        assert diff.comparison_base == base_sha
+        assert diff.source == "local-git"
+
+    def test_local_git_diff_fallback_rejects_unrelated_histories(self, tmp_path: Path) -> None:
+        repo_root, _, current_base_sha, _, _ = _make_pr_one_commit_behind_main(tmp_path)
+        empty_tree_sha = subprocess.run(
+            ["git", "mktree"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            input="",
+        ).stdout.strip()
+        unrelated_head_sha = subprocess.run(
+            ["git", "commit-tree", empty_tree_sha, "-m", "unrelated head"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        class UnrelatedHistoryGh(FakeGh):
+            def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+                self.calls.append(list(cmd))
+                if cmd and cmd[0] == "git":
+                    return subprocess.run(cmd, **kwargs)
+                return super().__call__(cmd, **kwargs)
+
+        gh = UnrelatedHistoryGh(
+            base_sha=current_base_sha,
+            head_sha=unrelated_head_sha,
+            files=["shared/foo.py"],
+        )
         with pytest.raises(RuntimeError) as excinfo:
             dispatch.fetch_pr_diff_from_local(
                 dispatch.PRInfo(
@@ -1795,7 +2391,7 @@ checklist:
                     base_ref="main",
                     base_sha=current_base_sha,
                     head_ref="feat/42",
-                    head_sha=head_sha,
+                    head_sha=unrelated_head_sha,
                     changed_file_count=1,
                     is_draft=False,
                     files=("shared/foo.py",),
@@ -1804,7 +2400,64 @@ checklist:
                 runner=gh,
             )
 
-        assert "cannot prove head contains" in str(excinfo.value)
+        message = str(excinfo.value)
+        assert "cannot compute a merge-base" in message
+        assert "histories unrelated" in message
+        assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
+
+    @pytest.mark.parametrize("missing", ["base-ref", "merge-base"])
+    def test_local_git_diff_fallback_rejects_missing_base_evidence_with_action(
+        self, tmp_path: Path, missing: str
+    ) -> None:
+        gh = FakeGh()
+
+        def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+            gh.calls.append(list(cmd))
+            assert cmd[0] == "git"
+            if cmd[:3] == ["git", "fetch", "--quiet"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if cmd == ["git", "rev-parse", "--verify", "origin/main"]:
+                if missing == "base-ref":
+                    return subprocess.CompletedProcess(cmd, 1, "", "missing ref")
+                return subprocess.CompletedProcess(cmd, 0, gh.base_sha, "")
+            if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if cmd == ["git", "rev-parse", "--verify", gh.head_sha]:
+                return subprocess.CompletedProcess(cmd, 0, gh.head_sha, "")
+            if cmd == ["git", "cat-file", "-e", f"{gh.head_sha}^{{commit}}"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if cmd == ["git", "merge-base", gh.base_sha, gh.head_sha]:
+                return subprocess.CompletedProcess(cmd, 0, "\n", "")
+            pytest.fail(f"unexpected command: {cmd}")
+
+        with pytest.raises(RuntimeError) as excinfo:
+            dispatch.fetch_pr_diff_from_local(
+                dispatch.PRInfo(
+                    number=42,
+                    title="PR 42",
+                    body="body",
+                    base_ref="main",
+                    base_sha=gh.base_sha,
+                    head_ref="feat/42",
+                    head_sha=gh.head_sha,
+                    changed_file_count=1,
+                    is_draft=False,
+                    files=("shared/foo.py",),
+                ),
+                repo_root=tmp_path,
+                runner=runner,
+            )
+
+        message = str(excinfo.value)
+        if missing == "base-ref":
+            assert "origin/main is missing after fetching the base ref" in message
+            assert "restore origin access and fetch the base ref" in message
+            assert not any(call[:2] == ["git", "merge-base"] for call in gh.calls)
+        else:
+            assert "computed no merge-base" in message
+            assert "fetch the PR head and base refs" in message
+        assert "Next action:" in message
+        assert "retry review dispatch" in message
         assert not any(call[:2] == ["git", "diff"] for call in gh.calls)
 
     def test_rest_pull_failure_names_recheck_action(self, tmp_path: Path) -> None:
@@ -2220,8 +2873,8 @@ public_gate_authority:
 
         assert result["status"] == "dispatched"
         assert (
-            "next action: restore the public-gate authority signing credential from pass"
-            in caplog.text
+            "next action: restore the public-gate authority signing credential from the "
+            "FileStore" in caplog.text
         )
         assert dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV not in caplog.text
 
@@ -2736,6 +3389,11 @@ class TestFamilyOutageDegradation:
         ledger = tmp_path / "degraded-merges.jsonl"
         monkeypatch.setattr(dispatch, "FAMILY_OUTAGE_STATE", state)
         monkeypatch.setattr(dispatch, "DEGRADED_MERGES_LEDGER", ledger)
+        monkeypatch.setattr(
+            dispatch,
+            "_glmcp_payg_review_route_eligible",
+            lambda _now_iso: False,
+        )
         return state, ledger
 
     @staticmethod
@@ -3434,6 +4092,109 @@ class TestFamilyOutageDegradation:
         assert witness == {}
         assert json.loads(state.read_text(encoding="utf-8")) == {}
 
+    def test_route_admission_with_future_until_does_not_clear_structured_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """A post-outage route admission is not recovery while operator until is future."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        entry = {
+            "observed_at": observed,
+            "outage_started_at": "2026-06-11T20:55:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        state.write_text(json.dumps({"claude": entry}), encoding="utf-8")
+
+        class Resolved:
+            source = "live"
+            live_error = None
+            ledger = object()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "subscription_quota_state_for_route",
+            lambda _ledger, _route_id, *, now: (
+                SubscriptionQuotaState.FRESH,
+                (
+                    "relay-receipt:claude-subscription-quota-admission.yaml:"
+                    "observed_at:2026-06-11T20:56:00Z:"
+                    "fresh_until:2026-06-11T21:11:00Z",
+                ),
+            ),
+        )
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"claude": observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            now_iso="2026-06-11T21:00:00+00:00",
+            state_path=state,
+        )
+
+        assert witness == {"claude": observed}
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded["claude"] == entry
+
+    def test_route_admission_with_past_until_clears_structured_latch(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Expired until yields to route-admission recovery."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-11T20:55:00+00:00"
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": observed,
+                        "outage_started_at": "2026-06-11T20:55:00+00:00",
+                        "until": "2026-06-11T20:00:00Z",
+                        "note": "weekly reset",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        class Resolved:
+            source = "live"
+            live_error = None
+            ledger = object()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "subscription_quota_state_for_route",
+            lambda _ledger, _route_id, *, now: (
+                SubscriptionQuotaState.FRESH,
+                (
+                    "relay-receipt:claude-subscription-quota-admission.yaml:"
+                    "observed_at:2026-06-11T20:56:00Z:"
+                    "fresh_until:2026-06-11T21:11:00Z",
+                ),
+            ),
+        )
+
+        witness = dispatch.clear_route_recovered_family_outage(
+            {"claude": observed},
+            registry=dispatch.review_team.load_lens_registry(),
+            route_blocked_families={},
+            now_iso="2026-06-11T21:00:00+00:00",
+            state_path=state,
+        )
+
+        assert witness == {}
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
     @pytest.mark.parametrize(
         ("family", "route_id", "evidence_ref"),
         [
@@ -3797,6 +4558,502 @@ payg_fallback: false
         witness = dispatch.load_family_outage_witness("2026-06-12T21:00:00+00:00", state)
 
         assert witness == {"claude": "2026-06-12T20:59:00"}
+
+    def test_stale_observed_at_with_future_until_keeps_family_out(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """observed_at older than TTL still OUT while explicit until is in the future."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-12T18:00:00+00:00"  # 3h before now
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": observed,
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                        "until": "2026-06-13T00:00:00Z",
+                        "note": "weekly reset",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        now = "2026-06-12T21:00:00+00:00"
+        assert dispatch.load_family_outage(now, state) == frozenset({"claude"})
+        assert dispatch.load_family_outage_witness(now, state) == {"claude": observed}
+
+    def test_stale_observed_at_with_past_until_returns_family_in(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Expired until is authoritative: family is IN even if observed_at is stale."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-12T18:00:00+00:00",
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                        "until": "2026-06-12T20:00:00Z",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert dispatch.load_family_outage("2026-06-12T21:00:00+00:00", state) == frozenset()
+
+    def test_stale_observed_at_without_until_expires_after_ttl(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """No until: 3h-old observed_at is past FAMILY_OUTAGE_TTL_S, family IN."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-12T18:00:00+00:00",
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert dispatch.load_family_outage("2026-06-12T21:00:00+00:00", state) == frozenset()
+
+    def test_recent_observed_at_without_until_keeps_family_out(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """No until: 1h-old observed_at is inside TTL, family OUT."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        observed = "2026-06-12T20:00:00+00:00"
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": observed,
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        now = "2026-06-12T21:00:00+00:00"
+        assert dispatch.load_family_outage(now, state) == frozenset({"claude"})
+        assert dispatch.load_family_outage_witness(now, state) == {"claude": observed}
+
+    @staticmethod
+    def _write_wall_receipt(
+        path: Path,
+        *,
+        resets_at: str,
+        observed_at: str,
+        status: str = "quota_blocked",
+        role: str = "claude-subscription-weekly-limit",
+        schema: str = "hapax.claude_quota_hold.v1",
+        provider: str = "anthropic-claude-subscription",
+        route_id: str = "claude.headless.full",
+        billing_mode: str = "operator_session_subscription",
+    ) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\n".join(
+                [
+                    f"schema: {schema}",
+                    f"status: {status}",
+                    f"role: {role}",
+                    f"provider: {provider}",
+                    f"route_id: {route_id}",
+                    f"billing_mode: {billing_mode}",
+                    f'observed_at: "{observed_at}"',
+                    f'resets_at: "{resets_at}"',
+                    "secret_value_persisted: false",
+                    "prompt_or_output_persisted: false",
+                    "positive_admission: false",
+                    "payg_fallback: false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return path
+
+    def test_claude_wall_receipt_marks_out_when_json_missing(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Json missing claude; weekly-limit wall resets_at in the future → claude OUT."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        wall = tmp_path / "relay-receipts" / "claude-subscription-weekly-limit-quota-wall.yaml"
+        observed = "2026-09-17T19:40:00Z"
+        self._write_wall_receipt(
+            wall,
+            resets_at="2026-09-18T22:00:00Z",
+            observed_at=observed,
+        )
+        now = "2026-09-17T20:00:00+00:00"
+        assert dispatch.load_family_outage(now, state, wall_receipt_path=wall) == frozenset(
+            {"claude"}
+        )
+        assert dispatch.load_family_outage_witness(now, state, wall_receipt_path=wall) == {
+            "claude": observed
+        }
+
+    def test_expired_json_until_fills_claude_from_wall_receipt(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Json until in the past; receipt resets_at in the future → claude OUT from receipt."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-09-17T10:00:00+00:00",
+                        "outage_started_at": "2026-09-17T10:00:00+00:00",
+                        "until": "2026-09-17T12:00:00Z",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        wall = tmp_path / "relay-receipts" / "claude-subscription-weekly-limit-quota-wall.yaml"
+        observed = "2026-09-17T19:40:00Z"
+        self._write_wall_receipt(
+            wall,
+            resets_at="2026-09-18T22:00:00Z",
+            observed_at=observed,
+        )
+        now = "2026-09-17T20:00:00+00:00"
+        assert dispatch.load_family_outage(now, state, wall_receipt_path=wall) == frozenset(
+            {"claude"}
+        )
+        assert dispatch.load_family_outage_witness(now, state, wall_receipt_path=wall) == {
+            "claude": observed
+        }
+
+    def test_past_wall_receipt_does_not_force_claude_out(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Receipt resets_at in the past → claude is not forced OUT by the receipt."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        wall = tmp_path / "relay-receipts" / "claude-subscription-weekly-limit-quota-wall.yaml"
+        self._write_wall_receipt(
+            wall,
+            resets_at="2026-09-16T22:00:00Z",
+            observed_at="2026-09-16T19:40:00Z",
+        )
+        now = "2026-09-17T20:00:00+00:00"
+        assert dispatch.load_family_outage(now, state, wall_receipt_path=wall) == frozenset()
+        assert dispatch.load_family_outage_witness(now, state, wall_receipt_path=wall) == {}
+
+    def test_glm_coding_plan_wall_does_not_add_glm(self, monkeypatch: Any, tmp_path: Path) -> None:
+        """A glm coding-plan wall is not glm-family death (PAYG is the live glm route)."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        wall = tmp_path / "relay-receipts" / "glm-coding-plan-weekly-limit-quota-wall.yaml"
+        self._write_wall_receipt(
+            wall,
+            resets_at="2026-09-20T11:37:24Z",
+            observed_at="2026-09-17T04:51:46Z",
+            role="glm-coding-plan-weekly-limit",
+            schema="hapax.glmcp_quota_hold.v1",
+            provider="z_ai-glm-coding-plan",
+            route_id="glmcp.review.direct",
+            billing_mode="coding_plan_subscription",
+        )
+        now = "2026-09-17T20:00:00+00:00"
+        assert dispatch.load_family_outage(now, state, wall_receipt_path=wall) == frozenset()
+        witness = dispatch.load_family_outage_witness(now, state, wall_receipt_path=wall)
+        assert "glm" not in witness
+        assert "claude" not in witness
+
+    def test_family_outage_restamp_preserves_until_and_note(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Restamp advances observed_at and keeps until/note; it does not invent until."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-12T18:00:00+00:00",
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                        "until": "2026-06-13T00:00:00Z",
+                        "note": "weekly reset",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        dispatch.update_family_outage(
+            [
+                {"family": "claude", "verdict": "quota-wall"},
+                {"family": "glm", "verdict": "provider-outage"},
+            ],
+            "2026-06-12T21:00:00+00:00",
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded["claude"] == {
+            "observed_at": "2026-06-12T21:00:00+00:00",
+            "outage_started_at": "2026-06-12T12:00:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        assert recorded["glm"] == {
+            "observed_at": "2026-06-12T21:00:00+00:00",
+            "outage_started_at": "2026-06-12T21:00:00+00:00",
+        }
+        # After restamp, observed_at can age past TTL while until is still future.
+        later = "2026-06-12T23:30:00+00:00"
+        assert dispatch.load_family_outage(later, state) == frozenset({"claude"})
+
+    def test_glm_quota_wall_does_not_stamp_family_outage_when_payg_eligible(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Coding Plan walls are not glm-family death while PAYG is the live route."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            dispatch,
+            "_glmcp_payg_review_route_eligible",
+            lambda _now_iso: True,
+        )
+        state.write_text(
+            json.dumps(
+                {
+                    "glm": {
+                        "observed_at": "2026-09-17T17:00:00+00:00",
+                        "outage_started_at": "2026-09-17T16:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        out = dispatch.update_family_outage(
+            [
+                {"family": "glm", "verdict": "quota-wall"},
+                {"family": "glm", "verdict": "quota-wall"},
+            ],
+            "2026-09-17T18:05:45+00:00",
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert "glm" not in recorded
+        assert out == frozenset()
+
+    def test_glm_quota_wall_stamps_family_outage_when_payg_ineligible(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Without PAYG, Coding Plan is the only glm path and the family is OUT."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        now = "2026-09-17T18:13:26+00:00"
+        out = dispatch.update_family_outage(
+            [
+                {"family": "glm", "verdict": "quota-wall"},
+                {"family": "glm", "verdict": "quota-wall"},
+            ],
+            now,
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded == {
+            "glm": {
+                "observed_at": now,
+                "outage_started_at": now,
+            }
+        }
+        assert out == frozenset({"glm"})
+
+    def test_glm_payg_eligible_preserves_claude_until(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """PAYG recovery pops no-until glm and must not pop claude until/note."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            dispatch,
+            "_glmcp_payg_review_route_eligible",
+            lambda _now_iso: True,
+        )
+        claude_entry = {
+            "observed_at": "2026-06-12T18:00:00+00:00",
+            "outage_started_at": "2026-06-12T12:00:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": claude_entry,
+                    "codex": {
+                        "observed_at": "2026-06-12T20:00:00+00:00",
+                        "outage_started_at": "2026-06-12T19:00:00+00:00",
+                    },
+                    "glm": {
+                        "observed_at": "2026-09-17T17:00:00+00:00",
+                        "outage_started_at": "2026-09-17T16:00:00+00:00",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        now = "2026-06-12T21:00:00+00:00"
+        dispatch.update_family_outage(
+            [
+                {"family": "claude", "verdict": "quota-wall"},
+                {"family": "glm", "verdict": "quota-wall"},
+            ],
+            now,
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded["claude"] == {
+            "observed_at": now,
+            "outage_started_at": "2026-06-12T12:00:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        assert recorded["codex"] == {
+            "observed_at": "2026-06-12T20:00:00+00:00",
+            "outage_started_at": "2026-06-12T19:00:00+00:00",
+        }
+        assert "glm" not in recorded
+
+    def test_glmcp_payg_review_route_eligible_with_live_transition_budget(
+        self, monkeypatch: Any
+    ) -> None:
+        class Budget:
+            providers_allowed = ("z_ai",)
+            profiles_allowed = ("glmcp-review-direct",)
+
+        class Ledger:
+            def active_paid_budgets(self, now: Any = None) -> tuple[Any, ...]:
+                return (Budget(),)
+
+        class Resolved:
+            source = "live"
+            ledger = Ledger()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch,
+            "_glmcp_review_direct_quota_admission_fresh",
+            lambda _now: False,
+        )
+        assert dispatch._glmcp_payg_review_route_eligible("2026-09-17T18:05:45+00:00") is True
+
+    def test_glmcp_payg_review_route_eligible_when_route_admission_fresh(
+        self, monkeypatch: Any
+    ) -> None:
+        class Resolved:
+            source = "fixtures"
+            ledger = None
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch,
+            "_route_specific_quota_admission_fresh",
+            lambda _payload, *, now: (
+                True,
+                ("spend-gate:glmcp.review.direct:eligible_active_budget",),
+            ),
+        )
+        assert dispatch._glmcp_payg_review_route_eligible("2026-09-17T18:05:45+00:00") is True
+
+    def test_glmcp_payg_review_route_ineligible_without_live_payg(self, monkeypatch: Any) -> None:
+        class Ledger:
+            def active_paid_budgets(self, now: Any = None) -> tuple[Any, ...]:
+                return ()
+
+        class Resolved:
+            source = "live"
+            ledger = Ledger()
+
+        monkeypatch.setattr(
+            dispatch.review_team,
+            "load_quota_spend_ledger_resolved",
+            lambda: Resolved(),
+        )
+        monkeypatch.setattr(
+            dispatch,
+            "_route_specific_quota_admission_fresh",
+            lambda _payload, *, now: (False, ()),
+        )
+        assert dispatch._glmcp_payg_review_route_eligible("2026-09-17T18:13:26+00:00") is False
+
+    def test_invalid_output_with_future_until_keeps_family_out(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """A seated invalid-output must not pop an operator until still in the future."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        entry = {
+            "observed_at": "2026-06-12T18:00:00+00:00",
+            "outage_started_at": "2026-06-12T12:00:00+00:00",
+            "until": "2026-06-13T00:00:00Z",
+            "note": "weekly reset",
+        }
+        state.write_text(json.dumps({"claude": entry}), encoding="utf-8")
+        now = "2026-06-12T21:00:00+00:00"
+        out = dispatch.update_family_outage(
+            [{"family": "claude", "verdict": "invalid-output"}],
+            now,
+            state,
+        )
+        recorded = json.loads(state.read_text(encoding="utf-8"))
+        assert recorded["claude"] == entry
+        assert out == frozenset({"claude"})
+        assert dispatch.load_family_outage(now, state) == frozenset({"claude"})
+
+    def test_invalid_output_with_past_until_clears_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """Expired until yields to clear-on-verdict."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-12T18:00:00+00:00",
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                        "until": "2026-06-12T20:00:00Z",
+                        "note": "weekly reset",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        dispatch.update_family_outage(
+            [{"family": "claude", "verdict": "invalid-output"}],
+            "2026-06-12T21:00:00+00:00",
+            state,
+        )
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
+
+    def test_valid_verdict_without_until_clears_family_outage(
+        self, monkeypatch: Any, tmp_path: Path
+    ) -> None:
+        """No until: a parseable verdict still clears the family."""
+        state, _ = self._isolate_state(monkeypatch, tmp_path)
+        state.write_text(
+            json.dumps(
+                {
+                    "claude": {
+                        "observed_at": "2026-06-12T20:00:00+00:00",
+                        "outage_started_at": "2026-06-12T12:00:00+00:00",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        dispatch.update_family_outage(
+            [{"family": "claude", "verdict": "accept"}],
+            "2026-06-12T21:00:00+00:00",
+            state,
+        )
+        assert json.loads(state.read_text(encoding="utf-8")) == {}
 
     def test_family_offline_simulation_degrades_and_flows(
         self, monkeypatch: Any, tmp_path: Path
@@ -4245,3 +5502,305 @@ payg_fallback: false
         reviews = dispatch.dispatch_reviews(constitution, ["prompt"], registry, runner)
 
         assert reviews[0]["verdict"] == "provider-outage"
+
+
+def _rate_only_runner(*, core: int, graphql: int, calls: list[list[str]] | None = None) -> Any:
+    """Serves rate_limit and the GraphQL listing; refuses REST spend."""
+
+    def run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        if calls is not None:
+            calls.append(list(cmd))
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            head = (
+                "HTTP/2.0 200 OK\r\n"
+                "X-Ratelimit-Limit: 5000\r\n"
+                f"X-Ratelimit-Remaining: {core}\r\n"
+                "X-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            payload = {
+                "resources": {
+                    "core": {"remaining": core, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": graphql, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, "[]", "")
+        raise AssertionError(f"no REST call may be spent once the pool is empty: {cmd}")
+
+    return run
+
+
+def test_exhausted_rest_routes_the_review_scan_to_graphql(tmp_path: Path) -> None:
+    """This test previously asserted the scan was skipped.
+
+    All three seated review families called that a critical gap: REST at zero with GraphQL
+    at 93% headroom stalled review dispatch rather than using the healthy pool. Skipping
+    remains correct when both pools are empty — pinned below.
+    """
+    calls: list[list[str]] = []
+    assert (
+        dispatch.review_all_open_prs(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            gh_runner=_rate_only_runner(core=0, graphql=4660, calls=calls),
+        )
+        == []
+    )
+    assert any(call[:3] == ["gh", "pr", "list"] for call in calls), (
+        "an exhausted REST pool with healthy GraphQL must select GraphQL, not sit out"
+    )
+
+
+def test_graphql_scan_skips_draft_with_failing_rollup_and_reviews_next_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A draft's 504 rollup must not starve the eligible PR after it in the real listing."""
+    calls: list[list[str]] = []
+    rows = [
+        {"number": 4610, "isDraft": True, "headRefOid": "draft-sha"},
+        {"number": 4611, "isDraft": False, "headRefOid": "ready-sha"},
+    ]
+    rate_runner = _rate_only_runner(core=0, graphql=4660)
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            return rate_runner(cmd, **kwargs)
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+        if cmd[:3] == ["gh", "repo", "view"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps({"defaultBranchRef": {"name": "main"}}), ""
+            )
+        if cmd[:3] == ["gh", "pr", "view"]:
+            assert cmd[cmd.index("--json") + 1] == "headRefOid,statusCheckRollup"
+            assert cmd[3] == "4610", f"unexpected rollup request: {cmd}"
+            # A failing runner response reproduces listing refusal before per-PR isolation.
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 504 Gateway Timeout")
+        pytest.fail(f"unexpected request with REST blocked: {cmd}")
+
+    reviews: list[tuple[int, Any]] = []
+
+    def record_review(pr_number: int, **kwargs: Any) -> dict[str, Any]:
+        reviews.append((pr_number, kwargs["route"]))
+        return {"status": "reviewed", "pr": pr_number}
+
+    monkeypatch.setattr(dispatch, "review_pr", record_review)
+    results = dispatch.review_all_open_prs(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=tmp_path,
+        gh_runner=runner,
+        route_blocked_families={},
+    )
+
+    assert [number for number, _route in reviews] == [4611], results
+    assert reviews[0][1].transport == "graphql"
+    assert reviews[0][1].rest_blocked is True
+    assert results == [{"status": "reviewed", "pr": 4611}]
+    assert any(call[:3] == ["gh", "pr", "list"] for call in calls)
+    assert not any(call[:3] == ["gh", "pr", "view"] for call in calls)
+
+
+def test_graphql_routed_scan_does_not_begin_each_pr_on_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Routing the listing is one call; the per-PR work is N. Only routing the one spares little.
+
+    The previous version of this coverage returned an empty listing, so there were no rows and
+    no per-PR path to observe — while `review_pr` was in fact calling `fetch_pr`, whose first
+    act was `get_pull_rest`. A fixture that avoids the failing path is the same defect it is
+    meant to catch, and this is the second time in this PR that exact shape got through.
+
+    The scan now needs only numbers and draft flags, so the sole PR view hydrates review
+    metadata; no status rollup request is expected.
+    """
+    calls: list[list[str]] = []
+    row = {
+        "number": 4610,
+        "isDraft": False,
+        "transport": "graphql",
+        "headRefOid": "deadbeef",
+    }
+
+    def runner(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+            head = (
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\n"
+                "X-Ratelimit-Remaining: 0\r\nX-Ratelimit-Reset: 1893456000\r\n"
+                "X-Ratelimit-Resource: core\r\n"
+            )
+            payload = {
+                "resources": {
+                    "core": {"remaining": 0, "limit": 5000, "reset": 1893456000},
+                    "graphql": {"remaining": 4660, "limit": 5000, "reset": 1893456000},
+                }
+            }
+            return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, json.dumps([row]), "")
+        if cmd[:3] == ["gh", "pr", "view"]:
+            fields = cmd[cmd.index("--json") + 1]
+            assert "files" in fields.split(",")
+            assert "statusCheckRollup" not in fields.split(",")
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                json.dumps(
+                    {
+                        "number": 4610,
+                        "title": "t",
+                        "body": "b",
+                        "baseRefName": "main",
+                        "baseRefOid": "base000",
+                        "headRefName": "feat/x",
+                        "headRefOid": "deadbeef",
+                        "changedFiles": 1,
+                        "isDraft": False,
+                        "files": [{"path": "scripts/example.py"}],
+                    }
+                ),
+                "",
+            )
+        if len(cmd) > 6 and str(cmd[6]).startswith("repos/"):
+            raise AssertionError(f"per-PR REST spend after a GraphQL-routed listing: {cmd}")
+        return subprocess.CompletedProcess(cmd, 1, "", "unhandled")
+
+    reviews = []
+    real_review_pr = dispatch.review_pr
+
+    def record_review(pr_number: int, **kwargs: Any) -> dict[str, Any]:
+        reviews.append((pr_number, kwargs["route"]))
+        return real_review_pr(pr_number, **kwargs)
+
+    monkeypatch.setattr(dispatch, "review_pr", record_review)
+    results = dispatch.review_all_open_prs(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=tmp_path,
+        gh_runner=runner,
+        route_blocked_families={},
+    )
+
+    assert len(reviews) == 1, f"review_pr was not reached: {results}"
+    assert reviews[0][0] == 4610
+    assert reviews[0][1].transport == "graphql"
+    assert reviews[0][1].rest_blocked is True
+    assert results == [{"status": "no_task", "pr": 4610}]
+    views = [call for call in calls if call[:3] == ["gh", "pr", "view"]]
+    assert len(views) == 1
+    assert "files" in views[0][views[0].index("--json") + 1].split(",")
+    assert "statusCheckRollup" not in views[0][views[0].index("--json") + 1].split(",")
+    assert any(call[:3] == ["gh", "pr", "list"] for call in calls)
+    assert not any(len(call) > 6 and str(call[6]).startswith("repos/") for call in calls)
+
+
+@pytest.mark.parametrize(
+    "rest_state", ["healthy", "blocked", "unavailable", "files_unavailable", "truncated"]
+)
+def test_graphql_truncated_files_use_eligible_rest_for_review(
+    tmp_path: Path, rest_state: str
+) -> None:
+    files = [f"shared/file_{index}.py" for index in range(101)]
+    fake = FakeGh(files=files, changed_files_count=101)
+    calls = []
+
+    def runner(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        calls.append(list(cmd))
+        if cmd[:3] == ["gh", "pr", "view"]:
+            proc = fake(cmd, **kwargs)
+            payload = json.loads(proc.stdout)
+            payload["files"] = payload["files"][:100]
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+        assert rest_state != "blocked", f"REST is ineligible: {cmd}"
+        if rest_state == "unavailable":
+            return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+        proc = fake(cmd, **kwargs)
+        if cmd[:2] == ["gh", "api"] and cmd[6].endswith("/files"):
+            if rest_state == "files_unavailable":
+                return subprocess.CompletedProcess(cmd, 1, "", "HTTP 503")
+            page = int(next(arg.split("=", 1)[1] for arg in cmd if arg.startswith("page=")))
+            rows = json.loads(proc.stdout)
+            if rest_state == "truncated":
+                rows = rows[:100]
+            return subprocess.CompletedProcess(
+                cmd, 0, json.dumps(rows[(page - 1) * 100 : page * 100]), ""
+            )
+        return proc
+
+    result, _, reviewers, note = _review(
+        tmp_path,
+        gh_runner=runner,
+        route=dispatch.ListingRoute(
+            transport="graphql", rest_blocked=rest_state == "blocked", reason=rest_state
+        ),
+    )
+    assert calls[0][:3] == ["gh", "pr", "view"]
+    if rest_state == "healthy":
+        assert result["status"] == "dispatched", result
+        dossier = yaml.safe_load(Path(result["dossier_path"]).read_text())
+        assert dossier["changed_files"] == files
+        assert dossier["changed_file_count"] == 101
+        assert reviewers.invocations
+        assert any(cmd[6].endswith("/files") for cmd in calls if cmd[:2] == ["gh", "api"])
+    else:
+        assert result == {
+            "status": "changed_files_truncated",
+            "pr": 42,
+            "files_seen": 100,
+            "changed_files": 101,
+        }
+        assert not reviewers.invocations
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        if rest_state == "blocked":
+            assert len(calls) == 1
+        else:
+            assert any(cmd[:2] == ["gh", "api"] for cmd in calls)
+
+
+def test_both_pools_exhausted_skips_the_review_scan(tmp_path: Path) -> None:
+    """Caller-level coverage for RestPoolExhausted (codex-1, major).
+
+    This module's tests were the ones the review flagged as unchanged. Skipping a scan is
+    safe here — the next scan re-evaluates every open PR from scratch, so nothing is lost
+    by sitting out a cycle — but it must be a *deliberate* skip rather than a crash, and it
+    must not spend a listing into guaranteed 403s.
+    """
+    assert (
+        dispatch.review_all_open_prs(
+            repo="owner/repo",
+            repo_root=tmp_path,
+            gh_runner=_rate_only_runner(core=0, graphql=0),
+        )
+        == []
+    )
+
+
+def test_a_raised_gh_failure_is_normalised_so_the_fallback_handlers_see_it(tmp_path: Path) -> None:
+    """`_run_gh` must convert a RAISED failure, not only a nonzero return code.
+
+    Found by external review. `runner` can raise `subprocess.TimeoutExpired` or `OSError` (a
+    missing or unexecutable `gh`), and neither is a `RuntimeError` — so both sailed past all EIGHT
+    `except RuntimeError` handlers in this module, skipping the transport fallback they guard and
+    surfacing as a per-PR error that can starve that PR every cycle.
+
+    Normalised at the primitive rather than by widening eight handlers: one mitigation at the
+    boundary, not eight for the same hazard. It still RAISES — returning an empty string here would
+    read as "gh said nothing", which is the silent-empty defect this fleet refuses elsewhere.
+    """
+
+    def gh_is_not_installed(cmd, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory: 'gh'")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        dispatch._run_gh(["gh", "pr", "view"], repo_root=tmp_path, runner=gh_is_not_installed)
+    assert "could not run" in str(excinfo.value)
+
+    def gh_times_out(cmd, **kwargs):
+        raise subprocess.TimeoutExpired(cmd, 120)
+
+    with pytest.raises(RuntimeError):
+        dispatch._run_gh(["gh", "pr", "view"], repo_root=tmp_path, runner=gh_times_out)

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "cc-task-offer-ready"
 
@@ -12,6 +15,14 @@ def _write(path: Path, text: str) -> Path:
     return path
 
 
+def _preferred_platforms_yaml(preferred: str | None, *, nested: bool) -> str:
+    if preferred is None:
+        return ""
+    if nested:
+        return f"route_metadata:\n  route_constraints:\n    preferred_platforms: {preferred}\n"
+    return f"route_constraints:\n  preferred_platforms: {preferred}\n"
+
+
 def _task_frontmatter(
     *,
     status: str = "ready",
@@ -19,7 +30,10 @@ def _task_frontmatter(
     depends_on: str = "dep",
     authority_level: str = "delegated",
     mutation_surface: str = "planning",
+    preferred_platforms: str | None = None,
+    nested_preferred_platforms: bool = False,
 ) -> str:
+    extra = _preferred_platforms_yaml(preferred_platforms, nested=nested_preferred_platforms)
     return f"""\
 ---
 type: cc-task
@@ -41,13 +55,13 @@ mutation_surface: {mutation_surface}
 authority_level: {authority_level}
 route_metadata_schema: 1
 kind: planning
----
+{extra}---
 
 # Ready Task
 """
 
 
-def _write_ready_task(vault: Path, **kwargs: str) -> Path:
+def _write_ready_task(vault: Path, **kwargs: Any) -> Path:
     return _write(vault / "active" / "ready-task.md", _task_frontmatter(**kwargs))
 
 
@@ -199,3 +213,136 @@ def test_reconcile_dry_run_does_not_modify(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "dry-run" in result.stdout
     assert "status: ready" in t1.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("preferred", "nested", "should_refuse"),
+    [
+        ("[claude]", False, True),
+        ("[Claude]", False, True),
+        ("[claude]", True, True),
+        (None, False, False),
+        ("[]", False, False),
+        ("[kimi]", False, False),
+        ("[claude, kimi]", False, False),
+        ("[grok]", False, False),
+        ("[gemini]", False, False),
+        ("[qwen]", False, False),
+    ],
+)
+def test_od2_preferred_platforms_gate(
+    tmp_path: Path, preferred: str | None, nested: bool, should_refuse: bool
+) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_ready_task(
+        vault,
+        preferred_platforms=preferred,
+        nested_preferred_platforms=nested,
+    )
+    _write_dep(vault)
+
+    result = _run(vault)
+    text = task.read_text(encoding="utf-8")
+
+    if should_refuse:
+        assert result.returncode == 7, result.stderr
+        assert "route metadata is not dispatchable" in result.stderr
+        assert "singleton walled carrier" in result.stderr
+        assert "OD2" in result.stderr
+        assert "status: ready" in text
+        return
+
+    assert result.returncode == 0, result.stderr
+    assert "status: offered" in text
+
+
+def _write_active_preferred(
+    vault: Path,
+    task_id: str,
+    *,
+    status: str = "offered",
+    preferred_platforms: str = "[kimi]",
+) -> Path:
+    return _write(
+        vault / "active" / f"{task_id}.md",
+        f"""\
+---
+type: cc-task
+task_id: {task_id}
+title: "{task_id}"
+status: {status}
+assigned_to: unassigned
+priority: p1
+wsjf: 5.0
+created_at: 2026-05-17T00:00:00Z
+updated_at: 2026-05-17T00:00:00Z
+parent_request: request.md
+authority_case: CASE-TEST-001
+parent_spec: spec.md
+quality_floor: deterministic_ok
+mutation_surface: vault_docs
+authority_level: authoritative
+route_metadata_schema: 1
+kind: planning
+route_constraints:
+  preferred_platforms: {preferred_platforms}
+---
+
+# {task_id}
+""",
+    )
+
+
+def test_concentration_cap_refuses_singleton_when_family_already_half(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_ready_task(vault, preferred_platforms="[kimi]")
+    _write_dep(vault)
+    _write_active_preferred(vault, "already-kimi", preferred_platforms="[Kimi]")
+
+    result = _run(vault)
+    text = task.read_text(encoding="utf-8")
+
+    assert result.returncode == 7, result.stderr
+    assert "route metadata is not dispatchable" in result.stderr
+    assert "CONCENTRATION_CAP_NUMERATOR" in result.stderr
+    assert "CONCENTRATION_CAP_DENOMINATOR" in result.stderr
+    assert "singleton [kimi]" in result.stderr
+    assert "glm" in result.stderr
+    assert "family-outage" in result.stderr
+    assert "status: ready" in text
+
+
+def test_concentration_cap_allows_two_element_set(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_ready_task(vault, preferred_platforms="[kimi, glm]")
+    _write_dep(vault)
+    _write_active_preferred(vault, "already-kimi", preferred_platforms="[kimi]")
+
+    result = _run(vault)
+
+    assert result.returncode == 0, result.stderr
+    assert "status: offered" in task.read_text(encoding="utf-8")
+
+
+def test_concentration_cap_allows_omitted_preferred_platforms(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_ready_task(vault)
+    _write_dep(vault)
+    _write_active_preferred(vault, "already-kimi", preferred_platforms="[kimi]")
+
+    result = _run(vault)
+
+    assert result.returncode == 0, result.stderr
+    assert "status: offered" in task.read_text(encoding="utf-8")
+
+
+def test_concentration_cap_allows_when_n_is_one(tmp_path: Path) -> None:
+    vault = tmp_path / "tasks"
+    task = _write_ready_task(vault, preferred_platforms="[kimi]")
+    _write_dep(vault)
+    _write_task(vault, "no-pref", status="offered", depends_on="dep")
+
+    result = _run(vault)
+
+    assert result.returncode == 0, result.stderr
+    assert "status: offered" in task.read_text(encoding="utf-8")

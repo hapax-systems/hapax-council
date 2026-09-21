@@ -22,20 +22,28 @@ Usage::
     HAPAX_CC_PR_AUTOQUEUE_EXPECTED_MERGE_METHOD=SQUASH uv run python scripts/cc-pr-autoqueue.py --apply
 
 Default mode is a dry-run report. ``--apply`` performs the GitHub mutation.
-``--expected-merge-method`` is a governed emergency bypass for rulesets API or
-configuration incidents; the report records the override source.
+``--expected-merge-method`` overrides the desired strategy; applicable queue
+governance must still be verified. The report records the override source.
+No merge-method bypass flag exists by design. During a GitHub rulesets outage,
+stop the autoqueue timer with ``systemctl --user stop hapax-cc-pr-autoqueue.timer``
+until governance is readable again, then run
+``systemctl --user start hapax-cc-pr-autoqueue.timer``. The override is not an
+outage bypass.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
 import os
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -53,10 +61,23 @@ import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
     REST_INDETERMINATE_CHECK_NAME,
+    ListingRoute,
+    PrListingUnavailable,
+    RestIndeterminateError,
+    _pull_status_row_from_rest,
+    _rest_get_json,
+    choose_transport,
     fetch_status_check_rollup_rest,
+    get_pr_status_graphql,
     get_pull_rest,
-    list_open_pr_statuses_rest,
+    graphql_pool_blocked,
+    list_open_pr_statuses,
+    listing_unavailable_detail,
+    pr_reference_reasons,
+    rate_snapshot,
+    read_ref_name,
     rest_merge_state_status,
+    rest_pool_blocked,
     run_graphql_rate_aware,
 )
 
@@ -98,9 +119,12 @@ DEFAULT_VAULT_ROOT = Path.home() / "Documents" / "Personal" / "20-projects" / "h
 DEFAULT_REPORT_PATH = (
     Path.home() / ".cache" / "hapax" / "orchestration" / "cc-pr-autoqueue-report.json"
 )
+DEFAULT_ROTATION_STATE_PATH = DEFAULT_REPORT_PATH.with_name("cc-pr-autoqueue-examined.json")
 DEFAULT_ADMISSION_GOVERNOR_PATH = Path.home() / ".cache" / "hapax" / "pr-admission-governor.yaml"
 KILLSWITCH_ENVS = ("HAPAX_CC_PR_AUTOQUEUE_OFF", "HAPAX_CC_HYGIENE_OFF")
 EXPECTED_MERGE_METHOD_OVERRIDE_ENV = "HAPAX_CC_PR_AUTOQUEUE_EXPECTED_MERGE_METHOD"
+OVERRIDE_CONTRADICTION_PREFIX = "auto_merge_method_override_contradicts_queue_governance:"
+TRANSIENT_TRANSPORT_UNVERIFIED_PREFIX = "auto_merge_method_unverified:transient_transport:"
 
 PASS_STATES = {"SUCCESS", "SKIPPED", "NEUTRAL"}
 # Ordinary queue admission treats skipped/neutral as non-failing, but mitigation
@@ -227,11 +251,18 @@ class CheckSummary:
 
 
 @dataclass(frozen=True)
+class MergeQueueGovernance:
+    method: str | None = None
+    source: str | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class PullRequest:
     number: int
     node_id: str | None
     title: str
-    head_ref: str
+    head_ref: str | None
     head_sha: str | None
     files: tuple[str, ...] | None
     changed_files_count: int | None
@@ -243,6 +274,13 @@ class PullRequest:
     auto_merge_enabled: bool
     auto_merge_method: str | None
     check_summary: CheckSummary
+    base_ref: str | None = None
+    default_branch: str | None = None
+    queue_governance: MergeQueueGovernance | None = None
+    base_ref_detail: str | None = None
+    base_ref_detail_latest: str | None = None
+    default_branch_detail: str | None = None
+    reference_reasons: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -298,6 +336,39 @@ class Decision:
             out["auto_arm_verified_checks"] = list(self.auto_arm_verified_checks)
         if self.pr.auto_merge_enabled:
             out["auto_merge_method"] = self.pr.auto_merge_method
+        governance = self.pr.queue_governance
+        if governance is not None:
+            out["merge_queue_governance"] = {
+                "base_ref": self.pr.base_ref,
+                "method": governance.method,
+                "source": governance.source,
+                "reason": governance.reason,
+            }
+            if self.pr.base_ref_detail:
+                out["merge_queue_governance"]["base_ref_detail"] = self.pr.base_ref_detail
+            if self.pr.base_ref_detail_latest:
+                out["merge_queue_governance"]["base_ref_detail_latest"] = (
+                    self.pr.base_ref_detail_latest
+                )
+            if self.pr.default_branch_detail:
+                out["merge_queue_governance"]["default_branch_detail"] = (
+                    self.pr.default_branch_detail
+                )
+            if self.pr.auto_merge_enabled:
+                out["auto_merge_method_owner"] = (
+                    "unverified"
+                    if governance.reason
+                    or (
+                        self.action in {"blocked", "hold"}
+                        and any(
+                            reason.startswith(OVERRIDE_CONTRADICTION_PREFIX)
+                            for reason in self.reasons
+                        )
+                    )
+                    else "merge_queue"
+                    if governance.method
+                    else "pull_request"
+                )
         if (
             self.expected_auto_merge_method is not None
             and self.expected_auto_merge_method != AUTOQUEUE_DEFAULT_MERGE_METHOD
@@ -411,19 +482,50 @@ def _merge_method_operator_next_action(
         "`gh api repos/<repo>/rulesets/<ruleset_id> --jq "
         "'.rules[] | select(.type==\"merge_queue\") | .parameters.merge_method'` "
         f"and verify one of {methods}; "
-        "during a documented GitHub API or ruleset incident, rerun with "
-        f"`--expected-merge-method <METHOD>` or {EXPECTED_MERGE_METHOD_OVERRIDE_ENV}=<METHOD>."
+        "set `--expected-merge-method <METHOD>` or "
+        f"{EXPECTED_MERGE_METHOD_OVERRIDE_ENV}=<METHOD> to match the applicable queue strategy, "
+        "or remove the contradictory override. Restore unreadable governance evidence "
+        "before retrying; an override cannot replace that evidence. No merge-method bypass "
+        "flag exists by design. During a GitHub rulesets outage, run "
+        "`systemctl --user stop hapax-cc-pr-autoqueue.timer` until governance is readable "
+        "again, then run `systemctl --user start hapax-cc-pr-autoqueue.timer`."
     )
 
 
 def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
+    if _transient_transport_refusal_only(list(reasons)):
+        return (
+            "The merge-queue ruleset fetch hit a transient transport window (rate limit or "
+            "GitHub unavailable), which says nothing about this PR. A queued entry is held in "
+            "place — not dequeued — and no admission status is written; the next reconciler "
+            "pass re-evaluates once the window clears. No operator action is required."
+        )
+    if _missing_cc_task_link_only(list(reasons)):
+        return (
+            "This PR has no matching vault cc-task note. A queued entry is held in place — "
+            "not dequeued — and hapax/autoqueue-admission stays pending until a note exists. "
+            "Add or fix the note (scripts/cc-task-lint); the next reconciler pass can then "
+            "admit."
+        )
+    if any(reason.startswith(OVERRIDE_CONTRADICTION_PREFIX) for reason in reasons):
+        return _merge_method_operator_next_action()
     merge_method_reason = any(
         reason.startswith("auto_merge_method_mismatch")
         or reason.startswith("auto_merge_method_unverified")
         or reason.startswith("auto_merge_method_unrecognized")
         for reason in reasons
     )
+    override_governance_reason = any(
+        reason.startswith("auto_merge_method_unverified:") and ":override=" in reason
+        for reason in reasons
+    )
     if action == "dequeue" and merge_method_reason:
+        if override_governance_reason:
+            return (
+                "This decision removes the PR from the native merge queue when run "
+                "with --apply; it does not disable auto-merge. Queue governance "
+                f"evidence is unverified. {_merge_method_operator_next_action()}"
+            )
         if any(
             reason.startswith("auto_merge_method_unverified:expected_missing") for reason in reasons
         ):
@@ -438,7 +540,7 @@ def _decision_next_action(action: str, reasons: tuple[str, ...]) -> str | None:
             "the next reconciler pass revalidates queue membership and armed "
             "auto-merge state before choosing any disable or re-arm mutation."
         )
-    if any(
+    if override_governance_reason or any(
         reason.startswith("auto_merge_method_unverified:expected_missing") for reason in reasons
     ):
         return _merge_method_operator_next_action()
@@ -488,6 +590,18 @@ def _merge_method_mismatch_reason(
 
 def _expected_merge_method_unverified_reason(source: str | None) -> str:
     detail = _scalar(source) or "source_missing"
+    # A rulesets fetch that failed on a transient transport window (rate-limit / 429 / 5xx)
+    # says nothing about the PR — the same fetch succeeds at the next reset. Emit a distinct
+    # reason so the queue decision HOLDS a queued entry instead of dequeuing it, and so the
+    # admission-status writer skips the `failure` write that would drop the entry. Reuses the
+    # one canonical transport-window classifier; adds no second predicate for the same hazard.
+    if detail.startswith("rulesets_fetch_failed:"):
+        message = detail[len("rulesets_fetch_failed:") :]
+        if _admission_status_write_deferral_class(message) in {
+            "github_rate_limit",
+            "github_unavailable",
+        }:
+            return f"auto_merge_method_unverified:transient_transport:source={detail}"
     return f"auto_merge_method_unverified:expected_missing:source={detail}"
 
 
@@ -647,6 +761,156 @@ def fetch_merge_queue_merge_method(
     if method_error:
         return None, f"{method_error}:ruleset={ruleset_label}:{ruleset_id}"
     return None, f"active_named_merge_queue_ruleset_method_missing:{ruleset_name}"
+
+
+def _ruleset_applies_to_pr(ruleset: dict[str, Any], pr: PullRequest) -> bool | None:
+    """Resolve observed ref conditions; unfamiliar pattern syntax stays unknown."""
+    conditions = ruleset.get("conditions")
+    refs = conditions.get("ref_name") if isinstance(conditions, dict) else None
+    if not isinstance(refs, dict) or not pr.base_ref:
+        return None
+    matches: dict[str, bool] = {}
+    for key in ("include", "exclude"):
+        patterns = refs.get(key)
+        if not isinstance(patterns, list) or (key == "include" and not patterns):
+            return None
+        matches[key] = False
+        for pattern in patterns:
+            if pattern == "~ALL":
+                match = True
+            elif pattern == "~DEFAULT_BRANCH":
+                if not pr.default_branch:
+                    return None
+                match = pr.base_ref == pr.default_branch
+            elif (
+                isinstance(pattern, str)
+                and pattern.startswith("refs/heads/")
+                and not any(char in pattern for char in "*?[]\\")
+            ):
+                match = pattern == f"refs/heads/{pr.base_ref}"
+            else:
+                return None
+            matches[key] |= match
+    return matches["include"] and not matches["exclude"]
+
+
+def fetch_pr_merge_queue_governance(
+    pr: PullRequest,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> MergeQueueGovernance:
+    """Validate all enforced queue rules for this base, separately from arm flags.
+
+    The REST status adapter carries base.ref and base.repo.default_branch from
+    the list payload, with detail reads as a secondary source. REST does not
+    expose isInMergeQueue/mergeQueueEntry. An empty queue membership list
+    cannot establish that ordinary per-PR auto-merge owns the strategy.
+    """
+    prefix = "auto_merge_method_unverified:"
+    if pr.reference_reasons:
+        return MergeQueueGovernance(reason=prefix + pr.reference_reasons[0])
+    if not pr.base_ref:
+        return MergeQueueGovernance(reason=prefix + "pr_base_ref_missing")
+    if pr.base_ref_detail and pr.base_ref_detail != pr.base_ref:
+        return MergeQueueGovernance(
+            reason=prefix + f"pr_base_ref_conflict:list={pr.base_ref}:detail={pr.base_ref_detail}"
+        )
+    if pr.default_branch_detail and pr.default_branch_detail != pr.default_branch:
+        return MergeQueueGovernance(
+            reason=prefix
+            + f"pr_default_branch_conflict:list={pr.default_branch}:detail={pr.default_branch_detail}"
+        )
+    methods: set[str] = set()
+    sources: list[str] = []
+    page = 1
+    while True:
+        try:
+            rulesets = _rest_get_json(
+                f"repos/{repo}/rulesets?per_page=100&page={page}",
+                repo_root=repo_root,
+                runner=runner,
+                fail_on_indeterminate=True,
+            )
+        except RestIndeterminateError as exc:
+            return MergeQueueGovernance(
+                reason=prefix + f"enforcement_unreadable:source=rulesets:cause={exc.reason}"
+            )
+        if not isinstance(rulesets, list):
+            return MergeQueueGovernance(reason=prefix + "enforcement_malformed:rulesets")
+        for summary in rulesets:
+            if (
+                not isinstance(summary, dict)
+                or summary.get("target") not in ("branch", "tag", "push")
+                or summary.get("enforcement") not in ("active", "evaluate", "disabled")
+            ):
+                return MergeQueueGovernance(reason=prefix + "enforcement_malformed:summary")
+            if summary["target"] != "branch" or summary["enforcement"] != "active":
+                continue
+            ruleset_id = summary.get("id")
+            if type(ruleset_id) is not int or ruleset_id <= 0:
+                return MergeQueueGovernance(reason=prefix + "enforcement_malformed:ruleset_id")
+            try:
+                detail = _rest_get_json(
+                    f"repos/{repo}/rulesets/{ruleset_id}",
+                    repo_root=repo_root,
+                    runner=runner,
+                    fail_on_indeterminate=True,
+                )
+            except RestIndeterminateError as exc:
+                return MergeQueueGovernance(
+                    reason=prefix
+                    + f"enforcement_unreadable:ruleset={ruleset_id}:cause={exc.reason}"
+                )
+            if not isinstance(detail, dict) or any(
+                detail.get(key) != summary.get(key) for key in ("id", "target", "enforcement")
+            ):
+                return MergeQueueGovernance(
+                    reason=prefix + f"enforcement_conflict:ruleset={ruleset_id}"
+                )
+            rules = detail.get("rules")
+            if not isinstance(rules, list) or any(
+                not isinstance(rule, dict) or not isinstance(rule.get("type"), str)
+                for rule in rules
+            ):
+                return MergeQueueGovernance(
+                    reason=prefix + f"queue_rule_malformed:ruleset={ruleset_id}"
+                )
+            queue_rules = [rule for rule in rules if rule["type"] == "merge_queue"]
+            if not queue_rules:
+                continue
+            applies = _ruleset_applies_to_pr(detail, pr)
+            if applies is None:
+                return MergeQueueGovernance(
+                    reason=prefix + f"ref_enforcement_unknown:ruleset={ruleset_id}"
+                )
+            if not applies:
+                continue
+            for rule in queue_rules:
+                parameters = rule.get("parameters")
+                method = (
+                    _normalize_merge_method(parameters.get("merge_method"))
+                    if isinstance(parameters, dict)
+                    else None
+                )
+                if method is None:
+                    return MergeQueueGovernance(
+                        reason=prefix + f"queue_strategy_invalid:ruleset={ruleset_id}"
+                    )
+                methods.add(method)
+            sources.append(f"ruleset:{detail.get('name') or ruleset_id}:{ruleset_id}")
+        if len(rulesets) < 100:
+            break
+        page += 1
+    if len(methods) > 1:
+        return MergeQueueGovernance(
+            reason=prefix + "queue_strategy_conflict:" + ",".join(sorted(methods))
+        )
+    return MergeQueueGovernance(
+        method=next(iter(methods), None),
+        source=",".join(sources) if sources else f"rulesets:base={pr.base_ref}:non_queue",
+    )
 
 
 def _admission_governor_projection(path: Path, *, observed_at: datetime) -> dict[str, Any]:
@@ -936,7 +1200,7 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         number=number,
         node_id=_scalar(item.get("id")),
         title=_scalar(item.get("title")) or "",
-        head_ref=_scalar(item.get("headRefName")) or "",
+        head_ref=read_ref_name(item.get("headRefName")),
         files=files,
         changed_files_count=changed_files_count,
         body=str(item.get("body") or ""),
@@ -948,7 +1212,406 @@ def _parse_pr(item: dict[str, Any]) -> PullRequest | None:
         auto_merge_enabled=bool(item.get("autoMergeRequest")),
         auto_merge_method=_auto_merge_request_method(item.get("autoMergeRequest")),
         check_summary=summarize_checks(item.get("statusCheckRollup") or []),
+        base_ref=read_ref_name(item.get("baseRefName")),
+        default_branch=read_ref_name(item.get("baseRepoDefaultBranch")),
+        default_branch_detail=read_ref_name(item.get("baseRepoDefaultBranchDetail")),
+        base_ref_detail=read_ref_name(item.get("baseRefNameDetail")),
+        base_ref_detail_latest=read_ref_name(item.get("baseRefNameDetailLatest")),
+        reference_reasons=pr_reference_reasons(item),
     )
+
+
+def _list_candidate_pages(
+    *, transport: str, repo: str, repo_root: Path, runner: Any
+) -> list[dict[str, Any]]:
+    """List identities without per-PR hydration; require transport pagination evidence."""
+    owner, name = repo.split("/", 1)
+    query = (
+        "query($owner:String!,$name:String!,$cursor:String){"
+        "repository(owner:$owner,name:$name){defaultBranchRef{name}"
+        "pullRequests(states:OPEN,first:100,after:$cursor,"
+        "orderBy:{field:CREATED_AT,direction:ASC}){totalCount "
+        "pageInfo{hasNextPage endCursor} nodes{number headRefOid headRefName baseRefName}}}}"
+    )
+    rows: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    cursors: set[str] = set()
+    cursor = None
+    page = 1
+    total = None
+    while True:
+        if transport == "rest":
+            cmd = [
+                "gh",
+                "api",
+                "--method",
+                "GET",
+                "-H",
+                "Accept: application/vnd.github+json",
+                f"repos/{repo}/pulls",
+                "--include",
+                "-f",
+                "state=open",
+                "-f",
+                "sort=created",
+                "-f",
+                "direction=asc",
+                "-f",
+                "per_page=100",
+                "-f",
+                f"page={page}",
+            ]
+        else:
+            cmd = [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"name={name}",
+            ]
+            if cursor is not None:
+                cmd.extend(["-f", f"cursor={cursor}"])
+        try:
+            proc = runner(
+                cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60
+            )
+            if proc.returncode:
+                raise RestIndeterminateError(f"{transport}_listing_failed")
+            body = proc.stdout
+            if transport == "rest":
+                parts = re.split(r"\r?\n\r?\n", body, maxsplit=1)
+                if len(parts) != 2 or not re.match(r"HTTP/\S+ 200\b", parts[0]):
+                    raise RestIndeterminateError("rest_pagination_headers_missing")
+                headers, body = parts
+                links = re.findall(r"^link:\s*(.+)$", headers, re.IGNORECASE | re.MULTILINE)
+                relations = []
+                for link in links:
+                    pattern = r'<[^>]+>;\s*rel="(next|prev|first|last)"'
+                    if re.sub(pattern, "", link).strip(", \r\t"):
+                        raise RestIndeterminateError("rest_pagination_link_invalid")
+                    relations.extend(re.findall(pattern, link))
+                # GitHub's terminal-page signal is a complete HTTP response with no
+                # rel="next" (including no Link header for a single-page estate).
+                has_next = "next" in relations
+                batch = json.loads(body)
+            else:
+                payload = json.loads(body)
+                if payload.get("errors"):
+                    raise RestIndeterminateError("graphql_listing_errors")
+                repository = payload["data"]["repository"]
+                connection = repository["pullRequests"]
+                info = connection["pageInfo"]
+                has_next = info["hasNextPage"]
+                count = connection["totalCount"]
+                if type(has_next) is not bool or type(count) is not int or count < 0:
+                    raise RestIndeterminateError("graphql_pagination_invalid")
+                if total is not None and count != total:
+                    raise RestIndeterminateError("open_pr_count_changed_during_listing")
+                total = count
+                batch = connection["nodes"]
+                if has_next:
+                    cursor = info["endCursor"]
+                    if not isinstance(cursor, str) or not cursor or cursor in cursors:
+                        raise RestIndeterminateError("graphql_pagination_cursor_invalid")
+                    cursors.add(cursor)
+        except (
+            OSError,
+            subprocess.TimeoutExpired,
+            ValueError,
+            KeyError,
+            TypeError,
+            AttributeError,
+        ) as exc:
+            raise RestIndeterminateError(f"{transport}_listing_indeterminate") from exc
+        if not isinstance(batch, list) or len(batch) > 100 or (has_next and not batch):
+            raise RestIndeterminateError(f"{transport}_pagination_invalid")
+        for item in batch:
+            number = item.get("number") if isinstance(item, dict) else None
+            if type(number) is not int or number <= 0 or number in seen:
+                raise RestIndeterminateError("open_pr_identity_invalid_or_duplicate")
+            seen.add(number)
+            if transport == "graphql":
+                default_ref = repository.get("defaultBranchRef") or {}
+                item["baseRepoDefaultBranch"] = default_ref.get("name")
+            rows.append(item)
+        if not has_next:
+            if total is not None and len(rows) != total:
+                raise RestIndeterminateError("open_pr_listing_truncated")
+            return rows
+        page += 1
+
+
+@contextmanager
+def _rotation_state(
+    *, repo: str, state_path: Path, persist: bool
+) -> Iterator[tuple[dict[int, datetime], dict[int, dict[str, Any]]]]:
+    """Read/modify/write under one lock; old examined-only state remains readable."""
+    try:
+        if persist:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+        with state_path.with_suffix(".lock").open("a") if persist else nullcontext() as lock:
+            if lock is not None:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                state = {"schema_version": 1, "repositories": {}}
+            if state["schema_version"] != 1 or not isinstance(state["repositories"], dict):
+                raise ValueError("invalid rotation state")
+            examined = {
+                int(number): datetime.fromisoformat(stamp)
+                for number, stamp in state["repositories"].get(repo, {}).items()
+            }
+            failure_repos = state.setdefault("hydration_failures", {})
+            failures = {
+                int(number): failure for number, failure in failure_repos.get(repo, {}).items()
+            }
+            stamps = list(examined.values())
+            for failure in failures.values():
+                count = failure["consecutive_failures"]
+                if type(count) is not int or count < 1 or not isinstance(failure["reason"], str):
+                    raise ValueError("invalid hydration failure")
+                stamps.append(datetime.fromisoformat(failure["last_failed_at"]))
+            if any(stamp.tzinfo is None for stamp in stamps):
+                raise ValueError("rotation timestamps must include a timezone")
+            yield examined, failures
+            if persist:
+                state["repositories"][repo] = {
+                    str(number): stamp.isoformat() for number, stamp in examined.items()
+                }
+                failure_repos[repo] = {str(number): failure for number, failure in failures.items()}
+                temporary = state_path.with_suffix(".tmp")
+                temporary.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+                temporary.replace(state_path)
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError) as exc:
+        raise RestIndeterminateError("rotation_state_unavailable_or_invalid") from exc
+
+
+def _rotation_timestamp(
+    examined: dict[int, datetime], failures: dict[int, dict[str, Any]]
+) -> datetime:
+    # Completion and retry order must progress even with equal/backward wall clocks.
+    stamps = [*examined.values()]
+    stamps.extend(
+        datetime.fromisoformat(failure["last_failed_at"]) for failure in failures.values()
+    )
+    return max(
+        datetime.now(UTC),
+        max(stamps, default=datetime.min.replace(tzinfo=UTC)) + timedelta(microseconds=1),
+    )
+
+
+def _select_pr_window(
+    rows: list[dict[str, Any]], *, repo: str, limit: int, state_path: Path, persist: bool
+) -> list[dict[str, Any]]:
+    """Select without acknowledging work. Repeated failures share the fair rotation."""
+    if limit <= 0:
+        raise ValueError("autoqueue limit must be positive")
+    with _rotation_state(repo=repo, state_path=state_path, persist=persist) as (examined, failures):
+        live = {row["number"] for row in rows}
+        for records in (examined, failures):
+            for number in set(records) - live:
+                del records[number]
+
+        def priority(row: dict[str, Any]) -> tuple[datetime, int]:
+            number = row["number"]
+            stamp = examined.get(number, datetime.min.replace(tzinfo=UTC))
+            failure = failures.get(number)
+            if failure and failure["consecutive_failures"] >= 2:
+                stamp = max(stamp, datetime.fromisoformat(failure["last_failed_at"]))
+            return stamp, number
+
+        return sorted(rows, key=priority)[:limit]
+
+
+def _record_hydration_failure(
+    number: int, reason: str, *, repo: str, state_path: Path, persist: bool
+) -> dict[str, Any]:
+    with _rotation_state(repo=repo, state_path=state_path, persist=persist) as (examined, failures):
+        failure = {
+            "consecutive_failures": failures.get(number, {}).get("consecutive_failures", 0) + 1,
+            "last_failed_at": _rotation_timestamp(examined, failures).isoformat(),
+            "reason": reason,
+        }
+        failures[number] = failure
+    return failure
+
+
+@contextmanager
+def _reconciled_pr(
+    number: int, *, repo: str, state_path: Path | None, failures: dict[int, dict[str, Any]]
+) -> Iterator[None]:
+    """Acknowledge only a completed per-PR pass, including explicit holds/refusals.
+
+    An exception or interrupted process leaves the old timestamp intact. This
+    scope also covers early continues in the mutation loop.
+    """
+    yield
+    if state_path is not None:
+        with _rotation_state(repo=repo, state_path=state_path, persist=True) as (examined, pending):
+            examined[number] = _rotation_timestamp(examined, pending)
+            pending.pop(number, None)
+        failures.pop(number, None)
+
+
+def _hydrate_selected_pr(
+    listed: dict[str, Any],
+    route: ListingRoute,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> PullRequest:
+    """Hydrate one selected identity without replacing its branch observations."""
+    if route.transport == "rest":
+        # Seed only listing evidence. If the detail read fails, no old head or
+        # status can masquerade as a fresh hydration of this selected identity.
+        row = _pull_status_row_from_rest(
+            {
+                "number": listed["number"],
+                "base": {
+                    "ref": listed.get("baseRefName"),
+                    "repo": {"default_branch": listed.get("baseRepoDefaultBranch")},
+                },
+            },
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            include_files=True,
+            include_review_decision=True,
+        )
+    else:
+        row = get_pr_status_graphql(
+            listed["number"],
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            expected_head_sha=listed.get("headRefOid"),
+        )
+        if row is None:
+            raise RestIndeterminateError("selected_pr_hydration_failed")
+        row["baseRefNameDetail"] = row.get("baseRefName")
+        row["refEvidenceReasons"] = pr_reference_reasons(
+            {**listed, "refEvidenceReasons": pr_reference_reasons(row)}
+        )
+        row["baseRefName"] = read_ref_name(listed.get("baseRefName")) or row.get("baseRefName")
+        row["baseRepoDefaultBranch"] = listed.get("baseRepoDefaultBranch")
+    if not row.get("headRefOid") or row["headRefOid"] != listed.get("headRefOid"):
+        raise RestIndeterminateError("selected_pr_hydration_head_changed")
+    hydrated, _ = _hydrate_open_prs([row], route, repo=repo, repo_root=repo_root, runner=runner)
+    if len(hydrated) != 1 or hydrated[0].number != listed["number"]:
+        raise RestIndeterminateError("selected_pr_hydration_identity_invalid")
+    return hydrated[0]
+
+
+def fetch_rotating_open_prs(
+    *, repo: str, repo_root: Path, limit: int, state_path: Path, persist: bool, runner: Any
+) -> tuple[list[PullRequest], ListingRoute, int, dict[int, dict[str, Any]]]:
+    """Prove the complete estate, then hydrate at most limit identities independently."""
+    snapshot = rate_snapshot(repo_root=repo_root, runner=runner)
+    transport, reason = choose_transport(repo_root=repo_root, runner=runner, snapshot=snapshot)
+    if transport is None:
+        raise RestIndeterminateError("both_rate_pools_below_floor")
+    rest_blocked = rest_pool_blocked(snapshot) is not None
+    try:
+        rows = _list_candidate_pages(
+            transport=transport, repo=repo, repo_root=repo_root, runner=runner
+        )
+    except RestIndeterminateError:
+        fallback = "rest" if transport == "graphql" else "graphql"
+        if (fallback == "rest" and rest_blocked) or (
+            fallback == "graphql" and graphql_pool_blocked(snapshot) is not None
+        ):
+            raise
+        rows = _list_candidate_pages(
+            transport=fallback, repo=repo, repo_root=repo_root, runner=runner
+        )
+        reason = f"{transport}_listing_indeterminate_{fallback}_fallback"
+        transport = fallback
+    selected = _select_pr_window(
+        rows, repo=repo, limit=limit, state_path=state_path, persist=persist
+    )
+    with _rotation_state(repo=repo, state_path=state_path, persist=False) as (_, failures):
+        failures = {
+            number: {**failure, "attempted_this_tick": False}
+            for number, failure in failures.items()
+        }
+    route = ListingRoute(transport=transport, rest_blocked=rest_blocked, reason=reason)
+    prs = []
+    for item in selected:
+        try:
+            listed = item
+            if transport == "rest":
+                base = item.get("base") or {}
+                listed = {
+                    "number": item["number"],
+                    "headRefOid": (item.get("head") or {}).get("sha"),
+                    "headRefName": (item.get("head") or {}).get("ref"),
+                    "baseRefName": base.get("ref"),
+                    "baseRepoDefaultBranch": (base.get("repo") or {}).get("default_branch"),
+                }
+            try:
+                hydrated = _hydrate_selected_pr(
+                    listed, route, repo=repo, repo_root=repo_root, runner=runner
+                )
+            except (
+                OSError,
+                subprocess.SubprocessError,
+                ValueError,
+                TypeError,
+                KeyError,
+                AttributeError,
+            ):
+                fallback = "rest" if transport == "graphql" else "graphql"
+                if (fallback == "rest" and rest_blocked) or (
+                    fallback == "graphql" and graphql_pool_blocked(snapshot) is not None
+                ):
+                    raise
+                LOG.warning(
+                    "PR #%s %s hydration failed; trying eligible %s",
+                    item["number"],
+                    transport,
+                    fallback,
+                )
+                hydrated = _hydrate_selected_pr(
+                    listed,
+                    ListingRoute(
+                        transport=fallback,
+                        rest_blocked=rest_blocked,
+                        reason=f"{transport}_hydration_failed_{fallback}_fallback",
+                    ),
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                )
+        except (
+            OSError,
+            subprocess.SubprocessError,
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+        ) as exc:
+            failure_reason = (
+                exc.reason if isinstance(exc, RestIndeterminateError) else type(exc).__name__
+            )
+            failure = _record_hydration_failure(
+                item["number"], failure_reason, repo=repo, state_path=state_path, persist=persist
+            )
+            failures[item["number"]] = {**failure, "attempted_this_tick": True}
+            LOG.warning(
+                "PR #%s hydration failed (%s), consecutive failures=%s; retry remains scheduled",
+                item["number"],
+                failure_reason,
+                failure["consecutive_failures"],
+            )
+            continue
+        prs.append(hydrated)
+    return prs, route, len(rows), failures
 
 
 def fetch_open_prs(
@@ -957,34 +1620,107 @@ def fetch_open_prs(
     repo_root: Path | None = None,
     limit: int = 100,
     runner: Any = None,
-) -> list[PullRequest]:
+) -> tuple[list[PullRequest], ListingRoute | None]:
+    """Open PRs plus the cycle's transport decision.
+
+    The decision is returned rather than left for the caller to infer from row stamps: an
+    empty GraphQL-routed listing has no rows to inspect, so inference silently read "rest".
+    ``None`` means the listing was unavailable and the cycle is skipping.
+    Strict REST failures retain their RestIndeterminateError cause for the report.
+    """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
-    raw = list_open_pr_statuses_rest(
-        repo=repo,
-        repo_root=repo_root,
-        runner=runner,
-        limit=limit,
-        include_files=True,
-        include_review_decision=True,
-    )
+    try:
+        raw, route = list_open_pr_statuses(
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            limit=limit,
+            include_files=True,
+            include_review_decision=True,
+        )
+    except PrListingUnavailable as exc:
+        # The router has already tried any eligible fallback. Preserve the strict REST
+        # cause for the reconciler's classified refusal, without changing its pure token.
+        if isinstance(exc.__cause__, RestIndeterminateError):
+            raise RestIndeterminateError(exc.__cause__.reason) from exc
+        # Skip this cycle rather than spending a listing plus per-PR hydration into
+        # guaranteed 403s. Distinguished from the empty-scan warning below because the
+        # two mean different things: this one is "we did not look", not "nothing found".
+        LOG.warning(
+            "open PR scan skipped: %s%s",
+            exc.reason,
+            listing_unavailable_detail(exc),
+        )
+        return [], None
+    return _hydrate_open_prs(raw, route, repo=repo, repo_root=repo_root, runner=runner)
+
+
+def _hydrate_open_prs(
+    raw: list[dict[str, Any]], route: ListingRoute, *, repo: str, repo_root: Path, runner: Any
+) -> tuple[list[PullRequest], ListingRoute]:
     if not raw:
-        LOG.warning("REST open PR scan returned no rows")
-        return []
+        # A successful listing with zero rows is a genuinely quiet estate, NOT an unavailable
+        # one. Returning `None` here made the caller skip the cycle on a correct measurement —
+        # the mirror of the defect this route object exists to fix, introduced by fixing it.
+        LOG.info("open PR scan returned no rows (estate is quiet, listing succeeded)")
+        return [], route
     prs: list[PullRequest] = []
     for item in raw:
         if isinstance(item, dict):
             rest_pr = None
-            try:
-                number = int(item.get("number"))
-                rest_pr = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
-            except (TypeError, ValueError):
-                rest_pr = None
+            # Rows fetched over GraphQL already carry mergeStateStatus and a per-PR rollup, so
+            # re-hydrating them through REST would spend the pool the routing exists to spare —
+            # one call moved and nothing saved, which is what the review found. Only REST rows
+            # need this pass.
+            if item.get("transport") != "graphql":
+                try:
+                    number = int(item.get("number"))
+                    rest_pr = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
+                except (TypeError, ValueError):
+                    rest_pr = None
             item["mergeStateStatus"] = (
                 rest_merge_state_status(rest_pr)
                 if rest_pr is not None
                 else str(item.get("mergeStateStatus") or "UNKNOWN").upper()
             )
+            # Fill missing base evidence, but never erase a disagreement already
+            # observed by the adapter, even if this read returns to the list base.
+            base = rest_pr.get("base") if isinstance(rest_pr, dict) else None
+            base = base if isinstance(base, dict) else {}
+            base_repo = base.get("repo")
+            detail_default = (
+                base_repo.get("default_branch") if isinstance(base_repo, dict) else None
+            )
+            item["refEvidenceReasons"] = pr_reference_reasons(
+                {
+                    "refEvidenceReasons": pr_reference_reasons(item),
+                    "baseRefNameDetailLatest": base.get("ref"),
+                    "baseRepoDefaultBranchDetail": detail_default,
+                }
+            )
+            detail_ref = read_ref_name(base.get("ref"))
+            item["baseRefName"] = read_ref_name(item.get("baseRefName")) or detail_ref
+            if detail_ref and detail_ref != item["baseRefName"]:
+                if not read_ref_name(item.get("baseRefNameDetail")):
+                    item["baseRefNameDetail"] = detail_ref
+                elif detail_ref != item["baseRefNameDetail"]:
+                    item["baseRefNameDetailLatest"] = detail_ref
+            if (
+                read_ref_name(item.get("baseRefNameDetail"))
+                and item["baseRefNameDetail"] != item["baseRefName"]
+            ):
+                item["baseRefConflict"] = "pr_base_ref_conflict"
+            detail_default = read_ref_name(detail_default)
+            item["baseRepoDefaultBranch"] = (
+                read_ref_name(item.get("baseRepoDefaultBranch")) or detail_default
+            )
+            if (
+                detail_default
+                and detail_default != item["baseRepoDefaultBranch"]
+                and not read_ref_name(item.get("baseRepoDefaultBranchDetail"))
+            ):
+                item["baseRepoDefaultBranchDetail"] = detail_default
             # Preserve the shared REST snapshot when available. If it is absent, derive the
             # rollup through REST/core check-runs and commit statuses, not another GraphQL PR
             # view. Fail-closed: an unfetchable rollup reads as "checks unknown / not green".
@@ -995,6 +1731,14 @@ def fetch_open_prs(
                 and not _rollup_is_rest_indeterminate(fallback_rollup)
             ):
                 item["statusCheckRollup"] = fallback_rollup
+            elif item.get("transport") == "graphql":
+                # A GraphQL row already made its own per-PR rollup call. An empty result here
+                # means no checks or an unfetchable rollup, and `[]` is the fail-closed value
+                # either way — it reads downstream as "checks unknown / not green". Reaching
+                # for REST would spend the exhausted pool to reach the same verdict.
+                item["statusCheckRollup"] = (
+                    fallback_rollup if isinstance(fallback_rollup, list) else []
+                )
             else:
                 item["statusCheckRollup"] = _fetch_status_check_rollup(
                     item.get("number"),
@@ -1006,7 +1750,7 @@ def fetch_open_prs(
             pr = _parse_pr(item)
             if pr is not None:
                 prs.append(pr)
-    return prs
+    return prs, route
 
 
 def _fetch_status_check_rollup(
@@ -1083,23 +1827,33 @@ def _fetch_status_check_rollup_graphql(
     query = (
         "query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){"
         "pullRequest(number:$number){headRefOid commits(last:1){nodes{commit{oid "
-        "statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status "
+        "statusCheckRollup{contexts(first:100){totalCount nodes{__typename ... on CheckRun{name status "
         "conclusion completedAt startedAt} ... on StatusContext{context state createdAt}}}}}}}}}}"
     )
-    proc = run_graphql_rate_aware(
-        [
-            "-f",
-            f"query={query}",
-            "-f",
-            f"owner={owner}",
-            "-f",
-            f"repo={name}",
-            "-F",
-            f"number={pr_number}",
-        ],
-        repo_root=repo_root,
-        runner=runner,
-    )
+    try:
+        proc = run_graphql_rate_aware(
+            [
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"repo={name}",
+                "-F",
+                f"number={pr_number}",
+            ],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        reason = (
+            f"pr_release_evidence_transport_unavailable:{type(exc).__name__}. "
+            f"Next action: retry `gh pr view {pr_number} --repo {repo} "
+            "--json headRefOid,statusCheckRollup`; if it still fails, check `gh auth status` "
+            "and `uv run python scripts/github_pr_status.py rate` before retrying the cycle."
+        )
+        LOG.warning("%s", reason)
+        return False, reason, []
     if proc.returncode != 0:
         return False, "invalid_pr_release_evidence_payload", []
     try:
@@ -1122,12 +1876,13 @@ def _fetch_status_check_rollup_graphql(
     commit = None
     if commit_nodes and isinstance(commit_nodes[-1], dict):
         commit = commit_nodes[-1].get("commit")
-    rollup = (
-        commit.get("statusCheckRollup", {}).get("contexts", {}).get("nodes")
-        if isinstance(commit, dict)
-        else None
-    )
-    if not isinstance(rollup, list):
+    status_rollup = commit.get("statusCheckRollup") if isinstance(commit, dict) else None
+    contexts = status_rollup.get("contexts") if isinstance(status_rollup, dict) else None
+    rollup = contexts.get("nodes") if isinstance(contexts, dict) else None
+    total = contexts.get("totalCount") if isinstance(contexts, dict) else None
+    # A later failed run may sit outside this page. Partial checks cannot verify release
+    # mitigations; the caller can retry via REST only when that pool is eligible.
+    if not isinstance(rollup, list) or type(total) is not int or len(rollup) != total:
         return False, "invalid_status_check_rollup", []
     return True, sha, rollup
 
@@ -1138,9 +1893,25 @@ def fetch_pr_release_evidence(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    route: ListingRoute | None = None,
 ) -> tuple[bool, str, set[str]]:
+    """Release evidence for one PR, on the transport the cycle chose.
+
+    An apply cycle reaches this per actionable PR, so beginning unconditionally on REST meant
+    a cycle routed AWAY from REST still spent it N times before falling back. The GraphQL path
+    already existed here as a post-failure fallback; when the cycle measured REST below its
+    floor it becomes the primary instead.
+    """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
+    if route is not None and route.transport == "graphql":
+        primary = _fetch_pr_release_evidence_graphql(
+            pr_number, repo=repo, repo_root=repo_root, runner=runner
+        )
+        if primary[0] or route.rest_blocked:
+            # A measured-empty REST pool is not an eligible fallback, so a GraphQL failure is
+            # the answer rather than a reason to spend REST anyway.
+            return primary
     payload = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if not isinstance(payload, dict):
         fallback = _fetch_pr_release_evidence_graphql(
@@ -1149,7 +1920,9 @@ def fetch_pr_release_evidence(
             repo_root=repo_root,
             runner=runner,
         )
-        return fallback if fallback[0] else (False, "invalid_pr_release_evidence_payload", set())
+        if fallback[0] or fallback[1].startswith("pr_release_evidence_transport_unavailable:"):
+            return fallback
+        return False, "invalid_pr_release_evidence_payload", set()
     head = payload.get("head") if isinstance(payload.get("head"), dict) else {}
     sha = _scalar(head.get("sha"))
     if not sha:
@@ -1159,7 +1932,9 @@ def fetch_pr_release_evidence(
             repo_root=repo_root,
             runner=runner,
         )
-        return fallback if fallback[0] else (False, "missing_head_sha", set())
+        if fallback[0] or fallback[1].startswith("pr_release_evidence_transport_unavailable:"):
+            return fallback
+        return False, "missing_head_sha", set()
     rollup = _fetch_status_check_rollup(
         pr_number,
         head_sha=sha,
@@ -1233,21 +2008,73 @@ def fetch_merge_queue_pr_numbers(
     except json.JSONDecodeError as exc:
         LOG.error("gh merge queue query emitted non-JSON: %s", exc)
         return None
-    nodes = (
-        payload.get("data", {})
-        .get("repository", {})
-        .get("mergeQueue", {})
-        .get("entries", {})
-        .get("nodes", [])
-    )
+
+    def indeterminate(cause: str) -> None:
+        LOG.error("gh merge queue query indeterminate: %s", cause)
+        return None
+
+    if not isinstance(payload, dict):
+        return indeterminate("invalid_payload")
+    if "errors" in payload:
+        if not isinstance(payload["errors"], list):
+            return indeterminate("invalid_errors")
+        if payload["errors"]:
+            return indeterminate("graphql_errors")
+    if "data" not in payload:
+        return indeterminate("missing_data")
+    data = payload["data"]
+    if not isinstance(data, dict):
+        return indeterminate("invalid_data")
+    if "repository" not in data:
+        return indeterminate("missing_repository")
+    repository = data["repository"]
+    if repository is None:
+        return indeterminate("repository_unresolved")
+    if not isinstance(repository, dict):
+        return indeterminate("invalid_repository")
+    if "mergeQueue" not in repository:
+        return indeterminate("missing_merge_queue")
+    merge_queue = repository["mergeQueue"]
+    if merge_queue is None:
+        LOG.info(
+            "gh merge queue query decided: %s",
+            "no_configured_merge_queue:ref_fallback=gh-readonly-queue",
+        )
+        nodes = []
+    else:
+        if not isinstance(merge_queue, dict):
+            return indeterminate("invalid_merge_queue")
+        entries = merge_queue.get("entries")
+        if not isinstance(entries, dict):
+            return indeterminate("invalid_entries")
+        if "nodes" not in entries:
+            return indeterminate("invalid_nodes")
+        nodes = entries["nodes"]
+        if nodes is None:
+            return indeterminate("nodes_unresolved")
+        if not isinstance(nodes, list):
+            return indeterminate("invalid_nodes")
     queued: set[int] = set()
-    if isinstance(nodes, list):
-        for node in nodes:
-            try:
-                number = int(node["pullRequest"]["number"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            queued.add(number)
+    for node in nodes:
+        # Nullable entries/PRs are schema-licensed but cannot establish membership.
+        if node is None:
+            return indeterminate("entry_unresolved:null_node")
+        if not isinstance(node, dict):
+            return indeterminate("invalid_entry:node_type")
+        # The query selects this key unconditionally; omission is not nullability.
+        if "pullRequest" not in node:
+            return indeterminate("invalid_entry:missing_pull_request")
+        pull_request = node["pullRequest"]
+        if pull_request is None:
+            return indeterminate("entry_unresolved:null_pull_request")
+        if not isinstance(pull_request, dict):
+            return indeterminate("invalid_entry:pull_request_type")
+        if "number" not in pull_request:
+            return indeterminate("invalid_entry:missing_number")
+        number = pull_request["number"]
+        if isinstance(number, bool) or not isinstance(number, int):
+            return indeterminate("invalid_entry:number_type")
+        queued.add(number)
     queued |= _merge_queue_ref_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
     return queued
 
@@ -1390,7 +2217,7 @@ def _matching_tasks(pr: PullRequest, tasks: list[TaskNote]) -> list[TaskNote]:
     by_pr = [task for task in tasks if task.pr == pr.number]
     if by_pr:
         return by_pr
-    return [task for task in tasks if task.branch == pr.head_ref]
+    return [task for task in tasks if pr.head_ref and task.branch == pr.head_ref]
 
 
 def _release_authorized_head_blockers(
@@ -1649,6 +2476,34 @@ def shared_file_epic_affinity_blockers(
     return blockers
 
 
+def _override_only_refusal(reasons: list[str]) -> bool:
+    """Only a contradictory override alone is exempt from revocation."""
+    return bool(reasons) and all(
+        reason.startswith(OVERRIDE_CONTRADICTION_PREFIX) for reason in reasons
+    )
+
+
+def _transient_transport_refusal_only(reasons: list[str]) -> bool:
+    """Every blocker is an unverified merge-method caused solely by a transient transport
+    window (rate-limit / 429 / 5xx) on the rulesets fetch. Such a window says nothing about
+    the PR, so a queued entry is held in place rather than dequeued."""
+    return bool(reasons) and all(
+        reason.startswith(TRANSIENT_TRANSPORT_UNVERIFIED_PREFIX) for reason in reasons
+    )
+
+
+def _is_missing_cc_task_link_reason(reason: str) -> bool:
+    return reason == "missing_cc_task_link" or reason.startswith("missing_cc_task_link (NOTE:")
+
+
+def _missing_cc_task_link_only(reasons: list[str]) -> bool:
+    """Every blocker is a missing vault cc-task note (exact, or the unparseable-notes
+    variant). That is a process gap, not a product defect: posting `failure` on
+    hapax/autoqueue-admission would fail the required check and make GitHub drop a
+    queued CI-green PR (overnight 2026-09-17)."""
+    return bool(reasons) and all(_is_missing_cc_task_link_reason(reason) for reason in reasons)
+
+
 def classify_pr(
     pr: PullRequest,
     *,
@@ -1662,6 +2517,7 @@ def classify_pr(
     storm_reasons: tuple[str, ...] = (),
     expected_auto_merge_method: str | None = None,
     expected_auto_merge_method_source: str | None = None,
+    expected_auto_merge_method_is_override: bool = False,
     require_expected_auto_merge_method: bool = False,
 ) -> Decision:
     reasons: list[str] = []
@@ -1791,7 +2647,41 @@ def classify_pr(
         if queued or pr.auto_merge_enabled or not reasons:
             reasons.append(expected_method_unverified_reason)
 
-    if pr.auto_merge_enabled and expected_method is not None:
+    governance = pr.queue_governance
+    if governance is not None:
+        if queued and governance.reason is None and governance.method is None:
+            # Membership and applicable-rule receipts contradict each other;
+            # neither receipt establishes ownership of the per-PR method.
+            governance = replace(
+                governance,
+                reason="auto_merge_method_unverified:queue_membership_evidence_contradiction:"
+                "owner=merge_queue:membership=present:governance=non_queue",
+            )
+            pr = replace(pr, queue_governance=governance)
+        if governance.reason:
+            if expected_auto_merge_method_is_override:
+                reasons.append(f"{governance.reason}:override={expected_method}")
+            else:
+                reasons.append(governance.reason)
+        elif governance.method is not None and governance.method != expected_method:
+            if expected_auto_merge_method_is_override:
+                reasons.append(
+                    OVERRIDE_CONTRADICTION_PREFIX
+                    + f"override={expected_method}:governed={governance.method}"
+                )
+            else:
+                reasons.append(
+                    "auto_merge_method_unverified:queue_strategy_expected_conflict:"
+                    f"rule={governance.method}:expected={expected_method}"
+                )
+
+    # GitHub ignores autoMergeRequest.mergeMethod under enforced queue handling;
+    # only a validated applicable rule establishes queue ownership of that field.
+    if (
+        pr.auto_merge_enabled
+        and expected_method is not None
+        and (governance is None or (governance.reason is None and governance.method is None))
+    ):
         method_mismatch = _merge_method_mismatch_reason(
             pr,
             expected_auto_merge_method=expected_method,
@@ -1799,16 +2689,32 @@ def classify_pr(
         if method_mismatch:
             reasons.append(method_mismatch)
 
+    if reasons:
+        if _override_only_refusal(reasons):
+            action = "hold" if queued or pr.auto_merge_enabled else "blocked"
+        elif _transient_transport_refusal_only(reasons):
+            # Transport window says nothing about the PR: hold a queued entry (never
+            # dequeue), otherwise stay blocked and re-evaluate next pass once it clears.
+            action = "hold" if queued else "blocked"
+        elif _missing_cc_task_link_only(reasons):
+            # Missing vault note is not a product defect. Hold a queued entry so GitHub
+            # and this reconciler never drop it; otherwise stay blocked until a note exists.
+            action = "hold" if queued else "blocked"
+        elif queued:
+            action = "dequeue"
+        elif pr.auto_merge_enabled and not expected_method_unverified:
+            action = "disable_auto_merge"
+        else:
+            action = "blocked"
+        return Decision(
+            pr=pr,
+            task=task,
+            tasks=matched_tasks,
+            action=action,
+            reasons=tuple(reasons),
+            expected_auto_merge_method=expected_auto_merge_method,
+        )
     if queued:
-        if reasons:
-            return Decision(
-                pr=pr,
-                task=task,
-                tasks=matched_tasks,
-                action="dequeue",
-                reasons=tuple(reasons),
-                expected_auto_merge_method=expected_auto_merge_method,
-            )
         return Decision(
             pr=pr,
             task=task,
@@ -1817,24 +2723,6 @@ def classify_pr(
             reasons=tuple(reasons),
             auto_arm=auto_arm,
             auto_arm_verified_checks=auto_arm_verified_checks,
-            expected_auto_merge_method=expected_auto_merge_method,
-        )
-    if reasons:
-        if pr.auto_merge_enabled and not expected_method_unverified:
-            return Decision(
-                pr=pr,
-                task=task,
-                tasks=matched_tasks,
-                action="disable_auto_merge",
-                reasons=tuple(reasons),
-                expected_auto_merge_method=expected_auto_merge_method,
-            )
-        return Decision(
-            pr=pr,
-            task=task,
-            tasks=matched_tasks,
-            action="blocked",
-            reasons=tuple(reasons),
             expected_auto_merge_method=expected_auto_merge_method,
         )
     if pr.auto_merge_enabled:
@@ -1884,6 +2772,7 @@ def merge_pr(
     repo_root: Path | None = None,
     runner: Any = None,
     require_route_metadata: bool = True,
+    route: ListingRoute | None = None,
 ) -> tuple[bool, str]:
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
@@ -1929,6 +2818,9 @@ def merge_pr(
                 repo=repo,
                 repo_root=repo_root,
                 runner=runner,
+                # The second call site. Threading only the first left the auto-arm
+                # revalidation re-entering REST on a cycle routed away from it.
+                route=route,
             )
             if boundary_blocker:
                 return False, boundary_blocker
@@ -2137,6 +3029,7 @@ def _release_head_boundary_blocker(
     repo_root: Path | None = None,
     runner: Any = None,
     release_authorization_waivers: list[str] | None = None,
+    route: ListingRoute | None = None,
 ) -> str | None:
     if decision.action not in {
         "queue",
@@ -2190,9 +3083,12 @@ def _release_head_boundary_blocker(
         repo=repo,
         repo_root=repo_root,
         runner=runner,
+        route=route,
     )
     if not evidence_ok:
-        if current_head_sha in {
+        if current_head_sha.startswith(
+            "pr_release_evidence_transport_unavailable:"
+        ) or current_head_sha in {
             "invalid_pr_release_evidence_payload",
             "invalid_status_check_rollup",
         }:
@@ -2313,6 +3209,7 @@ def arm_release_for_task(
     repo: str = DEFAULT_REPO,
     repo_root: Path | None = None,
     runner: Any = None,
+    route: ListingRoute | None = None,
 ) -> tuple[bool, str]:
     """Authorize release for a stranded task on behalf of a dead lane (system).
 
@@ -2358,9 +3255,16 @@ def arm_release_for_task(
             repo=repo,
             repo_root=repo_root,
             runner=runner,
+            # The THIRD call site. `_release_head_boundary_blocker` and `merge_pr` were threaded
+            # two commits ago and this one was not, so auto-arm still revalidated a head over
+            # REST on a cycle routed away from it. Enumerating the callers would have found all
+            # three at once; fixing the two the review named found two.
+            route=route,
         )
         if not evidence_ok:
-            if current_head_sha in {
+            if current_head_sha.startswith(
+                "pr_release_evidence_transport_unavailable:"
+            ) or current_head_sha in {
                 "invalid_pr_release_evidence_payload",
                 "invalid_status_check_rollup",
             }:
@@ -2439,7 +3343,25 @@ def _admission_status_for(decision: Decision) -> tuple[str, str] | None:
     }:
         return "success", _status_description(f"cc-pr-autoqueue admitted: {decision.action}")
 
-    if decision.action in {"blocked", "dequeue", "disable_auto_merge"}:
+    if _transient_transport_refusal_only(list(decision.reasons or ())):
+        # A transient transport window (rate-limit / 429 / 5xx) on the rulesets fetch says
+        # nothing about the PR. Writing a `failure` status would fail the required
+        # hapax/autoqueue-admission check and make GitHub drop the queue entry (the #4672
+        # loss, 2026-09-16). Defer the write; the next pass re-evaluates once it clears.
+        return None
+
+    if _missing_cc_task_link_only(list(decision.reasons or ())):
+        # A missing vault cc-task note is a process gap, not a product defect. Writing
+        # `failure` would fail the required hapax/autoqueue-admission check and make
+        # GitHub drop an already-queued CI-green PR (overnight 2026-09-17: #4680-#4686,
+        # #4673, #4665). `pending` does not fail that check: a queued entry stays queued,
+        # and a not-yet-queued PR stays unqueued until a note exists (honest: not admitted).
+        reasons = "; ".join(decision.reasons)
+        return "pending", _status_description(
+            f"cc-pr-autoqueue waiting for vault task note: {reasons}"
+        )
+
+    if decision.action in {"blocked", "hold", "dequeue", "disable_auto_merge"}:
         reasons = "; ".join(decision.reasons or ("not ready for merge queue",))
         return "failure", _status_description(f"cc-pr-autoqueue blocked: {reasons}")
 
@@ -2456,37 +3378,142 @@ def _parse_status_created_at(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+@dataclass(frozen=True)
+class AdmissionStatusReadFailed:
+    reason: str
+
+
 def _latest_admission_status(
     head_sha: str,
     *,
     repo: str,
     repo_root: Path,
     runner: Any,
-) -> tuple[str, str, datetime | None] | None:
+) -> tuple[str, str, datetime | None] | None | AdmissionStatusReadFailed:
     """The most recent autoqueue-admission (state, description, created_at) on
-    ``head_sha``, or None when absent/unreadable. Read-before-write lets the
+    ``head_sha``, None when absent, or AdmissionStatusReadFailed when unreadable.
+    Read-before-write lets the
     reconciler POST a fresh status only when it actually changed or is about to
     go stale: GitHub caps statuses at 1000 per SHA+context, and the old
     unconditional POST burned that cap into a 422 self-DoS that made the apply
     loop skip the queue mutation."""
     cmd = ["gh", "api", f"repos/{repo}/commits/{head_sha}/statuses"]
-    proc = runner(cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60)
-    if getattr(proc, "returncode", 1) != 0:
-        return None
     try:
-        items = json.loads(proc.stdout or "[]")
+        proc = runner(
+            cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=60
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        return AdmissionStatusReadFailed(f"query_unavailable:{type(exc).__name__}")
+    if getattr(proc, "returncode", 1) != 0:
+        return AdmissionStatusReadFailed(f"query_failed:rc={proc.returncode}")
+    try:
+        items = json.loads(proc.stdout)
     except (json.JSONDecodeError, TypeError):
-        return None
+        return AdmissionStatusReadFailed("invalid_json")
     if not isinstance(items, list):
-        return None
+        return AdmissionStatusReadFailed("expected_status_list")
     for item in items:  # the statuses API returns most-recent-first
-        if isinstance(item, dict) and item.get("context") == AUTOQUEUE_ADMISSION_CONTEXT:
+        if not isinstance(item, dict) or not isinstance(item.get("context"), str):
+            return AdmissionStatusReadFailed("malformed_status_row")
+        if item.get("context") == AUTOQUEUE_ADMISSION_CONTEXT:
+            if not isinstance(item.get("state"), str) or item["state"] not in {
+                "pending",
+                "success",
+                "failure",
+                "error",
+            }:
+                return AdmissionStatusReadFailed("malformed_status_state")
             return (
                 str(item.get("state") or ""),
                 str(item.get("description") or ""),
                 _parse_status_created_at(item.get("created_at")),
             )
     return None
+
+
+def _latest_admission_status_graphql(
+    head_sha: str,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+) -> tuple[str | None, tuple[str, str, datetime | None] | None]:
+    """GraphQL twin of ``_latest_admission_status`` for a cycle routed off REST.
+
+    Returns ``(repository_node_id, current_status)``. The node id proves the read reached the
+    repository; commit statuses have no GraphQL mutation (GitHub's schema defines none), so the
+    write itself stays on REST and is deferred while that pool is below its floor. ``(None,
+    None)`` means the pool refused or the payload was not the shape asked for — the caller then
+    either uses independently eligible REST or fails closed when REST is measured blocked.
+    """
+    owner, name = repo.split("/", 1)
+    query = (
+        "query($owner:String!,$repo:String!,$sha:GitObjectID!,$ctx:String!){"
+        "repository(owner:$owner,name:$repo){id object(oid:$sha){... on Commit{"
+        "status{context(name:$ctx){state description createdAt}}}}}}"
+    )
+    try:
+        proc = run_graphql_rate_aware(
+            [
+                "-f",
+                f"query={query}",
+                "-f",
+                f"owner={owner}",
+                "-f",
+                f"repo={name}",
+                "-f",
+                f"sha={head_sha}",
+                "-f",
+                f"ctx={AUTOQUEUE_ADMISSION_CONTEXT}",
+            ],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        LOG.warning(
+            "GraphQL admission status read unavailable for %s: %s", head_sha, type(exc).__name__
+        )
+        return None, None
+    if proc.returncode != 0:
+        return None, None
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return None, None
+    if not isinstance(payload, dict) or payload.get("errors"):
+        return None, None
+    data = payload.get("data")
+    repository = data.get("repository") if isinstance(data, dict) else None
+    if not isinstance(repository, dict):
+        return None, None
+    repository_id = _scalar(repository.get("id"))
+    if not repository_id:
+        return None, None
+    commit = repository.get("object")
+    if not isinstance(commit, dict) or "status" not in commit:
+        return None, None
+    status = commit["status"]
+    if status is None:
+        return repository_id, None  # readable commit with no statuses
+    if not isinstance(status, dict) or "context" not in status:
+        return None, None
+    context = status["context"]
+    if context is None:
+        return repository_id, None  # readable status with no context of ours
+    if not isinstance(context, dict):
+        return None, None
+    if not isinstance(context.get("state"), str) or context["state"] not in {
+        "PENDING",
+        "SUCCESS",
+        "FAILURE",
+        "ERROR",
+    }:
+        return None, None
+    return repository_id, (
+        str(context.get("state") or "").lower(),  # GraphQL enums are upper-case; REST is lower
+        str(context.get("description") or ""),
+        _parse_status_created_at(context.get("createdAt")),
+    )
 
 
 def set_autoqueue_admission_status(
@@ -2497,6 +3524,7 @@ def set_autoqueue_admission_status(
     runner: Any = None,
     now: datetime | None = None,
     force_fresh_success: bool = False,
+    route: ListingRoute | str | None = None,
 ) -> tuple[bool, str] | None:
     """Write the server-visible autoqueue admission proof for a PR head SHA.
 
@@ -2514,9 +3542,51 @@ def set_autoqueue_admission_status(
     if not decision.pr.head_sha:
         return False, "missing_head_sha"
     state, description = status
-    current = _latest_admission_status(
-        decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
-    )
+    # **Stay off a measured-blocked pool.** When the listing was routed to GraphQL because REST
+    # is below its floor, an unguarded REST GET here (and the REST POST after it) fails, and the
+    # apply loop then skips the queue mutation. But a GraphQL route may also mean only that
+    # GraphQL has proportionally more headroom. In that case REST remains an eligible fallback
+    # if the preferred GraphQL read fails.
+    repository_id: str | None = None
+    # The cycle's route arrives as the ListingRoute the listing chose (transport, whether REST is
+    # below its floor, and why) — every caller passes `route=listing_route` — or as a bare
+    # transport string. Until round 9 of #4610 this compared the OBJECT against "graphql", which
+    # never matched, so every cycle stayed on REST however empty that pool was measured to be.
+    if isinstance(route, ListingRoute):
+        transport = route.transport
+        rest_blocked = route.rest_blocked
+        route_reason = route.reason
+    else:
+        transport = route or "rest"
+        # Legacy GraphQL callers supplied no independent REST measurement. Keep their
+        # conservative no-REST contract; measured fallback eligibility requires ListingRoute.
+        rest_blocked = transport == "graphql"
+        route_reason = ""
+    if transport == "graphql":
+        repository_id, current = _latest_admission_status_graphql(
+            decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
+        )
+        if repository_id is None:
+            if rest_blocked:
+                return (
+                    False,
+                    "graphql_admission_status_read_failed. Next action: retry the read next "
+                    "cycle when GraphQL recovers or `github_pr_status.py rate` shows REST headroom.",
+                )
+            current = _latest_admission_status(
+                decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
+            )
+    else:
+        current = _latest_admission_status(
+            decision.pr.head_sha, repo=repo, repo_root=repo_root, runner=runner
+        )
+    if isinstance(current, AdmissionStatusReadFailed):
+        return (
+            False,
+            f"rest_admission_status_read_failed:{current.reason}. Next action: retry the "
+            "admission read next cycle; if it persists, check `gh auth status` and "
+            "`github_pr_status.py rate` before retrying.",
+        )
     if current is not None:
         cur_state, cur_description, cur_created = current
         if cur_state == state == "failure":
@@ -2533,6 +3603,17 @@ def set_autoqueue_admission_status(
         )
         if unchanged and fresh and not (force_fresh_success and state == "success"):
             return True, "unchanged"
+    if rest_blocked:
+        # Commit statuses have no GraphQL mutation — GitHub's schema defines none, and the
+        # `createCommitStatus` call this branch used to make was invented (review finding on
+        # #4610, round 9). The write waits for the REST pool to clear its floor. The message
+        # says "rate limit" so `_admission_status_write_deferral_class` files it as a
+        # transport-window deferral, not as a verdict on the pull request.
+        return (
+            False,
+            "admission status write deferred: GitHub commit statuses are REST-only and the core "
+            f"REST pool is below its floor (rate limit; {route_reason or 'no reason recorded'})",
+        )
     cmd = [
         "gh",
         "api",
@@ -2561,7 +3642,7 @@ def set_autoqueue_admission_status(
 
 
 def _decision_is_non_ready(decision: Decision) -> bool:
-    return decision.action in {"blocked", "dequeue", "disable_auto_merge"} and bool(
+    return decision.action in {"blocked", "hold", "dequeue", "disable_auto_merge"} and bool(
         decision.reasons
     )
 
@@ -2594,6 +3675,30 @@ def _release_auto_arm_write_ok(ok: bool, message: str) -> bool:
     return ok or message == "note_unchanged"
 
 
+def _admission_status_write_deferral_class(message: str) -> str | None:
+    """Name why a failed admission-status write says nothing about the PR, or None if it might.
+
+    A GitHub rate-limit (403 "API rate limit exceeded", secondary limit, 429) or 5xx response is a
+    property of the transport window, not of the pull request: the admission already recorded on
+    the head still stands, and the same write succeeds at the next reset with nothing changed on
+    our side. Treating it as a failed governance write removed two admitted PRs from the merge
+    queue on 2026-09-02 (#4615, #4616) — a 403 became a lost merge. Everything that is not one of
+    these documented transport responses keeps the fail-closed path.
+    """
+    lowered = (message or "").lower()
+    if lowered.startswith(
+        ("rest_admission_status_read_failed", "graphql_admission_status_read_failed")
+    ):
+        return "admission_status_read_failed"
+    if "rate limit" in lowered or '"status": "429"' in lowered or "http 429" in lowered:
+        return "github_rate_limit"
+    # Any 5xx, not a list of the usual ones (review finding on #4627, round 3): a 501 or a 599
+    # is exactly as much about the transport window as a 502.
+    if re.search(r'"status":\s*"5\d\d"|\bhttp 5\d\d\b', lowered):
+        return "github_unavailable"
+    return None
+
+
 def _remove_admitted_pr_for_release_auto_arm_failure(
     decision: Decision,
     *,
@@ -2615,6 +3720,7 @@ def _release_auto_arm_fail_closed_mutations(
     repo_root: Path,
     runner: Any,
     now: datetime,
+    route: str | None = None,
 ) -> list[dict[str, Any]]:
     fail_decision = _release_auto_arm_fail_closed_decision(
         decision,
@@ -2632,6 +3738,7 @@ def _release_auto_arm_fail_closed_mutations(
         repo_root=repo_root,
         runner=runner,
         now=now,
+        route=route,
     )
     if fail_status_result is not None:
         if fail_status is None:
@@ -2717,6 +3824,7 @@ def _build_storm_mode(
     failed_recent_merge_group_runs: tuple[dict[str, Any], ...],
     throttle_decision: ThrottleDecision,
     recommended_max_entries_to_build: int,
+    open_pr_count: int | None = None,
 ) -> StormMode:
     blocked_queued = tuple(
         decision.as_dict()
@@ -2728,7 +3836,7 @@ def _build_storm_mode(
     return StormMode(
         active=active,
         reasons=tuple(reasons),
-        open_pr_count=len(prs),
+        open_pr_count=len(prs) if open_pr_count is None else open_pr_count,
         queued_pr_count=len(queued_prs),
         blocked_queued_pr_count=len(blocked_queued),
         blocked_queued_prs=blocked_queued,
@@ -2762,11 +3870,19 @@ def run_reconciler(
     storm_recent_run_limit: int = DEFAULT_STORM_RECENT_RUN_LIMIT,
     auto_arm_ledger_path: Path | None = None,
     report_path: Path | None = None,
+    rotation_state_path: Path | None = None,
     admission_governor_path: Path = DEFAULT_ADMISSION_GOVERNOR_PATH,
     expected_auto_merge_method_override: str | None = None,
     expected_auto_merge_method_source: str | None = None,
     runner: Any = None,
 ) -> dict[str, Any]:
+    """Reconcile one batch; timer/CLI callers provide rotation_state_path across ticks.
+
+    Without a state path, the one-shot API retains its bounded snapshot behavior.
+    Dry runs can preview the persistent window but never advance it.
+    """
+    if limit <= 0:
+        raise ValueError("autoqueue limit must be positive")
     now = datetime.now(UTC)
     if any(os.environ.get(name) == "1" for name in KILLSWITCH_ENVS):
         report = {
@@ -2819,7 +3935,82 @@ def run_reconciler(
             repo_root=repo_root,
             runner=runner,
         )
-    prs = fetch_open_prs(repo=repo, repo_root=repo_root, limit=limit, runner=runner)
+    hydration_failures: dict[int, dict[str, Any]] = {}
+    try:
+        if rotation_state_path is not None:
+            prs, listing_route, open_pr_count, hydration_failures = fetch_rotating_open_prs(
+                repo=repo,
+                repo_root=repo_root,
+                limit=limit,
+                state_path=rotation_state_path,
+                persist=apply,
+                runner=runner or subprocess.run,
+            )
+        else:
+            prs, listing_route = fetch_open_prs(
+                repo=repo, repo_root=repo_root, limit=limit, runner=runner
+            )
+            open_pr_count = len(prs)
+    except RestIndeterminateError as exc:
+        report = {
+            "repo": repo,
+            "apply": apply,
+            "skipped": True,
+            "reason": f"open_pr_scan_indeterminate:{exc.reason}",
+            "decisions": [],
+            "mutations": [],
+        }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
+    if listing_route is None:
+        LOG.warning(
+            "autoqueue reconcile skipped: open-PR listing unavailable "
+            "(this is 'we did not look', not 'nothing to do'). Next action: none if the next "
+            "cycle proceeds; if it repeats, run `github_pr_status.py rate` and `gh auth status` "
+            "— a listing that fails with both pools healthy is not a quota condition."
+        )
+        report = {
+            "repo": repo,
+            "apply": apply,
+            "skipped": True,
+            "reason": "open_pr_listing_unavailable",
+            "detail": (
+                "both rate pools measured below their floors, or the listing itself failed; "
+                "no PR decisions attempted"
+            ),
+            "decisions": [],
+            "mutations": [],
+        }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
+    if expected_auto_merge_method is not None:
+        governance_by_base: dict[
+            tuple[str | None, str | None, str | None, str | None, tuple[str, ...]],
+            MergeQueueGovernance,
+        ] = {}
+        governed_prs: list[PullRequest] = []
+        for pr in prs:
+            base_key = (
+                pr.base_ref,
+                pr.default_branch,
+                pr.base_ref_detail,
+                pr.default_branch_detail,
+                pr.reference_reasons,
+            )
+            if base_key not in governance_by_base:
+                governance_by_base[base_key] = fetch_pr_merge_queue_governance(
+                    pr, repo=repo, repo_root=repo_root, runner=runner or subprocess.run
+                )
+            governed_prs.append(replace(pr, queue_governance=governance_by_base[base_key]))
+        prs = governed_prs
     preliminary_decisions = [
         classify_pr(
             pr,
@@ -2831,6 +4022,7 @@ def run_reconciler(
             active_ci_repair_task_ids=active_ci_repair_task_ids,
             expected_auto_merge_method=expected_auto_merge_method,
             expected_auto_merge_method_source=merge_method_source,
+            expected_auto_merge_method_is_override=expected_auto_merge_method_override is not None,
             require_expected_auto_merge_method=True,
         )
         for pr in prs
@@ -2856,7 +4048,7 @@ def run_reconciler(
         write_quarantine(quarantine_path, quarantine_reconciliation.records)
     throttle_decision = decide_fleet_throttle(
         lineage_records,
-        open_pr_count=len(prs),
+        open_pr_count=open_pr_count,
         policy=throttle_policy,
         now=now,
         quarantined_prs=quarantined_prs,
@@ -2879,6 +4071,7 @@ def run_reconciler(
         failed_recent_merge_group_runs=failed_recent_merge_group_runs,
         throttle_decision=throttle_decision,
         recommended_max_entries_to_build=recommended_entries,
+        open_pr_count=open_pr_count,
     )
     decisions = preliminary_decisions
     if storm_mode_enabled and storm_mode.active:
@@ -2895,6 +4088,8 @@ def run_reconciler(
                 storm_reasons=storm_mode.reasons,
                 expected_auto_merge_method=expected_auto_merge_method,
                 expected_auto_merge_method_source=merge_method_source,
+                expected_auto_merge_method_is_override=expected_auto_merge_method_override
+                is not None,
                 require_expected_auto_merge_method=True,
             )
             for pr in prs
@@ -2911,203 +4106,256 @@ def run_reconciler(
             failed_recent_merge_group_runs=failed_recent_merge_group_runs,
             throttle_decision=throttle_decision,
             recommended_max_entries_to_build=recommended_entries,
+            open_pr_count=open_pr_count,
         )
 
     mutation_results: list[dict[str, Any]] = []
     if apply:
         for decision in decisions:
-            admission_status = _admission_status_for(decision)
-            release_head_subject = decision.action in {
-                "queue",
-                "enable_auto_merge",
-                "already_queued",
-                "already_auto_merge_enabled",
-            }
-            if release_head_subject:
-                if decision.auto_arm and decision.task is not None:
-                    armed_ok, armed_message = arm_release_for_task(
-                        decision.task,
-                        ledger_path=auto_arm_ledger_path,
-                        now=now,
-                        verified_checks=set(decision.auto_arm_verified_checks),
-                        pr_number=decision.pr.number,
-                        head_ref=decision.pr.head_ref,
-                        expected_head_sha=decision.pr.head_sha,
+            with _reconciled_pr(
+                decision.pr.number,
+                repo=repo,
+                state_path=rotation_state_path,
+                failures=hydration_failures,
+            ):
+                admission_status = _admission_status_for(decision)
+                release_head_subject = decision.action in {
+                    "queue",
+                    "enable_auto_merge",
+                    "already_queued",
+                    "already_auto_merge_enabled",
+                }
+                if release_head_subject:
+                    if decision.auto_arm and decision.task is not None:
+                        armed_ok, armed_message = arm_release_for_task(
+                            decision.task,
+                            ledger_path=auto_arm_ledger_path,
+                            now=now,
+                            verified_checks=set(decision.auto_arm_verified_checks),
+                            pr_number=decision.pr.number,
+                            head_ref=decision.pr.head_ref,
+                            expected_head_sha=decision.pr.head_sha,
+                            require_route_metadata=require_route_metadata,
+                            route=listing_route,
+                            changed_files=decision.pr.files,
+                            changed_file_count=decision.pr.changed_files_count,
+                            repo=repo,
+                            repo_root=repo_root,
+                            runner=runner,
+                        )
+                        auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
+                        if not auto_arm_ok:
+                            mutation_results.append(
+                                {
+                                    **decision.as_dict(),
+                                    "action": "release_auto_arm",
+                                    "ok": False,
+                                    "message": f"release auto-arm failed: {armed_message}",
+                                }
+                            )
+                            mutation_results.extend(
+                                _release_auto_arm_fail_closed_mutations(
+                                    decision,
+                                    armed_message,
+                                    repo=repo,
+                                    repo_root=repo_root,
+                                    runner=runner,
+                                    now=now,
+                                    route=listing_route,
+                                )
+                            )
+                            continue
+                        mutation_results.append(
+                            {
+                                **decision.as_dict(),
+                                "action": "release_auto_arm",
+                                "ok": True,
+                                "message": armed_message,
+                            }
+                        )
+                    release_authorization_waivers: list[str] = []
+                    head_blocker = _release_head_boundary_blocker(
+                        decision,
                         require_route_metadata=require_route_metadata,
                         changed_files=decision.pr.files,
                         changed_file_count=decision.pr.changed_files_count,
                         repo=repo,
                         repo_root=repo_root,
                         runner=runner,
+                        release_authorization_waivers=release_authorization_waivers,
+                        route=listing_route,
                     )
-                    auto_arm_ok = _release_auto_arm_write_ok(armed_ok, armed_message)
-                    if not auto_arm_ok:
+                    if head_blocker is not None:
                         mutation_results.append(
                             {
                                 **decision.as_dict(),
-                                "action": "release_auto_arm",
+                                "action": "release_head_revalidation",
                                 "ok": False,
-                                "message": f"release auto-arm failed: {armed_message}",
+                                "message": head_blocker,
                             }
                         )
                         mutation_results.extend(
                             _release_auto_arm_fail_closed_mutations(
                                 decision,
-                                armed_message,
+                                head_blocker,
+                                reason_prefix="release_head_revalidation_failed",
                                 repo=repo,
                                 repo_root=repo_root,
                                 runner=runner,
                                 now=now,
+                                route=listing_route,
                             )
                         )
                         continue
-                    mutation_results.append(
-                        {
-                            **decision.as_dict(),
-                            "action": "release_auto_arm",
-                            "ok": True,
-                            "message": armed_message,
-                        }
-                    )
-                release_authorization_waivers: list[str] = []
-                head_blocker = _release_head_boundary_blocker(
+                    if release_authorization_waivers:
+                        mutation_results.append(
+                            {
+                                **decision.as_dict(),
+                                "action": "release_authorization_waiver",
+                                "ok": True,
+                                "waivers": release_authorization_waivers,
+                            }
+                        )
+                status_result = set_autoqueue_admission_status(
                     decision,
-                    require_route_metadata=require_route_metadata,
-                    changed_files=decision.pr.files,
-                    changed_file_count=decision.pr.changed_files_count,
                     repo=repo,
                     repo_root=repo_root,
                     runner=runner,
-                    release_authorization_waivers=release_authorization_waivers,
+                    now=now,
+                    force_fresh_success=_decision_is_release_head_guard_subject(decision),
+                    route=listing_route,
                 )
-                if head_blocker is not None:
+                # An unreadable status prevents new admission, but a known blocker still requires
+                # cancellation. merge_pr retains the existing dequeue revalidation below.
+                if (
+                    decision.action not in {"dequeue", "disable_auto_merge"}
+                    and status_result is not None
+                    and not status_result[0]
+                    and _admission_status_write_deferral_class(status_result[1])
+                    == "admission_status_read_failed"
+                ):
                     mutation_results.append(
                         {
                             **decision.as_dict(),
-                            "action": "release_head_revalidation",
-                            "ok": False,
-                            "message": head_blocker,
+                            "action": "hold",
+                            "ok": True,
+                            "reasons": ["admission_status_read_failed"],
+                            "message": status_result[1],
                         }
-                    )
-                    mutation_results.extend(
-                        _release_auto_arm_fail_closed_mutations(
-                            decision,
-                            head_blocker,
-                            reason_prefix="release_head_revalidation_failed",
-                            repo=repo,
-                            repo_root=repo_root,
-                            runner=runner,
-                            now=now,
-                        )
                     )
                     continue
-                if release_authorization_waivers:
-                    mutation_results.append(
-                        {
-                            **decision.as_dict(),
-                            "action": "release_authorization_waiver",
-                            "ok": True,
-                            "waivers": release_authorization_waivers,
-                        }
-                    )
-            status_result = set_autoqueue_admission_status(
-                decision,
-                repo=repo,
-                repo_root=repo_root,
-                runner=runner,
-                now=now,
-                force_fresh_success=_decision_is_release_head_guard_subject(decision),
-            )
-            if decision.action not in {
-                "queue",
-                "enable_auto_merge",
-                "disable_auto_merge",
-                "dequeue",
-            }:
-                if status_result is not None:
+                if decision.action not in {
+                    "queue",
+                    "enable_auto_merge",
+                    "disable_auto_merge",
+                    "dequeue",
+                }:
+                    if status_result is not None:
+                        assert admission_status is not None
+                        ok, message = status_result
+                        mutation_results.append(
+                            {
+                                **decision.as_dict(),
+                                "action": "set_admission_status",
+                                "status_state": admission_status[0],
+                                "ok": ok,
+                                "message": message,
+                            }
+                        )
+                        if not ok:
+                            deferral = _admission_status_write_deferral_class(message)
+                            if deferral is not None:
+                                # The write failed for a reason that is not about this PR (see
+                                # _admission_status_write_deferral_class): hold the queue state and
+                                # let the next cycle write the same status. Failure paths narrow —
+                                # no mutation is the only safe act on evidence about the transport.
+                                mutation_results.append(
+                                    {
+                                        **decision.as_dict(),
+                                        "action": "hold",
+                                        "ok": True,
+                                        "reasons": [f"admission_status_write_deferred:{deferral}"],
+                                        "message": (
+                                            "admission status write failed on a transport response; "
+                                            "queue state held for the next cycle"
+                                        ),
+                                    }
+                                )
+                            else:
+                                mutation_results.extend(
+                                    _release_auto_arm_fail_closed_mutations(
+                                        decision,
+                                        message,
+                                        reason_prefix="admission_status_write_failed",
+                                        repo=repo,
+                                        repo_root=repo_root,
+                                        runner=runner,
+                                        now=now,
+                                        route=listing_route,
+                                    )
+                                )
+                    continue
+                if (
+                    decision.action in {"queue", "enable_auto_merge"}
+                    and status_result is not None
+                    and not status_result[0]
+                ):
                     assert admission_status is not None
-                    ok, message = status_result
                     mutation_results.append(
                         {
                             **decision.as_dict(),
                             "action": "set_admission_status",
                             "status_state": admission_status[0],
-                            "ok": ok,
-                            "message": message,
+                            "ok": False,
+                            "message": "admission status write failed; queue mutation skipped",
+                            "admission_status": {
+                                "state": admission_status[0],
+                                "ok": status_result[0],
+                                "message": status_result[1],
+                            },
                         }
                     )
-                    if not ok:
-                        mutation_results.extend(
-                            _release_auto_arm_fail_closed_mutations(
-                                decision,
-                                message,
-                                reason_prefix="admission_status_write_failed",
-                                repo=repo,
-                                repo_root=repo_root,
-                                runner=runner,
-                                now=now,
-                            )
-                        )
-                continue
-            if (
-                decision.action in {"queue", "enable_auto_merge"}
-                and status_result is not None
-                and not status_result[0]
-            ):
-                assert admission_status is not None
-                mutation_results.append(
-                    {
-                        **decision.as_dict(),
-                        "action": "set_admission_status",
-                        "status_state": admission_status[0],
-                        "ok": False,
-                        "message": "admission status write failed; queue mutation skipped",
-                        "admission_status": {
-                            "state": admission_status[0],
-                            "ok": status_result[0],
-                            "message": status_result[1],
-                        },
-                    }
+                    continue
+                ok, message = merge_pr(
+                    decision,
+                    repo=repo,
+                    repo_root=repo_root,
+                    runner=runner,
+                    require_route_metadata=require_route_metadata,
+                    route=listing_route,
                 )
-                continue
-            ok, message = merge_pr(
-                decision,
-                repo=repo,
-                repo_root=repo_root,
-                runner=runner,
-                require_route_metadata=require_route_metadata,
-            )
-            result = {
-                **decision.as_dict(),
-                "ok": ok,
-                "message": message,
-            }
-            if status_result is not None:
-                assert admission_status is not None
-                status_ok, status_message = status_result
-                result["admission_status"] = {
-                    "state": admission_status[0],
-                    "ok": status_ok,
-                    "message": status_message,
+                result = {
+                    **decision.as_dict(),
+                    "ok": ok,
+                    "message": message,
                 }
-            mutation_results.append(result)
-            if (
-                not ok
-                and admission_status is not None
-                and admission_status[0] == "success"
-                and status_result is not None
-            ):
-                mutation_results.extend(
-                    _release_auto_arm_fail_closed_mutations(
-                        decision,
-                        message,
-                        reason_prefix="queue_mutation_failed",
-                        repo=repo,
-                        repo_root=repo_root,
-                        runner=runner,
-                        now=now,
+                if status_result is not None:
+                    assert admission_status is not None
+                    status_ok, status_message = status_result
+                    result["admission_status"] = {
+                        "state": admission_status[0],
+                        "ok": status_ok,
+                        "message": status_message,
+                    }
+                mutation_results.append(result)
+                if (
+                    not ok
+                    and admission_status is not None
+                    and admission_status[0] == "success"
+                    and status_result is not None
+                ):
+                    mutation_results.extend(
+                        _release_auto_arm_fail_closed_mutations(
+                            decision,
+                            message,
+                            reason_prefix="queue_mutation_failed",
+                            repo=repo,
+                            repo_root=repo_root,
+                            runner=runner,
+                            now=now,
+                            route=listing_route,
+                        )
                     )
-                )
 
     report = {
         "repo": repo,
@@ -3139,7 +4387,20 @@ def run_reconciler(
             ),
         },
         "lineage_ledger_path": str(lineage_ledger_path) if lineage_ledger_path else None,
-        "open_pr_count": len(prs),
+        "open_pr_count": open_pr_count,
+        "examined_pr_count": len(prs),
+        "rotation_state_path": str(rotation_state_path) if rotation_state_path else None,
+        "hydration_failures": [
+            {
+                "pr": number,
+                **failure,
+                "retry_policy": "next_tick"
+                if failure["consecutive_failures"] == 1
+                else "fair_rotation",
+                "next_action": "Retry automatically; inspect this PR's hydration if failures persist.",
+            }
+            for number, failure in sorted(hydration_failures.items())
+        ],
         "queued_prs": sorted(queued_prs),
         "decisions": [decision.as_dict() for decision in decisions],
         "counts": {
@@ -3158,6 +4419,7 @@ def run_reconciler(
             ),
             "dequeue": sum(1 for decision in decisions if decision.action == "dequeue"),
             "blocked": sum(1 for decision in decisions if decision.action == "blocked"),
+            "hold": sum(1 for decision in decisions if decision.action == "hold"),
         },
         "mutations": mutation_results,
     }
@@ -3175,7 +4437,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo", default=DEFAULT_REPO, help="GitHub repo, owner/name.")
     parser.add_argument("--repo-root", type=Path, default=default_repo_root())
     parser.add_argument("--vault-root", type=Path, default=DEFAULT_VAULT_ROOT)
-    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--limit", type=int, default=100, help="Maximum PRs examined per tick.")
+    parser.add_argument(
+        "--rotation-state-path",
+        type=Path,
+        default=DEFAULT_ROTATION_STATE_PATH,
+        help="Persistent examination timestamps beside the autoqueue report.",
+    )
     parser.add_argument(
         "--allow-legacy-task-metadata",
         action="store_true",
@@ -3262,6 +4530,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--verbose", "-v", action="count", default=0)
     args = parser.parse_args(argv)
+    if args.limit <= 0:
+        parser.error("--limit must be positive")
 
     level = logging.WARNING
     if args.verbose == 1:
@@ -3299,6 +4569,7 @@ def main(argv: list[str] | None = None) -> int:
         storm_failed_merge_group_threshold=args.storm_failed_merge_group_threshold,
         storm_recent_run_limit=args.storm_recent_run_limit,
         report_path=None if args.no_write_report else args.report_path,
+        rotation_state_path=args.rotation_state_path,
         admission_governor_path=args.admission_governor_path,
         expected_auto_merge_method_override=expected_method_override,
         expected_auto_merge_method_source=expected_method_source,

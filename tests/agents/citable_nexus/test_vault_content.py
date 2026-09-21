@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from agents.citable_nexus.vault_content import (
     VAULT_HAPAX_DIR_ENV,
     markdown_to_html,
+    read_cleared_inputs,
     read_vault_document,
 )
 
@@ -23,7 +26,7 @@ class TestReadVaultDocument:
         monkeypatch.setenv(VAULT_HAPAX_DIR_ENV, str(tmp_path))
         target = tmp_path / "manifesto.md"
         target.write_text("# Manifesto\n\nFirst paragraph.\n", encoding="utf-8")
-        doc = read_vault_document("manifesto")
+        doc = read_vault_document("manifesto", cleared_inputs=frozenset({target}))
         assert doc.available is True
         assert "Manifesto" in doc.markdown
         assert doc.slug == "manifesto"
@@ -88,8 +91,8 @@ class TestMarkdownToHtml:
         assert "<code>pass show</code>" in html
 
     def test_inline_link(self):
-        html = markdown_to_html("Visit [the spec](https://hapax.research/cite).")
-        assert '<a href="https://hapax.research/cite">the spec</a>' in html
+        html = markdown_to_html("Visit [the spec](https://example.invalid/cite).")
+        assert '<a href="https://example.invalid/cite">the spec</a>' in html
 
     def test_code_fence(self):
         md = "```\nimport sys\nsys.exit(0)\n```"
@@ -129,8 +132,8 @@ class TestRendererVaultIntegration:
 
         from agents.citable_nexus.renderer import render_manifesto_page
 
-        page = render_manifesto_page()
-        assert "<h1>Manifesto v0</h1>" in page.body_html
+        page = render_manifesto_page(cleared_inputs=frozenset({tmp_path / "manifesto.md"}))
+        assert "<h2>Manifesto v0</h2>" in page.body_html
         assert "A single-operator instrument." in page.body_html
 
     def test_manifesto_page_placeholder_when_absent(self, tmp_path, monkeypatch):
@@ -141,7 +144,7 @@ class TestRendererVaultIntegration:
 
         page = render_manifesto_page()
         assert "vault-placeholder" in page.body_html
-        assert "not yet synced" in page.body_html
+        assert "No reviewed copy is included" in page.body_html
 
     def test_refusal_brief_page_uses_vault_when_available(self, tmp_path, monkeypatch):
         monkeypatch.setenv(VAULT_HAPAX_DIR_ENV, str(tmp_path))
@@ -152,17 +155,101 @@ class TestRendererVaultIntegration:
 
         from agents.citable_nexus.renderer import render_refusal_brief_page
 
-        page = render_refusal_brief_page()
-        assert "<h1>Refusal Brief</h1>" in page.body_html
+        page = render_refusal_brief_page(cleared_inputs=frozenset({tmp_path / "refusal-brief.md"}))
+        assert "<h2>Refusal Brief</h2>" in page.body_html
         assert "<li>declined: bandcamp</li>" in page.body_html
 
-    def test_render_site_includes_phase_1b_pages(self, tmp_path, monkeypatch):
+    def test_render_site_omits_uncleared_documents(self, tmp_path, monkeypatch):
         monkeypatch.setenv(VAULT_HAPAX_DIR_ENV, str(tmp_path))
 
         from agents.citable_nexus.renderer import render_site
 
-        site = render_site()
-        assert "/manifesto" in site.pages
-        assert "/refusal-brief" in site.pages
-        assert site.pages["/manifesto"].startswith("<!doctype html>")
-        assert site.pages["/refusal-brief"].startswith("<!doctype html>")
+        site = render_site("https://example.invalid")
+        assert "/manifesto" not in site.pages
+        assert "/refusal-brief" not in site.pages
+        assert "/deposits" not in site.pages
+        assert "/citation-graph" not in site.pages
+
+
+def test_readable_but_unlisted_never_rendered(tmp_path, monkeypatch):
+    from agents.citable_nexus.renderer import render_site
+    from scripts.build_citable_nexus import main
+
+    monkeypatch.setenv(VAULT_HAPAX_DIR_ENV, str(tmp_path))
+    (tmp_path / "manifesto.md").write_text("PRIVATE readable fixture")
+    (tmp_path / "refusal-brief.md").write_text("PUBLIC cleared fixture")
+    allowlist = tmp_path / "cleared.txt"
+    allowlist.write_text("refusal-brief.md\n")
+    assert not read_vault_document("manifesto").available
+    site = render_site("https://example.invalid", cleared_inputs=allowlist)
+    assert all("PRIVATE readable fixture" not in html for html in site.pages.values())
+    assert "PUBLIC cleared fixture" in site.pages["/refusal-brief"]
+    output = tmp_path / "site"
+    assert (
+        main(
+            [
+                "--out",
+                str(output),
+                "--canonical-url",
+                "https://example.invalid",
+                "--cleared-inputs",
+                str(allowlist),
+            ]
+        )
+        == 0
+    )
+    assert all(
+        "PRIVATE readable fixture" not in path.read_text() for path in output.rglob("*.html")
+    )
+    # Empty and absent allowlists both clear nothing.
+    allowlist.write_text("")
+    assert read_cleared_inputs(allowlist) == read_cleared_inputs() == frozenset()
+
+
+def test_listed_missing_input_refuses_by_name_before_output(tmp_path, caplog):
+    from scripts.build_citable_nexus import main
+
+    missing = tmp_path / "missing.md"
+    allowlist = tmp_path / "cleared.txt"
+    allowlist.write_text(str(missing) + "\n")
+    with pytest.raises(ValueError, match="Cleared input refused:.*missing.md"):
+        read_cleared_inputs(allowlist)
+    assert (
+        main(
+            [
+                "--out",
+                str(tmp_path / "site"),
+                "--canonical-url",
+                "https://example.invalid",
+                "--cleared-inputs",
+                str(allowlist),
+            ]
+        )
+        == 2
+    )
+    assert str(missing) in caplog.text
+    assert not (tmp_path / "site").exists()
+
+
+def test_allowlist_relative_absolute_and_failed_cleared_read(tmp_path, monkeypatch):
+    monkeypatch.setenv(VAULT_HAPAX_DIR_ENV, str(tmp_path))
+    target = tmp_path / "manifesto.md"
+    target.write_text("# Fixture")
+    allowlist = tmp_path / "cleared.txt"
+    allowlist.write_text("manifesto.md\n" + str(target) + "\n\n")
+    cleared = read_cleared_inputs(allowlist)
+    assert cleared == frozenset({target})
+    target.unlink()
+    with pytest.raises(ValueError, match="Cleared input refused:.*manifesto.md"):
+        read_vault_document("manifesto", cleared_inputs=cleared)
+    with pytest.raises(ValueError, match="--cleared-inputs"):
+        read_cleared_inputs(tmp_path / "absent-list")
+
+
+def test_strong_emphasis_and_literal_code():
+    assert (
+        markdown_to_html("**A summary is not a person's instruction.**")
+        == "<p><strong>A summary is not a person's instruction.</strong></p>"
+    )
+    assert markdown_to_html("`**literal**`") == "<p><code>**literal**</code></p>"
+    assert markdown_to_html("[link](javascript:alert)") == "<p>link</p>"

@@ -87,7 +87,7 @@ class OSFPreregPublisher(Publisher):
     Refusal-as-data: missing ``HAPAX_OSF_TOKEN`` emits ``refused`` with
     ``credentials`` / ``token`` in the detail string. The Phase 1
     daemon path is structurally complete; the operator-action queue
-    item is ``pass insert osf/api-token``.
+    item is a put of ``osf/api-token`` through ``hapax-secret``.
     """
 
     surface_name: ClassVar[str] = OSF_PREREG_SURFACE
@@ -102,7 +102,7 @@ class OSFPreregPublisher(Publisher):
             return PublisherResult(
                 refused=True,
                 detail=(
-                    "missing OSF credentials (operator-action queue: pass insert osf/api-token)"
+                    "missing OSF credentials (operator-action: put osf/api-token with hapax-secret)"
                 ),
             )
         if requests is None:

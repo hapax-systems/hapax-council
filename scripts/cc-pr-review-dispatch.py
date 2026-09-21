@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -56,12 +57,18 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import review_team  # noqa: E402
 from github_pr_status import (  # noqa: E402
+    ListingRoute,
+    PrListingUnavailable,
     get_pull_rest,
-    list_open_pr_statuses_rest,
+    list_open_pr_statuses,
     list_pull_files_rest,
+    listing_unavailable_detail,
 )
 
 from shared import public_gate_receipts  # noqa: E402
+from shared.platform_capability_registry import (  # noqa: E402
+    _route_specific_quota_admission_fresh,
+)
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     acceptance_receipt_path,
@@ -352,8 +359,9 @@ def _sign_public_gate_authority_evidence(data: dict[str, Any]) -> None:
     if not secret:
         LOG.warning(
             "public-gate authority evidence left unsigned; signing credential is unset; "
-            "next action: restore the public-gate authority signing credential from pass "
-            "before relying on public-gate receipts",
+            "next action: restore the public-gate authority signing credential from the "
+            "FileStore (hapax-public-gate-authority-hmac-key) before relying on public-gate "
+            "receipts",
         )
         return
     data["authority_issuer"] = _review_team_authority_issuer(
@@ -520,8 +528,9 @@ PARSEABLE_VERDICTS = {"accept", "accept-with-findings", "block"}
 
 #: Family quota-wall state (postmortem 2026-06-12, failure class #1): a
 #: family whose seats ALL hit a provider wall in a round is OUT for the next
-#: constitutions until a seat answers again or the TTL lapses. The TTL keeps
-#: a stale outage from degrading reviews after a quiet recovery.
+#: constitutions until a seat answers again, an explicit ``until`` lapses, or
+#: (when ``until`` is absent) the TTL lapses. An explicit ``until`` is
+#: authoritative; TTL is the re-probe interval, not recovery.
 FAMILY_OUTAGE_STATE = review_team.FAMILY_OUTAGE_STATE  # canonical path lives with the validator
 DEGRADED_MERGES_LEDGER = Path.home() / ".cache" / "hapax" / "review-team" / "degraded-merges.jsonl"
 FAMILY_OUTAGE_TTL_S = review_team.FAMILY_OUTAGE_TTL_S
@@ -562,6 +571,25 @@ def _parse_aware_datetime(value: str) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed
+
+
+def _copy_until_note(existing: Any, entry: dict[str, Any]) -> None:
+    """Preserve operator-authored until/note; never invent until."""
+    if not isinstance(existing, dict):
+        return
+    if "until" in existing:
+        entry["until"] = existing["until"]
+    if "note" in existing:
+        entry["note"] = existing["note"]
+
+
+def _family_until_still_active(existing: Any, now_iso: str) -> bool:
+    """True when a dict entry has parseable until and now < until."""
+    if not isinstance(existing, dict):
+        return False
+    until_dt = _parse_aware_datetime(str(existing.get("until") or ""))
+    now_aware = _parse_aware_datetime(now_iso)
+    return until_dt is not None and now_aware is not None and now_aware < until_dt
 
 
 def _route_admission_observed_at(ref: str) -> datetime | None:
@@ -629,19 +657,141 @@ def _route_post_outage_admission_witness_result(
     return False, "post_outage_observed_at_not_after_outage"
 
 
-def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> dict[str, str]:
-    """TTL-live outage witness timestamps by family."""
+CLAUDE_SUBSCRIPTION_WEEKLY_LIMIT_WALL_NAME = "claude-subscription-weekly-limit-quota-wall.yaml"
+GLM_CODING_PLAN_WEEKLY_LIMIT_WALL_NAME = "glm-coding-plan-weekly-limit-quota-wall.yaml"
+
+
+def _relay_receipts_dir() -> Path:
+    """Receipts dir used by glmcp/claude walls: HAPAX_RELAY_RECEIPTS, else HAPAX_RELAY_RECEIPT_DIR."""
+
+    raw = os.environ.get("HAPAX_RELAY_RECEIPTS") or os.environ.get("HAPAX_RELAY_RECEIPT_DIR")
+    if raw and str(raw).strip():
+        return Path(str(raw).strip())
+    return Path.home() / ".cache" / "hapax" / "relay" / "receipts"
+
+
+def _claude_subscription_weekly_limit_wall_path() -> Path:
+    return _relay_receipts_dir() / CLAUDE_SUBSCRIPTION_WEEKLY_LIMIT_WALL_NAME
+
+
+def _receipt_iso_text(value: Any) -> str | None:
+    """Stringify a wall-receipt timestamp (PyYAML may load unquoted ISO as datetime)."""
+
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        iso = dt.isoformat()
+        if iso.endswith("+00:00"):
+            return f"{iso[:-6]}Z"
+        return iso
+    text = str(value).strip()
+    return text or None
+
+
+def _is_glm_coding_plan_wall(path: Path, receipt: dict[str, Any]) -> bool:
+    """True when the receipt is a glm Coding Plan wall (not claude family death)."""
+
+    if path.name == GLM_CODING_PLAN_WEEKLY_LIMIT_WALL_NAME:
+        return True
+    role = str(receipt.get("role") or "")
+    schema = str(receipt.get("schema") or "")
+    route_id = str(receipt.get("route_id") or "")
+    provider = str(receipt.get("provider") or "")
+    billing = str(receipt.get("billing_mode") or "")
+    if role == "glm-coding-plan-weekly-limit" or "glm-coding-plan" in role:
+        return True
+    if "glmcp_quota_hold" in schema:
+        return True
+    if route_id.startswith("glmcp."):
+        return True
+    if "glm-coding-plan" in provider:
+        return True
+    return billing == "coding_plan_subscription"
+
+
+def _claude_weekly_limit_wall_hold(
+    now_aware: datetime,
+    wall_receipt_path: Path | None = None,
+) -> tuple[datetime, str] | None:
+    """Return (resets_at, observed_iso) when the claude weekly-limit wall is active.
+
+    Reads one receipt path (no directory scrape). A glm coding-plan wall is never
+    treated as family death — PAYG is the live glm review route.
+    """
+
+    path = wall_receipt_path or _claude_subscription_weekly_limit_wall_path()
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    if _is_glm_coding_plan_wall(path, loaded):
+        return None
+    if str(loaded.get("status") or "").strip() != "quota_blocked":
+        return None
+    resets_at = _parse_aware_datetime(_receipt_iso_text(loaded.get("resets_at")) or "")
+    if resets_at is None or now_aware >= resets_at:
+        return None
+    observed_iso = _receipt_iso_text(loaded.get("observed_at")) or _receipt_iso_text(
+        loaded.get("detected_at")
+    )
+    if not observed_iso:
+        observed_iso = _receipt_iso_text(loaded.get("resets_at"))
+    if not observed_iso:
+        return None
+    return resets_at, observed_iso
+
+
+def load_family_outage_witness(
+    now_iso: str,
+    state_path: Path | None = None,
+    *,
+    wall_receipt_path: Path | None = None,
+) -> dict[str, str]:
+    """Live outage witness timestamps by family.
+
+    An explicit parseable ``until`` on a dict entry is authoritative: the family
+    stays OUT while ``now < until``, even if ``observed_at`` is older than
+    ``FAMILY_OUTAGE_TTL_S``. Once ``now >= until``, the family is IN — TTL does
+    not revive an expired ``until``. When ``until`` is absent, TTL is the
+    re-probe interval (not recovery).
+
+    A claude-subscription weekly-limit wall receipt (``status: quota_blocked``
+    and parseable future ``resets_at``) fills claude when json ``until`` is
+    missing or expired. Json ``until`` later than the receipt still wins. Do
+    not require the json key. A glm coding-plan wall is not glm-family death
+    and is never applied here.
+    """
 
     state_path = state_path or FAMILY_OUTAGE_STATE
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        state = {}
     if not isinstance(state, dict):
-        return {}
+        state = {}
     now = datetime.fromisoformat(now_iso)
+    now_aware = _parse_aware_datetime(now_iso)
+    if now_aware is None:
+        now_aware = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
     out: dict[str, str] = {}
+    claude_json_until: datetime | None = None
     for family, observed in state.items():
+        family_key = str(family)
+        if family_key == "claude" and isinstance(observed, dict):
+            parsed_until = _parse_aware_datetime(str(observed.get("until") or ""))
+            if parsed_until is not None:
+                claude_json_until = parsed_until
+        if isinstance(observed, dict):
+            until_dt = _parse_aware_datetime(str(observed.get("until") or ""))
+            if until_dt is not None:
+                if now_aware < until_dt:
+                    observed_iso = _witness_observed_at(observed)
+                    if observed_iso is not None:
+                        out[family_key] = observed_iso
+                continue
         observed_iso = _witness_observed_at(observed)
         if observed_iso is None:
             continue
@@ -656,7 +806,19 @@ def load_family_outage_witness(now_iso: str, state_path: Path | None = None) -> 
         except (TypeError, ValueError):
             continue
         if 0 <= age <= FAMILY_OUTAGE_TTL_S:
-            out[str(family)] = observed_iso
+            out[family_key] = observed_iso
+    json_until_active = claude_json_until is not None and now_aware < claude_json_until
+    hold = _claude_weekly_limit_wall_hold(now_aware, wall_receipt_path)
+    if hold is not None:
+        resets_at, receipt_observed = hold
+        # Json until later than the receipt still wins; receipt fills when json
+        # until is missing or expired. A still-future json until already has
+        # claude OUT, so keep json observed_at.
+        json_until_wins = json_until_active and (
+            (claude_json_until is not None and claude_json_until >= resets_at) or "claude" in out
+        )
+        if not json_until_wins:
+            out["claude"] = receipt_observed
     return out
 
 
@@ -668,10 +830,78 @@ def send_session_for_lane(lane: str) -> str:
     return SEND_SESSION_ALIASES.get(lane, lane)
 
 
-def load_family_outage(now_iso: str, state_path: Path | None = None) -> frozenset[str]:
-    """Families currently out on an observed quota wall (TTL-bounded)."""
+def load_family_outage(
+    now_iso: str,
+    state_path: Path | None = None,
+    *,
+    wall_receipt_path: Path | None = None,
+) -> frozenset[str]:
+    """Families currently out on an observed quota wall (until- or TTL-bounded)."""
 
-    return frozenset(load_family_outage_witness(now_iso, state_path))
+    return frozenset(
+        load_family_outage_witness(now_iso, state_path, wall_receipt_path=wall_receipt_path)
+    )
+
+
+def _family_outage_entry_has_until(existing: Any) -> bool:
+    """True when a dict outage entry carries an operator-authored until key."""
+
+    return isinstance(existing, dict) and "until" in existing
+
+
+def _glmcp_payg_transition_budget_active(now: datetime | None) -> bool:
+    """True when a live TransitionBudget is active for glmcp-review-direct / z_ai."""
+
+    try:
+        resolved = review_team.load_quota_spend_ledger_resolved()
+    except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
+        return False
+    if getattr(resolved, "source", None) != "live":
+        return False
+    ledger = getattr(resolved, "ledger", None)
+    if ledger is None:
+        return False
+    try:
+        budgets = ledger.active_paid_budgets(now=now)
+    except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
+        return False
+    provider = review_team.GLMCP_PAYG_BUDGET_PROVIDER
+    profile = review_team.GLMCP_PAYG_BUDGET_PROFILE
+    return any(
+        provider in getattr(budget, "providers_allowed", ())
+        and profile in getattr(budget, "profiles_allowed", ())
+        for budget in budgets
+    )
+
+
+def _glmcp_review_direct_quota_admission_fresh(now: datetime | None) -> bool:
+    """True when glmcp.review.direct has a fresh route-specific quota admission."""
+
+    try:
+        fresh, _refs = _route_specific_quota_admission_fresh(
+            {"route_id": review_team.GLMCP_PAYG_BUDGET_ROUTE_ID},
+            now=now,
+        )
+    except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
+        return False
+    return bool(fresh)
+
+
+def _glmcp_payg_review_route_eligible(now_iso: str) -> bool:
+    """True when glmcp.review.direct PAYG is a live glm review route.
+
+    A Coding Plan wall is not glm-family death. PAYG stays eligible when a live
+    TransitionBudget is active for glmcp-review-direct / z_ai, or when
+    glmcp.review.direct has a fresh route-specific quota admission.
+    """
+
+    now = _parse_aware_datetime(now_iso)
+    try:
+        if _glmcp_payg_transition_budget_active(now):
+            return True
+        return _glmcp_review_direct_quota_admission_fresh(now)
+    except (OSError, TypeError, ValueError, review_team.QuotaSpendLedgerError):
+        return False
 
 
 def update_family_outage(
@@ -681,9 +911,15 @@ def update_family_outage(
 ) -> frozenset[str]:
     """Fold a round's seat verdicts into the outage state.
 
-    All seats of a family walled -> family OUT (stamped now). Any parseable
-    verdict or invalid-output from a family -> family back (cleared), because
-    the family is responding even if its reply is unusable.
+    All seats of a family walled -> family OUT (stamped now). Restamp
+    preserves operator-authored until/note and never invents until. A
+    parseable verdict or invalid-output clears the family only when until
+    is absent or now >= until; a still-future until keeps the family OUT.
+
+    Family ``glm`` is the exception when glmcp.review.direct PAYG is
+    eligible: a Coding Plan wall is not glm-family death, so glm is not
+    inserted or restamped, and a no-until glm latch is popped. claude and
+    codex are never popped by this PAYG path.
     """
 
     state_path = state_path or FAMILY_OUTAGE_STATE
@@ -702,15 +938,34 @@ def update_family_outage(
             for r in reviews:
                 by_family.setdefault(str(r.get("family")), []).append(str(r.get("verdict")))
             available_verdicts = PARSEABLE_VERDICTS | {"invalid-output"}
+            glm_payg_eligible = _glmcp_payg_review_route_eligible(now_iso)
             for family, verdicts in by_family.items():
                 if all(v in review_team.FAMILY_OUTAGE_VERDICTS for v in verdicts):
+                    if family == "glm" and glm_payg_eligible:
+                        # Coding Plan wall ≠ glm-family death. Do not insert/restamp glm.
+                        continue
                     # Sustained outage: preserve the STABLE outage_started_at (set when this
                     # outage began) and only advance observed_at. Legacy str entries seed
                     # started == the old timestamp; a brand-new outage seeds started == now.
-                    started = _outage_started_at(state.get(family), now_iso)
-                    state[family] = {"observed_at": now_iso, "outage_started_at": started}
+                    # Preserve operator-authored until/note on restamp; never invent until.
+                    existing = state.get(family)
+                    started = _outage_started_at(existing, now_iso)
+                    entry: dict[str, Any] = {
+                        "observed_at": now_iso,
+                        "outage_started_at": started,
+                    }
+                    _copy_until_note(existing, entry)
+                    state[family] = entry
                 elif any(v in available_verdicts for v in verdicts):
+                    existing = state.get(family)
+                    if _family_until_still_active(existing, now_iso):
+                        # Stay OUT until operator until. Do not pop until/note.
+                        continue
                     state.pop(family, None)
+            if glm_payg_eligible:
+                existing_glm = state.get("glm")
+                if existing_glm is not None and not _family_outage_entry_has_until(existing_glm):
+                    state.pop("glm", None)
             with tempfile.NamedTemporaryFile(
                 "w",
                 encoding="utf-8",
@@ -742,8 +997,11 @@ def clear_route_recovered_family_outage(
     receipt is a recovery witness for that backing route; if the route is still
     blocked, the outage latch stays intact. The route_blocked_families input is
     the operational killswitch for a bad recovery detector: route-block the
-    family and this helper will not clear its outage latch. Legacy one-line
-    outage entries remain explicit family outages and are not route-cleared.
+    family and this helper will not clear its outage latch. A parseable until
+    still in the future is not recovery: a post-outage route admission must
+    not pop that family. After until lapses, or when until is absent,
+    route-admission recovery is unchanged. Legacy one-line outage entries
+    remain explicit family outages and are not route-cleared.
     """
 
     if not outage_witness:
@@ -765,6 +1023,10 @@ def clear_route_recovered_family_outage(
         if family in structured_outage_families
         and family in route_ids
         and family not in route_blocked_families
+        and not _family_until_still_active(
+            raw_state.get(family),
+            now_iso or datetime.now(UTC).isoformat(),
+        )
         and _route_has_post_outage_admission_witness(
             route_ids[family],
             observed_at,
@@ -895,9 +1157,24 @@ class PRInfo:
 
 
 def _run_gh(cmd: list[str], *, repo_root: Path, runner: Any, timeout: int = 120) -> str:
-    proc = runner(
-        cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=timeout
-    )
+    """Run a `gh` command, normalising EVERY failure to RuntimeError.
+
+    A nonzero return code was already converted; a RAISED failure was not. `runner` can raise
+    `subprocess.TimeoutExpired` or `OSError` (a missing or unexecutable `gh`), and neither is a
+    `RuntimeError` — so both sailed past all **eight** `except RuntimeError` handlers in this
+    module, skipping the transport fallback they guard and surfacing as a per-PR error that can
+    starve that PR every cycle. Found by external review.
+
+    Normalising here rather than widening those eight handlers is deliberate: one mitigation at the
+    boundary, not eight for the same hazard. The distinction the handlers depend on is preserved —
+    this still raises, and never returns an empty string that would read as "gh said nothing".
+    """
+    try:
+        proc = runner(
+            cmd, cwd=str(repo_root), capture_output=True, text=True, check=False, timeout=timeout
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise RuntimeError(f"{' '.join(cmd[:3])} could not run: {exc}") from exc
     if proc.returncode != 0:
         raise RuntimeError(
             f"{' '.join(cmd[:3])} failed (rc={proc.returncode}): {proc.stderr.strip()[:300]}"
@@ -967,9 +1244,67 @@ def _fetch_pr_via_view(
     )
 
 
-def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRInfo:
+def fetch_pr(
+    pr_number: int,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    route: ListingRoute | None = None,
+) -> PRInfo:
+    """Fetch one PR's metadata, preferring the transport the cycle chose.
+
+    `gh pr view --json` is GraphQL-backed and already existed here — but only as a *fallback*
+    after REST failed, which is the shape `choose_transport` was written against: a path that
+    engages on failure can react to exhaustion but never prevent it. When the cycle measured
+    REST below its floor, this begins on GraphQL instead, and REST becomes the fallback.
+    """
+    incomplete_pr: PRInfo | None = None
+    if route is not None and route.transport == "graphql":
+        try:
+            pr_info = _fetch_pr_via_view(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+            if (
+                pr_info.changed_file_count is None
+                or len(pr_info.files) >= pr_info.changed_file_count
+                or route.rest_blocked
+            ):
+                return pr_info
+            # Keep the known truncation for review_pr's withholding reason if REST also
+            # fails. A successful metadata response is not a complete file listing.
+            incomplete_pr = pr_info
+            LOG.warning(
+                "GraphQL pull files truncated for PR #%d (%d/%d); falling back to REST",
+                pr_number,
+                len(pr_info.files),
+                pr_info.changed_file_count,
+            )
+        except RuntimeError as exc:
+            if route.rest_blocked:
+                # REST was MEASURED below its floor. Falling back to it would attempt more
+                # after a failure than before it, and would recreate the failure-triggered
+                # routing this change exists to replace — with a pool already known empty.
+                raise RuntimeError(
+                    f"GraphQL pull fetch failed for PR #{pr_number} ({exc}) and REST is "
+                    f"measured below its floor ({route.reason}), so it is not an eligible "
+                    "fallback. Next action: retry once either pool recovers; "
+                    "`github_pr_status.py rate` reports both."
+                ) from exc
+            LOG.warning(
+                "GraphQL pull fetch failed for PR #%d; falling back to REST: %s", pr_number, exc
+            )
     item = get_pull_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
     if item is None:
+        if incomplete_pr is not None:
+            return incomplete_pr
+        if route is not None and route.transport == "graphql":
+            # `gh pr view` was already the PRIMARY on this cycle and it failed; retrying it here
+            # would repeat a call we know just failed, which is the "attempt more after a
+            # failure" shape the routing rules forbid.
+            raise RuntimeError(
+                f"both transports failed for PR #{pr_number}: `gh pr view` was tried first "
+                f"(cycle routed to GraphQL) and REST also returned nothing. Next action: check "
+                f"`gh auth status` and `github_pr_status.py rate`."
+            )
         try:
             LOG.warning(
                 "REST pull fetch failed for PR #%d; falling back to `gh pr view`",
@@ -992,6 +1327,8 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
     head = item.get("head") if isinstance(item.get("head"), dict) else {}
     base = item.get("base") if isinstance(item.get("base"), dict) else {}
     file_items = list_pull_files_rest(pr_number, repo=repo, repo_root=repo_root, runner=runner)
+    if incomplete_pr is not None and not file_items:
+        return incomplete_pr
     files = tuple(
         str(entry["filename"])
         for entry in file_items
@@ -1017,10 +1354,63 @@ def fetch_pr(pr_number: int, *, repo: str, repo_root: Path, runner: Any) -> PRIn
     )
 
 
-def fetch_pr_diff(pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any) -> str:
+_GITHUB_DIFF_BASE = "merge-base(base, head), as computed by GitHub"
+
+
+class PrDiff(str):
+    """A unified diff that knows what it was computed against.
+
+    A plain ``str`` everywhere a diff is consumed (truncation, prompt rendering); the two
+    attributes let the reviewer prompt state the comparison base and the transport. Review
+    on #4610 asked for that once the local fallback stopped requiring the PR's recorded base
+    sha to equal the local base tip.
+    """
+
+    comparison_base: str
+    source: str
+
+    def __new__(cls, text: str, *, source: str, comparison_base: str = "") -> PrDiff:
+        diff = super().__new__(cls, text)
+        diff.source = source
+        diff.comparison_base = comparison_base
+        return diff
+
+
+def fetch_pr_diff(
+    pr_info: PRInfo,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    route: ListingRoute | None = None,
+) -> PrDiff:
+    """Fetch the PR diff, avoiding the REST pool when the cycle measured it empty.
+
+    There is no GraphQL diff API — GraphQL cannot return a unified diff, and `gh pr diff`
+    goes to the REST diff media type — so "route to GraphQL" has no meaning here. The path
+    that actually spares the pool is the **local** one: `git fetch` speaks the git protocol,
+    which is a different quota entirely. It already existed as the last fallback; when REST
+    is measured empty it becomes the first choice.
+    """
     pr_number = pr_info.number
+    if route is not None and route.transport == "graphql":
+        try:
+            return fetch_pr_diff_from_local(pr_info, repo_root=repo_root, runner=runner)
+        except RuntimeError as exc:
+            if route.rest_blocked:
+                raise RuntimeError(
+                    f"local git diff unavailable for PR #{pr_info.number} ({exc}) and REST is "
+                    f"measured below its floor ({route.reason}), so the REST diff endpoint is "
+                    "not an eligible fallback. Next action: ensure the PR ref can be fetched "
+                    "locally (`git fetch origin pull/N/head`), or retry once REST recovers."
+                ) from exc
+            LOG.warning(
+                "local git diff unavailable for PR #%d; falling back to the REST diff endpoint: %s",
+                pr_number,
+                exc,
+            )
     try:
-        return _run_gh(
+        text = _run_gh(
             [
                 "gh",
                 "api",
@@ -1033,6 +1423,7 @@ def fetch_pr_diff(pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any) -
             repo_root=repo_root,
             runner=runner,
         )
+        return PrDiff(text, source="github-rest", comparison_base=_GITHUB_DIFF_BASE)
     except RuntimeError as exc:
         LOG.warning(
             "REST diff fetch failed for PR #%d; falling back to `gh pr diff`: %s",
@@ -1040,11 +1431,12 @@ def fetch_pr_diff(pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any) -
             exc,
         )
         try:
-            return _run_gh(
+            text = _run_gh(
                 ["gh", "pr", "diff", str(pr_number), "--repo", repo],
                 repo_root=repo_root,
                 runner=runner,
             )
+            return PrDiff(text, source="gh-pr-diff", comparison_base=_GITHUB_DIFF_BASE)
         except RuntimeError as diff_exc:
             LOG.warning(
                 "`gh pr diff` failed for PR #%d; falling back to local git diff: %s",
@@ -1054,7 +1446,7 @@ def fetch_pr_diff(pr_info: PRInfo, *, repo: str, repo_root: Path, runner: Any) -
             return fetch_pr_diff_from_local(pr_info, repo_root=repo_root, runner=runner)
 
 
-def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -> str:
+def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -> PrDiff:
     """Build a pinned local PR diff when GitHub diff endpoints are unavailable."""
     base_ref = pr_info.base_ref or "main"
     remote_base = f"origin/{base_ref}"
@@ -1070,7 +1462,7 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             "prove the current PR head. Next action: restore GitHub PR metadata access or "
             "fetch PR metadata with headRefOid/head.sha before review dispatch."
         )
-    _ensure_local_ref_at_sha(
+    pinned_base = _ensure_local_ref_at_sha(
         remote_base,
         expected_sha=pr_info.base_sha,
         fetch_ref=base_ref,
@@ -1093,17 +1485,38 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             f"access or fetch pull/{pr_info.number}/head before review dispatch."
         )
 
-    merge_base = _run_gh(
-        ["git", "merge-base", pr_info.base_sha, head],
-        repo_root=repo_root,
-        runner=runner,
-    ).strip()
-    if merge_base != pr_info.base_sha:
+    try:
+        merge_base = _run_gh(
+            ["git", "merge-base", pinned_base, head],
+            repo_root=repo_root,
+            runner=runner,
+        ).strip()
+    except RuntimeError as exc:
         raise RuntimeError(
-            f"local git diff fallback for PR #{pr_info.number} cannot prove head contains "
-            f"the current PR base {pr_info.base_sha[:12]}; merge-base was "
-            f"{merge_base[:12]}. Next action: fetch the GitHub PR diff endpoint or "
-            "update the PR branch to the current base before review dispatch."
+            f"local git diff fallback for PR #{pr_info.number} cannot compute a merge-base "
+            f"between {remote_base} and head {head[:12]}; the refs may be missing or the "
+            "histories unrelated. Next action: fetch the PR head and base refs, then retry "
+            "review dispatch."
+        ) from exc
+    if not merge_base:
+        raise RuntimeError(
+            f"local git diff fallback for PR #{pr_info.number} computed no merge-base "
+            f"between {remote_base} and head {head[:12]}; refusing to review an unproven "
+            "diff. Next action: fetch the PR head and base refs, then retry review dispatch."
+        )
+    if merge_base != pinned_base or merge_base != pr_info.base_sha:
+        # A PR behind main is valid: GitHub reviews merge-base(base, head)..head.
+        # The metadata may also lag the refreshed base. Record the actual comparison
+        # base in the dossier instead of rejecting either normal shape of a PR.
+        LOG.info(
+            "PR #%d: reviewing head %s against merge base %s "
+            "(refreshed %s %s, recorded PR base %s)",
+            pr_info.number,
+            head[:12],
+            merge_base[:12],
+            base_ref,
+            pinned_base[:12],
+            pr_info.base_sha[:12],
         )
     diff = _run_gh(
         ["git", "diff", "--no-ext-diff", "--find-renames", f"{merge_base}..{head}"],
@@ -1116,7 +1529,7 @@ def fetch_pr_diff_from_local(pr_info: PRInfo, *, repo_root: Path, runner: Any) -
             f"local git diff for PR #{pr_info.number} was empty between "
             f"{remote_base} and {head[:12]}; next action: fetch PR head/base and retry"
         )
-    return diff
+    return PrDiff(diff, source="local-git", comparison_base=merge_base)
 
 
 def _resolve_local_ref(ref: str, *, repo_root: Path, runner: Any) -> str | None:
@@ -1147,25 +1560,49 @@ def _ensure_local_ref_at_sha(
     fetch_ref: str,
     repo_root: Path,
     runner: Any,
-) -> None:
-    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
-    if actual_sha == expected_sha:
-        return
-
-    _run_gh(
-        ["git", "fetch", "--quiet", "origin", f"{fetch_ref}:refs/remotes/origin/{fetch_ref}"],
-        repo_root=repo_root,
-        runner=runner,
-        timeout=180,
-    )
-    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
-    if actual_sha != expected_sha:
-        actual_label = (actual_sha or "missing")[:12]
-        raise RuntimeError(
-            f"local ref {ref} resolved to {actual_label}, expected PR base "
-            f"{expected_sha[:12]}; next action: fetch the PR base ref from origin and "
-            "retry review dispatch after the local base matches the PR metadata."
+) -> str:
+    """Refresh and return an immutable base tip with the recorded PR base as an ancestor."""
+    # GitHub refreshes baseRefOid lazily; even a matching local ref may lag origin.
+    try:
+        _run_gh(
+            [
+                "git",
+                "fetch",
+                "--quiet",
+                "origin",
+                f"+refs/heads/{fetch_ref}:refs/remotes/origin/{fetch_ref}",
+            ],
+            repo_root=repo_root,
+            runner=runner,
+            timeout=180,
         )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"local ref {ref} cannot establish the current PR base at "
+            f"{expected_sha[:12]}; fetching the base ref failed. Next action: restore "
+            "origin access and retry review dispatch."
+        ) from exc
+
+    actual_sha = _resolve_local_ref(ref, repo_root=repo_root, runner=runner)
+    if not actual_sha:
+        raise RuntimeError(
+            f"local ref {ref} is missing after fetching the base ref. Next action: "
+            "restore origin access and fetch the base ref, then retry review dispatch."
+        )
+    try:
+        _run_gh(
+            ["git", "merge-base", "--is-ancestor", expected_sha, actual_sha],
+            repo_root=repo_root,
+            runner=runner,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"PR base {expected_sha[:12]} is not a proven ancestor of refreshed {ref} "
+            f"({actual_sha[:12]}); refusing local git diff. Next action: re-set the PR base "
+            f'with updatePullRequest(baseRefName: "{fetch_ref}") or push a merge of '
+            f"{fetch_ref}, then retry review dispatch."
+        ) from exc
+    return actual_sha
 
 
 def _ensure_local_ref(
@@ -1279,6 +1716,8 @@ def render_reviewer_prompt(
     diff: str,
     prior_criticals: list[dict[str, Any]],
     prior_file_excerpts: str = "",
+    diff_source: str = "",
+    comparison_base: str = "",
 ) -> str:
     prior_block = ""
     if prior_criticals:
@@ -1298,6 +1737,8 @@ def render_reviewer_prompt(
             "title": pr_info.title,
             "branch": pr_info.head_ref,
             "head_sha": pr_info.head_sha,
+            "diff_source": diff_source or "unrecorded",
+            "comparison_base": comparison_base or "unrecorded",
             "linked_cc_task": task_id,
             "team_class": team_class,
             "changed_files": list(pr_info.files),
@@ -2540,8 +2981,15 @@ def review_pr(
     registry_path: Path | None = None,
     now_iso: str | None = None,
     route_blocked_families: dict[str, tuple[str, ...]] | None = None,
+    route: ListingRoute | None = None,
 ) -> dict[str, Any]:
-    """Constitute (and with ``apply``, dispatch) the review team for one PR."""
+    """Constitute (and with ``apply``, dispatch) the review team for one PR.
+
+    ``route`` is the cycle's measured decision, made once by the caller rather than re-probed
+    per PR: a per-call decision would cost a rate probe per PR and could disagree with itself
+    mid-scan. It also carries whether REST is *blocked*, which decides whether REST is eligible
+    as a fallback at all.
+    """
 
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
@@ -2574,7 +3022,7 @@ def review_pr(
             "reason": truncate_context(f"{type(exc).__name__}: {exc}", limit=500),
         }
 
-    pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner)
+    pr_info = fetch_pr(pr_number, repo=repo, repo_root=repo_root, runner=gh_runner, route=route)
     if pr_info.is_draft:
         return {"status": "draft_skipped", "pr": pr_number}
     if not pr_info.files:
@@ -2801,7 +3249,8 @@ def review_pr(
         changed_source_excerpt_files, repo_root=repo_root, head_sha=pr_info.head_sha
     )
     reviewer_source_excerpts = prior_file_excerpts + changed_file_excerpts
-    diff = truncate_diff(fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner))
+    pr_diff = fetch_pr_diff(pr_info, repo=repo, repo_root=repo_root, runner=gh_runner, route=route)
+    diff = truncate_diff(pr_diff)
     task_note_text = "\n\n".join(
         f"## Linked task note: {path.name}\n\n{path.read_text(encoding='utf-8')}"
         for path, _, _ in keyed_matches
@@ -2811,6 +3260,8 @@ def review_pr(
         render_reviewer_prompt(
             seat=seat,
             pr_info=pr_info,
+            diff_source=pr_diff.source,
+            comparison_base=pr_diff.comparison_base,
             task_id=task_ids[0] if len(task_ids) == 1 else ", ".join(task_ids),
             team_class=team_class,
             lenses=lenses,
@@ -2887,6 +3338,9 @@ def review_pr(
             changed_file_count=pr_info.changed_file_count,
             repo_root=repo_root,
         )
+        dossier["diff_source"] = pr_diff.source
+        dossier["comparison_base"] = pr_diff.comparison_base
+        dossier["diff_sha256"] = hashlib.sha256(pr_diff.encode("utf-8")).hexdigest()
         # Durable evidence audit trail: exactly which prior-critical excerpts
         # were shown to reviewers, pinned to which head (sdlc-legibility —
         # receipts must reconstruct the evidence, not just the verdict).
@@ -3003,12 +3457,30 @@ def review_all_open_prs(
 ) -> list[dict[str, Any]]:
     repo_root = repo_root or REPO_ROOT
     gh_runner = gh_runner or subprocess.run
-    open_prs = list_open_pr_statuses_rest(
-        repo=repo,
-        repo_root=repo_root,
-        runner=gh_runner,
-        limit=100,
-    )
+    try:
+        # The scan needs only PR numbers and draft flags; fetching statuses here would
+        # couple every review to one row's rollup availability.
+        open_prs, route = list_open_pr_statuses(
+            repo=repo,
+            repo_root=repo_root,
+            runner=gh_runner,
+            limit=100,
+            include_status=False,
+        )
+    except PrListingUnavailable as exc:
+        # Skip this scan rather than spending it into guaranteed 403s. Returning an empty
+        # result set is safe here — the next scan re-evaluates every open PR from scratch,
+        # so nothing is lost by sitting out a cycle. Logged loudly so an empty scan is
+        # never mistaken for "no PRs needed review".
+        LOG.warning(
+            "review-team dispatch scan skipped: %s%s",
+            exc.reason,
+            listing_unavailable_detail(exc),
+        )
+        return []
+    # The cycle's transport comes from the chooser, not from scanning rows for a stamp. Routing
+    # only the bulk listing spared almost nothing anyway — the listing is one call and the
+    # per-PR work below is N — so `route` is threaded all the way down.
     results: list[dict[str, Any]] = []
     for item in open_prs:
         if not isinstance(item, dict) or item.get("isDraft"):
@@ -3028,6 +3500,7 @@ def review_all_open_prs(
                     wake_dir=wake_dir,
                     send_runner=send_runner,
                     route_blocked_families=route_blocked_families,
+                    route=route,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — one PR must not starve the scan

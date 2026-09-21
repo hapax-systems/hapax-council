@@ -106,6 +106,40 @@ def widen(task_id: str, additions: list[str], removals: list[str] | None = None)
         if not _surface_ok(item):
             return _refuse(f"path '{item}' has no existing surface under {REPO_ROOT}")
 
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from shared.task_note_lock import TaskNoteLockError, projected_path_lock
+
+    # Read and write together under the projection lock — see cc-stage-advance for why the
+    # read has to be inside it.
+    try:
+        with projected_path_lock(task_id, (note,)):
+            # Re-resolve under the lock: the path was found before the lock existed, and a
+            # transition relocating this note in that window would leave us holding a lock
+            # on a name that no longer refers to it. Locking a stale path is not locking
+            # the note.
+            current = _find_note(task_id)
+            if current is None or current != note:
+                print(
+                    f"cc-scope-widen: '{task_id}' moved while acquiring its lock "
+                    f"({note} -> {current}); rerun to act on its current position",
+                    file=sys.stderr,
+                )
+                return ERROR
+            return _widen_locked(task_id, note, additions, removals)
+
+
+    except TaskNoteLockError as exc:
+        # A refusal from the lock is an operator-facing outcome, not a crash: the estate's
+        # executive_function axiom requires the message to carry its own next action, and a
+        # Python traceback carries the stack instead.
+        print(f"cc-scope-widen: REFUSED — {exc}", file=sys.stderr)
+        return REFUSED
+def _widen_locked(
+    task_id: str, note: Path, additions: list[str], removals: list[str]
+) -> int:
+    """The read-modify-write itself. Called only with the projection lock held."""
+
     text = note.read_text(encoding="utf-8")
     if not text.startswith("---"):
         print("cc-scope-widen: note has no frontmatter", file=sys.stderr)

@@ -109,16 +109,23 @@ ROUTE_MODEL_PREFIXES: Final[dict[str, tuple[str, ...]]] = {
 
 
 class Observation:
-    __slots__ = ("kind", "at", "source", "detail", "model")
+    __slots__ = ("kind", "at", "source", "detail", "model", "scrubbed_env")
 
     def __init__(
-        self, kind: str, at: datetime, source: str, detail: str = "", model: str | None = None
+        self,
+        kind: str,
+        at: datetime,
+        source: str,
+        detail: str = "",
+        model: str | None = None,
+        scrubbed_env: tuple[str, ...] = (),
     ) -> None:
         self.kind = kind  # "served" | "wall"
         self.at = at
         self.source = source
         self.detail = detail
         self.model = model
+        self.scrubbed_env = scrubbed_env
 
 
 def _anthropic_model(record: Mapping[str, object]) -> str | None:
@@ -322,10 +329,11 @@ def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
     return out
 
 
-#: Bounded active probe, used ONLY when nothing exercised the subscription recently, so a
-#: quiet estate does not silently drop the review floor. Measured 2026-08-19: ~$0.02 once
-#: the prompt cache is warm. A FRESH PROCESS taking the same path a reviewer would — which
-#: is why it is better evidence than this process's own liveness, and why it is not presence.
+#: Bounded active probe, used when any requested route lacks recent in-family passive evidence,
+#: so either a quiet estate or a busy session in another family cannot silently drop the review
+#: floor. Measured 2026-08-19: ~$0.02 once the prompt cache is warm. A FRESH PROCESS taking the
+#: same path a reviewer would is better evidence than this process's own liveness and is not
+#: presence.
 #: The probe must request a model whose family can witness EVERY route it intends to mint.
 #: An earlier revision probed with Haiku, which cannot witness claude.review.opus — the one
 #: route the review floor depends on — so the probe could only ever have covered the route
@@ -347,24 +355,28 @@ PROBE_ARGV = (
 )
 PROBE_TIMEOUT_SECONDS = 180
 
-#: Env vars that redirect the Claude CLI away from the operator's subscription. If ANY is
-#: set, the probe would measure somebody else's endpoint while the receipt asserts
-#: ``auth_surface: subscription``. NOT hypothetical: /run/user/1000/hapax-secrets.env carries
-#: ANTHROPIC_BASE_URL pointing at podium's LiteLLM proxy, and this unit originally loaded that
-#: file via EnvironmentFile=. The estate has already had one incident where inherited provider
-#: env silently redirected Claude to a third-party API.
-#:
-#: Scrubbing alone is NOT the fix. If the caller's environment says "talk to that endpoint",
-#: quietly ignoring it and measuring something else is a different lie. The probe REFUSES and
-#: names the variable, so the route holds rather than being vouched for on the wrong evidence.
+#: Known provider controls that the operator-subscription probe deliberately removes. Only names,
+#: never values, are persisted in a probe-backed admission receipt so the measurement discloses
+#: which ambient controls could not affect it.
+PROBE_ENV_SCRUBBED = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
+)
+
+#: Env vars that can redirect the Claude CLI away from the operator's subscription. Known exact
+#: controls above are scrubbed in the child process; any other redirect control still refuses the
+#: probe. This keeps the guard fail-closed as new provider controls appear.
 PROVIDER_REDIRECT_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_USE_")
 
 
-def provider_redirect_env() -> list[str]:
+def provider_redirect_env(env: Mapping[str, str] | None = None) -> list[str]:
     """Names of set env vars that would point the probe at a non-subscription endpoint."""
+    source = os.environ if env is None else env
     return sorted(
         name
-        for name, value in os.environ.items()
+        for name, value in source.items()
         if value and name.startswith(PROVIDER_REDIRECT_ENV_PREFIXES)
     )
 
@@ -372,11 +384,14 @@ def provider_redirect_env() -> list[str]:
 def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
     """Actively observe account-live by making one bounded real request.
 
-    Refuses outright when the environment would redirect the CLI off the subscription —
-    see :data:`PROVIDER_REDIRECT_ENV_PREFIXES`. Returning ``None`` means "no evidence",
-    which holds the route; it never mints.
+    Known provider controls are removed from the subprocess environment. Any redirecting
+    variable not in that explicit scrub list still refuses the probe. Returning ``None`` means
+    "no evidence", which holds the route; it never mints.
     """
-    redirected = provider_redirect_env()
+    probe_env = dict(os.environ)
+    for name in PROBE_ENV_SCRUBBED:
+        probe_env.pop(name, None)
+    redirected = provider_redirect_env(probe_env)
     if redirected:
         print(
             "probe refused: environment would redirect the Claude CLI off the operator "
@@ -392,6 +407,7 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
             text=True,
             timeout=PROBE_TIMEOUT_SECONDS,
             cwd=cwd,
+            env=probe_env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         # A probe that could not RUN is a broken instrument, not an absence of evidence.
@@ -421,7 +437,13 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         model = _anthropic_model(record)
         if model is None:
             return None
-        return Observation("served", now, "active-probe", model=model)
+        return Observation(
+            "served",
+            now,
+            "active-probe",
+            model=model,
+            scrubbed_env=PROBE_ENV_SCRUBBED,
+        )
     return None
 
 
@@ -462,16 +484,79 @@ def observe(
         found.extend(_scan_headless(path, floor))
     for path in _recent_files(transcript_glob, floor):
         found.extend(_scan_transcript(path, floor))
+    verdict, newest, _found = _verdict(found)
+    return verdict, newest
+
+
+def observe_all(
+    *,
+    now: datetime,
+    max_age_seconds: int,
+    headless_glob: str,
+    transcript_glob: str,
+) -> tuple[str, Observation | None, list[Observation]]:
+    """``observe`` plus every observation inside the window, so routes can pick their own.
+
+    The account-level verdict (served / walled / no_evidence) is a property of the NEWEST
+    observation. Which observation may vouch for a given ROUTE is not: measured 2026-09-02,
+    every 10-minute cycle for ~24h logged ``claude.review.opus: skipped model-family-mismatch,
+    observed_model: claude-fable-5-1`` — the newest serve was a Fable run, so the opus review
+    route was never minted although opus serves sat minutes older inside the same window.
+    A new model family arriving had silently starved a route. The per-route choice lives in
+    ``evidence_by_route``; this function only stops discarding the evidence it needs.
+    """
+    floor = now - timedelta(seconds=max_age_seconds)
+    found: list[Observation] = []
+    for path in _recent_files(headless_glob, floor):
+        found.extend(_scan_headless(path, floor))
+    for path in _recent_files(transcript_glob, floor):
+        found.extend(_scan_transcript(path, floor))
+    return _verdict(found)
+
+
+def _verdict(found: list[Observation]) -> tuple[str, Observation | None, list[Observation]]:
     if not found:
-        return "no_evidence", None
+        return "no_evidence", None, []
     # A wall that is NEWER than the newest served response is the live state: a served
     # response from 20 minutes ago does not survive a wall 2 minutes ago. On an exact tie
     # the wall wins — `max` returns the FIRST maximal element, so without the second key a
     # tie silently resolves to whichever the scan happened to emit first.
     newest = max(found, key=lambda o: (o.at, o.kind == "wall"))
     if newest.kind == "wall":
-        return "walled", newest
-    return "served", newest
+        return "walled", newest, found
+    return "served", newest, found
+
+
+def evidence_by_route(
+    found: list[Observation],
+    route_ids: tuple[str, ...],
+) -> dict[str, Observation | None]:
+    """For each route, the newest SERVED observation in that route's own model family.
+
+    A wall still wins for the whole account — callers only reach this after ``_verdict`` said
+    ``served`` — but inside a served window each route is vouched for by the freshest serve
+    that could actually witness it, never by a serve from another family and never by nothing
+    because a different family happened to answer last. Ties resolve to the first scanned,
+    which is immaterial: same family, same instant, same evidence.
+    """
+    # A wall is an account-level refusal. A serve that PRECEDES the newest wall cannot witness
+    # availability after it, whatever family answered later: opus serve at t0, wall at t1, fable
+    # serve at t2 makes the account "served" (t2 is newest) but must not resurrect the t0 opus
+    # serve as evidence for the opus review route (review finding on #4615, three families).
+    walls = [o.at for o in found if o.kind == "wall"]
+    newest_wall = max(walls) if walls else None
+    by_route: dict[str, Observation | None] = {}
+    for route_id in route_ids:
+        prefixes = ROUTE_MODEL_PREFIXES.get(route_id)
+        eligible = [
+            o
+            for o in found
+            if o.kind == "served"
+            and (not prefixes or (o.model or "").startswith(prefixes))
+            and (newest_wall is None or o.at > newest_wall)
+        ]
+        by_route[route_id] = max(eligible, key=lambda o: o.at) if eligible else None
+    return by_route
 
 
 def mint(
@@ -482,8 +567,13 @@ def mint(
     stale_after_seconds: int,
     receipt_dir: Path | None,
     dry_run: bool,
+    evidence_by_route: Mapping[str, Observation | None] | None = None,
 ) -> list[dict]:
     """Hand the observation to the existing admission writer — never bypass its validation.
+
+    ``evidence_by_route`` (from ``evidence_by_route()``) lets each route be minted from the
+    freshest serve in its OWN family. Without it every route is judged against the single
+    ``evidence`` observation, which is how a Fable serve starved the opus review route.
 
     The receipt is anchored to the OBSERVATION time, not the mint time. The writer computes
     ``fresh_until = observed_at + stale_after``, so passing mint time would let a stale
@@ -491,25 +581,41 @@ def mint(
     compounding into a receipt that vouches far past what was actually seen. Anchoring here
     means a 14-minute-old observation yields 14 fewer minutes of freshness, automatically.
     """
-    observed_at = evidence.at.replace(microsecond=0)
-    stamp = observed_at.strftime("%Y%m%dt%H%M%Sz")
-    evidence_ref = f"{WITNESS_PREFIX}-{stamp}"
     results: list[dict] = []
     for route_id in route_ids:
+        route_evidence = evidence
+        if evidence_by_route is not None:
+            route_evidence = evidence_by_route.get(route_id)
+            if route_evidence is None:
+                # No serve in this route's family inside the window. Distinct from a family
+                # mismatch: nothing was seen that could vouch, rather than the wrong thing.
+                results.append(
+                    {
+                        "route_id": route_id,
+                        "skipped": "no-serve-in-model-family",
+                        "observed_model": evidence.model,
+                    }
+                )
+                continue
         # Mint a route ONLY from evidence in its own model family. A Haiku serve does not
         # witness claude.review.opus — and the moment the Opus entitlement is exhausted is
         # exactly when cheap models keep answering, so fanning one observation across both
-        # routes is wrong precisely when it matters most.
+        # routes is wrong precisely when it matters most. Kept as a guard even when
+        # ``evidence_by_route`` already selected by family: the receipt must never depend on
+        # the selector and the guard agreeing by accident.
         prefixes = ROUTE_MODEL_PREFIXES.get(route_id)
-        if prefixes and not (evidence.model or "").startswith(prefixes):
+        if prefixes and not (route_evidence.model or "").startswith(prefixes):
             results.append(
                 {
                     "route_id": route_id,
                     "skipped": "model-family-mismatch",
-                    "observed_model": evidence.model,
+                    "observed_model": route_evidence.model,
                 }
             )
             continue
+        observed_at = route_evidence.at.replace(microsecond=0)
+        stamp = observed_at.strftime("%Y%m%dt%H%M%Sz")
+        evidence_ref = f"{WITNESS_PREFIX}-{stamp}"
         argv = [
             sys.executable,
             str(ADMISSION_WRITER),
@@ -527,13 +633,17 @@ def mint(
         ]
         if receipt_dir is not None:
             argv += ["--receipt-dir", str(receipt_dir)]
+        if route_evidence.scrubbed_env:
+            argv.append("--probe-environment-scrubbed")
         if dry_run:
             results.append({"route_id": route_id, "would_run": argv[2:]})
             continue
         try:
             proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            results.append({"route_id": route_id, "returncode": -1, "stderr": f"{type(exc).__name__}: {exc}"})
+            results.append(
+                {"route_id": route_id, "returncode": -1, "stderr": f"{type(exc).__name__}: {exc}"}
+            )
             continue
         results.append(
             {
@@ -571,8 +681,9 @@ def main(argv: list[str] | None = None) -> int:
         "--probe",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="When no passive evidence exists, make ONE bounded real request to observe "
-        "account-live directly (~$0.02). --no-probe restricts to passive observation.",
+        help="When any requested route lacks passive in-family evidence, make ONE bounded real "
+        "request to observe account-live directly (~$0.02). --no-probe restricts to passive "
+        "observation.",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -584,28 +695,59 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     route_ids = tuple(args.route_ids or DEFAULT_ROUTE_IDS)
 
-    verdict, evidence = observe(
+    verdict, evidence, found = observe_all(
         now=now,
         max_age_seconds=args.max_age_seconds,
         headless_glob=args.headless_glob,
         transcript_glob=args.transcript_glob,
     )
 
-    # A quiet estate is not an exhausted one. Passive evidence only exists when something
-    # happened to run; without a fallback, an idle hour silently drops the review floor —
-    # which is the exact failure this whole change exists to end. The probe is a fresh
-    # process making one bounded real request, so it observes what a reviewer would get.
+    # Probe for ROUTE evidence, not merely for account-level evidence. A Fable serve witnesses
+    # headless.full but says nothing about review.opus; treating that as "the account was served"
+    # and suppressing the probe starves the review route indefinitely. Preserve every passive
+    # route witness already found and let one probe fill only the missing families.
     # NOT used to override a wall: a detected wall is the live state and must stand.
-    if verdict == "no_evidence" and args.probe and not args.dry_run:
+    by_route = (
+        evidence_by_route(found, route_ids) if verdict == "served" else dict.fromkeys(route_ids)
+    )
+    routes_missing_passive_evidence = [
+        route_id for route_id, route_evidence in by_route.items() if route_evidence is None
+    ]
+    probe_report: dict | None = None
+    if verdict != "walled" and routes_missing_passive_evidence and args.probe and not args.dry_run:
+        probe_report = {
+            "attempted": True,
+            "requested_for_routes": routes_missing_passive_evidence,
+            "reason": "requested route lacked in-model-family served evidence inside the window",
+            "model": PROBE_MODEL,
+            "environment_variables_scrubbed": list(PROBE_ENV_SCRUBBED),
+        }
         probed = probe(now)
         if probed is not None:
-            verdict, evidence = probed.kind, probed
+            probe_report["outcome"] = probed.kind
+            if probed.kind == "served":
+                witnessed = evidence_by_route([probed], tuple(routes_missing_passive_evidence))
+                for route_id, route_evidence in witnessed.items():
+                    if route_evidence is not None:
+                        by_route[route_id] = route_evidence
+                probe_report["witnessed_routes"] = [
+                    route_id for route_id, route_evidence in witnessed.items() if route_evidence
+                ]
+                found.append(probed)
+                verdict, evidence, _ = _verdict(found)
+            else:
+                verdict, evidence = probed.kind, probed
+        else:
+            probe_report["outcome"] = "no_evidence"
+            probe_report["witnessed_routes"] = []
     payload: dict = {
         "verdict": verdict,
         "observed_at": evidence.at.isoformat().replace("+00:00", "Z") if evidence else None,
         "source": evidence.source if evidence else None,
         "route_ids": list(route_ids),
     }
+    if probe_report is not None:
+        payload["probe"] = probe_report
 
     if verdict == "served":
         payload["receipts"] = mint(
@@ -615,8 +757,12 @@ def main(argv: list[str] | None = None) -> int:
             stale_after_seconds=args.stale_after_seconds,
             receipt_dir=args.receipt_dir,
             dry_run=args.dry_run,
+            evidence_by_route=by_route,
         )
         payload["observed_model"] = evidence.model
+        payload["observed_model_by_route"] = {
+            route_id: (o.model if o else None) for route_id, o in by_route.items()
+        }
         if not args.dry_run and mint_failed(payload["receipts"]):
             payload["hint"] = (
                 "observation succeeded but at least one receipt write FAILED — the route is "
@@ -624,9 +770,7 @@ def main(argv: list[str] | None = None) -> int:
                 "surfaces instead of leaving systemd green with no receipts."
             )
             rc = 5
-        elif not args.dry_run and not any(
-            r.get("returncode") == 0 for r in payload["receipts"]
-        ):
+        elif not args.dry_run and not any(r.get("returncode") == 0 for r in payload["receipts"]):
             payload["hint"] = "every route was skipped; no receipt was written"
             rc = 5
         else:

@@ -10,7 +10,6 @@ RemainAfterExit=yes
 WorkingDirectory=/home/hapax/llm-stack
 Environment=HOME=/home/hapax
 Environment=GNUPGHOME=/home/hapax/.gnupg
-Environment=PASSWORD_STORE_DIR=/home/hapax/.password-store
 Environment=PATH=/home/hapax/.local/bin:/usr/local/bin:/usr/bin:/bin
 # 60s delay — let core services (qdrant, postgres, litellm) settle first
 ExecStartPre=/bin/sleep 60

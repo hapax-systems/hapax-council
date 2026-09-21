@@ -73,6 +73,7 @@ REQUIRED_ROUTE_IDS = frozenset(
         "claude.headless.sonnet",
         "claude.review.opus",
         "claude.interactive.full",
+        "kimi.interactive.lane",
         "codex.headless.full",
         "codex.headless.spark",
         "agy.review.direct",
@@ -93,6 +94,8 @@ CLAUDE_REVIEW_ROUTE_ID = "claude.review.opus"
 CLAUDE_REVIEW_ADMISSION_BLOCKER = "claude_review_seat_receipt_admission_required"
 CLAUDE_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER = "claude_review_route_specific_quota_receipt_absent"
 CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER = "account_live_quota_receipt_absent"
+KIMI_INTERACTIVE_ROUTE_ID = "kimi.interactive.lane"
+KIMI_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
 ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     AGY_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
     GLMCP_REVIEW_ROUTE_ID: GLMCP_REVIEW_ADMISSION_BLOCKER,
@@ -102,6 +105,13 @@ ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     # the route stays held — lane/session presence never clears this.
     CLAUDE_HEADLESS_ROUTE_ID: CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER,
     CLAUDE_REVIEW_ROUTE_ID: CLAUDE_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER,
+    # kimi.interactive.lane: same contract — a hapax.kimi_quota_admission.v1 receipt minted by
+    # ~/.local/bin/hapax-kimi-quota-admission and folded into the live ledger by the telemetry
+    # writer (PR #4660) clears the fail-closed receipt blocker. The route id follows the minter's
+    # live contract (ROUTE_ID = "kimi.interactive.lane"), not the claude .interactive.full shape.
+    # Lane/session presence never clears this (review finding gemini-1, 2026-09-12: a route
+    # missing from this set can never clear its config-recorded blocker).
+    KIMI_INTERACTIVE_ROUTE_ID: KIMI_ROUTE_SPECIFIC_QUOTA_BLOCKER,
 }
 _DURATION_RE = re.compile(r"^(?P<count>[1-9][0-9]*)(?P<unit>s|m|h|d)$")
 _WRAPPER_CAPABILITY_REASON_PREFIXES = (
@@ -140,6 +150,7 @@ class Platform(StrEnum):
     CODEX = "codex"
     GEMINI = "gemini"
     GLMCP = "glmcp"
+    KIMI = "kimi"
     LOCAL_TOOL = "local_tool"
     VIBE = "vibe"
 
@@ -160,6 +171,7 @@ class Profile(StrEnum):
     FULL = "full"
     HAIKU = "haiku"
     JR = "jr"
+    LANE = "lane"
     LITE = "lite"
     OPENROUTER = "openrouter"
     OPUS = "opus"
@@ -218,6 +230,7 @@ class ModelId(StrEnum):
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
+    GPT_6_ASTRA = "gpt-6-astra"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
     GPT_OSS_120B = "gpt-oss-120b"
     COMMAND_R_08_2024 = "command-r-08-2024"
@@ -227,6 +240,7 @@ class ModelId(StrEnum):
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
+    KIMI_K3 = "kimi-code/k3"
     UNKNOWN = "unknown"
 
 
@@ -2115,18 +2129,25 @@ def _apply_receipt_to_route_payload(
     quota_stale_after = (
         receipt.stale_after if quota_unobservable_nonblocking else receipt.quota.stale_after
     )
+    # A platform receipt's quota evidence names the routes it actually observed
+    # (`platform-capability-registry:<route_id>:quota:observed`). An OBSERVED receipt that does not
+    # name THIS route is, for this route, an absent observation — one route's fresh receipt must
+    # not clear the quota blockers of its siblings (review finding on #4616).
+    quota_observed_for_route = _receipt_quota_names_route(receipt, route_payload)
+    if receipt.quota.status is EvidenceStatus.OBSERVED and not quota_observed_for_route:
+        quota_reason_codes = ["account_live_quota_receipt_absent"]
     _apply_surface(
         freshness,
         "quota",
         checked_at=observed_at,
         stale_after=quota_stale_after,
         evidence_refs=[*receipt.quota.evidence_refs, receipt_ref],
-        reason_codes=quota_reason_codes
-        if receipt.quota.status is not EvidenceStatus.OBSERVED
-        else [],
+        reason_codes=quota_reason_codes if not quota_observed_for_route else [],
         removable_reasons=_quota_unobservable_removable_reasons(route_payload)
         if quota_unobservable_nonblocking
-        else _quota_receipt_removable_reasons(route_payload),
+        else (
+            _quota_receipt_removable_reasons(route_payload) if quota_observed_for_route else set()
+        ),
     )
     _apply_surface(
         freshness,
@@ -2151,15 +2172,15 @@ def _apply_receipt_to_route_payload(
             score["evidence_refs"] = list(
                 dict.fromkeys([*score.get("evidence_refs", []), receipt_ref])
             )
-    if receipt.quota.status is EvidenceStatus.OBSERVED:
+    if quota_observed_for_route:
         route_payload.setdefault("telemetry", {})["quota_source"] = QuotaSource.MANUAL.value
 
     if capability_status is not EvidenceStatus.OBSERVED:
         top_blockers.extend(capability_reason_codes)
     if resource_status is not EvidenceStatus.OBSERVED:
         top_blockers.extend(resource_reason_codes)
-    if receipt.quota.status is not EvidenceStatus.OBSERVED and not quota_unobservable_nonblocking:
-        top_blockers.extend(receipt.quota.reason_codes)
+    if not quota_observed_for_route and not quota_unobservable_nonblocking:
+        top_blockers.extend(quota_reason_codes)
 
     removable_top_blockers = {"provider_docs_evidence_absent"}
     if capability_status is EvidenceStatus.OBSERVED:
@@ -2168,7 +2189,7 @@ def _apply_receipt_to_route_payload(
         removable_top_blockers.update(_resource_receipt_removable_reasons(route_payload))
     if quota_unobservable_nonblocking:
         removable_top_blockers.update(_quota_unobservable_removable_reasons(route_payload))
-    elif receipt.quota.status is EvidenceStatus.OBSERVED:
+    elif quota_observed_for_route:
         removable_top_blockers.update(_observed_quota_receipt_removable_reasons(route_payload))
     quota_admission_fresh, quota_admission_refs = _route_specific_quota_admission_fresh(
         route_payload,
@@ -2363,6 +2384,23 @@ def _quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
     return {"account_live_quota_receipt_absent", "quota_telemetry_unknown"}
 
 
+def _receipt_quota_names_route(
+    receipt: PlatformCapabilityReceipt, route_payload: dict[str, Any]
+) -> bool:
+    """True when the receipt's quota surface is OBSERVED and its evidence names this route.
+
+    The receipts producer writes one ``platform-capability-registry:<route_id>:quota:observed``
+    reference per route it actually saw a fresh receipt AND a fresh ledger snapshot for. A receipt
+    that is OBSERVED for a sibling route is not an observation of this one.
+    """
+    if receipt.quota.status is not EvidenceStatus.OBSERVED:
+        return False
+    route_id = str(route_payload.get("route_id") or "")
+    if not route_id:
+        return False
+    return f"platform-capability-registry:{route_id}:quota:observed" in receipt.quota.evidence_refs
+
+
 def _observed_quota_receipt_removable_reasons(route_payload: dict[str, Any]) -> set[str]:
     if route_payload.get("route_id") == "agy.review.direct":
         return set()
@@ -2396,7 +2434,7 @@ def _apply_surface(
 
 
 #: Effort tokens historically smuggled into ``model_or_engine`` (e.g. codex.headless.full's
-#: ``gpt-5.5-xhigh``). ``derive_execution_descriptor`` splits them back into structured axes.
+#: ``gpt-6-astra-xhigh``). ``derive_execution_descriptor`` splits them back into structured axes.
 _SMUGGLED_EFFORT_SUFFIXES: dict[str, Effort] = {
     "-max": Effort.MAX,
     "-xhigh": Effort.XHIGH,
@@ -2424,6 +2462,7 @@ _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
     "claude-sonnet-5": ModelId.CLAUDE_SONNET_5,
     "claude-haiku": ModelId.CLAUDE_HAIKU_4_5,
     "gpt-5.5": ModelId.GPT_5_5,
+    "gpt-6-astra": ModelId.GPT_6_ASTRA,
     "gpt-5.3-codex-spark": ModelId.GPT_5_3_CODEX_SPARK,
     "gpt-oss-120b": ModelId.GPT_OSS_120B,
     "mistral-vibe": ModelId.MISTRAL_MEDIUM_3_5,
@@ -2440,8 +2479,8 @@ _MODEL_OR_ENGINE_TO_MODEL_ID: dict[str, ModelId] = {
 def derive_execution_descriptor(route: PlatformCapabilityRoute) -> ExecutionDescriptor:
     """Project a route's implicit execution descriptor from its legacy ``model_or_engine``.
 
-    Best-effort: it surfaces effort smuggled into the model string (``gpt-5.5-xhigh`` ->
-    model_id ``gpt-5.5`` + effort ``XHIGH``) and maps the model onto the dated
+    Best-effort: it surfaces effort smuggled into the model string (``gpt-6-astra-xhigh`` ->
+    model_id ``gpt-6-astra`` + effort ``XHIGH``) and maps the model onto the dated
     :class:`ModelId` catalog (unmapped -> ``ModelId.UNKNOWN``). effort that the data never
     carried is ``Effort.NONE``; context_mode/quantization stay at conservative defaults.
     Used to GENERATE the stored ``execution_descriptor`` backfill and demonstrate the

@@ -35,7 +35,6 @@ import base64
 import json
 import logging
 import os
-import subprocess
 import threading
 import time
 import urllib.error
@@ -43,6 +42,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from shared.secrets import SecretUnavailable, get_secret
 
 log = logging.getLogger(__name__)
 
@@ -188,19 +189,13 @@ _LITELLM_KEY_CACHE: dict[str, str] = {}
 
 
 def _get_litellm_key() -> str:
-    """Fetch the LiteLLM master key via ``pass``. Cached process-wide."""
+    """The LiteLLM master key via ``shared.secrets`` (env, FileStore, CLI). Cached process-wide."""
     if "key" in _LITELLM_KEY_CACHE:
         return _LITELLM_KEY_CACHE["key"]
     try:
-        result = subprocess.run(
-            ["pass", "show", "litellm/master-key"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        key = result.stdout.strip()
-    except Exception:
-        log.debug("pass show litellm/master-key failed", exc_info=True)
+        key = get_secret("litellm/master-key", env="LITELLM_API_KEY", required=False) or ""
+    except SecretUnavailable:
+        log.debug("litellm/master-key unavailable", exc_info=True)
         key = ""
     _LITELLM_KEY_CACHE["key"] = key
     return key

@@ -891,9 +891,15 @@ class _StuckRunner:
                 return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
             if re.fullmatch(r"repos/o/r/commits/sha-\d+/status", path):
                 return subprocess.CompletedProcess(cmd, 0, json.dumps({"statuses": []}), "")
-        if cmd[:3] == ["gh", "api", "rate_limit"]:
+        if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
             payload = {"resources": {"graphql": {"remaining": 1000, "reset": 1893456000}}}
-            return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 5000\r\nX-Ratelimit-Reset: 1893456000\r\nX-Ratelimit-Resource: core\r\n\r\n"
+                + json.dumps(payload),
+                "",
+            )
         if cmd[:3] == ["gh", "api", "graphql"]:
             nodes = [{"pullRequest": {"number": n}} for n in self.queued]
             payload = {"data": {"repository": {"mergeQueue": {"entries": {"nodes": nodes}}}}}
@@ -953,10 +959,16 @@ class TestStuckPRAlerter:
     def test_graphql_backoff_does_not_report_stuck(self, tmp_path: Path) -> None:
         class _LowGraphQLRunner(_StuckRunner):
             def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
-                if cmd[:3] == ["gh", "api", "rate_limit"]:
+                if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
                     self.calls.append(list(cmd))
                     payload = {"resources": {"graphql": {"remaining": 0, "reset": 1893456000}}}
-                    return subprocess.CompletedProcess(cmd, 0, json.dumps(payload), "")
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        0,
+                        "HTTP/2.0 200 OK\r\nX-Ratelimit-Limit: 5000\r\nX-Ratelimit-Remaining: 5000\r\nX-Ratelimit-Reset: 1893456000\r\nX-Ratelimit-Resource: core\r\n\r\n"
+                        + json.dumps(payload),
+                        "",
+                    )
                 return super().__call__(cmd, **kwargs)
 
         runner = _LowGraphQLRunner([_open_pr(75)], queued=())
@@ -972,3 +984,79 @@ class TestStuckPRAlerter:
         runner = _StuckRunner([_open_pr(76)], queued=())
         count = watcher.alert_stuck_prs(repo="o/r", repo_root=tmp_path, runner=runner, dry_run=True)
         assert count == 1
+
+    @staticmethod
+    def _rate_only_runner(*, core: int, graphql: int, calls: list[list[str]] | None = None) -> Any:
+        """Serves rate_limit and the GraphQL listing; refuses REST spend."""
+
+        def run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess:
+            if calls is not None:
+                calls.append(list(cmd))
+            if cmd[:4] == ["gh", "api", "-i", "rate_limit"]:
+                head = (
+                    "HTTP/2.0 200 OK\r\n"
+                    "X-Ratelimit-Limit: 5000\r\n"
+                    f"X-Ratelimit-Remaining: {core}\r\n"
+                    "X-Ratelimit-Reset: 1893456000\r\n"
+                    "X-Ratelimit-Resource: core\r\n"
+                )
+                payload = {
+                    "resources": {
+                        "core": {"remaining": core, "limit": 5000, "reset": 1893456000},
+                        "graphql": {"remaining": graphql, "limit": 5000, "reset": 1893456000},
+                    }
+                }
+                return subprocess.CompletedProcess(cmd, 0, f"{head}\r\n{json.dumps(payload)}", "")
+            if cmd[:3] == ["gh", "pr", "list"]:
+                return subprocess.CompletedProcess(cmd, 0, "[]", "")
+            if cmd[:3] == ["gh", "api", "graphql"]:
+                # `fetch_merge_queue_numbers` was already on GraphQL before this change, so
+                # once the listing routes too, the whole watcher cycle runs off the healthy
+                # pool rather than stalling. Permitted here for exactly that reason.
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    json.dumps(
+                        {"data": {"repository": {"mergeQueue": {"entries": {"nodes": []}}}}}
+                    ),
+                    "",
+                )
+            raise AssertionError(f"no REST call may be spent once the pool is empty: {cmd}")
+
+        return run
+
+    def test_exhausted_rest_routes_to_graphql(self, tmp_path: Path) -> None:
+        """This test previously asserted the watcher skipped the cycle.
+
+        Three seated review families called that a critical gap: REST at zero with GraphQL
+        at 93% headroom stalled stuck-PR detection instead of using the healthy pool. The
+        skip is still correct when both pools are empty — pinned below.
+        """
+        calls: list[list[str]] = []
+        assert (
+            watcher.detect_stuck_prs(
+                repo="o/r",
+                repo_root=tmp_path,
+                runner=self._rate_only_runner(core=0, graphql=4660, calls=calls),
+            )
+            == []
+        )
+        assert any(call[:3] == ["gh", "pr", "list"] for call in calls), (
+            "an exhausted REST pool with healthy GraphQL must select GraphQL, not sit out"
+        )
+
+    def test_both_pools_exhausted_skips_the_cycle_instead_of_crashing(self, tmp_path: Path) -> None:
+        """Caller-level coverage for RestPoolExhausted (codex-1, major).
+
+        An uncaught exception here would crash the watcher service and mint a P0
+        "service failed" incident — worse than the exhaustion it reports. The cycle is
+        skipped with a warning instead; an empty result must never read as "no stuck PRs".
+        """
+        assert (
+            watcher.detect_stuck_prs(
+                repo="o/r",
+                repo_root=tmp_path,
+                runner=self._rate_only_runner(core=0, graphql=0),
+            )
+            == []
+        )
