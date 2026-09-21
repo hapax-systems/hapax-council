@@ -134,7 +134,8 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "claude",
         "headless",
         "full",
-        "~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+        "scripts/hapax-methodology-dispatch --task <task> --lane <lane> "
+        "--platform claude --mode headless --profile full --launch",
         "Claude Code headless stream-json lane",
         True,
         "Default frontier Claude path; requires governed headless enable latch and a validated task.",
@@ -143,7 +144,8 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "claude",
         "headless",
         "opus",
-        "~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+        "scripts/hapax-methodology-dispatch --task <task> --lane <lane> "
+        "--platform claude --mode headless --profile opus --launch",
         "Claude Opus headless stream-json lane",
         True,
         "Use when architecture, governance, theory, or high-ambiguity work requires the strongest Claude profile.",
@@ -152,7 +154,8 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "claude",
         "headless",
         "sonnet",
-        "~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+        "scripts/hapax-methodology-dispatch --task <task> --lane <lane> "
+        "--platform claude --mode headless --profile sonnet --launch",
         "Claude Sonnet headless stream-json lane",
         True,
         "Use only when Sonnet is quality-equivalent for the bounded task or Opus capacity is blocked.",
@@ -233,7 +236,8 @@ PLATFORM_PATHS: dict[tuple[str, str, str], PlatformPath] = {
         "claude",
         "headless",
         "haiku",
-        "~/.local/bin/hapax-claude-headless <lane> <governed-prompt>",
+        "scripts/hapax-methodology-dispatch --task <task> --lane <lane> "
+        "--platform claude --mode headless --profile haiku --launch",
         "Claude Haiku headless stream-json lane",
         True,
         "Cheap bounded Claude tier; use only when Haiku is quality-equivalent for the bounded support task.",

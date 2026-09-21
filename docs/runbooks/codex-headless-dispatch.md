@@ -52,6 +52,17 @@ Direct unbound Vibe invocations are outside that dispatch claim and are not
 receipt evidence. Recheck actual controlled native-child delivery with
 `uv run pytest tests/test_methodology_dispatch_model_pin.py -q`.
 
+For an already authorized Claude task/lane, the native availability recheck is
+one ordinary dispatch, for example
+`scripts/hapax-methodology-dispatch --task TASK --lane LANE --platform claude --mode headless --profile opus --launch`.
+Inspect that invocation’s native initialization/transcript model against
+`resolve_execution_descriptor("claude.headless.opus").model_id` and the
+requested effort. A successful launcher exit or controlled argv recorder alone
+is not this observation. The source tests establish concrete argument delivery;
+this PR does not claim new provider availability measurements for every profile.
+The printed Claude path templates now use this governed entrypoint, preserving
+the selected profile rather than suggesting an unbound direct launch.
+
 Retired or wound-down relays stay fail-closed by default. Direct, read-only, or
 advisory-only headless launches must not pass `--force`; they should fail at the
 relay guard with a recheck command. Mutable unbound launches are blocked earlier
