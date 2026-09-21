@@ -17,6 +17,7 @@ import json
 import tempfile
 from contextlib import ExitStack
 from pathlib import Path
+from threading import Thread
 from types import SimpleNamespace
 from unittest import mock
 
@@ -68,6 +69,23 @@ def make_compositor(monkeypatch: pytest.MonkeyPatch):
         try:
             yield make
         finally:
+            # Stop methods may clear their thread fields before a bounded join
+            # succeeds. Retain the actual owned handles, not later field values.
+            workers: list[Thread] = []
+            for compositor in compositors:
+                owners = [
+                    compositor._overlay_zone_manager._runner,
+                    compositor._command_server,
+                    compositor._layout_autosaver,
+                    compositor._layout_file_watcher,
+                ]
+                if compositor.source_registry is not None:
+                    owners.extend(compositor.source_registry._backends.values())
+                workers.extend(
+                    thread
+                    for owner in owners
+                    if isinstance(thread := getattr(owner, "_thread", None), Thread)
+                )
             with ExitStack() as cleanup:
                 for compositor in compositors:
                     cleanup.callback(compositor.stop)
@@ -77,6 +95,9 @@ def make_compositor(monkeypatch: pytest.MonkeyPatch):
                             stop = getattr(backend, "stop", None)
                             if callable(stop):
                                 cleanup.callback(stop)
+            assert not (live := [worker.name for worker in workers if worker.is_alive()]), (
+                f"layout fixture left owned workers alive: {live}"
+            )
 
 
 class TestStartLayoutOnly:
