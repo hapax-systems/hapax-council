@@ -1,3 +1,131 @@
+receipt_publication_replay_20260921:
+  source_revision: d40222ecaf3f46ac3f79c3e9b4298a8604163793  # pragma: allowlist secret — public Git/image/content digest
+  scope: Current installer publication and recovery input revision. This record supersedes the earlier
+    latest_replay_20260921 inputs; all earlier observations remain historical.
+  validation:
+    installer_deployment_and_load_tests_passed: 227
+    applied_mutations_caught: 3
+    pre_repair_failing_cli_cells: 8
+    rotation_tests_passed: 19
+    ruff: passed
+    pyrefly: passed
+    selected_pre_commit: passed
+  build_context:
+    source_revision: d40222ecaf3f46ac3f79c3e9b4298a8604163793  # pragma: allowlist secret — public Git/image/content digest
+    files:
+      artifacts/claude: 722210f05ba494d8f6df69423c4d4f2960900f7a007d0532851c7a36e375cab7  # pragma: allowlist secret — public Git/image/content digest
+      artifacts/codex: 0753dfe1d8b87a52436deb13eb1c549661ef4c84fee2c5aa688385eebeccb761  # pragma: allowlist secret — public Git/image/content digest
+      config/agent-instructions/AGENTS.md: 10c998961118c718e28a24e37e62bb1d64ebbda429550c835ecff5fb5ce5d261  # pragma: allowlist secret — public Git/image/content digest
+      config/agent-instructions/bindings.json: d475051b78e417e76024bdcb8e5eec47d45fd28267e22c66b549bed2a888f14c  # pragma: allowlist secret — public Git/image/content digest
+      config/agent-instructions/native/claude.md: 8fc8398707864e270a6eb89ae10b0c05e8678a73d695eb8db7ac7a1f4a222495  # pragma: allowlist secret — public Git/image/content digest
+      config/agent-instructions/native/grok.md: 0c379c2aa2cb6734687be94863e484df4037d16a5c3ac8132feea471e2fa3b62  # pragma: allowlist secret — public Git/image/content digest
+      config/agent-instructions/native/kimi.md: ec6f020ff7b87c9c956f9b3f43818b5568bfc8d3d281a693a56ea094a0f08ec3  # pragma: allowlist secret — public Git/image/content digest
+      config/agent-instructions/native/vibe.md: 9a57bd74f4dc95a87f3f25707e67d4bc3fdb6c118941628931f5b433cfa8b7df  # pragma: allowlist secret — public Git/image/content digest
+      docker/Dockerfile.native-harness: ccbd48c9420ebdf81f3d493cb47a80adaa11d16e35dd3bbe07ebda190cd189a6  # pragma: allowlist secret — public Git/image/content digest
+      docker/native-codex.toml: 0456219f86181cc2ff42b0b6eaa4fc243c41122c38ad08a8810daf0b0c9e572f  # pragma: allowlist secret — public Git/image/content digest
+      scripts/install-agent-instructions.py: b3df934f4c917d833014401ae8e022e4ae94209ffebd6362643b135450ca55da  # pragma: allowlist secret — public Git/image/content digest
+    command: docker build -f <context>/docker/Dockerfile.native-harness --target <claude|codex> --build-arg
+      SOURCE_REVISION=<source_revision> --iidfile <target>.id <context>
+    recheck: git diff --exit-code d40222ecaf3f46ac3f79c3e9b4298a8604163793 HEAD -- config/agent-instructions
+      scripts/install-agent-instructions.py docker/Dockerfile.native-harness docker/native-codex.toml
+      scripts/probe-native-harness-container.py
+    recheck_expected: exit zero with no diff for a head that changes only this evidence
+  images:
+    claude:
+      image_id: sha256:dd16fdbbf9008a480b5f245c6f7f7ea963d58d34a8eeee18d6aee700103e57c7  # pragma: allowlist secret — public Git/image/content digest
+      native_version: 2.1.277 (Claude Code)
+    codex:
+      image_id: sha256:703782e3ed6ed73567610b4e6d72ae6775e5d7f7462570accff1370bcab435ff  # pragma: allowlist secret — public Git/image/content digest
+      native_version: codex-cli 0.155.1
+  probe_sha256: 4018244c90acf8b9cfa2122ca56f3450b6c9f067599e38e9c2d49d14328f613f  # pragma: allowlist secret — public Git/image/content digest
+  project_sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+  hosts:
+  - observer_host: hapax-appendix
+    source_matches_revision: true
+    cells:
+    - platform: claude
+      cwd: /work
+      files:
+      - path: /work/CLAUDE.md
+        sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+      - path: /opt/hapax-agent/.claude/CLAUDE.md
+        sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+      pass: true
+    - platform: codex
+      cwd: /work
+      instruction_sources:
+      - /opt/hapax-agent/.codex/AGENTS.md
+      - /work/AGENTS.md
+      resume: same_native_session
+      owned_state_persisted: true
+      pass: true
+    - platform: claude
+      cwd: /work/nested
+      files:
+      - path: /opt/hapax-agent/.claude/CLAUDE.md
+        sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+      - path: /work/CLAUDE.md
+        sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+      pass: true
+    - platform: codex
+      cwd: /work/nested
+      instruction_sources:
+      - /opt/hapax-agent/.codex/AGENTS.md
+      - /work/AGENTS.md
+      resume: same_native_session
+      owned_state_persisted: true
+      pass: true
+    negative_cells:
+      override_mismatch_detected: true
+      missing_instruction_detected: true
+      wrong_resume_id_rejected: true
+  - observer_host: hapax-podium
+    source_matches_revision: null
+    cells:
+    - platform: claude
+      cwd: /work
+      files:
+      - path: /opt/hapax-agent/.claude/CLAUDE.md
+        sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+      - path: /work/CLAUDE.md
+        sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+      pass: true
+    - platform: codex
+      cwd: /work
+      instruction_sources:
+      - /opt/hapax-agent/.codex/AGENTS.md
+      - /work/AGENTS.md
+      resume: same_native_session
+      owned_state_persisted: true
+      pass: true
+    - platform: claude
+      cwd: /work/nested
+      files:
+      - path: /opt/hapax-agent/.claude/CLAUDE.md
+        sha256: bbd0a204475aa9e0ddb40a2a4b42e34f3da02867c6ccc10f1b32ee7b006ee727  # pragma: allowlist secret — public Git/image/content digest
+      - path: /work/CLAUDE.md
+        sha256: a3352647bd1fa2ada841fe2c03698250977571a9bd5b3f09b3c01888bef3a581  # pragma: allowlist secret — public Git/image/content digest
+      pass: true
+    - platform: codex
+      cwd: /work/nested
+      instruction_sources:
+      - /opt/hapax-agent/.codex/AGENTS.md
+      - /work/AGENTS.md
+      resume: same_native_session
+      owned_state_persisted: true
+      pass: true
+    negative_cells:
+      override_mismatch_detected: true
+      missing_instruction_detected: true
+      wrong_resume_id_rejected: true
+  model_requests: 0
+  provider_credentials: absent
+  network: none
+  may_authorize: false
+  source_release: requires fresh current-head review and ordinary admission
+  live_policy_revision: f8aa16c41b014ac6eaf297aa24c67ff8c0036c78  # pragma: allowlist secret — public Git/image/content digest
+  live_policy_mutated: false
+
 latest_replay_20260921:
   source_revision: 6bdcad33a85f04e1dfc742f26a364cc3a5f2e080  # pragma: allowlist secret — public Git/image/content digest
   scope: Current installer input revision. Earlier top-level images/hosts and later historical records below
