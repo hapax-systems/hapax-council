@@ -37,7 +37,7 @@ import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 # When invoked as a CLI script, the package sits next to us under cc_hygiene/.
 _HERE = Path(__file__).resolve().parent
@@ -53,10 +53,12 @@ from cc_hygiene.checks import (
     check_refusal_pipeline_dormancy,
     check_relay_yaml_staleness,
     check_spec_staleness,
+    check_stale_claim_marker,
     check_stale_in_progress,
     check_vault_link_integrity,
     check_wip_limit,
     parse_task_note,
+    read_claim_markers,
 )
 from cc_hygiene.dashboard import (
     DEFAULT_DASHBOARD_PATH,
@@ -82,6 +84,20 @@ DEFAULT_RELAY_ROOT = Path.home() / ".cache" / "hapax" / "relay"
 DEFAULT_REPO_ROOT = Path.home() / "projects" / "hapax-council"
 
 KILLSWITCH_ENV = "HAPAX_CC_HYGIENE_OFF"
+
+#: Point the live<->declared join at the real marker directory on a host whose
+#: cache layout differs from the default derivation. Deliberately a CORRECTION and
+#: not a mute: the check whose job is noticing that live state disagrees with
+#: declared state is the last one that should be individually silenceable, and
+#: "the derivation is wrong here" is answered by naming the right directory.
+#:
+#: **There is no per-check bypass, and this is not one.** The only way to silence
+#: `stale_claim_marker` is ``HAPAX_CC_HYGIENE_OFF=1``, which stops every other check
+#: with it. Stated here as well as in the runbook because an operator reading the
+#: check's own source should not have to go looking to learn that the escape hatch
+#: is global — see "When it misfires" and "Silencing it" in
+#: docs/runbooks/gate0b-claim-publication-fallback.md.
+CLAIM_MARKER_DIR_ENV = "HAPAX_CC_HYGIENE_CLAIM_MARKER_DIR"
 
 
 def _relay_payload_is_retired(payload: dict[str, Any]) -> bool:
@@ -238,30 +254,71 @@ def reap_dead_lanes(relay_root: Path) -> list[str]:
     return reaped
 
 
-def _load_active_notes(vault_root: Path) -> list[TaskNote]:
-    """Parse all `active/*.md` cc-task notes."""
-    active = vault_root / "active"
-    if not active.is_dir():
-        return []
-    notes: list[TaskNote] = []
-    for path in sorted(active.glob("*.md")):
-        note = parse_task_note(path)
-        if note is not None:
-            notes.append(note)
-    return notes
+class VaultScan(NamedTuple):
+    """One read of one task directory: what parsed, what did not, what failed.
+
+    ONE scan, not three. The first repair kept three functions — a note loader, a
+    rejected-path scan, a closed loader — each enumerating the directory again. That
+    is not a view of the vault; it is three views, and a directory that failed on
+    the first read and succeeded on the second produced a notes snapshot missing
+    that directory beside an error list saying nothing went wrong. Measured in
+    review round 13: an injected PermissionError on the first active/ enumeration,
+    followed by a successful rescan, recorded no errors and produced
+    retire-orphan-marker advice for a live in_progress task.
+
+    A later successful rescan cannot repair an earlier snapshot, because nothing
+    joins them. So the notes, the rejects and the errors are produced together, by
+    the same read, and travel together to the decision.
+
+    A NamedTuple rather than a dataclass: this module is extensionless and is loaded
+    in tests through `spec_from_file_location`, where `@dataclass` raises
+    `AttributeError: 'NoneType' object has no attribute '__dict__'` unless the
+    loader registers the module in `sys.modules` before executing it. Requiring a
+    loader to do that is a trap for the next loader; NamedTuple needs nothing.
+    """
+
+    notes: list[TaskNote]
+    rejected: list[str]
+    errors: list[str]
 
 
-def _load_closed_notes(vault_root: Path) -> list[TaskNote]:
-    """Parse closed/*.md notes for refusal-dormancy check (best-effort)."""
-    closed = vault_root / "closed"
-    if not closed.is_dir():
-        return []
+def _scan_task_notes(directory: Path) -> VaultScan:
+    """Read one task directory once.
+
+    `os.listdir`, not `Path.glob`: glob swallows a directory-level PermissionError
+    inside its own scandir walk and returns an empty iterator, which is
+    indistinguishable from an empty directory. An unreadable active/ therefore read
+    as "no live tasks", and the live↔declared join recommended retiring a live
+    claim's marker from a view it could not read.
+
+    An ABSENT directory is not an error: a vault with no closed/ yet is normal. An
+    unreadable one is.
+    """
+    if not directory.is_dir():
+        return VaultScan(notes=[], rejected=[], errors=[])
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError as exc:
+        return VaultScan(
+            notes=[], rejected=[], errors=[f"{directory}: {type(exc).__name__}: {exc}"]
+        )
     notes: list[TaskNote] = []
-    for path in sorted(closed.glob("*.md")):
+    rejected: list[str] = []
+    for name in names:
+        if not name.endswith(".md"):
+            continue
+        path = directory / name
         note = parse_task_note(path)
-        if note is not None:
+        if note is None:
+            # `parse_task_note` returns None for anything without `type: cc-task` or
+            # a readable task_id/status, and callers used to drop those silently.
+            # That is fine for a check that only reports and unsafe for one that
+            # recommends deleting runtime state: a rejected active note is precisely
+            # a task the sweep cannot see, and it may own the marker being retired.
+            rejected.append(str(path))
+        else:
             notes.append(note)
-    return notes
+    return VaultScan(notes=notes, rejected=rejected, errors=[])
 
 
 def _load_relay_payloads(relay_root: Path) -> dict[str, dict[str, Any]]:
@@ -341,6 +398,7 @@ def _summarize_checks(events: list[HygieneEvent]) -> list[CheckSummary]:
         "refusal_dormancy",
         "spec_staleness",
         "vault_link_integrity",
+        "stale_claim_marker",
     )
     return [CheckSummary(check_id=cid, fired=counter.get(cid, 0)) for cid in all_ids]
 
@@ -350,18 +408,74 @@ def run_sweep(
     vault_root: Path = DEFAULT_VAULT_ROOT,
     relay_root: Path = DEFAULT_RELAY_ROOT,
     repo_root: Path = DEFAULT_REPO_ROOT,
+    claim_marker_dir: Path | None = None,
+    reap: bool = True,
     now: datetime | None = None,
 ) -> HygieneState:
-    """Perform one sweep and return the snapshot. Does NOT write to disk."""
+    """Perform one sweep and return the snapshot.
+
+    The docstring used to say "Does NOT write to disk", and that was false in the
+    one way that matters: `reap_dead_lanes` runs `hapax-relay-retire` against every
+    lane with no live process, so a sweep MUTATES relay state before it computes a
+    single event. `--no-write --no-actions` did not stop it, and the gate0b runbook
+    recommended exactly that pair as a diagnostic — measured 2026-09-14T10:46:26Z:
+    running it to verify the runbook retired `alpha`.
+
+    So `reap` is a parameter, off in diagnostic mode. Events are still computed;
+    only the action is withheld, which is what "observational" has to mean for a
+    tool whose whole job is reporting on state it can also change.
+    """
     now = now or datetime.now(UTC)
     started = time.monotonic()
+    # Derived from relay_root, not from $HOME: cc-claim writes the markers beside
+    # the relay dir, and every other root here is configurable. A marker source
+    # anchored on the real home would make a sweep of some OTHER vault report on
+    # THIS host's live lanes — which is both wrong in production and untestable.
+    #
+    # The coupling is IMPLICIT and worth stating: cc-claim writes to
+    # $HOME/.cache/hapax while the default relay root is $HOME/.cache/hapax/relay,
+    # so `relay_root.parent` coincides with the marker dir only because of that
+    # layout. Relocate relay_root without relocating the cache and this join
+    # silently points at a directory holding no markers — the absent-dir branch
+    # catches a MISSING one, but a relocated-and-existing one reports clean while
+    # checking nothing. Pass claim_marker_dir explicitly rather than relying on the
+    # coincidence whenever the two are not siblings.
+    # Two options were on the table for the relocation hazard: resolve from the
+    # same source cc-claim uses ($HOME/.cache/hapax), or emit an event when the
+    # derivation finds nothing. The first was TRIED and reverted — reading the real
+    # $HOME makes a sweep of some other vault report on this host's live lanes,
+    # which is the isolation defect this default was introduced to fix. So the
+    # derivation stays, and the fail-open is closed below by an event instead.
+    derived_marker_dir = claim_marker_dir is None
+    if claim_marker_dir is None:
+        claim_marker_dir = relay_root.parent
+    # Carried onto EVERY event this check emits. The remaining hole the derivation
+    # leaves is a directory that exists and is wrong — no guard here can see that,
+    # because "wrong" is a fact about another process's configuration. What a reader
+    # CAN be given is how the location was chosen, so a clean result is never
+    # mistaken for a verified one.
+    marker_dir_provenance = (
+        f"derived from relay_root {relay_root} (cc-claim writes markers beside it)"
+        if derived_marker_dir
+        else "passed explicitly by the caller"
+    )
 
-    reaped = reap_dead_lanes(relay_root)
-    if reaped:
-        LOG.info("Reaped %d dead lane(s): %s", len(reaped), ", ".join(reaped))
+    if reap:
+        reaped = reap_dead_lanes(relay_root)
+        if reaped:
+            LOG.info("Reaped %d dead lane(s): %s", len(reaped), ", ".join(reaped))
+    else:
+        LOG.info("Reaping skipped (observational mode) — no relay was retired")
 
-    notes = _load_active_notes(vault_root)
-    closed_notes = _load_closed_notes(vault_root)
+    # ONE read of each directory, here, for the whole sweep. Every consumer below
+    # — including the live↔declared join, which recommends deleting runtime state —
+    # gets notes, rejected paths and enumeration errors that describe the SAME read.
+    active_scan = _scan_task_notes(vault_root / "active")
+    closed_scan = _scan_task_notes(vault_root / "closed")
+    notes = active_scan.notes
+    closed_notes = closed_scan.notes
+    vault_rejected = [*active_scan.rejected, *closed_scan.rejected]
+    vault_errors = [*active_scan.errors, *closed_scan.errors]
     relay_payloads = _load_relay_payloads(relay_root)
 
     events: list[HygieneEvent] = []
@@ -380,6 +494,102 @@ def run_sweep(
     events.extend(
         check_vault_link_integrity(notes, vault_root.parent.parent, repo_root=repo_root, now=now)
     )
+    # The live<->declared join: every other check reads the vault and asks whether
+    # the DECLARED state is self-consistent. This one reads the runtime markers the
+    # gate actually keys on and asks whether they still agree with it.
+    # An absent marker dir makes this check inert, and read_claim_markers returns
+    # {} for both "no drift" and "I could not read anything" — so a reconciliation
+    # check would report clean while checking nothing. Say so instead.
+    if not claim_marker_dir.is_dir():
+        events.append(
+            HygieneEvent(
+                timestamp=now,
+                check_id="stale_claim_marker",
+                # VIOLATION, not warning. ntfy alerts gate on `violation`
+                # (cc_hygiene/models.py), so a warning lands in the dashboard and
+                # pages nobody — practically the same outcome as the silence this
+                # event exists to replace, just with a record. A reconciliation that
+                # checked nothing is exactly the case someone has to notice.
+                severity="violation",
+                task_id=None,
+                session=None,
+                message=(
+                    f"claim marker directory {claim_marker_dir} does not exist — the "
+                    "live↔declared join checked nothing this sweep"
+                ),
+                metadata={
+                    "marker_dir": str(claim_marker_dir),
+                    "marker_dir_provenance": marker_dir_provenance,
+                    "next_action": "operator-adjudication",
+                    "reason": "marker_dir_absent",
+                },
+            )
+        )
+    else:
+        scan = read_claim_markers(claim_marker_dir)
+        # A DERIVED marker dir that exists but holds nothing is the relocation
+        # hazard the comment above names: the absent-dir branch catches a missing
+        # directory, not a relocated-and-empty one, so without this the join
+        # reports clean while reconciling nothing. An empty cache is legitimate on
+        # an idle host, so this is a warning that names where it looked — not a
+        # violation — and it is raised only when the dir was derived rather than
+        # passed, since an explicit dir is the caller's assertion about where to look.
+        # An OVERRIDDEN dir counts too, not only a derived one. The override exists
+        # so an operator can point the join at the real cache — but pointed at an
+        # empty directory it produced a completely clean report, indistinguishable
+        # from "no drift", which is the silence-on-failure this check refuses
+        # everywhere else (review round 24). A clean run must be attributable to the
+        # place it looked.
+        if not scan.markers and scan.enumeration_error is None:
+            # WARNING, not violation — and the reason matters, because escalating
+            # here was TRIED and is unsound. "The vault records held tasks, so the
+            # cache must hold markers" looks compelling and is false twice over: a
+            # ghost claim is precisely a claimed note with no marker (cc-hygiene has
+            # a separate check for exactly that), and a task held by a lane on
+            # another host has no marker here either. Escalating on that inference
+            # pages falsely on both. This records where the join looked and what it
+            # found; escalation belongs to the checks that can tell those apart.
+            held = [n for n in notes if (n.status or "").strip() in {"claimed", "in_progress"}]
+            events.append(
+                HygieneEvent(
+                    timestamp=now,
+                    check_id="stale_claim_marker",
+                    severity="warning",
+                    message=(
+                        f"claim marker directory {claim_marker_dir} "
+                        + (
+                            f"(derived from relay_root {relay_root}) "
+                            if derived_marker_dir
+                            else "(passed explicitly by the caller) "
+                        )
+                        + "holds no cc-active-task-* markers while the vault records "
+                        f"{len(held)} claimed/in_progress task(s) — the join "
+                        "reconciled nothing. Expected on an idle host, or where those "
+                        "tasks are held elsewhere or are ghost claims; otherwise this "
+                        "directory is not the one cc-claim writes"
+                    ),
+                    metadata={
+                        "marker_dir": str(claim_marker_dir),
+                        "marker_dir_provenance": marker_dir_provenance,
+                        "relay_root": str(relay_root),
+                        "held_task_count": str(len(held)),
+                        "next_action": "operator-adjudication",
+                        "reason": "marker_dir_empty",
+                    },
+                )
+            )
+        events.extend(
+            check_stale_claim_marker(
+                scan,
+                notes,
+                closed_notes,
+                cache_dir=claim_marker_dir,
+                unparsed_notes=vault_rejected,
+                enumeration_errors=vault_errors,
+                marker_dir_provenance=marker_dir_provenance,
+                now=now,
+            )
+        )
 
     sessions = _build_session_states(relay_payloads, notes)
     summaries = _summarize_checks(events)
@@ -438,6 +648,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip the ghost-claimed self-heal auto-action (observational mode).",
     )
+    parser.add_argument(
+        "--claim-marker-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Where cc-claim writes cc-active-task-* markers. Defaults to the parent "
+            "of --relay-root, which coincides with cc-claim's cache by layout. Pass "
+            "it (or set HAPAX_CC_HYGIENE_CLAIM_MARKER_DIR) on a host whose cache "
+            "layout differs, so the live<->declared join is CORRECTED rather than "
+            "silenced."
+        ),
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -459,10 +681,28 @@ def main(argv: list[str] | None = None) -> int:
             write_state(state, path=args.state_path)
         return 0
 
+    # An explicit marker dir CORRECTS a wrong derivation rather than muting the
+    # check. Review round 14 asked for an emergency bypass for stale_claim_marker,
+    # naming "a host whose cache layout differs" as the misfire — and a per-check
+    # mute is the wrong answer to that: it leaves the drift in place and removes
+    # the only thing reporting it. The sweeper-wide killswitch above still exists
+    # for a genuinely misbehaving sweeper. This is the narrower control, and it is
+    # the one that fits the named cause.
+    claim_marker_dir = args.claim_marker_dir
+    if claim_marker_dir is None:
+        env_dir = (os.environ.get(CLAIM_MARKER_DIR_ENV) or "").strip()
+        if env_dir:
+            claim_marker_dir = Path(env_dir)
     state = run_sweep(
         vault_root=args.vault_root,
         relay_root=args.relay_root,
         repo_root=args.repo_root,
+        claim_marker_dir=claim_marker_dir,
+        # Retiring a relay is an ACTION, so --no-actions withholds it. --no-write
+        # counts too: a flag pair a runbook offers as "writes no state" must not
+        # leave one mutation outside both of them, which is how a diagnostic run
+        # retired a live lane.
+        reap=not (args.no_actions or args.no_write),
     )
     LOG.info(
         "sweep complete: %d events in %d ms",
@@ -485,7 +725,7 @@ def main(argv: list[str] | None = None) -> int:
             if ghost_events:
                 from cc_hygiene.actions import apply_actions
 
-                notes = _load_active_notes(args.vault_root)
+                notes = _scan_task_notes(args.vault_root / "active").notes
                 for result in apply_actions(
                     ghost_events,
                     notes,
@@ -536,7 +776,18 @@ def main(argv: list[str] | None = None) -> int:
                 LOG.exception("dashboard render raised; continuing")
     if args.verbose:
         for event in state.events:
-            LOG.debug("%s: %s", event.check_id, event.message)
+            # Metadata too, not just check_id and message. The runbook tells an
+            # operator to verify `marker_dir` and `marker_dir_provenance` from a
+            # `--no-write --no-actions -v` run — and verbose printed neither, while
+            # --no-write meant nothing was recorded to read them from afterwards. A
+            # documented verification that cannot display the field it verifies is
+            # not a recheck (review round 19).
+            detail = (
+                " ".join(f"{k}={v}" for k, v in sorted(event.metadata.items()))
+                if event.metadata
+                else ""
+            )
+            LOG.debug("%s: %s%s", event.check_id, event.message, f" [{detail}]" if detail else "")
     return 0
 
 

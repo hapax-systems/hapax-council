@@ -21,6 +21,38 @@
 set -euo pipefail
 
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+# Resolve the identity helper from THIS script's own tree first, and only then
+# from COUNCIL_DIR. A launcher in a worktree must use that worktree's helper, and
+# COUNCIL_DIR's default ($HOME/projects/hapax-council) does not exist under every
+# HOME — anchoring on it alone makes the launcher unlaunchable wherever the
+# primary clone is absent or renamed. Symlinks resolved because the installed
+# entrypoint is ~/.local/bin/hapax-claude -> the repo.
+_hc_self="${BASH_SOURCE[0]:-$0}"
+if command -v readlink >/dev/null 2>&1; then
+  _hc_self="$(readlink -f "$_hc_self" 2>/dev/null || printf '%s' "$_hc_self")"
+fi
+ROLE_HELPER="$(cd "$(dirname "$_hc_self")/.." 2>/dev/null && pwd)/hooks/scripts/agent-role.sh"
+[ -f "$ROLE_HELPER" ] || ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
+if [ -f "$ROLE_HELPER" ]; then
+  # shellcheck source=../hooks/scripts/agent-role.sh
+  # shellcheck disable=SC1091
+  . "$ROLE_HELPER"
+fi
+# Refuse loudly rather than limp: session identity is what keys this lane's claim,
+# and a launcher that quietly re-implements the mint is how the five divergent
+# copies happened in the first place.
+# Both helpers, because a partially-updated helper file is exactly what this guard
+# exists to catch: a checkout carrying the session helper but not the capability
+# one would launch and silently record an inherited route.
+# Exit 78 (sysexits EX_CONFIG), not 9: hapax-methodology-dispatch already returns
+# 9 for its own "no declared model pin" refusal and 8 for "launcher not found", so
+# a caller reading the code alone could not tell those from this one.
+if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1 ||
+  ! declare -F hapax_consume_launch_capability_descriptors >/dev/null 2>&1; then
+  echo "hapax-claude: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
+  echo "hapax-claude: if this ran over SSH from hapax-methodology-dispatch, the incomplete checkout is on THIS host (${HOSTNAME:-$(uname -n)}), not the dispatcher's — repair or re-sync the council checkout there. Exit 78 is this identity refusal specifically; dispatch's own 8/9 mean launcher-not-found and no-declared-model-pin." >&2
+  exit 78
+fi
 
 usage() {
   cat <<'EOF'
@@ -289,7 +321,28 @@ fi
 # can read either CLAUDE_ROLE or HAPAX_AGENT_NAME).
 # Per-session id (coordination reform Phase 1): a stable uuid so the gate keys a
 # claim lease to THIS session — two same-role sessions never collide (FM-2).
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$ROLE" "$$")}"
+# MINTED, never inherited from the ambient environment: this launcher's runner
+# execs the Claude binary directly (see below), so nothing re-enters here needing
+# to preserve an outer id. Launching several lanes from one shell that had
+# HAPAX_SESSION_ID exported used to give them all ONE claim key
+# (claims-ontology-correction; hooks/scripts/agent-role.sh::hapax_consume_launch_session_id).
+# Called OUTSIDE a command substitution so the helper can clear the one-shot pin in
+# this shell — a subshell's unset would not reach the env we hand the runner.
+# No addressee argument: this launcher never re-execs itself, so no pin is ever
+# addressed to it and it always mints. Passing nothing is the way to say that.
+hapax_consume_launch_session_id
+SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
+# Session succession is NOT done here. A launcher-side helper lived here across
+# review rounds 2-6 and was removed: it cannot be made correct in a launcher (see
+# the REMOVED block in hooks/scripts/agent-role.sh for the proof) and is rowed
+# against cc-claim, which owns the lease lock. This launcher mints, which is what
+# origin/main does today, so nothing regressed.
+# Capability descriptors, same grant, same call site. No addressee: nothing
+# dispatches an interactive claude lane with a route, so there is never a
+# legitimate descriptor to inherit and this always clears. Running this launcher
+# by hand from inside a codex lane used to record that lane's route and model
+# beside harness=claude (review round 12, reproduced).
+hapax_consume_launch_capability_descriptors
 export HAPAX_AGENT_INTERFACE="claude"
 export HAPAX_AGENT_NAME="$ROLE"
 export CLAUDE_ROLE="$ROLE"
@@ -353,9 +406,12 @@ if [ "$TERMINAL" = "none" ]; then
   exec "$CLAUDE_BIN" "${CLAUDE_DEFAULT_ARGS[@]}" "${CLAUDE_EXTRA[@]}"
 fi
 
-# tmux/foot path: build a runner script that re-execs hapax-claude with
-# --terminal none so the inner process inherits identity. Mirrors the
-# codex idiom.
+# tmux/foot path: build a runner script that execs the Claude binary directly
+# with this launch's identity pinned into its environment. (It does NOT re-exec
+# hapax-claude — an earlier comment here said it did, and that stale claim is the
+# likeliest reason the session id was inherited rather than minted above. The
+# codex idiom, which really does re-enter its own launcher, is the one that
+# propagates an id, and it says so explicitly with HAPAX_SESSION_ID_PINNED.)
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/claude-spawns"
 mkdir -p "$SPAWN_DIR"
 RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
@@ -364,6 +420,15 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
   printf '%s\n' 'set -euo pipefail'
   printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
   printf 'cd %q\n' "$WORKDIR"
+  # The runner re-establishes identity explicitly because it does NOT inherit this
+  # launcher's environment: an already-running tmux server supplies its own, which
+  # can be minutes or days old. That is also why the capability descriptors are
+  # cleared HERE and not only in the launcher — a stale server environment carrying
+  # `HAPAX_CAPABILITY_ROUTE=codex.headless.full` reached the Claude child and was
+  # recorded as this launch's condition vector (review round 16, reproduced).
+  # `unset` rather than a conditional export: this launcher never holds descriptors
+  # addressed to it, so there is nothing to carry and every value here is inherited.
+  printf 'unset HAPAX_CAPABILITY_ROUTE HAPAX_CAPABILITY_MODEL HAPAX_CAPABILITY_PINNED HAPAX_SESSION_ID_PINNED\n'
   printf 'export HAPAX_AGENT_INTERFACE=claude\n'
   printf 'export HAPAX_AGENT_NAME=%q\n' "$ROLE"
   printf 'export CLAUDE_ROLE=%q\n' "$ROLE"

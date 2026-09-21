@@ -88,7 +88,52 @@ export HAPAX_WORKTREE_ROLE="$ROLE"
 # pid recycling makes ambiguous and that cc-claim now refuses to key. The
 # last-resort mint is alpha-infixed so it stays claim-keyable
 # (shared/session_identity.py::is_claim_keyable_session_id).
-SESSION_UUID="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null || printf 'sid%sx%s%s' "$(date +%s%N)" "$RANDOM" "$RANDOM")"
+# This lane was the FIRST to get this right (#3875); the mint now lives in
+# agent-role.sh so the five siblings that never adopted it share ONE
+# implementation instead of five copies. The L1 slice self-attach above re-execs
+# BEFORE this line, so the outer process never mints and there is no id to pin.
+COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+# This script's own tree first: COUNCIL_DIR's default does not exist under every
+# HOME, and a launcher that cannot find its helper must not become unlaunchable.
+_hch_self="${BASH_SOURCE[0]:-$0}"
+if command -v readlink >/dev/null 2>&1; then
+  _hch_self="$(readlink -f "$_hch_self" 2>/dev/null || printf '%s' "$_hch_self")"
+fi
+ROLE_HELPER="$(cd "$(dirname "$_hch_self")/.." 2>/dev/null && pwd)/hooks/scripts/agent-role.sh"
+[ -f "$ROLE_HELPER" ] || ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
+if [ -f "$ROLE_HELPER" ]; then
+  # shellcheck source=../hooks/scripts/agent-role.sh
+  # shellcheck disable=SC1091
+  . "$ROLE_HELPER"
+fi
+# Both helpers, and exit 78 (sysexits EX_CONFIG) rather than 9 — see the same
+# guard in scripts/hapax-claude for why: 8 and 9 are already
+# hapax-methodology-dispatch's own launch refusals.
+if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1 ||
+  ! declare -F hapax_consume_launch_capability_descriptors >/dev/null 2>&1; then
+  echo "hapax-claude-headless: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
+  echo "hapax-claude-headless: if this ran over SSH from hapax-methodology-dispatch, the incomplete checkout is on THIS host (${HOSTNAME:-$(uname -n)}), not the dispatcher's — repair or re-sync the council checkout there. Exit 78 is this identity refusal specifically; dispatch's own 8/9 mean launcher-not-found and no-declared-model-pin." >&2
+  exit 78
+fi
+# Consume form, outside a command substitution: this lane minted unconditionally
+# before the helper existed (#3875), and a standing pin would silently regress it
+# back to inheriting whenever it is dispatched from inside a pinned codex pane.
+# No addressee: every headless launch is a fresh lane and this launcher never
+# re-execs itself after minting, so it mints unconditionally — preserving #3875's
+# behaviour exactly, including when dispatched from inside a pinned codex pane.
+hapax_consume_launch_session_id
+SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
+# Session succession is NOT done here. A launcher-side helper lived here across
+# review rounds 2-6 and was removed: it cannot be made correct in a launcher (see
+# the REMOVED block in hooks/scripts/agent-role.sh for the proof) and is rowed
+# against cc-claim, which owns the lease lock. This launcher mints, which is what
+# origin/main does today, so nothing regressed.
+# Capability descriptors: ADDRESSED, because this is a launcher a dispatcher
+# really does hand a route to. hapax-methodology-dispatch.launch_claude_headless
+# writes the route it resolved plus HAPAX_CAPABILITY_PINNED=hapax-claude-headless;
+# anything else reaching this process (an operator running the documented manual
+# form from inside another lane, say) is inherited and is cleared.
+hapax_consume_launch_capability_descriptors hapax-claude-headless
 export HAPAX_SESSION_ID="$SESSION_UUID"
 # Per-session identity marker (WM-independent): record THIS session's role keyed by
 # the session id so agent-role.sh / hapax-whoami resolve identity without a
@@ -266,6 +311,13 @@ CLAUDE_ARGS=(
 )
 if [[ -n "$MODEL" ]]; then
   CLAUDE_ARGS+=(--model "$MODEL")
+  # Publish, in the SAME branch that passes it, what this launch actually ran
+  # with. shared.session_identity.capability_shape_from_env records the model from
+  # HAPAX_CAPABILITY_MODEL and nothing else: HAPAX_CLAUDE_MODEL is an INPUT, and a
+  # launcher that inherits it without handing it to a harness — hapax-claude
+  # interactive, for one — would otherwise record a model it never executed. One
+  # branch, so "passed" and "recorded" cannot drift apart.
+  export HAPAX_CAPABILITY_MODEL="$MODEL"
 fi
 
 INITIAL_MSG="${1:-}"
@@ -699,6 +751,13 @@ elif kind == "exec":
         "CLAUDE_ROLE",
         "HAPAX_WORKTREE_ROLE",
         "HAPAX_METHODOLOGY_DISPATCH_TASK",
+        # The condition vector travels with the launch it describes. The exec-host
+        # process IS this launch, and no launcher runs there to re-derive these, so
+        # without them a remote lane's claim records no capability shape at all.
+        # Safe to send precisely because they are this launcher's own post-consume
+        # values: inherited descriptors were already cleared above.
+        "HAPAX_CAPABILITY_ROUTE",
+        "HAPAX_CAPABILITY_MODEL",
     )
     payload["env"].update(
         {k: os.environ[k] for k in identity_keys if os.environ.get(k)}

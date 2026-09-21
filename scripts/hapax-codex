@@ -4,11 +4,28 @@
 set -euo pipefail
 
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
-ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
+# This script's own tree first; COUNCIL_DIR's default does not exist under every
+# HOME, and the session identity below is now sourced from here rather than
+# hand-rolled, so an unfound helper must be a named refusal, not a silent limp.
+_hcx_self="${BASH_SOURCE[0]:-$0}"
+if command -v readlink >/dev/null 2>&1; then
+  _hcx_self="$(readlink -f "$_hcx_self" 2>/dev/null || printf '%s' "$_hcx_self")"
+fi
+ROLE_HELPER="$(cd "$(dirname "$_hcx_self")/.." 2>/dev/null && pwd)/hooks/scripts/agent-role.sh"
+[ -f "$ROLE_HELPER" ] || ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
 if [ -f "$ROLE_HELPER" ]; then
   # shellcheck source=../hooks/scripts/agent-role.sh
   # shellcheck disable=SC1091
   . "$ROLE_HELPER"
+fi
+# Both helpers, and exit 78 (sysexits EX_CONFIG) rather than 9 — see the same
+# guard in scripts/hapax-claude for why: 8 and 9 are already
+# hapax-methodology-dispatch's own launch refusals.
+if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1 ||
+  ! declare -F hapax_consume_launch_capability_descriptors >/dev/null 2>&1; then
+  echo "hapax-codex: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
+  echo "hapax-codex: if this ran over SSH from hapax-methodology-dispatch, the incomplete checkout is on THIS host (${HOSTNAME:-$(uname -n)}), not the dispatcher's — repair or re-sync the council checkout there. Exit 78 is this identity refusal specifically; dispatch's own 8/9 mean launcher-not-found and no-declared-model-pin." >&2
+  exit 78
 fi
 
 usage() {
@@ -1085,7 +1102,36 @@ PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-${CODEX_THREAD_NAME:
 
 # Per-session id (coordination reform Phase 1): stable uuid so the gate keys a
 # claim lease to THIS session — two same-role sessions never collide (FM-2).
-SESSION_UUID="$(normalize_session_uuid "${HAPAX_SESSION_ID:-}")"
+# hapax_consume_launch_session_id honours an inherited id ONLY when the sender also
+# set HAPAX_SESSION_ID_PINNED to THIS launcher's name — which the tmux runner below
+# does (`=hapax-codex`), because it really
+# does re-exec THIS launcher and the inner process must keep the outer's id. An
+# ambient id from whatever shell the operator happened to be in is ignored
+# (claims-ontology-correction).
+#
+# CONSUME form, called outside any command substitution: the helper clears the pin
+# in THIS shell, so it is gone from the environment every child of this lane
+# inherits. Without that, the pin authorised the whole subtree and a grandchild
+# launcher re-created the very collision this repairs — the defect this PR's own
+# first round shipped and all four reviewer families caught.
+#
+# normalize_session_uuid still runs afterwards so a pinned-but-path-hostile id can
+# never reach a filename.
+hapax_consume_launch_session_id hapax-codex
+SESSION_UUID="$(normalize_session_uuid "$HAPAX_LAUNCH_SESSION_ID")"
+# Capability descriptors: NO addressee, unlike the session id above. The session
+# pin exists because the tmux runner really does re-exec this launcher and the
+# inner process must keep the outer's id; descriptors have no such case, because
+# nothing dispatches an interactive codex lane with a route, so there is never a
+# legitimate one to carry across that re-exec. When a codex interactive route is
+# dispatched, the pin is the mechanism to add then — writing it into the runner
+# now would be an unexercised path authorising values that are always absent.
+hapax_consume_launch_capability_descriptors
+# Session succession is NOT done here. A launcher-side helper lived here across
+# review rounds 2-6; it cannot be made correct in a launcher (see the REMOVED
+# block in hooks/scripts/agent-role.sh for the proof) and is rowed against
+# cc-claim, which owns the lease lock. This launcher mints, which is exactly what
+# origin/main does today — so nothing regresses while the real fix is built.
 TMUX_NAME="hapax-codex-$SESSION"
 DISPATCH_HOST_REQUESTED="${HAPAX_DISPATCH_HOST:-}"
 DISPATCH_HOST=""
@@ -1546,11 +1592,30 @@ else
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
     printf 'trap '\''%q %q --reason "clean exit (codex)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$SESSION"
+    # Capability descriptors, cleared in the RUNNER as well as in the launcher: an
+    # already-running tmux server hands the runner its own environment, not this
+    # shell's, and a stale one there reached the harness carrying another launch's
+    # route (review round 16). Unset rather than carried, because nothing pins an
+    # interactive codex lane — when a codex interactive route is dispatched, this is
+    # where the pinned values would be re-exported instead.
+    #
+    # HAPAX_CAPABILITY_PINNED only; the SESSION pin below is the one grant that must
+    # survive into the re-exec, and it is written explicitly further down.
+    printf 'unset HAPAX_CAPABILITY_ROUTE HAPAX_CAPABILITY_MODEL HAPAX_CAPABILITY_PINNED\n'
     printf 'export HAPAX_PARENT_AGENT_INTERFACE=%q\n' "$PARENT_INTERFACE"
     printf 'export HAPAX_PARENT_AGENT_NAME=%q\n' "$PARENT_NAME"
     # Propagate the session id so the re-exec'd inner hapax-codex keeps ONE stable
-    # uuid (reform Phase 1, FM-2) instead of minting a fresh one.
+    # uuid (reform Phase 1, FM-2) instead of minting a fresh one. The PIN is what
+    # makes that legitimate rather than accidental: hapax_consume_launch_session_id
+    # ignores a bare inherited id precisely so an ancestor shell cannot hand three
+    # lanes one claim key, and this is the one caller entitled to say "no, keep mine".
+    # The grant is ONE HOP: the inner hapax-codex consumes and unsets it before
+    # exporting anything to its own children, so it never becomes ambient.
+    # The pin NAMES its addressee, so it authorises this re-exec and nothing else:
+    # a headless or kimi lane launched from inside this pane sees a pin addressed
+    # to hapax-codex, ignores it, and mints.
     printf 'export HAPAX_SESSION_ID=%q\n' "$SESSION_UUID"
+    printf 'export HAPAX_SESSION_ID_PINNED=hapax-codex\n'
     printf 'cd %q\n' "$WORKDIR"
     printf 'exec %q' "$COUNCIL_DIR/scripts/hapax-codex"
     for arg in "${CHILD_ARGS[@]}"; do

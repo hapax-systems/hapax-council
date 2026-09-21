@@ -4,6 +4,27 @@
 set -euo pipefail
 
 COUNCIL_DIR="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}"
+# This script's own tree first; COUNCIL_DIR's default does not exist under every HOME.
+_hv_self="${BASH_SOURCE[0]:-$0}"
+if command -v readlink >/dev/null 2>&1; then
+  _hv_self="$(readlink -f "$_hv_self" 2>/dev/null || printf '%s' "$_hv_self")"
+fi
+ROLE_HELPER="$(cd "$(dirname "$_hv_self")/.." 2>/dev/null && pwd)/hooks/scripts/agent-role.sh"
+[ -f "$ROLE_HELPER" ] || ROLE_HELPER="$COUNCIL_DIR/hooks/scripts/agent-role.sh"
+if [ -f "$ROLE_HELPER" ]; then
+  # shellcheck source=../hooks/scripts/agent-role.sh
+  # shellcheck disable=SC1091
+  . "$ROLE_HELPER"
+fi
+# Both helpers, and exit 78 (sysexits EX_CONFIG) rather than 9 — see the same
+# guard in scripts/hapax-claude for why: 8 and 9 are already
+# hapax-methodology-dispatch's own launch refusals.
+if ! declare -F hapax_consume_launch_session_id >/dev/null 2>&1 ||
+  ! declare -F hapax_consume_launch_capability_descriptors >/dev/null 2>&1; then
+  echo "hapax-vibe: identity helper not found (looked for $ROLE_HELPER); next action: run from a complete council checkout or set HAPAX_COUNCIL_DIR" >&2
+  echo "hapax-vibe: if this ran over SSH from hapax-methodology-dispatch, the incomplete checkout is on THIS host (${HOSTNAME:-$(uname -n)}), not the dispatcher's — repair or re-sync the council checkout there. Exit 78 is this identity refusal specifically; dispatch's own 8/9 mean launcher-not-found and no-declared-model-pin." >&2
+  exit 78
+fi
 WORKTREE_ROOT="${HAPAX_VIBE_WORKTREE_ROOT:-$HOME/projects}"
 RELAY_DIR="${HAPAX_VIBE_RELAY_DIR:-$HOME/.cache/hapax/relay}"
 SPAWN_DIR="${HAPAX_VIBE_SPAWN_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/hapax/vibe-spawns}"
@@ -271,7 +292,22 @@ PARENT_INTERFACE="${HAPAX_PARENT_AGENT_INTERFACE:-${HAPAX_AGENT_INTERFACE:-unkno
 PARENT_NAME="${HAPAX_PARENT_AGENT_NAME:-${HAPAX_AGENT_NAME:-unknown}}"
 
 # Per-session id (coordination reform Phase 1): stable uuid for FM-2 lease keying.
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$SESSION" "$$")}"
+# MINTED, never inherited: this launcher's runner execs $VIBE_BIN directly and
+# never re-enters here, so an ambient HAPAX_SESSION_ID has no claim on this
+# lane's identity (claims-ontology-correction).
+# No addressee: the runner execs $VIBE_BIN directly and never re-enters here.
+hapax_consume_launch_session_id
+SESSION_UUID="$HAPAX_LAUNCH_SESSION_ID"
+# Session succession is NOT done here. A launcher-side helper lived here across
+# review rounds 2-6; it cannot be made correct in a launcher (see the REMOVED
+# block in hooks/scripts/agent-role.sh for the proof) and is rowed against
+# cc-claim, which owns the lease lock. This launcher mints, which is exactly what
+# origin/main does today — so nothing regresses while the real fix is built.
+# Capability descriptors: no addressee. launch_vibe_headless has no route in hand
+# to write, so nothing ever pins this launcher and every descriptor it can see is
+# the parent's. Recording none is the status quo; recording the parent's would be
+# a false measurement.
+hapax_consume_launch_capability_descriptors
 export HAPAX_AGENT_INTERFACE="vibe"
 export HAPAX_AGENT_NAME="$SESSION"
 export HAPAX_AGENT_SLOT="$SESSION"
@@ -399,6 +435,10 @@ write_runner() {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -euo pipefail'
     printf 'cd %q\n' "$WORKDIR"
+    # Cleared here as well as in the launcher: the runner is executed by a tmux
+    # server whose environment it inherits instead of this shell's. See the same
+    # block in scripts/hapax-claude for the measured leak.
+    printf 'unset HAPAX_CAPABILITY_ROUTE HAPAX_CAPABILITY_MODEL HAPAX_CAPABILITY_PINNED HAPAX_SESSION_ID_PINNED\n'
     printf 'export HAPAX_AGENT_INTERFACE=vibe\n'
     printf 'export HAPAX_AGENT_NAME=%q\n' "$SESSION"
     printf 'export HAPAX_AGENT_SLOT=%q\n' "$SESSION"
