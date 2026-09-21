@@ -1134,6 +1134,7 @@ NATIVE_LOG_FILE="$(mktemp "$LOG_DIR/native-XXXXXXXX.jsonl")"
 DIAGNOSTICS_FILE="${NATIVE_LOG_FILE%.jsonl}.stderr.log"
 if [[ -e "$LOG_FILE" && ! -L "$LOG_FILE" ]]; then
   mv "$LOG_FILE" "${NATIVE_LOG_FILE%.jsonl}.predecessor.log"
+  echo "  predecessor log: ${NATIVE_LOG_FILE%.jsonl}.predecessor.log"
 fi
 OUTPUT_ALIAS="${NATIVE_LOG_FILE%.jsonl}.alias"
 ln -s "$(basename "$NATIVE_LOG_FILE")" "$OUTPUT_ALIAS"
@@ -1159,7 +1160,7 @@ write_native_lifecycle() {
     --returncode "$EXIT_CODE" --cancel-signal "$CANCEL_SIGNAL" "${local_args[@]}" \
     2>>"$DIAGNOSTICS_FILE" \
     || [[ ! -f "$receipt" || ! -s "$receipt" ]]; then
-    echo "hapax-codex-headless: native lifecycle observation unavailable (producer failed or no fresh receipt at $receipt); next action: inspect $NATIVE_LOG_FILE and $DIAGNOSTICS_FILE, verify the observer CLI under $observer_root through governed source activation, then replay observation to a fresh receipt before relying on completion" >&2
+    echo "hapax-codex-headless: native lifecycle observation unavailable (producer failed or no fresh receipt at $receipt); next action: inspect $NATIVE_LOG_FILE and $DIAGNOSTICS_FILE, verify the observer CLI under $observer_root through governed hapax-source-activate, then replay observation to a fresh receipt before relying on completion" >&2
   fi
   # Observation failure is diagnostic; retain the waited child's exit status.
   return 0

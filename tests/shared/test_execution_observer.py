@@ -108,7 +108,11 @@ def test_resume_requires_one_observed_native_identity(tmp_path):
 
 
 def test_partial_or_malformed_native_stream_never_claims_complete(tmp_path):
-    path = _write(tmp_path / "native.jsonl", [{"type": "turn.completed"}])
+    path = _write(
+        tmp_path / "native.jsonl",
+        [{"type": "thread.started", "thread_id": "session"}, {"type": "turn.completed"}],
+    )
+    assert observe_native_lifecycle(path, platform="codex", process_returncode=0)["complete"]
     with path.open("a") as out:
         out.write('{"type":')
     result = observe_native_lifecycle(path, platform="codex", process_returncode=0)

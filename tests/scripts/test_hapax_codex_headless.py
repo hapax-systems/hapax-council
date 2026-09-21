@@ -365,6 +365,7 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     assert "native diagnostic" in diagnostic.read_text()
     if case in {"no_cli", "missing", "preexisting"}:
         assert "native lifecycle observation unavailable" in result.stderr
+        assert "hapax-source-activate" in result.stderr
         assert str(activation) in result.stderr
         assert str(receipt) in result.stderr
         if case == "preexisting":
@@ -769,6 +770,8 @@ exit 0
     assert [p.read_text() for p in log_dir.glob("*.predecessor.log")] == (
         ["predecessor evidence\n"] if predecessor == "file" else []
     )
+    if predecessor == "file":
+        assert str(next(log_dir.glob("*.predecessor.log"))) in result.stdout
     assert (log_dir / "output.jsonl").resolve() == Path(observed["stream_path"]).resolve()
     if predecessor == "symlink":
         assert previous_target.read_text() == "predecessor evidence\n"

@@ -34,6 +34,11 @@ def render(source: Path, names: list[str] | None = None) -> dict[str, tuple[dict
     common = (config / "AGENTS.md").read_text()
     rendered = {}
     for name in names or bindings:
+        if name not in bindings:
+            raise ValueError(
+                f"unknown --binding {name!r}; next action: choose from "
+                + ", ".join(sorted(bindings))
+            )
         binding = bindings[name]
         body = common
         if binding.get("fragment"):
@@ -44,12 +49,14 @@ def render(source: Path, names: list[str] | None = None) -> dict[str, tuple[dict
         payload = body.encode()
         if len(body) > binding.get("max_chars", sys.maxsize):
             raise ValueError(
-                f"{name}: instruction character limit exceeded; reduce shared/native content "
+                f"{name}: instruction character limit exceeded "
+                f"({len(body)} characters, limit {binding['max_chars']}); reduce shared/native content "
                 "or move domain guidance to a scoped reference, then retry"
             )
         if len(payload) > binding.get("max_bytes", sys.maxsize):
             raise ValueError(
-                f"{name}: instruction byte limit exceeded; reduce shared/native content "
+                f"{name}: instruction byte limit exceeded "
+                f"({len(payload)} bytes, limit {binding['max_bytes']}); reduce shared/native content "
                 "or move domain guidance to a scoped reference, then retry"
             )
         rendered[name] = (binding, payload)
@@ -415,7 +422,9 @@ def main() -> int:
                     recover_pending(state, args.restore_backup)
                     print("Recovered the pending instruction transaction.")
                     return 0
-                current = json.loads((state / "current.json").read_text())
+                current_path = state / "current.json"
+                current_body = current_path.read_bytes()
+                current = json.loads(current_body)
                 if Path(current["rollback"]).resolve() != args.restore_backup.resolve():
                     raise ValueError(
                         "backup is not the current install; inspect the successor first"
@@ -428,15 +437,23 @@ def main() -> int:
                         )
                 # Retain a recoverable transaction if manual rollback itself
                 # fails after restoring current.json or any earlier output.
+                # Expected postimages come from the validated receipt snapshot,
+                # never a later read that could adopt somebody else's edit.
+                approved = {item["path"]: item["sha256"] for item in current["files"]}
+                approved[str(current_path)] = digest(current_body)
                 originals = json.loads((args.restore_backup / "preimages.json").read_text())
+                original_paths = [item["path"] for item in originals]
+                if len(original_paths) != len(approved) or set(original_paths) != set(approved):
+                    raise ValueError(
+                        "backup targets differ from the current installation; "
+                        "inspect the receipt and backup before rollback"
+                    )
                 atomic_write(
                     state / "pending.json",
                     json.dumps(
                         {
                             "backup": str(args.restore_backup),
-                            "postimages": [
-                                digest(Path(item["path"]).read_bytes()) for item in originals
-                            ],
+                            "postimages": [approved[path] for path in original_paths],
                         },
                         indent=2,
                     ).encode(),

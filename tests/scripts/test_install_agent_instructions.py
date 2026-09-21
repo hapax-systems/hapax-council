@@ -33,6 +33,29 @@ def test_all_native_outputs_contain_one_shared_body_and_keep_native_additions(tm
     assert not (home / ".claude/settings.json").exists()
 
 
+def test_unknown_binding_reports_choices_without_publication(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "installer",
+            "--source",
+            str(ROOT),
+            "--source-revision",
+            "fixture",
+            "--home",
+            str(tmp_path),
+            "--binding",
+            "cdoex",
+            "--apply",
+        ],
+    )
+    assert installer.main() == 1
+    error = capsys.readouterr().err
+    assert "unknown --binding 'cdoex'" in error
+    assert "next action: choose from" in error and "codex" in error
+    assert not (tmp_path / ".config").exists()
+
+
 def test_foreign_instruction_controls_preserve_other_native_settings(tmp_path):
     grok = tmp_path / ".grok/config.toml"
     grok.parent.mkdir()
@@ -156,6 +179,50 @@ def test_failed_readback_retains_unknown_bytes_for_reconciliation(tmp_path, monk
 
 
 @pytest.mark.parametrize("upgrade", [False, True])
+@pytest.mark.parametrize("changed", ["output", "receipt"])
+def test_manual_rollback_never_adopts_edits_after_validation(
+    tmp_path, monkeypatch, upgrade, changed
+):
+    home = tmp_path / "home"
+    if upgrade:
+        installer.install(ROOT, home, revision="prior", apply=True)
+    current = installer.install(ROOT, home, revision="current", apply=True)
+    state = home / ".config/hapax/agent-instructions"
+    target = home / ".codex/AGENTS.md" if changed == "output" else state / "current.json"
+    approved = target.read_bytes()
+    foreign = approved + b"\n "
+    backup = Path(current["rollback"])
+    read_text = Path.read_text
+    injected = False
+
+    def intervene(path, *args, **kwargs):
+        nonlocal injected
+        body = read_text(path, *args, **kwargs)
+        if path == backup / "preimages.json" and not injected:
+            injected = True
+            target.write_bytes(foreign)
+        return body
+
+    monkeypatch.setattr(
+        "sys.argv", ["installer", "--home", str(home), "--restore-backup", str(backup)]
+    )
+    with monkeypatch.context() as fault:
+        fault.setattr(Path, "read_text", intervene)
+        status = installer.main()
+    assert injected, "the edit must arrive after validation, before pending-record creation"
+    assert status == 1
+    assert target.read_bytes() == foreign
+    pending = json.loads((state / "pending.json").read_text())
+    originals = json.loads((backup / "preimages.json").read_text())
+    index = next(i for i, item in enumerate(originals) if item["path"] == str(target))
+    assert pending["postimages"][index] == installer.digest(approved)
+    # Explicit reconciliation in this fixture permits a later guarded retry.
+    target.write_bytes(approved)
+    assert installer.main() == 0
+    assert not (state / "pending.json").exists()
+
+
+@pytest.mark.parametrize("upgrade", [False, True])
 @pytest.mark.parametrize("foreign_kind", ["file", "symlink", "directory"])
 def test_automatic_rollback_preserves_intervening_edits_and_pending_recovery(
     tmp_path, monkeypatch, upgrade, foreign_kind
@@ -242,8 +309,27 @@ def test_shadow_refuses_before_any_native_write(tmp_path, installed):
 def test_oversize_refuses_instead_of_truncating(tmp_path):
     shutil.copytree(ROOT / "config/agent-instructions", tmp_path / "config/agent-instructions")
     (tmp_path / "config/agent-instructions/AGENTS.md").write_text("x" * 10001)
-    with pytest.raises(ValueError, match="grok.*character limit"):
+    with pytest.raises(ValueError, match="grok.*character limit") as error:
         installer.render(tmp_path, ["grok"])
+    assert "characters, limit 10000" in str(error.value)
+
+
+def test_character_and_byte_limits_keep_their_units(tmp_path):
+    config = tmp_path / "config/agent-instructions"
+    config.mkdir(parents=True)
+    (config / "AGENTS.md").write_text("é" * 10)
+    binding = {"path": ".codex/AGENTS.md"}
+    (config / "bindings.json").write_text(json.dumps({"codex": binding}))
+    body = installer.render(tmp_path, ["codex"])["codex"][1]
+    chars = len(body.decode())
+    binding["max_chars"] = chars
+    (config / "bindings.json").write_text(json.dumps({"codex": binding}))
+    assert installer.render(tmp_path, ["codex"])["codex"][1] == body
+    binding["max_bytes"] = chars
+    (config / "bindings.json").write_text(json.dumps({"codex": binding}))
+    with pytest.raises(ValueError, match="byte limit") as error:
+        installer.render(tmp_path, ["codex"])
+    assert f"{len(body)} bytes, limit {chars}" in str(error.value)
 
 
 def test_explicit_home_does_not_inherit_process_native_homes(tmp_path, monkeypatch):
