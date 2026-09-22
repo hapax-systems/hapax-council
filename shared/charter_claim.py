@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -117,7 +117,7 @@ def write_obligation_report(
         "schema": "hapax.charter-obligation-report.v1",
         "charter_id": charter_id,
         "breaches": breaches,
-        "reported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "reported_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     with destination.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
