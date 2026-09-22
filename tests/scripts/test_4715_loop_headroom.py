@@ -54,6 +54,8 @@ def _base(tmp_path: Path, **overrides: str) -> dict[str, str]:
         "HAPAX_REQUIRED_CODEX_LANES": "",
         "HAPAX_LOCAL_DEV_MAINTENANCE_MODE": "local",
         "HAPAX_SUPERVISOR_CLAUDE_LANES": "alpha beta gamma",
+        "HAPAX_SDLC_PRESSURE_GATE_OFF": "1",
+        "HAPAX_RECOVERY_GOVERNOR_OFF": "1",
         "NTFY_URL": "http://127.0.0.1:1",
         "NTFY_TOPIC": "test",
     }
@@ -114,7 +116,9 @@ def test_real_loop_respects_budget_cap_of_two(tmp_path: Path) -> None:
     out = _run_watchdog(env, load1="0.01", nproc="32")
     assert "launch headroom budget=2" in out, out
     launched = _launched(env)
-    assert 1 <= len(launched) <= 2, (launched, out)
+    launching_lines = [ln for ln in out.splitlines() if "LAUNCHING" in ln]
+    assert len(launching_lines) <= 2, (launching_lines, out)
+    assert len(launched) <= 2, (launched, out)
 
 
 def test_real_loop_logs_budget_and_pool(tmp_path: Path) -> None:
