@@ -137,13 +137,32 @@ mkdir -p "$STATE_DIR"
 
 log() { printf '%s lane-supervisor: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 
-local_dev_maintenance_mode() {
+site_class() {
+  # Explicit site classes (G1 D2). Host names and mode strings map here; they
+  # are placement hints, not identity. remote/thin-client are NOT appendix.
   local mode="${HAPAX_LOCAL_DEV_MAINTENANCE_MODE:-}"
   if [ -z "$mode" ]; then
     mode="${HAPAX_DEFAULT_DISPATCH_HOST:-${HAPAX_DISPATCH_HOST:-local}}"
   fi
   case "$mode" in
-    appendix | hapax-appendix | appendix-only | appendix_only | remote | thin-client | thin_client)
+    appendix|hapax-appendix|appendix-only|appendix_only)
+      echo "appendix-only"
+      ;;
+    remote|thin-client|thin_client|remote-client)
+      echo "remote-client"
+      ;;
+    *)
+      echo "local"
+      ;;
+  esac
+}
+
+local_dev_maintenance_mode() {
+  # Policy derived from site class, not from the mode string. Both non-local
+  # classes suppress local required-lane launch; they stay distinct so a future
+  # policy split is one map entry, not a string-match rewrite.
+  case "$(site_class)" in
+    appendix-only|remote-client)
       echo "appendix-only"
       ;;
     *)
@@ -152,7 +171,9 @@ local_dev_maintenance_mode() {
   esac
 }
 
+SITE_CLASS="$(site_class)"
 LOCAL_DEV_MAINTENANCE_MODE="$(local_dev_maintenance_mode)"
+log "site-class ${SITE_CLASS} (maintenance=${LOCAL_DEV_MAINTENANCE_MODE})"
 if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
   log "appendix-only local-dev maintenance: unclaimed idle-await respawns disabled; active claimed-task resumes preserved"
 fi
