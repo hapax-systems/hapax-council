@@ -659,6 +659,9 @@ class TestCanonEcho(unittest.TestCase):
             payload='{"task_id":"task-echo"}',
         )
         send_message(self.db_path, self.parent)
+        # Keep the WAL generation alive across byte snapshots. Connections from
+        # SQLite transaction contexts may otherwise be collected between reads.
+        self._database_anchor = _connect(self.db_path)
         self.ledger = self.root / "methodology-dispatch.jsonl"
         self.ledger.write_text(
             json.dumps(_dispatch_record(self.source_message_id), sort_keys=True) + "\n",
@@ -673,7 +676,15 @@ class TestCanonEcho(unittest.TestCase):
         self.now = datetime(2026, 7, 11, 15, 0, tzinfo=UTC)
 
     def tearDown(self) -> None:
+        self._database_anchor.close()
         self._tmp.cleanup()
+
+    def _assert_tree_unchanged(self, before: dict[str, bytes]) -> None:
+        after = _tree_bytes(self.root)
+        self.assertEqual(set(after), set(before))
+        for path, contents in before.items():
+            # Avoid unittest's expensive pretty diff of whole binary databases.
+            self.assertTrue(after[path] == contents, f"relay observation changed {path}")
 
     def _tampered_echo(
         self, *, observed_at: datetime, repair_message_id: str | None = None
@@ -797,7 +808,7 @@ class TestCanonEcho(unittest.TestCase):
 
         self.assertEqual(result.action, "hold")
         self.assertEqual(result.reason_code, "canon_echo_projection_required")
-        self.assertEqual(_tree_bytes(self.root), before)
+        self._assert_tree_unchanged(before)
 
     def test_absent_database_holds_without_creating_a_database(self) -> None:
         absent_root = self.root / "absent-relay"
@@ -813,7 +824,7 @@ class TestCanonEcho(unittest.TestCase):
 
         self.assertEqual(result.action, "hold")
         self.assertEqual(result.reason_code, "canon_echo_repair_required")
-        self.assertEqual(_tree_bytes(self.root), before)
+        self._assert_tree_unchanged(before)
         self.assertFalse(absent_root.exists())
 
     def test_observation_preserves_database_and_existing_sidecar_bytes(self) -> None:
@@ -833,7 +844,7 @@ class TestCanonEcho(unittest.TestCase):
 
             self.assertEqual(result.action, "hold")
             self.assertEqual(result.reason_code, "canon_echo_projection_required")
-            self.assertEqual(_tree_bytes(self.root), before)
+            self._assert_tree_unchanged(before)
         finally:
             writer.close()
 
@@ -855,7 +866,7 @@ class TestCanonEcho(unittest.TestCase):
         )
         self.assertEqual(held.action, "hold")
         self.assertEqual(held.reason_code, "canon_echo_projection_required")
-        self.assertEqual(_tree_bytes(self.root), before)
+        self._assert_tree_unchanged(before)
 
         rows = list_messages(self.db_path, MessageFilters(limit=20))
         repairs = [
