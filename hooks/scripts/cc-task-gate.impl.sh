@@ -926,6 +926,11 @@ src_auth = fields.get("source_mutation_authorized", "")
 docs_auth = fields.get("docs_mutation_authorized", "")
 runtime_auth = fields.get("runtime_mutation_authorized", "")
 scope_refs = fields.get("mutation_scope_refs", "")
+# A charter is the coordinator's grant. Work inside charter_scope does not
+# need a second claim. The lease stays this note.
+if fields.get("claim_form") == "charter" and fields.get("charter_scope"):
+    extra = fields["charter_scope"]
+    scope_refs = f"{scope_refs}\x1f{extra}" if scope_refs else extra
 print(
     f"{status}\t{assigned}\t{blocked_reason}\t{blocked_witness}\t"
     f"{authority_case}\t{parent_spec}\t{route_schema}\t{stage}\t"
