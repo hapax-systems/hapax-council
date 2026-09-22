@@ -14,6 +14,11 @@ WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 # mutable dev tree. The activation worktree is a governed, reviewed checkout.
 ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/codex-claim-audit --release --stale-hours=6
 Environment=GH_REPO=hapax-systems/hapax-council
+# #4090 canonical-root: never the mutable dev tree.
+Environment=HAPAX_COUNCIL_DIR=%h/.cache/hapax/source-activation/worktree
+# Authoritative claim plane (the pin). The registry read in
+# claim_plane_hosts() is the growth path and errors closed when empty.
+Environment="HAPAX_CLAIM_PLANE_HOSTS=hapax-podium hapax-appendix"
 Environment=NTFY_URL=https://ntfy.sh
 Environment=NTFY_TOPIC=hapax-ops
 # Reconcile cleared state to the PEER host (class #4 fix). The preset enables
