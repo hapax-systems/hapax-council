@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import sqlite3
@@ -1334,6 +1335,86 @@ class TestRecipientExpansion(unittest.TestCase):
     def test_expand_normalizes_roles(self) -> None:
         result = expand_recipients("Alpha, CX_Red")
         self.assertEqual(sorted(result), ["alpha", "cx-red"])
+
+
+class TestConnectConnectionLifecycle(unittest.TestCase):
+    """Regression tests for the WAL sidecar leak (merge-queue lottery).
+
+    ``_connect`` once returned a raw sqlite3 connection; every ``with _connect(...)``
+    call site then only ended the transaction and leaked the connection. Leaked
+    connections pin ``messages.db-wal``/``-shm`` until GC collects them, and that
+    collection deletes the sidecars mid-snapshot — a FileNotFoundError window the
+    merge_group runner hit at random.
+    """
+
+    def _open_connections_to(self, root: Path) -> list[sqlite3.Connection]:
+        connections: list[sqlite3.Connection] = []
+        for obj in gc.get_objects():
+            if not isinstance(obj, sqlite3.Connection):
+                continue
+            try:
+                rows = obj.execute("PRAGMA database_list").fetchall()
+            except sqlite3.Error:
+                continue
+            if any(file and Path(file).is_relative_to(root) for _, _, file in rows):
+                connections.append(obj)
+        return connections
+
+    def test_send_message_leaks_no_connection(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = root / "messages.db"
+            send_message(db, _regression_envelope())
+            gc.collect()
+            self.assertEqual(
+                self._open_connections_to(root),
+                [],
+                "send_message leaked an open connection; a later gc.collect() would "
+                "delete the WAL sidecars mid-snapshot",
+            )
+
+    def test_leaked_connection_would_delete_sidecars_in_snapshot_window(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = root / "messages.db"
+            # A deliberately leaked connection recreates the pre-fix state: the
+            # sidecars exist, and collecting that connection inside the
+            # list-then-read window deletes them under the reader.
+            anchor = _open_connection(db)
+            anchor.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            send_message(db, _regression_envelope())
+            listed = [path for path in sorted(root.rglob("*")) if path.is_file()]
+            sidecars = [path for path in listed if path.name != db.name]
+            self.assertTrue(sidecars, "expected WAL sidecars while a connection is open")
+            del anchor
+            for path in listed:
+                gc.collect()
+                if path.name != db.name:
+                    with self.assertRaises(FileNotFoundError):
+                        path.read_bytes()
+            self.assertEqual(self._open_connections_to(root), [])
+
+    def test_connect_closes_connection_when_body_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db = root / "messages.db"
+            ensure_schema(db)
+            with self.assertRaises(RuntimeError):
+                with _connect(db) as conn:
+                    conn.execute("SELECT 1").fetchone()
+                    raise RuntimeError("boom")
+            gc.collect()
+            self.assertEqual(self._open_connections_to(root), [])
+
+
+def _regression_envelope() -> Envelope:
+    return Envelope(
+        sender="regression",
+        message_type="advisory",
+        subject="wal sidecar leak regression",
+        recipients_spec="alpha",
+        payload="regression payload",
+    )
 
 
 if __name__ == "__main__":
