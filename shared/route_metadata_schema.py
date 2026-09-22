@@ -1165,10 +1165,14 @@ def _coerce_known_route_tokens(
                 payload["context_shape"] = context
     floor = payload.get("quality_floor")
     legal = {item.value for item in QualityFloor}
-    if isinstance(floor, str) and floor.strip().lower() not in legal:
-        derived = _derive_quality_floor({**frontmatter, "quality_floor": None})
-        if derived is not None:
-            payload["quality_floor"] = derived.value
+    if isinstance(floor, str):
+        token = floor.strip().lower()
+        if token in legal:
+            payload["quality_floor"] = token
+        else:
+            derived = _derive_quality_floor({**frontmatter, "quality_floor": None})
+            if derived is not None:
+                payload["quality_floor"] = derived.value
     return payload
 
 

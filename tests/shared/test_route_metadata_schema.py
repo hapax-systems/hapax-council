@@ -309,6 +309,14 @@ def test_known_stale_route_tokens_coerce_and_unknown_tokens_do_not() -> None:
     assert refused.validation_errors
 
 
+def test_quality_floor_is_normalized_before_validation() -> None:
+    noisy = _explicit_metadata()
+    noisy["quality_floor"] = "  FRONTIER_REQUIRED  "
+    accepted = assess_route_metadata(noisy)
+    assert accepted.metadata is not None
+    assert accepted.metadata.quality_floor.value == "frontier_required"
+
+
 def test_mutation_surface_unknown_is_hold_condition() -> None:
     assessment = assess_route_metadata(
         {

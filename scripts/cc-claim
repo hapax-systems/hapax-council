@@ -287,6 +287,10 @@ cc_task_root_resolve || exit $?
 vault_root_check="$CC_TASK_ROOT"
 now_epoch="$(date +%s 2>/dev/null || echo 0)"
 legacy_claim_file="$HOME/.cache/hapax/cc-active-task-$role"
+# Only this run's lease scan may set the charter-keep grant; a value inherited
+# from the caller's environment would force the charter branch without the
+# child-may-mint check having run for this claim.
+unset HAPAX_CHARTER_KEEP_TASK || true
 shopt -s nullglob
 for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   [[ -f "$cf" ]] || continue
@@ -442,7 +446,7 @@ def _write_charter_sidecar() -> None:
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from shared.charter_claim import sidecar_belongs_to  # noqa: E402
+from shared.charter_claim import child_may_mint, sidecar_belongs_to  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
@@ -1292,6 +1296,27 @@ if charter_keep:
     # AND an applied publication that resolves. Naming the publication
     # receipt check means performing it, and an absent lease is a hold, not
     # a fallthrough to minting a fresh claim.
+    charter_note = None
+    for candidate in (
+        path.parent / f"{charter_keep}.md",
+        *sorted(path.parent.glob(f"{charter_keep}-*.md")),
+    ):
+        if candidate.is_file():
+            charter_note = candidate
+            break
+    if charter_note is None or not child_may_mint(
+        charter_note.read_text(encoding="utf-8"), text
+    ):
+        print(
+            f"cc-claim: HOLD — '{task_id}' is not a valid unit of charter "
+            f"'{charter_keep}': the re-verification of parent_charter and "
+            "scope coverage failed, so the charter-keep grant cannot be "
+            "honored. Next action: on the unit note set parent_charter: "
+            f"'{charter_keep}' and keep every mutation_scope_ref inside that "
+            "charter's charter_scope, then rerun cc-claim.",
+            file=sys.stderr,
+        )
+        sys.exit(8)
     live_parent = []
     for key in (role, f"{role}-{session_id}" if session_id else ""):
         if not key:

@@ -1447,17 +1447,24 @@ PYEOF
       # edit a unit covers is that unit's work, and an edit no unit covers is
       # written down as a breach. If the report cannot be written, the edit
       # stops.
-      if ! python3 - "$note_path" "$edit_path" "$HOME/.cache/hapax" "$_scope_repo_top" "$_scope_vault_root" "$_scope_file_top" <<'PYEOF'
+      _charter_shared_top="$(_escape_grant_repo_root 2>/dev/null || true)"
+      if ! python3 - "$note_path" "$edit_path" "$HOME/.cache/hapax" "$_scope_repo_top" "$_scope_vault_root" "$_scope_file_top" "$_charter_shared_top" <<'PYEOF'
 import json
 import os
 import sys
 from pathlib import Path
 
-note, edit, cache, repo_top, vault_root, file_top = sys.argv[1:7]
+note, edit, cache, repo_top, vault_root, file_top, shared_top = sys.argv[1:8]
 text = Path(note).read_text(encoding="utf-8")
 if "\nclaim_form: charter" not in f"\n{text}":
     sys.exit(0)
-sys.path.insert(0, file_top or repo_top or str(Path(note).resolve().parents[3]))
+# The edit may target a repository that carries no shared/ tree; the canonical
+# council source root selected by _escape_grant_repo_root is the import source
+# when it exists, with the previous anchoring kept as the fallback.
+if shared_top and (Path(shared_top) / "shared").is_dir():
+    sys.path.insert(0, shared_top)
+else:
+    sys.path.insert(0, file_top or repo_top or str(Path(note).resolve().parents[3]))
 from shared.charter_claim import (  # noqa: E402
     _frontmatter,
     _refs,

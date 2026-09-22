@@ -235,19 +235,43 @@ def test_charter_unit_claim_holds_when_parent_publication_unresolvable(tmp_path:
     assert _publications(home) == []
 
 
-def test_charter_unit_claim_holds_without_parent_lease_and_mints_nothing(
+def test_charter_unit_claim_holds_with_incomplete_parent_lease_and_mints_nothing(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    _write_charter(home)
+    charter = _claim(home, "charter-x")
+    assert charter.returncode == 0, charter.stderr
+    cache = home / ".cache" / "hapax"
+    for key in (_ROLE, f"{_ROLE}-{_SESSION_ID}"):
+        (cache / f"cc-claim-epoch-{key}").unlink(missing_ok=True)
+        (cache / f"cc-claim-dispatch-{key}.json").unlink(missing_ok=True)
+
+    # The active-task sidecar keeps the loop's charter grant alive, but a
+    # leftover active-task file is not a complete lease: the unit holds.
+    _write_unit(home, "unit-a", ["shared/cx/unit-a.py"])
+    unit = _claim(home, "unit-a", install_gate0b=False)
+
+    assert unit.returncode == 8
+    assert "does not have a complete lease" in unit.stderr
+    assert len(_publications(home)) == 1
+
+
+def test_inherited_charter_keep_env_does_not_force_the_charter_branch(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
     _write_unit(home, "unit-a", ["shared/cx/unit-a.py"])
 
-    # No charter lease exists at all; charter_keep is forced to reach the
-    # guard. An absent lease is a hold, never a fallthrough to a fresh claim.
+    # A stale HAPAX_CHARTER_KEEP_TASK inherited from the caller's environment
+    # must not reach the charter branch: it is unset before the lease scan,
+    # so the claim proceeds as an ordinary claim instead of holding.
     unit = _claim(home, "unit-a", extra_env={"HAPAX_CHARTER_KEEP_TASK": "charter-x"})
 
-    assert unit.returncode == 8
-    assert "no live lease sidecars" in unit.stderr
-    assert _publications(home) == []
+    assert unit.returncode == 0, unit.stderr
+    cache = home / ".cache" / "hapax"
+    assert not (cache / f"charter-units-{_ROLE}-{_SESSION_ID}.jsonl").exists()
+    assert len(_publications(home)) == 1
 
 
 def test_unit_outside_charter_scope_is_blocked_with_next_action(tmp_path: Path) -> None:
@@ -303,7 +327,9 @@ def _gate_home(tmp_path: Path) -> tuple[Path, Path]:
     return home, note
 
 
-def _run_gate(home: Path, target: Path) -> subprocess.CompletedProcess[str]:
+def _run_gate(
+    home: Path, target: Path, *, cwd: Path | None = None, path: str | None = None
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     for key in (
         "HAPAX_AGENT_ROLE",
@@ -317,6 +343,8 @@ def _run_gate(home: Path, target: Path) -> subprocess.CompletedProcess[str]:
         env.pop(key, None)
     env["HOME"] = str(home)
     env["CLAUDE_ROLE"] = "alpha"
+    if path:
+        env["PATH"] = path
     payload = {
         "hook_event_name": "PreToolUse",
         "tool_name": "Edit",
@@ -326,7 +354,7 @@ def _run_gate(home: Path, target: Path) -> subprocess.CompletedProcess[str]:
         [str(GATE)],
         input=json.dumps(payload),
         env=env,
-        cwd=str(REPO_ROOT),
+        cwd=str(cwd or REPO_ROOT),
         text=True,
         capture_output=True,
         check=False,
@@ -346,6 +374,30 @@ def test_gate_reports_charter_breach_when_no_unit_covers_the_edit(tmp_path: Path
     rows = [json.loads(line) for line in report.read_text(encoding="utf-8").splitlines()]
     assert [row["breaches"] for row in rows] == [["charter-gate-area/x.py"]]
     assert rows[0]["schema"] == "hapax.charter-obligation-report.v1"
+
+
+def test_gate_resolves_the_reporter_from_a_repo_without_shared(tmp_path: Path) -> None:
+    home, note = _gate_home(tmp_path)
+    note.write_text(
+        note.read_text(encoding="utf-8").replace("  - charter-gate-area/\n", "  - src/\n"),
+        encoding="utf-8",
+    )
+    foreign = tmp_path / "other-repo"
+    target = foreign / "src" / "x.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(foreign)], check=True, timeout=30)
+
+    # The edit target's repository carries no shared/ tree and the gate is
+    # invoked from that repository with the system interpreter (the
+    # canonical-deployed shape, no venv editable install): the reporter must
+    # import from the canonical council source root, not block the edit.
+    result = _run_gate(home, target, cwd=foreign, path="/usr/bin:/bin")
+
+    assert result.returncode == 0, result.stderr
+    report = home / ".cache" / "hapax" / "charter-obligation-charter-x.jsonl"
+    assert report.exists()
+    rows = [json.loads(line) for line in report.read_text(encoding="utf-8").splitlines()]
+    assert [row["breaches"] for row in rows] == [["src/x.py"]]
 
 
 def test_gate_records_no_breach_when_a_unit_covers_the_edit(tmp_path: Path) -> None:
