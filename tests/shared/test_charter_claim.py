@@ -1,9 +1,10 @@
-"""Charter grants a child and obligates one. Absence is a report, not a refusal."""
+"""A charter lets the coordinator continue. A missing unit is a report, not a stop."""
 
 from shared.charter_claim import (
     child_may_mint,
     covers,
     obligation_breaches,
+    record_unit,
     residue_without_active_lease,
     sidecar_belongs_to,
     write_obligation_report,
@@ -49,6 +50,14 @@ def test_child_without_scope_may_not_mint() -> None:
 def test_ordinary_claim_is_not_a_charter() -> None:
     ordinary = _CHARTER.replace("claim_form: charter\n", "claim_form: task\n")
     assert child_may_mint(ordinary, _CHILD) is False
+
+
+def test_recording_a_unit_does_not_require_a_new_claim(tmp_path) -> None:
+    destination = tmp_path / "units.jsonl"
+    record_unit(destination, charter_id="charter-demo", unit_id="unit-1")
+    text = destination.read_text(encoding="utf-8")
+    assert "charter-demo" in text
+    assert "unit-1" in text
 
 
 def test_missing_child_is_written_as_a_report(tmp_path) -> None:

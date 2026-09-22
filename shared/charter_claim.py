@@ -1,9 +1,10 @@
-"""Charter claims: one grant, obligated precise children.
+"""The coordinator continues under one charter.
 
-Yard Crow is the demand surface where operator inflection enters once. It does
-not yet mint claims. A charter is that inflection recorded as an entry: it
-names a scope, it is not itself permission to edit, and it obligates a later
-sub-claim inside that scope before a mutation counts as supported.
+Yard Crow is the demand surface where operator inflection enters once. The
+goal is that the crow does its job without stopping to ask for a new claim.
+A charter is that grant and its lease. A unit inside the scope is recorded.
+The lease is not handed off, because the publication journal cannot store a
+parent lease as a preimage.
 
 That is gap 2 of the append-only log. An entry that obligates the record makes
 the absence of the discharge a well-formedness breach, checkable by anyone who
@@ -124,6 +125,22 @@ def child_may_mint(charter_text: str, child_text: str) -> bool:
     if not scope or not refs:
         return False
     return all(any(covers(prefix, ref) for prefix in scope) for ref in refs)
+
+
+def record_unit(destination: Path, *, charter_id: str, unit_id: str) -> None:
+    """Record that the coordinator opened a unit without asking for a new claim.
+
+    The charter lease is unchanged. This is the coordinator continuing.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "schema": "hapax.charter-unit.v1",
+        "charter_id": charter_id,
+        "unit_id": unit_id,
+        "recorded_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    with destination.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 def write_obligation_report(

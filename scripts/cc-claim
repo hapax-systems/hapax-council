@@ -344,7 +344,7 @@ from pathlib import Path
 ok = child_may_mint(Path(os.environ["EXISTING_NOTE"]).read_text(), Path(os.environ["CHILD_NOTE"]).read_text())
 sys.exit(0 if ok else 1)
 '; then
-    echo "cc-claim: charter '$existing_task' covers '$task_id'. Minting the sub-claim. The charter stays. No operator widen." >&2
+    echo "cc-claim: charter '$existing_task' covers '$task_id'. Recording the unit. The lease stays. No new claim was requested." >&2
     export HAPAX_CHARTER_KEEP_TASK="$existing_task"
     continue
   fi
@@ -1442,16 +1442,26 @@ try:
                 if sidecar_belongs_to(candidate, charter_keep):
                     live_parent.append(name)
         if live_parent:
-            print(
-                "cc-claim: HOLD — charter "
-                f"'{charter_keep}' still holds the lease ({', '.join(live_parent)}). "
-                "A child cannot take that lease until the publication record can "
-                "store the parent bytes as its preimage. Closing the charter "
-                "through the governed lifecycle, then claiming the child, is the "
-                "path that exists today. Do not move the sidecars by hand.",
-                file=sys.stderr,
+            from shared.charter_claim import record_unit  # noqa: E402
+            from shared.task_note_lock import projected_path_lock  # noqa: E402
+
+            with projected_path_lock(task_id, (path,)):
+                path.write_text(text, encoding="utf-8")
+            if session_id:
+                (cache_dir / f"cc-active-charter-{role}-{session_id}").write_text(
+                    f"{charter_keep}\n",
+                    encoding="utf-8",
+                )
+            record_unit(
+                cache_dir / f"charter-units-{role}-{session_id}.jsonl",
+                charter_id=charter_keep,
+                unit_id=task_id,
             )
-            sys.exit(8)
+            print(
+                f"cc-claim: recorded '{task_id}' under charter '{charter_keep}'. "
+                "The lease stays. No new claim was requested.",
+            )
+            sys.exit(0)
     receipt = publish_gate0b_claim(intent, root=install.root, now=now)
 except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError) as exc:
     print(
