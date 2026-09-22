@@ -368,7 +368,7 @@ Recheck the actual child argv, temporary roots, dossier construction and selecte
 host-input exclusion, together with the declaration and registry byte pin:
 
 ```bash
-uv run pytest tests/scripts/test_hapax_agy_reviewer.py \
+uv run --no-sync pytest tests/scripts/test_hapax_agy_reviewer.py \
   tests/shared/test_capability_load_set.py \
   tests/docs/test_platform_capability_registry_contract.py -q
 ```
