@@ -1,16 +1,21 @@
 [Unit]
-Description=Hapax SBCL+CLOG coordination dashboard
-Documentation=file://%h/.cache/hapax/coord-activation/worktree/README.md
-ConditionPathExists=%h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh
-OnFailure=notify-failure@%n.service
+Description=Hapax coordination daemon (Lisp yard, :8765, bounded control preflight)
+# RC-4: refuses to boot on a stale/missing SDLC vocabulary feed. The feed is
+# kept fresh by hapax-sdlc-vocab-export.timer.
+After=network-online.target hapax-sdlc-vocab-export.service
+Wants=hapax-sdlc-vocab-export.service
+Documentation=file:%h/projects/hapax-coord/README.md
 
 [Service]
 Type=simple
-WorkingDirectory=%h/.cache/hapax/coord-activation/worktree
-ExecStart=%h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh --daemon
+WorkingDirectory=%h/projects/hapax-coord
+# Quicklisp is a prerequisite (README); setup.lisp must exist.
+ExecStart=/usr/bin/env bash %h/projects/hapax-coord/scripts/run-dev.sh --host 127.0.0.1 --port 8765 --daemon
 Restart=on-failure
-RestartSec=5s
-NoNewPrivileges=true
+RestartSec=5
+# The yard is a local control surface only (loopback bind; carve-out).
+# No non-loopback exposure.
 
 [Install]
 WantedBy=default.target
+
