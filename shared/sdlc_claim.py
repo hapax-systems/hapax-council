@@ -2007,6 +2007,39 @@ def _validate_intent(intent: ClaimPublicationIntent) -> None:
     )
 
 
+def _other_task_lease_preimage(path: Path, task_id: str) -> tuple[bytes | None, int | None]:
+    """Bytes already on disk when they belong to a different task.
+
+    A fresh claim, and a same-task file the transaction itself just wrote,
+    stay absent-to-child. A charter handoff records the parent lease as the
+    preimage so recovery puts that lease back.
+    """
+    if not path.exists():
+        return None, None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None, None
+    other = False
+    if path.name.startswith("cc-claim-dispatch-"):
+        try:
+            other = json.loads(text).get("task_id") not in (None, task_id)
+        except json.JSONDecodeError:
+            other = False
+    elif path.name.startswith("cc-claim-epoch-"):
+        parts = text.split()
+        other = len(parts) >= 2 and parts[1] != task_id
+    else:
+        current = text.strip()
+        other = bool(current) and current != task_id
+    if not other:
+        return None, None
+    try:
+        return path.read_bytes(), path.stat().st_mode & 0o777
+    except OSError:
+        return None, None
+
+
 def _projections(intent: ClaimPublicationIntent) -> tuple[FileProjection, ...]:
     _validate_intent(intent)
     claim = f"{intent.task_id}\n".encode()
@@ -2022,31 +2055,24 @@ def _projections(intent: ClaimPublicationIntent) -> tuple[FileProjection, ...]:
         )
     ]
     for key in (intent.role, f"{intent.role}-{intent.session_id}"):
-        projections.extend(
-            (
-                FileProjection.from_snapshot(
-                    intent.cache_dir / f"cc-active-task-{key}",
-                    before=None,
-                    before_mode=None,
-                    after=claim,
-                    after_mode=0o644,
-                ),
-                FileProjection.from_snapshot(
-                    intent.cache_dir / f"cc-claim-epoch-{key}",
-                    before=None,
-                    before_mode=None,
-                    after=epoch,
-                    after_mode=0o644,
-                ),
-                FileProjection.from_snapshot(
-                    claim_dispatch_binding_path(intent.cache_dir, key),
-                    before=None,
-                    before_mode=None,
-                    after=binding,
-                    after_mode=0o600,
-                ),
-            )
+        lease_paths = (
+            (intent.cache_dir / f"cc-active-task-{key}", claim, 0o644),
+            (intent.cache_dir / f"cc-claim-epoch-{key}", epoch, 0o644),
+            (claim_dispatch_binding_path(intent.cache_dir, key), binding, 0o600),
         )
+        projected = []
+        for path, after, after_mode in lease_paths:
+            before, before_mode = _other_task_lease_preimage(path, intent.task_id)
+            projected.append(
+                FileProjection.from_snapshot(
+                    path,
+                    before=before,
+                    before_mode=before_mode,
+                    after=after,
+                    after_mode=after_mode,
+                )
+            )
+        projections.extend(projected)
     return tuple(projections)
 
 

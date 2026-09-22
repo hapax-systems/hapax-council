@@ -426,16 +426,10 @@ claim_epoch = int(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else 0
     dispatch_idempotency_key,
 ) = (sys.argv[9:16] if len(sys.argv) >= 16 else ("", "", "", "", "", "", ""))
 charter_keep = sys.argv[16].strip() if len(sys.argv) > 16 else ""
-parked_sidecars: list[tuple[Path, Path]] = []
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from shared.charter_claim import (  # noqa: E402
-    park_matching,
-    residue_without_active_lease,
-    restore_parked,
-    sidecar_belongs_to,
-)
+from shared.charter_claim import residue_without_active_lease, sidecar_belongs_to  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
@@ -1423,32 +1417,8 @@ try:
             "install artifacts.",
             file=sys.stderr,
         )
-    if charter_keep:
-        pairs: list[tuple[Path, Path]] = []
-        for key in (role, f"{role}-{session_id}" if session_id else ""):
-            if not key:
-                continue
-            pairs.extend(
-                (
-                    (cache_dir / f"cc-active-task-{key}", cache_dir / f"cc-charter-parked-task-{key}"),
-                    (cache_dir / f"cc-claim-epoch-{key}", cache_dir / f"cc-charter-parked-epoch-{key}"),
-                    (
-                        cache_dir / f"cc-claim-dispatch-{key}.json",
-                        cache_dir / f"cc-charter-parked-dispatch-{key}.json",
-                    ),
-                )
-            )
-        parked_sidecars.extend(park_matching(pairs, charter_keep))
-        if session_id:
-            (cache_dir / f"cc-active-charter-{role}-{session_id}").write_text(
-                f"{charter_keep}\n",
-                encoding="utf-8",
-            )
     receipt = publish_gate0b_claim(intent, root=install.root, now=now)
-except BaseException as exc:
-    restore_parked(parked_sidecars)
-    if not isinstance(exc, (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError)):
-        raise
+except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError) as exc:
     print(
         f"cc-claim: HOLD — {exc}; Next action: provision or repair the Gate-0B "
         "claim-publication composition receipt for this HOME through the governed "
