@@ -5151,3 +5151,36 @@ from shared.platform_capability_registry import NativeLoadFile as _NativeLoadFil
 
 _observe_load_set
 _NativeLoadFile._relative_binding
+
+# Charter claim machinery (cc-task charter-breach-reporter-publication-validation-20260922):
+# every production caller lives in inline-python heredocs inside extensionless bash —
+# scripts/cc-claim (sidecar_belongs_to, child_may_mint, record_unit) and
+# hooks/scripts/cc-task-gate.impl.sh (obligation_breaches, write_obligation_report).
+# DETECTOR BLIND SPOT, not dead code: vulture never parses those heredocs. Exercised
+# by tests/scripts/test_cc_claim_charter.py and tests/shared/test_charter_claim.py.
+# residue_without_active_lease shipped with the module but had no caller — removed
+# rather than whitelisted (superseded by archive_dispatch_only_claim_residue in
+# shared/sdlc_claim.py, #4713).
+from shared.charter_claim import (  # noqa: E402
+    child_may_mint as _charter_child_may_mint,
+)
+from shared.charter_claim import (
+    obligation_breaches as _charter_obligation_breaches,
+)
+from shared.charter_claim import (
+    record_unit as _charter_record_unit,
+)
+from shared.charter_claim import (
+    sidecar_belongs_to as _charter_sidecar_belongs_to,
+)
+from shared.charter_claim import (
+    write_obligation_report as _charter_write_obligation_report,
+)
+
+_ = (
+    _charter_sidecar_belongs_to,
+    _charter_child_may_mint,
+    _charter_record_unit,
+    _charter_write_obligation_report,
+    _charter_obligation_breaches,
+)
