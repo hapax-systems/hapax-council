@@ -36,7 +36,7 @@ _idle_threshold_default() {
 IDLE_THRESHOLD_S="${HAPAX_IDLE_THRESHOLD_S:-$(_idle_threshold_default)}"  # measured tau; 600 fallback
 COOLDOWN_S="${HAPAX_IDLE_COOLDOWN_S:-120}"              # 2 min between kicks
 STATE_DIR="${HAPAX_IDLE_STATE_DIR:-/tmp/hapax-lane-idle-state}"
-TASK_ROOT="${HOME}/Documents/Personal/20-projects/hapax-cc-tasks/active"
+TASK_ROOT="${HAPAX_IDLE_TASK_ROOT:-${HOME}/Documents/Personal/20-projects/hapax-cc-tasks/active}"
 REQUEST_ROOT="${HOME}/Documents/Personal/20-projects/hapax-requests/active"
 NTFY_TOPIC="${HAPAX_NTFY_TOPIC:-hapax}"
 NTFY_URL="${HAPAX_NTFY_URL:-http://localhost:8092}"
@@ -53,6 +53,124 @@ CLAUDE_LAUNCHER="${HOME}/.local/bin/hapax-claude"
 CODEX_LAUNCHER="${HOME}/projects/hapax-council/scripts/hapax-codex"
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle: $*"; }
+
+# ─── Active-task resolution ──────────────────────────────────────────────────
+# Which task, if any, is this lane accountable for? Two sources, in order:
+#   1. the claim plane — the role pointer cc-active-task-<lane> and every
+#      session-keyed cc-active-task-<lane>-<sid>, newest mtime first (the
+#      supervisor's resolve_claimed_task shape); a sidecar counts only when the
+#      row it names exists in TASK_ROOT and is assigned_to this lane;
+#   2. the rows — EVERY active row with assigned_to: <lane>, never the first one
+#      grep happens to list. The pre-fix `grep -rl … | head -1` judged dev by a
+#      blocked row while its claimed row sat beside it, and epsilon by a
+#      May-2026 offered row (measured 2026-09-16T12:5xZ).
+# Statuses: claimed / in_progress are ACTIVE (remind the lane); pr_open,
+# ready_for_review, merge_queue, ci_green, ready_for_merge, review_ready are a
+# HOLD — the lane is waiting on the plane, not idle — never a kick; anything
+# else is not this lane's live work.
+# Prints ONE tab-separated line:
+#   kind  task_id  status  source  rows_scanned  sidecars_checked
+# kind ∈ active|hold|none; task_id/status/source are "-" when kind=none;
+# rows_scanned counts every row examined (so a wedged scan reads as 0, never as
+# a confident "no active row"); source is rows|sidecar:<file>.
+CLAIM_DIR="${HAPAX_CLAIM_DIR:-${HOME}/.cache/hapax}"
+resolve_lane_active_task() {
+    local lane="$1"
+    python3 - "$TASK_ROOT" "$CLAIM_DIR" "$lane" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+task_root, claim_dir, lane = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+ACTIVE_RANK = {"claimed": 0, "in_progress": 1}  # higher rank wins a tie between rows
+HOLD = {"pr_open", "ready_for_review", "merge_queue", "ci_green", "ready_for_merge", "review_ready"}
+FIELD = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):\s*(.*?)\s*$")
+
+
+def frontmatter(path):
+    try:
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            text = fh.read(16384)
+    except OSError:
+        return {}
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    block = text[3:end] if end != -1 else text[3:]
+    fm = {}
+    for line in block.splitlines():
+        m = FIELD.match(line)
+        if m and m.group(1) not in fm:
+            fm[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+    return fm
+
+
+def note_for(task_id):
+    direct = task_root / f"{task_id}.md"
+    if direct.is_file():
+        return direct
+    return next(iter(sorted(task_root.glob(f"{task_id}-*.md"))), None)
+
+
+def emit(kind, task_id="-", status="-", source="-", rows=0, sidecars=0):
+    print(f"{kind}\t{task_id}\t{status}\t{source}\t{rows}\t{sidecars}")
+    sys.exit(0)
+
+
+# 1. Claim plane, newest first.
+sidecars = [claim_dir / f"cc-active-task-{lane}"] + sorted(claim_dir.glob(f"cc-active-task-{lane}-*"))
+sidecars = [p for p in sidecars if p.is_file()]
+sidecars.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+hold = None
+for cf in sidecars:
+    try:
+        lines = [ln.strip() for ln in cf.read_text(errors="replace").splitlines() if ln.strip()]
+    except OSError:
+        continue
+    if not lines:
+        continue
+    note = note_for(lines[0])
+    if note is None:
+        continue
+    fm = frontmatter(note)
+    if fm.get("assigned_to") != lane:
+        continue
+    status = fm.get("status", "")
+    if status in ACTIVE_RANK:
+        emit("active", note.stem, status, f"sidecar:{cf.name}", 0, len(sidecars))
+    if status in HOLD and hold is None:
+        hold = (note.stem, status, f"sidecar:{cf.name}")
+
+# 2. Every row assigned to the lane — no head -1.
+rows = 0
+best = None  # (rank, task_id, status)
+for note in sorted(task_root.glob("*.md")) if task_root.is_dir() else []:
+    rows += 1
+    fm = frontmatter(note)
+    if fm.get("assigned_to") != lane:
+        continue
+    status = fm.get("status", "")
+    if status in ACTIVE_RANK:
+        cand = (ACTIVE_RANK[status], note.stem, status)
+        if best is None or cand[0] > best[0]:
+            best = cand
+    elif status in HOLD and hold is None:
+        hold = (note.stem, status, "rows")
+if best is not None:
+    emit("active", best[1], best[2], "rows", rows, len(sidecars))
+if hold is not None:
+    emit("hold", hold[0], hold[1], hold[2], rows, len(sidecars))
+emit("none", "-", "-", "-", rows, len(sidecars))
+PY
+}
+
+# Inspection / test surface: resolve one lane and exit — no tmux scan, no kick.
+if [ "${1:-}" = "--resolve-active-task" ]; then
+    [ -n "${2:-}" ] || { echo "usage: $0 --resolve-active-task <lane>" >&2; exit 2; }
+    resolve_lane_active_task "$2"
+    exit $?
+fi
+
 
 local_dev_maintenance_mode() {
     local mode="${HAPAX_LOCAL_DEV_MAINTENANCE_MODE:-}"
@@ -463,27 +581,11 @@ fi
 
 # ─── Nudge ALL idle lanes past cooldown ──────────────────────────────────────
 
-find_claimed_task() {
-    local assignee="$1"
-    if [ -d "$TASK_ROOT" ]; then
-        local match
-        match=$(grep -rl "^assigned_to: ${assignee}$" "$TASK_ROOT/" 2>/dev/null | head -1)
-        if [ -n "$match" ]; then
-            local task_id status
-            task_id=$(basename "$match" .md)
-            status=$(grep -m1 "^status:" "$match" 2>/dev/null | awk '{print $2}')
-            if [ "$status" = "claimed" ] || [ "$status" = "in_progress" ]; then
-                echo "$task_id"
-                return 0
-            fi
-        fi
-    fi
-    return 1
-}
 
 dispatched=0
 skipped_cooldown=0
 suppressed_appendix_only=0
+held=0
 
 # L4: under 'closed' the floor yields — defer nudges (don't re-kick paused lanes).
 if [ "$SDLC_ADMISSION" = "closed" ]; then
@@ -497,6 +599,14 @@ for session in "${!IDLE_LANES[@]}"; do
         last_kick=$(cat "$cooldown_file")
         elapsed=$((now - last_kick))
         if [ "$elapsed" -lt "$COOLDOWN_S" ]; then
+            skipped_cooldown=$((skipped_cooldown + 1))
+            continue
+        fi
+        # idle_since now survives a kick so the printed figure is the TRUE idle
+        # time (it used to be reset, so every kick read as exactly the
+        # threshold). A lane already kicked during this idle stretch is re-kicked
+        # once per threshold, not once per tick.
+        if [ "$last_kick" -ge $((now - idle_s)) ] && [ "$elapsed" -lt "$IDLE_THRESHOLD_S" ]; then
             skipped_cooldown=$((skipped_cooldown + 1))
             continue
         fi
@@ -517,13 +627,30 @@ for session in "${!IDLE_LANES[@]}"; do
     fi
 
     dispatch_msg=""
-    claimed=$(find_claimed_task "$lane" 2>/dev/null || true)
+    claimed=""
     dispatch_target=""
-    if [ -n "$claimed" ]; then
-        dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with an active task: $claimed. Resume work immediately. Ship a PR and cc-close --pr N after merge."
+    # A resolver that fails must read as a failure, never as a confident "no row".
+    resolution="$(resolve_lane_active_task "$lane" 2>/dev/null || true)"
+    [ -n "$resolution" ] || resolution=$'none\t-\t-\tresolver_failed\t0\t0'
+    IFS=$'\t' read -r res_kind res_task res_status res_source res_rows res_sidecars <<< "$resolution" || true
+    if [ "$res_kind" = "hold" ]; then
+        # Typed hold: the lane is waiting on the plane (review, merge queue), not
+        # idle. Never a kick. Logged once per threshold, not once per tick.
+        hold_log_file="$STATE_DIR/${session}.last_hold_log"
+        last_hold_log="$(cat "$hold_log_file" 2>/dev/null || echo 0)"
+        if [ $((now - last_hold_log)) -ge "$IDLE_THRESHOLD_S" ]; then
+            log "HOLD $session ($platform/$lane): task $res_task is $res_status (via $res_source) — waiting on the plane, not idle; no kick (idle ${idle_s}s, ${res_rows} rows scanned, ${res_sidecars} sidecars checked)"
+            echo "$now" > "$hold_log_file"
+        fi
+        held=$((held + 1))
+        continue
+    fi
+    if [ "$res_kind" = "active" ]; then
+        claimed="$res_task"
+        dispatch_msg="IDLE WATCHDOG: You have been idle for ${idle_s}s ($((idle_s/60))m) with an active task: $claimed (status $res_status, resolved via $res_source). Resume work immediately. Ship a PR and cc-close --pr N after merge."
         dispatch_target="$claimed"
     else
-        log "IDLE without claim for $lane — awaiting governed dispatch"
+        log "IDLE without claim for $lane — awaiting governed dispatch (idle_kick:no_active_row:${res_rows} rows scanned, ${res_sidecars} sidecars checked, source ${res_source})"
         if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
             log "APPENDIX-ONLY skip nudge $session ($platform/$lane): unclaimed local dev lane must remain quiet until explicit governed dispatch"
             echo "$now" > "$cooldown_file"
@@ -531,7 +658,7 @@ for session in "${!IDLE_LANES[@]}"; do
             suppressed_appendix_only=$((suppressed_appendix_only + 1))
             continue
         fi
-        dispatch_msg="IDLE WATCHDOG: You have been idle for $((idle_s/60))m with no active claimed task. Await governed dispatch; do not self-select queue work. Required path: scripts/hapax-methodology-dispatch --task <id> --lane ${lane} --platform ${platform} --mode <mode>."
+        dispatch_msg="IDLE WATCHDOG: You have been idle for ${idle_s}s ($((idle_s/60))m) with no active claimed task (idle_kick:no_active_row:${res_rows} rows scanned, ${res_sidecars} sidecars checked). Await governed dispatch; do not self-select queue work. Required path: scripts/hapax-methodology-dispatch --task <id> --lane ${lane} --platform ${platform} --mode <mode>."
         dispatch_target="await-governed-dispatch"
     fi
 
@@ -568,7 +695,6 @@ for session in "${!IDLE_LANES[@]}"; do
 
     if [ "$send_success" = true ]; then
         log "DISPATCHED $session ($platform/$lane): idle ${idle_s}s -> $dispatch_target"
-        rm -f "$STATE_DIR/${session}.idle_since" 2>/dev/null
         rm -f "$STATE_DIR/${session}.dispatch_failure_alerted" 2>/dev/null
         dispatched=$((dispatched + 1))
     else
@@ -596,6 +722,9 @@ if [ "$dispatched" -eq 0 ] && [ "$skipped_cooldown" -gt 0 ]; then
 fi
 if [ "$suppressed_appendix_only" -gt 0 ]; then
     log "appendix-only suppressed $suppressed_appendix_only unclaimed local idle lane nudge(s)"
+fi
+if [ "$held" -gt 0 ]; then
+    log "held $held lane(s) waiting on the plane (pr_open / review / merge queue) — not kicked"
 fi
 
 log "dispatched $dispatched of $idle_count idle lanes"
