@@ -23,8 +23,6 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-import pytest
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "cc-claim"
 GATE = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
