@@ -339,7 +339,7 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
     "$python_runner" -I -c '
 import os, sys
 sys.path.insert(0, os.environ["CHARTER_REPO"])
-from shared.charter_claim import child_may_mint
+from shared.charter_claim import child_may_mint, residue_without_active_lease
 from pathlib import Path
 ok = child_may_mint(Path(os.environ["EXISTING_NOTE"]).read_text(), Path(os.environ["CHILD_NOTE"]).read_text())
 sys.exit(0 if ok else 1)
@@ -428,6 +428,7 @@ claim_epoch = int(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else 0
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+from shared.charter_claim import residue_without_active_lease  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
@@ -576,23 +577,25 @@ if canon_enforced:
                 )
                 sys.exit(8)
             status = _task_status_for_any_state(vault_root, binding.task_id)
-            if status not in TASK_TERMINAL_STATUSES and claim_path.exists():
+            disposition = residue_without_active_lease(status)
+            if disposition == "hold":
                 print(
-                    "cc-claim: HOLD - dispatch-only claim residue belongs to a "
-                    f"non-terminal or missing task (task_id={binding.task_id}, "
-                    f"status={status}). Next action: restore the matching "
-                    "cc-active-task/cc-claim-epoch sidecars or close/release that "
-                    "task through the governed lifecycle before retrying.",
+                    "cc-claim: HOLD - dispatch residue has no active lease and "
+                    f"the task is not terminal (task_id={binding.task_id}, "
+                    f"status={status}). Losing the lease file is not a release. "
+                    "Next action: restore the matching cc-active-task sidecar, "
+                    "or close/release the task through the governed lifecycle, "
+                    "then rerun cc-claim.",
                     file=sys.stderr,
                 )
                 sys.exit(8)
-            dispatch_only.append((claim_key, dispatch_path, binding))
+            dispatch_only.append((claim_key, dispatch_path, binding, status))
 
         if not dispatch_only:
             return
         lineage_root = vault_root / "_lineage"
         archived: list[str] = []
-        for claim_key, dispatch_path, binding in dispatch_only:
+        for claim_key, dispatch_path, binding, status in dispatch_only:
             lineage_dir = (
                 lineage_root
                 / _safe_lineage_component(binding.task_id)
@@ -615,9 +618,10 @@ if canon_enforced:
                 f"claim_key: {claim_key}\n"
                 f"source: {dispatch_path}\n"
                 f"archived_at: {observed_at}\n"
-                "reason: the active-task lease file was absent. The dispatch "
-                "binding and any epoch were preserved here. The task note was "
-                "not closed.\n",
+                f"task_status: {status}\n"
+                "reason: the active-task lease file was absent and the task "
+                "status is terminal. The dispatch binding and any epoch were "
+                "preserved here. The task note was not closed by this archive.\n",
                 encoding="utf-8",
             )
             archived.append(str(destination))
@@ -1419,6 +1423,16 @@ except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueErr
     )
     sys.exit(8)
 
+charter_keep = sys.argv[16].strip() if len(sys.argv) > 16 else ""
+if charter_keep and session_id:
+    (cache_dir / f"cc-active-charter-{role}-{session_id}").write_text(
+        f"{charter_keep}\n",
+        encoding="utf-8",
+    )
+    print(
+        f"cc-claim: charter {charter_keep} remains; '{task_id}' is its sub-claim",
+        file=sys.stderr,
+    )
 print(result_message)
 if manual_binding_issued:
     print("cc-claim: claim binding provenance=manual")

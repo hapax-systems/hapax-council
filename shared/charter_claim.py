@@ -23,17 +23,46 @@ from typing import Any
 
 import yaml
 
+_TERMINAL_TASK_STATUSES = frozenset({"done", "completed", "closed", "withdrawn", "superseded"})
 
-def _norm(ref: str) -> str:
-    return ref.strip().lstrip("./").rstrip("/")
+
+def _norm(ref: str) -> str | None:
+    """Return a relative path, or None when the form can escape a prefix."""
+    raw = ref.strip()
+    if not raw or raw.startswith("/") or "\\" in raw:
+        return None
+    parts: list[str] = []
+    for part in raw.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            return None
+        parts.append(part)
+    if not parts:
+        return None
+    return "/".join(parts)
 
 
 def covers(prefix: str, ref: str) -> bool:
-    """True when ``ref`` is the prefix or a path under it."""
+    """True when ``ref`` is the prefix or a path under it.
+
+    Forms that leave the prefix (``..``, absolute paths) are not covered.
+    """
     parent, child = _norm(prefix), _norm(ref)
-    if not parent or not child:
+    if parent is None or child is None:
         return False
     return child == parent or child.startswith(parent + "/")
+
+
+def residue_without_active_lease(status: str) -> str:
+    """What to do with dispatch residue when the active-lease file is absent.
+
+    A live task (any non-terminal status, including missing) is a hold.
+    Only a terminal task may be archived. Losing the lease file is not a release.
+    """
+    if status in _TERMINAL_TASK_STATUSES:
+        return "archive"
+    return "hold"
 
 
 def _frontmatter(text: str) -> Mapping[str, Any]:
@@ -62,7 +91,9 @@ def child_may_mint(charter_text: str, child_text: str) -> bool:
     child = _frontmatter(child_text)
     if str(charter.get("claim_form") or "") != "charter":
         return False
-    if child.get("parent_charter") != charter.get("task_id"):
+    charter_id = str(charter.get("task_id") or "").strip()
+    parent = str(child.get("parent_charter") or "").strip()
+    if not charter_id or parent != charter_id:
         return False
     scope = _refs(charter.get("charter_scope"))
     refs = _refs(child.get("mutation_scope_refs"))
