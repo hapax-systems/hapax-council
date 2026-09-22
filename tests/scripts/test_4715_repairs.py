@@ -7,7 +7,6 @@ Review findings (22:32Z): (1) dev-tree fallback violates #4090 canonical-root;
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
