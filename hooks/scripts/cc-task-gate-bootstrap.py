@@ -209,6 +209,12 @@ def _validate_task(path: Path, fields: dict[str, Any], present: set[str], body: 
         errors.append("new cc-task bootstrap notes must use `status: offered`")
     if _as_scalar(fields, "assigned_to") != "unassigned":
         errors.append("new cc-task bootstrap notes must use `assigned_to: unassigned`")
+    # A bootstrap note is born offered and unassigned, i.e. immediately available for a
+    # fresh claim — and cc-claim's publication path requires `claimable: true` for one.
+    # Letting the field be omitted here minted rows into the offered queue that no lane
+    # could claim, so the field is required at birth rather than discovered at claim time.
+    if _as_scalar(fields, "claimable") != "true":
+        errors.append("new cc-task bootstrap notes must use `claimable: true`")
 
     authority_case = _as_scalar(fields, "authority_case")
     if authority_case and not re.match(r"^CASE-[A-Z0-9-]+$", authority_case):

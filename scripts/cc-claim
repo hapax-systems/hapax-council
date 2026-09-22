@@ -446,6 +446,7 @@ if canon_enforced:
     from shared.sdlc_claim import (  # noqa: E402
         ClaimPublicationError,
         ClaimPublicationIntent,
+        archive_file_byte_exact,
         inspect_claim_publications,
         recover_claim_publications,
         resolve_applied_claim_publication,
@@ -477,6 +478,98 @@ if canon_enforced:
         if task_path is None:
             return "missing"
         return _frontmatter_scalar(task_path.read_text(encoding="utf-8"), "status") or "unknown"
+
+    def _archive_epoch_only_claim_residue(
+        *,
+        vault_root: Path,
+        cache_dir: Path,
+        role: str,
+        session_id: str,
+        observed_at: str,
+    ) -> None:
+        """Archive epoch sidecars whose claim marker is gone and whose task is terminal.
+
+        The mirror of `_archive_dispatch_only_claim_residue`. A close, a quarantine or a
+        partial reap removes `cc-active-task-<key>` and leaves the epoch behind; because
+        `resolve_applied_claim_publication` is entered when ANY of the six sidecars exists,
+        that leftover wedges every later claim by the role, on residue of a finished task.
+
+        Deliberately does not skip when a dispatch binding is also present: this runs
+        before the dispatch-only pass, so a role carrying both kinds of residue has the
+        epoch cleared here and the binding cleared there. Refuses, typed, when the epoch
+        names a task that is still live — that is a stale lease for someone to release,
+        not residue to sweep.
+        """
+        keys_to_check: set[str] = {role, f"{role}-{session_id}"}
+        for stray in cache_dir.glob(f"cc-claim-epoch-{role}-*"):
+            keys_to_check.add(stray.name[len("cc-claim-epoch-") :])
+
+        epoch_only: list[tuple[str, Path, str]] = []
+        for claim_key in sorted(keys_to_check):
+            epoch_path = cache_dir / f"cc-claim-epoch-{claim_key}"
+            if not epoch_path.exists():
+                continue
+            if (cache_dir / f"cc-active-task-{claim_key}").exists():
+                continue
+            try:
+                epoch_text, epoch_task = epoch_path.read_text(encoding="utf-8").split()
+                int(epoch_text)
+            except (OSError, UnicodeError, ValueError):
+                print(
+                    "cc-claim: HOLD - malformed epoch sidecar with no claim marker at "
+                    f"{epoch_path}. Next action: inspect it, then archive it through the "
+                    "task lineage before retrying.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
+            status = _task_status_for_any_state(vault_root, epoch_task)
+            if status not in TASK_TERMINAL_STATUSES:
+                print(
+                    "cc-claim: HOLD - epoch-only claim residue belongs to a live task "
+                    f"(task_id={epoch_task}, status={status}) at {epoch_path}. Next "
+                    "action: close or release that task through the governed lifecycle, "
+                    "or restore its cc-active-task sidecar; this is a stale lease, not "
+                    "residue, and nothing has been moved.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
+            epoch_only.append((claim_key, epoch_path, epoch_task))
+
+        if not epoch_only:
+            return
+        archived: list[str] = []
+        for claim_key, epoch_path, epoch_task in epoch_only:
+            lineage_dir = (
+                vault_root
+                / "_lineage"
+                / _safe_lineage_component(epoch_task)
+                / (
+                    "removed-epoch-residue-"
+                    f"{_safe_lineage_component(observed_at)}-"
+                    f"{_safe_lineage_component(claim_key)}"
+                )
+            )
+            lineage_dir.mkdir(parents=True, exist_ok=False)
+            destination = lineage_dir / epoch_path.name
+            digest = archive_file_byte_exact(epoch_path, destination)
+            (lineage_dir / "README.md").write_text(
+                "Archived epoch-only claim residue before a fresh admitted claim.\n"
+                f"task_id: {epoch_task}\n"
+                f"claim_key: {claim_key}\n"
+                f"source: {epoch_path}\n"
+                f"sha256: {digest}\n"
+                f"archived_at: {observed_at}\n"
+                "reason: the claim marker was removed (close, quarantine or partial reap) "
+                "and the epoch sidecar outlived it, wedging every later claim by this "
+                "role.\n",
+                encoding="utf-8",
+            )
+            archived.append(str(destination))
+        print(
+            "cc-claim: archived terminal epoch-only claim residue before fresh admitted "
+            "claim: " + ", ".join(archived),
+            file=sys.stderr,
+        )
 
     def _archive_dispatch_only_claim_residue(
         *,
@@ -567,7 +660,10 @@ if canon_enforced:
             )
             lineage_dir.mkdir(parents=True, exist_ok=False)
             destination = lineage_dir / dispatch_path.name
-            dispatch_path.replace(destination)
+            # ~/.cache is local disk and the lineage tree is an NFS mount: a plain
+            # rename raises EXDEV. archive_file_byte_exact completes the rename across
+            # devices and unlinks the source only after verifying the copy.
+            archive_file_byte_exact(dispatch_path, destination)
             (lineage_dir / "README.md").write_text(
                 "Archived dispatch-only claim residue before a fresh admitted claim.\n"
                 f"task_id: {binding.task_id}\n"
@@ -693,13 +789,23 @@ if canon_enforced:
             cache_dir / f"cc-claim-dispatch-{key}.json",
         )
     )
+    _residue_observed_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # Epoch first: the dispatch pass skips any key whose epoch sidecar still exists, so a
+    # role carrying both kinds of residue is only fully cleared when this runs ahead of it.
+    _archive_epoch_only_claim_residue(
+        vault_root=path.parent.parent,
+        cache_dir=cache_dir,
+        role=role,
+        session_id=session_id,
+        observed_at=_residue_observed_at,
+    )
     _archive_dispatch_only_claim_residue(
         vault_root=path.parent.parent,
         cache_dir=cache_dir,
         role=role,
         session_id=session_id,
         current_task_id=task_id,
-        observed_at=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
+        observed_at=_residue_observed_at,
     )
     claim_paths = tuple(candidate for candidate in claim_paths if candidate.exists())
     if any(candidate.exists() for candidate in claim_paths):

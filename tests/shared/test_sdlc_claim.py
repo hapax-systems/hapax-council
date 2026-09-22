@@ -2166,6 +2166,20 @@ def test_intent_requires_explicit_claimable_true(tmp_path: Path) -> None:
     assert raised.value.reason_code == "claim_publication_task_not_claimable"
 
 
+def test_resume_of_an_owned_row_does_not_require_the_claimable_field(tmp_path: Path) -> None:
+    """`claimable` governs fresh claims. It must not block an owning lane's resume.
+
+    A lane returning to its own merge-ready row for a review round is the normal loop,
+    not an edge: the field was introduced later, so rows minted without it are ordinary,
+    and 323 of 1,275 active rows carry it. Gating resume on it strands a lane holding a
+    quorum-accept it cannot spend (eta #4668 and zeta #4676, within two minutes of each
+    other on 2026-09-19).
+    """
+    fixture = _fixture(tmp_path, resume=True, claimable=False)
+
+    assert fixture.intent.claim_mode == "resume"
+
+
 def test_claim_and_resume_intents_bind_exact_preimages(tmp_path: Path) -> None:
     claim = _fixture(tmp_path / "claim")
     resume = _fixture(tmp_path / "resume", resume=True)
@@ -4354,3 +4368,78 @@ def test_require_refuses_missing_blob_and_unsafe_receipt(tmp_path: Path) -> None
         )
     assert raised.value.reason_code == "fs_snapshot_file_unsafe"
     assert not unsafe.locks.exists()
+
+
+# --- byte-exact residue archiving across filesystems -------------------------------
+# claim-epoch-only-residue-reaper-20260916, work item 5: cc-claim renames claim residue
+# from ~/.cache (local disk) into the vault lineage directory (NFS), so os.replace raises
+# EXDEV and the archive dies after the tool has printed "binding issued".
+
+
+def _residue_pair(tmp_path: Path) -> tuple[Path, Path, bytes]:
+    name = "cc-claim-dispatch-beta.json"
+    source = tmp_path / "cache" / name
+    source.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps({"lane": "beta", "task_id": "some-task"}).encode("utf-8") * 64
+    source.write_bytes(payload)
+    destination = tmp_path / "lineage" / "removed-epoch-residue-20260919T000000Z" / name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    return source, destination, payload
+
+
+def test_archive_file_byte_exact_moves_and_removes_source(tmp_path: Path) -> None:
+    source, destination, payload = _residue_pair(tmp_path)
+
+    digest = sdlc_claim.archive_file_byte_exact(source, destination)
+
+    assert destination.read_bytes() == payload
+    assert not source.exists()
+    assert digest == hashlib.sha256(payload).hexdigest()
+
+
+def test_archive_file_byte_exact_survives_cross_device_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, destination, payload = _residue_pair(tmp_path)
+    real_replace = os.replace
+    seen: list[int] = []
+
+    def fake_replace(src: object, dst: object, **kwargs: object) -> None:
+        seen.append(1)
+        if len(seen) == 1:
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        real_replace(src, dst, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sdlc_claim.os, "replace", fake_replace)
+
+    digest = sdlc_claim.archive_file_byte_exact(source, destination)
+
+    assert destination.read_bytes() == payload
+    assert not source.exists()
+    assert digest == hashlib.sha256(payload).hexdigest()
+    assert sorted(p.name for p in destination.parent.iterdir()) == [destination.name]
+
+
+def test_archive_file_byte_exact_refuses_unverified_copy_and_keeps_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, destination, payload = _residue_pair(tmp_path)
+
+    def always_exdev(src: object, dst: object, **kwargs: object) -> None:
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    def truncating_copy(src: object, dst: object, **kwargs: object) -> object:
+        Path(str(dst)).write_bytes(Path(str(src)).read_bytes()[:-8])
+        return dst
+
+    monkeypatch.setattr(sdlc_claim.os, "replace", always_exdev)
+    monkeypatch.setattr(sdlc_claim.shutil, "copyfile", truncating_copy)
+
+    with pytest.raises(sdlc_claim.ClaimPublicationError) as raised:
+        sdlc_claim.archive_file_byte_exact(source, destination)
+
+    assert raised.value.reason_code == "claim_residue_archive_unverified"
+    # the source is the only copy of these bytes: it must survive a failed archive
+    assert source.read_bytes() == payload
+    assert not destination.exists()
+    assert list(destination.parent.iterdir()) == []

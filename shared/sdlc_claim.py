@@ -16,6 +16,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -105,6 +106,59 @@ class ClaimPublicationError(RuntimeError):
         if detail:
             message += f" ({detail})"
         super().__init__(message)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def archive_file_byte_exact(source: Path, destination: Path) -> str:
+    """Move ``source`` onto ``destination``, byte-exact, across filesystem boundaries.
+
+    Claim residue lives on local disk under ``~/.cache`` and is archived into the vault's
+    lineage tree, which is an NFS mount: ``os.replace`` between them raises ``EXDEV``.
+    This is rename semantics completed across devices, not a second write path — the
+    fallback does strictly less than the primary, and it never reaches a state the
+    primary could not.
+
+    The source is unlinked only after the destination has been written, flushed to disk
+    and verified to hash identically. A copy that does not verify leaves the source in
+    place (it holds the only copy of those bytes) and raises, typed.
+
+    Returns the sha256 of the archived bytes.
+    """
+    expected = _sha256_file(source)
+    try:
+        os.replace(source, destination)
+    except OSError as exc:
+        if exc.errno != errno.EXDEV:
+            raise
+    else:
+        return expected
+
+    staged = destination.with_name(f"{destination.name}.archive-staged")
+    try:
+        shutil.copyfile(source, staged)
+        with staged.open("rb") as handle:
+            os.fsync(handle.fileno())
+        observed = _sha256_file(staged)
+        if observed != expected:
+            raise ClaimPublicationError(
+                "claim_residue_archive_unverified",
+                "leave the residue in place and retry the archive; the copy did not "
+                "match the source",
+                f"{source} sha256:{expected} -> {destination} sha256:{observed}",
+            )
+        os.replace(staged, destination)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+    source.unlink()
+    return expected
 
 
 def _canonical(value: object) -> bytes:
@@ -311,12 +365,6 @@ class ClaimPublicationIntent:
             )
         from_status = str(task.frontmatter.get("status") or "offered").strip()
         assigned_to = str(task.frontmatter.get("assigned_to") or "").strip()
-        if task.frontmatter.get("claimable") is not True:
-            raise ClaimPublicationError(
-                "claim_publication_task_not_claimable",
-                "advance the task through a lawful claimable lifecycle projection",
-                f"{task.task_id}:claimable={task.frontmatter.get('claimable')!r}",
-            )
         if from_status in TASK_CLAIMABLE_STATUSES and assigned_to.lower() in {
             "",
             "none",
@@ -324,6 +372,16 @@ class ClaimPublicationIntent:
             "unassigned",
             "~",
         }:
+            # `claimable` governs FRESH claims only, so it is tested inside this branch.
+            # Testing it ahead of the claim-vs-resume split also gated resume, which
+            # stranded an owning lane on its own merge-ready row whenever that row was
+            # minted before the field existed — the ordinary case, not an edge.
+            if task.frontmatter.get("claimable") is not True:
+                raise ClaimPublicationError(
+                    "claim_publication_task_not_claimable",
+                    "advance the task through a lawful claimable lifecycle projection",
+                    f"{task.task_id}:claimable={task.frontmatter.get('claimable')!r}",
+                )
             claim_mode = "claim"
             to_status = "claimed"
         elif from_status in TASK_RESUMABLE_STATUSES and assigned_to == binding.lane:
