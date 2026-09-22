@@ -11,7 +11,6 @@ regardless of load, and pass once ``launch_headroom_budget`` gates the loop.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import textwrap
 from pathlib import Path
