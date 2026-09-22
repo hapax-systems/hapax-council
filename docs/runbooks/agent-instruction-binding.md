@@ -345,6 +345,38 @@ process-group cancellation without provider calls:
 uv run --no-sync pytest tests/scripts/test_hapax_claude_reviewer.py -q
 ```
 
+The `agy.review.direct` wrapper also supplies blind-review context rather than
+worker instructions. It creates a temporary workspace and per-invocation
+HOME/XDG roots, writes `review-dossier.md` containing its fixed review prompt
+and the supplied packet, and asks the native client to read that file. Its load
+declaration therefore does not require the operator's global `GEMINI.md` or a
+worker checkout's `AGENTS.md`. `source_refs` points to the wrapper that constructs
+the prompt. The optional configuration path is
+`.gemini/antigravity-cli/settings.json` relative to the invocation HOME; the wrapper
+does not copy host settings into that location. Its existing OAuth seed remains a
+separate credential binding; this declaration never contains credential bytes.
+
+The declared loading flags match the wrapper's sandbox, permission and slash
+command options. Plugins, skills, hooks and MCP remain unknown: disabling slash
+commands does not prove that all extensions are absent. Temporary HOME and cwd
+construction is also not proof of filesystem containment or delivered model
+context. The general platform receipt still observes host files at its named
+`host_observation` boundary; those hashes do not describe this invocation's
+fresh roots. Native discovery and content use remain unobserved here.
+
+Recheck the actual child argv, temporary roots, dossier construction and selected
+host-input exclusion, together with the declaration and registry byte pin:
+
+```bash
+uv run pytest tests/scripts/test_hapax_agy_reviewer.py \
+  tests/shared/test_capability_load_set.py \
+  tests/docs/test_platform_capability_registry_contract.py -q
+```
+
+These tests use a controlled executable and synthetic credential fixture. They
+must pass; on failure, reconcile the wrapper and declaration before release.
+They do not execute a provider model or establish native sandbox enforcement.
+
 `hapax-platform-capability-receipts` attaches host-side observations to its existing
 receipt. Presence and matching bytes do not establish native delivery.
 Its observed project comes from `HAPAX_SOURCE_ACTIVATE_WORKTREE` or the default
