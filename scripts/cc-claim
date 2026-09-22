@@ -425,6 +425,8 @@ claim_epoch = int(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else 0
     dispatch_authority_case,
     dispatch_idempotency_key,
 ) = (sys.argv[9:16] if len(sys.argv) >= 16 else ("", "", "", "", "", "", ""))
+charter_keep = sys.argv[16].strip() if len(sys.argv) > 16 else ""
+parked_sidecars: list[tuple[Path, Path]] = []
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
@@ -729,6 +731,31 @@ if canon_enforced:
             file=sys.stderr,
         )
         sys.exit(8)
+    if charter_keep:
+        for key in (role, f"{role}-{session_id}" if session_id else ""):
+            if not key:
+                continue
+            pairs = (
+                (cache_dir / f"cc-active-task-{key}", cache_dir / f"cc-charter-parked-task-{key}"),
+                (cache_dir / f"cc-claim-epoch-{key}", cache_dir / f"cc-charter-parked-epoch-{key}"),
+                (
+                    cache_dir / f"cc-claim-dispatch-{key}.json",
+                    cache_dir / f"cc-charter-parked-dispatch-{key}.json",
+                ),
+            )
+            for src, dst in pairs:
+                if not src.exists():
+                    continue
+                body = src.read_text(encoding="utf-8")
+                if charter_keep not in body:
+                    continue
+                src.replace(dst)
+                parked_sidecars.append((dst, src))
+        if session_id:
+            (cache_dir / f"cc-active-charter-{role}-{session_id}").write_text(
+                f"{charter_keep}\n",
+                encoding="utf-8",
+            )
     claim_keys = (role, f"{role}-{session_id}")
     claim_paths = tuple(
         candidate
@@ -1414,6 +1441,9 @@ try:
         )
     receipt = publish_gate0b_claim(intent, root=install.root, now=now)
 except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError) as exc:
+    for dst, src in reversed(parked_sidecars):
+        if dst.exists() and not src.exists():
+            dst.replace(src)
     print(
         f"cc-claim: HOLD — {exc}; Next action: provision or repair the Gate-0B "
         "claim-publication composition receipt for this HOME through the governed "

@@ -26,8 +26,6 @@ from typing import Any
 
 import yaml
 
-_TERMINAL_TASK_STATUSES = frozenset({"done", "completed", "closed", "withdrawn", "superseded"})
-
 
 def _norm(ref: str) -> str | None:
     """Return a relative path, or None when the form can escape a prefix."""
@@ -62,8 +60,11 @@ def residue_without_active_lease(status: str) -> str:
 
     A live task (any non-terminal status, including missing) is a hold.
     Only a terminal task may be archived. Losing the lease file is not a release.
+    The terminal set is the lifecycle module's, not a private subset.
     """
-    if status in _TERMINAL_TASK_STATUSES:
+    from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
+
+    if status in TASK_TERMINAL_STATUSES:
         return "archive"
     return "hold"
 
