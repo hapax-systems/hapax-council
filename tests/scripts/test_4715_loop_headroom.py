@@ -71,6 +71,7 @@ def _run_watchdog(env: dict[str, str], load1: str, nproc: str = "8") -> str:
             cut() {{
               if [ "${{1:-}}" = "-d" ]; then echo "{load1} 1.00 1.00"; else command cut "$@"; fi
             }}
+            export -f nproc cut
             exec bash "{WATCHDOG}"
             """
         ).lstrip(),
