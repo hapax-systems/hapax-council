@@ -339,7 +339,7 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
     "$python_runner" -I -c '
 import os, sys
 sys.path.insert(0, os.environ["CHARTER_REPO"])
-from shared.charter_claim import child_may_mint, residue_without_active_lease
+from shared.charter_claim import child_may_mint
 from pathlib import Path
 ok = child_may_mint(Path(os.environ["EXISTING_NOTE"]).read_text(), Path(os.environ["CHILD_NOTE"]).read_text())
 sys.exit(0 if ok else 1)
@@ -430,7 +430,7 @@ parked_sidecars: list[tuple[Path, Path]] = []
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from shared.charter_claim import residue_without_active_lease  # noqa: E402
+from shared.charter_claim import residue_without_active_lease, sidecar_belongs_to  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
@@ -731,31 +731,6 @@ if canon_enforced:
             file=sys.stderr,
         )
         sys.exit(8)
-    if charter_keep:
-        for key in (role, f"{role}-{session_id}" if session_id else ""):
-            if not key:
-                continue
-            pairs = (
-                (cache_dir / f"cc-active-task-{key}", cache_dir / f"cc-charter-parked-task-{key}"),
-                (cache_dir / f"cc-claim-epoch-{key}", cache_dir / f"cc-charter-parked-epoch-{key}"),
-                (
-                    cache_dir / f"cc-claim-dispatch-{key}.json",
-                    cache_dir / f"cc-charter-parked-dispatch-{key}.json",
-                ),
-            )
-            for src, dst in pairs:
-                if not src.exists():
-                    continue
-                body = src.read_text(encoding="utf-8")
-                if charter_keep not in body:
-                    continue
-                src.replace(dst)
-                parked_sidecars.append((dst, src))
-        if session_id:
-            (cache_dir / f"cc-active-charter-{role}-{session_id}").write_text(
-                f"{charter_keep}\n",
-                encoding="utf-8",
-            )
     claim_keys = (role, f"{role}-{session_id}")
     claim_paths = tuple(
         candidate
@@ -774,7 +749,11 @@ if canon_enforced:
         current_task_id=task_id,
         observed_at=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
     )
-    claim_paths = tuple(candidate for candidate in claim_paths if candidate.exists())
+    claim_paths = tuple(
+        candidate
+        for candidate in claim_paths
+        if candidate.exists() and not sidecar_belongs_to(candidate, charter_keep)
+    )
     if any(candidate.exists() for candidate in claim_paths):
         try:
             applied = resolve_applied_claim_publication(
@@ -1439,6 +1418,28 @@ try:
             "install artifacts.",
             file=sys.stderr,
         )
+    if charter_keep:
+        for key in (role, f"{role}-{session_id}" if session_id else ""):
+            if not key:
+                continue
+            pairs = (
+                (cache_dir / f"cc-active-task-{key}", cache_dir / f"cc-charter-parked-task-{key}"),
+                (cache_dir / f"cc-claim-epoch-{key}", cache_dir / f"cc-charter-parked-epoch-{key}"),
+                (
+                    cache_dir / f"cc-claim-dispatch-{key}.json",
+                    cache_dir / f"cc-charter-parked-dispatch-{key}.json",
+                ),
+            )
+            for src, dst in pairs:
+                if not sidecar_belongs_to(src, charter_keep):
+                    continue
+                src.replace(dst)
+                parked_sidecars.append((dst, src))
+        if session_id:
+            (cache_dir / f"cc-active-charter-{role}-{session_id}").write_text(
+                f"{charter_keep}\n",
+                encoding="utf-8",
+            )
     receipt = publish_gate0b_claim(intent, root=install.root, now=now)
 except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError) as exc:
     for dst, src in reversed(parked_sidecars):

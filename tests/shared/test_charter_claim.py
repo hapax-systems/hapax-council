@@ -5,6 +5,7 @@ from shared.charter_claim import (
     covers,
     obligation_breaches,
     residue_without_active_lease,
+    sidecar_belongs_to,
     write_obligation_report,
 )
 
@@ -83,6 +84,21 @@ def test_missing_identity_cannot_mint() -> None:
     assert child_may_mint(nameless, _CHILD) is False
     unlinked = _CHILD.replace("parent_charter: charter-demo\n", "parent_charter:\n")
     assert child_may_mint(_CHARTER, unlinked) is False
+
+
+def test_sidecar_match_is_the_parsed_task_id(tmp_path) -> None:
+    active = tmp_path / "cc-active-task-grok"
+    active.write_text("charter-demo\n", encoding="utf-8")
+    neighbor = tmp_path / "cc-active-task-other"
+    neighbor.write_text("charter-demo-extra\n", encoding="utf-8")
+    epoch = tmp_path / "cc-claim-epoch-grok"
+    epoch.write_text("123 charter-demo\n", encoding="utf-8")
+    dispatch = tmp_path / "cc-claim-dispatch-grok.json"
+    dispatch.write_text('{"task_id": "charter-demo"}\n', encoding="utf-8")
+    assert sidecar_belongs_to(active, "charter-demo") is True
+    assert sidecar_belongs_to(neighbor, "charter-demo") is False
+    assert sidecar_belongs_to(epoch, "charter-demo") is True
+    assert sidecar_belongs_to(dispatch, "charter-demo") is True
 
 
 def test_missing_lease_holds_a_live_task_and_archives_a_terminal_one() -> None:

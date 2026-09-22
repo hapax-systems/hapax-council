@@ -55,6 +55,26 @@ def covers(prefix: str, ref: str) -> bool:
     return child == parent or child.startswith(parent + "/")
 
 
+def sidecar_belongs_to(path: Path, task_id: str) -> bool:
+    """True when a claim sidecar's parsed task id is exactly ``task_id``.
+
+    Substring checks are not used. A neighboring id must not count as a match.
+    """
+    if not task_id or not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8")
+    if path.name.startswith("cc-claim-dispatch-"):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return False
+        return payload.get("task_id") == task_id
+    parts = text.split()
+    if path.name.startswith("cc-claim-epoch-") and len(parts) >= 2:
+        return parts[1] == task_id
+    return text.strip() == task_id
+
+
 def residue_without_active_lease(status: str) -> str:
     """What to do with dispatch residue when the active-lease file is absent.
 
