@@ -18,7 +18,10 @@ Environment=GH_REPO=hapax-systems/hapax-council
 Environment=HAPAX_COUNCIL_DIR=%h/.cache/hapax/source-activation/worktree
 # Authoritative claim plane (the pin). The registry read in
 # claim_plane_hosts() is the growth path and errors closed when empty.
-Environment="HAPAX_CLAIM_PLANE_HOSTS=hapax-podium hapax-appendix"
+# Claim-plane pin intentionally NOT set here (G1 D4): the plane is
+# derived from the host registry and must prove itself (errors closed
+# when empty). Set HAPAX_CLAIM_PLANE_HOSTS only as a temporary override.
+# Environment="HAPAX_CLAIM_PLANE_HOSTS="
 Environment=NTFY_URL=https://ntfy.sh
 Environment=NTFY_TOPIC=hapax-ops
 # Reconcile cleared state to the PEER host (class #4 fix). The preset enables

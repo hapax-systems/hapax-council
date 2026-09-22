@@ -8,10 +8,8 @@ controllable load, and assert the loop honors the budget.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import textwrap
-import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -42,16 +40,13 @@ def _base(tmp_path: Path, **overrides: str) -> dict[str, str]:
         esac
         """,
     )
+    calls_txt = str(calls / "calls.txt")
     _write_executable(
         bin_dir / "fake-claude",
-        """
-        #!/usr/bin/env bash
-        printf 'LAUNCHED %s\\n' "$*" >> "%s/calls.txt"
-        """
-        % (str(calls),),
+        (f'#!/usr/bin/env bash\nprintf \'LAUNCHED %s\\n\' "$*" >> "{calls_txt}"\n'),
     )
     for role in ("alpha", "beta", "gamma"):
-        (home / f"projects" / f"hapax-council--{role}").mkdir(parents=True, exist_ok=True)
+        (home / "projects" / f"hapax-council--{role}").mkdir(parents=True, exist_ok=True)
     env = {
         "PATH": f"{bin_dir}:/usr/bin:/bin",
         "HOME": str(home),
@@ -68,7 +63,7 @@ def _base(tmp_path: Path, **overrides: str) -> dict[str, str]:
 
 
 def _run_watchdog(env: dict[str, str], load1: str, nproc: str = "8") -> str:
-    """Run the watchdog once with a stubbed /proc/loadavg via a wrapper."""
+    """Run the watchdog once with a stubbed nproc and load average."""
     wrapper = Path(env["HOME"]) / "run-watchdog.sh"
     wrapper.write_text(
         textwrap.dedent(
