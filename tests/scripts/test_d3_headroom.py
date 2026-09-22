@@ -73,4 +73,3 @@ def test_watchdog_declares_launch_headroom_budget() -> None:
     text = WATCHDOG.read_text(encoding="utf-8")
     assert "launch_headroom_budget" in text
     assert "REQUIRED_CLAUDE_LANES" in text  # pool, not deleted
-

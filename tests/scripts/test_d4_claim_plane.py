@@ -47,10 +47,7 @@ def _claim_plane_hosts(registry: Path, env_value: str | None) -> str:
         [
             "bash",
             "-c",
-            (
-                f'source <(sed -n "/^claim_plane_hosts()/,/^}}/p" "{AUDIT}")\n'
-                f"claim_plane_hosts\n"
-            ),
+            (f'source <(sed -n "/^claim_plane_hosts()/,/^}}/p" "{AUDIT}")\nclaim_plane_hosts\n'),
         ],
         capture_output=True,
         text=True,
@@ -93,4 +90,3 @@ def test_unit_does_not_pin_the_pair() -> None:
 def test_audit_declares_claim_plane_hosts() -> None:
     text = AUDIT.read_text(encoding="utf-8")
     assert "claim_plane_hosts" in text
-

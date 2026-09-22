@@ -73,4 +73,3 @@ def test_watchdog_site_class_remote_client_is_not_appendix_only() -> None:
 
 def test_watchdog_site_class_appendix_stays_appendix_only() -> None:
     assert _site_class(WATCHDOG, "appendix-only") == "appendix-only"
-
