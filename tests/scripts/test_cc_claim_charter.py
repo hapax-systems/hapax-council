@@ -207,13 +207,7 @@ def test_charter_unit_claim_records_unit_and_keeps_lease(tmp_path: Path) -> None
     assert (cache / f"cc-active-task-{_ROLE}").read_text(encoding="utf-8") == "charter-x\n"
     assert len(_publications(home)) == 1
     unit_note = (
-        home
-        / "Documents"
-        / "Personal"
-        / "20-projects"
-        / "hapax-cc-tasks"
-        / "active"
-        / "unit-a.md"
+        home / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active" / "unit-a.md"
     )
     assert "claimed_at: 2026-" in unit_note.read_text(encoding="utf-8")
 
