@@ -56,11 +56,7 @@ def test_recording_a_unit_does_not_require_a_new_claim(tmp_path) -> None:
     destination = tmp_path / "units.jsonl"
     record_unit(destination, charter_id="charter-demo", unit_id="unit-1")
     record_unit(destination, charter_id="charter-demo", unit_id="unit-1")
-    lines = [
-        line
-        for line in destination.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    lines = [line for line in destination.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1
     assert "unit-1" in lines[0]
 
