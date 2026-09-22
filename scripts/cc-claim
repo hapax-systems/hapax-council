@@ -578,6 +578,17 @@ if canon_enforced:
                 )
                 sys.exit(8)
             status = _task_status_for_any_state(vault_root, binding.task_id)
+            epoch_beside = cache_dir / f"cc-claim-epoch-{claim_key}"
+            if epoch_beside.exists() and not sidecar_belongs_to(epoch_beside, binding.task_id):
+                print(
+                    "cc-claim: HOLD - epoch sidecar does not name the same task "
+                    f"as the dispatch binding (binding task_id={binding.task_id}, "
+                    f"epoch={epoch_beside}). Next action: do not archive either "
+                    "file. Identify both task ids and reconcile them through the "
+                    "task lineage before retrying.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
             disposition = residue_without_active_lease(status)
             if disposition == "hold":
                 print(
@@ -1434,11 +1445,10 @@ try:
             print(
                 "cc-claim: HOLD — charter "
                 f"'{charter_keep}' still holds the lease ({', '.join(live_parent)}). "
-                "The publication journal recomputes a new lease as absent-to-child "
-                "from the live files, so overwriting a parent lease here makes "
-                "recovery fail with claim_publication_manifest_identity_mismatch. "
-                "Next action: close the charter through the governed lifecycle, "
-                "then claim the child. Do not move the sidecars by hand.",
+                "A child cannot take that lease until the publication record can "
+                "store the parent bytes as its preimage. Closing the charter "
+                "through the governed lifecycle, then claiming the child, is the "
+                "path that exists today. Do not move the sidecars by hand.",
                 file=sys.stderr,
             )
             sys.exit(8)

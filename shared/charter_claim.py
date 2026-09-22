@@ -75,30 +75,6 @@ def sidecar_belongs_to(path: Path, task_id: str) -> bool:
     return text.strip() == task_id
 
 
-def park_matching(pairs: list[tuple[Path, Path]], task_id: str) -> list[tuple[Path, Path]]:
-    """Move sidecars that belong to ``task_id``. On any failure, put back what moved."""
-    moved: list[tuple[Path, Path]] = []
-    try:
-        for src, dst in pairs:
-            if not sidecar_belongs_to(src, task_id):
-                continue
-            src.replace(dst)
-            moved.append((dst, src))
-    except Exception:
-        restore_parked(moved)
-        raise
-    return moved
-
-
-def restore_parked(moved: list[tuple[Path, Path]]) -> None:
-    """Return parked sidecars, dropping anything written at the original name since."""
-    for dst, src in reversed(moved):
-        if src.exists():
-            src.unlink()
-        if dst.exists():
-            dst.replace(src)
-
-
 def residue_without_active_lease(status: str) -> str:
     """What to do with dispatch residue when the active-lease file is absent.
 
