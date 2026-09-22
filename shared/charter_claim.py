@@ -18,7 +18,10 @@ coordinator's obligation, and it is the thing that keeps the work moving.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -100,6 +103,24 @@ def child_may_mint(charter_text: str, child_text: str) -> bool:
     if not scope or not refs:
         return False
     return all(any(covers(prefix, ref) for prefix in scope) for ref in refs)
+
+
+def write_obligation_report(
+    destination: Path,
+    breaches: list[str],
+    *,
+    charter_id: str,
+) -> None:
+    """Append one breach report. The mutation is not undone."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "schema": "hapax.charter-obligation-report.v1",
+        "charter_id": charter_id,
+        "breaches": breaches,
+        "reported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    with destination.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
 def obligation_breaches(
