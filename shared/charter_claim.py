@@ -157,8 +157,20 @@ def write_obligation_report(
     *,
     charter_id: str,
 ) -> None:
-    """Append one breach report. The mutation is not undone."""
+    """Append one breach report. The mutation is not undone.
+
+    The same charter and the same path set are not written twice.
+    """
     destination.parent.mkdir(parents=True, exist_ok=True)
+    signature = (charter_id, tuple(breaches))
+    if destination.exists():
+        for line in destination.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (row.get("charter_id"), tuple(row.get("breaches") or [])) == signature:
+                return
     record = {
         "schema": "hapax.charter-obligation-report.v1",
         "charter_id": charter_id,

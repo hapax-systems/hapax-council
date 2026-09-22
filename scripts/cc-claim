@@ -349,8 +349,8 @@ sys.exit(0 if ok else 1)
     continue
   fi
   echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
-  if [[ -f "$HOME/.cache/hapax/cc-active-charter-$role${session_id:+-$session_id}" ]]; then
-    echo "  The requested unit is not covered by the held charter, or it does not name that charter. The charter was not closed. Next action: put parent_charter and mutation_scope_refs inside the charter, then rerun cc-claim." >&2
+  if grep -q '^claim_form:[[:space:]]*charter[[:space:]]*$' "$existing_note" 2>/dev/null; then
+    echo "  The unit was not recorded. On the unit note, parent_charter must name '$existing_task' and mutation_scope_refs must sit inside that charter's scope. The charter was not closed." >&2
   else
     echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
   fi
@@ -1442,6 +1442,33 @@ try:
                 if sidecar_belongs_to(candidate, charter_keep):
                     live_parent.append(name)
         if live_parent:
+            required = []
+            for key in (role, f"{role}-{session_id}" if session_id else ""):
+                if not key:
+                    continue
+                required.extend(
+                    (
+                        cache_dir / f"cc-active-task-{key}",
+                        cache_dir / f"cc-claim-epoch-{key}",
+                        cache_dir / f"cc-claim-dispatch-{key}.json",
+                    )
+                )
+            missing = [
+                item.name
+                for item in required
+                if not sidecar_belongs_to(item, charter_keep)
+            ]
+            if missing:
+                print(
+                    "cc-claim: HOLD — charter "
+                    f"'{charter_keep}' does not have a complete lease "
+                    f"({', '.join(missing)}). A leftover active-task file is "
+                    "not a grant. Next action: restore the missing epoch, "
+                    "dispatch binding, and publication receipt for that "
+                    "charter, or close it through the governed lifecycle.",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
             from shared.charter_claim import record_unit  # noqa: E402
             from shared.task_note_lock import projected_path_lock  # noqa: E402
 

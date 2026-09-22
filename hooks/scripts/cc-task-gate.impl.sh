@@ -1488,10 +1488,11 @@ sys.exit(0)
 PYEOF
       then
         _emit_block <<EOF
-cc-task-gate: BLOCKED — charter edit is outside mutation_scope_refs and the breach report could not be written.
+cc-task-gate: BLOCKED — the charter check did not finish, so the edit did not proceed.
 
   File: $edit_path
   Task: $note_path
+  Next action: read the python error above. A missing report file is only one cause. If the cache directory cannot be written, create it or set HAPAX_METHODOLOGY_EMERGENCY=1 for an emergency bypass.
 EOF
         exit 2
       fi

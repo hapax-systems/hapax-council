@@ -69,9 +69,11 @@ def test_missing_child_is_written_as_a_report(tmp_path) -> None:
     )
     destination = tmp_path / "reports" / "obligation.jsonl"
     write_obligation_report(destination, breaches, charter_id="charter-demo")
-    line = destination.read_text(encoding="utf-8").strip()
-    assert "shared/route_metadata_schema.py" in line
-    assert "docs/unrelated.md" not in line
+    write_obligation_report(destination, breaches, charter_id="charter-demo")
+    lines = [line for line in destination.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert "shared/route_metadata_schema.py" in lines[0]
+    assert "docs/unrelated.md" not in lines[0]
 
 
 def test_missing_child_is_a_reported_breach_not_a_write_refusal() -> None:
