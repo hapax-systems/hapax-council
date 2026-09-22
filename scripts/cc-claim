@@ -330,8 +330,30 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
   case "$existing_status" in
     done|completed|closed|withdrawn|superseded) continue ;;
   esac
+  child_note=""
+  for c in "$vault_root_check/active/$task_id-"*.md "$vault_root_check/active/$task_id.md"; do
+    [[ -f "$c" ]] && child_note="$c" && break
+  done
+  if [[ -n "$child_note" ]] && \
+    EXISTING_NOTE="$existing_note" CHILD_NOTE="$child_note" CHARTER_REPO="$SCRIPT_DIR/.." \
+    "$python_runner" -I -c '
+import os, sys
+sys.path.insert(0, os.environ["CHARTER_REPO"])
+from pathlib import Path
+from shared.charter_claim import child_may_mint
+ok = child_may_mint(Path(os.environ["EXISTING_NOTE"]).read_text(encoding="utf-8"), Path(os.environ["CHILD_NOTE"]).read_text(encoding="utf-8"))
+sys.exit(0 if ok else 1)
+'; then
+    echo "cc-claim: charter '$existing_task' covers '$task_id'. Recording the unit. The lease stays. No new claim was requested." >&2
+    export HAPAX_CHARTER_KEEP_TASK="$existing_task"
+    continue
+  fi
   echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
-  echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+  if grep -q '^claim_form:[[:space:]]*charter[[:space:]]*$' "$existing_note" 2>/dev/null; then
+    echo "  The unit was not recorded. Next action: on the '$task_id' note, set parent_charter: '$existing_task' and keep every mutation_scope_ref inside that charter's charter_scope, then rerun cc-claim; or close the charter with cc-close $existing_task if it is terminal." >&2
+  else
+    echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
+  fi
   if [[ "$canon_enforced" == "0" ]]; then
     echo "  Legacy fallback only: cc-claim --force $task_id" >&2
   fi
@@ -373,7 +395,7 @@ claim_epoch="$(date +%s)"
   "$canon_enforced" "$HOME/.cache/hapax" "$claim_epoch" \
   "$dispatch_message_id" "$dispatch_binding_hash" "$dispatch_platform" \
   "$dispatch_mode" "$dispatch_profile" "$dispatch_authority_case" \
-  "$dispatch_idempotency_key" <<'PYEOF'
+  "$dispatch_idempotency_key" "${HAPAX_CHARTER_KEEP_TASK:-}" <<'PYEOF'
 import hashlib
 import json
 import re
@@ -402,9 +424,25 @@ claim_epoch = int(sys.argv[8]) if len(sys.argv) > 8 and sys.argv[8] else 0
     dispatch_authority_case,
     dispatch_idempotency_key,
 ) = (sys.argv[9:16] if len(sys.argv) >= 16 else ("", "", "", "", "", "", ""))
+charter_keep = sys.argv[16].strip() if len(sys.argv) > 16 else ""
+
+
+def _write_charter_sidecar() -> None:
+    """One condition for every writer of the cc-active-charter sidecar.
+
+    The sidecar is keyed by role and session; without a session id the name
+    would be malformed, so no writer may drop that guard.
+    """
+    if charter_keep and session_id:
+        (cache_dir / f"cc-active-charter-{role}-{session_id}").write_text(
+            f"{charter_keep}\n", encoding="utf-8"
+        )
+
+
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+from shared.charter_claim import sidecar_belongs_to  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
@@ -450,6 +488,7 @@ if canon_enforced:
         inspect_claim_publications,
         recover_claim_publications,
         resolve_applied_claim_publication,
+        resolve_applied_claim_publication_for_task,
     )
     from shared.sdlc_task_store import (  # noqa: E402
         ClaimDispatchBinding,
@@ -601,7 +640,14 @@ if canon_enforced:
         current_task_id=task_id,
         observed_at=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
     )
-    claim_paths = tuple(candidate for candidate in claim_paths if candidate.exists())
+    # A unit recorded under a live charter keeps the charter's sidecars; they
+    # belong to the parent, not to this task, and must not read as this
+    # task's applied publication.
+    claim_paths = tuple(
+        candidate
+        for candidate in claim_paths
+        if candidate.exists() and not sidecar_belongs_to(candidate, charter_keep)
+    )
     if any(candidate.exists() for candidate in claim_paths):
         try:
             applied = resolve_applied_claim_publication(
@@ -1184,6 +1230,12 @@ if not canon_enforced:
             f"{task_id}\n",
             encoding="utf-8",
         )
+        _write_charter_sidecar()
+        if charter_keep and session_id:
+            print(
+                f"cc-claim: charter {charter_keep} remains; "
+                f"'{task_id}' is its sub-claim"
+            )
         print(result_message)
         print(
             f"cc-claim: wrote {cache_dir / f'cc-active-task-{role}-{session_id}'} "
@@ -1233,6 +1285,106 @@ except (ClaimPublicationError, TaskStoreError) as exc:
         file=sys.stderr,
     )
     sys.exit(8)
+
+if charter_keep:
+    # A unit continues under the charter's lease; no new claim is published.
+    # The parent must actually hold that lease: live sidecars for this role
+    # AND an applied publication that resolves. Naming the publication
+    # receipt check means performing it, and an absent lease is a hold, not
+    # a fallthrough to minting a fresh claim.
+    live_parent = []
+    for key in (role, f"{role}-{session_id}" if session_id else ""):
+        if not key:
+            continue
+        for name in (
+            f"cc-active-task-{key}",
+            f"cc-claim-epoch-{key}",
+            f"cc-claim-dispatch-{key}.json",
+        ):
+            if sidecar_belongs_to(cache_dir / name, charter_keep):
+                live_parent.append(name)
+    if not live_parent:
+        print(
+            f"cc-claim: HOLD — charter '{charter_keep}' has no live lease "
+            "sidecars for this role, so the unit cannot be recorded under it. "
+            "Losing a lease file is not a release. Next action: restore the "
+            "charter's cc-active-task/cc-claim-epoch/cc-claim-dispatch "
+            "sidecars from its lineage, or close the charter through the "
+            "governed lifecycle before claiming new work.",
+            file=sys.stderr,
+        )
+        sys.exit(8)
+    required = []
+    for key in (role, f"{role}-{session_id}" if session_id else ""):
+        if not key:
+            continue
+        required.extend(
+            (
+                cache_dir / f"cc-active-task-{key}",
+                cache_dir / f"cc-claim-epoch-{key}",
+                cache_dir / f"cc-claim-dispatch-{key}.json",
+            )
+        )
+    missing = [item.name for item in required if not sidecar_belongs_to(item, charter_keep)]
+    if missing:
+        print(
+            f"cc-claim: HOLD — charter '{charter_keep}' does not have a "
+            f"complete lease ({', '.join(missing)}). A leftover active-task "
+            "file is not a grant. Next action: restore the missing epoch and "
+            "dispatch binding for that charter, or close it through the "
+            "governed lifecycle.",
+            file=sys.stderr,
+        )
+        sys.exit(8)
+    try:
+        resolve_applied_claim_publication_for_task(
+            vault_root=path.parent.parent,
+            cache_dir=cache_dir,
+            role=role,
+            task_id=charter_keep,
+            transaction_root=transaction_root,
+            receipt_root=receipt_root,
+            lock_root=lock_root,
+        )
+    except ClaimPublicationError as exc:
+        print(
+            f"cc-claim: HOLD — charter '{charter_keep}' has no coherent "
+            f"applied claim publication ({exc}). The publication receipt was "
+            "checked and it did not resolve. Next action: recover or "
+            "re-publish the charter's claim through the Gate-0B admitted "
+            "path, then rerun cc-claim for this unit.",
+            file=sys.stderr,
+        )
+        sys.exit(8)
+    from shared.charter_claim import record_unit  # noqa: E402
+    from shared.task_note_lock import projected_path_lock  # noqa: E402
+
+    with projected_path_lock(task_id, (path,)):
+        if path.exists():
+            disk_status = ""
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("status:"):
+                    disk_status = line.split(":", 1)[1].strip()
+                    break
+            if disk_status in {"withdrawn", "closed", "done", "completed", "superseded"}:
+                print(
+                    f"cc-claim: HOLD — note on disk is {disk_status}; not "
+                    f"replacing it with a claimed postimage. task_id={task_id}",
+                    file=sys.stderr,
+                )
+                sys.exit(8)
+        path.write_text(text, encoding="utf-8")
+    _write_charter_sidecar()
+    record_unit(
+        cache_dir / f"charter-units-{role}-{session_id}.jsonl",
+        charter_id=charter_keep,
+        unit_id=task_id,
+    )
+    print(
+        f"cc-claim: recorded '{task_id}' under charter '{charter_keep}'. "
+        "The lease stays. No new claim was requested."
+    )
+    sys.exit(0)
 
 try:
     try:

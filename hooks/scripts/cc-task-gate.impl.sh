@@ -926,6 +926,11 @@ src_auth = fields.get("source_mutation_authorized", "")
 docs_auth = fields.get("docs_mutation_authorized", "")
 runtime_auth = fields.get("runtime_mutation_authorized", "")
 scope_refs = fields.get("mutation_scope_refs", "")
+# A charter is the coordinator's grant. Work inside charter_scope does not
+# need a second claim. The lease stays this note.
+if fields.get("claim_form") == "charter" and fields.get("charter_scope"):
+    extra = fields["charter_scope"]
+    scope_refs = f"{scope_refs}\x1f{extra}" if scope_refs else extra
 print(
     f"{status}\t{assigned}\t{blocked_reason}\t{blocked_witness}\t"
     f"{authority_case}\t{parent_spec}\t{route_schema}\t{stage}\t"
@@ -1435,7 +1440,98 @@ print("allowed" if allowed else "denied")
 PYEOF
 )"
   case "$scope_check" in
-    allowed) ;;
+    allowed)
+      # A charter may edit charter_scope without a second claim. A path that
+      # is outside the precise mutation_scope_refs is still allowed. When it
+      # is inside the charter_scope, the recorded units are consulted: an
+      # edit a unit covers is that unit's work, and an edit no unit covers is
+      # written down as a breach. If the report cannot be written, the edit
+      # stops.
+      if ! python3 - "$note_path" "$edit_path" "$HOME/.cache/hapax" "$_scope_repo_top" "$_scope_vault_root" "$_scope_file_top" <<'PYEOF'
+import json
+import os
+import sys
+from pathlib import Path
+
+note, edit, cache, repo_top, vault_root, file_top = sys.argv[1:7]
+text = Path(note).read_text(encoding="utf-8")
+if "\nclaim_form: charter" not in f"\n{text}":
+    sys.exit(0)
+sys.path.insert(0, file_top or repo_top or str(Path(note).resolve().parents[3]))
+from shared.charter_claim import (  # noqa: E402
+    _frontmatter,
+    _refs,
+    covers,
+    obligation_breaches,
+    write_obligation_report,
+)
+
+fields = _frontmatter(text)
+if str(fields.get("claim_form") or "") != "charter":
+    sys.exit(0)
+target = Path(os.path.expanduser(edit)).resolve(strict=False)
+relative = None
+for root in (file_top, repo_top, vault_root):
+    if not root:
+        continue
+    try:
+        relative = str(target.relative_to(Path(root).resolve(strict=False)))
+        break
+    except ValueError:
+        continue
+if relative is None:
+    relative = str(target)
+precise = _refs(fields.get("mutation_scope_refs"))
+if any(covers(item, relative) for item in precise):
+    sys.exit(0)
+task_id = str(fields.get("task_id") or "").strip() or "charter"
+charter_scope = _refs(fields.get("charter_scope"))
+child_scopes = []
+# Unit notes are siblings of the charter note in its active directory.
+active_root = Path(note).parent
+for ledger in sorted(Path(cache).glob("charter-units-*.jsonl")):
+    for line in ledger.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("schema") != "hapax.charter-unit.v1":
+            continue
+        if row.get("charter_id") != task_id:
+            continue
+        unit_id = str(row.get("unit_id") or "").strip()
+        if not unit_id:
+            continue
+        child_text = ""
+        for pattern in (f"{unit_id}-*.md", f"{unit_id}.md"):
+            matches = sorted(active_root.glob(pattern))
+            if matches:
+                child_text = matches[0].read_text(encoding="utf-8")
+                break
+        child_scopes.append(_refs(_frontmatter(child_text).get("mutation_scope_refs")))
+breaches = obligation_breaches(charter_scope, child_scopes, [relative])
+if breaches:
+    try:
+        write_obligation_report(
+            Path(cache) / f"charter-obligation-{task_id}.jsonl",
+            breaches,
+            charter_id=task_id,
+        )
+    except OSError:
+        sys.exit(3)
+sys.exit(0)
+PYEOF
+      then
+        _emit_block <<EOF
+cc-task-gate: BLOCKED — the charter check did not finish, so the edit did not proceed.
+
+  File: $edit_path
+  Task: $note_path
+  Next action: read the python error above. A missing report file is only one cause. If the cache directory cannot be written, create it or set HAPAX_METHODOLOGY_EMERGENCY=1 for an emergency bypass.
+EOF
+        exit 2
+      fi
+      ;;
     missing)
       _emit_block <<EOF
 cc-task-gate: BLOCKED — task '$task_id' has no mutation_scope_refs for direct file mutation.
