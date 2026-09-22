@@ -55,9 +55,14 @@ def test_ordinary_claim_is_not_a_charter() -> None:
 def test_recording_a_unit_does_not_require_a_new_claim(tmp_path) -> None:
     destination = tmp_path / "units.jsonl"
     record_unit(destination, charter_id="charter-demo", unit_id="unit-1")
-    text = destination.read_text(encoding="utf-8")
-    assert "charter-demo" in text
-    assert "unit-1" in text
+    record_unit(destination, charter_id="charter-demo", unit_id="unit-1")
+    lines = [
+        line
+        for line in destination.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(lines) == 1
+    assert "unit-1" in lines[0]
 
 
 def test_missing_child_is_written_as_a_report(tmp_path) -> None:

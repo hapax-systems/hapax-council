@@ -1440,7 +1440,62 @@ print("allowed" if allowed else "denied")
 PYEOF
 )"
   case "$scope_check" in
-    allowed) ;;
+    allowed)
+      # A charter may edit charter_scope without a second claim. A path that
+      # is outside the precise mutation_scope_refs is still allowed, and the
+      # absence of that precise cover is written down. If the report cannot
+      # be written, the edit stops.
+      if ! python3 - "$note_path" "$edit_path" "$HOME/.cache/hapax" "$_scope_repo_top" "$_scope_vault_root" "$_scope_file_top" <<'PYEOF'
+import os
+import sys
+from pathlib import Path
+
+note, edit, cache, repo_top, vault_root, file_top = sys.argv[1:7]
+text = Path(note).read_text(encoding="utf-8")
+if "\nclaim_form: charter" not in f"\n{text}":
+    sys.exit(0)
+sys.path.insert(0, file_top or repo_top or str(Path(note).resolve().parents[3]))
+from shared.charter_claim import _frontmatter, _refs, covers, write_obligation_report
+
+fields = _frontmatter(text)
+if str(fields.get("claim_form") or "") != "charter":
+    sys.exit(0)
+target = Path(os.path.expanduser(edit)).resolve(strict=False)
+relative = None
+for root in (file_top, repo_top, vault_root):
+    if not root:
+        continue
+    try:
+        relative = str(target.relative_to(Path(root).resolve(strict=False)))
+        break
+    except ValueError:
+        continue
+if relative is None:
+    relative = str(target)
+precise = _refs(fields.get("mutation_scope_refs"))
+if any(covers(item, relative) for item in precise):
+    sys.exit(0)
+task_id = str(fields.get("task_id") or "").strip() or "charter"
+try:
+    write_obligation_report(
+        Path(cache) / f"charter-obligation-{task_id}.jsonl",
+        [relative],
+        charter_id=task_id,
+    )
+except OSError:
+    sys.exit(3)
+sys.exit(0)
+PYEOF
+      then
+        _emit_block <<EOF
+cc-task-gate: BLOCKED — charter edit is outside mutation_scope_refs and the breach report could not be written.
+
+  File: $edit_path
+  Task: $note_path
+EOF
+        exit 2
+      fi
+      ;;
     missing)
       _emit_block <<EOF
 cc-task-gate: BLOCKED — task '$task_id' has no mutation_scope_refs for direct file mutation.

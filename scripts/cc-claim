@@ -350,7 +350,7 @@ sys.exit(0 if ok else 1)
   fi
   echo "cc-claim: BLOCKED — role '$role' already has active task '$existing_task' (status: $existing_status)." >&2
   if [[ -f "$HOME/.cache/hapax/cc-active-charter-$role${session_id:+-$session_id}" ]]; then
-    echo "  A charter is held. Next action: cc-close $existing_task if that child is terminal, then cc-claim the next child. Do not ask for a widen inside the charter scope." >&2
+    echo "  The requested unit is not covered by the held charter, or it does not name that charter. The charter was not closed. Next action: put parent_charter and mutation_scope_refs inside the charter, then rerun cc-claim." >&2
   else
     echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
   fi
@@ -1446,6 +1446,26 @@ try:
             from shared.task_note_lock import projected_path_lock  # noqa: E402
 
             with projected_path_lock(task_id, (path,)):
+                if path.exists():
+                    disk_status = ""
+                    for line in path.read_text(encoding="utf-8").splitlines():
+                        if line.startswith("status:"):
+                            disk_status = line.split(":", 1)[1].strip()
+                            break
+                    if disk_status in {
+                        "withdrawn",
+                        "closed",
+                        "done",
+                        "completed",
+                        "superseded",
+                    }:
+                        print(
+                            "cc-claim: HOLD — note on disk is "
+                            f"{disk_status}; not replacing it with a claimed "
+                            f"postimage. task_id={task_id}",
+                            file=sys.stderr,
+                        )
+                        sys.exit(8)
                 path.write_text(text, encoding="utf-8")
             if session_id:
                 (cache_dir / f"cc-active-charter-{role}-{session_id}").write_text(

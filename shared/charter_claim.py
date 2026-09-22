@@ -133,6 +133,14 @@ def record_unit(destination: Path, *, charter_id: str, unit_id: str) -> None:
     The charter lease is unchanged. This is the coordinator continuing.
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        for line in destination.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("charter_id") == charter_id and row.get("unit_id") == unit_id:
+                return
     record = {
         "schema": "hapax.charter-unit.v1",
         "charter_id": charter_id,
