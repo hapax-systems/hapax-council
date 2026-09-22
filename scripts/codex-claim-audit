@@ -62,7 +62,25 @@ RECONCILE_CACHE_DIR="${HAPAX_RECONCILE_CACHE_DIR:-$HOME/.cache/hapax}"
 # BOTH hosts, so a single hardcoded target would silently no-op to self on the
 # host it names, leaving the peer replica stale. The scheduled unit opts in by
 # setting HAPAX_CLAIM_PLANE_HOSTS to the host pair; ad-hoc runs default to off.
-CLAIM_PLANE_HOSTS="${HAPAX_CLAIM_PLANE_HOSTS:-}"
+# D4 successor (G1): claim-plane hosts come from the host registry. The env
+# string is an override, not the identity of the plane. A pair-not-mesh pin in
+# a unit is a privilege; a registry row is a fact that can grow.
+claim_plane_hosts() {
+  if [ -n "${HAPAX_CLAIM_PLANE_HOSTS:-}" ]; then
+    printf '%s' "$HAPAX_CLAIM_PLANE_HOSTS"
+    return 0
+  fi
+  local registry="${HAPAX_HOST_STORAGE_REGISTRY:-${HOME}/hapax-state/storage/host-storage-registry.json}"
+  if [ ! -f "$registry" ]; then
+    registry="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}/config/infrastructure/host-storage-registry.json"
+  fi
+  [ -f "$registry" ] || { printf ''; return 0; }
+  python3 -c "import json,sys; reg=json.load(open(sys.argv[1],encoding='utf-8')); hosts=[];
+[hosts.append(h) for row in reg.get('backup_policies',[]) for h in (row.get('command_host') or '', row.get('target_host') or '') if h and h not in hosts];
+print(' '.join(hosts), end='')" "$registry"
+}
+
+CLAIM_PLANE_HOSTS="$(claim_plane_hosts)"
 DRY_RUN=false
 GH_CMD="${HAPAX_GH_CMD:-gh}"  # overridable for testing
 GH_REPO_SLUG="${HAPAX_GH_REPO:-${GH_REPO:-hapax-systems/hapax-council}}"

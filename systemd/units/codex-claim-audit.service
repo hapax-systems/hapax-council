@@ -22,4 +22,7 @@ Environment=NTFY_TOPIC=hapax-ops
 # we declare the two-host claim plane and let the audit derive the peer = the
 # plane host that is not the one it runs on. Reconciliation is therefore
 # bidirectional: podium reconciles to appendix, appendix reconciles to podium.
-Environment="HAPAX_CLAIM_PLANE_HOSTS=hapax-podium hapax-appendix"
+# Claim-plane hosts are derived from the host registry (scripts/codex-claim-audit
+# claim_plane_hosts). HAPAX_CLAIM_PLANE_HOSTS remains an optional override for
+# a pinned reconcile window; do not set it here as the plane's identity.
+# Environment="HAPAX_CLAIM_PLANE_HOSTS="
