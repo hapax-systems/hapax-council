@@ -16,6 +16,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -53,7 +54,11 @@ from shared.execution_admission import (
     require_admitted_execution_lease,
 )
 from shared.frontmatter import parse_frontmatter_with_diagnostics
-from shared.sdlc_lifecycle import TASK_CLAIMABLE_STATUSES, TASK_RESUMABLE_STATUSES
+from shared.sdlc_lifecycle import (
+    TASK_CLAIMABLE_STATUSES,
+    TASK_RESUMABLE_STATUSES,
+    TASK_TERMINAL_STATUSES,
+)
 from shared.sdlc_task_store import (
     ClaimDispatchBinding,
     ClaimLeaseSnapshot,
@@ -6158,6 +6163,149 @@ def recover_claim_publications(
     return tuple(results)
 
 
+class ClaimResidueArchiveHold(RuntimeError):
+    """Terminal dispatch-only claim residue cannot be lawfully archived."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+
+def _safe_lineage_component(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._:-]+", "_", value).strip("._:-")[:160] or "unknown"
+
+
+def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Path | None:
+    for subdir in ("closed", "active"):
+        root = vault_root / subdir
+        exact = root / f"{observed_task_id}.md"
+        if exact.is_file():
+            return exact
+        for candidate in sorted(root.glob(f"{observed_task_id}-*.md")):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _task_status_for_any_state(vault_root: Path, observed_task_id: str) -> str:
+    task_path = _task_note_path_for_any_state(vault_root, observed_task_id)
+    if task_path is None:
+        return "missing"
+    text = task_path.read_text(encoding="utf-8")
+    match = re.search(r"^status:[ \t]*(.*)$", text, re.MULTILINE)
+    return (match.group(1).strip() if match else "") or "unknown"
+
+
+def archive_dispatch_only_claim_residue(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    role: str,
+    session_id: str,
+    current_task_id: str,
+    observed_at: str,
+) -> list[Path]:
+    """Archive terminal dispatch-only residue into the task lineage.
+
+    Returns the archived destination paths (empty when no residue existed).
+    Raises :class:`ClaimResidueArchiveHold` when the residue belongs to a live
+    claim, another lane, or a non-terminal task — the caller holds the claim.
+    The move tolerates a cross-device cache/vault boundary (shutil.move falls
+    back to copy+unlink where os.replace raises EXDEV) and is idempotent under
+    retry after a half-applied crash: an existing lineage directory is reused,
+    an already-moved dispatch file is not moved again, and the README is
+    (re)written from the binding.
+    """
+
+    keys_to_check: set[str] = {role, f"{role}-{session_id}"}
+    role_dispatch = claim_dispatch_binding_path(cache_dir, role)
+    if role_dispatch.exists() and not (
+        (cache_dir / f"cc-active-task-{role}").exists()
+        or (cache_dir / f"cc-claim-epoch-{role}").exists()
+    ):
+        try:
+            role_binding = load_claim_dispatch_binding(role_dispatch)
+        except TaskStoreError:
+            role_binding = None
+        if role_binding is not None:
+            keys_to_check.add(f"{role}-{role_binding.session_id}")
+
+    dispatch_only: list[tuple[str, Path, ClaimDispatchBinding]] = []
+    for claim_key in sorted(keys_to_check):
+        dispatch_path = claim_dispatch_binding_path(cache_dir, claim_key)
+        claim_path = cache_dir / f"cc-active-task-{claim_key}"
+        epoch_path = cache_dir / f"cc-claim-epoch-{claim_key}"
+        if not dispatch_path.exists():
+            continue
+        if claim_path.exists() or epoch_path.exists():
+            continue
+        try:
+            binding = load_claim_dispatch_binding(dispatch_path)
+        except TaskStoreError as exc:
+            raise ClaimResidueArchiveHold(
+                f"HOLD - {exc}. Next action: restore the matching "
+                f"cc-active-task/cc-claim-epoch sidecars for {dispatch_path}, "
+                "or archive this corrupt dispatch-only residue through the "
+                "task lineage before retrying."
+            ) from exc
+        if binding.task_id == current_task_id:
+            raise ClaimResidueArchiveHold(
+                "HOLD - current task has dispatch-only claim residue "
+                f"at {dispatch_path}. Next action: restore the matching "
+                "cc-active-task and cc-claim-epoch sidecars for this admitted "
+                "claim, or run admitted recovery before retrying."
+            )
+        if binding.lane != role:
+            raise ClaimResidueArchiveHold(
+                "HOLD - dispatch-only claim residue is bound to a "
+                f"different lane at {dispatch_path}. Next action: preserve the "
+                "sidecar and ask the owning lane/operator to reconcile its "
+                "claim lineage before retrying."
+            )
+        status = _task_status_for_any_state(vault_root, binding.task_id)
+        if status not in TASK_TERMINAL_STATUSES:
+            raise ClaimResidueArchiveHold(
+                "HOLD - dispatch-only claim residue belongs to a "
+                f"non-terminal or missing task (task_id={binding.task_id}, "
+                f"status={status}). Next action: restore the matching "
+                "cc-active-task/cc-claim-epoch sidecars or close/release that "
+                "task through the governed lifecycle before retrying."
+            )
+        dispatch_only.append((claim_key, dispatch_path, binding))
+
+    if not dispatch_only:
+        return []
+
+    lineage_root = vault_root / "_lineage"
+    archived: list[Path] = []
+    for claim_key, dispatch_path, binding in dispatch_only:
+        lineage_dir = (
+            lineage_root
+            / _safe_lineage_component(binding.task_id)
+            / (
+                "closed-claim-dispatch-residue-"
+                f"{_safe_lineage_component(observed_at)}-"
+                f"{_safe_lineage_component(claim_key)}"
+            )
+        )
+        lineage_dir.mkdir(parents=True, exist_ok=True)
+        destination = lineage_dir / dispatch_path.name
+        if dispatch_path.exists():
+            shutil.move(str(dispatch_path), str(destination))
+        (lineage_dir / "README.md").write_text(
+            "Archived dispatch-only claim residue before a fresh admitted claim.\n"
+            f"task_id: {binding.task_id}\n"
+            f"claim_key: {claim_key}\n"
+            f"source: {dispatch_path}\n"
+            f"archived_at: {observed_at}\n"
+            "reason: normal close removed active/epoch sidecars but preserved "
+            "the dispatch binding spent leg.\n",
+            encoding="utf-8",
+        )
+        archived.append(destination)
+    return archived
+
+
 __all__ = [
     "ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA",
     "ADMITTED_CLAIM_PUBLICATION_SCHEMA",
@@ -6173,6 +6321,9 @@ __all__ = [
     "ClaimPublicationInspection",
     "ClaimPublicationReceipt",
     "ClaimPublicationRecoveryResult",
+    "ClaimResidueArchiveHold",
+    "admitted_claim_publication_id",
+    "archive_dispatch_only_claim_residue",
     "admitted_claim_publication_id",
     "claim_publication_id",
     "claim_publication_mutation_scope_address",
