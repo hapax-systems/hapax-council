@@ -4,7 +4,9 @@ from shared.charter_claim import (
     child_may_mint,
     covers,
     obligation_breaches,
+    park_matching,
     residue_without_active_lease,
+    restore_parked,
     sidecar_belongs_to,
     write_obligation_report,
 )
@@ -84,6 +86,17 @@ def test_missing_identity_cannot_mint() -> None:
     assert child_may_mint(nameless, _CHILD) is False
     unlinked = _CHILD.replace("parent_charter: charter-demo\n", "parent_charter:\n")
     assert child_may_mint(_CHARTER, unlinked) is False
+
+
+def test_failed_publish_drops_a_partial_child_and_restores_the_parent(tmp_path) -> None:
+    src = tmp_path / "cc-active-task-grok"
+    dst = tmp_path / "cc-charter-parked-task-grok"
+    src.write_text("charter-demo\n", encoding="utf-8")
+    moved = park_matching([(src, dst)], "charter-demo")
+    src.write_text("child-demo\n", encoding="utf-8")
+    restore_parked(moved)
+    assert src.read_text(encoding="utf-8") == "charter-demo\n"
+    assert not dst.exists()
 
 
 def test_sidecar_match_is_the_parsed_task_id(tmp_path) -> None:

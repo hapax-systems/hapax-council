@@ -430,7 +430,12 @@ parked_sidecars: list[tuple[Path, Path]] = []
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from shared.charter_claim import residue_without_active_lease, sidecar_belongs_to  # noqa: E402
+from shared.charter_claim import (  # noqa: E402
+    park_matching,
+    residue_without_active_lease,
+    restore_parked,
+    sidecar_belongs_to,
+)
 from shared.sdlc_lifecycle import (  # noqa: E402
     TASK_CLAIMABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
@@ -1419,32 +1424,31 @@ try:
             file=sys.stderr,
         )
     if charter_keep:
+        pairs: list[tuple[Path, Path]] = []
         for key in (role, f"{role}-{session_id}" if session_id else ""):
             if not key:
                 continue
-            pairs = (
-                (cache_dir / f"cc-active-task-{key}", cache_dir / f"cc-charter-parked-task-{key}"),
-                (cache_dir / f"cc-claim-epoch-{key}", cache_dir / f"cc-charter-parked-epoch-{key}"),
+            pairs.extend(
                 (
-                    cache_dir / f"cc-claim-dispatch-{key}.json",
-                    cache_dir / f"cc-charter-parked-dispatch-{key}.json",
-                ),
+                    (cache_dir / f"cc-active-task-{key}", cache_dir / f"cc-charter-parked-task-{key}"),
+                    (cache_dir / f"cc-claim-epoch-{key}", cache_dir / f"cc-charter-parked-epoch-{key}"),
+                    (
+                        cache_dir / f"cc-claim-dispatch-{key}.json",
+                        cache_dir / f"cc-charter-parked-dispatch-{key}.json",
+                    ),
+                )
             )
-            for src, dst in pairs:
-                if not sidecar_belongs_to(src, charter_keep):
-                    continue
-                src.replace(dst)
-                parked_sidecars.append((dst, src))
+        parked_sidecars.extend(park_matching(pairs, charter_keep))
         if session_id:
             (cache_dir / f"cc-active-charter-{role}-{session_id}").write_text(
                 f"{charter_keep}\n",
                 encoding="utf-8",
             )
     receipt = publish_gate0b_claim(intent, root=install.root, now=now)
-except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError) as exc:
-    for dst, src in reversed(parked_sidecars):
-        if dst.exists() and not src.exists():
-            dst.replace(src)
+except BaseException as exc:
+    restore_parked(parked_sidecars)
+    if not isinstance(exc, (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError)):
+        raise
     print(
         f"cc-claim: HOLD — {exc}; Next action: provision or repair the Gate-0B "
         "claim-publication composition receipt for this HOME through the governed "
