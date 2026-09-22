@@ -89,6 +89,21 @@ local_dev_maintenance_mode() {
 }
 
 SITE_CLASS="$(site_class)"
+
+# D3 successor (zz-coord-appendix-only-20260919.conf REMOVE WHEN): lane launch
+# is decided by measured headroom, not by membership in a required-lanes list.
+# The list is a candidate pool; this budget is how many lanes may launch now.
+launch_headroom_budget() {
+    local nproc load1 free_slots budget
+    nproc="$(nproc 2>/dev/null || echo 1)"
+    load1="$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0)"
+    free_slots=$(awk -v n="$nproc" -v l="$load1" 'BEGIN{f=n-int(l); if(f<0)f=0; print f}')
+    budget=$free_slots
+    # cap: at most 2 launches per tick so a cold host cannot burst a whole roster
+    [ "$budget" -gt 2 ] && budget=2
+    echo "$budget"
+}
+
 LOCAL_DEV_MAINTENANCE_MODE="$(local_dev_maintenance_mode)"
 log "site-class ${SITE_CLASS} (maintenance=${LOCAL_DEV_MAINTENANCE_MODE})"
 if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
@@ -279,8 +294,11 @@ revived_lanes=0
 # L4: the respawn floor yields under 'closed' and under appendix-only local-dev
 # mode. Appendix-only mode keeps podium as a thin client; explicit governed
 # dispatch remains available through hapax-methodology-dispatch.
-if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CLAUDE_LAUNCHER" ]; then
+HEADROOM_BUDGET="$(launch_headroom_budget)"
+log "launch headroom budget=${HEADROOM_BUDGET} (candidate pool: ${REQUIRED_CLAUDE_LANES})"
+if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CLAUDE_LAUNCHER" ] && [ "$HEADROOM_BUDGET" -gt 0 ]; then
     for role in $REQUIRED_CLAUDE_LANES; do
+        [ "$HEADROOM_BUDGET" -gt 0 ] || break
         session="hapax-claude-${role}"
         worktree="${HOME}/projects/hapax-council--${role}"
 
@@ -307,7 +325,8 @@ if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" !
                     log "RecoveryGovernor deferred launch of $role (backoff/pressure); retry next tick"
                     continue
                 fi
-                log "LAUNCHING missing lane: $role"
+                HEADROOM_BUDGET=$((HEADROOM_BUDGET - 1))
+                log "LAUNCHING missing lane: $role (headroom left=${HEADROOM_BUDGET})"
                 echo "$now" > "$cooldown_file"
                 launch_err="$STATE_DIR/${session}.launch.err"
                 if "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux --readonly >"$launch_err" 2>&1; then
