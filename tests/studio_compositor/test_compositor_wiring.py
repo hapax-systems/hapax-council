@@ -50,6 +50,11 @@ def _disable_live_director_segment_runner(monkeypatch: pytest.MonkeyPatch) -> No
 def make_compositor(monkeypatch: pytest.MonkeyPatch):
     """Own the real layout workers while keeping external publishers out of scope."""
     compositors: list[StudioCompositor] = []
+    # Layout wiring must not recruit the footer's external Ring 2 classifier.
+    monkeypatch.setattr(
+        "agents.studio_compositor.egress_footer_source.validate_footer_once",
+        mock.Mock(side_effect=RuntimeError("classifier unavailable in layout wiring tests")),
+    )
 
     def make(layout_path: Path | None = None) -> StudioCompositor:
         # Host camera profiles are not part of the layout-wiring contract.
@@ -98,6 +103,20 @@ def make_compositor(monkeypatch: pytest.MonkeyPatch):
             assert not (live := [worker.name for worker in workers if worker.is_alive()]), (
                 f"layout fixture left owned workers alive: {live}"
             )
+
+
+def test_layout_fixture_withholds_footer_without_classifier(make_compositor) -> None:
+    from agents.studio_compositor.egress_footer_source import EgressFooterCairoSource
+
+    source = EgressFooterCairoSource()
+    with mock.patch(
+        "shared.governance.ring2_classifier.Ring2Classifier.classify",
+        return_value=SimpleNamespace(allowed=False, risk="high", reason="controlled test"),
+    ) as classifier:
+        source._ensure_validated()
+    assert source._validated
+    assert source._withheld
+    classifier.assert_not_called()
 
 
 class TestStartLayoutOnly:

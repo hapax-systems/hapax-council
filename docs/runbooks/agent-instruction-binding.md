@@ -294,6 +294,12 @@ inputs still need observations from the actual native loading boundary.
 
 The reviewer resolves `claude.review.opus` once through
 `shared.capability_execution` in its physical release's `.venv/bin/python -I`.
+Like the Codex launchers, it selects `HAPAX_SOURCE_ACTIVATE_WORKTREE`, then an
+explicit `HAPAX_COUNCIL_DIR`, otherwise `~/.cache/hapax/source-activation/worktree`.
+The selected path resolves to its physical target once before the resolver runs.
+This works with the deployer's regular copy in `~/.local/bin`; the installed
+script's parent directory is not a source release. Source-checkout invocations
+must explicitly select that checkout when testing an unactivated change.
 That binding supplies the concrete model and effort arguments, plus the child
 environment's `CLAUDE_CODE_EFFORT_LEVEL` and fast-mode disable setting. Neither
 the moving `opus` alias nor ambient effort selects the review identity anymore.
