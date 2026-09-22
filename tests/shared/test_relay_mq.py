@@ -15,6 +15,7 @@ from shared.relay_mq import (
     CanonEchoError,
     MessageFilters,
     _connect,
+    _open_connection,
     ack_message,
     assess_canon_echo,
     build_canon_echo_envelope,
@@ -661,7 +662,7 @@ class TestCanonEcho(unittest.TestCase):
         send_message(self.db_path, self.parent)
         # Keep the WAL generation alive across byte snapshots. Connections from
         # SQLite transaction contexts may otherwise be collected between reads.
-        self._database_anchor = _connect(self.db_path)
+        self._database_anchor = _open_connection(self.db_path)
         self.ledger = self.root / "methodology-dispatch.jsonl"
         self.ledger.write_text(
             json.dumps(_dispatch_record(self.source_message_id), sort_keys=True) + "\n",
@@ -828,7 +829,7 @@ class TestCanonEcho(unittest.TestCase):
         self.assertFalse(absent_root.exists())
 
     def test_observation_preserves_database_and_existing_sidecar_bytes(self) -> None:
-        writer = _connect(self.db_path)
+        writer = _open_connection(self.db_path)
         try:
             writer.execute("SELECT 1").fetchone()
             sidecars = [Path(f"{self.db_path}-wal"), Path(f"{self.db_path}-shm")]
