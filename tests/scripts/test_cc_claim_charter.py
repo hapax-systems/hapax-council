@@ -183,6 +183,10 @@ def test_charter_unit_claim_records_unit_and_keeps_lease(tmp_path: Path) -> None
     charter = _claim(home, "charter-x")
     assert charter.returncode == 0, charter.stderr
     assert len(_publications(home)) == 1
+    # The charter sidecar exists from the mint itself, not only once a unit
+    # is recorded under the charter.
+    mint_sidecar = home / ".cache" / "hapax" / f"cc-active-charter-{_ROLE}-{_SESSION_ID}"
+    assert mint_sidecar.read_text(encoding="utf-8") == "charter-x\n"
 
     _write_unit(home, "unit-a", ["shared/cx/unit-a.py"])
     unit = _claim(home, "unit-a", install_gate0b=False)
@@ -257,6 +261,30 @@ def test_charter_unit_claim_holds_with_incomplete_parent_lease_and_mints_nothing
     assert len(_publications(home)) == 1
 
 
+def test_unit_claim_holds_when_charter_has_no_live_lease_sidecars_for_this_role(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    _write_charter(home)
+    charter = _claim(home, "charter-x")
+    assert charter.returncode == 0, charter.stderr
+    cache = home / ".cache" / "hapax"
+    # The role-keyed lease legs are archived away; only the minting session's
+    # own files remain. A unit claimed from a different session discovers the
+    # charter (the bash lease scan reads any session's active-task file) but
+    # holds: none of THIS role's lease sidecars belongs to the charter.
+    (cache / f"cc-active-task-{_ROLE}").unlink()
+    (cache / f"cc-claim-epoch-{_ROLE}").unlink()
+    (cache / f"cc-claim-dispatch-{_ROLE}.json").unlink(missing_ok=True)
+
+    _write_unit(home, "unit-a", ["shared/cx/unit-a.py"])
+    unit = _claim(home, "unit-a", extra_env={"HAPAX_SESSION_ID": "session-b"}, install_gate0b=False)
+
+    assert unit.returncode == 8
+    assert "has no live lease sidecars" in unit.stderr
+    assert len(_publications(home)) == 1
+
+
 def test_inherited_charter_keep_env_does_not_force_the_charter_branch(
     tmp_path: Path,
 ) -> None:
@@ -271,6 +299,8 @@ def test_inherited_charter_keep_env_does_not_force_the_charter_branch(
     assert unit.returncode == 0, unit.stderr
     cache = home / ".cache" / "hapax"
     assert not (cache / f"charter-units-{_ROLE}-{_SESSION_ID}.jsonl").exists()
+    # An ordinary (non-charter) claim writes no charter sidecar.
+    assert not (cache / f"cc-active-charter-{_ROLE}-{_SESSION_ID}").exists()
     assert len(_publications(home)) == 1
 
 
@@ -441,3 +471,21 @@ def test_gate_records_no_breach_when_a_unit_covers_the_edit(tmp_path: Path) -> N
 
     assert result.returncode == 0, result.stderr
     assert not (cache / "charter-obligation-charter-x.jsonl").exists()
+
+
+def test_gate_blocks_fail_closed_when_the_obligation_report_cannot_be_written(
+    tmp_path: Path,
+) -> None:
+    home, _ = _gate_home(tmp_path)
+    cache = home / ".cache" / "hapax"
+    # A directory squatting on the report path makes the report write raise
+    # OSError: the reporter must exit 3 and the gate must block the edit
+    # rather than let an unrecorded breach pass.
+    (cache / "charter-obligation-charter-x.jsonl").mkdir(parents=True, exist_ok=True)
+    target = REPO_ROOT / "charter-gate-area" / "x.py"
+
+    result = _run_gate(home, target)
+
+    assert result.returncode == 2
+    combined = result.stdout + result.stderr
+    assert "charter check did not finish" in combined

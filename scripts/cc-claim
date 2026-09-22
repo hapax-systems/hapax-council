@@ -434,12 +434,17 @@ charter_keep = sys.argv[16].strip() if len(sys.argv) > 16 else ""
 def _write_charter_sidecar() -> None:
     """One condition for every writer of the cc-active-charter sidecar.
 
-    The sidecar is keyed by role and session; without a session id the name
-    would be malformed, so no writer may drop that guard.
+    The sidecar records which charter this session's claim belongs to: the
+    parent for a unit claim, the task itself when the minted note IS the
+    charter (claim_form: charter). Without a session id the name would be
+    malformed, so no writer may drop that guard.
     """
-    if charter_keep and session_id:
+    keep = charter_keep
+    if not keep and _frontmatter_scalar(text, "claim_form").strip() == "charter":
+        keep = task_id
+    if keep and session_id:
         (cache_dir / f"cc-active-charter-{role}-{session_id}").write_text(
-            f"{charter_keep}\n", encoding="utf-8"
+            f"{keep}\n", encoding="utf-8"
         )
 
 
@@ -1451,6 +1456,9 @@ print(
     "cc-claim: admitted publication applied "
     f"(publication={receipt.publication_id}, receipt={receipt.receipt_hash})"
 )
+# Charter sidecar for a canonical mint: the publication applied, so the
+# charter's lease sidecars exist and the session's charter record may too.
+_write_charter_sidecar()
 PYEOF
 
 exit 0
