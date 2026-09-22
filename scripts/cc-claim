@@ -1417,6 +1417,31 @@ try:
             "install artifacts.",
             file=sys.stderr,
         )
+    if charter_keep:
+        live_parent = []
+        for key in (role, f"{role}-{session_id}" if session_id else ""):
+            if not key:
+                continue
+            for name in (
+                f"cc-active-task-{key}",
+                f"cc-claim-epoch-{key}",
+                f"cc-claim-dispatch-{key}.json",
+            ):
+                candidate = cache_dir / name
+                if sidecar_belongs_to(candidate, charter_keep):
+                    live_parent.append(name)
+        if live_parent:
+            print(
+                "cc-claim: HOLD — charter "
+                f"'{charter_keep}' still holds the lease ({', '.join(live_parent)}). "
+                "The publication journal recomputes a new lease as absent-to-child "
+                "from the live files, so overwriting a parent lease here makes "
+                "recovery fail with claim_publication_manifest_identity_mismatch. "
+                "Next action: close the charter through the governed lifecycle, "
+                "then claim the child. Do not move the sidecars by hand.",
+                file=sys.stderr,
+            )
+            sys.exit(8)
     receipt = publish_gate0b_claim(intent, root=install.root, now=now)
 except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError) as exc:
     print(
