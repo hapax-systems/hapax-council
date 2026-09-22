@@ -1365,13 +1365,18 @@ class TestConnectConnectionLifecycle(unittest.TestCase):
             root = Path(td)
             db = root / "messages.db"
             send_message(db, _regression_envelope())
+            # Probe before any forced collection: gc.collect() would destroy a
+            # leaked-but-unreferenced connection and mask the leak this test
+            # exists to pin.
+            leaked = self._open_connections_to(root)
             gc.collect()
             self.assertEqual(
-                self._open_connections_to(root),
+                leaked,
                 [],
                 "send_message leaked an open connection; a later gc.collect() would "
                 "delete the WAL sidecars mid-snapshot",
             )
+            self.assertEqual(self._open_connections_to(root), [])
 
     def test_leaked_connection_would_delete_sidecars_in_snapshot_window(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1387,6 +1392,7 @@ class TestConnectConnectionLifecycle(unittest.TestCase):
             sidecars = [path for path in listed if path.name != db.name]
             self.assertTrue(sidecars, "expected WAL sidecars while a connection is open")
             del anchor
+            gc.collect()
             for path in listed:
                 gc.collect()
                 if path.name != db.name:
