@@ -646,6 +646,11 @@ def test_an_unsafe_lock_root_is_refused(tmp_path: Path) -> None:
 
     shared = tmp_path / "shared-root"
     shared.mkdir(mode=0o777)
+    # mkdir applies the ambient umask, so mode=0o777 alone does not guarantee a
+    # world-writable root (a runner umask of 0077 yields exactly the 0700 the
+    # validator accepts). Pin the mode explicitly: this test asserts that a
+    # genuinely world-writable root is refused, whatever the process umask is.
+    os.chmod(shared, 0o777)
     with pytest.raises(tnl.TaskNoteLockError) as excinfo:
         with tnl.projected_path_lock("task-1", (), root=shared, timeout=5.0):
             pytest.fail("entered with a world-writable lock root")
