@@ -76,20 +76,6 @@ def sidecar_belongs_to(path: Path, task_id: str) -> bool:
     return text.strip() == task_id
 
 
-def residue_without_active_lease(status: str) -> str:
-    """What to do with dispatch residue when the active-lease file is absent.
-
-    A live task (any non-terminal status, including missing) is a hold.
-    Only a terminal task may be archived. Losing the lease file is not a release.
-    The terminal set is the lifecycle module's, not a private subset.
-    """
-    from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
-
-    if status in TASK_TERMINAL_STATUSES:
-        return "archive"
-    return "hold"
-
-
 def _frontmatter(text: str) -> Mapping[str, Any]:
     if not text.startswith("---"):
         return {}

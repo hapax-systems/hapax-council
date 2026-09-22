@@ -5,7 +5,6 @@ from shared.charter_claim import (
     covers,
     obligation_breaches,
     record_unit,
-    residue_without_active_lease,
     sidecar_belongs_to,
     write_obligation_report,
 )
@@ -111,15 +110,6 @@ def test_sidecar_match_is_the_parsed_task_id(tmp_path) -> None:
     assert sidecar_belongs_to(neighbor, "charter-demo") is False
     assert sidecar_belongs_to(epoch, "charter-demo") is True
     assert sidecar_belongs_to(dispatch, "charter-demo") is True
-
-
-def test_missing_lease_holds_a_live_task_and_archives_a_terminal_one() -> None:
-    assert residue_without_active_lease("in_progress") == "hold"
-    assert residue_without_active_lease("missing") == "hold"
-    assert residue_without_active_lease("closed") == "archive"
-    assert residue_without_active_lease("complete") == "archive"
-    assert residue_without_active_lease("resolved") == "archive"
-    assert residue_without_active_lease("rejected") == "archive"
 
 
 def test_child_scope_discharges_the_obligation() -> None:
