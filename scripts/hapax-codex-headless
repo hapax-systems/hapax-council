@@ -1118,10 +1118,9 @@ DISPATCH:
 "
 INITIAL_MSG="${SDLC_PREAMBLE}${INITIAL_MSG}"
 
-# Config mirrors hapax-codex's governed CODEX_ARGS (shared contract — keep in
-# sync): full-access sandbox under external governance, the codex-hook-adapter on
-# every phase, and the hapax MCP surface. `--json` streams JSONL events; `--cd`
-# binds the worktree; trust is scoped to the worktree.
+# The shared helper binds common approval, trust, hook and Hapax MCP settings.
+# Headless invocation/output flags and additional MCP tools remain explicit here.
+bind_codex_common_config "$HOME" "$WORKDIR" "$HOOK" "$LOGOS_BASE_URL"
 CODEX_ARGS=(
   exec
   --dangerously-bypass-approvals-and-sandbox
@@ -1129,17 +1128,7 @@ CODEX_ARGS=(
   --json
   --cd "$WORKDIR"
   "${CODEX_EXECUTION_ARGS[@]}"
-  -c 'approval_policy="never"'
-  -c 'sandbox_mode="danger-full-access"'
-  -c "projects.\"$HOME/projects\".trust_level=\"trusted\""
-  -c "projects.\"$WORKDIR\".trust_level=\"trusted\""
-  -c "hooks.SessionStart=[{command=\"$HOOK\",timeout=20,statusMessage=\"Loading Hapax context\"}]"
-  -c "hooks.PreToolUse=[{command=\"$HOOK\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax guardrails\"}]"
-  -c "hooks.PostToolUse=[{command=\"$HOOK\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax audit\"}]"
-  -c "hooks.Stop=[{command=\"$HOOK\",timeout=20,statusMessage=\"Writing Hapax session summary\"}]"
-  -c "mcp_servers.hapax.command=\"$HOME/.local/bin/uv\""
-  -c "mcp_servers.hapax.args=[\"--directory\",\"$HOME/projects/hapax-mcp\",\"run\",\"hapax-mcp\"]"
-  -c "mcp_servers.hapax.env.LOGOS_BASE_URL=\"$LOGOS_BASE_URL\""
+  "${CODEX_COMMON_CONFIG_ARGS[@]}"
   -c "mcp_servers.github.command=\"$COUNCIL_DIR/scripts/hapax-github-mcp\""
   -c "mcp_servers.context7.command=\"$COUNCIL_DIR/scripts/hapax-context7-mcp\""
 )

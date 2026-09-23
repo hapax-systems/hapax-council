@@ -4274,34 +4274,24 @@
         "files": [
           {
             "root": "native_home",
-            "path": "GEMINI.md",
-            "kind": "instructions",
-            "sha256": "3415dd19d39e588b9888081b4641df0b473f168d7ea02d516f5ed8c30d1c81b5", "digest_description": "Public SHA-256 of agy global instructions rendered from config/agent-instructions. # pragma: allowlist secret",
-            "required": true
-          },
-          {
-            "root": "project",
-            "path": "AGENTS.md",
-            "kind": "instructions",
-            "sha256": "6a195e23b266cc06beaa44ddff3ea3e3501d8850df0aec0238441f05e7947e17", "digest_description": "Public SHA-256 of canonical repository AGENTS.md. # pragma: allowlist secret",
-            "required": true
-          },
-          {
-            "root": "native_home",
-            "path": "settings.json",
+            "path": "antigravity-cli/settings.json",
             "kind": "configuration",
             "sha256": null,
             "required": false
           }
         ],
-        "memory_scope": "native session and cwd partition; actual scope unobserved until runtime receipt",
+        "memory_scope": "per-invocation temporary HOME/XDG/workspace; wrapper seeds only its OAuth binding and writes review-dossier.md. Native/provider memory behavior remains unobserved.",
         "plugins": null,
         "skills": null,
         "hooks": null,
         "mcp": null,
-        "loading_flags": null,
+        "loading_flags": [
+          "--sandbox",
+          "--dangerously-skip-permissions",
+          "--disable-slash-commands"
+        ],
         "source_refs": [
-          "config/agent-instructions/bindings.json",
+          "scripts/hapax-agy-reviewer",
           "docs/runbooks/agent-instruction-binding.md",
           "task:capability-declared-load-set-20260919"
         ]

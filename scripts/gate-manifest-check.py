@@ -178,9 +178,39 @@ def _check_codex_config(
     config_phases = _literal_list(runtime.get("config_phases"), "manifest codex.config_phases")
 
     launcher_text = launcher_path.read_text(encoding="utf-8")
+    # Configuration lives in the physical release's shared helper. Check the
+    # launcher still sources, calls and consumes that composition; runtime argv
+    # behavior is exercised separately by the launcher integration tests.
+    for marker, label in (
+        ('. "$EXECUTION_SOURCE_ROOT/scripts/capability-execution.sh"', "helper source"),
+        ('bind_codex_common_config "$HOME" "$WORKDIR" "$HOOK" "$LOGOS_BASE_URL"', "helper call"),
+        ('"${CODEX_COMMON_CONFIG_ARGS[@]}"', "helper argv"),
+    ):
+        if marker not in launcher_text:
+            errors.append(
+                f"codex launcher missing common configuration {label}; "
+                "next action: restore the selected release's helper source, call and argv expansion"
+            )
+    helper_path = launcher_path.resolve().with_name("capability-execution.sh")
+    try:
+        helper_text = helper_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        errors.append(
+            f"codex common configuration helper unreadable: {helper_path}: {exc}; "
+            "next action: restore capability-execution.sh beside the checked launcher"
+        )
+        helper_text = ""
+    if "bind_codex_common_config() {" not in helper_text:
+        errors.append(
+            "codex common configuration helper missing binding function; "
+            "next action: restore bind_codex_common_config in the selected release helper"
+        )
     for phase in config_phases:
-        if f"hooks.{phase}=" not in launcher_text:
-            errors.append(f"codex launcher missing hooks.{phase} override")
+        if f"hooks.{phase}=" not in helper_text:
+            errors.append(
+                f"codex common configuration missing hooks.{phase} override; "
+                "next action: restore the phase override in bind_codex_common_config"
+            )
     if adapter_name not in launcher_text:
         errors.append(f"codex launcher missing adapter marker {adapter_name}")
 

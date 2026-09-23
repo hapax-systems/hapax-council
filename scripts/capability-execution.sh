@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared launcher identity binding. Resolve before claims, auth probes or spawns.
+# Shared launcher construction. Resolve identity before claims, auth probes or spawns.
 # This helper belongs to the selected source release and uses its pinned runtime.
 bind_codex_execution() {
   local execution_root execution_python
@@ -44,4 +44,22 @@ print("\n".join(args))
   export HAPAX_CODEX_EXECUTION_ARGS="${execution_fields[0]}"
   export HAPAX_CODEX_EXECUTION_DESCRIPTOR="${execution_fields[1]}"
   CODEX_EXECUTION_ARGS=("${execution_fields[@]:2}")
+}
+
+# Common native configuration; mode-specific tools and invocation flags stay at callers.
+bind_codex_common_config() {
+  local load_home="$1" load_workdir="$2" load_hook="$3" load_logos_url="$4"
+  CODEX_COMMON_CONFIG_ARGS=(
+    -c 'approval_policy="never"'
+    -c 'sandbox_mode="danger-full-access"'
+    -c "projects.\"$load_home/projects\".trust_level=\"trusted\""
+    -c "projects.\"$load_workdir\".trust_level=\"trusted\""
+    -c "hooks.SessionStart=[{command=\"$load_hook\",timeout=20,statusMessage=\"Loading Hapax context\"}]"
+    -c "hooks.PreToolUse=[{command=\"$load_hook\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax guardrails\"}]"
+    -c "hooks.PostToolUse=[{command=\"$load_hook\",timeout=20,include_apply_patch_tool=true,statusMessage=\"Hapax audit\"}]"
+    -c "hooks.Stop=[{command=\"$load_hook\",timeout=20,statusMessage=\"Writing Hapax session summary\"}]"
+    -c "mcp_servers.hapax.command=\"$load_home/.local/bin/uv\""
+    -c "mcp_servers.hapax.args=[\"--directory\",\"$load_home/projects/hapax-mcp\",\"run\",\"hapax-mcp\"]"
+    -c "mcp_servers.hapax.env.LOGOS_BASE_URL=\"$load_logos_url\""
+  )
 }

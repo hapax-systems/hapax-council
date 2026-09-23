@@ -135,6 +135,7 @@ def _env_with_fake_codex(tmp_path: Path) -> tuple[dict[str, str], Path]:
                 "  exit 0",
                 "fi",
                 f"printf '%s\\n' \"$@\" > {shlex.quote(str(args_file))}",
+                f"printf '%s\\0' \"$@\" > {shlex.quote(str(args_file.with_suffix('.argv')))}",
                 "exit 0",
                 "",
             ]
@@ -160,7 +161,7 @@ def _env_with_fake_codex(tmp_path: Path) -> tuple[dict[str, str], Path]:
     return env, args_file
 
 
-def _launch(launcher, env, route="codex.headless.full", extra=()):
+def _launch(launcher, env, route="codex.headless.full", extra=(), workdir=None):
     if launcher == HEADLESS:
         args = [
             "--execution-route",
@@ -181,7 +182,7 @@ def _launch(launcher, env, route="codex.headless.full", extra=()):
             "--slot",
             "alpha",
             "--cd",
-            str(REPO_ROOT),
+            str(workdir or REPO_ROOT),
             "--terminal",
             "none",
         ]
@@ -190,6 +191,56 @@ def _launch(launcher, env, route="codex.headless.full", extra=()):
     return subprocess.run(
         [str(launcher), *args], capture_output=True, text=True, env=env, timeout=20
     )
+
+
+@pytest.mark.parametrize("launcher", LAUNCHERS)
+@pytest.mark.parametrize("layout", ["ordinary", "with spaces", "relocated release"])
+def test_both_launchers_deliver_exact_common_configuration(tmp_path, launcher, layout):
+    cell = tmp_path / layout
+    cell.mkdir()
+    env, args_file = _env_with_fake_codex(cell)
+    workdir = cell / "working directory"
+    workdir.mkdir()
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["LOGOS_BASE_URL"] = "http://127.0.0.1:1/isolated-api"
+    source = REPO_ROOT
+    if layout == "relocated release":
+        source = cell / "selected source"
+        source.mkdir()
+        shutil.copytree(REPO_ROOT / "scripts", source / "scripts")
+        for name in ("shared", "config", "hooks"):
+            (source / name).symlink_to(REPO_ROOT / name, target_is_directory=True)
+        (source / ".venv").symlink_to(Path(sys.executable).parent.parent, target_is_directory=True)
+        env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(source)
+        env["HAPAX_COUNCIL_DIR"] = str(source)
+
+    result = _launch(launcher, env, workdir=workdir)
+    assert result.returncode == 0, result.stderr
+    observed = args_file.with_suffix(".argv").read_bytes().split(b"\0")
+    assert observed.pop() == b""
+    argv = [arg.decode() for arg in observed]
+    home = env["HOME"]
+    hook = source / "hooks/scripts/codex-hook-adapter.sh"
+    # Literal expectations pin the native child boundary, independently of the helper.
+    settings = [
+        'approval_policy="never"',
+        'sandbox_mode="danger-full-access"',
+        f'projects."{home}/projects".trust_level="trusted"',
+        f'projects."{workdir}".trust_level="trusted"',
+        f'hooks.SessionStart=[{{command="{hook}",timeout=20,statusMessage="Loading Hapax context"}}]',
+        f'hooks.PreToolUse=[{{command="{hook}",timeout=20,include_apply_patch_tool=true,statusMessage="Hapax guardrails"}}]',
+        f'hooks.PostToolUse=[{{command="{hook}",timeout=20,include_apply_patch_tool=true,statusMessage="Hapax audit"}}]',
+        f'hooks.Stop=[{{command="{hook}",timeout=20,statusMessage="Writing Hapax session summary"}}]',
+        f'mcp_servers.hapax.command="{home}/.local/bin/uv"',
+        f'mcp_servers.hapax.args=["--directory","{home}/projects/hapax-mcp","run","hapax-mcp"]',
+        f'mcp_servers.hapax.env.LOGOS_BASE_URL="{env["LOGOS_BASE_URL"]}"',
+    ]
+    common = [part for setting in settings for part in ("-c", setting)]
+    start = argv.index(settings[0]) - 1
+    assert argv[start : start + len(common)] == common
+    for setting in settings:
+        key = setting.split("=", 1)[0] + "="
+        assert [arg for arg in argv if arg.startswith(key)] == [setting]
 
 
 @pytest.mark.parametrize("launcher", LAUNCHERS)
