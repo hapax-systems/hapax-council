@@ -1,4 +1,11 @@
-"""Test ConsentGatedReader wiring in conversation pipeline."""
+"""Test ConsentGatedReader wiring in conversation pipeline.
+
+This file executes in the pinned minimal environment of CI's
+egress-boundary-pin job (pytest + pyyaml + pydantic only — deliberately no
+pytest-asyncio, like every other file that job pins). Its tests therefore stay
+sync at the pytest boundary and drive their coroutines through asyncio.run;
+the async bodies themselves are unchanged.
+"""
 
 import asyncio
 import importlib
@@ -54,13 +61,7 @@ async def _retrieve(pipeline):
     return pipeline.messages[-1]["content"]
 
 
-@pytest.mark.parametrize(
-    "module_name", ["shared.governance.consent_reader", "agents._governance.consent_reader"]
-)
-@pytest.mark.parametrize("scope", ["audio", "document"])
-async def test_complete_retrieval_gates_predecessor(
-    module_name, scope, synthetic_custody, tmp_path, caplog
-):
+async def _check_complete_retrieval_gates_predecessor(module_name, scope, tmp_path, caplog):
     module = importlib.import_module(module_name)
     registry = consent.ConsentRegistry(
         _contracts={
@@ -90,9 +91,14 @@ async def test_complete_retrieval_gates_predecessor(
 @pytest.mark.parametrize(
     "module_name", ["shared.governance.consent_reader", "agents._governance.consent_reader"]
 )
-async def test_retrieval_keeps_loop_responsive_with_one_snapshot(
-    module_name, synthetic_custody, monkeypatch
+@pytest.mark.parametrize("scope", ["audio", "document"])
+def test_complete_retrieval_gates_predecessor(
+    module_name, scope, synthetic_custody, tmp_path, caplog
 ):
+    asyncio.run(_check_complete_retrieval_gates_predecessor(module_name, scope, tmp_path, caplog))
+
+
+async def _check_retrieval_keeps_loop_responsive_with_one_snapshot(module_name, monkeypatch):
     module = importlib.import_module(module_name)
     reader = module.ConsentGatedReader(_registry(), frozenset({"operator"}))
     pipeline = _pipeline(
@@ -124,7 +130,16 @@ async def test_retrieval_keeps_loop_responsive_with_one_snapshot(
     assert calls == 1
 
 
-async def test_pipeline_start_offloads_reload(synthetic_custody, monkeypatch):
+@pytest.mark.parametrize(
+    "module_name", ["shared.governance.consent_reader", "agents._governance.consent_reader"]
+)
+def test_retrieval_keeps_loop_responsive_with_one_snapshot(
+    module_name, synthetic_custody, monkeypatch
+):
+    asyncio.run(_check_retrieval_keeps_loop_responsive_with_one_snapshot(module_name, monkeypatch))
+
+
+async def _check_pipeline_start_offloads_reload(monkeypatch):
     module = importlib.import_module("agents._governance.consent_reader")
     from agents.hapax_daimonion.conversation_pipeline import ConversationPipeline
 
@@ -152,7 +167,11 @@ async def test_pipeline_start_offloads_reload(synthetic_custody, monkeypatch):
     assert len(reads) == 1
 
 
-async def test_pipeline_worker_inherits_existing_snapshot(synthetic_custody, monkeypatch):
+def test_pipeline_start_offloads_reload(synthetic_custody, monkeypatch):
+    asyncio.run(_check_pipeline_start_offloads_reload(monkeypatch))
+
+
+async def _check_pipeline_worker_inherits_existing_snapshot(monkeypatch):
     module = importlib.import_module("agents._governance.consent_reader")
     pipeline = _pipeline(
         module.ConsentGatedReader(_registry(), frozenset({"operator"})),
@@ -165,3 +184,7 @@ async def test_pipeline_worker_inherits_existing_snapshot(synthetic_custody, mon
 
         monkeypatch.setattr(consent, "_read_compatibility_document", forbid_reload)
         assert await _retrieve(pipeline) == "Notes about someone."
+
+
+def test_pipeline_worker_inherits_existing_snapshot(synthetic_custody, monkeypatch):
+    asyncio.run(_check_pipeline_worker_inherits_existing_snapshot(monkeypatch))

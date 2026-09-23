@@ -540,8 +540,24 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             uv.lock
+      - name: Check out the reins API (consent custody substrate for the pins)
+        # The consent-containment pins build a synthetic custody store from the
+        # installed reins API (tests/shared/synthetic_custody.py). The hosted
+        # runner has no reins installation, so the public repository's api/
+        # tree IS the installed API here, through HAPAX_REINS_API — exactly the
+        # remedy the fixture names. Pinned to a sha for reproducible evidence;
+        # key_capture.py at this ref is byte-identical to the estate-installed
+        # current release. Bump deliberately when the estate installation moves.
+        if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: hapax-systems/reins
+          ref: 38c7e395bd36e91f6cc380b280cd569de7fbffbb
+          path: reins-api
       - name: Run egress-boundary behavior pins
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
+        env:
+          HAPAX_REINS_API: ${{ github.workspace }}/reins-api/api
         run: >
           uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic
           pytest --confcutdir=tests tests/test_capability_adapter_protocol.py
@@ -592,6 +608,19 @@ jobs:
         shard_count: [4]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - name: Check out the reins API (consent custody substrate)
+        # The autouse synthetic_custody fixture (tests/shared/synthetic_custody.py,
+        # registered by tests/conftest.py) builds every consent test's custody
+        # store from the installed reins API. Hosted runners have no reins
+        # installation; the public repository's api/ tree serves as the
+        # installed API through HAPAX_REINS_API — the remedy the fixture itself
+        # names. Pinned to a sha for reproducible evidence; key_capture.py at
+        # this ref is byte-identical to the estate-installed current release.
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: hapax-systems/reins
+          ref: 38c7e395bd36e91f6cc380b280cd569de7fbffbb
+          path: reins-api
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
           enable-cache: true
@@ -657,6 +686,11 @@ jobs:
           LANGFUSE_HOST: "http://0.0.0.0:1"
           PYTEST_SHARD: ${{ matrix.shard }}
           PYTEST_SHARD_COUNT: ${{ matrix.shard_count }}
+          # The synthetic-custody fixture resolves the installed reins API
+          # through this variable; without it consent-bound tests refuse on
+          # hosted runners (one named failure in
+          # tests/shared/test_consent_identifier_compatibility.py).
+          HAPAX_REINS_API: ${{ github.workspace }}/reins-api/api
           # HAPAX_NFS_INTEGRATION_WAIVED is declared once at workflow level so every job
           # that runs the suite inherits it. It lived here, and the separate non-sharded
           # `test` job then ran the same tests with it unset.
