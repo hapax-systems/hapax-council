@@ -176,6 +176,24 @@ RELEASE_MITIGATION_CHECK_CONTEXTS = frozenset(
 # re-posts the admission proof once it is older than half this window so the
 # server-side proof never goes stale (G3 idempotent writes).
 AUTOQUEUE_ADMISSION_TTL_SECONDS = 30 * 60
+# Must-include guarantee (spec autoqueue-queued-pr-decision-guarantee-20260923):
+# merge-queued and auto-merge-armed PRs get an admission-proof refresh every
+# tick through a cheap path, because the fair rotation re-examines the estate
+# on a ~102-minute cycle while the merge-group gate demands proofs younger
+# than the 30-minute TTL (evidence: #4715 03:47Z, #4711 ~04:5xZ, 2026-09-23).
+MUST_INCLUDE_CAP = 8
+# Rotation slots preserved even when must-include fills the window: without
+# them, a queued backlog would freeze ordinary reconciliation entirely.
+MUST_INCLUDE_RESERVE = 2
+# Refresh POSTs per tick across all must-include PRs. At q=2 the R4 margin
+# spends ~20 POSTs/hr against GitHub's ~500/hr content limit.
+MUST_INCLUDE_REFRESH_POST_CAP = 4
+# R4: refresh must-include proofs when older than one tick (~6 min), not
+# TTL/2 — tolerates 3-4 missed ticks before the gate sees a stale proof.
+MUST_INCLUDE_REFRESH_MARGIN_SECONDS = 6 * 60
+# R3: the persisted last-known must-include set lives no longer than the
+# proof TTL it exists to keep fresh.
+MUST_INCLUDE_STATE_MAX_AGE_SECONDS = AUTOQUEUE_ADMISSION_TTL_SECONDS
 # Failure proofs intentionally refresh less often than success proofs: blocked
 # PRs can sit for days, and GitHub caps commit statuses per SHA+context. Still,
 # when the blocker text changes, the proof must eventually stop advertising
@@ -1231,7 +1249,8 @@ def _list_candidate_pages(
         "repository(owner:$owner,name:$name){defaultBranchRef{name}"
         "pullRequests(states:OPEN,first:100,after:$cursor,"
         "orderBy:{field:CREATED_AT,direction:ASC}){totalCount "
-        "pageInfo{hasNextPage endCursor} nodes{number headRefOid headRefName baseRefName}}}}"
+        "pageInfo{hasNextPage endCursor} nodes{number headRefOid headRefName "
+        "baseRefName autoMergeRequest{mergeMethod}}}}}"
     )
     rows: list[dict[str, Any]] = []
     seen: set[int] = set()
@@ -1405,10 +1424,63 @@ def _rotation_timestamp(
     )
 
 
+def _row_auto_merge_armed(row: dict[str, Any]) -> bool:
+    """Whether a listing row (GraphQL or REST shape) carries an armed auto-merge request."""
+    auto_merge = row.get("autoMergeRequest")
+    if auto_merge is None:
+        # REST listing rows spell it ``auto_merge``.
+        auto_merge = row.get("auto_merge")
+    return bool(auto_merge)
+
+
+def _listing_head_sha(row: dict[str, Any]) -> str | None:
+    """Head SHA from a listing row without hydration (GraphQL or REST shape)."""
+    if "headRefOid" in row:
+        sha = row.get("headRefOid")
+        return sha if isinstance(sha, str) and sha else None
+    head = row.get("head")
+    sha = head.get("sha") if isinstance(head, dict) else None
+    return sha if isinstance(sha, str) and sha else None
+
+
+@dataclass(frozen=True)
+class _WindowSelection:
+    """One tick's window split by treatment.
+
+    ``rotation_rows`` take the existing full hydration/classify path.
+    ``must_refresh`` are (number, head_sha) identities served by the cheap
+    refresh-only path (R5): one status read, at most one status POST, no
+    hydration, no new admission decision. ``full_exam_rows`` are must-include
+    rows that need a full pass this tick (dequeued follow-up, R6).
+    ``overflow`` lists must-include numbers the cap could not serve (oldest
+    proofs are served first).
+    """
+
+    rotation_rows: list[dict[str, Any]]
+    must_refresh: tuple[tuple[int, str | None], ...]
+    full_exam_rows: list[dict[str, Any]]
+    overflow: tuple[int, ...]
+    must_identities: tuple[tuple[int, str | None], ...]
+
+
 def _select_pr_window(
-    rows: list[dict[str, Any]], *, repo: str, limit: int, state_path: Path, persist: bool
-) -> list[dict[str, Any]]:
-    """Select without acknowledging work. Repeated failures share the fair rotation."""
+    rows: list[dict[str, Any]],
+    *,
+    repo: str,
+    limit: int,
+    state_path: Path,
+    persist: bool,
+    must_include: frozenset[int] | set[int] = frozenset(),
+    full_exam: frozenset[int] | set[int] = frozenset(),
+) -> _WindowSelection:
+    """Select without acknowledging work. Repeated failures share the fair rotation.
+
+    Must-include PRs (merge-queued, auto-merge-armed, or dequeued follow-up) are
+    guaranteed a window slot every tick (R2), capped at ``MUST_INCLUDE_CAP``
+    with ``MUST_INCLUDE_RESERVE`` rotation slots always preserved (R5). The
+    guarantee never silently dominates: overflow is reported, and the oldest
+    proofs are served first.
+    """
     if limit <= 0:
         raise ValueError("autoqueue limit must be positive")
     with _rotation_state(repo=repo, state_path=state_path, persist=persist) as (examined, failures):
@@ -1425,7 +1497,35 @@ def _select_pr_window(
                 stamp = max(stamp, datetime.fromisoformat(failure["last_failed_at"]))
             return stamp, number
 
-        return sorted(rows, key=priority)[:limit]
+        armed = {row["number"] for row in rows if _row_auto_merge_armed(row)}
+        must = (set(must_include) | armed | set(full_exam)) & live
+        must_rows = sorted((row for row in rows if row["number"] in must), key=priority)
+        # No must-include rows: keep the historical window size exactly.
+        reserve_floor = min(len(must), MUST_INCLUDE_CAP) + MUST_INCLUDE_RESERVE if must else 0
+        effective_limit = max(limit, reserve_floor)
+        # Cap, not dominance: leave the rotation its reserve even mid-backlog.
+        must_capacity = effective_limit - MUST_INCLUDE_RESERVE
+        served = must_rows[: max(must_capacity, 0)]
+        served_numbers = {row["number"] for row in served}
+        overflow = tuple(row["number"] for row in must_rows[max(must_capacity, 0) :])
+        full_exam_live = set(full_exam) & live
+        full_exam_rows = [row for row in served if row["number"] in full_exam_live]
+        must_refresh = tuple(
+            (row["number"], _listing_head_sha(row))
+            for row in served
+            if row["number"] not in full_exam_live
+        )
+        rotation_rows = [
+            row for row in sorted(rows, key=priority) if row["number"] not in served_numbers
+        ][: max(effective_limit - len(served), 0)]
+        must_identities = tuple((row["number"], _listing_head_sha(row)) for row in must_rows)
+        return _WindowSelection(
+            rotation_rows=rotation_rows,
+            must_refresh=must_refresh,
+            full_exam_rows=full_exam_rows,
+            overflow=overflow,
+            must_identities=must_identities,
+        )
 
 
 def _record_hydration_failure(
@@ -1509,9 +1609,22 @@ def _hydrate_selected_pr(
 
 
 def fetch_rotating_open_prs(
-    *, repo: str, repo_root: Path, limit: int, state_path: Path, persist: bool, runner: Any
-) -> tuple[list[PullRequest], ListingRoute, int, dict[int, dict[str, Any]]]:
-    """Prove the complete estate, then hydrate at most limit identities independently."""
+    *,
+    repo: str,
+    repo_root: Path,
+    limit: int,
+    state_path: Path,
+    persist: bool,
+    runner: Any,
+    must_include: frozenset[int] | set[int] = frozenset(),
+    full_exam: frozenset[int] | set[int] = frozenset(),
+) -> tuple[list[PullRequest], ListingRoute, int, dict[int, dict[str, Any]], _WindowSelection]:
+    """Prove the complete estate, then hydrate at most limit identities independently.
+
+    Must-include identities (R2) are selected every tick and split off for the
+    caller's cheap refresh-only path; only rotation rows and dequeued follow-up
+    rows pay for full hydration here.
+    """
     snapshot = rate_snapshot(repo_root=repo_root, runner=runner)
     transport, reason = choose_transport(repo_root=repo_root, runner=runner, snapshot=snapshot)
     if transport is None:
@@ -1532,9 +1645,23 @@ def fetch_rotating_open_prs(
         )
         reason = f"{transport}_listing_indeterminate_{fallback}_fallback"
         transport = fallback
-    selected = _select_pr_window(
-        rows, repo=repo, limit=limit, state_path=state_path, persist=persist
+    selection = _select_pr_window(
+        rows,
+        repo=repo,
+        limit=limit,
+        state_path=state_path,
+        persist=persist,
+        must_include=must_include,
+        full_exam=full_exam,
     )
+    if selection.overflow:
+        LOG.warning(
+            "must-include overflow: %d queued/armed PRs exceed the per-tick cap (%d); "
+            "oldest proofs served first, unserved: %s",
+            len(selection.must_identities),
+            MUST_INCLUDE_CAP,
+            list(selection.overflow),
+        )
     with _rotation_state(repo=repo, state_path=state_path, persist=False) as (_, failures):
         failures = {
             number: {**failure, "attempted_this_tick": False}
@@ -1542,7 +1669,9 @@ def fetch_rotating_open_prs(
         }
     route = ListingRoute(transport=transport, rest_blocked=rest_blocked, reason=reason)
     prs = []
-    for item in selected:
+    # Dequeued follow-up (R6) needs a real decision this tick, not a refresh:
+    # hydrate those rows first so a crash mid-loop cannot drop the one-shot.
+    for item in [*selection.full_exam_rows, *selection.rotation_rows]:
         try:
             listed = item
             if transport == "rest":
@@ -1611,7 +1740,7 @@ def fetch_rotating_open_prs(
             )
             continue
         prs.append(hydrated)
-    return prs, route, len(rows), failures
+    return prs, route, len(rows), failures, selection
 
 
 def fetch_open_prs(
@@ -1620,6 +1749,7 @@ def fetch_open_prs(
     repo_root: Path | None = None,
     limit: int = 100,
     runner: Any = None,
+    must_include: frozenset[int] | set[int] = frozenset(),
 ) -> tuple[list[PullRequest], ListingRoute | None]:
     """Open PRs plus the cycle's transport decision.
 
@@ -1627,6 +1757,10 @@ def fetch_open_prs(
     empty GraphQL-routed listing has no rows to inspect, so inference silently read "rest".
     ``None`` means the listing was unavailable and the cycle is skipping.
     Strict REST failures retain their RestIndeterminateError cause for the report.
+
+    ``must_include`` numbers missing from the limit-sliced listing (estate larger
+    than the limit) are fetched per-PR, bounded by ``MUST_INCLUDE_CAP``, so the
+    one-shot path cannot silently drop merge-queued PRs (T01 #12).
     """
     runner = runner or subprocess.run
     repo_root = repo_root or default_repo_root()
@@ -1653,6 +1787,21 @@ def fetch_open_prs(
             listing_unavailable_detail(exc),
         )
         return [], None
+    listed_numbers = {item.get("number") for item in raw if isinstance(item, dict)}
+    missing = sorted(set(must_include) - {number for number in listed_numbers if number})
+    for number in missing[:MUST_INCLUDE_CAP]:
+        row = get_pr_status_graphql(number, repo=repo, repo_root=repo_root, runner=runner)
+        if row is None:
+            row = get_pull_rest(number, repo=repo, repo_root=repo_root, runner=runner)
+        if isinstance(row, dict):
+            raw.append(row)
+    if len(missing) > MUST_INCLUDE_CAP:
+        LOG.warning(
+            "one-shot listing: %d must-include PRs beyond the limit, %d fetched, unserved: %s",
+            len(missing),
+            MUST_INCLUDE_CAP,
+            missing[MUST_INCLUDE_CAP:],
+        )
     return _hydrate_open_prs(raw, route, repo=repo, repo_root=repo_root, runner=runner)
 
 
@@ -3614,21 +3763,8 @@ def set_autoqueue_admission_status(
             "admission status write deferred: GitHub commit statuses are REST-only and the core "
             f"REST pool is below its floor (rate limit; {route_reason or 'no reason recorded'})",
         )
-    cmd = [
-        "gh",
-        "api",
-        "-X",
-        "POST",
-        f"repos/{repo}/statuses/{decision.pr.head_sha}",
-        "-f",
-        f"state={state}",
-        "-f",
-        f"context={AUTOQUEUE_ADMISSION_CONTEXT}",
-        "-f",
-        f"description={description}",
-    ]
     proc = runner(
-        cmd,
+        _admission_status_post_cmd(decision.pr.head_sha, state, description, repo=repo),
         cwd=str(repo_root),
         capture_output=True,
         text=True,
@@ -3639,6 +3775,287 @@ def set_autoqueue_admission_status(
     if proc.returncode != 0:
         return False, output or f"status write failed rc={proc.returncode}"
     return True, output
+
+
+def _admission_status_post_cmd(
+    head_sha: str, state: str, description: str, *, repo: str
+) -> list[str]:
+    return [
+        "gh",
+        "api",
+        "-X",
+        "POST",
+        f"repos/{repo}/statuses/{head_sha}",
+        "-f",
+        f"state={state}",
+        "-f",
+        f"context={AUTOQUEUE_ADMISSION_CONTEXT}",
+        "-f",
+        f"description={description}",
+    ]
+
+
+def _read_admission_status_for_refresh(
+    head_sha: str,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    route: ListingRoute | str | None,
+) -> tuple[tuple[str, str, datetime | None] | None, str | None]:
+    """Route-aware admission-status read for the refresh-only path (R5).
+
+    Mirrors the transport dispatch of `set_autoqueue_admission_status` without
+    touching its reviewed control flow. Returns ``(current, None)`` on a
+    successful read (``current`` is None when no status exists) or
+    ``(None, reason)`` when the read itself failed.
+    """
+    if isinstance(route, ListingRoute):
+        transport = route.transport
+        rest_blocked = route.rest_blocked
+    else:
+        transport = route or "rest"
+        rest_blocked = transport == "graphql"
+    current: tuple[str, str, datetime | None] | None | AdmissionStatusReadFailed
+    if transport == "graphql":
+        repository_id, current = _latest_admission_status_graphql(
+            head_sha, repo=repo, repo_root=repo_root, runner=runner
+        )
+        if repository_id is None:
+            if rest_blocked:
+                return None, "admission_status_read_failed:graphql_no_fallback"
+            current = _latest_admission_status(
+                head_sha, repo=repo, repo_root=repo_root, runner=runner
+            )
+    else:
+        current = _latest_admission_status(head_sha, repo=repo, repo_root=repo_root, runner=runner)
+    if isinstance(current, AdmissionStatusReadFailed):
+        return None, f"admission_status_read_failed:{current.reason}"
+    return current, None
+
+
+def _refresh_must_include_proof(
+    number: int,
+    head_sha: str | None,
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    now: datetime,
+    apply: bool,
+    route: ListingRoute | str | None,
+) -> dict[str, Any]:
+    """The R4/R5 cheap path: repost the existing successful admission proof.
+
+    One status read, at most one status POST, no hydration, no new admission
+    decision. Only successful proofs are refreshed (R3): a non-success status
+    on a must-include PR is a signal the full path must re-examine, not
+    something to re-stamp.
+    """
+    result: dict[str, Any] = {"pr": number}
+    if not head_sha:
+        return {**result, "ok": False, "message": "missing_head_sha"}
+    current, read_error = _read_admission_status_for_refresh(
+        head_sha, repo=repo, repo_root=repo_root, runner=runner, route=route
+    )
+    if read_error is not None:
+        return {**result, "ok": False, "message": read_error}
+    if current is None:
+        return {**result, "ok": False, "message": "no_existing_admission_status"}
+    state, description, created = current
+    if state != "success":
+        return {**result, "ok": False, "message": f"existing_status_not_success:{state}"}
+    if created is not None and (now - created) < timedelta(
+        seconds=MUST_INCLUDE_REFRESH_MARGIN_SECONDS
+    ):
+        return {**result, "ok": True, "message": "fresh", "posted": False}
+    if isinstance(route, ListingRoute) and route.rest_blocked:
+        return {
+            **result,
+            "ok": False,
+            "message": (
+                "admission status write deferred: GitHub commit statuses are REST-only and "
+                f"the core REST pool is below its floor (rate limit; {route.reason or 'no reason recorded'})"
+            ),
+        }
+    if not apply:
+        return {**result, "ok": True, "message": "stale_would_refresh", "posted": False}
+    proc = runner(
+        _admission_status_post_cmd(head_sha, state, description, repo=repo),
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    output = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode != 0:
+        return {
+            **result,
+            "ok": False,
+            "message": output or f"status write failed rc={proc.returncode}",
+        }
+    return {**result, "ok": True, "message": output, "posted": True}
+
+
+def _must_include_state_path(rotation_state_path: Path) -> Path:
+    return rotation_state_path.parent / (rotation_state_path.name + ".must-include.json")
+
+
+def _load_must_include_state(path: Path, *, repo: str, now: datetime) -> dict[int, dict[str, Any]]:
+    """Last-known must-include set with per-PR write-failure counters (R3/R6/R7).
+
+    Fail-open: this is an auxiliary cache feeding a fallback and an alert, not
+    fairness authority like the rotation state — a corrupt file logs and starts
+    empty rather than wedging the reconciler.
+    """
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        LOG.warning("must-include state unreadable, starting empty: %s", exc)
+        return {}
+    if not isinstance(state, dict) or state.get("schema_version") != 1:
+        LOG.warning("must-include state has an unexpected schema, starting empty")
+        return {}
+    entries: dict[int, dict[str, Any]] = {}
+    for number, entry in (state.get("repositories", {}).get(repo) or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            last_seen = datetime.fromisoformat(entry["last_seen_at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if now - last_seen > timedelta(seconds=MUST_INCLUDE_STATE_MAX_AGE_SECONDS):
+            continue
+        try:
+            entries[int(number)] = {
+                "head_sha": entry.get("head_sha"),
+                "last_seen_at": entry["last_seen_at"],
+                "last_success_at": entry.get("last_success_at"),
+                "consecutive_failures": int(entry.get("consecutive_failures") or 0),
+            }
+        except (TypeError, ValueError):
+            continue
+    return entries
+
+
+def _save_must_include_state(path: Path, repo: str, entries: dict[int, dict[str, Any]]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            state = {"schema_version": 1, "repositories": {repo: {}}}
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(existing, dict) and existing.get("schema_version") == 1:
+                    state = existing
+            except (OSError, ValueError):
+                pass
+            repositories = state.setdefault("repositories", {})
+            repositories[repo] = {str(number): entry for number, entry in entries.items()}
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+            temporary.replace(path)
+    except OSError as exc:
+        LOG.warning("must-include state write failed: %s", exc)
+
+
+def _refresh_must_include_batch(
+    identities: list[tuple[int, str | None]] | tuple[tuple[int, str | None], ...],
+    *,
+    repo: str,
+    repo_root: Path,
+    runner: Any,
+    now: datetime,
+    apply: bool,
+    route: ListingRoute | str | None,
+) -> dict[int, dict[str, Any]]:
+    """R5: bounded per-tick refresh pass.
+
+    Both the reads and the POST count against the per-tick cap; identities
+    beyond it are reported as ``deferred_post_cap`` so the R7 counters see the
+    truth instead of a silent skip.
+    """
+    results: dict[int, dict[str, Any]] = {}
+    for index, (number, head_sha) in enumerate(identities):
+        if index >= MUST_INCLUDE_REFRESH_POST_CAP:
+            results[number] = {"pr": number, "ok": False, "message": "deferred_post_cap"}
+            continue
+        results[number] = _refresh_must_include_proof(
+            number,
+            head_sha,
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner,
+            now=now,
+            apply=apply,
+            route=route,
+        )
+    return results
+
+
+def _record_must_include_outcomes(
+    state: dict[int, dict[str, Any]],
+    refresh_results: dict[int, dict[str, Any]],
+    *,
+    current_identities: tuple[tuple[int, str | None], ...] | None,
+    apply: bool,
+    path: Path,
+    repo: str,
+    now: datetime,
+    served_full_exam: frozenset[int] | set[int] = frozenset(),
+    forced_failures: tuple[int, ...] | list[int] = (),
+) -> None:
+    """Advance the persisted must-include counters one tick (apply mode only).
+
+    ``current_identities`` is the new authoritative set; ``None`` keeps the
+    existing keys (the R3 indeterminate path, where the only job is to record
+    refresh outcomes and keep fresh entries alive).
+    """
+    if not apply:
+        return
+    if current_identities is None:
+        identity_map = {number: entry.get("head_sha") for number, entry in state.items()}
+    else:
+        identity_map = dict(current_identities)
+    entries: dict[int, dict[str, Any]] = {}
+    for number in sorted(identity_map):
+        if number in served_full_exam:
+            # R6 is one-shot: a dequeued follow-up that got its full exam this
+            # tick leaves the persisted set. If it re-arms, the armed-row
+            # detection re-adds it on the next determinate tick.
+            continue
+        entry = dict(state.get(number) or {})
+        entry["head_sha"] = identity_map.get(number)
+        entry["last_seen_at"] = now.isoformat()
+        result = refresh_results.get(number)
+        if result is not None and result.get("ok"):
+            entry["consecutive_failures"] = 0
+            entry["last_success_at"] = now.isoformat()
+        elif result is not None or number in forced_failures:
+            entry["consecutive_failures"] = int(entry.get("consecutive_failures") or 0) + 1
+        entries[number] = entry
+    state.clear()
+    state.update(entries)
+    _save_must_include_state(path, repo, entries)
+
+
+def _must_include_report_summary(
+    results: dict[int, dict[str, Any]], *, overflow: tuple[int, ...] | list[int]
+) -> dict[str, Any]:
+    return {
+        "refreshed": sorted(number for number, result in results.items() if result.get("posted")),
+        "ok": sorted(number for number, result in results.items() if result.get("ok")),
+        "deferred": {
+            str(number): result.get("message")
+            for number, result in sorted(results.items())
+            if not result.get("ok")
+        },
+        "overflow": list(overflow),
+        "post_cap": MUST_INCLUDE_REFRESH_POST_CAP,
+    }
 
 
 def _decision_is_non_ready(decision: Decision) -> bool:
@@ -3905,6 +4322,65 @@ def run_reconciler(
     queued_prs_snapshot = fetch_merge_queue_pr_numbers(
         repo=repo, repo_root=repo_root, runner=runner
     )
+    must_include_state_path = (
+        _must_include_state_path(rotation_state_path) if rotation_state_path is not None else None
+    )
+    must_include_state: dict[int, dict[str, Any]] = {}
+    if queued_prs_snapshot is None and must_include_state_path is not None:
+        # R3: the queue snapshot is indeterminate, but the persisted last-known
+        # must-include set can still keep its proofs fresh — refresh-only, then
+        # skip the cycle exactly as before.
+        must_include_state = _load_must_include_state(must_include_state_path, repo=repo, now=now)
+        refresh_only = _refresh_must_include_batch(
+            [
+                (number, entry.get("head_sha"))
+                for number, entry in sorted(must_include_state.items())
+            ],
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner or subprocess.run,
+            now=now,
+            apply=apply,
+            route=None,
+        )
+        must_include_report = _must_include_report_summary(refresh_only, overflow=())
+        _record_must_include_outcomes(
+            must_include_state,
+            refresh_only,
+            current_identities=None,
+            apply=apply,
+            path=must_include_state_path,
+            repo=repo,
+            now=now,
+        )
+        for number, entry in sorted(must_include_state.items()):
+            if entry.get("consecutive_failures", 0) >= 2:
+                LOG.error(
+                    "must-include PR #%s has gone %s consecutive ticks without a successful "
+                    "admission status write (indeterminate queue snapshot); inspect "
+                    "`github_pr_status.py rate` and this PR's status history",
+                    number,
+                    entry.get("consecutive_failures", 0),
+                )
+        must_include_report["starved"] = sorted(
+            number
+            for number, entry in must_include_state.items()
+            if entry.get("consecutive_failures", 0) >= 2
+        )
+        report = {
+            "repo": repo,
+            "apply": apply,
+            "skipped": True,
+            "reason": "merge_queue_state_indeterminate",
+            "detail": "native merge-queue GraphQL probe failed or backed off; no queue mutations attempted",
+            "must_include": must_include_report,
+        }
+        return _finalize_reconciler_report(
+            report,
+            report_path=report_path,
+            admission_governor_path=admission_governor_path,
+            now=now,
+        )
     if queued_prs_snapshot is None:
         report = {
             "repo": repo,
@@ -3920,6 +4396,13 @@ def run_reconciler(
             now=now,
         )
     queued_prs = queued_prs_snapshot
+    if must_include_state_path is not None:
+        must_include_state = _load_must_include_state(must_include_state_path, repo=repo, now=now)
+    # R6: PRs in the previous snapshot, missing now, still open get a one-shot
+    # full exam this tick (still-open is enforced against the listing inside
+    # selection) — the fair rotation alone would keep them waiting ~100+ min
+    # for the re-arm decision after a dequeue.
+    dequeued_followup = frozenset(must_include_state) - queued_prs
     if expected_auto_merge_method_override is not None:
         expected_auto_merge_method = _normalize_merge_method(expected_auto_merge_method_override)
         if expected_auto_merge_method is None:
@@ -3936,19 +4419,32 @@ def run_reconciler(
             runner=runner,
         )
     hydration_failures: dict[int, dict[str, Any]] = {}
+    window: _WindowSelection | None = None
     try:
         if rotation_state_path is not None:
-            prs, listing_route, open_pr_count, hydration_failures = fetch_rotating_open_prs(
+            (
+                prs,
+                listing_route,
+                open_pr_count,
+                hydration_failures,
+                window,
+            ) = fetch_rotating_open_prs(
                 repo=repo,
                 repo_root=repo_root,
                 limit=limit,
                 state_path=rotation_state_path,
                 persist=apply,
                 runner=runner or subprocess.run,
+                must_include=queued_prs,
+                full_exam=dequeued_followup,
             )
         else:
             prs, listing_route = fetch_open_prs(
-                repo=repo, repo_root=repo_root, limit=limit, runner=runner
+                repo=repo,
+                repo_root=repo_root,
+                limit=limit,
+                runner=runner,
+                must_include=queued_prs | dequeued_followup,
             )
             open_pr_count = len(prs)
     except RestIndeterminateError as exc:
@@ -3991,6 +4487,30 @@ def run_reconciler(
             admission_governor_path=admission_governor_path,
             now=now,
         )
+    must_refresh_results: dict[int, dict[str, Any]] = {}
+    must_overflow: tuple[int, ...] = ()
+    if window is not None and window.must_refresh:
+        must_refresh_results = _refresh_must_include_batch(
+            list(window.must_refresh),
+            repo=repo,
+            repo_root=repo_root,
+            runner=runner or subprocess.run,
+            now=now,
+            apply=apply,
+            route=listing_route,
+        )
+        must_overflow = window.overflow
+        if apply:
+            for number, result in must_refresh_results.items():
+                if result.get("ok"):
+                    # Rotation ack: a refreshed must-include PR must not also be
+                    # picked up by the fair rotation's next fill.
+                    with _reconciled_pr(
+                        number, repo=repo, state_path=rotation_state_path, failures={}
+                    ):
+                        pass
+    elif window is not None:
+        must_overflow = window.overflow
     if expected_auto_merge_method is not None:
         governance_by_base: dict[
             tuple[str | None, str | None, str | None, str | None, tuple[str, ...]],
@@ -4357,6 +4877,38 @@ def run_reconciler(
                         )
                     )
 
+    starved: list[int] = []
+    if must_include_state_path is not None:
+        _record_must_include_outcomes(
+            must_include_state,
+            must_refresh_results,
+            current_identities=window.must_identities if window is not None else None,
+            apply=apply,
+            path=must_include_state_path,
+            repo=repo,
+            now=now,
+            served_full_exam=frozenset(dequeued_followup),
+            forced_failures=tuple(
+                number
+                for number in must_overflow
+                # An overflow row may still have won a rotation slot and a full
+                # decision; only genuinely unserved numbers count as failures.
+                if number not in {pr.number for pr in prs}
+            ),
+        )
+        starved = sorted(
+            number
+            for number, entry in must_include_state.items()
+            if entry.get("consecutive_failures", 0) >= 2
+        )
+        for number in starved:
+            LOG.error(
+                "must-include PR #%s has gone %s consecutive ticks without a successful "
+                "admission status write; inspect `github_pr_status.py rate` and this PR's "
+                "status history",
+                number,
+                must_include_state[number].get("consecutive_failures", 0),
+            )
     report = {
         "repo": repo,
         "apply": apply,
@@ -4402,6 +4954,11 @@ def run_reconciler(
             for number, failure in sorted(hydration_failures.items())
         ],
         "queued_prs": sorted(queued_prs),
+        "must_include": {
+            **_must_include_report_summary(must_refresh_results, overflow=must_overflow),
+            "starved": starved,
+            "dequeued_followup": sorted(dequeued_followup),
+        },
         "decisions": [decision.as_dict() for decision in decisions],
         "counts": {
             "queue": sum(1 for decision in decisions if decision.action == "queue"),

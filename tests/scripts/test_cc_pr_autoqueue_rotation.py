@@ -7,7 +7,7 @@ import json
 import re
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from math import ceil
 from pathlib import Path
 from typing import Any
@@ -78,8 +78,11 @@ class RotationRunner(_FakeRunner):
                 },
                 "nodes": [
                     {
-                        key: row[key]
-                        for key in ("number", "headRefOid", "headRefName", "baseRefName")
+                        **{
+                            key: row[key]
+                            for key in ("number", "headRefOid", "headRefName", "baseRefName")
+                        },
+                        "autoMergeRequest": row.get("autoMergeRequest"),
                     }
                     for row in rows
                 ],
@@ -221,7 +224,7 @@ def test_autoqueue_closed_prs_are_pruned_and_repositories_are_isolated(tmp_path:
     selected = autoqueue._select_pr_window(
         runner.open_prs, repo="other/repo", limit=2, state_path=state_path, persist=True
     )
-    assert [row["number"] for row in selected] == [6, 7]
+    assert [row["number"] for row in selected.rotation_rows] == [6, 7]
     assert (
         json.loads(state_path.read_text())["repositories"]["owner/repo"]
         == state["repositories"]["owner/repo"]
@@ -564,3 +567,208 @@ def test_autoqueue_corrupt_retry_state_refuses_without_hydration(
     assert report["decisions"] == report["mutations"] == []
     assert not runner.hydrated_numbers()
     assert state_path.read_bytes() == previous
+
+
+def _admission_status(
+    state: str,
+    *,
+    age_minutes: float,
+    description: str = "cc-pr-autoqueue admitted: queue",
+) -> dict[str, Any]:
+    created = datetime.now(UTC) - timedelta(minutes=age_minutes)
+    return {
+        "context": autoqueue.AUTOQUEUE_ADMISSION_CONTEXT,
+        "state": state,
+        "description": description,
+        "created_at": created.isoformat(),
+    }
+
+
+def _status_posts(runner: RotationRunner, sha: str) -> list[list[str]]:
+    return [
+        cmd
+        for cmd in runner.calls
+        if cmd[:4] == ["gh", "api", "-X", "POST"] and f"repos/owner/repo/statuses/{sha}" in cmd
+    ]
+
+
+MUST_INCLUDE_STATE_NAME = "examined.json.must-include.json"
+
+
+def test_autoqueue_queued_pr_proof_refreshed_within_one_reconcile(tmp_path: Path) -> None:
+    # R1 control-flow proof: a queued PR at proof age 16 min receives a status
+    # POST inside ONE reconcile call, without full hydration.
+    runner = RotationRunner(25)
+    runner.queued_prs = {13}
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    report = tick(tmp_path, runner)
+    assert not report.get("skipped"), report
+    assert _status_posts(runner, "sha-13")
+    assert 13 not in runner.hydrated_numbers()
+    assert 13 not in examined(report)
+    assert len(examined(report)) == 4  # Window stays 5 wide: 1 must + 4 rotation.
+    state = json.loads((tmp_path / "examined.json").read_text())
+    assert "13" in state["repositories"]["owner/repo"]  # Rotation ack stamped.
+    assert report["must_include"]["refreshed"] == [13]
+
+
+def test_autoqueue_armed_pr_is_must_include(tmp_path: Path) -> None:
+    # R2: auto-merge-armed PRs (pre-queue gap) refresh even when not queued.
+    runner = RotationRunner(25)
+    runner.open_prs[6]["autoMergeRequest"] = {"mergeMethod": "SQUASH"}  # PR #19
+    runner.head_statuses["sha-19"] = [_admission_status("success", age_minutes=16)]
+    report = tick(tmp_path, runner)
+    assert _status_posts(runner, "sha-19")
+    assert 19 not in runner.hydrated_numbers()
+    assert 19 not in examined(report)
+
+
+def test_autoqueue_fresh_must_include_proof_not_reposted(tmp_path: Path) -> None:
+    # R4: the refresh margin is one tick, not TTL/2 — a 2-minute-old proof is
+    # left alone, and no POST is spent on it.
+    runner = RotationRunner(25)
+    runner.queued_prs = {13}
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=2)]
+    report = tick(tmp_path, runner)
+    assert not _status_posts(runner, "sha-13")
+    assert report["must_include"]["ok"] == [13]
+    state = json.loads((tmp_path / "examined.json").read_text())
+    assert "13" in state["repositories"]["owner/repo"]
+
+
+def test_autoqueue_must_include_cap_overflow_and_post_cap(tmp_path: Path) -> None:
+    # R5: cap, not dominance. 12 must-include PRs at limit 5: 8 served by the
+    # guarantee, 4 POSTs per tick, 2 rotation slots preserved, overflow reported.
+    runner = RotationRunner(25)
+    runner.queued_prs = set(range(1, 13))
+    for number in range(1, 13):
+        runner.head_statuses[f"sha-{number}"] = [_admission_status("success", age_minutes=16)]
+    report = tick(tmp_path, runner)
+    must_include = report["must_include"]
+    assert must_include["refreshed"] == [1, 2, 3, 4]
+    assert [
+        number
+        for number in range(1, 13)
+        if must_include["deferred"].get(str(number)) == "deferred_post_cap"
+    ] == [5, 6, 7, 8]
+    assert must_include["overflow"] == [9, 10, 11, 12]
+    assert len(examined(report)) == 2
+    assert runner.hydrated_numbers() == {9, 10}  # Overflow rows may win rotation slots.
+
+
+def test_autoqueue_indeterminate_queue_snapshot_refreshes_persisted_set(
+    tmp_path: Path,
+) -> None:
+    # R3: an indeterminate merge-queue probe runs a refresh-only pass for the
+    # persisted last-known set, then skips the cycle as before.
+    runner = RotationRunner(25)
+    runner.queued_prs = {7}
+    runner.head_statuses["sha-7"] = [_admission_status("success", age_minutes=16)]
+    tick(tmp_path, runner)
+    assert (tmp_path / MUST_INCLUDE_STATE_NAME).exists()
+    runner.merge_queue_stdout = "not-json"
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    assert report["skipped"] is True
+    assert report["reason"] == "merge_queue_state_indeterminate"
+    assert _status_posts(runner, "sha-7")
+    assert not runner.hydrated_numbers()
+    assert not any(
+        "repos/owner/repo/pulls" in arg or "pullRequests(" in arg
+        for cmd in runner.calls
+        for arg in cmd
+    )
+    assert report["must_include"]["refreshed"] == [7]
+
+
+def test_autoqueue_expired_persisted_must_include_entry_is_dropped(tmp_path: Path) -> None:
+    # R3: the persisted set lives no longer than the proof TTL it protects.
+    runner = RotationRunner(25)
+    runner.queued_prs = {7}
+    runner.head_statuses["sha-7"] = [_admission_status("success", age_minutes=16)]
+    tick(tmp_path, runner)
+    state_path = tmp_path / MUST_INCLUDE_STATE_NAME
+    state = json.loads(state_path.read_text())
+    entry = state["repositories"]["owner/repo"]["7"]
+    entry["last_seen_at"] = (datetime.now(UTC) - timedelta(minutes=45)).isoformat()
+    state_path.write_text(json.dumps(state))
+    runner.merge_queue_stdout = "not-json"
+    runner.calls.clear()
+    report = tick(tmp_path, runner)
+    assert report["skipped"] is True
+    assert report["must_include"]["ok"] == []
+    assert not _status_posts(runner, "sha-7")
+
+
+def test_autoqueue_dequeued_pr_gets_one_shot_full_exam(tmp_path: Path) -> None:
+    # R6: a PR that left the merge queue (still open) gets exactly one full
+    # exam, not a permanent must-include seat.
+    runner = RotationRunner(25)
+    runner.queued_prs = {9}
+    runner.head_statuses["sha-9"] = [_admission_status("success", age_minutes=16)]
+    tick(tmp_path, runner)
+    # Queued: served by the cheap refresh path, not a full exam/hydration.
+    assert 9 not in runner.hydrated_numbers()
+    runner.queued_prs = set()
+    report = tick(tmp_path, runner)
+    assert 9 in examined(report)
+    assert 9 in runner.hydrated_numbers()
+    assert report["must_include"]["dequeued_followup"] == [9]
+    report = tick(tmp_path, runner)
+    assert 9 not in examined(report)
+
+
+def test_autoqueue_starved_must_include_pr_alerts_after_two_ticks(tmp_path: Path) -> None:
+    # R7: two consecutive ticks without a successful status write raise the
+    # starved flag on the persisted counters.
+    runner = RotationRunner(25)
+    runner.queued_prs = {5}
+    runner.head_statuses["sha-5"] = [_admission_status("success", age_minutes=16)]
+    runner.fail_status_posts = True
+    report = tick(tmp_path, runner)
+    assert report["must_include"]["starved"] == []
+    report = tick(tmp_path, runner)
+    assert report["must_include"]["starved"] == [5]
+    state = json.loads((tmp_path / MUST_INCLUDE_STATE_NAME).read_text())
+    assert state["repositories"]["owner/repo"]["5"]["consecutive_failures"] == 2
+
+
+def test_autoqueue_non_success_must_include_status_is_not_reposted(tmp_path: Path) -> None:
+    # Only successful proofs are refreshed; anything else needs the full path.
+    runner = RotationRunner(25)
+    runner.queued_prs = {13}
+    runner.head_statuses["sha-13"] = [
+        _admission_status("failure", age_minutes=16, description="cc-pr-autoqueue blocked: x")
+    ]
+    report = tick(tmp_path, runner)
+    assert not _status_posts(runner, "sha-13")
+    assert report["must_include"]["deferred"]["13"].startswith("existing_status_not_success")
+
+
+def test_autoqueue_one_shot_path_fetches_must_include_beyond_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # T01 #12: the one-shot API path must not silently drop merge-queued PRs
+    # when the estate exceeds the limit slice.
+    runner = RotationRunner(25)
+    runner.queued_prs = {20}
+    original_listing = autoqueue.list_open_pr_statuses
+
+    def sliced_listing(**kwargs: Any) -> Any:
+        raw, route = original_listing(**kwargs)
+        return raw[: kwargs["limit"]], route
+
+    monkeypatch.setattr(autoqueue, "list_open_pr_statuses", sliced_listing)
+    report = autoqueue.run_reconciler(
+        repo="owner/repo",
+        repo_root=tmp_path,
+        vault_root=tmp_path / "tasks",
+        runner=runner,
+        apply=False,
+        limit=5,
+        rotation_state_path=None,
+        lineage_ledger_path=None,
+        quarantine_path=tmp_path / "quarantine.json",
+        admission_governor_path=tmp_path / "governor.yaml",
+    )
+    assert 20 in examined(report)
