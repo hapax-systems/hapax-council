@@ -19,6 +19,7 @@ from __future__ import annotations
 import pytest
 
 from shared.release_gate import (
+    LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES,
     LIVE_EGRESS_MITIGATION_CHECKS,
     assess_release_auto_arm_estate,
 )
@@ -215,6 +216,89 @@ def test_egress_auto_arm_coverage_bound_holds_uncovered_paths() -> None:
         blocker.startswith("egress_evidence_uncovered_paths:scripts/hapax-operator-message")
         for blocker in assessment.blockers
     )
+
+
+def test_consent_containment_lane_surfaces_is_exact() -> None:
+    # Drift pin: this tuple IS the consent-containment lane the release gate
+    # admits past the coverage bound. Extending or narrowing it re-scopes what
+    # a live-egress-sensitive PR may touch without new behavioral evidence —
+    # a ratification act, never an edit. Update this test deliberately, and
+    # extend the egress-boundary-pin job's consent pins first: evidence
+    # follows coverage, coverage follows the pin suite.
+    assert LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES == (
+        "agents/_governance",
+        "agents/_governance.py",
+        "agents/hapax_daimonion/conversation_pipeline.py",
+        "agents/hapax_daimonion/conversational_policy.py",
+        "agents/studio_compositor/consent.py",
+        "agents/studio_compositor/consent_live_egress.py",
+        "axioms/contracts",
+        "logos/_governance.py",
+        "logos/api/deps/stream_redaction.py",
+        "logos/api/routes/consent.py",
+        "logos/api/routes/data.py",
+        "packages/agentgov",
+        "scripts/archive-purge.py",
+        "scripts/hapax-guest-consent",
+        "scripts/screwm-guest-source.py",
+        "scripts/vulture_whitelist.py",
+        "shared/face_enrollment_registry.py",
+        "shared/governance/consent.py",
+        "shared/governance/consent_gate.py",
+        "shared/governance/consent_reader.py",
+        "tests/conftest.py",
+        "tests/hapax_daimonion",
+        "tests/logos",
+        "tests/scripts",
+        "tests/shared",
+        "tests/test_affordance_pipeline.py",
+        "tests/test_archive_purge.py",
+        "tests/test_consent_pipeline_reader.py",
+        "tests/test_revocation_wiring.py",
+    )
+
+
+def test_consent_containment_lane_admits_lane_shapes() -> None:
+    # Every non-doc shape of the containment PR class — contract deletions,
+    # test helpers, package sources, gate files, docs — passes the coverage
+    # bound with the full mitigation set: the lane's pins (per PR) plus the
+    # full suite at landing are its behavioral evidence.
+    assessment = assess_release_auto_arm_estate(
+        _egress_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+        changed_files=[
+            "shared/release_gate.py",
+            "axioms/contracts/agatha.yaml",
+            "axioms/contracts/jason-consent.yaml",
+            "tests/shared/test_consent_helpers.py",
+            "packages/agentgov/src/agentgov/consent.py",
+            "agents/studio_compositor/consent_live_egress.py",
+            "docs/runbooks/pii-containment.md",
+        ],
+    )
+    assert not any("egress_evidence_uncovered" in b for b in assessment.blockers)
+    assert assessment.eligible is True
+
+
+def test_consent_containment_lane_boundary_is_anchored() -> None:
+    # The lane is exact-or-directory-prefix, never substring: a sibling file
+    # of a lane entry and a lookalike extension are both outside the lane and
+    # held by the coverage bound.
+    assessment = assess_release_auto_arm_estate(
+        _egress_frontmatter(),
+        verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
+        changed_files=[
+            "shared/governance/other.py",
+            "agents/_governance.py.bak",
+        ],
+    )
+    assert assessment.eligible is False
+    blockers = list(assessment.blockers)
+    assert any(
+        blocker.startswith("egress_evidence_uncovered_paths:agents/_governance.py.bak")
+        and "shared/governance/other.py" in blocker
+        for blocker in blockers
+    ), f"lane boundary leaked: {blockers}"
 
 
 def test_egress_coverage_bound_unevaluable_without_changed_files() -> None:

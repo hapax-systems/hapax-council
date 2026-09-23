@@ -503,6 +503,10 @@ jobs:
     # time (test-full-shard). The pin set is structurally pinned with semantic
     # anchors by tests/ci/test_release_gate_ci_composition.py; semantic fidelity
     # is the quorum's layer, as for every test file in the repo.
+    # The consent-containment lane's core containment behavior (consent reader
+    # pipeline, archive purge, face enrollment) is pinned here per PR — the
+    # lane's rounds/custody suites arrive with their own PRs and are executed
+    # at landing via test-full-shard (three-layer evidence, as above).
     # Unlike sibling jobs this job has NO docs-only sentinel: the class's
     # behavioral evidence must always execute (~40s); a green check that ran
     # nothing is not evidence. The duplicate-merge-group sentinel stays — it
@@ -531,7 +535,9 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
         run: >
           uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic
-          pytest --confcutdir=tests tests/test_capability_adapter_protocol.py -q --tb=short
+          pytest --confcutdir=tests tests/test_capability_adapter_protocol.py
+          tests/test_consent_pipeline_reader.py tests/test_archive_purge.py
+          tests/shared/test_face_enrollment_registry.py -q --tb=short
 
 
   typecheck:
