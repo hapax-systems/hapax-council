@@ -1472,6 +1472,7 @@ class _WindowSelection:
     full_exam_rows: list[dict[str, Any]]
     overflow: tuple[int, ...]
     must_identities: tuple[tuple[int, str | None], ...]
+    armed_live: frozenset[int] = frozenset()
 
 
 def _select_pr_window(
@@ -1525,7 +1526,11 @@ def _select_pr_window(
         served = must_rows[: max(must_capacity, 0)]
         served_numbers = {row["number"] for row in served}
         overflow = tuple(row["number"] for row in must_rows[max(must_capacity, 0) :])
-        full_exam_live = set(full_exam) & live
+        # Armed rows are R2 refresh seats, not R6 follow-ups: a PR that is armed
+        # but has never queued (or re-armed after a dequeue) stays on the cheap
+        # refresh path; the R6 one-shot full exam belongs to rows that left the
+        # queue unarmed.
+        full_exam_live = (set(full_exam) & live) - armed
         full_exam_rows = [row for row in served if row["number"] in full_exam_live]
         must_refresh = tuple(
             (row["number"], _listing_head_sha(row))
@@ -1542,6 +1547,7 @@ def _select_pr_window(
             full_exam_rows=full_exam_rows,
             overflow=overflow,
             must_identities=must_identities,
+            armed_live=frozenset(armed),
         )
 
 
@@ -4982,7 +4988,9 @@ def run_reconciler(
         "must_include": {
             **_must_include_report_summary(must_refresh_results, overflow=must_overflow),
             "starved": starved,
-            "dequeued_followup": sorted(dequeued_followup),
+            "dequeued_followup": sorted(
+                dequeued_followup - (window.armed_live if window is not None else frozenset())
+            ),
         },
         "decisions": [decision.as_dict() for decision in decisions],
         "counts": {

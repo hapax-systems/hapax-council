@@ -718,6 +718,44 @@ def test_autoqueue_dequeued_pr_gets_one_shot_full_exam(tmp_path: Path) -> None:
     assert 9 not in examined(report)
 
 
+def test_autoqueue_armed_pr_persisted_keeps_refresh_not_repeated_full_exams(
+    tmp_path: Path,
+) -> None:
+    # R2 vs R6: an armed, never-queued PR that lands in the persisted
+    # must-include set keeps the cheap refresh path — armed is not dequeued,
+    # so the R6 one-shot must not re-fire on alternate ticks.
+    runner = RotationRunner(25)
+    runner.open_prs[6]["autoMergeRequest"] = {"mergeMethod": "SQUASH"}  # PR #19
+    runner.head_statuses["sha-19"] = [_admission_status("success", age_minutes=16)]
+    tick(tmp_path, runner)
+    for _ in range(2):
+        runner.calls.clear()
+        report = tick(tmp_path, runner)
+        assert 19 not in runner.hydrated_numbers()
+        assert 19 not in examined(report)
+        assert report["must_include"]["refreshed"] == [19]
+    state = json.loads((tmp_path / MUST_INCLUDE_STATE_NAME).read_text())
+    assert "19" in state["repositories"]["owner/repo"]
+    assert report["must_include"]["dequeued_followup"] == []
+
+
+def test_autoqueue_dequeued_then_rearmed_pr_keeps_refresh_path(tmp_path: Path) -> None:
+    # A dequeued PR that re-arms (auto-merge request still on) is an R2
+    # refresh seat until it re-queues; the R6 one-shot full exam belongs to
+    # rows that left the queue unarmed.
+    runner = RotationRunner(25)
+    runner.queued_prs = {9}
+    runner.head_statuses["sha-9"] = [_admission_status("success", age_minutes=16)]
+    tick(tmp_path, runner)
+    runner.queued_prs = set()
+    runner.open_prs[16]["autoMergeRequest"] = {"mergeMethod": "SQUASH"}  # PR #9
+    report = tick(tmp_path, runner)
+    assert 9 not in runner.hydrated_numbers()
+    assert 9 not in examined(report)
+    assert report["must_include"]["refreshed"] == [9]
+    assert report["must_include"]["dequeued_followup"] == []
+
+
 def test_autoqueue_starved_must_include_pr_alerts_after_two_ticks(tmp_path: Path) -> None:
     # R7: two consecutive ticks without a successful status write raise the
     # starved flag on the persisted counters.
