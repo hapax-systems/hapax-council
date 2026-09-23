@@ -75,7 +75,7 @@ def test_rotation_retains_conflicting_base_for_actual_governance(tmp_path, fallb
     runner = HydrationRunner(core=3000 if fallback else 0)
     runner.graphql_fails = fallback
     runner.detail_base = "release"
-    prs, _, count, failures = hydrate(tmp_path, runner)
+    prs, _, count, failures, _ = hydrate(tmp_path, runner)
     assert count == 1 and not failures and len(prs) == 1
     assert prs[0].base_ref == "main"
     assert prs[0].base_ref_detail == "release"
@@ -90,7 +90,7 @@ def test_rotation_retains_conflicting_base_for_actual_governance(tmp_path, fallb
 
 def test_rotation_matching_base_has_usable_queue_governance(tmp_path):
     runner = HydrationRunner()
-    prs, _, _, failures = hydrate(tmp_path, runner)
+    prs, _, _, failures, _ = hydrate(tmp_path, runner)
     assert not failures and len(prs) == 1
     governance = autoqueue.fetch_pr_merge_queue_governance(
         prs[0], repo="owner/repo", repo_root=tmp_path, runner=runner
@@ -102,7 +102,7 @@ def test_rotation_matching_base_has_usable_queue_governance(tmp_path):
 def test_rotation_preserves_malformed_detail_evidence(tmp_path, invalid_base):
     runner = HydrationRunner()
     runner.detail_base = invalid_base
-    prs, _, _, failures = hydrate(tmp_path, runner)
+    prs, _, _, failures, _ = hydrate(tmp_path, runner)
     assert not failures and len(prs) == 1
     governance = autoqueue.fetch_pr_merge_queue_governance(
         prs[0], repo="owner/repo", repo_root=tmp_path, runner=runner
@@ -115,7 +115,7 @@ def test_rotation_hydration_recovers_through_eligible_other_transport(tmp_path, 
     runner = HydrationRunner(core=3000 if primary == "graphql" else 5000)
     runner.graphql_fails = primary == "graphql"
     runner.rest_fails = primary == "rest"
-    prs, _, count, failures = hydrate(tmp_path, runner)
+    prs, _, count, failures, _ = hydrate(tmp_path, runner)
     assert count == 1 and not failures and len(prs) == 1
     assert prs[0].head_sha == "sha-1" and prs[0].files == ("shared/foo.py",)
     assert {"lint", "test", "typecheck"} <= set(prs[0].check_summary.passed)
@@ -132,7 +132,7 @@ def test_rotation_never_falls_back_to_measured_exhausted_pool(tmp_path, primary)
     )
     runner.graphql_fails = primary == "graphql"
     runner.rest_fails = primary == "rest"
-    prs, _, count, failures = hydrate(tmp_path, runner)
+    prs, _, count, failures, _ = hydrate(tmp_path, runner)
     assert count == 1 and prs == [] and set(failures) == {1}
     if primary == "graphql":
         assert not any("repos/owner/repo/pulls/1" in call for call in runner.calls)
@@ -145,14 +145,14 @@ def test_rotation_refuses_moved_head_on_primary_and_fallback(tmp_path, fallback)
     runner = HydrationRunner(core=3000 if fallback else 0)
     runner.graphql_fails = fallback
     runner.detail_head = "sha-moved"
-    prs, _, count, failures = hydrate(tmp_path, runner)
+    prs, _, count, failures, _ = hydrate(tmp_path, runner)
     assert count == 1 and prs == [] and set(failures) == {1}
 
 
 def test_rotation_failed_fallback_remains_a_visible_retry(tmp_path):
     runner = HydrationRunner(core=3000)
     runner.graphql_fails = runner.rest_fails = True
-    prs, _, count, failures = hydrate(tmp_path, runner)
+    prs, _, count, failures, _ = hydrate(tmp_path, runner)
     assert count == 1 and prs == []
     assert failures[1]["attempted_this_tick"]
     assert failures[1]["consecutive_failures"] == 1

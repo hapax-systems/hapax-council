@@ -1696,7 +1696,7 @@ def test_run_reconciler_refuses_indeterminate_open_pr_scan(
         pytest.param("[{}]", False, None, id="missing_number"),
         pytest.param('[{"number": "7"}]', False, None, id="string_number"),
         pytest.param("[null]", True, None, id="later_page_null"),
-        pytest.param("[]", False, 0, id="empty"),
+        pytest.param("[]", False, 1, id="empty"),
         pytest.param(None, False, 1, id="valid"),
     ],
 )
@@ -1780,8 +1780,15 @@ def test_run_reconciler_open_pr_rows_report(
         assert len(after_list) == 1 and after_list[0][:3] == ["gh", "pr", "list"]
     else:
         assert not any(call[:3] == ["gh", "pr", "list"] for call in runner.calls)
+    permitted_pr_prefixes = [["gh", "pr", "list"]]
+    if body == "[]":
+        # Empty listing slice: the queued must-include PR is still fetched per-PR
+        # (bounded by MUST_INCLUDE_CAP) rather than dropped from the cycle.
+        view_calls = [call for call in runner.calls if call[:3] == ["gh", "pr", "view"]]
+        assert len(view_calls) == 1 and "42" in view_calls[0]
+        permitted_pr_prefixes.append(["gh", "pr", "view"])
     assert not any(
-        (call[:2] == ["gh", "pr"] and call[:3] != ["gh", "pr", "list"]) or "POST" in call
+        (call[:2] == ["gh", "pr"] and call[:3] not in permitted_pr_prefixes) or "POST" in call
         for call in runner.calls
     )
     assert not any("mutation" in part for call in runner.calls for part in call)
