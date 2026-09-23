@@ -21,6 +21,8 @@ from shared.governance.consent_gate import ConsentGatedWriter
 from shared.governance.consent_label import ConsentLabel
 from shared.governance.governor import GovernorWrapper, consent_output_policy
 from shared.governance.labeled import Labeled
+from shared.governance.provenance import ProvenanceExpr
+from tests.shared.synthetic_custody import CONTRACT, OLD_CONTRACT
 
 
 def _registry_with(*contracts: ConsentContract) -> ConsentRegistry:
@@ -130,6 +132,63 @@ class TestConsentGateBasic(unittest.TestCase):
         )
         assert not decision.allowed
         assert "bob" in decision.reason
+
+
+# ── Identifier migration (predecessor ids at the gate) ───────────────
+
+
+class TestConsentGatePredecessorIds(unittest.TestCase):
+    """Pre-migration contract ids must resolve on every side of the gate check.
+
+    The synthetic custody document maps OLD_CONTRACT to CONTRACT; the gate must
+    treat predecessor ids as their canonical successors on the allow path and
+    must name the canonical id in a deny reason.
+    """
+
+    def test_predecessor_id_in_provenance_allowed(self):
+        """Flat provenance holding a predecessor id resolves to the active canonical contract."""
+        c = _contract(CONTRACT, "alice", frozenset({"audio"}))
+        gate = _gate(_registry_with(c))
+        decision = gate.check(
+            _labeled("migrated data", provenance=frozenset({OLD_CONTRACT})),
+            data_category="audio",
+        )
+        assert decision.allowed, decision.reason
+
+    def test_predecessor_id_in_structured_expr_allowed(self):
+        """A semiring expression over a predecessor id resolves the same way."""
+        c = _contract(CONTRACT, "alice", frozenset({"audio"}))
+        gate = _gate(_registry_with(c))
+        labeled = _labeled("migrated data").with_expr(ProvenanceExpr.leaf(OLD_CONTRACT))
+        decision = gate.check(labeled, data_category="audio")
+        assert decision.allowed, decision.reason
+
+    def test_predecessor_id_denied_names_canonical_successor(self):
+        """A predecessor id whose successor is revoked denies and names the canonical id."""
+        c = _contract(CONTRACT, "alice", frozenset({"audio"}), active=False)
+        gate = _gate(_registry_with(c))
+        decision = gate.check(
+            _labeled("migrated data", provenance=frozenset({OLD_CONTRACT})),
+            data_category="audio",
+        )
+        assert not decision.allowed
+        assert CONTRACT in decision.reason
+        assert OLD_CONTRACT not in decision.reason
+
+    def test_expr_only_provenance_still_checked(self):
+        """A structured expression with an empty flat set cannot bypass the provenance check."""
+        c = _contract("c-revoked", "alice", frozenset({"audio"}), active=False)
+        gate = _gate(_registry_with(c))
+        labeled = Labeled(
+            value="structured data",
+            label=ConsentLabel.bottom(),
+            provenance=frozenset(),
+            provenance_expr=ProvenanceExpr.leaf("c-revoked"),
+        )
+        decision = gate.check(labeled, data_category="audio")
+        assert not decision.allowed
+        assert "c-revoked" in decision.reason
+        assert "[]" not in decision.reason
 
 
 # ── Audit trail ──────────────────────────────────────────────────────

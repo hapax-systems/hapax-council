@@ -108,11 +108,14 @@ class ConsentGatedWriter:
         """
         person_ids = tuple(resolve_principal_id(pid) for pid in person_ids)
         provenance = frozenset(resolve_contract_id(cid) for cid in data.provenance)
+        provenance |= frozenset(
+            resolve_contract_id(cid) for cid in data.effective_expr().contract_ids()
+        )
         now = datetime.now(UTC).isoformat()
 
         # 1. Check provenance — all contracts must be active
         active_ids = frozenset(resolve_contract_id(c.id) for c in self._registry.active_contracts)
-        if data.provenance and not check_provenance(data, active_ids):
+        if provenance and not check_provenance(data, active_ids):
             revoked = provenance - active_ids
             decision = self._deny(
                 reason=f"Provenance contains revoked contracts: {sorted(revoked)}",
