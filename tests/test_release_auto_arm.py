@@ -16,11 +16,14 @@ exists for that sensitive class.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from shared.release_gate import (
     LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES,
     LIVE_EGRESS_MITIGATION_CHECKS,
+    _path_in_consent_containment_lane,
     assess_release_auto_arm_estate,
 )
 from shared.sdlc_lifecycle import (
@@ -299,6 +302,41 @@ def test_consent_containment_lane_boundary_is_anchored() -> None:
         and "shared/governance/other.py" in blocker
         for blocker in blockers
     ), f"lane boundary leaked: {blockers}"
+
+
+def test_consent_containment_lane_membership_is_exact_and_degenerate_safe() -> None:
+    # Direct unit pin for the lane matcher: exact-file and under-directory
+    # admission, sibling/lookalike denials, and degenerate inputs — empty and
+    # whitespace-only paths match nothing.
+    assert _path_in_consent_containment_lane("shared/governance/consent.py")
+    assert _path_in_consent_containment_lane("agents/_governance.py")
+    assert _path_in_consent_containment_lane("tests/logos/test_anything.py")
+    assert not _path_in_consent_containment_lane("shared/governance/other.py")
+    assert not _path_in_consent_containment_lane("agents/_governance.py.bak")
+    assert not _path_in_consent_containment_lane("tests/logos-other/x.py")
+    assert not _path_in_consent_containment_lane("")
+    assert not _path_in_consent_containment_lane("   ")
+
+
+def test_consent_containment_lane_entries_exist_with_evidence_substrate() -> None:
+    # The landing-time layer of the lane's evidence (test-full-shard executes
+    # the whole tests/ tree at merge, anchored by
+    # test_composition_suite_itself_runs_in_the_required_full_shard) presumes
+    # every admitted entry exists on disk with its suites present — a lane
+    # entry whose path vanished, or whose directory emptied, would silently
+    # degrade the three-layer evidence shape to two layers. The allowlist is
+    # machine-coupled to its substrate: 29 entries, 29 existing paths.
+    repo_root = Path(__file__).resolve().parents[1]
+    missing: list[str] = []
+    hollow: list[str] = []
+    for entry in LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES:
+        path = repo_root / entry
+        if not path.exists():
+            missing.append(entry)
+        elif path.is_dir() and not any(path.iterdir()):
+            hollow.append(entry)
+    assert not missing, f"lane entries absent from the tree: {missing}"
+    assert not hollow, f"lane directories carry no evidence substrate: {hollow}"
 
 
 def test_egress_coverage_bound_unevaluable_without_changed_files() -> None:

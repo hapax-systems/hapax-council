@@ -886,7 +886,16 @@ LIVE_EGRESS_AUTO_ARM_COVERAGE: tuple[str, ...] = (
 #: behavioral layer. Ancillary mechanics (vulture whitelist, conftest) are
 #: enumerated because containment work legitimately requires them; they carry
 #: no egress surface. Extending the lane is another gate PR: evidence follows
-#: coverage, coverage follows the pin suite.
+#: coverage, coverage follows the pin suite. Admission by lane membership is
+#: ALLOWLIST evidence, not executed-evidence: a lane path passing the coverage
+#: bound without a per-PR pin passes because it is enumerated here, and its
+#: landing-time layer is guaranteed only by every entry existing on disk with
+#: its suites in the tree (machine-checked by
+#: test_consent_containment_lane_entries_exist_with_evidence_substrate).
+#: Escape path: a containment fix that must touch a path outside the lane and
+#: outside the gate tuple is not blocked forever — it requires another gate PR
+#: extending this map (the same doctrine as the gate tuple); the human-release
+#: path remains the authority boundary for the sensitive_path classes.
 LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
     "agents/_governance",
     "agents/_governance.py",

@@ -506,7 +506,12 @@ jobs:
     # The consent-containment lane's core containment behavior (consent reader
     # pipeline, archive purge, face enrollment) is pinned here per PR — the
     # lane's rounds/custody suites arrive with their own PRs and are executed
-    # at landing via test-full-shard (three-layer evidence, as above).
+    # at landing via test-full-shard (three-layer evidence, as above). The
+    # per-PR wiring is anchored by
+    # test_egress_boundary_pin_job_executes_the_consent_containment_pins_per_pr
+    # and the landing-time layer by
+    # test_consent_containment_lane_entries_exist_with_evidence_substrate plus
+    # test_composition_suite_itself_runs_in_the_required_full_shard.
     # Unlike sibling jobs this job has NO docs-only sentinel: the class's
     # behavioral evidence must always execute (~40s); a green check that ran
     # nothing is not evidence. The duplicate-merge-group sentinel stays — it
