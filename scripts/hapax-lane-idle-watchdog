@@ -94,9 +94,14 @@ SITE_CLASS="$(site_class)"
 # is decided by measured headroom, not by membership in a required-lanes list.
 # The list is a candidate pool; this budget is how many lanes may launch now.
 launch_headroom_budget() {
-    local nproc load1 free_slots budget
-    nproc="$(nproc 2>/dev/null || echo 1)"
-    load1="$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0)"
+    # Observation sources are env-overridable (HAPAX_LOADAVG_PATH /
+    # HAPAX_NPROC) so the budget is testable without stubbing coreutils, and so
+    # a host with a non-standard loadavg can be pointed at the right file. The
+    # defaults are the real kernel sources.
+    local nproc load1 free_slots budget load_path
+    load_path="${HAPAX_LOADAVG_PATH:-/proc/loadavg}"
+    nproc="${HAPAX_NPROC:-$(nproc 2>/dev/null || echo 1)}"
+    load1="$(cut -d' ' -f1 "$load_path" 2>/dev/null || echo 0)"
     free_slots=$(awk -v n="$nproc" -v l="$load1" 'BEGIN{f=n-int(l); if(f<0)f=0; print f}')
     budget=$free_slots
     # cap: at most 2 launches per tick so a cold host cannot burst a whole roster

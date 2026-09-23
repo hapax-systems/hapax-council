@@ -64,28 +64,14 @@ def _base(tmp_path: Path, **overrides: str) -> dict[str, str]:
 
 
 def _run_watchdog(env: dict[str, str], load1: str, nproc: str = "8") -> str:
-    wrapper = Path(env["HOME"]) / "run-watchdog.sh"
-    # Real PATH stubs, not exported shell functions: `exec bash` does not
-    # reliably inherit BASH_FUNC_* across this wrapper.
-    bin_dir = Path(env["HOME"]) / "stub-bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    (bin_dir / "nproc").write_text(f"#!/usr/bin/env bash\necho {nproc}\n", encoding="utf-8")
-    (bin_dir / "cut").write_text(
-        f"#!/usr/bin/env bash\n"
-        f'if [ "$1" = "-d" ]; then echo "{load1} 1.00 1.00"; exit 0; fi\n'
-        f'exec /usr/bin/cut "$@"\n',
-        encoding="utf-8",
-    )
-    for stub in ("nproc", "cut"):
-        (bin_dir / stub).chmod(0o755)
-    env["PATH"] = f"{bin_dir}:{env['PATH']}"
-    wrapper.write_text(
-        f'#!/usr/bin/env bash\nexec bash "{WATCHDOG}"\n',
-        encoding="utf-8",
-    )
-    wrapper.chmod(0o755)
+    """Run the watchdog once with env-overridable load/nproc observation."""
+    load_path = Path(env["HOME"]) / "fake-loadavg"
+    load_path.write_text(f"{load1} 1.00 1.00\n", encoding="utf-8")
+    env = dict(env)
+    env["HAPAX_LOADAVG_PATH"] = str(load_path)
+    env["HAPAX_NPROC"] = nproc
     result = subprocess.run(
-        ["bash", str(wrapper)],
+        ["bash", str(WATCHDOG)],
         capture_output=True,
         text=True,
         env=env,
