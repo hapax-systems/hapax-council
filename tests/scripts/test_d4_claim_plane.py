@@ -88,3 +88,42 @@ def test_unit_does_not_pin_the_pair() -> None:
 def test_audit_declares_claim_plane_hosts() -> None:
     text = AUDIT.read_text(encoding="utf-8")
     assert "claim_plane_hosts" in text
+
+
+def _run_audit_guard(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run the full script with --version to probe the top-level plane guard.
+
+    The guard executes before arg parsing, so --version exits 0 only when the
+    guard lets a plane-less run proceed.
+    """
+    return subprocess.run(
+        [str(AUDIT), "--version"],
+        capture_output=True,
+        text=True,
+        env={"PATH": "/usr/bin:/bin", "HOME": "/tmp", **env},
+        timeout=15,
+        check=False,
+    )
+
+
+def test_bare_ad_hoc_run_proceeds_without_a_plane() -> None:
+    """No plane signal (no env/registry/council dir) must not be fatal.
+
+    CI full-suite, tests and operator ad-hoc audits invoke the script bare;
+    those runs stay plane-less with peer reconciliation off.
+    """
+    out = _run_audit_guard({})
+    assert out.returncode == 0, (out.returncode, out.stdout, out.stderr)
+    assert "ad-hoc run, peer reconciliation off" in out.stderr, out.stderr
+
+
+def test_broken_declared_context_is_fatal() -> None:
+    """A plane context that cannot resolve a plane fails closed.
+
+    HAPAX_COUNCIL_DIR set with no registry claim_plane declaration must abort
+    the run rather than silently skipping peer reconciliation.
+    """
+    empty_dir = Path("/nonexistent-audit-context")
+    out = _run_audit_guard({"HAPAX_COUNCIL_DIR": str(empty_dir)})
+    assert out.returncode == 2, (out.returncode, out.stdout, out.stderr)
+    assert "FATAL" in out.stderr, out.stderr
