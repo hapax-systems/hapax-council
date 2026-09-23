@@ -875,30 +875,46 @@ LIVE_EGRESS_AUTO_ARM_COVERAGE: tuple[str, ...] = (
 )
 
 #: The consent-containment lane: the estate's person-data consent/containment
-#: surfaces. A live-egress-sensitive PR confined to these paths (plus docs and
-#: the gate tuple above) is covered by the class's mitigation evidence: the
-#: per-PR consent pins added to the egress-boundary-pin job (consent reader
-#: pipeline, archive purge, face enrollment) execute the lane's core
-#: containment behavior on every PR head, and the merge-queue full suite
-#: (test-full-shard, required through all-green) executes every consent,
-#: revocation, custody and identifier suite in the tree at landing — the same
-#: three-layer evidence shape as the gate tuple, with the lane's suites as the
-#: behavioral layer. Ancillary mechanics (vulture whitelist, conftest) are
-#: enumerated because containment work legitimately requires them; they carry
-#: no egress surface. Extending the lane is another gate PR: evidence follows
-#: coverage, coverage follows the pin suite. Admission by lane membership is
-#: ALLOWLIST evidence, not executed-evidence: a lane path passing the coverage
-#: bound without a per-PR pin passes because it is enumerated here, and its
-#: landing-time layer is guaranteed only by every entry existing on disk with
-#: its suites in the tree (machine-checked by
-#: test_consent_containment_lane_entries_exist_with_evidence_substrate).
-#: Escape path: a containment fix that must touch a path outside the lane and
-#: outside the gate tuple is not blocked forever — it requires another gate PR
-#: extending this map (the same doctrine as the gate tuple); the human-release
-#: path remains the authority boundary for the sensitive_path classes.
+#: surfaces, enumerated EXACTLY for production sources — a future file added
+#: beside them is NOT admitted (fail-closed; extend the lane by another gate
+#: PR). Two directory classes remain, each deliberate: ``axioms/contracts``
+#: because the containment PR deletes person-named contract files whose names
+#: must not appear in public gate source, and everything under it is a consent
+#: contract by construction; and the test trees (``tests/*`` prefixes and
+#: ``packages/agentgov/tests``) because test code is not an egress surface —
+#: it is never imported by the production runtime — and its landing-time
+#: layer is the merge-queue full suite, pinned required by
+#: tests/ci/test_release_gate_ci_composition.py
+#: (test_all_green_aggregate_keeps_the_behavioral_and_declaration_layers).
+#: A live-egress-sensitive PR confined to these paths (plus docs and the gate
+#: tuple above) is covered by the class's mitigation evidence: the per-PR
+#: consent pins added to the egress-boundary-pin job (consent reader pipeline,
+#: archive purge, face enrollment) execute the lane's core containment
+#: behavior on every PR head, and the merge-queue full suite (test-full-shard,
+#: required through all-green) executes every consent, revocation, custody and
+#: identifier suite in the tree at landing — the same three-layer evidence
+#: shape as the gate tuple, with the lane's suites as the behavioral layer.
+#: Rounds/custody suites absent at this head arrive with their own PRs and are
+#: substrate-coupled by
+#: test_consent_containment_lane_entries_exist_with_evidence_substrate.
+#: Ancillary mechanics (vulture whitelist, conftest) are enumerated because
+#: containment work legitimately requires them; they carry no egress surface.
+#: Admission by lane membership is ALLOWLIST evidence, not executed-evidence:
+#: a lane path passing the coverage bound without a per-PR pin passes because
+#: it is enumerated here. Escape path: a containment fix that must touch a
+#: path outside the lane and outside the gate tuple is not blocked forever —
+#: it requires another gate PR extending this map (the same doctrine as the
+#: gate tuple); the human-release path remains the authority boundary for the
+#: sensitive_path classes.
 LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
-    "agents/_governance",
     "agents/_governance.py",
+    "agents/_governance/carrier.py",
+    "agents/_governance/consent.py",
+    "agents/_governance/consent_gate.py",
+    "agents/_governance/consent_label.py",
+    "agents/_governance/consent_reader.py",
+    "agents/_governance/provenance.py",
+    "agents/_governance/revocation.py",
     "agents/hapax_daimonion/conversation_pipeline.py",
     "agents/hapax_daimonion/conversational_policy.py",
     "agents/studio_compositor/consent.py",
@@ -908,7 +924,12 @@ LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
     "logos/api/deps/stream_redaction.py",
     "logos/api/routes/consent.py",
     "logos/api/routes/data.py",
-    "packages/agentgov",
+    "packages/agentgov/src/agentgov/carrier.py",
+    "packages/agentgov/src/agentgov/consent.py",
+    "packages/agentgov/src/agentgov/consent_label.py",
+    "packages/agentgov/src/agentgov/provenance.py",
+    "packages/agentgov/src/agentgov/revocation.py",
+    "packages/agentgov/tests",
     "scripts/archive-purge.py",
     "scripts/hapax-guest-consent",
     "scripts/screwm-guest-source.py",

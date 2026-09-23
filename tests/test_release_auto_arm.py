@@ -227,10 +227,19 @@ def test_consent_containment_lane_surfaces_is_exact() -> None:
     # a live-egress-sensitive PR may touch without new behavioral evidence —
     # a ratification act, never an edit. Update this test deliberately, and
     # extend the egress-boundary-pin job's consent pins first: evidence
-    # follows coverage, coverage follows the pin suite.
+    # follows coverage, coverage follows the pin suite. Production sources are
+    # exact files (fail-closed for future files beside them); only
+    # axioms/contracts (person-named deletions) and the test trees (not egress
+    # surfaces; landing layer is the merge-queue full shard) are directories.
     assert LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES == (
-        "agents/_governance",
         "agents/_governance.py",
+        "agents/_governance/carrier.py",
+        "agents/_governance/consent.py",
+        "agents/_governance/consent_gate.py",
+        "agents/_governance/consent_label.py",
+        "agents/_governance/consent_reader.py",
+        "agents/_governance/provenance.py",
+        "agents/_governance/revocation.py",
         "agents/hapax_daimonion/conversation_pipeline.py",
         "agents/hapax_daimonion/conversational_policy.py",
         "agents/studio_compositor/consent.py",
@@ -240,7 +249,12 @@ def test_consent_containment_lane_surfaces_is_exact() -> None:
         "logos/api/deps/stream_redaction.py",
         "logos/api/routes/consent.py",
         "logos/api/routes/data.py",
-        "packages/agentgov",
+        "packages/agentgov/src/agentgov/carrier.py",
+        "packages/agentgov/src/agentgov/consent.py",
+        "packages/agentgov/src/agentgov/consent_label.py",
+        "packages/agentgov/src/agentgov/provenance.py",
+        "packages/agentgov/src/agentgov/revocation.py",
+        "packages/agentgov/tests",
         "scripts/archive-purge.py",
         "scripts/hapax-guest-consent",
         "scripts/screwm-guest-source.py",
@@ -271,10 +285,12 @@ def test_consent_containment_lane_admits_lane_shapes() -> None:
         verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
         changed_files=[
             "shared/release_gate.py",
-            "axioms/contracts/agatha.yaml",
-            "axioms/contracts/jason-consent.yaml",
-            "tests/shared/test_consent_helpers.py",
+            "axioms/contracts/contract-removed-one.yaml",
+            "axioms/contracts/contract-removed-two.yaml",
             "packages/agentgov/src/agentgov/consent.py",
+            "packages/agentgov/tests/test_consent_binding.py",
+            "agents/_governance/consent_reader.py",
+            "tests/shared/test_consent_round_ten.py",
             "agents/studio_compositor/consent_live_egress.py",
             "docs/runbooks/pii-containment.md",
         ],
@@ -284,24 +300,31 @@ def test_consent_containment_lane_admits_lane_shapes() -> None:
 
 
 def test_consent_containment_lane_boundary_is_anchored() -> None:
-    # The lane is exact-or-directory-prefix, never substring: a sibling file
-    # of a lane entry and a lookalike extension are both outside the lane and
-    # held by the coverage bound.
+    # The lane is exact-or-directory-prefix, never substring, and production
+    # trees fail CLOSED for future files: a sibling of a lane entry, a
+    # lookalike extension, and a brand-new production source beside admitted
+    # ones are all outside the lane and held by the coverage bound.
     assessment = assess_release_auto_arm_estate(
         _egress_frontmatter(),
         verified_checks=set(LIVE_EGRESS_MITIGATION_CHECKS),
         changed_files=[
             "shared/governance/other.py",
             "agents/_governance.py.bak",
+            "packages/agentgov/src/agentgov/new_egress.py",
+            "agents/_governance/new_surface.py",
         ],
     )
     assert assessment.eligible is False
     blockers = list(assessment.blockers)
-    assert any(
-        blocker.startswith("egress_evidence_uncovered_paths:agents/_governance.py.bak")
-        and "shared/governance/other.py" in blocker
-        for blocker in blockers
-    ), f"lane boundary leaked: {blockers}"
+    for held in (
+        "agents/_governance.py.bak",
+        "agents/_governance/new_surface.py",
+        "packages/agentgov/src/agentgov/new_egress.py",
+        "shared/governance/other.py",
+    ):
+        assert any(held in blocker for blocker in blockers), (
+            f"lane boundary leaked for {held}: {blockers}"
+        )
 
 
 def test_consent_containment_lane_membership_is_exact_and_degenerate_safe() -> None:
@@ -316,6 +339,8 @@ def test_consent_containment_lane_membership_is_exact_and_degenerate_safe() -> N
     assert not _path_in_consent_containment_lane("tests/logos-other/x.py")
     assert not _path_in_consent_containment_lane("")
     assert not _path_in_consent_containment_lane("   ")
+    assert not _path_in_consent_containment_lane("./shared/governance/consent.py")
+    assert not _path_in_consent_containment_lane("packages/agentgov/src/agentgov/other.py")
 
 
 def test_consent_containment_lane_entries_exist_with_evidence_substrate() -> None:
