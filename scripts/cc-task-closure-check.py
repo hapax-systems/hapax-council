@@ -48,10 +48,8 @@ from shared.sdlc_gate_event_drain import (  # noqa: E402
     OUTCOME_GATE_ON_CLOSE_ENV,
     outcome_gate_on_close_enabled,
 )
-from shared.sdlc_lifecycle import (  # noqa: E402
-    acceptance_criteria_state,
-    frontmatter_from_text,
-)
+from shared.sdlc_lifecycle import acceptance_criteria_state  # noqa: E402
+from shared.sdlc_note_contract import frontmatter_from_text  # noqa: E402
 from shared.sdlc_router import REQUIREMENT_VECTOR_DIMENSIONS  # noqa: E402
 
 # World-to-record first caller (Edge A §4 / Edge C): OFF by default.

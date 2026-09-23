@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -43,10 +42,19 @@ from shared.sdlc_claim import (
 )
 from shared.sdlc_lifecycle import (
     acceptance_criteria_state,
+    stage_token,
+)
+from shared.sdlc_note_contract import (
+    FRONTMATTER_OK,
+    WRITE_COLLATERAL,
+    WRITE_INEFFECTIVE,
+    WRITE_POSTIMAGE_UNREADABLE,
+    WRITE_PREIMAGE_UNREADABLE,
+    WRITE_VALUE_UNREPRESENTABLE,
     acceptance_receipt_blockers,
     acceptance_receipt_path,
+    frontmatter_set_exactly,
     requires_acceptance_receipt,
-    stage_token,
 )
 from shared.sdlc_task_store import (
     TaskNoteSnapshot,
@@ -89,21 +97,44 @@ def _mode(path: Path) -> int:
     return path.stat().st_mode & 0o777
 
 
+#: Close's policy over :func:`frontmatter_set_exactly`: every way the exact
+#: write can fail, mapped to the refusal a lane can act on. Close is the
+#: destructive writer — it projects the postimage into ``closed/`` and deletes
+#: the active note and every claim lease in the same transaction — so an
+#: unapplied edit must stop it rather than reach the filesystem.
+_CLOSE_WRITE_REFUSALS: dict[str, tuple[str, str]] = {
+    WRITE_PREIMAGE_UNREADABLE: (
+        "terminal_close_frontmatter_malformed",
+        "restore one closed frontmatter mapping before close",
+    ),
+    WRITE_POSTIMAGE_UNREADABLE: (
+        "terminal_close_frontmatter_malformed",
+        "give {key} a single-line value in the note frontmatter before close",
+    ),
+    WRITE_VALUE_UNREPRESENTABLE: (
+        "terminal_close_frontmatter_value_unrepresentable",
+        "give {key} a value that renders as one YAML line before close",
+    ),
+    WRITE_INEFFECTIVE: (
+        "terminal_close_frontmatter_write_ineffective",
+        "remove the conflicting {key} entry from the note frontmatter before close",
+    ),
+    WRITE_COLLATERAL: (
+        "terminal_close_frontmatter_write_collateral",
+        "move {key} out of the frontmatter's nested structures before close",
+    ),
+}
+
+
 def _frontmatter_set(text: str, key: str, rendered_value: str) -> str:
-    close = text.find("\n---", 3) if text.startswith("---") else -1
-    if close < 0:
-        raise TerminalCloseError(
-            "terminal_close_frontmatter_malformed",
-            "restore one closed frontmatter mapping before close",
-        )
-    frontmatter = text[:close]
-    body = text[close:]
-    pattern = rf"(?m)^{re.escape(key)}:\s*.*$"
-    if re.search(pattern, frontmatter):
-        frontmatter = re.sub(pattern, f"{key}: {rendered_value}", frontmatter, count=1)
-    else:
-        frontmatter += f"\n{key}: {rendered_value}"
-    return frontmatter + body
+    postimage, state, detail = frontmatter_set_exactly(text, key, rendered_value)
+    if state == FRONTMATTER_OK:
+        return postimage
+    reason_code, repair = _CLOSE_WRITE_REFUSALS.get(
+        state,
+        ("terminal_close_frontmatter_malformed", "restore one closed frontmatter mapping"),
+    )
+    raise TerminalCloseError(reason_code, repair.format(key=key), detail or state)
 
 
 @dataclass(frozen=True)

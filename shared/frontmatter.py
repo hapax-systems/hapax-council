@@ -18,6 +18,14 @@ import yaml
 from shared.governance.consent_label import ConsentLabel
 from shared.governance.labeled import Labeled
 
+# The fence grammar lives in a leaf module (stdlib + PyYAML) precisely so this
+# module can depend on it: shared/frontmatter.py reaches
+# shared.governance.consent_label and therefore AGENTGOV, while the close gate
+# runs under a bare python3. The dependency points canonical-parser → leaf, never
+# the other way, and that direction is pinned by
+# tests/shared/test_sdlc_note_contract.py.
+from shared.sdlc_note_contract import is_frontmatter_fence
+
 FrontmatterErrorKind = Literal[
     "read_error",
     "missing_frontmatter",
@@ -73,7 +81,22 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
     else:
         text = path_or_text
 
-    if not text.startswith("---"):
+    # Fence detection is the SHARED grammar (``is_frontmatter_fence``): ``---``
+    # at column 0, followed by end-of-line or whitespace. A substring scan for
+    # "\n---" also matched `---extra: abc` (a legal mapping key) and an indented
+    # `---` inside a literal scalar, truncating the block there and silently
+    # dropping every field below — on the SDLC path, a task's declared review
+    # requirement, so a row closed unreviewed because its metadata was cut in
+    # half. Importing the predicate rather than restating it is deliberate: this
+    # parser and the SDLC one disagreeing about what a fence is was itself a
+    # defect.
+    # Lines are NOT CR-normalized here. ``is_frontmatter_fence`` tolerates a
+    # trailing CR and PyYAML accepts CRLF, so doing it here was a redundant
+    # second guard — and it silently rewrote a CRLF ``body`` to LF on success
+    # while returning the original text, CRLF intact, on failure. Same document,
+    # different line endings depending on whether parsing worked.
+    lines = text.split("\n")
+    if not is_frontmatter_fence(lines[0]):
         return FrontmatterParseResult(
             frontmatter=None,
             body=text,
@@ -81,8 +104,12 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
             error_message="document does not start with YAML frontmatter",
         )
 
-    end = text.find("\n---", 3)
-    if end == -1:
+    close_index = None
+    for index in range(1, len(lines)):
+        if is_frontmatter_fence(lines[index]):
+            close_index = index
+            break
+    if close_index is None:
         return FrontmatterParseResult(
             frontmatter=None,
             body=text,
@@ -90,8 +117,12 @@ def parse_frontmatter_with_diagnostics(path_or_text: Path | str) -> FrontmatterP
             error_message="frontmatter closing marker is missing",
         )
 
-    yaml_text = text[3:end].strip()
-    body = text[end + 4 :].lstrip("\n")
+    # The remainder of the opening line is YAML CONTENT, not decoration:
+    # ``--- {a: 1}`` is a valid document with its mapping on the marker line.
+    # Taking only the lines after it silently discarded whole declarations while
+    # still reporting a clean parse.
+    yaml_text = "\n".join([lines[0][3:], *lines[1:close_index]]).strip()
+    body = "\n".join(lines[close_index + 1 :]).lstrip("\n")
     if not yaml_text:
         return FrontmatterParseResult(frontmatter={}, body=body)
 

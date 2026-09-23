@@ -172,11 +172,14 @@ if [[ "$final_status" == "done" ]]; then
     fi
   fi
 
-  # Acceptance-receipt gate (routing Phase 0.2) — review-floor
-  # (frontier_review_required) tasks close only with a signed acceptance
-  # receipt (<task_id>.acceptance.yaml beside the note). The checker honors
-  # HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1 directly; non-review-floor tasks
-  # pass through untouched.
+  # Acceptance-receipt gate (routing Phase 0.2) — receipt-ARMED tasks close only
+  # with a signed acceptance receipt (<task_id>.acceptance.yaml beside the note).
+  # Armed = the frontier_review_required floor OR a declared
+  # review_requirement.independent_review_required (see
+  # shared.sdlc_lifecycle.acceptance_receipt_triggers); NOT floor-only, since a
+  # row may demand independent review under any quality floor. The checker
+  # honors HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1 directly; a row with neither
+  # declaration passes through untouched.
   RECEIPT_CHECKER="$SCRIPT_DIR/cc-close-acceptance-receipt-check.py"
   if [[ -f "$RECEIPT_CHECKER" ]]; then
     set +e

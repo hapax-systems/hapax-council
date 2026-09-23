@@ -288,17 +288,24 @@ def test_close_under_debt_is_refused_and_names_no_available_override() -> None:
             )
 
 
-def test_lifecycle_leaf_does_not_depend_on_the_close_admission() -> None:
-    """``shared/sdlc_lifecycle.py`` is the shared leaf and must stay a leaf.
+def test_note_contract_leaf_does_not_depend_on_the_close_admission() -> None:
+    """``shared/sdlc_note_contract.py`` is the shared leaf and must stay a leaf.
 
     Both close gates import their receipt predicates from it. If it ever imported
     ``shared.sdlc_close``, the two gates would become mutually reachable and a
     circular wait would be expressible.
+
+    It must also stay importable under a bare ``python3``, which is how
+    ``scripts/cc-close`` runs the gate: no pydantic, no AGENTGOV. The one
+    ``shared`` module it may reach is ``shared.sdlc_lifecycle``, itself
+    stdlib + PyYAML.
     """
-    imports = _imported_modules(REPO_ROOT / "shared" / "sdlc_lifecycle.py")
+    imports = _imported_modules(REPO_ROOT / "shared" / "sdlc_note_contract.py")
 
     assert "shared.sdlc_close" not in imports
     assert not any(name.endswith("cc_close_acceptance_receipt_check") for name in imports)
+    assert {name for name in imports if name.startswith("shared.")} == {"shared.sdlc_lifecycle"}
+    assert "shared.frontmatter" not in imports  # the canonical parser depends on US
 
 
 def test_receipt_gate_does_not_depend_on_the_close_admission() -> None:
@@ -310,7 +317,129 @@ def test_receipt_gate_does_not_depend_on_the_close_admission() -> None:
     imports = _imported_modules(RECEIPT_GATE_SCRIPT)
 
     assert "shared.sdlc_close" not in imports
-    assert "shared.sdlc_lifecycle" in imports
+    assert "shared.sdlc_note_contract" in imports
+
+
+def test_the_close_path_snapshot_sees_the_review_demand(tmp_path: Path) -> None:
+    """The terminal-close snapshot reads the SAME declaration as the gate.
+
+    ``shared.sdlc_close`` computes its blockers from
+    ``shared.sdlc_task_store._snapshot``, which parses via
+    ``shared.frontmatter``. That parser carried the prefix fence defect, so with
+    ``---extra: abc`` between the identity fields and the demand the snapshot
+    omitted the requirement entirely: the standalone gate returned 2 while the
+    terminal-close path recorded a pass with no receipt.
+
+    I found that parser defective in the previous round and judged it out of
+    scope. It was not out of scope — it is reachable from this row's own close
+    path. Pinned here so the judgment cannot be repeated silently.
+    """
+    from shared.sdlc_note_contract import acceptance_receipt_blockers
+    from shared.sdlc_task_store import _snapshot
+
+    note = tmp_path / "dash-key.md"
+    note.write_text(
+        "---\n"
+        "type: cc-task\n"
+        "task_id: dash-key\n"
+        "status: in_progress\n"
+        "quality_floor: verification_receipt\n"
+        "---extra: abc\n"
+        "review_requirement:\n"
+        "  independent_review_required: true\n"
+        "---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    snapshot = _snapshot(note, expected_task_id="dash-key", state="active")
+
+    assert "review_requirement" in snapshot.frontmatter, (
+        "the close-path snapshot lost the declaration below the dash-prefixed key"
+    )
+    assert acceptance_receipt_blockers(snapshot.frontmatter, note) == (
+        "missing_acceptance_receipt",
+    )
+
+
+def test_the_close_path_snapshot_accepts_a_crlf_note(tmp_path: Path) -> None:
+    """CRLF notes must parse on the raw-bytes path too.
+
+    ``sdlc_task_store._snapshot`` decodes bytes itself, so — unlike every caller
+    reading through ``Path.read_text``, which performs universal-newline
+    translation — a carriage return survives to reach the fence predicate. A
+    predicate that rejects ``---\\r`` makes terminal close raise
+    ``task_note_frontmatter_malformed`` on a note the standalone gate accepts:
+    the two closure surfaces disagreeing about the same file.
+
+    This is the ONLY caller that pins the predicate's CR tolerance. An earlier
+    attempt to pin it through autoqueue was vacuous for exactly the reason above,
+    and the mutation survived until it was moved here.
+    """
+    from shared.sdlc_note_contract import acceptance_receipt_blockers
+    from shared.sdlc_task_store import _snapshot
+
+    note = tmp_path / "crlf.md"
+    note.write_bytes(
+        b"---\r\n"
+        b"type: cc-task\r\n"
+        b"task_id: crlf\r\n"
+        b"status: in_progress\r\n"
+        b"quality_floor: verification_receipt\r\n"
+        b"review_requirement:\r\n"
+        b"  independent_review_required: true\r\n"
+        b"---\r\n\r\nbody\r\n"
+    )
+
+    snapshot = _snapshot(note, expected_task_id="crlf", state="active")
+
+    assert snapshot.frontmatter.get("task_id") == "crlf"
+    assert "review_requirement" in snapshot.frontmatter
+    assert acceptance_receipt_blockers(snapshot.frontmatter, note) == (
+        "missing_acceptance_receipt",
+    )
+
+
+def test_every_surface_parses_a_note_the_same_way(tmp_path: Path) -> None:
+    """Sharing the PREDICATE is not enough if the surfaces parse differently.
+
+    ``review_team._note_frontmatter`` and ``cc-pr-autoqueue._frontmatter`` each
+    carried their own copy of the fence scan, which truncated the block at any
+    line merely *starting* with ``---``. A legal YAML key like ``---extra: abc``
+    therefore produced a closure trap: the close gate (shared parser) saw the
+    review demand below it and required a receipt, while dispatch and admission
+    saw no arming declaration — so minting never ran and the row could never
+    obtain the receipt its own close demanded.
+
+    One parser, one reading. Pinned across all three surfaces on one note.
+    """
+    import sys
+
+    from shared.sdlc_note_contract import acceptance_receipt_triggers, frontmatter_from_text
+
+    scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    import review_team
+
+    note_text = (
+        "---\n"
+        "task_id: t\n"
+        "pr: 42\n"
+        "---extra: abc\n"
+        "review_requirement:\n"
+        "  independent_review_required: true\n"
+        "---\n\nbody\n"
+    )
+    note = tmp_path / "t.md"
+    note.write_text(note_text, encoding="utf-8")
+
+    shared = acceptance_receipt_triggers(frontmatter_from_text(note_text))
+    dispatch = acceptance_receipt_triggers(review_team._note_frontmatter(note) or {})
+
+    assert shared, "the shared parser must see the demand at all"
+    assert dispatch == shared, (
+        "dispatch parses a different declaration than close — the closure trap"
+    )
 
 
 def test_both_close_gates_share_one_receipt_predicate() -> None:
@@ -320,14 +449,36 @@ def test_both_close_gates_share_one_receipt_predicate() -> None:
     permits close while the other says it is not and blocks, forever. Sharing the
     single implementation in the leaf makes that unrepresentable.
     """
-    from shared import sdlc_close, sdlc_lifecycle
+    from shared import sdlc_close, sdlc_note_contract
 
     gate_module = _load_receipt_gate()
 
-    assert gate_module.acceptance_receipt_blockers is sdlc_lifecycle.acceptance_receipt_blockers
-    assert gate_module.requires_acceptance_receipt is sdlc_lifecycle.requires_acceptance_receipt
-    assert sdlc_close.acceptance_receipt_blockers is sdlc_lifecycle.acceptance_receipt_blockers
-    assert sdlc_close.requires_acceptance_receipt is sdlc_lifecycle.requires_acceptance_receipt
+    assert gate_module.acceptance_receipt_blockers is sdlc_note_contract.acceptance_receipt_blockers
+    assert sdlc_close.acceptance_receipt_blockers is sdlc_note_contract.acceptance_receipt_blockers
+    assert sdlc_close.requires_acceptance_receipt is sdlc_note_contract.requires_acceptance_receipt
+
+    # The close-gate checker consumes the trigger list rather than the boolean,
+    # because its refusal must name WHICH declaration armed the gate. That is
+    # only safe while the boolean is a derivation of the same list — otherwise
+    # the two surfaces could drift into the livelock this test exists to
+    # prevent. Pin the leaf identity AND the derivation.
+    assert gate_module.acceptance_receipt_triggers is sdlc_note_contract.acceptance_receipt_triggers
+    for frontmatter in (
+        {"quality_floor": "frontier_review_required"},
+        {"quality_floor": "verification_receipt"},
+        {
+            "quality_floor": "verification_receipt",
+            "review_requirement": {"independent_review_required": True},
+        },
+        {
+            "quality_floor": "verification_receipt",
+            "review_requirement": {"independent_review_required": False},
+        },
+        {},
+    ):
+        assert sdlc_note_contract.requires_acceptance_receipt(frontmatter) is bool(
+            sdlc_note_contract.acceptance_receipt_triggers(frontmatter)
+        )
 
 
 def test_the_acceptance_receipt_is_an_external_artifact(tmp_path: Path) -> None:
@@ -337,7 +488,7 @@ def test_the_acceptance_receipt_is_an_external_artifact(tmp_path: Path) -> None:
     receipt is an operator-minted file beside the note, produced by neither gate,
     so neither can be holding it against the other.
     """
-    from shared.sdlc_lifecycle import acceptance_receipt_path
+    from shared.sdlc_note_contract import acceptance_receipt_path
 
     note = tmp_path / "cc-task-x.md"
     receipt = acceptance_receipt_path(note, "cc-task-x")

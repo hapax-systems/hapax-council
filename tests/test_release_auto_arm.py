@@ -25,9 +25,13 @@ from shared.release_gate import (
 from shared.sdlc_lifecycle import (
     RELEASE_MITIGATION_CHECKS,
     REVIEW_TEAM_QUORUM_EVIDENCE,
-    apply_release_auto_arm,
     assess_release_auto_arm,
     release_auto_arm_waivers,
+)
+from shared.sdlc_note_contract import (
+    FRONTMATTER_OK,
+    apply_release_auto_arm,
+    frontmatter_state_from_text,
 )
 
 
@@ -529,28 +533,149 @@ authority_case: CASE-CAPACITY-ROUTING-001
 
 
 def test_apply_release_auto_arm_sets_release_authorized_true() -> None:
-    out = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
+    out, _ = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
     assert "release_authorized: true" in out
     assert "release_authorized: false" not in out
 
 
 def test_apply_release_auto_arm_advances_stage_to_s7() -> None:
-    out = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
+    out, _ = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
     assert "stage: S7_RELEASE" in out
     assert "stage: S6_IMPLEMENTATION" not in out
 
 
 def test_apply_release_auto_arm_keeps_existing_s7_stage() -> None:
     note = _NOTE.replace("stage: S6_IMPLEMENTATION", "stage: S7_RELEASE")
-    out = apply_release_auto_arm(note, now_iso="2026-06-01T03:00:00Z")
+    out, _ = apply_release_auto_arm(note, now_iso="2026-06-01T03:00:00Z")
     assert out.count("stage: S7_RELEASE") == 1
 
 
 def test_apply_release_auto_arm_updates_timestamp_and_logs() -> None:
-    out = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
+    out, _ = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
     assert "updated_at: 2026-06-01T03:00:00Z" in out
     assert "- prior line" in out  # body preserved
     assert "release auto-arm" in out.lower()  # audit line appended to body
+
+
+# A legal mapping key that begins with three dashes. The parser stopped reading
+# it as the closing fence before this writer did, so the arming was inserted
+# ABOVE the real fields and every retry logged success while nothing advanced.
+_DASH_KEY_NOTE = _NOTE.replace("type: cc-task", "---extra: abc\ntype: cc-task", 1)
+
+
+def _as_parsed(line: str) -> object:
+    """What YAML makes of one frontmatter line — an ISO stamp becomes a datetime.
+
+    Written out rather than assumed, so the expectation is the note's own
+    reading of the value the writer rendered.
+    """
+
+    key = line.split(":", 1)[0]
+    return frontmatter_state_from_text(f"---\n{line}\n---\n")[0][key]
+
+
+@pytest.mark.parametrize(("label", "note"), [("plain", _NOTE), ("dash_key", _DASH_KEY_NOTE)])
+def test_apply_release_auto_arm_postimage_parses_as_armed(label: str, note: str) -> None:
+    """The armed note must PARSE as armed, not merely contain the substring.
+
+    Every other assertion in this file is a substring check, and the corrupted
+    postimage contained every one of those strings.
+    """
+
+    before, before_state = frontmatter_state_from_text(note)
+    assert before_state == FRONTMATTER_OK, label
+    assert before["release_authorized"] is False, label
+
+    out, _ = apply_release_auto_arm(note, now_iso="2026-06-01T03:00:00Z")
+
+    after, state = frontmatter_state_from_text(out)
+    assert state == FRONTMATTER_OK, label
+    assert after["release_authorized"] is True, label
+    assert after["stage"] == "S7_RELEASE", label
+    assert after["updated_at"] == _as_parsed("updated_at: 2026-06-01T03:00:00Z"), label
+    untouched = set(before) - {"release_authorized", "stage", "updated_at"}
+    assert {key: after.get(key) for key in untouched} == {key: before[key] for key in untouched}, (
+        label
+    )
+
+
+@pytest.mark.parametrize(("label", "note"), [("plain", _NOTE), ("dash_key", _DASH_KEY_NOTE)])
+def test_apply_release_auto_arm_repeated_runs_stay_armed(label: str, note: str) -> None:
+    """A second run must not undo the first.
+
+    The reported failure mode was a run that logged success and advanced
+    nothing, so repeating it accumulated audit entries against an unchanged
+    authorization. Assert the state each run leaves behind, not the log.
+    """
+
+    first, _ = apply_release_auto_arm(note, now_iso="2026-06-01T03:00:00Z")
+    second, _ = apply_release_auto_arm(first, now_iso="2026-06-01T04:00:00Z")
+
+    for run, text, stamp in (
+        (1, first, "2026-06-01T03:00:00Z"),
+        (2, second, "2026-06-01T04:00:00Z"),
+    ):
+        parsed, state = frontmatter_state_from_text(text)
+        assert state == FRONTMATTER_OK, (label, run)
+        assert parsed["release_authorized"] is True, (label, run)
+        assert parsed["stage"] == "S7_RELEASE", (label, run)
+        assert parsed["updated_at"] == _as_parsed(f"updated_at: {stamp}"), (label, run)
+
+
+@pytest.mark.parametrize(
+    ("label", "head_sha", "head_ref"),
+    [
+        ("ordinary", "abc1234", "delta/some-branch"),
+        # An all-digit short sha is a YAML int and a branch named "no" is a YAML
+        # bool, so the value half has to go through the emitter rather than be
+        # interpolated. Both round-trip as strings or the recorded head is wrong.
+        ("yaml_coercible", "1234567", "no"),
+    ],
+)
+def test_apply_release_auto_arm_records_the_authorized_head(
+    label: str,
+    head_sha: str,
+    head_ref: str,
+) -> None:
+    out, _ = apply_release_auto_arm(
+        _NOTE,
+        now_iso="2026-06-01T03:00:00Z",
+        head_sha=head_sha,
+        head_ref=head_ref,
+    )
+
+    parsed, state = frontmatter_state_from_text(out)
+    assert state == FRONTMATTER_OK, label
+    assert parsed["release_authorized_head_sha"] == head_sha, label
+    assert parsed["release_authorized_head_ref"] == head_ref, label
+
+
+def test_apply_release_auto_arm_refuses_with_a_reason_and_records_no_progress() -> None:
+    """A refusal returns the input unchanged AND says why.
+
+    The audit trail must never gain a line for arming that did not happen —
+    which is what the previous writer did on every retry. And the refusal has to
+    be nameable: ``arm_release_for_task`` reads an unchanged return as
+    ``note_unchanged``, which it also returns for an already-armed note, so a
+    reason-less refusal is indistinguishable from a no-op success.
+    """
+
+    unwritable = _NOTE.replace("stage: S6_IMPLEMENTATION", "stage:\n  name: S6_IMPLEMENTATION")
+
+    out, refusal = apply_release_auto_arm(unwritable, now_iso="2026-06-01T03:00:00Z")
+
+    assert out == unwritable
+    assert "release auto-arm" not in out.lower()
+    assert refusal.startswith("stage:postimage_unreadable:"), refusal
+
+
+def test_apply_release_auto_arm_reports_no_refusal_on_success() -> None:
+    """The reason channel is empty exactly when the arming was applied."""
+
+    out, refusal = apply_release_auto_arm(_NOTE, now_iso="2026-06-01T03:00:00Z")
+
+    assert refusal == ""
+    assert out != _NOTE
 
 
 # ── evidence-gated auto-arm (no manual arming; operator directive 2026-06-22) ──
