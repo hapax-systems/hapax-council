@@ -56,7 +56,10 @@ NTFY_URL="${NTFY_URL:-https://ntfy.sh}"
 NTFY_TOPIC="${NTFY_TOPIC:-hapax-ops}"
 RECONCILE_HOST="${HAPAX_RECONCILE_HOST:-}"
 RECONCILE_CACHE_DIR="${HAPAX_RECONCILE_CACHE_DIR:-$HOME/.cache/hapax}"
-# Two-host claim plane (opt-in; empty = reconciliation off). The reconcile target
+# Claim-plane reconcile (opt-in; empty = reconciliation off). INVARIANT: exactly
+# two hosts today (the peer derivation assumes a pair). The registry declaration
+# may name more, but the reconcile step is still pairwise â€” generalize the peer
+# derivation before admitting N>2. The reconcile target
 # is the PEER (the plane host that is not the one running the audit) so
 # reconciliation is symmetric/bidirectional — the preset enables this unit on
 # BOTH hosts, so a single hardcoded target would silently no-op to self on the
@@ -79,13 +82,13 @@ claim_plane_hosts() {
   local registry="${HAPAX_HOST_STORAGE_REGISTRY:-}"
   if [ -z "$registry" ] || [ ! -f "$registry" ]; then
     if [ -z "${HAPAX_COUNCIL_DIR:-}" ]; then
-      echo "claim-audit: FATAL claim_plane_hosts: no HAPAX_CLAIM_PLANE_HOSTS override and HAPAX_COUNCIL_DIR unset; refusing to fall back to the mutable dev tree" >&2
+      echo "claim-audit: FATAL claim_plane_hosts: no HAPAX_CLAIM_PLANE_HOSTS override and HAPAX_COUNCIL_DIR unset; refusing to fall back to the mutable dev tree. Next action: set HAPAX_COUNCIL_DIR to the activation worktree (or set HAPAX_HOST_STORAGE_REGISTRY to a registry that declares claim_plane)" >&2
       return 1
     fi
     registry="${HAPAX_COUNCIL_DIR}/config/infrastructure/host-storage-registry.json"
   fi
   if [ ! -f "$registry" ]; then
-    echo "claim-audit: FATAL claim_plane_hosts: registry not found at $registry" >&2
+    echo "claim-audit: FATAL claim_plane_hosts: registry not found at $registry. Next action: set HAPAX_HOST_STORAGE_REGISTRY to a readable registry, or declare claim_plane.hosts there" >&2
     return 1
   fi
   local sha hosts
@@ -95,16 +98,16 @@ import json,sys
 reg=json.load(open(sys.argv[1],encoding='utf-8'))
 plane=reg.get('claim_plane')
 if not isinstance(plane, dict):
-    sys.stderr.write('claim-audit: FATAL claim_plane_hosts: registry has no claim_plane declaration (backup_policies is NOT a claim plane)\n')
+    sys.stderr.write('claim-audit: FATAL claim_plane_hosts: registry has no claim_plane declaration (backup_policies is NOT a claim plane). Next action: declare claim_plane.hosts/source/declared_at in the registry\n')
     sys.exit(1)
 hs=plane.get('hosts')
 if not isinstance(hs, list) or not hs:
-    sys.stderr.write('claim-audit: FATAL claim_plane_hosts: claim_plane.hosts is empty\n')
+    sys.stderr.write('claim-audit: FATAL claim_plane_hosts: claim_plane.hosts is empty. Next action: declare at least one claim-plane host in claim_plane.hosts\n')
     sys.exit(1)
 print(' '.join(str(h) for h in hs), end='')
 " "$registry")" || return 1
   if [ -z "${hosts// /}" ]; then
-    echo "claim-audit: FATAL claim_plane_hosts: claim_plane.hosts resolved empty" >&2
+    echo "claim-audit: FATAL claim_plane_hosts: claim_plane.hosts resolved empty. Next action: declare at least one claim-plane host in claim_plane.hosts" >&2
     return 1
   fi
   echo "claim-audit: claim-plane from DECLARATION registry=$registry sha256=$sha hosts=$(echo $hosts | wc -w) [$hosts]" >&2
@@ -112,7 +115,7 @@ print(' '.join(str(h) for h in hs), end='')
 }
 
 if ! CLAIM_PLANE_HOSTS="$(claim_plane_hosts)"; then
-  echo "claim-audit: FATAL: claim-plane host list unavailable; refusing to run with an undeclared plane" >&2
+  echo "claim-audit: FATAL: claim-plane host list unavailable; refusing to run with an undeclared plane. Next action: declare claim_plane in the registry or set HAPAX_CLAIM_PLANE_HOSTS" >&2
   exit 2
 fi
 DRY_RUN=false

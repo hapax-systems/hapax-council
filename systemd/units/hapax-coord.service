@@ -1,9 +1,8 @@
 [Unit]
 Description=Hapax coordination daemon (Lisp yard, :8765, bounded control preflight)
-# RC-4: refuses to boot on a stale/missing SDLC vocabulary feed. The feed is
-# kept fresh by hapax-sdlc-vocab-export.timer.
-After=network-online.target hapax-sdlc-vocab-export.service
-Wants=hapax-sdlc-vocab-export.service
+After=network-online.target
+OnFailure=notify-failure@%n.service
+ConditionPathExists=%h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh
 Documentation=file:%h/.cache/hapax/coord-activation/worktree/README.md
 
 [Service]
@@ -13,6 +12,7 @@ Type=simple
 # WorkingDirectory both resolve through that worktree, not ~/projects/hapax-coord.
 WorkingDirectory=%h/.cache/hapax/coord-activation/worktree
 ExecStart=/usr/bin/env bash %h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh --host 127.0.0.1 --port 8765 --daemon
+NoNewPrivileges=true
 Restart=on-failure
 RestartSec=5
 # The yard is a local control surface only (loopback bind; carve-out).
