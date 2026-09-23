@@ -12,6 +12,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -189,6 +190,37 @@ class TestConsentGatePredecessorIds(unittest.TestCase):
         assert not decision.allowed
         assert "c-revoked" in decision.reason
         assert "[]" not in decision.reason
+
+    def test_resolver_none_falls_back_to_raw_contract_id(self):
+        """A resolver returning None must not None-ify provenance or the deny reason.
+
+        The correspondence snapshot resolves unmapped ids to themselves today;
+        the gate's use-sites stay locally total so a future resolver regression
+        cannot collapse contract ids into None or print [None] in diagnostics.
+        """
+        c = _contract("c-alice", "alice", frozenset({"audio"}), active=False)
+        gate = _gate(_registry_with(c))
+        with mock.patch("shared.governance.consent_gate.resolve_contract_id", return_value=None):
+            decision = gate.check(
+                _labeled("old data", provenance=frozenset({"c-alice"})),
+                data_category="audio",
+            )
+        assert not decision.allowed
+        assert "c-alice" in decision.reason
+        assert "None" not in decision.reason
+
+    def test_resolver_none_falls_back_to_raw_person_id(self):
+        """A resolver returning None must not erase the person id in a deny reason."""
+        gate = _gate(_registry_with())
+        with mock.patch("shared.governance.consent_gate.resolve_principal_id", return_value=None):
+            decision = gate.check(
+                _labeled("conversation with alice"),
+                person_ids=("alice",),
+                data_category="audio",
+            )
+        assert not decision.allowed
+        assert "alice" in decision.reason
+        assert "None" not in decision.reason
 
 
 # ── Audit trail ──────────────────────────────────────────────────────

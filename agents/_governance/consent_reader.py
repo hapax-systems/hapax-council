@@ -158,11 +158,11 @@ class ConsentGatedReader:
         """
         with estate_identity_operation() as snapshot:
             canonical_person_ids = frozenset(
-                snapshot.resolve_principal_id(pid)
+                snapshot.resolve_principal_id(pid) or pid
                 for pid in datum.person_ids | self._extract_person_ids(datum.content)
             ) | snapshot.mentioned_principal_ids(datum.content)
             operator_ids = frozenset(
-                snapshot.resolve_principal_id(pid) for pid in self._operator_ids
+                snapshot.resolve_principal_id(pid) or pid for pid in self._operator_ids
             )
             # From this boundary onward, every partition uses canonical IDs only.
             # Recognition never changes the retrieved content, including consented text.
@@ -270,7 +270,7 @@ class ConsentGatedReader:
             persons: set[str] = set()
             for contract in self._registry.active_contracts:
                 for party in contract.parties:
-                    canonical = snapshot.resolve_principal_id(party)
+                    canonical = snapshot.resolve_principal_id(party) or party
                     if canonical != "operator" and canonical not in self._operator_ids:
                         persons.add(canonical)
             # A failed or empty registry must not erase the independent vocabulary.

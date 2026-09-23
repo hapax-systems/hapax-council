@@ -35,8 +35,8 @@ class ConsentLabel:
             source_policies, target_policies = (
                 frozenset(
                     (
-                        resolve_principal_id(owner),
-                        frozenset(resolve_principal_id(r) for r in readers),
+                        resolve_principal_id(owner) or owner,
+                        frozenset(resolve_principal_id(r) or r for r in readers),
                     )
                     for owner, readers in label.policies
                 )
