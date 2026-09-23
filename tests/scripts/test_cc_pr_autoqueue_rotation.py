@@ -772,3 +772,187 @@ def test_autoqueue_one_shot_path_fetches_must_include_beyond_limit(
         admission_governor_path=tmp_path / "governor.yaml",
     )
     assert 20 in examined(report)
+
+
+def test_autoqueue_post_cap_rotation_serves_next_slice_next_tick(tmp_path: Path) -> None:
+    # Post-cap starvation refutation: rows served past the POST cap (deferred)
+    # and rows overflowed entirely keep their head-of-queue priority, while the
+    # rows that DID get their proof rotate to the tail. Tick 2 must therefore
+    # serve exactly the deferred slice, not re-serve tick 1's posted rows.
+    runner = RotationRunner(25)
+    runner.queued_prs = set(range(1, 13))
+    for number in range(1, 13):
+        runner.head_statuses[f"sha-{number}"] = [_admission_status("success", age_minutes=16)]
+    report = tick(tmp_path, runner)
+    assert report["must_include"]["refreshed"] == [1, 2, 3, 4]
+    report = tick(tmp_path, runner)
+    must_include = report["must_include"]
+    assert must_include["refreshed"] == [5, 6, 7, 8]  # Tick 1's deferred_post_cap slice.
+    assert must_include["overflow"] == [3, 4, 9, 10]  # Previously served rows rotated to the tail.
+    covered = set(range(1, 5)) | set(must_include["refreshed"])
+    for _ in range(4):
+        covered.update(tick(tmp_path, runner)["must_include"]["refreshed"])
+    assert covered == set(range(1, 13))  # No queued PR can starve behind the caps.
+
+
+def test_autoqueue_dequeued_followup_overflow_stays_in_state(tmp_path: Path) -> None:
+    # A dequeued follow-up that overflows the window (no full exam this tick)
+    # must stay in the persisted set for its one-shot exam on a later tick;
+    # only a served exam retires it.
+    runner = RotationRunner(25)
+    runner.queued_prs = set(range(1, 11))  # 11 and 12 just left the queue.
+    now = datetime.now(UTC)
+    state_path = tmp_path / MUST_INCLUDE_STATE_NAME
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "repositories": {
+                    "owner/repo": {
+                        str(number): {
+                            "head_sha": f"sha-{number}",
+                            "last_seen_at": now.isoformat(),
+                            "consecutive_failures": 0,
+                        }
+                        for number in range(1, 13)
+                    }
+                },
+            }
+        )
+    )
+    report = tick(tmp_path, runner)
+    assert 11 not in examined(report) and 12 not in examined(report)
+    persisted = json.loads(state_path.read_text())["repositories"]["owner/repo"]
+    assert set(persisted) == {str(number) for number in range(1, 13)}
+    assert persisted["11"]["consecutive_failures"] == 1  # Overflow counts as an unserved tick.
+
+
+def test_autoqueue_must_include_killswitch_restores_plain_rotation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # HAPAX_AUTOQUEUE_MUST_INCLUDE_OFF=1: no must seats, no refresh path, no
+    # persisted must-include state — the rotation behaves exactly as pre-R1.
+    monkeypatch.setenv("HAPAX_AUTOQUEUE_MUST_INCLUDE_OFF", "1")
+    runner = RotationRunner(25)
+    runner.queued_prs = {13}
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    report = tick(tmp_path, runner)
+    assert examined(report) == [1, 2, 3, 4, 5]
+    assert report["queued_prs"] == []
+    assert not _status_posts(runner, "sha-13")
+    assert 13 not in runner.hydrated_numbers()
+    must_include = report["must_include"]
+    assert must_include["refreshed"] == must_include["ok"] == must_include["starved"] == []
+    assert must_include["deferred"] == {} and must_include["overflow"] == []
+    assert not (tmp_path / MUST_INCLUDE_STATE_NAME).exists()
+    assert examined(tick(tmp_path, runner)) == [6, 7, 8, 9, 10]
+
+
+def test_autoqueue_must_include_without_head_sha_is_a_visible_failure(tmp_path: Path) -> None:
+    runner = RotationRunner(25)
+    runner.queued_prs = {13}
+    runner.open_prs[12].pop("headRefOid")
+    report = tick(tmp_path, runner)
+    assert report["must_include"]["deferred"]["13"] == "missing_head_sha"
+    assert not _status_posts(runner, "sha-13")
+    assert 13 not in runner.hydrated_numbers()
+    assert len(examined(report)) == 4
+
+
+def test_autoqueue_must_include_without_existing_status_is_a_visible_failure(
+    tmp_path: Path,
+) -> None:
+    runner = RotationRunner(25)
+    runner.queued_prs = {13}
+    report = tick(tmp_path, runner)
+    assert report["must_include"]["deferred"]["13"] == "no_existing_admission_status"
+    assert not _status_posts(runner, "sha-13")
+
+
+class _StatusReadFailsRunner(RotationRunner):
+    def __call__(self, cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        if (
+            cmd[:2] == ["gh", "api"]
+            and len(cmd) == 3
+            and "/commits/" in cmd[2]
+            and cmd[2].endswith("/statuses")
+        ):
+            self.calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 1, "", "status read failed")
+        return super().__call__(cmd, **kwargs)
+
+
+def test_autoqueue_failed_status_read_counts_toward_starvation(tmp_path: Path) -> None:
+    runner = _StatusReadFailsRunner(25)
+    runner.queued_prs = {13}
+    report = tick(tmp_path, runner)
+    assert (
+        report["must_include"]["deferred"]["13"] == "admission_status_read_failed:query_failed:rc=1"
+    )
+    assert report["must_include"]["starved"] == []
+    report = tick(tmp_path, runner)
+    assert report["must_include"]["starved"] == [13]
+
+
+def test_autoqueue_refresh_defers_write_when_rest_pool_below_floor(tmp_path: Path) -> None:
+    runner = RotationRunner(25)
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    result = autoqueue._refresh_must_include_proof(
+        13,
+        "sha-13",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        now=datetime.now(UTC),
+        apply=True,
+        route=autoqueue.ListingRoute(
+            transport="rest", rest_blocked=True, reason="core_below_floor"
+        ),
+    )
+    assert result["pr"] == 13 and result["ok"] is False
+    assert result["message"].startswith("admission status write deferred")
+    # "rate limit" wording files it as a transport-window deferral, not a PR verdict.
+    assert "rate limit" in result["message"]
+    assert not _status_posts(runner, "sha-13")
+
+
+def test_autoqueue_refresh_dry_run_previews_without_posting(tmp_path: Path) -> None:
+    runner = RotationRunner(25)
+    runner.queued_prs = {13}
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    report = tick(tmp_path, runner, apply=False)
+    must_include = report["must_include"]
+    assert must_include["ok"] == [13]
+    assert must_include["refreshed"] == []
+    assert must_include["deferred"] == {}
+    assert not _status_posts(runner, "sha-13")
+    assert not (tmp_path / MUST_INCLUDE_STATE_NAME).exists()
+    preview = autoqueue._refresh_must_include_proof(
+        13,
+        "sha-13",
+        repo="owner/repo",
+        repo_root=tmp_path,
+        runner=runner,
+        now=datetime.now(UTC),
+        apply=False,
+        route=None,
+    )
+    assert preview == {"pr": 13, "ok": True, "message": "stale_would_refresh", "posted": False}
+
+
+def test_autoqueue_queued_number_absent_from_listing_is_ignored(tmp_path: Path) -> None:
+    # A queued number with no listing row is silently out of the window: no
+    # refresh, no failure counter, no crash — the listing is the liveness truth.
+    runner = RotationRunner(25)
+    runner.queued_prs = {13, 999}
+    runner.head_statuses["sha-13"] = [_admission_status("success", age_minutes=16)]
+    report = tick(tmp_path, runner)
+    assert not report.get("skipped"), report
+    assert report["must_include"]["refreshed"] == [13]
+    assert "999" not in json.dumps(report["must_include"])
+    assert 999 not in examined(report)
+    state = json.loads((tmp_path / MUST_INCLUDE_STATE_NAME).read_text())
+    assert set(state["repositories"]["owner/repo"]) == {"13"}
+    # A phantom queued number must not inflate the reserve floor and widen the
+    # window: at limit 3, one live must row leaves exactly two rotation seats.
+    assert examined(tick(tmp_path, runner, limit=3)) == [5, 6]

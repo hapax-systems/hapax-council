@@ -1424,6 +1424,17 @@ def _rotation_timestamp(
     )
 
 
+def _must_include_guarantee_disabled() -> bool:
+    """Killswitch: ``HAPAX_AUTOQUEUE_MUST_INCLUDE_OFF=1`` restores pre-guarantee
+    behavior — no must-include seats, no refresh path, no persisted state, no
+    R3 refresh-only fallback. The rotation alone reconciles, exactly as before
+    this guarantee existed (the manual stopgap watcher is the documented
+    compensating control while the killswitch is engaged).
+    """
+
+    return os.environ.get("HAPAX_AUTOQUEUE_MUST_INCLUDE_OFF", "") == "1"
+
+
 def _row_auto_merge_armed(row: dict[str, Any]) -> bool:
     """Whether a listing row (GraphQL or REST shape) carries an armed auto-merge request."""
     auto_merge = row.get("autoMergeRequest")
@@ -1476,10 +1487,14 @@ def _select_pr_window(
     """Select without acknowledging work. Repeated failures share the fair rotation.
 
     Must-include PRs (merge-queued, auto-merge-armed, or dequeued follow-up) are
-    guaranteed a window slot every tick (R2), capped at ``MUST_INCLUDE_CAP``
-    with ``MUST_INCLUDE_RESERVE`` rotation slots always preserved (R5). The
-    guarantee never silently dominates: overflow is reported, and the oldest
-    proofs are served first.
+    guaranteed a window slot every tick (R2). When must-include PRs would
+    otherwise squeeze the rotation, the window grows to at most
+    ``MUST_INCLUDE_CAP`` extra seats beyond the requested limit, with
+    ``MUST_INCLUDE_RESERVE`` rotation slots always preserved (R5). A large
+    ``--limit`` legitimately serves more must-include rows than the cap — the
+    cap bounds the guarantee's dominance over the rotation, not the window.
+    The guarantee never silently dominates: overflow is reported, and the
+    oldest proofs are served first.
     """
     if limit <= 0:
         raise ValueError("autoqueue limit must be positive")
@@ -1498,6 +1513,8 @@ def _select_pr_window(
             return stamp, number
 
         armed = {row["number"] for row in rows if _row_auto_merge_armed(row)}
+        if _must_include_guarantee_disabled():
+            armed = set()
         must = (set(must_include) | armed | set(full_exam)) & live
         must_rows = sorted((row for row in rows if row["number"] in must), key=priority)
         # No must-include rows: keep the historical window size exactly.
@@ -1656,9 +1673,9 @@ def fetch_rotating_open_prs(
     )
     if selection.overflow:
         LOG.warning(
-            "must-include overflow: %d queued/armed PRs exceed the per-tick cap (%d); "
+            "must-include overflow: %d queued/armed PRs beyond the per-tick cap (%d); "
             "oldest proofs served first, unserved: %s",
-            len(selection.must_identities),
+            len(selection.overflow),
             MUST_INCLUDE_CAP,
             list(selection.overflow),
         )
@@ -4326,7 +4343,11 @@ def run_reconciler(
         _must_include_state_path(rotation_state_path) if rotation_state_path is not None else None
     )
     must_include_state: dict[int, dict[str, Any]] = {}
-    if queued_prs_snapshot is None and must_include_state_path is not None:
+    if (
+        queued_prs_snapshot is None
+        and must_include_state_path is not None
+        and not _must_include_guarantee_disabled()
+    ):
         # R3: the queue snapshot is indeterminate, but the persisted last-known
         # must-include set can still keep its proofs fresh — refresh-only, then
         # skip the cycle exactly as before.
@@ -4396,8 +4417,12 @@ def run_reconciler(
             now=now,
         )
     queued_prs = queued_prs_snapshot
-    if must_include_state_path is not None:
+    if must_include_state_path is not None and not _must_include_guarantee_disabled():
         must_include_state = _load_must_include_state(must_include_state_path, repo=repo, now=now)
+    if _must_include_guarantee_disabled():
+        # Killswitch: no must-include seats, no R3/R6 machinery this tick.
+        queued_prs = frozenset()
+        must_include_state_path = None
     # R6: PRs in the previous snapshot, missing now, still open get a one-shot
     # full exam this tick (still-open is enforced against the listing inside
     # selection) — the fair rotation alone would keep them waiting ~100+ min
@@ -4887,7 +4912,7 @@ def run_reconciler(
             path=must_include_state_path,
             repo=repo,
             now=now,
-            served_full_exam=frozenset(dequeued_followup),
+            served_full_exam=frozenset(dequeued_followup) & {pr.number for pr in prs},
             forced_failures=tuple(
                 number
                 for number in must_overflow
