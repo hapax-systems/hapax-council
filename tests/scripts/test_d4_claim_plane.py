@@ -20,22 +20,20 @@ UNIT = REPO_ROOT / "systemd" / "units" / "codex-claim-audit.service"
 
 
 def _write_registry(path: Path, hosts: list[str]) -> None:
-    """Minimal host-storage-registry shape: one row per host as target_host."""
-    rows = [
-        {
-            "cadence": "daily",
-            "command_host": h,
-            "target_host": h,
-            "locality_class": "same_host",
-            "method": "restic-nas",
-            "store_id": f"store-{h}",
-            "unit_name": "hapax-backup-local.timer",
-            "intended_state": "enabled",
-        }
-        for h in hosts
-    ]
+    """Minimal host-storage-registry shape: an explicit claim_plane declaration."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"backup_policies": rows}), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {
+                "claim_plane": {
+                    "hosts": hosts,
+                    "source": "test",
+                    "declared_at": "2026-09-23T00:00:00Z",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _claim_plane_hosts(registry: Path, env_value: str | None) -> str:

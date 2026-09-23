@@ -4,18 +4,18 @@ Description=Hapax coordination daemon (Lisp yard, :8765, bounded control preflig
 # kept fresh by hapax-sdlc-vocab-export.timer.
 After=network-online.target hapax-sdlc-vocab-export.service
 Wants=hapax-sdlc-vocab-export.service
-Documentation=file:%h/projects/hapax-coord/README.md
+Documentation=file:%h/.cache/hapax/coord-activation/worktree/README.md
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/hapax-coord
-# Quicklisp is a prerequisite (README); setup.lisp must exist.
-ExecStart=/usr/bin/env bash %h/projects/hapax-coord/scripts/run-dev.sh --host 127.0.0.1 --port 8765 --daemon
+# #4090 canonical-root: the trainyard serves an ACTIVATION WORKTREE pinned to
+# origin/main (coord-deploy.sh: "never the mutable dev tree"). ExecStart and
+# WorkingDirectory both resolve through that worktree, not ~/projects/hapax-coord.
+WorkingDirectory=%h/.cache/hapax/coord-activation/worktree
+ExecStart=/usr/bin/env bash %h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh --host 127.0.0.1 --port 8765 --daemon
 Restart=on-failure
 RestartSec=5
 # The yard is a local control surface only (loopback bind; carve-out).
-# No non-loopback exposure.
 
 [Install]
 WantedBy=default.target
-

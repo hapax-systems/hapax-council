@@ -32,7 +32,7 @@ def _run(script: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
 def test_pin_wins_over_registry(tmp_path: Path) -> None:
     reg = tmp_path / "host-storage-registry.json"
     reg.write_text(
-        '{"backup_policies":[{"command_host":"zzz","target_host":"zzz"}]}',
+        '{"claim_plane":{"hosts":["zzz"],"source":"t","declared_at":"2026-09-23T00:00:00Z"}}',
         encoding="utf-8",
     )
     env = {
@@ -48,7 +48,7 @@ def test_pin_wins_over_registry(tmp_path: Path) -> None:
 def test_registry_derivation_succeeds_and_logs_source(tmp_path: Path) -> None:
     reg = tmp_path / "host-storage-registry.json"
     reg.write_text(
-        '{"backup_policies":[{"command_host":"hapax-podium","target_host":"hapax-appendix"},{"command_host":"beelink1","target_host":"beelink1"}]}',
+        '{"claim_plane":{"hosts":["hapax-podium","hapax-appendix","beelink1"],"source":"t","declared_at":"2026-09-23T00:00:00Z"}}',
         encoding="utf-8",
     )
     env = {"PATH": "/usr/bin:/bin", "HAPAX_HOST_STORAGE_REGISTRY": str(reg)}
@@ -57,7 +57,7 @@ def test_registry_derivation_succeeds_and_logs_source(tmp_path: Path) -> None:
     assert (
         "hapax-podium" in out.stdout and "hapax-appendix" in out.stdout and "beelink1" in out.stdout
     )
-    assert "derived from registry" in out.stderr
+    assert "DECLARATION" in out.stderr
 
 
 def test_missing_registry_without_council_dir_is_fatal() -> None:
@@ -75,7 +75,10 @@ def test_missing_registry_without_council_dir_is_fatal() -> None:
 def test_empty_registry_plane_is_fatal(tmp_path: Path) -> None:
     """A registry that yields no hosts must error closed, not no-op."""
     reg = tmp_path / "host-storage-registry.json"
-    reg.write_text('{"backup_policies":[]}', encoding="utf-8")
+    reg.write_text(
+        '{"claim_plane":{"hosts":[],"source":"t","declared_at":"2026-09-23T00:00:00Z"}}',
+        encoding="utf-8",
+    )
     env = {"PATH": "/usr/bin:/bin", "HAPAX_HOST_STORAGE_REGISTRY": str(reg)}
     out = _run(AUDIT, env)
     assert out.returncode != 0, (out.returncode, out.stdout, out.stderr)
