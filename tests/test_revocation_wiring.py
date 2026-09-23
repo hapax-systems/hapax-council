@@ -24,7 +24,7 @@ from shared.governance.revocation_wiring import (
 
 
 def _make_consent_registry(*contracts: ConsentContract) -> ConsentRegistry:
-    reg = ConsentRegistry()
+    reg = ConsentRegistry(_contracts_dir=None)
     for c in contracts:
         reg._contracts[c.id] = c
     return reg
