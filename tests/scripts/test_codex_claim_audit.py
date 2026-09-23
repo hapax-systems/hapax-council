@@ -1344,8 +1344,10 @@ class TestSystemdUnits:
         )
         registry = SCRIPT.parent.parent / "config" / "infrastructure" / "host-storage-registry.json"
         reg_text = registry.read_text()
-        assert '"claim_plane"' in reg_text and '"hapax-podium"' in reg_text and (
-            '"hapax-appendix"' in reg_text
+        assert (
+            '"claim_plane"' in reg_text
+            and '"hapax-podium"' in reg_text
+            and ('"hapax-appendix"' in reg_text)
         ), "the shipped registry must declare both plane hosts so each derives the other as peer"
 
     def test_timer_unit_parses(self) -> None:
