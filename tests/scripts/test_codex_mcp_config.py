@@ -79,9 +79,18 @@ def test_tavily_token_is_not_exported_by_parent_launcher() -> None:
 
 def test_hapax_mcp_logos_url_is_launcher_selected_not_hardcoded_localhost() -> None:
     launcher = CODEX_LAUNCHER.read_text()
+    helper = (REPO_ROOT / "scripts" / "capability-execution.sh").read_text()
 
-    assert 'mcp_servers.hapax.env.LOGOS_BASE_URL=\\"$LOGOS_BASE_URL\\"' in launcher
+    inline = 'mcp_servers.hapax.env.LOGOS_BASE_URL=\\"$LOGOS_BASE_URL\\"' in launcher
+    via_binder = "bind_codex_common_config" in launcher and (
+        'mcp_servers.hapax.env.LOGOS_BASE_URL=\\"$' in helper
+    )
+    assert inline or via_binder, (
+        "hapax MCP LOGOS_BASE_URL must stay launcher-selected: inline in the "
+        "launcher or through the shared bind_codex_common_config binder"
+    )
     assert 'mcp_servers.hapax.env.LOGOS_BASE_URL="http://localhost:8051/api"' not in launcher
+    assert 'mcp_servers.hapax.env.LOGOS_BASE_URL="http://localhost:8051/api"' not in helper
 
 
 def test_playwright_mcp_uses_noninteractive_wrapper(tmp_path: Path) -> None:

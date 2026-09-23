@@ -1,16 +1,21 @@
 [Unit]
-Description=Hapax SBCL+CLOG coordination dashboard
-Documentation=file://%h/.cache/hapax/coord-activation/worktree/README.md
-ConditionPathExists=%h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh
+Description=Hapax coordination daemon (Lisp yard, :8765, bounded control preflight)
+After=network-online.target
 OnFailure=notify-failure@%n.service
+ConditionPathExists=%h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh
+Documentation=file:%h/.cache/hapax/coord-activation/worktree/README.md
 
 [Service]
 Type=simple
+# #4090 canonical-root: the trainyard serves an ACTIVATION WORKTREE pinned to
+# origin/main (coord-deploy.sh: "never the mutable dev tree"). ExecStart and
+# WorkingDirectory both resolve through that worktree, not ~/projects/hapax-coord.
 WorkingDirectory=%h/.cache/hapax/coord-activation/worktree
-ExecStart=%h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh --daemon
-Restart=on-failure
-RestartSec=5s
+ExecStart=/usr/bin/env bash %h/.cache/hapax/coord-activation/worktree/scripts/run-dev.sh --host 127.0.0.1 --port 8765 --daemon
 NoNewPrivileges=true
+Restart=on-failure
+RestartSec=5
+# The yard is a local control surface only (loopback bind; carve-out).
 
 [Install]
 WantedBy=default.target

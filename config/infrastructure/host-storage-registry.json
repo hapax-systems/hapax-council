@@ -399,5 +399,14 @@
   ],
   "network_nodes": [],
   "schema_version": 1,
-  "secret_pointers": []
+  "secret_pointers": [],
+  "claim_plane": {
+    "hosts": [
+      "hapax-podium",
+      "hapax-appendix"
+    ],
+    "source": "G1-privilege-census-20260922 D4 + CAPABILITY-ROUTING-TABLE claim-plane hosts",
+    "declared_at": "2026-09-23T00:20:00Z",
+    "note": "Declared claim-plane membership. NOT derived from backup_policies: a backup peer is not a claim-plane host. This list is the plane; it grows by declaration, not by inference."
+  }
 }
