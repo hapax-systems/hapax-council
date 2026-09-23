@@ -503,6 +503,19 @@ jobs:
     # time (test-full-shard). The pin set is structurally pinned with semantic
     # anchors by tests/ci/test_release_gate_ci_composition.py; semantic fidelity
     # is the quorum's layer, as for every test file in the repo.
+    # The consent-containment lane's core containment behavior (consent reader
+    # pipeline, archive purge, face enrollment) is pinned here per PR — the
+    # lane's rounds/custody suites arrive with their own PRs and are executed
+    # at landing via test-full-shard (three-layer evidence, as above). The
+    # shard does NOT collect two lane trees — tests/hapax_daimonion (ignored)
+    # and packages/agentgov/tests (outside tests/) — so those trees are pinned
+    # HERE per PR instead (conversational policy, agentgov carrier): no lane
+    # tree is admitted without executed behavioral evidence somewhere. The
+    # per-PR wiring is anchored by
+    # test_egress_boundary_pin_job_executes_the_consent_containment_pins_per_pr
+    # and the landing-time layer by
+    # test_consent_containment_lane_entries_exist_with_evidence_substrate plus
+    # test_composition_suite_itself_runs_in_the_required_full_shard.
     # Unlike sibling jobs this job has NO docs-only sentinel: the class's
     # behavioral evidence must always execute (~40s); a green check that ran
     # nothing is not evidence. The duplicate-merge-group sentinel stays — it
@@ -531,7 +544,11 @@ jobs:
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
         run: >
           uv run --no-project --with pytest==9.0.2 --with pyyaml --with pydantic
-          pytest --confcutdir=tests tests/test_capability_adapter_protocol.py -q --tb=short
+          pytest --confcutdir=tests tests/test_capability_adapter_protocol.py
+          tests/test_consent_pipeline_reader.py tests/test_archive_purge.py
+          tests/shared/test_face_enrollment_registry.py
+          tests/hapax_daimonion/test_conversational_policy.py
+          packages/agentgov/tests/test_carrier.py -q --tb=short
 
 
   typecheck:

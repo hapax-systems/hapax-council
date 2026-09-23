@@ -874,7 +874,100 @@ LIVE_EGRESS_AUTO_ARM_COVERAGE: tuple[str, ...] = (
     "tests/test_cc_pr_autoqueue.py",
 )
 
+#: The consent-containment lane: the estate's person-data consent/containment
+#: surfaces, enumerated EXACTLY for production sources — a future file added
+#: beside them is NOT admitted (fail-closed; extend the lane by another gate
+#: PR). Two directory classes remain, each deliberate: ``axioms/contracts``
+#: because the containment PR deletes person-named contract files whose names
+#: must not appear in public gate source, and everything under it is a consent
+#: contract by construction. The test trees carry their evidence differently:
+#: collected trees (``tests/*``) land through the merge-queue full suite
+#: (test-full-shard, pinned required by the composition suite's all-green
+#: aggregate test); the two trees the shard does NOT collect —
+#: ``tests/hapax_daimonion`` (ignored by the shard) and
+#: ``packages/agentgov/tests`` (outside the ``tests/`` root) — are pinned
+#: per PR instead: the egress-boundary-pin job executes
+#: tests/hapax_daimonion/test_conversational_policy.py and
+#: packages/agentgov/tests/test_carrier.py on every PR head, so no lane tree
+#: is admitted without executed behavioral evidence somewhere.
+#: A live-egress-sensitive PR confined to these paths (plus docs and the gate
+#: tuple above) is covered by the class's mitigation evidence: the per-PR
+#: consent pins added to the egress-boundary-pin job (consent reader pipeline,
+#: archive purge, face enrollment) execute the lane's core containment
+#: behavior on every PR head, and the merge-queue full suite (test-full-shard,
+#: required through all-green) executes every consent, revocation, custody and
+#: identifier suite in the tree at landing — the same three-layer evidence
+#: shape as the gate tuple, with the lane's suites as the behavioral layer.
+#: Rounds/custody suites absent at this head arrive with their own PRs and are
+#: substrate-coupled by
+#: test_consent_containment_lane_entries_exist_with_evidence_substrate.
+#: Ancillary mechanics (vulture whitelist, conftest) are enumerated because
+#: containment work legitimately requires them; they carry no egress surface.
+#: Admission by lane membership is ALLOWLIST evidence, not executed-evidence:
+#: a lane path passing the coverage bound without a per-PR pin passes because
+#: it is enumerated here. Escape path: a containment fix that must touch a
+#: path outside the lane and outside the gate tuple is not blocked forever —
+#: it requires another gate PR extending this map (the same doctrine as the
+#: gate tuple); the human-release path remains the authority boundary for the
+#: sensitive_path classes.
+LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
+    "agents/_governance.py",
+    "agents/_governance/carrier.py",
+    "agents/_governance/consent.py",
+    "agents/_governance/consent_gate.py",
+    "agents/_governance/consent_label.py",
+    "agents/_governance/consent_reader.py",
+    "agents/_governance/provenance.py",
+    "agents/_governance/revocation.py",
+    "agents/hapax_daimonion/conversation_pipeline.py",
+    "agents/hapax_daimonion/conversational_policy.py",
+    "agents/studio_compositor/consent.py",
+    "agents/studio_compositor/consent_live_egress.py",
+    "axioms/contracts",
+    "logos/_governance.py",
+    "logos/api/deps/stream_redaction.py",
+    "logos/api/routes/consent.py",
+    "logos/api/routes/data.py",
+    "packages/agentgov/src/agentgov/carrier.py",
+    "packages/agentgov/src/agentgov/consent.py",
+    "packages/agentgov/src/agentgov/consent_label.py",
+    "packages/agentgov/src/agentgov/provenance.py",
+    "packages/agentgov/src/agentgov/revocation.py",
+    "packages/agentgov/tests",
+    "scripts/archive-purge.py",
+    "scripts/hapax-guest-consent",
+    "scripts/screwm-guest-source.py",
+    "scripts/vulture_whitelist.py",
+    "shared/face_enrollment_registry.py",
+    "shared/governance/consent.py",
+    "shared/governance/consent_gate.py",
+    "shared/governance/consent_reader.py",
+    "tests/conftest.py",
+    "tests/hapax_daimonion",
+    "tests/logos",
+    "tests/scripts",
+    "tests/shared",
+    "tests/test_affordance_pipeline.py",
+    "tests/test_archive_purge.py",
+    "tests/test_consent_pipeline_reader.py",
+    "tests/test_revocation_wiring.py",
+)
+
 _LIVE_EGRESS_FLAG = "audio_or_live_egress_sensitive"
+
+
+def _path_in_consent_containment_lane(path: str) -> bool:
+    """Exact-or-directory-prefix membership in the consent-containment lane.
+
+    A lane entry covers the entry path itself and everything strictly under it
+    (``entry + "/"``); ``agents/_governance`` does NOT match
+    ``agents/_governance.py`` — boundary-anchored, never substring.
+    """
+    token = path.strip()
+    return any(
+        token == entry or token.startswith(entry + "/")
+        for entry in LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES
+    )
 
 
 def _egress_uncovered_paths(changed_files: Sequence[str]) -> list[str]:
@@ -889,6 +982,7 @@ def _egress_uncovered_paths(changed_files: Sequence[str]) -> list[str]:
             if path.strip()
             and not _is_doc(path)
             and path.strip() not in LIVE_EGRESS_AUTO_ARM_COVERAGE
+            and not _path_in_consent_containment_lane(path)
         }
     )
 
@@ -904,8 +998,9 @@ def assess_release_auto_arm_estate(
 
     Applies LIVE_EGRESS_MITIGATION_CHECKS to the audio/live-egress sensitive
     class when the canon map reports it unmitigable, plus the coverage bound
-    (LIVE_EGRESS_AUTO_ARM_COVERAGE) when the PR's changed files are supplied.
-    Everything else is the canon assessment verbatim.
+    (LIVE_EGRESS_AUTO_ARM_COVERAGE and the consent-containment lane,
+    LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES) when the PR's changed files are
+    supplied. Everything else is the canon assessment verbatim.
 
     Scope boundary: this wrapper governs the autoqueue's admission and
     release-head REVALIDATION reads. The arm-time apply path
