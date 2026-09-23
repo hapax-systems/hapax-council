@@ -115,9 +115,6 @@ if ! CLAIM_PLANE_HOSTS="$(claim_plane_hosts)"; then
   echo "claim-audit: FATAL: claim-plane host list unavailable; refusing to run with an undeclared plane" >&2
   exit 2
 fi
-  echo "claim-audit: FATAL: claim-plane host list unavailable; refusing to run with an empty plane" >&2
-  exit 2
-fi
 DRY_RUN=false
 GH_CMD="${HAPAX_GH_CMD:-gh}"  # overridable for testing
 GH_REPO_SLUG="${HAPAX_GH_REPO:-${GH_REPO:-hapax-systems/hapax-council}}"

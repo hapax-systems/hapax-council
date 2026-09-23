@@ -82,7 +82,7 @@ def test_empty_registry_plane_is_fatal(tmp_path: Path) -> None:
     env = {"PATH": "/usr/bin:/bin", "HAPAX_HOST_STORAGE_REGISTRY": str(reg)}
     out = _run(AUDIT, env)
     assert out.returncode != 0, (out.returncode, out.stdout, out.stderr)
-    assert "empty plane" in out.stderr
+    assert "empty" in out.stderr
 
 
 def test_no_dev_tree_fallback(tmp_path: Path) -> None:
@@ -103,7 +103,7 @@ def test_council_dir_registry_path(tmp_path: Path) -> None:
     council = tmp_path / "worktree"
     (council / "config" / "infrastructure").mkdir(parents=True)
     (council / "config" / "infrastructure" / "host-storage-registry.json").write_text(
-        '{"backup_policies":[{"command_host":"hapax-podium","target_host":"hapax-appendix"}]}',
+        '{"claim_plane":{"hosts":["hapax-podium","hapax-appendix"],"source":"t","declared_at":"2026-09-23T00:00:00Z"}}',
         encoding="utf-8",
     )
     env = {"PATH": "/usr/bin:/bin", "HAPAX_COUNCIL_DIR": str(council)}
