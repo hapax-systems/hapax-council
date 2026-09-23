@@ -552,7 +552,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           repository: hapax-systems/reins
-          ref: 38c7e395bd36e91f6cc380b280cd569de7fbffbb
+          ref: 38c7e395bd36e91f6cc380b280cd569de7fbffbb  # pragma: allowlist secret (reins commit sha, not a secret)
           path: reins-api
       - name: Run egress-boundary behavior pins
         if: needs.post_merge_duplicate_filter.outputs.duplicate_merge_group != 'true'
@@ -619,7 +619,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           repository: hapax-systems/reins
-          ref: 38c7e395bd36e91f6cc380b280cd569de7fbffbb
+          ref: 38c7e395bd36e91f6cc380b280cd569de7fbffbb  # pragma: allowlist secret (reins commit sha, not a secret)
           path: reins-api
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
         with:
