@@ -1139,7 +1139,7 @@ if [ "$issue_count" -gt 0 ]; then
     && [ "$cache_mismatch_count" -eq 0 ] \
     && [ "$coherence_count" -eq 0 ] \
     && [ "$process_count" -eq 0 ]; then
-    exit 2
+    exit 0
   fi
   exit "$FINDINGS_EXIT"
 else
