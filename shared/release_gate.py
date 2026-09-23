@@ -910,7 +910,19 @@ LIVE_EGRESS_AUTO_ARM_COVERAGE: tuple[str, ...] = (
 #: it requires another gate PR extending this map (the same doctrine as the
 #: gate tuple); the human-release path remains the authority boundary for the
 #: sensitive_path classes.
+#: Three round-2 entries extend the same doctrine to the containment PR's
+#: remaining shapes (each missed by the lane's first enumeration, each still
+#: fail-closed for future siblings): ``tests/test_consent_gate.py`` and
+#: ``tests/test_consent_label.py`` are collected trees — landing evidence is
+#: the merge-queue full suite, exactly the other enumerated test files'
+#: class; ``.github/workflows/ci.yml`` is ancillary mechanics in the vulture
+#: whitelist/conftest sense — it carries no egress surface and is itself the
+#: executor of the lane's evidence — and its consent-relevant wiring is
+#: pinned by the composition suite (egress-boundary-pin executes the lane's
+#: pins per PR; all-green requires the jobs), which runs in the required full
+#: shard on every PR head.
 LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
+    ".github/workflows/ci.yml",
     "agents/_governance.py",
     "agents/_governance/carrier.py",
     "agents/_governance/consent.py",
@@ -949,6 +961,8 @@ LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES: tuple[str, ...] = (
     "tests/shared",
     "tests/test_affordance_pipeline.py",
     "tests/test_archive_purge.py",
+    "tests/test_consent_gate.py",
+    "tests/test_consent_label.py",
     "tests/test_consent_pipeline_reader.py",
     "tests/test_revocation_wiring.py",
 )
