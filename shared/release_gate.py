@@ -880,12 +880,16 @@ LIVE_EGRESS_AUTO_ARM_COVERAGE: tuple[str, ...] = (
 #: PR). Two directory classes remain, each deliberate: ``axioms/contracts``
 #: because the containment PR deletes person-named contract files whose names
 #: must not appear in public gate source, and everything under it is a consent
-#: contract by construction; and the test trees (``tests/*`` prefixes and
-#: ``packages/agentgov/tests``) because test code is not an egress surface —
-#: it is never imported by the production runtime — and its landing-time
-#: layer is the merge-queue full suite, pinned required by
-#: tests/ci/test_release_gate_ci_composition.py
-#: (test_all_green_aggregate_keeps_the_behavioral_and_declaration_layers).
+#: contract by construction. The test trees carry their evidence differently:
+#: collected trees (``tests/*``) land through the merge-queue full suite
+#: (test-full-shard, pinned required by the composition suite's all-green
+#: aggregate test); the two trees the shard does NOT collect —
+#: ``tests/hapax_daimonion`` (ignored by the shard) and
+#: ``packages/agentgov/tests`` (outside the ``tests/`` root) — are pinned
+#: per PR instead: the egress-boundary-pin job executes
+#: tests/hapax_daimonion/test_conversational_policy.py and
+#: packages/agentgov/tests/test_carrier.py on every PR head, so no lane tree
+#: is admitted without executed behavioral evidence somewhere.
 #: A live-egress-sensitive PR confined to these paths (plus docs and the gate
 #: tuple above) is covered by the class's mitigation evidence: the per-PR
 #: consent pins added to the egress-boundary-pin job (consent reader pipeline,

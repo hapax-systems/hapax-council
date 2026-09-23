@@ -116,6 +116,8 @@ def test_egress_boundary_pin_job_executes_the_consent_containment_pins_per_pr() 
         "tests/test_consent_pipeline_reader.py",
         "tests/test_archive_purge.py",
         "tests/shared/test_face_enrollment_registry.py",
+        "tests/hapax_daimonion/test_conversational_policy.py",
+        "packages/agentgov/tests/test_carrier.py",
     ):
         assert re.search(rf"uv run\b.*\bpytest\b.*{re.escape(pin_file)}", joined), (
             f"egress-boundary-pin no longer executes the consent pin {pin_file}"

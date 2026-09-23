@@ -273,6 +273,9 @@ def test_consent_containment_lane_surfaces_is_exact() -> None:
         "tests/test_consent_pipeline_reader.py",
         "tests/test_revocation_wiring.py",
     )
+    # The count is machine-checked so prose can never understate the lane's
+    # governance blast radius (review F round 3): 40 entries, not fewer.
+    assert len(LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES) == 40
 
 
 def test_consent_containment_lane_admits_lane_shapes() -> None:
@@ -350,7 +353,7 @@ def test_consent_containment_lane_entries_exist_with_evidence_substrate() -> Non
     # every admitted entry exists on disk with its suites present — a lane
     # entry whose path vanished, or whose directory emptied, would silently
     # degrade the three-layer evidence shape to two layers. The allowlist is
-    # machine-coupled to its substrate: 29 entries, 29 existing paths.
+    # machine-coupled to its substrate: every entry exists, none hollow.
     repo_root = Path(__file__).resolve().parents[1]
     missing: list[str] = []
     hollow: list[str] = []
