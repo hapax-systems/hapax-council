@@ -371,6 +371,9 @@ def run_claude(*args: str, home: Path, binstub: Path) -> subprocess.CompletedPro
         "PATH": f"{binstub}:/usr/bin:/bin",
         "HOME": str(home),
         "HAPAX_CLAUDE_WORKTREE_ROOT": str(home),
+        # The tmux stub has no pane to witness; readiness is pinned in
+        # test_hapax_claude_launch_readiness.py.
+        "HAPAX_CLAUDE_READY_TIMEOUT": "0",
     }
     return subprocess.run(
         ["bash", str(HAPAX_CLAUDE), *args],
