@@ -161,9 +161,8 @@ def test_mint_or_version_uses_newversion_endpoint_when_state_present(tmp_path: P
 
     newver_resp = Mock(status_code=201)
     newver_resp.json.return_value = {
-        "id": 101,
-        "doi": "10.5281/zenodo.101",
-        "conceptdoi": "10.5281/zenodo.99",
+        "id": 100,
+        "links": {"latest_draft": "https://zenodo.org/api/deposit/depositions/101"},
     }
     put_resp = Mock(status_code=200)
     put_resp.json.return_value = {"id": 101}

@@ -243,7 +243,20 @@ def _create_new_version(
     )
     _raise_for_status(newver_resp, "newversion")
     newver_body = _safe_json(newver_resp)
-    new_id = _remote_deposit_id(newver_body)
+    # Zenodo returns the original resource here, not the new draft. Only the
+    # declared deposition link identifies the version we may update/publish.
+    # https://developers.zenodo.org/#new-version
+    if _remote_deposit_id(newver_body) != prev_id:
+        raise GraphPublisherError("newversion response does not match previous deposit")
+    links = newver_body.get("links")
+    draft_url = links.get("latest_draft") if isinstance(links, dict) else None
+    prefix = ZENODO_DEPOSIT_ENDPOINT + "/"
+    if not isinstance(draft_url, str) or not draft_url.startswith(prefix):
+        raise GraphPublisherError("newversion response missing or invalid latest_draft link")
+    draft_id = draft_url[len(prefix) :]
+    if not draft_id.isascii() or not draft_id.isdecimal() or int(draft_id) <= 0:
+        raise GraphPublisherError("newversion latest_draft has invalid deposit identity")
+    new_id = int(draft_id)
     if new_id == prev_id:
         raise GraphPublisherError("newversion response reused previous deposit identity")
 

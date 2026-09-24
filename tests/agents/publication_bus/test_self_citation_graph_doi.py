@@ -327,7 +327,12 @@ def commit_case(tmp_path, monkeypatch):
     http.post.side_effect = [
         response({"id": 100, "doi": "10.x/v1"}),
         response({"id": 100, "doi": "10.x/v1", "conceptdoi": "10.x/concept"}),
-        response({"id": 101, "doi": "10.x/v2", "conceptdoi": "10.x/concept"}),
+        response(
+            {
+                "id": 100,
+                "links": {"latest_draft": "https://zenodo.org/api/deposit/depositions/101"},
+            }
+        ),
         response({"id": 101, "doi": "10.x/v2", "conceptdoi": "10.x/concept"}),
     ]
     http.put.return_value = response({})
@@ -637,7 +642,9 @@ def test_commit_version_must_preserve_concept_and_change_deposit(
     _seed_snapshot(snapshot, [("10.x/y", 2)])
     responses = list(http.post.side_effect)
     if wrong_identity == "deposit":
-        responses[0].json.return_value["id"] = 100
+        responses[0].json.return_value["links"]["latest_draft"] = (
+            "https://zenodo.org/api/deposit/depositions/100"
+        )
     else:
         responses[1].json.return_value["conceptdoi"] = "10.x/different-concept"
     http.post.side_effect = responses
@@ -649,6 +656,39 @@ def test_commit_version_must_preserve_concept_and_change_deposit(
     assert main(argv) == 1
     assert "reconcile" in capsys.readouterr().err
     assert http.post.call_count == calls
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        None,
+        "",
+        [],
+        "https://unrelated.invalid/api/deposit/depositions/101",
+        "http://zenodo.org/api/deposit/depositions/101",
+        "https://zenodo.org/api/deposit/depositions/0",
+        "https://zenodo.org/api/deposit/depositions/-1",
+        "https://zenodo.org/api/deposit/depositions/101?untrusted=1",
+        "https://zenodo.org/api/deposit/depositions/101/extra",
+    ],
+)
+def test_commit_rejects_invalid_draft_link_before_put(commit_case, capsys, link):
+    argv, graph, snapshot, http = commit_case
+    assert main(argv) == 0
+    capsys.readouterr()
+    prior_history = (graph / "version-doi-history.jsonl").read_bytes()
+    _seed_snapshot(snapshot, [("10.x/y", 2)])
+    responses = list(http.post.side_effect)
+    responses[0].json.return_value["links"]["latest_draft"] = link
+    http.post.side_effect = responses
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    http.put.assert_not_called()
+    assert http.post.call_count == 3
+    assert (graph / "version-doi-history.jsonl").read_bytes() == prior_history
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    assert http.post.call_count == 3
 
 
 def test_commit_incomplete_matching_fingerprint_is_not_no_change(commit_case, capsys):
