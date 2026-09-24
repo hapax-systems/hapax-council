@@ -283,6 +283,9 @@ fi
 # tmux server does not necessarily inherit the dispatcher's environment.
 CLAUDE_COMMAND=("$CLAUDE_BIN")
 if [ "$SUBSCRIPTION_ONLY" -eq 1 ]; then
+  # Installed copies resolve dependencies through governed activation. Freeze
+  # its physical target before preflight and retain it across the tmux server.
+  export HAPAX_SOURCE_ACTIVATE_WORKTREE="$(realpath -m -- "${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}")"
   # Pin the admitted ledger path along with HOME/config across the tmux server.
   export HAPAX_QUOTA_SPEND_LEDGER="$(realpath -m -- "${HAPAX_QUOTA_SPEND_LEDGER:-${HAPAX_QUOTA_SPEND_LEDGER_LIVE:-$HOME/.cache/hapax/orchestration/quota-spend-ledger-live.json}}")"
   SUBSCRIPTION_GUARD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hapax-claude-account-live-observe"
@@ -397,6 +400,7 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
     printf 'export HOME=%q\n' "$HOME"
     printf 'export CLAUDE_CONFIG_DIR=%q\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
     printf 'export HAPAX_QUOTA_SPEND_LEDGER=%q\n' "$HAPAX_QUOTA_SPEND_LEDGER"
+    printf 'export HAPAX_SOURCE_ACTIVATE_WORKTREE=%q\n' "$HAPAX_SOURCE_ACTIVATE_WORKTREE"
   fi
   if [ -n "$CLAUDE_TASK" ]; then
     printf 'export HAPAX_METHODOLOGY_DISPATCH_TASK=%q\n' "$CLAUDE_TASK"

@@ -64,7 +64,22 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Final
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+# Match the existing capability-receipt producer's installed-release binding.
+# Published hapax-* commands can be regular copies in ~/.local/bin, whose
+# parent is not a source tree. Explicit checkout execution keeps its own code.
+_SCRIPT_PATH = Path(__file__).resolve()
+_CHECKOUT_ROOT = _SCRIPT_PATH.parents[1]
+REPO_ROOT = (
+    _CHECKOUT_ROOT
+    if _SCRIPT_PATH.parent.name == "scripts"
+    and (_CHECKOUT_ROOT / "shared" / "quota_spend_ledger.py").is_file()
+    else Path(
+        os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+        or Path.home() / ".cache/hapax/source-activation/worktree"
+    )
+    .expanduser()
+    .resolve()
+)
 sys.path.insert(0, str(REPO_ROOT))
 ADMISSION_WRITER = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admission"
 
@@ -519,6 +534,11 @@ def interactive_subscription(argv: list[str], *, execute: bool) -> int:
         for arg in argv[1:]
     ):
         return hold("caller settings overrides cannot be bound to the measured route")
+    if not (REPO_ROOT / "shared" / "quota_spend_ledger.py").is_file():
+        return hold(
+            "governed quota implementation unavailable; restore the declared "
+            "HAPAX_SOURCE_ACTIVATE_WORKTREE release before retrying"
+        )
     token = _subscription_probe_token(datetime.now(UTC)) if _unmanaged_linux_probe() else None
     if token is None:
         return hold("subscription authentication or host policy is unproven")
