@@ -6348,12 +6348,13 @@ def recover_claim_publications(
 ) -> tuple[ClaimPublicationRecoveryResult, ...]:
     """Inspect admitted journals under role locks; hold every pending replay.
 
-    ``expected_owner`` remains a syntactically validated legacy API input only. It authenticates no caller. Applied/aborted journals can be
-    observed without replay; incomplete journals require a future independently
-    verified authority producer, even when the supplied owner tuple matches.
+    ``expected_owner`` remains a syntactically validated legacy API input only. It authenticates
+    no caller, so it may be omitted; a supplied tuple must still be well formed. Applied and
+    aborted journals are observed without replay; an interrupted journal is reconciled only
+    when every projection shows one whole vector (see ``_recover_one``).
     """
 
-    if (
+    if expected_owner is not None and (
         not isinstance(expected_owner, tuple)
         or len(expected_owner) != 2
         or any(

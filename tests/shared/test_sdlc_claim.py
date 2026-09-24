@@ -4750,8 +4750,37 @@ def test_require_refuses_missing_blob_and_unsafe_receipt(tmp_path: Path) -> None
     assert not unsafe.locks.exists()
 
 
-@pytest.mark.parametrize("owner", [None, (), ("cx-red", ""), ["cx-red", "session-abc"]])
-def test_recovery_requires_explicit_valid_owner_before_any_io(tmp_path: Path, owner) -> None:
+def test_recovery_accepts_omitted_owner_coordinates(tmp_path: Path) -> None:
+    # PR4726 review (Gemini, Muse; finding 9): the coordinates authenticate nothing, so the
+    # historical no-owner call stays valid. It still replays nothing.
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def interrupt(phase: str, index: int | None) -> None:
+        if phase == "before_projection" and index == 0:
+            raise RuntimeError("interrupted publication")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            failure_hook=interrupt,
+        )
+    before = _tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert [item.state for item in results] == ["aborted"]
+    assert (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)) == before
+
+
+@pytest.mark.parametrize("owner", [(), ("cx-red", ""), ["cx-red", "session-abc"]])
+def test_recovery_refuses_malformed_owner_coordinates_before_any_io(tmp_path: Path, owner) -> None:
     fixture = _fixture(tmp_path)
     active = _active_admission_fixture(tmp_path, fixture)
 
