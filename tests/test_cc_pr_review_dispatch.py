@@ -5986,8 +5986,13 @@ class TestWalledFamilySubstitution:
             == ()
         )
 
-    def test_walled_seat_is_never_counted_in_the_acceptor(self, tmp_path: Path) -> None:
+    def test_walled_seat_is_never_counted_and_leaves_the_team_below_floor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         # t2, writer claude, four live families: PR 42 rotation seats gemini, glm and codex.
+        secret = "test-public-gate-authority-secret"
+        monkeypatch.setenv(dispatch.public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV, secret)
+
         class GlmWalled(RecordingReviewers):
             def __call__(self, seat: Any, family_cfg: dict, prompt: str) -> str:
                 self.invocations.append((seat.id, seat.family, prompt))
@@ -6004,9 +6009,15 @@ class TestWalledFamilySubstitution:
         )
         dossier = result["dossier"]
         assert {r["family"]: r["verdict"] for r in dossier["reviewers"]}["glm"] == "quota-wall"
-        assert dossier["review_team_verdict"] == "quorum-accept"
-        receipt = yaml.safe_load((note.parent / "task-a.acceptance.yaml").read_text())
-        assert receipt["acceptor"] == "review-team:codex,gemini"
+        # Two families voted where three were seated: below the floor, so no accept and no receipt.
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert dossier["family_floor"] == {
+            "seated_families": ["codex", "gemini", "glm"],
+            "voting_families": ["codex", "gemini"],
+            "met": False,
+        }
+        assert dossier["authority_issuer"] == "review-team:codex,gemini"
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
 
     def test_walled_seat_is_never_counted_in_the_authority_issuer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -6018,6 +6029,47 @@ class TestWalledFamilySubstitution:
             tmp_path, reviewers=reviewers, task_kwargs={"quality_floor": "frontier_review_required"}
         )
         assert result["dossier"]["authority_issuer"] == "review-team:codex,gemini"
+
+    # agy auto-denied a tool headlessly and printed this (frame/briefs/agy-flash-measure-
+    # 20260905T1941Z/*.stderr); with stderr merged it lands in stdout, otherwise stdout is empty.
+    JETSKI = (
+        'jetski: no output produced — a tool required the "command" permission that headless '
+        "mode cannot prompt for, so it was auto-denied. Add an allow-rule under "
+        "permissions.allow in settings.json (e.g. command(<target>)). Alternatively, re-run "
+        "with --dangerously-skip-permissions to auto-approve all tools."
+    )
+
+    @pytest.mark.parametrize("reply", ["", "JETSKI"])
+    def test_gemini_no_output_is_an_outage_and_no_receipt(self, tmp_path: Path, reply: str) -> None:
+        reviewers = RecordingReviewers(replies={"gemini": self.JETSKI if reply == "JETSKI" else ""})
+        result, _, _, note = _review(
+            tmp_path, reviewers=reviewers, task_kwargs={"quality_floor": "frontier_review_required"}
+        )
+        dossier = result["dossier"]
+        gemini = [r for r in dossier["reviewers"] if r["family"] == "gemini"]
+        assert gemini and all(r["verdict"] == "reviewer-route-unavailable" for r in gemini)
+        assert all(r["outage_cause"] == "empty_output" for r in gemini)
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert dossier["family_floor"]["met"] is False
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        state = json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text(encoding="utf-8"))
+        assert state["gemini"]["cause"] == "seat_output"
+
+    def test_wall_and_route_block_substitute_a_distinct_family(self, tmp_path: Path) -> None:
+        # Today's #4729 shape: codex walled, glm route-blocked, claude writes. Three distinct
+        # families are seated; a declared substitute fills the third seat, never a reseat.
+        _write_codex_weekly_wall(tmp_path / "wall-home")
+        result, _, _, _ = _review(
+            tmp_path,
+            apply=False,
+            route_blocked_families={"glm": ("glmcp.review.direct:route_state_blocked",)},
+        )
+        plan = result["plan"]
+        families = [seat["family"] for seat in plan["seats"]]
+        assert len(families) == len(set(families)) == 3
+        assert {"gemini", "claude"} <= set(families)
+        substituted = plan["family_substitution"]["substitute_families_seated"]
+        assert len(substituted) == 1 and substituted[0] in {"muse", "vibe", "local"}
 
     def test_empty_output_is_an_outage_not_a_vote(self, tmp_path: Path) -> None:
         reviewers = RecordingReviewers(replies={"glm": "   \n"})
@@ -6075,7 +6127,8 @@ class TestWalledFamilySubstitution:
         assert "glm" not in _seat_families(result["plan"])
 
     def test_substitution_never_lowers_the_diversity_floor(self, tmp_path: Path) -> None:
-        # codex walled; gemini and glm route-blocked; only the writer's own family is left.
+        # codex walled; every other family (substitutes too) unavailable: only the writer's
+        # own family is left.
         _write_codex_weekly_wall(tmp_path / "wall-home")
         result, _, reviewers, note = _review(
             tmp_path,
@@ -6083,6 +6136,7 @@ class TestWalledFamilySubstitution:
             route_blocked_families={
                 "gemini": ("agy.review.direct:route_state_blocked",),
                 "glm": ("glmcp.review.direct:route_state_blocked",),
+                **{f: ("route_state_blocked",) for f in ("muse", "vibe", "local")},
             },
         )
         assert result["status"] == "constitution_blocked"
@@ -6260,6 +6314,48 @@ class TestVaultArtifactAcceptance:
         archived = note.parent / f"vault-row.acceptance.{first_head.split(':', 1)[1][:8]}.yaml"
         assert yaml.safe_load(archived.read_text())["head_sha"] == first_head
         assert dispatch.artifact_receipt_blockers(note, files, artifact_root=root)
+
+    def test_close_gate_refuses_a_receipt_once_the_bytes_change(self, tmp_path: Path) -> None:
+        # Panel r1 critical (Muse): between an edit and a re-review, cc-close's receipt gate must
+        # see that the accepted bytes are gone. A vault row has no merged-head backstop.
+        from shared.sdlc_lifecycle import acceptance_receipt_blockers
+
+        root, vault, note, files = _artifact_setup(tmp_path)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        frontmatter = yaml.safe_load(note.read_text().split("---", 2)[1])
+        assert acceptance_receipt_blockers(frontmatter, note) == ()
+        files[0].write_text("# Census\n\n14 + 4 = 19\n", encoding="utf-8")
+        assert acceptance_receipt_blockers(frontmatter, note) == (
+            "acceptance_receipt_artifact_changed:30-areas/hapax/frame/CENSUS.md",
+        )
+        files[0].write_text("# Census\n\n14 + 4 = 18\n", encoding="utf-8")
+        assert acceptance_receipt_blockers(frontmatter, note) == ()
+        files[1].unlink()
+        assert acceptance_receipt_blockers(frontmatter, note) == (
+            "acceptance_receipt_artifact_changed:30-areas/hapax/frame/CENSUS-APPENDIX.md",
+        )
+
+    def test_close_gate_refuses_a_receipt_whose_manifest_does_not_match_its_head(
+        self, tmp_path: Path
+    ) -> None:
+        from shared.sdlc_lifecycle import acceptance_receipt_blockers
+
+        root, vault, note, files = _artifact_setup(tmp_path)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        receipt_path = note.parent / "vault-row.acceptance.yaml"
+        receipt = yaml.safe_load(receipt_path.read_text())
+        frontmatter = yaml.safe_load(note.read_text().split("---", 2)[1])
+        forged = dict(receipt, head_sha="artifact-sha256:" + "0" * 64)
+        receipt_path.write_text(yaml.safe_dump(forged), encoding="utf-8")
+        assert acceptance_receipt_blockers(frontmatter, note) == (
+            "acceptance_receipt_artifact_head_mismatch",
+        )
+        rootless = dict(receipt)
+        rootless["artifact_review"] = {"manifest": receipt["artifact_review"]["manifest"]}
+        receipt_path.write_text(yaml.safe_dump(rootless), encoding="utf-8")
+        assert acceptance_receipt_blockers(frontmatter, note) == (
+            "acceptance_receipt_artifact_root_missing",
+        )
 
     def test_fresh_dossier_for_the_same_bytes_is_not_re_reviewed(self, tmp_path: Path) -> None:
         root, vault, _, files = _artifact_setup(tmp_path)
