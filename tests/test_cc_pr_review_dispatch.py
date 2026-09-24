@@ -3836,7 +3836,10 @@ class TestFamilyOutageDegradation:
         assert gemini_seats
         assert gemini_seats[0]["verdict"] == "invalid-output"
         recorded = json.loads(state.read_text(encoding="utf-8"))
-        assert "gemini" not in recorded
+        # Model stdout still cannot forge a provider-evidenced outage. Since
+        # review-constitution-walled-family-substitution-20260924 unparseable output is an
+        # outage, not a vote; its latch is marked seat_output and can never degrade t1.
+        assert recorded["gemini"]["cause"] == "seat_output"
 
     def test_provider_outage_round_records_the_family_outage(
         self, monkeypatch: Any, tmp_path: Path
@@ -3879,9 +3882,12 @@ class TestFamilyOutageDegradation:
         assert recorded["outage_started_at"] == "2026-06-12T21:00:00+00:00"  # STABLE
         assert recorded["observed_at"] == "2026-06-12T21:10:00+00:00"  # ADVANCED
 
-    def test_invalid_output_clears_stale_family_outage(
+    def test_invalid_output_restamps_stale_family_outage(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
+        # Superseded rule: invalid-output used to clear the latch. It is an outage, not a vote
+        # (review-constitution-walled-family-substitution-20260924), so it restamps instead.
+        # A legacy latch is not seat output, so the restamp does not mark it seat_output.
         state, _ = self._isolate_state(monkeypatch, tmp_path)
         state.write_text(json.dumps({"glm": "2026-06-12T20:00:00+00:00"}), encoding="utf-8")
 
@@ -3891,7 +3897,12 @@ class TestFamilyOutageDegradation:
             state,
         )
 
-        assert json.loads(state.read_text(encoding="utf-8")) == {}
+        assert json.loads(state.read_text(encoding="utf-8")) == {
+            "glm": {
+                "observed_at": "2026-06-12T21:00:00+00:00",
+                "outage_started_at": "2026-06-12T20:00:00+00:00",
+            }
+        }
 
     def test_family_outage_update_takes_exclusive_lock(
         self, monkeypatch: Any, tmp_path: Path
@@ -5006,14 +5017,17 @@ payg_fallback: false
             state,
         )
         recorded = json.loads(state.read_text(encoding="utf-8"))
-        assert recorded["claude"] == entry
+        # invalid-output is an outage (review-constitution-walled-family-substitution-20260924):
+        # it restamps observed_at and keeps the stable start and the operator until/note.
+        assert recorded["claude"] == {**entry, "observed_at": now}
         assert out == frozenset({"claude"})
         assert dispatch.load_family_outage(now, state) == frozenset({"claude"})
 
-    def test_invalid_output_with_past_until_clears_family_outage(
+    def test_invalid_output_with_past_until_restamps_but_until_rules(
         self, monkeypatch: Any, tmp_path: Path
     ) -> None:
-        """Expired until yields to clear-on-verdict."""
+        """invalid-output restamps (it is an outage, not a vote); the expired operator until
+        still decides, so the family is IN (review-constitution-walled-family-substitution)."""
         state, _ = self._isolate_state(monkeypatch, tmp_path)
         state.write_text(
             json.dumps(
@@ -5028,12 +5042,21 @@ payg_fallback: false
             ),
             encoding="utf-8",
         )
+        now = "2026-06-12T21:00:00+00:00"
         dispatch.update_family_outage(
             [{"family": "claude", "verdict": "invalid-output"}],
-            "2026-06-12T21:00:00+00:00",
+            now,
             state,
         )
-        assert json.loads(state.read_text(encoding="utf-8")) == {}
+        assert json.loads(state.read_text(encoding="utf-8")) == {
+            "claude": {
+                "observed_at": now,
+                "outage_started_at": "2026-06-12T12:00:00+00:00",
+                "until": "2026-06-12T20:00:00Z",
+                "note": "weekly reset",
+            }
+        }
+        assert dispatch.load_family_outage(now, state) == frozenset()
 
     def test_valid_verdict_without_until_clears_family_outage(
         self, monkeypatch: Any, tmp_path: Path
@@ -5885,7 +5908,7 @@ def _seed_seat_output_latch(family: str = "glm") -> None:
 
 class TestWalledFamilySubstitution:
     def test_tests_never_read_the_hosts_live_wall_traces(self, tmp_path: Path) -> None:
-        assert dispatch.WALL_TRACE_HOME == tmp_path / "wall-home"
+        assert tmp_path / "wall-home" == dispatch.WALL_TRACE_HOME
 
     def test_family_with_live_wall_evidence_is_not_seated(self, tmp_path: Path) -> None:
         _write_codex_weekly_wall(tmp_path / "wall-home")
@@ -6185,6 +6208,7 @@ class TestVaultArtifactAcceptance:
         assert receipt["pr"] is None
         assert receipt["head_sha"] == dossier["head_sha"]
         assert dossier["head_sha"] in receipt["artifact"]
+        assert receipt["artifact_review"]["manifest"] == manifest
         assert receipt["authority_signature"] == (
             dispatch.public_gate_receipts.public_gate_authority_signature(receipt, secret)
         )
@@ -6228,8 +6252,13 @@ class TestVaultArtifactAcceptance:
         assert again["status"] == "dispatched"
         assert blocking.invocations, "an edited artifact must be re-reviewed"
         assert again["dossier"]["head_sha"] != first_head
-        receipt = yaml.safe_load((note.parent / "vault-row.acceptance.yaml").read_text())
-        assert receipt["head_sha"] == first_head  # the old receipt covers only the old bytes
+        # The old receipt covered only the old bytes: it is archived, never left to close the row.
+        from shared.sdlc_lifecycle import acceptance_receipt_blockers
+
+        frontmatter = yaml.safe_load(note.read_text().split("---", 2)[1])
+        assert acceptance_receipt_blockers(frontmatter, note) == ("missing_acceptance_receipt",)
+        archived = note.parent / f"vault-row.acceptance.{first_head.split(':', 1)[1][:8]}.yaml"
+        assert yaml.safe_load(archived.read_text())["head_sha"] == first_head
         assert dispatch.artifact_receipt_blockers(note, files, artifact_root=root)
 
     def test_fresh_dossier_for_the_same_bytes_is_not_re_reviewed(self, tmp_path: Path) -> None:
@@ -6255,20 +6284,34 @@ class TestVaultArtifactAcceptance:
         assert reviewers.invocations == []
         assert not (vault / "active" / "pr-row.acceptance.yaml").exists()
 
-    @pytest.mark.parametrize("kind", ["outside_root", "symlink", "missing", "empty_set"])
+    @pytest.mark.parametrize(
+        "kind",
+        ["outside_root", "symlink_out", "missing", "directory", "empty_set", "binary", "too_large"],
+    )
     def test_unreviewable_artifact_sets_are_refused(self, tmp_path: Path, kind: str) -> None:
         root, vault, note, files = _artifact_setup(tmp_path)
         if kind == "outside_root":
             outside = tmp_path / "outside.md"
             outside.write_text("x", encoding="utf-8")
             paths = [*files, outside]
-        elif kind == "symlink":
+        elif kind == "symlink_out":
             (tmp_path / "outside-target.md").write_text("x", encoding="utf-8")
             link = files[0].parent / "LINK.md"
             link.symlink_to(tmp_path / "outside-target.md")
             paths = [*files, link]
         elif kind == "missing":
             paths = [*files, files[0].parent / "NOPE.md"]
+        elif kind == "directory":
+            paths = [*files, files[0].parent]
+        elif kind == "binary":
+            blob = files[0].parent / "blob.bin"
+            blob.write_bytes(b"\xff\xfe\x00binary")
+            paths = [*files, blob]
+        elif kind == "too_large":
+            # Reviewers must see every byte they accept; a set over the cap is refused whole.
+            big = files[0].parent / "BIG.md"
+            big.write_text("x" * dispatch.MAX_ARTIFACT_CHARS, encoding="utf-8")
+            paths = [*files, big]
         else:
             paths = []
         reviewers = RecordingReviewers()
@@ -6278,6 +6321,28 @@ class TestVaultArtifactAcceptance:
         assert result["status"] == "artifact_invalid"
         assert reviewers.invocations == []
         assert not (note.parent / "vault-row.acceptance.yaml").exists()
+
+    def test_lineage_names_each_files_last_vault_commit_and_uncommitted_edits(
+        self, tmp_path: Path
+    ) -> None:
+        root, vault, _, files = _artifact_setup(tmp_path)
+        git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+        subprocess.run([*git, "init", "-q"], check=True)
+        subprocess.run([*git, "add", "-A"], check=True)
+        subprocess.run([*git, "commit", "-q", "-m", "snapshot"], check=True)
+        head = subprocess.run(
+            [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        ).stdout.strip()
+        files[1].write_text("# Appendix\n\nedited after the snapshot\n", encoding="utf-8")
+        result = dispatch.review_artifact(
+            "vault-row", files, **_artifact_kwargs(tmp_path, vault, root, apply=False)
+        )
+        lineage = {f["path"]: f for f in result["plan"]["artifact_lineage"]["files"]}
+        census = lineage["30-areas/hapax/frame/CENSUS.md"]
+        appendix = lineage["30-areas/hapax/frame/CENSUS-APPENDIX.md"]
+        assert census["last_commit"] == head and census["uncommitted_changes"] is False
+        assert appendix["last_commit"] == head and appendix["uncommitted_changes"] is True
+        assert result["plan"]["artifact_lineage"]["task_parent_spec"] == "docs/spec.md"
 
     def test_walled_family_is_not_seated_for_an_artifact(self, tmp_path: Path) -> None:
         _write_codex_weekly_wall(tmp_path / "wall-home")

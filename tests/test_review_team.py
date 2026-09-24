@@ -3392,6 +3392,8 @@ class TestDispatcherRepoThreading:
             changed_files = ["scripts/review_team.py"]
 
         monkeypatch.setattr(dispatch, "fetch_pr", lambda *a, **k: _PrInfo())
+        # Constitution reads quota wall traces; keep this test off the host's live traces.
+        monkeypatch.setattr(dispatch, "WALL_TRACE_HOME", tmp_path / "wall-home")
         seen: list[tuple] = []
         real = rt.find_task_notes
 
