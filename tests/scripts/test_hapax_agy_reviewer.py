@@ -290,6 +290,8 @@ def _child_script(
 child = subprocess.Popen([sys.executable, '-c',
     'import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)'],
     start_new_session={escape!r})
+pathlib.Path({str(tmp / "child.start")!r}).write_text(
+    pathlib.Path(f'/proc/{{child.pid}}/stat').read_text().rsplit(')', 1)[1].split()[19])
 pathlib.Path({str(tmp / "child.pid")!r}).write_text(str(child.pid))
 pathlib.Path({str(tmp / "root")!r}).write_text(os.getcwd())
 {"time.sleep(30)" if linger else "time.sleep(0.05)"}
