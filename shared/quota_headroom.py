@@ -33,6 +33,9 @@ CLAUDE_WINDOWS = {
 }
 # A file untouched for longer than the longest window cannot hold an open window's reading.
 CLAUDE_WINDOW_HORIZON = timedelta(days=8)
+# Burn pairs: closer than the minimum the rate is noise; beyond the maximum it is history.
+BURN_MIN_SPAN = timedelta(minutes=20)
+BURN_MAX_SPAN = timedelta(hours=6)
 CLAUDE_MODEL = re.compile(r"\Aclaude-[a-z0-9.-]+\Z")
 KIMI_RESPONSE = re.compile(
     rf"({ISO_TIME.pattern})\s+[A-Z]+\s+llm response\s.*?\boutputTokens=(\d+)\b"
@@ -106,9 +109,58 @@ def evidence(capacity_id: str, *, at: datetime, reset=None, **fields) -> QuotaMe
     )
 
 
+def burn_rows(readings: list[QuotaMeasurement]) -> list[QuotaMeasurement]:
+    """Percent of a window used per hour, derived from two readings of that same window.
+
+    The newest reading is paired with the oldest one of the same capacity and the same reset
+    between BURN_MAX_SPAN and BURN_MIN_SPAN before it: a reset between readings makes their
+    difference meaningless, a short pair is noise, and a falling pair is not a burn. This is the
+    pool's burn; it is the seat's own only on a pool the seat has to itself.
+    """
+    windows = defaultdict(list)
+    for row in readings:
+        if row.label == "observed" and row.unit == "percent_used" and row.resets_at:
+            windows[row.capacity_id].append(row)
+    rows = []
+    for capacity_id, series in sorted(windows.items()):
+        newest = max(series, key=lambda row: row.observed_at)
+        earlier = [
+            row
+            for row in series
+            if row.resets_at == newest.resets_at
+            and newest.observed_at - BURN_MAX_SPAN <= row.observed_at
+            and row.observed_at <= newest.observed_at - BURN_MIN_SPAN
+        ]
+        if not earlier:
+            continue
+        oldest = min(earlier, key=lambda row: row.observed_at)
+        if newest.quantity < oldest.quantity:
+            continue
+        hours = (newest.observed_at - oldest.observed_at).total_seconds() / 3600
+        rows.append(
+            evidence(
+                f"{capacity_id}.burn",
+                at=newest.observed_at,
+                reset=newest.resets_at,
+                quantity=round((newest.quantity - oldest.quantity) / hours, 6),
+                unit="percent_used_per_hour",
+                window=f"[{oldest.observed_at.isoformat()},{newest.observed_at.isoformat()}]",
+                label="derived",
+                source=newest.source,
+                details={
+                    "from_percent": oldest.quantity,
+                    "to_percent": newest.quantity,
+                    "hours": round(hours, 4),
+                },
+            )
+        )
+    return rows
+
+
 def read_codex_token_count(sessions_root: Path) -> list[QuotaMeasurement]:
     """Select by event time across all rollouts; mtime never supplies freshness."""
     samples = []
+    window_samples = []
     local_usage_times = []
     latest = None
     for path in sorted(sessions_root.glob("**/rollout-*.jsonl")):
@@ -138,6 +190,10 @@ def read_codex_token_count(sessions_root: Path) -> list[QuotaMeasurement]:
             # provider payload makes a full-history scan exceed the timer's
             # memory ceiling; only the newest payload supplies current limits.
             samples.append((at, str(path), number((limits.get("credits") or {}).get("balance"))))
+            # Primary-window readings as bare numbers, for the burn between two of them.
+            window_samples.append(
+                (at, used, primary.get("resets_at"), number(primary.get("window_minutes")))
+            )
             if latest is None or at >= latest[0]:
                 latest = (at, str(path), limits)
     if not samples:
@@ -205,6 +261,25 @@ def read_codex_token_count(sessions_root: Path) -> list[QuotaMeasurement]:
                     details={"previous_balance": old, "balance": new},
                 )
             )
+    newest_at, _, newest_reset, minutes = max(window_samples, key=lambda row: row[0])
+    in_window = [row for row in window_samples if row[2:] == (newest_reset, minutes)]
+    rows.extend(
+        burn_rows(
+            [
+                evidence(
+                    f"codex.subscription.{'weekly' if minutes == 10080 else 'primary'}",
+                    at=sample_at,
+                    reset=instant(reset),
+                    quantity=used,
+                    unit="percent_used",
+                    label="observed",
+                    source=source_ref(path, "codex_rollout_token_count"),
+                )
+                for sample_at, used, reset, _ in in_window
+                if newest_at - BURN_MAX_SPAN <= sample_at
+            ]
+        )
+    )
     return rows
 
 
@@ -462,6 +537,7 @@ def read_claude_wall_and_spend(
         or measurement("claude.subscription.weekly", reason="no_claude_rate_limit_window_observed")
     ]
     rows.extend(sorted(newest.values(), key=lambda row: (row.capacity_id, row.window or "")))
+    rows.extend(burn_rows(readings))
     walls = read_receipt_measurements(receipts_dir, "claude")
     messages: dict[str, tuple[datetime, dict[str, float]]] = {}
     token_fields = (

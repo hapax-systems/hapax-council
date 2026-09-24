@@ -15,7 +15,7 @@ import importlib.util
 import json
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -213,7 +213,9 @@ def test_a_passive_serve_mints_no_numbers(tmp_path: Path) -> None:
     assert "used_percent" not in text and "resets_at" not in text
 
 
-def run_writer(tmp_path: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+def run_writer(
+    tmp_path: Path, *extra: str, now: str = "2026-09-24T18:06:36Z"
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             sys.executable,
@@ -221,7 +223,7 @@ def run_writer(tmp_path: Path, *extra: str) -> subprocess.CompletedProcess[str]:
             "--receipt-dir",
             str(tmp_path),
             "--now",
-            "2026-09-24T18:06:36Z",
+            now,
             "--evidence-ref",
             "claude-subscription-headroom-observed-20260924t180636z",  # pragma: allowlist secret
             *extra,
@@ -305,3 +307,133 @@ def test_writer_refuses_a_window_it_cannot_vouch_for(
     assert result.returncode != 0
     assert list(tmp_path.glob("*.yaml")) == []
     assert "next action" in result.stderr
+
+
+# H1 #15: read the quantity before probing for it; probe only when it is stale.
+
+
+def iso(at: datetime) -> str:
+    return at.isoformat().replace("+00:00", "Z")
+
+
+def passive_serve(tmp_path: Path, at: datetime) -> None:
+    """A transcript serve by a model that witnesses both default routes."""
+    path = tmp_path / "projects/proj/session.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "type": "assistant",
+        "timestamp": iso(at),
+        "message": {"model": "claude-opus-5", "usage": {"input_tokens": 3, "output_tokens": 4}},
+    }
+    path.write_text(json.dumps(record) + "\n")
+
+
+def window_receipt(tmp_path: Path, at: datetime) -> None:
+    result = run_writer(
+        tmp_path / "receipts",
+        "--probe-environment-scrubbed",
+        "--seven-day-used-percent",
+        "9",
+        "--seven-day-resets-at",
+        "2026-09-25T22:00:00Z",
+        now=iso(at),
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def run_main(monkeypatch, tmp_path: Path, capsys, *extra: str, probe_result=None):
+    calls: list[datetime] = []
+
+    def fake_probe(now: datetime):
+        calls.append(now)
+        return probe_result
+
+    monkeypatch.setattr(obs, "probe", fake_probe)
+    rc = obs.main(
+        [
+            "--transcript-glob",
+            str(tmp_path / "projects" / "*" / "*.jsonl"),
+            "--headless-glob",
+            str(tmp_path / "headless" / "*" / "output.jsonl"),
+            "--receipt-dir",
+            str(tmp_path / "receipts"),
+            "--now",
+            iso(NOW),
+            "--max-age-seconds",
+            "1800",
+            "--json",
+            *extra,
+        ]
+    )
+    return rc, json.loads(capsys.readouterr().out), calls
+
+
+def test_a_fresh_quantity_is_not_probed_again(monkeypatch, tmp_path: Path, capsys) -> None:
+    window_receipt(tmp_path, NOW - timedelta(minutes=10))
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
+    assert rc == 0 and calls == []
+    assert payload["quantity"]["stale"] is False
+    assert payload["quantity"]["newest_reading_at"] == iso(NOW - timedelta(minutes=10))
+
+
+@pytest.mark.parametrize("reading_age", [timedelta(minutes=50), None])
+def test_a_stale_or_missing_quantity_is_probed_and_the_receipt_keeps_it(
+    monkeypatch, tmp_path: Path, capsys, reading_age
+) -> None:
+    if reading_age is not None:
+        window_receipt(tmp_path, NOW - reading_age)
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    probed = obs.Observation(
+        "served",
+        NOW,
+        "active-probe",
+        model="claude-opus-5",
+        scrubbed_env=obs.PROBE_ENV_SCRUBBED,
+        windows={"seven_day": (11.0, datetime(2026, 9, 25, 22, tzinfo=UTC))},
+    )
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=probed)
+    assert rc == 0 and calls == [NOW]
+    assert payload["probe"]["requested_for_routes"] == []
+    assert payload["probe"]["quantity"]["stale"] is True
+    newest = read_claude_wall_and_spend(
+        tmp_path / "receipts", tmp_path / "none", now=NOW, stream_root=tmp_path / "none"
+    )[0]
+    assert (newest.quantity, newest.observed_at) == (11.0, NOW.replace(microsecond=0))
+
+
+def test_an_unreadable_quantity_source_never_triggers_a_probe(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    (receipts / "claude-subscription-quota-admission-claude-headless-full-x.yaml").write_text(
+        "seven_day_used_percent: [unclosed\n"
+    )
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
+    assert calls == []
+    assert payload["quantity"]["read_error"] == "corrupt_or_unreadable_quantity_source"
+    assert payload["quantity"]["stale"] is False
+
+
+def test_a_walled_account_is_not_probed_for_its_quantity(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    passive_serve(tmp_path, NOW - timedelta(minutes=5))
+    wall = {
+        "type": "assistant",
+        "timestamp": iso(NOW - timedelta(minutes=1)),
+        "message": {"model": "claude-opus-5", "error": "rate_limit"},
+        "error": "rate_limit",
+    }
+    with (tmp_path / "projects/proj/session.jsonl").open("a") as stream:
+        stream.write(json.dumps(wall) + "\n")
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
+    assert payload["verdict"] == "walled" and calls == []
+
+
+def test_no_probe_means_no_quantity_probe(monkeypatch, tmp_path: Path, capsys) -> None:
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, "--no-probe")
+    assert calls == [] and payload["quantity"]["stale"] is True

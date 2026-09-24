@@ -954,3 +954,88 @@ def test_collect_reads_claude_headless_streams_into_the_ledger(tmp_path):
         9.0,
     )
     assert snapshot.stage in {"declared-measured", "routable"}
+
+
+# H1 #3: burn per hour, derived from two readings of the same window.
+
+
+def weekly_readings(tmp_path, *points, reset=RESET_7D, prefix="l"):
+    """Stream readings of the seven-day window at (time, utilization) points, one lane each."""
+    for index, (at, utilization) in enumerate(points):
+        info = {"status": "allowed", "unifiedWindows": {}}
+        info["unifiedWindows"]["seven_day"] = {"utilization": utilization, "resetsAt": reset}
+        claude_stream(
+            tmp_path,
+            stream_init(),
+            stream_dated(at),
+            rate_limit_event(info),
+            lane=f"{prefix}{index}",
+        )
+
+
+def burn(rows):
+    return by_id(rows).get("claude.subscription.weekly.burn")
+
+
+def test_burn_is_derived_from_two_readings_of_the_same_window(tmp_path):
+    weekly_readings(tmp_path, ("2026-09-24T17:20:00Z", 0.05), ("2026-09-24T18:20:00Z", 0.08))
+    row = burn(claude_rows(tmp_path))
+    assert row is not None
+    assert (row.label, row.unit, row.quantity) == ("derived", "percent_used_per_hour", 3.0)
+    assert row.observed_at == datetime(2026, 9, 24, 18, 20, tzinfo=UTC)
+    assert row.details["from_percent"] == 5.0 and row.details["to_percent"] == 8.0
+
+
+def test_burn_pairs_the_oldest_reading_inside_the_span(tmp_path):
+    weekly_readings(
+        tmp_path,
+        ("2026-09-24T11:00:00Z", 0.01),  # more than six hours before the newest
+        ("2026-09-24T15:20:00Z", 0.02),
+        ("2026-09-24T17:20:00Z", 0.05),
+        ("2026-09-24T18:20:00Z", 0.08),
+    )
+    row = burn(claude_rows(tmp_path))
+    assert row is not None and row.quantity == 2.0
+
+
+@pytest.mark.parametrize(
+    "points",
+    [
+        # A reset between the readings: their difference measures nothing.
+        "reset",
+        # Too close together: the rate is noise.
+        (("2026-09-24T18:10:00Z", 0.05), ("2026-09-24T18:20:00Z", 0.08)),
+        # A falling reading is not a burn.
+        (("2026-09-24T17:20:00Z", 0.08), ("2026-09-24T18:20:00Z", 0.05)),
+        # One reading is not a rate.
+        (("2026-09-24T18:20:00Z", 0.08),),
+    ],
+)
+def test_no_burn_without_a_valid_pair(tmp_path, points):
+    if points == "reset":
+        weekly_readings(tmp_path, ("2026-09-24T17:20:00Z", 0.05), reset=RESET_5H, prefix="a")
+        weekly_readings(tmp_path, ("2026-09-24T18:20:00Z", 0.08), prefix="b")
+    else:
+        weekly_readings(tmp_path, *points)
+    assert burn(claude_rows(tmp_path)) is None
+
+
+def test_burn_never_freezes_or_supersedes(tmp_path):
+    weekly_readings(tmp_path, ("2026-09-24T17:20:00Z", 0.05), ("2026-09-24T18:20:00Z", 5.05))
+    rows = claude_rows(tmp_path)
+    assert burn(rows) is not None and burn(rows).quantity == 500.0
+    frozen = freeze_predicate(
+        [row for row in rows if row.capacity_id.endswith(".burn")], now=A1_NOW
+    )
+    assert not frozen["active"]
+
+
+def test_codex_burn_from_two_token_counts_in_one_window(tmp_path):
+    rows = codex(
+        tmp_path,
+        token_event(at="2026-09-19T05:50:00Z", used=10),
+        token_event(at="2026-09-19T07:50:00Z", used=14),
+    )
+    row = by_id(rows).get("codex.subscription.weekly.burn")
+    assert row is not None
+    assert (row.label, row.unit, row.quantity) == ("derived", "percent_used_per_hour", 2.0)

@@ -69,7 +69,12 @@ ADMISSION_WRITER = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admi
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.quota_headroom import claude_rate_limit_windows  # noqa: E402
+from shared.quota_headroom import (  # noqa: E402
+    TraceReadError,
+    claude_rate_limit_windows,
+    read_claude_probe_receipts,
+    read_claude_stream_windows,
+)
 
 #: The witness name the receipt validator's allowlist requires for this observation.
 WITNESS_PREFIX = "claude-subscription-headroom-observed"
@@ -84,6 +89,13 @@ DEFAULT_MAX_AGE_SECONDS = 1800
 #: Receipt lifetime. Deliberately short: an observation of "served at T" cannot vouch
 #: for a quota wall that appears at T+1h.
 DEFAULT_STALE_AFTER_SECONDS = 3600
+#: The ledger keeps a window reading fresh for one hour. Probing once the newest reading is
+#: older than 40 minutes lands the next reading before that lapses, on a 10-minute timer,
+#: and never probes for a quantity that is already fresh (H1 #15: read before probing).
+DEFAULT_QUANTITY_MAX_AGE_SECONDS = 2400
+DEFAULT_RECEIPT_DIR = Path(
+    os.environ.get("HAPAX_RELAY_RECEIPT_DIR", str(Path.home() / ".cache/hapax/relay/receipts"))
+)
 
 #: Markers that mean the SUBSCRIPTION refused for quota reasons. Kept narrow and
 #: anchored to provider wording: a generic "error" must never read as a quota wall,
@@ -715,6 +727,27 @@ def mint(
     return results
 
 
+def newest_window_reading(
+    now: datetime, *, receipt_dir: Path, headless_glob: str
+) -> datetime | None:
+    """When the newest seven-day reading the ledger reads was taken; None when there is none.
+
+    Reads the two sources the ledger reads (probe-backed receipts and headless stream-json
+    outputs) through the same reader, so this and the ledger cannot disagree about staleness.
+    Raises ``TraceReadError`` on an unreadable source.
+    """
+    rows = read_claude_probe_receipts(receipt_dir, now=now)
+    pattern = Path(os.path.expanduser(headless_glob))
+    if pattern.parts[-2:] == ("*", "output.jsonl"):
+        rows += read_claude_stream_windows(pattern.parent.parent, now=now)
+    times = [
+        row.observed_at
+        for row in rows
+        if row.capacity_id == "claude.subscription.weekly" and row.observed_at is not None
+    ]
+    return max(times, default=None)
+
+
 def mint_failed(receipts: list[dict]) -> bool:
     """True if any route was attempted and its write did not succeed.
 
@@ -744,6 +777,13 @@ def main(argv: list[str] | None = None) -> int:
         "request to observe account-live directly (~$0.02). --no-probe restricts to passive "
         "observation.",
     )
+    parser.add_argument(
+        "--quantity-max-age-seconds",
+        type=int,
+        default=DEFAULT_QUANTITY_MAX_AGE_SECONDS,
+        help="Probe when the newest subscription window reading is older than this, even if "
+        "every route has passive evidence; never when it is newer.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -772,12 +812,37 @@ def main(argv: list[str] | None = None) -> int:
     routes_missing_passive_evidence = [
         route_id for route_id, route_evidence in by_route.items() if route_evidence is None
     ]
+    # Read the quantity before spending a request on it. An unreadable source narrows:
+    # it never triggers a quantity probe on its own.
+    quantity: dict = {"max_age_seconds": args.quantity_max_age_seconds}
+    try:
+        reading_at = newest_window_reading(
+            now,
+            receipt_dir=args.receipt_dir or DEFAULT_RECEIPT_DIR,
+            headless_glob=args.headless_glob,
+        )
+    except TraceReadError:
+        reading_at, quantity["read_error"] = None, "corrupt_or_unreadable_quantity_source"
+    quantity["newest_reading_at"] = (
+        reading_at.isoformat().replace("+00:00", "Z") if reading_at else None
+    )
+    quantity["stale"] = "read_error" not in quantity and (
+        reading_at is None or (now - reading_at).total_seconds() > args.quantity_max_age_seconds
+    )
     probe_report: dict | None = None
-    if verdict != "walled" and routes_missing_passive_evidence and args.probe and not args.dry_run:
+    if (
+        verdict != "walled"
+        and (routes_missing_passive_evidence or quantity["stale"])
+        and args.probe
+        and not args.dry_run
+    ):
         probe_report = {
             "attempted": True,
             "requested_for_routes": routes_missing_passive_evidence,
-            "reason": "requested route lacked in-model-family served evidence inside the window",
+            "reason": "requested route lacked in-model-family served evidence inside the window"
+            if routes_missing_passive_evidence
+            else "the newest subscription window reading is older than its max-age",
+            "quantity": quantity,
             "model": PROBE_MODEL,
             "environment_variables_scrubbed": list(PROBE_ENV_SCRUBBED),
         }
@@ -785,7 +850,10 @@ def main(argv: list[str] | None = None) -> int:
         if probed is not None:
             probe_report["outcome"] = probed.kind
             if probed.kind == "served":
-                witnessed = evidence_by_route([probed], tuple(routes_missing_passive_evidence))
+                # A probe that saw the windows also witnesses every route it can vouch for, so
+                # the minted receipt keeps the numbers; a passive serve carries none.
+                targets = route_ids if probed.windows else tuple(routes_missing_passive_evidence)
+                witnessed = evidence_by_route([probed], tuple(targets))
                 for route_id, route_evidence in witnessed.items():
                     if route_evidence is not None:
                         by_route[route_id] = route_evidence
@@ -804,6 +872,7 @@ def main(argv: list[str] | None = None) -> int:
         "observed_at": evidence.at.isoformat().replace("+00:00", "Z") if evidence else None,
         "source": evidence.source if evidence else None,
         "route_ids": list(route_ids),
+        "quantity": quantity,
     }
     if probe_report is not None:
         payload["probe"] = probe_report
