@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tomllib
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -16,6 +17,133 @@ from shared.platform_capability_registry import NativeLoadSet
 
 def _sha(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
+
+
+def _json_sha(value: object) -> str:
+    return _sha(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def observe_codex_invocation(
+    declaration: NativeLoadSet,
+    *,
+    home: Path,
+    project: Path,
+    env: Mapping[str, str],
+    argv: Sequence[str],
+) -> dict:
+    """Observe fresh exec construction, with the prompt excluded by the caller.
+
+    Only explicit overrides are inventoried. Managed/user/project config, native
+    discovery and loading remain unobserved; we do not simulate that precedence.
+    Values (including commands, environment and secrets) are never returned.
+    """
+    refusal = (
+        "unsupported Codex invocation inventory; next action: extend the bounded "
+        "observer for the selected native arguments before launching"
+    )
+    if not argv or argv[0] != "exec":
+        raise ValueError(refusal)
+    value_options = {
+        "-C",
+        "--cd",
+        "-c",
+        "--config",
+        "-i",
+        "--image",
+        "-s",
+        "--sandbox",
+        "--enable",
+        "--disable",
+        "--add-dir",
+        "--output-schema",
+        "--color",
+        "-o",
+        "--output-last-message",
+        "--thread-source",
+    }
+    switches = {
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
+        "--skip-git-repo-check",
+        "--json",
+        "--ephemeral",
+        "--ignore-rules",
+        "--ignore-user-config",
+        "--strict-config",
+        "--approve-for-me",
+    }
+    overrides: dict = {}
+    flags = []
+    count = 0
+    effective_project = project.resolve()
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        flag, separator, value = arg.partition("=")
+        if arg.startswith(("-c", "-C")) and len(arg) > 2:
+            flag, value, separator = arg[:2], arg[2:].removeprefix("="), "="
+        if flag in value_options:
+            if not separator:
+                i += 1
+                if i >= len(argv):
+                    raise ValueError(refusal)
+                value = argv[i]
+            if flag in {"-C", "--cd"}:
+                path = Path(value)
+                effective_project = (project / path).resolve()
+            elif flag in {"-c", "--config"}:
+                key, equals, raw_value = value.partition("=")
+                if not equals:
+                    raise ValueError(refusal)
+                try:
+                    key_tree = tomllib.loads(f"{key}=0")
+                except tomllib.TOMLDecodeError:
+                    raise ValueError(refusal) from None
+                keys = []
+                while isinstance(key_tree, dict) and len(key_tree) == 1:
+                    part, key_tree = next(iter(key_tree.items()))
+                    keys.append(part)
+                if key_tree != 0 or not keys:
+                    raise ValueError(refusal)
+                try:
+                    parsed_value = tomllib.loads(f"value={raw_value}")["value"]
+                except tomllib.TOMLDecodeError:
+                    # Native -c accepts unquoted strings. Retain that meaning
+                    # internally without ever persisting the raw value.
+                    parsed_value = raw_value
+                target = overrides
+                for part in keys[:-1]:
+                    if not isinstance(target.get(part), dict):
+                        target[part] = {}
+                    target = target[part]
+                target[keys[-1]] = parsed_value
+                count += 1
+        elif flag not in switches or separator:
+            # Positional input here could be a prompt or resume/review command.
+            raise ValueError(refusal)
+        flags.append(flag)
+        i += 1
+
+    result = observe_load_set(declaration, home=home, project=effective_project, env=env)
+    result["boundary"] = "invocation_construction"
+    result["invocation"] = {
+        "argv_sha256": _json_sha(list(argv)),
+        "binding_sha256": _json_sha(
+            {
+                "argv": list(argv),
+                "roots": result["resolved_roots"],
+                "declaration": result["declaration_sha256"],
+            }
+        ),
+        "flags": flags,
+        "config_override_count": count,
+        "configured_extensions": {
+            name: sorted(overrides[key]) if isinstance(overrides.get(key), dict) else None
+            for name, key in (("hooks", "hooks"), ("mcp", "mcp_servers"))
+        },
+        "inventory_scope": "explicit argv overrides only; ambient and native discovery unobserved",
+    }
+    return result
 
 
 def observe_load_set(

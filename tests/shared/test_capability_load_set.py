@@ -203,3 +203,83 @@ def test_identical_bytes_in_different_native_homes_keep_binding_provenance(tmp_p
     assert changed["declaration_sha256"] != observations[0]["declaration_sha256"]
     assert changed["source_refs"] == declaration.source_refs
     assert changed["may_authorize"] is False
+
+
+@pytest.mark.parametrize("cd_flag", ["--cd=", "-C=", "-C"])
+def test_invocation_observes_final_roots_and_overrides_without_claiming_native_load(
+    tmp_path, cd_flag
+):
+    from shared.capability_load_set import observe_codex_invocation
+
+    native, declaration = fixture(tmp_path)
+    project = tmp_path / "other project"
+    project.mkdir()
+    args = [
+        "exec",
+        "--cd",
+        str(tmp_path),
+        "-c",
+        'mcp_servers.old.command="secret-value"',
+        '--config=mcp_servers={new={command="other-secret"}}',
+        '-chooks.Stop=[{command="private-command"}]',
+        cd_flag + str(project),
+    ]
+    result = observe_codex_invocation(
+        declaration, home=native.parent, project=tmp_path, env={}, argv=args
+    )
+    assert result["resolved_roots"]["project"] == str(project)
+    assert result["invocation"]["configured_extensions"] == {"mcp": ["new"], "hooks": ["Stop"]}
+    assert result["invocation"]["config_override_count"] == 3
+    assert result["extensions"] == dict.fromkeys(("plugins", "skills", "hooks", "mcp"))
+    assert result["native_loading"] == "unobserved"
+    assert result["boundary"] == "invocation_construction"
+    assert result["may_authorize"] is False
+    assert not any(
+        secret in json.dumps(result)
+        for secret in ("secret-value", "other-secret", "private-command")
+    )
+
+
+@pytest.mark.parametrize("args", [["resume"], ["exec", "--cd"], ["exec", "-c", "broken"]])
+def test_invocation_does_not_make_inventory_from_unsupported_or_malformed_input(tmp_path, args):
+    from shared.capability_load_set import observe_codex_invocation
+
+    native, declaration = fixture(tmp_path)
+    with pytest.raises(ValueError, match="next action"):
+        observe_codex_invocation(
+            declaration, home=native.parent, project=tmp_path, env={}, argv=args
+        )
+
+
+def test_invocation_binding_changes_with_roots_flags_and_declaration(tmp_path):
+    from shared.capability_load_set import observe_codex_invocation
+
+    native, declaration = fixture(tmp_path)
+    kwargs = dict(home=native.parent, project=tmp_path, env={}, argv=["exec"])
+    baseline = observe_codex_invocation(declaration, **kwargs)
+    for change in (
+        {"env": {"CODEX_HOME": str(tmp_path / "other")}},
+        {"project": tmp_path / "other"},
+        {"argv": ["exec", "--ignore-rules"]},
+    ):
+        changed = observe_codex_invocation(declaration, **(kwargs | change))
+        assert changed["invocation"]["binding_sha256"] != baseline["invocation"]["binding_sha256"]
+    declaration.memory_scope = "different"
+    changed = observe_codex_invocation(declaration, **kwargs)
+    assert changed["invocation"]["binding_sha256"] != baseline["invocation"]["binding_sha256"]
+
+
+def test_native_literal_config_does_not_become_known_empty_extensions(tmp_path):
+    from shared.capability_load_set import observe_codex_invocation
+
+    native, declaration = fixture(tmp_path)
+    result = observe_codex_invocation(
+        declaration,
+        home=native.parent,
+        project=tmp_path,
+        env={},
+        argv=["exec", "-c", "hooks=opaque-native-literal", "-c", "mcp_servers={}"],
+    )
+    assert result["invocation"]["configured_extensions"] == {"hooks": None, "mcp": []}
+    assert result["extensions"]["mcp"] is None
+    assert "opaque-native-literal" not in json.dumps(result)
