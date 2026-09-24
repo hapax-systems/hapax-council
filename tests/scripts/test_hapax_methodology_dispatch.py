@@ -4862,3 +4862,40 @@ def test_policy_rollback_help_documents_retirement() -> None:
     # The old help claimed legacy full-profile routes "may launch" — that is now
     # false (rollback HOLDs). Guard against the stale promise regressing.
     assert "may launch" not in help_text
+
+
+@pytest.mark.parametrize("status", ["offered", "claimed", "in_progress"])
+def test_codex_dispatch_scrubs_fresh_session_and_preserves_continuation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    module = _dispatcher_module()
+    parent_session = "2836fb1e-6ec7-4b6c-997e-9db553e7a092"
+    monkeypatch.setenv("HAPAX_SESSION_ID", parent_session)
+    output = tmp_path / "launches.jsonl"
+    launcher = tmp_path / "launcher"
+    launcher.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys, uuid\n"
+        f"with open({str(output)!r}, 'a') as stream:\n"
+        "    stream.write(json.dumps({'inherited':os.environ.get('HAPAX_SESSION_ID'), "
+        "'session':os.environ.get('HAPAX_SESSION_ID') or str(uuid.uuid4()), "
+        "'args':sys.argv[1:]})+'\\n')\n"
+    )
+    launcher.chmod(0o755)
+    monkeypatch.setenv("HAPAX_METHODOLOGY_CODEX_HEADLESS", str(launcher))
+    validation = SimpleNamespace(task=SimpleNamespace(fields={"status": status}))
+    route = module.PLATFORM_PATHS[("codex", "headless", "full")]
+    for lane in ("cx-first", "cx-second"):
+        result = module.launch_codex_headless("new-task", lane, "prompt", validation, route)
+        assert result == 0
+    records = [json.loads(line) for line in output.read_text().splitlines()]
+    assert len(records) == 2
+    if status == "offered":
+        assert all(item["inherited"] is None for item in records)
+        assert records[0]["session"] != records[1]["session"]
+        assert all(item["session"] != parent_session for item in records)
+        assert all("--no-claim" not in item["args"] for item in records)
+    else:
+        assert all(item["inherited"] == parent_session for item in records)
+        assert all(item["session"] == parent_session for item in records)
+        assert all("--no-claim" in item["args"] for item in records)
