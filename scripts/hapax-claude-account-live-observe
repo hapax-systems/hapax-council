@@ -26,15 +26,15 @@ WHAT IS ACTUALLY OBSERVABLE
 
 Token usage and a Claude model name prove a serve, but not its authentication or
 billing surface. The existing passive sources contain no request-bound subscription
-auth evidence, so they can only withhold admission on a wall:
+auth evidence, so their quota walls are diagnostics, not subscription decisions:
 
   - ``~/.cache/hapax/claude-headless/*/output.jsonl``  headless lane results
     (``is_error`` / ``api_error_status`` / ``usage``)
   - ``~/.claude/projects/*/*.jsonl``                   session transcripts
     (``assistant`` records with ``message.usage``)
 
-Positive observation uses the existing bounded active probe with its controlled
-subscription environment. With --no-probe, unbound passive serves leave the route held.
+Subscription observation uses the existing bounded active probe with its controlled
+subscription environment. With --no-probe, all unbound passive input leaves the route held.
 Current login state cannot retroactively authenticate a historical request.
 
 WHAT THIS IS NOT
@@ -46,8 +46,8 @@ session PRESENCE as evidence. Presence is exactly the defect the receipt validat
 evidence is a request that was SERVED, not a process that exists. A session sitting idle
 against an exhausted quota produces no recent usage record and therefore no receipt.
 
-Fail-closed. A wall observation newer than the newest served observation refuses to mint
-and exits non-zero, so the route stays held. No evidence in the window also refuses.
+Fail-closed. A subscription-bound probe wall refuses to mint and exits non-zero.
+No subscription-bound evidence also refuses; passive timestamps cannot change either result.
 """
 
 from __future__ import annotations
@@ -229,7 +229,7 @@ def _wall_text(record: dict) -> str:
 
 
 def _classify(record: Mapping[str, object], at: datetime, source: str) -> Observation | None:
-    """Passive records can withhold admission, but cannot establish subscription auth."""
+    """Keep passive wall diagnostics without asserting subscription authentication."""
     if any(marker.search(_wall_text(record)) for marker in WALL_MARKERS):
         return Observation("wall", at, source, "provider-quota-refusal")
     # Neither source binds a serve to its auth surface. API/PAYG and subscription
@@ -277,8 +277,8 @@ def _scan_headless(path: Path, floor: datetime) -> list[Observation]:
                 obs = _classify(record, mtime, "headless-result")
                 if obs is None:
                     continue
-                # Only walls reach here; mtime can conservatively withhold
-                # availability, but must never grant freshness to an undated serve.
+                # Only wall diagnostics reach here; mtime must never grant
+                # subscription freshness to an undated serve.
                 undated_last = obs
     except OSError:
         return []
@@ -325,8 +325,8 @@ def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
     return out
 
 
-#: Bounded active probe, used when no recent passive wall holds the account. Passive
-#: serves lack subscription-auth binding and cannot suppress this positive producer.
+#: Bounded active probe. Passive serves and walls lack subscription-auth binding
+#: and cannot suppress this producer or decide the measured account's admission.
 #: A fresh process with the controlled subscription environment measures a response;
 #: this process's own liveness is not evidence.
 #: The probe must request a model whose family can witness EVERY route it intends to mint.
@@ -932,28 +932,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     route_ids = tuple(args.route_ids or DEFAULT_ROUTE_IDS)
 
-    verdict, evidence, found = observe_all(
+    passive_verdict, passive_evidence, passive_found = observe_all(
         now=now,
         max_age_seconds=args.max_age_seconds,
         headless_glob=args.headless_glob,
         transcript_glob=args.transcript_glob,
     )
 
-    # Passive sources currently supply walls only. One controlled probe supplies
-    # positive route evidence, still constrained by the observed model family.
-    # A detected wall must stand; neither passive serves nor the probe clear it.
-    by_route = (
-        evidence_by_route(found, route_ids) if verdict == "served" else dict.fromkeys(route_ids)
-    )
-    routes_missing_passive_evidence = [
-        route_id for route_id, route_evidence in by_route.items() if route_evidence is None
-    ]
+    # Passive records do not bind the request to this subscription account. Keep
+    # their diagnostics separate: even a newer gateway wall cannot veto this
+    # controlled request, and passive success cannot stand in for one.
+    verdict, evidence = "no_evidence", None
+    by_route = dict.fromkeys(route_ids)
     probe_report: dict | None = None
-    if verdict != "walled" and routes_missing_passive_evidence and args.probe and not args.dry_run:
+    if args.probe and not args.dry_run:
         probe_report = {
             "attempted": True,
-            "requested_for_routes": routes_missing_passive_evidence,
-            "reason": "requested route lacked in-model-family served evidence inside the window",
+            "requested_for_routes": list(route_ids),
+            "reason": "passive records do not bind requests to the subscription account",
             "model": PROBE_MODEL,
             "environment_variables_scrubbed": list(PROBE_ENV_SCRUBBED),
         }
@@ -961,17 +957,14 @@ def main(argv: list[str] | None = None) -> int:
         if probed is not None:
             probe_report["outcome"] = probed.kind
             if probed.kind == "served":
-                witnessed = evidence_by_route([probed], tuple(routes_missing_passive_evidence))
-                for route_id, route_evidence in witnessed.items():
-                    if route_evidence is not None:
-                        by_route[route_id] = route_evidence
+                by_route = evidence_by_route([probed], route_ids)
                 probe_report["witnessed_routes"] = [
-                    route_id for route_id, route_evidence in witnessed.items() if route_evidence
+                    route_id for route_id, route_evidence in by_route.items() if route_evidence
                 ]
-                found.append(probed)
-                verdict, evidence, _ = _verdict(found)
+                verdict, evidence = "served", probed
             else:
-                verdict, evidence = probed.kind, probed
+                verdict = "walled" if probed.kind == "wall" else probed.kind
+                evidence = probed
         else:
             probe_report["outcome"] = "no_evidence"
             probe_report["witnessed_routes"] = []
@@ -980,6 +973,15 @@ def main(argv: list[str] | None = None) -> int:
         "observed_at": evidence.at.isoformat().replace("+00:00", "Z") if evidence else None,
         "source": evidence.source if evidence else None,
         "route_ids": list(route_ids),
+        "passive": {
+            "verdict": passive_verdict,
+            "observed_at": (
+                passive_evidence.at.isoformat().replace("+00:00", "Z") if passive_evidence else None
+            ),
+            "source": passive_evidence.source if passive_evidence else None,
+            "subscription_bound": False,
+            "observation_count": len(passive_found),
+        },
     }
     if probe_report is not None:
         payload["probe"] = probe_report
@@ -1012,7 +1014,7 @@ def main(argv: list[str] | None = None) -> int:
             rc = 0
     elif verdict == "walled":
         payload["hint"] = (
-            "subscription refused for quota reasons more recently than it served; "
+            "the controlled subscription probe refused for quota reasons; "
             "holding the route rather than minting availability"
         )
         rc = 3
@@ -1022,7 +1024,12 @@ def main(argv: list[str] | None = None) -> int:
         # of leaving the unit green while it silently observes nothing.
         payload["hint"] = (
             f"the active probe could not run ({evidence.detail if evidence else 'unknown'}); "
-            "this is a broken instrument, not an absence of evidence"
+            "this is a broken instrument, not an absence of evidence. Next action: "
+            "check `command -v claude` in the observer's configured PATH and "
+            "`systemctl --user status hapax-claude-account-live-observe.service`; "
+            "restore the executable or resolve the request timeout, then rerun "
+            "`hapax-claude-account-live-observe --probe --json` under the same "
+            "authorized subscription configuration. Admission stays held."
         )
         rc = 7
     else:

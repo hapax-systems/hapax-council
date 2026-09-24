@@ -154,7 +154,7 @@ class TestEachRouteUsesItsOwnFamily:
         payload = json.loads(capsys.readouterr().out)
         assert payload["probe"]["requested_for_routes"] == list(ROUTES)
         assert payload["probe"]["reason"] == (
-            "requested route lacked in-model-family served evidence inside the window"
+            "passive records do not bind requests to the subscription account"
         )
         assert payload["probe"]["witnessed_routes"] == list(ROUTES)
         assert payload["observed_model_by_route"] == {
@@ -243,7 +243,7 @@ class TestEachRouteUsesItsOwnFamily:
         assert by_route["claude.review.opus"].at == NOW - timedelta(minutes=3)
         assert "would_run" in _plan(tmp_path, newest, found)["claude.review.opus"]
 
-    def test_main_unbound_mixed_family_serves_cannot_clear_wall(
+    def test_main_unbound_mixed_family_records_cannot_decide_subscription(
         self, tmp_path: Path, capsys
     ) -> None:
         """Review finding: every regression test composed observe_all/evidence_by_route/mint by
@@ -284,9 +284,11 @@ class TestEachRouteUsesItsOwnFamily:
                 "--json",
             ]
         )
-        assert rc == 3
+        assert rc == 4
         payload = json.loads(capsys.readouterr().out)
-        assert payload["verdict"] == "walled"
+        assert payload["verdict"] == "no_evidence"
+        assert payload["passive"]["verdict"] == "walled"
+        assert payload["passive"]["subscription_bound"] is False
         assert not payload.get("receipts")
 
     def test_evidence_by_route_picks_the_freshest_in_family_not_the_first(

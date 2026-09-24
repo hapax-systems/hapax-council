@@ -11,18 +11,18 @@ Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-cl
 # NORMAL outcome: 3 = a quota wall was observed, 4 = nothing exercised the subscription
 # and the probe could not observe either. Both are correct fail-closed results that hold
 # the route; paging on them would train the operator to ignore the notifier. A genuine
-# defect here looks like the timer not firing, which the paired timer's Persistent=true
-# and the receipt's own expiry already surface (the route simply holds).
+# defect here looks like the timer not firing; its monotonic boot/active cadence does
+# not catch up missed runs. The receipt's own expiry then holds the route.
 
 [Service]
 Type=oneshot
 # Reads headless results and session transcripts for recent quota walls only. Passive
-# serves do not establish subscription authentication and cannot mint admission or skip
-# the probe. If no wall holds the account, makes ONE bounded Opus subscription request;
+# records do not establish subscription authentication and cannot mint admission or skip
+# the probe. Makes ONE bounded Opus subscription request to decide account admission;
 # a served response can witness headless, review and interactive routes. The existing
 # scripts/hapax-claude-subscription-quota-admission writer owns sanitization and bounds.
 # Lane/tmux presence never witnesses quota. Pass --no-probe to read passive walls only;
-# unbound passive serves then leave admission held.
+# all unbound passive records then leave admission held without asserting exhaustion.
 #
 # --max-age-seconds 900 with the writer's TTL: the receipt is anchored to the OBSERVATION
 # time, not the mint time, so a 14-minute-old observation yields 14 fewer minutes of

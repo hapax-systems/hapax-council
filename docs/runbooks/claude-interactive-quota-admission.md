@@ -15,11 +15,18 @@ The scheduled account-live observer now includes this route and requires an
 Opus-family serve, matching the declared interactive model family. A Haiku or
 Sonnet serve cannot witness interactive admission. Passive transcripts and headless
 logs do not bind requests to subscription authentication; their model names and
-token usage cannot establish headroom. They can only report quota walls. Use
+token usage cannot establish headroom. Their walls remain under the observer's
+`passive` diagnostics with `subscription_bound: false`; they cannot skip or veto
+the controlled subscription probe, even with a newer timestamp. Only that probe
+can establish subscription refusal (exit 3) or a qualifying serve. Use
 `--no-probe` when a live probe is not authorized; it leaves admission held even
 when an unbound passive Opus serve exists. The existing active subscription probe
 remains the positive observation path. Current login state cannot authenticate
-an earlier passive request.
+an earlier passive request. A disabled/dry-run probe or completed request without
+evidence leaves admission held (exit 4); failure to execute or timeout remains
+an instrument failure (exit 7), with an executable/service check and bounded
+rerun in the diagnostic. Recheck these boundaries through the real observer and
+receipt writer with `tests/scripts/test_claude_passive_wall_authority.py`.
 
 The active probe reads the existing Claude saved-login credential binding
 `$CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude/.credentials.json`).
@@ -186,6 +193,7 @@ Run the regression from the source checkout using its declared test environment:
 uv run pytest tests/scripts/test_hapax_claude_interactive_admission.py \
   tests/scripts/test_claude_interactive_admission_review.py \
   tests/scripts/test_claude_interactive_admission_auth_review.py \
+  tests/scripts/test_claude_passive_wall_authority.py \
   tests/scripts/test_claude_probe_subscription_boundary.py \
   tests/scripts/test_claude_interactive_launch_auth.py \
   tests/scripts/test_claude_interactive_credential_binding.py \

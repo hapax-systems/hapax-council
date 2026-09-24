@@ -172,7 +172,7 @@ def test_real_probe_result_reaches_interactive_mint(tmp_path, monkeypatch, capsy
         assert receipt["observed_at"] == NOW
         assert "synthetic-redirect-value" not in written[0].read_text()
     else:
-        assert rc == {"claude-sonnet-4-5": 5, "wall": 4, None: 4}[model]
+        assert rc == {"claude-sonnet-4-5": 5, "wall": 3, None: 4}[model]
         assert not written
 
 
