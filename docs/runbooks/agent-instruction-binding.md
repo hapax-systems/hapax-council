@@ -550,6 +550,14 @@ SIGKILL from `subprocess.run(timeout=...)`, so the supervisor can finish cleanup
 and remove the temporary credential workspace. Captured output uses unlinked
 files, avoiding a hang on pipe descriptors inherited by descendants.
 
+During native launch the supervisor latches SIGTERM/SIGINT without raising, so
+the child handle cannot be lost between spawn and assignment. Launch and timeout
+setup are inside the cleanup boundary; cancellation is raised after ownership
+is recorded. Cleanup still verifies PGID/SID, ignores repeated cancellation
+until reaping finishes, and restores the previous signal handlers. Focused
+`test_launch_window_signal_cleans_live_owned_group` cases inject both signals
+before `Popen` returns and during deadline setup, plus a direct setup exception.
+
 This is bounded process-group cleanup. A descendant which deliberately leaves
 the group/session is not proven owned by that boundary and is not killed. Killing
 the supervisor itself with SIGKILL, host failure, or external child reaping is

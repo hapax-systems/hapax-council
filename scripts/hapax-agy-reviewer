@@ -237,18 +237,33 @@ def _run_owned(
             + "\n"
         )
         stdin.seek(0)
-        proc = subprocess.Popen(
-            cmd,
-            stdin=stdin,
-            stdout=stdout,
-            stderr=stderr,
-            cwd=workdir,
-            env=_review_env(workdir),
-            start_new_session=True,
-        )
-        deadline = time.monotonic() + timeout if timeout is not None else None
+        proc = None
+        cancelled = False
+
+        def cancel(signum: int, frame: object) -> None:
+            nonlocal cancelled
+            cancelled = True
+
+        # A raising handler can lose the child before Popen returns its handle.
+        # Latch termination until ownership is stored; do not block signals,
+        # since a child would inherit the blocked mask across exec.
+        handlers = {sig: signal.signal(sig, cancel) for sig in (signal.SIGTERM, signal.SIGINT)}
         try:
-            while os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                cwd=workdir,
+                env=_review_env(workdir),
+                start_new_session=True,
+            )
+            deadline = time.monotonic() + timeout if timeout is not None else None
+            while True:
+                if cancelled:
+                    raise InterruptedError("review cancelled")
+                if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None:
+                    break
                 if select.select([lifetime], [], [], 0.05)[0]:
                     raise InterruptedError("review caller exited")
                 if deadline is not None and time.monotonic() >= deadline:
@@ -257,7 +272,12 @@ def _run_owned(
             # Repeated cancellation must not interrupt group cleanup.
             for sig in (signal.SIGTERM, signal.SIGINT):
                 signal.signal(sig, signal.SIG_IGN)
-            _stop_owned_group(proc)
+            try:
+                if proc is not None:
+                    _stop_owned_group(proc)
+            finally:
+                for sig, handler in handlers.items():
+                    signal.signal(sig, handler)
         stdout.seek(0)
         stderr.seek(0)
         return subprocess.CompletedProcess(cmd, proc.returncode, stdout.read(), stderr.read())

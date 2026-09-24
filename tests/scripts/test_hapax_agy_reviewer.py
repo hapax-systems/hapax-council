@@ -497,8 +497,9 @@ child = subprocess.Popen([sys.executable, '-c',
     start_new_session={escape!r})
 pathlib.Path({str(tmp / "child.start")!r}).write_text(
     pathlib.Path(f'/proc/{{child.pid}}/stat').read_text().rsplit(')', 1)[1].split()[19])
-pathlib.Path({str(tmp / "child.pid")!r}).write_text(str(child.pid))
 pathlib.Path({str(tmp / "root")!r}).write_text(os.getcwd())
+pathlib.Path({str(tmp / "child.ready")!r}).write_text(str(child.pid))
+pathlib.Path({str(tmp / "child.ready")!r}).replace({str(tmp / "child.pid")!r})
 {"time.sleep(30)" if linger else "time.sleep(0.05)"}
 emit()
 sys.exit({exit_code})
@@ -550,6 +551,104 @@ def test_timeout_kills_owned_child_and_cleans_workspace(tmp_path: Path, child_re
     assert "check route admission and retry the same pinned review" in result.stderr
     assert not _running(int(child_record.read_text()))
     assert not Path((tmp_path / "root").read_text()).exists()
+
+
+@pytest.mark.parametrize(
+    ("window", "sig"),
+    [
+        ("spawn_return", signal.SIGTERM),
+        ("spawn_return", signal.SIGINT),
+        ("deadline", signal.SIGTERM),
+        ("deadline", signal.SIGINT),
+        ("deadline_exception", None),
+    ],
+)
+def test_launch_window_signal_cleans_live_owned_group(
+    tmp_path: Path, child_record: Path, window: str, sig: int | None
+) -> None:
+    fake = _fake_agy(tmp_path, _child_script(tmp_path, linger=True))
+    observation = tmp_path / "launch-window.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"""
+import json, os, pathlib, runpy, signal, subprocess, time
+wrapper = runpy.run_path({str(WRAPPER)!r})
+native_popen, clock = subprocess.Popen, time.monotonic
+processes = []
+observed = {{}}
+def running(pid):
+    try:
+        return pathlib.Path(f'/proc/{{pid}}/stat').read_text().rsplit(')', 1)[1].split()[0] != 'Z'
+    except FileNotFoundError:
+        return False
+def interrupted(signum, frame):
+    raise InterruptedError('injected supervisor cancellation')
+for sig in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(sig, interrupted)
+def inject():
+    observed['child_live_at_signal'] = running(int(pathlib.Path({str(child_record)!r}).read_text()))
+    if {window!r} == 'deadline_exception':
+        raise InterruptedError('injected deadline interruption')
+    os.kill(os.getpid(), {sig})
+def launch(*args, **kwargs):
+    proc = native_popen(*args, **kwargs)
+    processes.append(proc)
+    deadline = clock() + 3
+    while not pathlib.Path({str(child_record)!r}).exists():
+        if clock() >= deadline:
+            raise RuntimeError('fake child did not start')
+        time.sleep(0.01)
+    if {window!r} == 'spawn_return':
+        inject()  # The real spawn succeeded; assignment in _run_owned has not.
+    return proc
+def deadline_clock():
+    if processes and {window!r}.startswith('deadline') and not observed:
+        inject()  # Popen returned; the predecessor cleanup try is still unarmed.
+    return clock()
+subprocess.Popen, time.monotonic = launch, deadline_clock
+read_fd, write_fd = os.pipe()
+try:
+    try:
+        wrapper['_run_owned']([{str(fake)!r}], pathlib.Path({str(tmp_path)!r}), 'review', 2, read_fd)
+    except InterruptedError:
+        observed['interrupted'] = True
+    # The leader may already be reaped while the kernel still schedules the
+    # descendant's SIGKILL. Bound that observation; rescue happens only below.
+    child_pid = int(pathlib.Path({str(child_record)!r}).read_text())
+    deadline = clock() + 1
+    while running(child_pid) and clock() < deadline:
+        time.sleep(0.01)
+    observed['leader_running'] = running(processes[0].pid)
+    observed['child_running'] = running(child_pid)
+    observed['leader_reaped'] = processes[0].returncode is not None
+    observed['handlers_restored'] = all(
+        signal.getsignal(sig) is interrupted for sig in (signal.SIGTERM, signal.SIGINT))
+    pathlib.Path({str(observation)!r}).write_text(json.dumps(observed))
+finally:
+    # Preserve the observation before rescue; never leave the deliberately red
+    # case's owned processes running. Keep its unreaped leader as identity proof.
+    subprocess.Popen, time.monotonic = native_popen, clock
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, signal.SIG_IGN)
+    for proc in processes:
+        if proc.returncode is None:
+            wrapper['_stop_owned_group'](proc)
+    os.close(read_fd)
+    os.close(write_fd)
+""",
+        ],
+        text=True,
+        capture_output=True,
+        timeout=6,
+    )
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(observation.read_text())
+    assert observed["child_live_at_signal"] and observed["interrupted"]
+    assert not observed["child_running"], observed
+    assert not observed["leader_running"] and observed["leader_reaped"], observed
+    assert observed["handlers_restored"]
 
 
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGKILL])
