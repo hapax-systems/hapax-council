@@ -4873,7 +4873,10 @@ def _superseding_applied_publication(
     An applied journal whose projections drifted is superseded, not damaged, when the latest
     later admitted publication for the same task and note path passes the full applied
     readback: its receipt, its live sidecars and a note postimage equal to the live note. A
-    manifest's ``applied`` flag alone proves nothing (PR4726 round 2, Muse new-1). Read-only.
+    manifest's ``applied`` flag alone proves nothing (PR4726 round 2, Muse new-1). Only the
+    latest candidate is tried (round 3, kept by choice): only it can own the live note, and a
+    damaged latest owner is reconciled, never bypassed through an older one, so it holds.
+    Equal epochs are never ordered, so a tie supersedes nothing. Read-only.
     The caller holds this task's note lock, which every writer of the successor's projections
     takes, so the readback is consistent; the successor's role lock is not taken because a
     second role lock under a held note lock is a lock-order inversion.
@@ -6420,13 +6423,17 @@ def recover_claim_publications(
         except (ClaimPublicationError, TaskNoteLockError) as exc:
             # Note-lock contention (another writer of this task) holds this one journal,
             # exactly like role contention; it never aborts the rest of the run.
+            # A refusal missing its typed fields still holds only this journal; the handler
+            # itself must never raise (PR4726 round 3, Vibe).
             results.append(
                 ClaimPublicationRecoveryResult(
                     entry.name,
                     "hold",
-                    exc.reason_code,
+                    getattr(exc, "reason_code", None) or "claim_publication_recovery_refused",
                     detail=getattr(exc, "detail", None),
-                    repair_action=exc.repair_action,
+                    repair_action=getattr(exc, "repair_action", None)
+                    or "preserve the journal and projections and retry recovery after the "
+                    "contending writer finishes",
                 )
             )
     return tuple(results)
