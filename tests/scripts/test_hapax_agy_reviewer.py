@@ -10,6 +10,7 @@ import runpy
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -56,14 +57,248 @@ def _fake_agy(tmp: Path, body: str = "emit()") -> Path:
     return path
 
 
+def _protocol_wrapper_command() -> list[str]:
+    # Protocol/ownership cases deliberately exercise their original boundary.
+    # Mount enforcement has separate real-bwrap integration tests below; no
+    # environment switch or uncontained fallback exists in the shipped wrapper.
+    return [
+        sys.executable,
+        "-c",
+        (
+            "import runpy; "
+            f"m = runpy.run_path({str(WRAPPER)!r}); "
+            "m['_review'].__globals__['_contained_command'] = lambda cmd, workdir: cmd; "
+            "raise SystemExit(m['main']())"
+        ),
+    ]
+
+
 def _run(fake: Path, *args: str, dossier: str = "diff --git a/x b/x\n+change\n"):
     return subprocess.run(
-        [str(WRAPPER), "--agy-bin", str(fake), *args],
+        [*_protocol_wrapper_command(), "--agy-bin", str(fake), *args],
         input=dossier,
         text=True,
         capture_output=True,
         timeout=5,
     )
+
+
+def _shell_agy(tmp_path: Path, body: str = "") -> Path:
+    fake = tmp_path / "agy"
+    event = json.dumps({"event": "result", "result": {"status": "SUCCESS", "response": REVIEW}})
+    fake.write_text("#!/bin/bash\n" + body + "\nprintf '%s\\n' '" + event + "'\n")
+    fake.chmod(0o755)
+    return fake
+
+
+def _run_contained(fake: Path, *args: str):
+    return subprocess.run(
+        [str(WRAPPER), "--agy-bin", str(fake), *args],
+        input="Synthetic containment test.",
+        text=True,
+        capture_output=True,
+        timeout=5,
+    )
+
+
+def test_host_root_search_cannot_read_host_only_marker(tmp_path: Path) -> None:
+    marker = tmp_path / "host-only-marker"
+    marker.write_text("HOST_MARKER_MUST_STAY_OUTSIDE_REVIEW")
+    fake = _shell_agy(
+        tmp_path,
+        f"""
+# Start at / and prune everything except the marker's ancestors.
+shopt -s nullglob dotglob
+target={str(marker)!r}
+search() {{
+    local item
+    for item in "$1"/*; do
+        if [[ "$item" == "$target" && -r "$item" ]]; then
+            printf 'HOST_MARKER_MUST_STAY_OUTSIDE_REVIEW\\n' >&2
+        fi
+        if [[ -d "$item" && "$target" == "$item/"* ]]; then search "$item"; fi
+    done
+}}
+search ""
+""",
+    )
+    result = _run_contained(fake)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == REVIEW
+    assert "HOST_MARKER_MUST_STAY_OUTSIDE_REVIEW" not in result.stderr
+
+
+@pytest.mark.parametrize("failure", ["missing_bwrap", "missing_dependency", "namespace_setup"])
+def test_containment_failure_never_runs_uncontained(tmp_path: Path, failure: str) -> None:
+    fake = _shell_agy(tmp_path, "printf 'NATIVE_WAS_RUN\\n' >&2")
+    overrides = {
+        "missing_bwrap": "g['BWRAP_BIN'] = '/missing-test-bwrap'",
+        "missing_dependency": "g['REVIEW_RUNTIME_FILES'] = ('/missing-test-runtime-file',)",
+        "namespace_setup": (
+            "original = g['_contained_command']; "
+            "g['_contained_command'] = lambda cmd, workdir: "
+            "original(cmd, workdir)[:1] + ['--ro-bind', '/missing-test-mount', '/missing'] "
+            "+ original(cmd, workdir)[1:]"
+        ),
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                f"import runpy; m=runpy.run_path({str(WRAPPER)!r}); "
+                "g=m['_review'].__globals__; " + overrides[failure] + "; "
+                f"raise SystemExit(m['main'](['--agy-bin', {str(fake)!r}]))"
+            ),
+        ],
+        input="synthetic review",
+        text=True,
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode != 0
+    assert result.stdout == "" and "NATIVE_WAS_RUN" not in result.stderr
+    assert "Do not retry without filesystem containment" in result.stderr
+
+
+def test_containment_hides_host_proc_root(tmp_path: Path) -> None:
+    marker = tmp_path / "host-proc-marker"
+    marker.write_text("only outside")
+    fake = _shell_agy(
+        tmp_path,
+        f"""
+if [[ -e /proc/{os.getpid()}/stat || -r /proc/{os.getpid()}/root{marker} ]]; then
+    printf 'HOST_PROC_ROOT_VISIBLE\\n' >&2
+fi
+""",
+    )
+    result = _run_contained(fake)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == REVIEW
+    assert "HOST_PROC_ROOT_VISIBLE" not in result.stderr
+
+
+@pytest.mark.parametrize("size", [40, 2_500_000])
+def test_contained_dossier_seed_and_readonly_binary(tmp_path: Path, size: int) -> None:
+    _seed_operator_token(Path(os.environ["HOME"]))
+    fake = _shell_agy(
+        tmp_path,
+        f"""
+IFS= read -r input
+[[ "$input" == *BEGIN_CONTAINED* && "$input" == *END_CONTAINED* ]] || exit 9
+[[ "$HOME" == "$PWD/home" && ! -e review-dossier.md ]] || exit 10
+IFS= read -r token < "$HOME/.gemini/antigravity-cli/antigravity-oauth-token" || :
+[[ "$token" == *{FAKE_ACCESS_TOKEN}* ]] || exit 11
+if {{ printf 'unsafe' > /usr/bin/agy; }} 2>/dev/null; then exit 12; fi
+""",
+    )
+    before = fake.read_bytes()
+    result = subprocess.run(
+        [str(WRAPPER), "--agy-bin", str(fake)],
+        input="BEGIN_CONTAINED π" + "x" * size + "λ END_CONTAINED",
+        text=True,
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == REVIEW
+    assert fake.read_bytes() == before
+
+
+@pytest.mark.parametrize("mode", ["success", "timeout", "tool", "cancel"])
+def test_contained_owned_descendants_removed(tmp_path: Path, mode: str, monkeypatch) -> None:
+    # The namespace-local child PID is only a readiness record. Never use it
+    # as a host PID; fixture rescue retains the actual parent Popen handle.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    body = """
+/bin/bash -c 'trap "" TERM; while :; do :; done' &
+printf '%s' "$!" > child.pid
+"""
+    if mode in {"timeout", "cancel"}:
+        body += "while :; do :; done\n"
+    elif mode == "tool":
+        body += (
+            "printf '%s\\n' '"
+            + json.dumps(
+                {
+                    "event": "step_update",
+                    "step_update": {"step_type": "tool", "state": "DONE", "step_index": 1},
+                }
+            )
+            + "'\n"
+        )
+    fake = _shell_agy(tmp_path, body)
+    wrapper = runpy.run_path(str(WRAPPER))
+    cmd = wrapper["_contained_command"]([str(fake)], workspace)
+    read_fd, write_fd = os.pipe()
+    processes = []
+    native_popen = subprocess.Popen
+
+    def launch(*args, **kwargs):
+        proc = native_popen(*args, **kwargs)
+        processes.append(proc)  # Retain our unreaped handle for fixture rescue.
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    cancelled = threading.Event()
+
+    def cancel():
+        deadline = time.monotonic() + 2
+        while not (workspace / "child.pid").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        os.close(write_fd)
+        cancelled.set()
+
+    canceller = threading.Thread(target=cancel) if mode == "cancel" else None
+    try:
+        if canceller:
+            canceller.start()
+            with pytest.raises(InterruptedError):
+                wrapper["_run_owned"](cmd, workspace, "synthetic", 2, read_fd)
+        elif mode == "timeout":
+            with pytest.raises(subprocess.TimeoutExpired):
+                wrapper["_run_owned"](cmd, workspace, "synthetic", 0.3, read_fd)
+        else:
+            result = wrapper["_run_owned"](cmd, workspace, "synthetic", 2, read_fd)
+            assert result.returncode == 0, result.stderr
+            if mode == "tool":
+                with pytest.raises(wrapper["UnsupportedReviewActivity"]):
+                    wrapper["_stream_response"](result.stdout)
+            else:
+                assert wrapper["_stream_response"](result.stdout) == REVIEW
+        assert (workspace / "child.pid").exists(), "child never started"
+        # These fixtures retain this unique cwd; inspect live survivor metadata.
+        # Zombies are completed, not running survivors.
+        deadline = time.monotonic() + 1
+        while True:
+            survivors = []
+            for proc in Path("/proc").iterdir():
+                if not proc.name.isdigit():
+                    continue
+                try:
+                    if (proc / "stat").read_text().rsplit(")", 1)[1].split()[0] == "Z":
+                        continue
+                    if os.readlink(proc / "cwd") == str(workspace):
+                        survivors.append(int(proc.name))
+                except (OSError, ValueError):
+                    pass
+            if not survivors or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        assert not survivors
+    finally:
+        if canceller:
+            canceller.join(3)
+        for proc in processes:
+            if proc.returncode is None:
+                os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                if os.getpgid(proc.pid) == proc.pid and os.getsid(proc.pid) == proc.pid:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=3)
+        os.close(read_fd)
+        if not cancelled.is_set():
+            os.close(write_fd)
 
 
 @pytest.mark.parametrize("size", [40, 2_500_000])
@@ -289,7 +524,8 @@ def test_malformed_output_on_native_failure_preserves_status_and_diagnostic(tmp_
     )
     assert result.returncode == 7
     assert result.stdout == ""
-    assert result.stderr == "agy failed\n"
+    assert result.stderr.startswith("agy failed\n")
+    assert "Do not retry without filesystem containment" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -327,6 +563,7 @@ def fail(cmd, workdir, *args):
     pathlib.Path({str(observed)!r}).write_text(str(workdir))
     raise RuntimeError({FAKE_ACCESS_TOKEN!r})
 wrapper['_review'].__globals__['_run_owned'] = fail
+wrapper['_review'].__globals__['_contained_command'] = lambda cmd, workdir: cmd
 raise SystemExit(wrapper['main'](['--agy-bin', '/unused/agy']))
 """,
         ],
@@ -657,7 +894,7 @@ def test_caller_cancellation_still_cleans_group(
 ) -> None:
     fake = _fake_agy(tmp_path, _child_script(tmp_path, linger=True))
     with subprocess.Popen(
-        [str(WRAPPER), "--agy-bin", str(fake), "--print-timeout", "2s"],
+        [*_protocol_wrapper_command(), "--agy-bin", str(fake), "--print-timeout", "2s"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

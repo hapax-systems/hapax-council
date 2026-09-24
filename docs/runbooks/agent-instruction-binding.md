@@ -509,7 +509,13 @@ workspace monthly audit follows named aliases and deduplicates resolved targets.
 ### Recheck Agy dossier delivery and child cleanup
 
 Run `uv run --no-sync pytest tests/scripts/test_hapax_agy_reviewer.py -q` from
-the candidate source. The doubles exercise short and 2.5 MB Unicode dossiers,
+the candidate source. Protocol/ownership doubles replace only the mount-command
+builder in a test harness so their original Python fixtures remain executable;
+the shipped wrapper has no bypass switch. Separate real-Bubblewrap tests exercise
+host-root marker hiding, host `/proc` hiding, read-only mounts, missing runtime or
+containment refusal, contained stdin/OAuth delivery, exit, tool refusal, timeout
+and caller lifetime cancellation. The protocol doubles exercise short and 2.5 MB
+Unicode dossiers,
 OAuth isolation and raw/nested-JSON-escaped echo suppression on both streams before
 parsing (including native failures), semantic YAML token checks, native final-result
 unwrapping, malformed output, timeout, caller cancellation and process ownership.
@@ -540,8 +546,9 @@ tool-attempt reviews refused if that qualification is unavailable. CLI help and
 official permission/custom-agent documentation are candidate configuration
 evidence; neither replaces an observed enforcement boundary.
 
-The wrapper forks a small lifetime supervisor before launching Agy. Agy leads a
-new session/process group. The supervisor observes exit with `waitid(WNOWAIT)`
+The wrapper forks a small lifetime supervisor before launching Bubblewrap, which
+leads a new session/process group containing Agy. The supervisor observes exit
+with `waitid(WNOWAIT)`
 and checks the unreaped child's PGID/SID before signalling that group. Keeping
 the child unreaped reserves its identifier until TERM, a 150 ms cleanup grace,
 KILL and wait finish. The original print timeout and pinned model are unchanged.
@@ -558,14 +565,36 @@ until reaping finishes, and restores the previous signal handlers. Focused
 `test_launch_window_signal_cleans_live_owned_group` cases inject both signals
 before `Popen` returns and during deadline setup, plus a direct setup exception.
 
-This is bounded process-group cleanup. A descendant which deliberately leaves
+This is bounded process-group cleanup. At that boundary, a descendant which
+deliberately leaves
 the group/session is not proven owned by that boundary and is not killed. Killing
 the supervisor itself with SIGKILL, host failure, or external child reaping is
 outside the cleanup guarantee. Do not remedy those limits by killing role-wide
 matches or guessing ownership from command names. The tests retain an escaped
 child and an unrelated process deliberately, then dispose of their own fixtures.
-Temporary HOME/cwd and Agy's sandbox flag are not proof of operating-system
-filesystem isolation.
+The additional PID namespace and `--die-with-parent` bound the contained process
+tree. This does not authorize signalling any unrelated host process.
+
+The mandatory `/usr/bin/bwrap` boundary constructs an empty filesystem with a
+private PID namespace and procfs, fresh devices and `/tmp`, disabled nested user
+namespaces, and dropped capabilities. It binds only the existing invocation's
+workspace (including its original seeded HOME) and individual read-only runtime
+files. `REVIEW_RUNTIME_FILES` declares the qualified x86-64 Linux loader and its
+native/shell libraries, bash, DNS configuration and CA bundle; the selected Agy
+binary is bound as `/usr/bin/agy`. The list is a runtime binding, not permission
+to discover and mount parent trees. No host home, repository, host `/proc`, system
+directory tree or host socket is mounted. Missing files, unavailable Bubblewrap
+or rejected namespace setup refuse execution; there is no uncontained retry.
+Requalify exact dependency bindings on a different host rather than widening
+mounts. See the [Bubblewrap options](https://github.com/containers/bubblewrap/blob/main/bwrap.xml).
+
+Network remains shared for the same subscription route. This filesystem boundary
+is not an egress filter or a no-search guarantee: a contained tool attempt still
+causes stream refusal, and the seeded credential remains readable to the native
+client. The existing token screens remain mandatory. Use a harmless host-only
+marker outside the bound workspace for a negative read/search probe and inspect
+the actual Agy executable hash, mount/PID namespaces, pinned model and native
+result. Keep that source-probe evidence separate from installed qualification.
 
 Before claiming activation, bind the installed wrapper path and SHA-256 to the
 accepted source, record local `agy --help` and binary identity, and observe an
@@ -616,15 +645,17 @@ Inspect the plan's route, quality floor and admission before applying it. Do not
 use `--force`, change routes or renew receipts to bypass a refusal. The following
 observer launches the installed caller once and samples only its descendants.
 It records start times as well as PID/PGID/SID, preserving the observed ancestry
-for the Agy session leader. It never signals any process.
+for the Bubblewrap session leader and its Agy descendant. It never signals any
+process.
 
 ```bash
 export AGY_RECHECK_PR
 uv --directory "$agy_recheck_root" run python - <<'PY_OBSERVE'
-import json, os, subprocess, time
+import hashlib, json, os, subprocess, time
 from pathlib import Path
 root, evidence = Path(os.environ["AGY_RECHECK_ROOT"]), Path(os.environ["AGY_RECHECK_DIR"])
 agy = Path("/usr/bin/agy").resolve(strict=True)
+agy_sha256 = hashlib.sha256(agy.read_bytes()).hexdigest()
 def snapshot():
     rows = {}
     for path in Path("/proc").glob("[0-9]*/stat"):
@@ -638,7 +669,7 @@ def snapshot():
         except (OSError, ValueError, IndexError):
             continue
     return rows
-leaders, searches = {}, []
+leaders, searches, clients = {}, [], {}
 with (evidence / "caller-output.json").open("x") as out, (evidence / "caller-stderr.txt").open("x") as err:
     proc = subprocess.Popen(["uv", "--directory", str(root), "run", "python",
                              "scripts/cc-pr-review-dispatch.py", "--pr",
@@ -651,9 +682,17 @@ with (evidence / "caller-output.json").open("x") as out, (evidence / "caller-std
                 chain.append(rows[parent])
                 if parent == proc.pid:
                     try:
-                        if Path(f"/proc/{pid}/exe").resolve(strict=True) == agy:
+                        executable = Path(f"/proc/{pid}/exe")
+                        if executable.resolve(strict=True) == Path("/usr/bin/bwrap"):
                             if row["pid"] == row["pgid"] == row["sid"]:
                                 leaders[(pid, row["start"])] = chain
+                        if row["name"] == "agy" and (pid, row["start"]) not in clients:
+                            clients[(pid, row["start"])] = {
+                                "pid": pid, "pgid": row["pgid"], "ancestry": chain,
+                                "binary_hash_matches": hashlib.sha256(executable.read_bytes()).hexdigest() == agy_sha256,
+                                "private_mount_namespace": os.readlink(f"/proc/{pid}/ns/mnt") != os.readlink("/proc/self/ns/mnt"),
+                                "private_pid_namespace": os.readlink(f"/proc/{pid}/ns/pid") != os.readlink("/proc/self/ns/pid"),
+                            }
                         if row["name"] == "find":
                             searches.append(row)
                     except OSError:
@@ -665,6 +704,7 @@ with (evidence / "caller-output.json").open("x") as out, (evidence / "caller-std
     groups = {pid for pid, start in leaders}
     survivors = [row for row in snapshot().values() if row["pgid"] in groups]
     result = {"caller_exit": proc.returncode, "leader_ancestries": list(leaders.values()),
+              "native_clients": list(clients.values()),
               "observed_find": searches, "group_members_after": survivors,
               "coverage": "sampled /proc only; short-lived processes may be missed"}
     (evidence / "owned-groups.json").write_text(json.dumps(result, indent=2))
@@ -688,6 +728,9 @@ binding, plus the dossier's exact head, Gemini verdict and `parse_path: fence`;
 disposition any route debt separately. An exit-zero caller alone is
 not a successful review: it can return a refusal or an already-reviewed result.
 Missing leader ancestry means the owned-group observation is **unobserved**.
+Require a native client with matching executable hash, separate mount/PID
+namespaces, and PGID matching a recorded leader; otherwise containment at the
+installed caller boundary is **unobserved**.
 Any remaining member, including a zombie, needs disposition; never kill it from
 this sample. Sampling cannot certify absence of short-lived dossier searches or
 escaped descendants. Record that limit; a complete no-search claim still needs

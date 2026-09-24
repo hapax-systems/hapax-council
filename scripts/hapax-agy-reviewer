@@ -35,6 +35,24 @@ PINNED_REVIEW_MODELS = frozenset({DEFAULT_MODEL, LEGACY_REVIEW_MODEL})
 GUARDED_SECRET_MIN_CHARS = 24
 TOKEN_ECHO_EXIT = 65
 
+# Qualified execution-host bindings, not a discovery rule. A missing dependency
+# refuses the invocation; never bind a parent directory or run without bwrap.
+BWRAP_BIN = "/usr/bin/bwrap"
+REVIEW_RUNTIME_FILES = (
+    "/usr/lib/ld-linux-x86-64.so.2",
+    "/usr/lib/libc.so.6",
+    "/usr/lib/libresolv.so.2",
+    "/usr/lib/libpthread.so.0",
+    "/usr/lib/libm.so.6",
+    "/usr/lib/libdl.so.2",
+    "/usr/lib/librt.so.1",
+    "/usr/lib/libreadline.so.8",
+    "/usr/lib/libncursesw.so.6",
+    "/usr/bin/bash",
+    "/etc/resolv.conf",
+    "/etc/ssl/cert.pem",
+)
+
 REVIEW_PROMPT = """You are a blind PR reviewer invoked non-interactively through agy --print.
 Review ONLY the dossier supplied below in this message. You have no repository access and must not assume facts not visible in the
 supplied dossier, unified diff, or gate summary.
@@ -203,6 +221,69 @@ def _timeout_seconds(raw: str) -> float | None:
     if not math.isfinite(seconds):
         raise ValueError("invalid print timeout")
     return seconds or None
+
+
+def _contained_command(cmd: list[str], workdir: Path) -> list[str]:
+    """Expose only this invocation and explicitly qualified native dependencies.
+
+    PID isolation is load-bearing: host procfs could otherwise expose the host
+    root via another process. Keep network for the same subscription endpoint;
+    this boundary makes no network-egress or complete no-tool claim.
+    """
+    wrapped = [
+        BWRAP_BIN,
+        "--unshare-all",
+        "--unshare-user",
+        "--share-net",
+        "--die-with-parent",
+        "--disable-userns",
+        "--cap-drop",
+        "ALL",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib",
+        "/lib64",
+        "--symlink",
+        "lib",
+        "/usr/lib64",
+    ]
+    for name in REVIEW_RUNTIME_FILES:
+        wrapped.extend(["--ro-bind", str(Path(name).resolve(strict=True)), name])
+    wrapped.extend(
+        [
+            "--ro-bind",
+            str(Path(cmd[0]).resolve(strict=True)),
+            "/usr/bin/agy",
+            "--symlink",
+            "bash",
+            "/usr/bin/sh",
+            "--bind",
+            str(workdir),
+            str(workdir),
+            "--chdir",
+            str(workdir),
+            "--setenv",
+            "PATH",
+            "/usr/bin:/bin",
+            "--remount-ro",
+            "/",
+            "--",
+            "/usr/bin/agy",
+            *cmd[1:],
+        ]
+    )
+    return wrapped
 
 
 def _stop_owned_group(proc: subprocess.Popen) -> None:
@@ -499,7 +580,9 @@ def _review(args: argparse.Namespace, dossier: str, lifetime: int) -> int:
         )
 
         try:
-            result = _run_owned(cmd, workdir, prompt, args.timeout_seconds, lifetime)
+            result = _run_owned(
+                _contained_command(cmd, workdir), workdir, prompt, args.timeout_seconds, lifetime
+            )
         except subprocess.TimeoutExpired:
             print(
                 "hapax-agy-reviewer: print timeout; owned group cleaned; review discarded; "
@@ -517,7 +600,9 @@ def _review(args: argparse.Namespace, dossier: str, lifetime: int) -> int:
         except OSError as exc:
             print(
                 "hapax-agy-reviewer: failed to launch "
-                f"{agy_bin}: {exc}; install agy or pass --agy-bin /absolute/path/to/agy",
+                f"{agy_bin}: {exc}; install agy or pass --agy-bin /absolute/path/to/agy; "
+                "verify /usr/bin/bwrap and the declared runtime file bindings. "
+                "Do not retry without filesystem containment.",
                 file=sys.stderr,
             )
             return 2
@@ -558,6 +643,13 @@ def _review(args: argparse.Namespace, dossier: str, lifetime: int) -> int:
             response = ""
     sys.stdout.write(response if result.returncode == 0 else "")
     sys.stderr.write(result.stderr)
+    if result.returncode:
+        print(
+            "hapax-agy-reviewer: contained reviewer failed; verify /usr/bin/bwrap, "
+            "namespace support and declared runtime file bindings before retrying. "
+            "Do not retry without filesystem containment.",
+            file=sys.stderr,
+        )
     return result.returncode
 
 
