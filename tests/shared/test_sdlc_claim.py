@@ -5134,6 +5134,57 @@ def test_recovery_holds_preimage_journal_that_already_has_a_receipt(tmp_path: Pa
     assert _tree_snapshot(tmp_path) == before
 
 
+def test_recovery_holds_one_journal_while_another_writer_holds_its_note_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # PR4726 round 2 (Muse new-2): role contention was a per-journal hold, but note-lock
+    # contention (a different-role writer of the same task) raised TaskNoteLockError out of
+    # the whole recovery run. It must hold that journal like any other contention.
+    from shared.task_note_lock import TIMEOUT_ENV, projected_path_lock
+
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def fail_before_projection(phase: str, index: int | None) -> None:
+        if phase == "before_projection" and index == 0:
+            raise RuntimeError("interrupted publication")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            failure_hook=fail_before_projection,
+        )
+    monkeypatch.setenv(TIMEOUT_ENV, "0.2")
+    holding, release = threading.Event(), threading.Event()
+
+    def other_role_writer() -> None:
+        with projected_path_lock(fixture.intent.task_id, (fixture.intent.note_path,)):
+            holding.set()
+            release.wait(timeout=10)
+
+    writer = threading.Thread(target=other_role_writer)
+    writer.start()
+    try:
+        assert holding.wait(timeout=5)
+        before = _tree_snapshot(tmp_path)
+        results = recover_claim_publications(
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            task_id=fixture.intent.task_id,
+        )
+        assert [item.state for item in results] == ["hold"]
+        assert results[0].reason_code.startswith("task_note_lock")
+        assert results[0].repair_action
+        assert _tree_snapshot(tmp_path) == before
+    finally:
+        release.set()
+        writer.join(timeout=10)
+
+
 def test_recovery_cannot_reconcile_while_a_publisher_holds_the_role_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

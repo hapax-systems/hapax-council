@@ -1041,9 +1041,11 @@ def _journal_for_role(home: Path, role: str) -> str:
     return found[0]
 
 
-@pytest.mark.parametrize("note_moved_on", [False, True])
+@pytest.mark.parametrize(
+    "damage", ["none", "note_moved_on", "successor_receipt_missing", "successor_marker_missing"]
+)
 def test_recover_reports_applied_journal_superseded_by_later_owner_not_drift(
-    tmp_path: Path, note_moved_on: bool
+    tmp_path: Path, damage: str
 ) -> None:
     # PRIORITY specimen 2026-09-24T20:03Z (U3, claim-pub-07127dd1): an applied claim whose
     # note was later re-offered and claimed by another role through a second applied
@@ -1084,8 +1086,20 @@ def test_recover_reports_applied_journal_superseded_by_later_owner_not_drift(
         extra_env=_NEXT_ROLE_ENV,
     )
     assert second.returncode == 0, second.stderr
-    if note_moved_on:
+    cache = home / ".cache" / "hapax"
+    if damage == "note_moved_on":
         note.write_text(note.read_text(encoding="utf-8") + "- later edit\n", encoding="utf-8")
+    elif damage == "successor_receipt_missing":
+        # PR4726 round 2 (Muse new-1): an `applied` flag alone must not launder drift.
+        receipts = [
+            path
+            for path in (cache / "claim-publication-receipts").glob("*.json")
+            if '"cx-next"' in path.read_text(encoding="utf-8")
+        ]
+        assert len(receipts) == 1
+        receipts[0].unlink()
+    elif damage == "successor_marker_missing":
+        (cache / f"cc-active-task-cx-next-{_NEXT_SESSION_ID}").unlink()
 
     result = _claim(
         home,
@@ -1098,9 +1112,10 @@ def test_recover_reports_applied_journal_superseded_by_later_owner_not_drift(
     )
 
     superseded = _journal_for_role(home, "cx-test")
-    if note_moved_on:
-        # Unsafe counterpart: without a later applied postimage equal to the current note,
-        # supersession is not proven and the drift must still hold.
+    if damage != "none":
+        # Unsafe counterparts: unless a later publication verifies as applied (receipt,
+        # sidecars and a note postimage equal to the current note), supersession is not
+        # proven and the drift must still hold.
         assert result.returncode == 8
         assert f"{superseded}:hold:claim_publication_postimage_drift" in result.stdout
         return
