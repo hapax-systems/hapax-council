@@ -6,6 +6,18 @@ telemetry writer folds it into the route's ledger snapshot; registry projection
 and the availability guarantor consume that snapshot. Local CLI, wrapper or
 session presence cannot substitute for account evidence.
 
+The installed observer/interactive guard can be a regular copy in `~/.local/bin`.
+Its quota module and receipt writer come from `HAPAX_SOURCE_ACTIVATE_WORKTREE`
+(default `~/.cache/hapax/source-activation/worktree`), resolved to the physical
+release. The subscription launcher pins that release before preflight and carries
+it into the tmux runner. An explicit source-checkout invocation keeps its own
+implementation. Neither the current working directory, `HAPAX_COUNCIL_DIR`, nor
+an ambient Python import path replaces a missing declared quota implementation.
+Restore the governed release if that check holds. The isolated copied-command
+regression is `tests/scripts/test_claude_interactive_installed_copy.py`; it uses
+synthetic credentials and an offline ledger, excludes editable-install import
+hooks, and never establishes real account headroom.
+
 The source change requires independent review and coordinator release. It does
 not itself observe live headroom or authorize launching work. After release,
 the coordinator must obtain a genuine account-live subscription observation,
@@ -196,6 +208,7 @@ uv run pytest tests/scripts/test_hapax_claude_interactive_admission.py \
   tests/scripts/test_claude_passive_wall_authority.py \
   tests/scripts/test_claude_probe_subscription_boundary.py \
   tests/scripts/test_claude_interactive_launch_auth.py \
+  tests/scripts/test_claude_interactive_installed_copy.py \
   tests/scripts/test_claude_interactive_credential_binding.py \
   tests/shared/test_capability_availability_guarantor.py -q
 ```
