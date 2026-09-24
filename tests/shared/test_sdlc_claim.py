@@ -3104,9 +3104,12 @@ def test_recovery_checks_complete_task_identity_before_any_projection(
     assert (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)) == before
 
 
-def test_automatic_recovery_preserves_pending_claim_for_its_original_session(
+def test_recovery_retires_attempt_interrupted_before_any_projection(
     tmp_path: Path,
 ) -> None:
+    # PR4726 review (Muse, Mistral): a crash after the journal write must not wedge the task
+    # with zero winners. Nothing took effect, so recovery records `aborted` and writes no
+    # projection; the task stays exactly as it was, claimable by any caller.
     fixture = _fixture(tmp_path)
     active = _active_admission_fixture(tmp_path, fixture)
 
@@ -3130,19 +3133,30 @@ def test_automatic_recovery_preserves_pending_claim_for_its_original_session(
         task_id=fixture.intent.task_id,
         expected_owner=(fixture.intent.role, "fresh-session"),
     )
-    assert [result.reason_code for result in results] == [
-        "claim_publication_recovery_authority_unverified"
+    assert [(result.state, result.reason_code) for result in results] == [
+        ("aborted", "claim_publication_reconciled_before_projection")
     ]
     assert (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)) == before
-    results = recover_claim_publications(
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    manifest = json.loads(
+        (fixture.transactions / publication_id / "manifest.json").read_text(encoding="ascii")
+    )
+    assert manifest["state"] == "aborted"
+    inspections = inspect_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        task_id=fixture.intent.task_id,
+    )
+    assert [item.disposition for item in inspections] == ["terminal_aborted"]
+    # Idempotent: a second recovery observes the terminal state and changes nothing.
+    again = recover_claim_publications(
         cache_dir=fixture.cache,
         transaction_root=fixture.transactions,
         lock_root=fixture.locks,
         task_id=fixture.intent.task_id,
         expected_owner=(fixture.intent.role, fixture.intent.session_id),
     )
-    assert [result.state for result in results] == ["hold"]
-    assert results[0].reason_code == "claim_publication_recovery_authority_unverified"
+    assert [result.state for result in again] == ["aborted"]
     assert (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)) == before
 
 
@@ -3238,17 +3252,20 @@ def test_recovery_excludes_duplicate_writer_in_claim_lock_domain(
     assert checked
     assert writer_results == ["task_note_lock_timeout"]
     assert not duplicate.exists()
-    assert [item.state for item in results] == ["hold"]
-    assert results[0].reason_code == "claim_publication_recovery_authority_unverified"
+    assert [(item.state, item.reason_code) for item in results] == [
+        ("aborted", "claim_publication_reconciled_before_projection")
+    ]
     assert fixture.intent.note_path.read_bytes() == fixture.intent.note_before
     assert not list(fixture.cache.glob("cc-active-task-*"))
 
 
 @pytest.mark.parametrize("explicit_recovery", [False, True])
-def test_cc_claim_fresh_session_does_not_apply_original_pending_publication(
+def test_cc_claim_fresh_session_retires_interrupted_attempt_and_never_applies_it(
     tmp_path: Path,
     explicit_recovery: bool,
 ) -> None:
+    # The original session's interrupted attempt is retired, never applied: its session id
+    # is never materialized. Without explicit recovery the fresh claimant is the one winner.
     from tests.scripts.test_cc_claim import _claim
 
     fixture = _home_fixture(tmp_path)
@@ -3276,14 +3293,33 @@ def test_cc_claim_fresh_session_does_not_apply_original_pending_publication(
         extra_env={"HAPAX_AGENT_ROLE": "cx-red", "HAPAX_AGENT_NAME": "cx-red"},
         extra_args=["--recover-claim-publications"] if explicit_recovery else None,
     )
-    assert result.returncode == 8, result.stderr
+    assert result.returncode == 0, result.stderr
     report = result.stderr + result.stdout
-    assert "claim_publication_recovery_authority_unverified" in report
     assert fixture.intent.session_id not in report
-    assert "obtain independently verified recovery authority" in (report)
-    assert fixture.intent.note_path.read_bytes() == fixture.intent.note_before
-    assert not list(fixture.cache.glob("cc-active-task-*"))
-    assert not list(fixture.cache.glob("cc-claim-dispatch-*"))
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    manifest = json.loads(
+        (fixture.transactions / publication_id / "manifest.json").read_text(encoding="ascii")
+    )
+    assert manifest["state"] == "aborted"
+    for sidecar in fixture.cache.glob("cc-*"):
+        assert fixture.intent.session_id not in sidecar.name
+        assert fixture.intent.session_id.encode() not in sidecar.read_bytes()
+    if explicit_recovery:
+        assert f"{publication_id}:aborted:claim_publication_reconciled_before_projection" in (
+            result.stdout
+        )
+        assert fixture.intent.note_path.read_bytes() == fixture.intent.note_before
+        assert not list(fixture.cache.glob("cc-active-task-*"))
+        assert not list(fixture.cache.glob("cc-claim-dispatch-*"))
+    else:
+        assert "admitted publication applied" in result.stdout
+        note = fixture.intent.note_path.read_text(encoding="utf-8")
+        assert "status: claimed" in note
+        assert "assigned_to: cx-red" in note
+        assert sorted(path.name for path in fixture.cache.glob("cc-active-task-*")) == [
+            "cc-active-task-cx-red",
+            "cc-active-task-cx-red-fresh-session",
+        ]
 
 
 def test_cc_claim_recovery_reports_task_identity_reason_and_repair(tmp_path: Path) -> None:
@@ -4821,8 +4857,275 @@ def test_recovery_caller_cannot_replay_disclosed_owner(
         task_id=fixture.intent.task_id,
         expected_owner=coordinates,
     )
+    assert fixture.intent.session_id not in repr(results)
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    manifest_path = fixture.transactions / publication_id / "manifest.json"
+    if phase == "before_projection":
+        # Nothing took effect: the attempt is retired, never replayed. Only its own
+        # manifest records the terminal state; every projection is byte-identical.
+        assert [(item.state, item.reason_code) for item in results] == [
+            ("aborted", "claim_publication_reconciled_before_projection")
+        ]
+        rows_before = {row[0]: row for row in before}
+        rows_after = {row[0]: row for row in _tree_snapshot(tmp_path)}
+        changed = {
+            path
+            for path in set(rows_before) | set(rows_after)
+            if rows_before.get(path) != rows_after.get(path)
+        }
+        assert changed == {str(manifest_path.relative_to(tmp_path))}
+        return
     assert [item.state for item in results] == ["hold"]
     assert results[0].reason_code == "claim_publication_recovery_authority_unverified"
-    assert fixture.intent.session_id not in repr(results)
     assert _tree_snapshot(tmp_path) == before
     assert _file_identity_snapshot(tuple(row[0] for row in files_before)) == files_before
+
+
+# --- Reconciliation by observation (PR4726 three-family review, finding 6) -----------------
+# The admitted transaction holds the role lock and the note lock from its existence check to
+# its terminal state, so recovery under those locks observes only journals with no live
+# publisher. It may record what every projection already shows; it never writes a projection.
+
+
+def _landed_publication_that_lost_final_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[ClaimFixture, object, Path, Path]:
+    """Every projection and the receipt land; only the post-activation check loses a race."""
+
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+    original = sdlc_claim._require_exact_task_postimage
+    calls = 0
+
+    def lose_final_validation(intent: ClaimPublicationIntent) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ClaimPublicationError(
+                "claim_publication_task_projection_invalid",
+                "hold the claim until exactly one active receipt-bound task note remains",
+                "task_store_frontier_changed_during_index_build",
+            )
+        original(intent)
+
+    monkeypatch.setattr(sdlc_claim, "_require_exact_task_postimage", lose_final_validation)
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            now=active.checked_at,
+        )
+    monkeypatch.setattr(sdlc_claim, "_require_exact_task_postimage", original)
+    assert calls == 2
+    assert raised.value.reason_code == "claim_publication_task_projection_invalid"
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    manifest_path = fixture.transactions / publication_id / "manifest.json"
+    assert json.loads(manifest_path.read_text(encoding="ascii"))["state"] == "recovery_required"
+    receipt_path = claim_publication_receipt_path(
+        fixture.cache, fixture.intent.binding, receipt_root=receipt_root
+    )
+    assert receipt_path.is_file()
+    assert fixture.intent.note_path.read_bytes() == fixture.intent.note_after
+    return fixture, active, manifest_path, receipt_root
+
+
+def test_recovery_finalizes_landed_publication_whose_final_validation_lost_a_race(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The held-journal class measured on 2026-09-24 (six journals on one host): the claim
+    # took full effect, the outer command reported HOLD, and the journal stayed held forever.
+    fixture, active, manifest_path, receipt_root = _landed_publication_that_lost_final_validation(
+        tmp_path, monkeypatch
+    )
+    held = inspect_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        task_id=fixture.intent.task_id,
+    )
+    assert [(item.disposition, item.reason_code) for item in held] == [
+        ("hold", "admitted_claim_publication_postimage_requires_reconciliation")
+    ]
+    before = (
+        _tree_snapshot(fixture.vault),
+        _tree_snapshot(fixture.cache),
+        _tree_snapshot(receipt_root),
+    )
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
+    )
+    assert [(item.state, item.reason_code) for item in results] == [
+        ("applied", "claim_publication_reconciled_postimage")
+    ]
+    assert (
+        _tree_snapshot(fixture.vault),
+        _tree_snapshot(fixture.cache),
+        _tree_snapshot(receipt_root),
+    ) == before
+    assert json.loads(manifest_path.read_text(encoding="ascii"))["state"] == "applied"
+    receipt = require_applied_admitted_claim_publication(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+    )
+    assert receipt.publication_id == manifest_path.parent.name
+    after = inspect_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        task_id=fixture.intent.task_id,
+    )
+    assert [item.disposition for item in after] == ["terminal_applied"]
+
+
+def test_recovery_holds_landed_publication_whose_receipt_contradicts_the_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture, _active, manifest_path, receipt_root = _landed_publication_that_lost_final_validation(
+        tmp_path, monkeypatch
+    )
+    receipt_path = next(receipt_root.glob("*.json"))
+    receipt_path.write_bytes(receipt_path.read_bytes().replace(b"}", b" }", 1))
+    before = _tree_snapshot(tmp_path)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
+    )
+    assert [(item.state, item.reason_code) for item in results] == [
+        ("hold", "claim_publication_receipt_postimage_contradiction")
+    ]
+    assert _tree_snapshot(tmp_path) == before
+    assert json.loads(manifest_path.read_text(encoding="ascii"))["state"] == "recovery_required"
+
+
+def test_recovery_holds_landed_publication_after_the_note_moved_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A later note write is not the admitted postimage. Whether it is a legitimate
+    # continuation is a separate question (claim-applied-journal-current-note-drift); here
+    # it must hold, never finalize.
+    fixture, _active, manifest_path, receipt_root = _landed_publication_that_lost_final_validation(
+        tmp_path, monkeypatch
+    )
+    fixture.intent.note_path.write_bytes(fixture.intent.note_after + b"- later session log\n")
+    before = _tree_snapshot(tmp_path)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
+    )
+    assert [item.state for item in results] == ["hold"]
+    assert results[0].reason_code == "claim_publication_recovery_task_image_changed"
+    assert _tree_snapshot(tmp_path) == before
+    assert json.loads(manifest_path.read_text(encoding="ascii"))["state"] == "recovery_required"
+
+
+def test_recovery_holds_preimage_journal_that_already_has_a_receipt(tmp_path: Path) -> None:
+    # Before-images everywhere but a receipt present is a contradiction, not an abort.
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    receipt_root = tmp_path / "receipts"
+
+    def fail_before_projection(phase: str, index: int | None) -> None:
+        if phase == "before_projection" and index == 0:
+            raise RuntimeError("interrupted publication")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            receipt_root=receipt_root,
+            lock_root=fixture.locks,
+            failure_hook=fail_before_projection,
+        )
+    publication_id = admitted_claim_publication_id(fixture.intent, active.consumption)
+    manifest_path = fixture.transactions / publication_id / "manifest.json"
+    _intent, projections, _id, _state, consumption = sdlc_claim._load_admitted_manifest(
+        manifest_path
+    )
+    receipt_path = claim_publication_receipt_path(
+        fixture.cache, fixture.intent.binding, receipt_root=receipt_root
+    )
+    sdlc_claim._ensure_claim_private_directory(receipt_root)
+    sdlc_claim._persist_admitted_receipt(
+        receipt_path, fixture.intent, consumption, projections, publication_id
+    )
+    before = _tree_snapshot(tmp_path)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        receipt_root=receipt_root,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
+    )
+    assert [(item.state, item.reason_code) for item in results] == [
+        ("hold", "claim_publication_recovery_authority_unverified")
+    ]
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_recovery_cannot_reconcile_while_a_publisher_holds_the_role_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A live transaction holds the role lock for its whole duration. Reconciliation takes the
+    # same lock, so it can never observe (and retire) an attempt that is still running.
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def fail_before_projection(phase: str, index: int | None) -> None:
+        if phase == "before_projection" and index == 0:
+            raise RuntimeError("interrupted publication")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            failure_hook=fail_before_projection,
+        )
+    monkeypatch.setattr(sdlc_claim, "_CLAIM_PUBLICATION_LOCK_TIMEOUT_SECONDS", 0.2)
+    holding, release = threading.Event(), threading.Event()
+
+    def live_publisher() -> None:
+        with sdlc_claim.claim_role_exclusion(fixture.intent.role, lock_root=fixture.locks):
+            holding.set()
+            release.wait(timeout=10)
+
+    publisher = threading.Thread(target=live_publisher)
+    publisher.start()
+    try:
+        assert holding.wait(timeout=5)
+        before = _tree_snapshot(tmp_path)
+        results = recover_claim_publications(
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            task_id=fixture.intent.task_id,
+            expected_owner=(fixture.intent.role, fixture.intent.session_id),
+        )
+        assert [item.state for item in results] == ["hold"]
+        assert results[0].reason_code != "claim_publication_reconciled_before_projection"
+        assert _tree_snapshot(tmp_path) == before
+    finally:
+        release.set()
+        publisher.join(timeout=10)

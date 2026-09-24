@@ -4971,6 +4971,88 @@ def _recover_one(
                     "preserve the journal and reconcile the exact task preimage or postimage",
                     intent.task_id,
                 )
+            # Reconciliation by observation. The admitted transaction holds this
+            # role lock and the note lock from its existence check to its terminal
+            # state, so a non-terminal journal observed here has no live publisher.
+            # Recording what every projection already shows writes no projection
+            # and replays nothing; only the two whole-vector cases qualify.
+            live = [_file_state(projection.path) for projection in projections[:7]]
+            all_before = all(
+                observed == (projection.before, projection.before_mode)
+                for projection, observed in zip(projections[:7], live, strict=True)
+            )
+            all_after = all(
+                observed == (projection.after, projection.after_mode)
+                for projection, observed in zip(projections[:7], live, strict=True)
+            )
+            receipt_present = receipt_path.exists() or receipt_path.is_symlink()
+            if all_before and not receipt_present:
+                _assert_preimages(projections[7:])
+                _persist_admitted_manifest_state(
+                    manifest_path,
+                    intent,
+                    consumption,
+                    projections,
+                    publication_id,
+                    state="aborted",
+                    reason_code="claim_publication_reconciled_before_projection",
+                )
+                return ClaimPublicationRecoveryResult(
+                    publication_id,
+                    "aborted",
+                    "claim_publication_reconciled_before_projection",
+                    detail="no projection took effect; the task was never claimed by this attempt",
+                )
+            if all_after and receipt_present:
+                _assert_preimages(projections[7:])
+                consumption.require_source_proofs(intent)
+                expected_receipt = (
+                    _canonical(
+                        _admitted_receipt_record(intent, consumption, projections, publication_id)
+                    )
+                    + b"\n"
+                )
+                if _file_state(receipt_path) != (expected_receipt, 0o600):
+                    raise ClaimPublicationError(
+                        "claim_publication_receipt_postimage_contradiction",
+                        "preserve receipt and projections for contradiction review",
+                        publication_id,
+                    )
+                prior_state = state
+                _persist_admitted_manifest_state(
+                    manifest_path,
+                    intent,
+                    consumption,
+                    projections,
+                    publication_id,
+                    state="applied",
+                    reason_code="claim_publication_reconciled_postimage",
+                )
+                try:
+                    require_applied_admitted_claim_publication(
+                        intent,
+                        consumption,
+                        transaction_root=manifest_path.parent.parent,
+                        receipt_root=receipt_directory,
+                        _already_locked=True,
+                    )
+                except ClaimPublicationError:
+                    _persist_admitted_manifest_state(
+                        manifest_path,
+                        intent,
+                        consumption,
+                        projections,
+                        publication_id,
+                        state=prior_state,
+                        reason_code="claim_publication_reconciliation_readback_failed",
+                    )
+                    raise
+                return ClaimPublicationRecoveryResult(
+                    publication_id,
+                    "applied",
+                    "claim_publication_reconciled_postimage",
+                    detail="every projection and the receipt already matched the admitted postimage",
+                )
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
         except LifecycleTransitionError as exc:
@@ -4980,9 +5062,9 @@ def _recover_one(
                 exc,
             ) from exc
 
-        # A journal and a caller-supplied owner tuple identify an attempt but
-        # cannot authorize another process to finish it. No qualified authority
-        # witness is consumed here. Preserve the pending journal and projections.
+        # Mixed projections: some took effect and some did not. A journal and a
+        # caller-supplied owner tuple identify an attempt but cannot authorize
+        # another process to finish or undo it. Preserve the journal and projections.
         raise ClaimPublicationError(
             "claim_publication_recovery_authority_unverified",
             "preserve the pending journal and projections; obtain independently "
