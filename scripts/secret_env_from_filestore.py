@@ -285,6 +285,8 @@ elif not _first_line(authority_value).strip():
 _write_env(out, lines)
 if authority_value is None:
     authority_out.unlink(missing_ok=True)
+    authority_outcome = f"removed {authority_out} (entry absent)"
 else:
     _write_env(authority_out, [f"{AUTHORITY_ENV}={_first_line(authority_value)}"])
-print(f"wrote {out} keys={len(lines)} backend={store.backend_id}")
+    authority_outcome = f"wrote {authority_out}"
+print(f"wrote {out} keys={len(lines)} backend={store.backend_id}; {authority_outcome}")

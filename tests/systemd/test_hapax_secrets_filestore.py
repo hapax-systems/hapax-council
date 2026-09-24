@@ -201,6 +201,7 @@ def test_producer_authority_file_contains_only_signing_key(producer_store) -> No
     authority = common.with_name(AUTHORITY_FILE)
     assert authority.read_bytes() == AUTHORITY_ENV.encode() + b"=" + AUTHORITY_VALUE + b"\n"
     assert authority.stat().st_mode & 0o777 == 0o600
+    assert f"; wrote {authority}\n" in result.stdout
     assert AUTHORITY_VALUE.decode() not in result.stdout + result.stderr
 
 
@@ -271,6 +272,7 @@ def test_producer_absent_authority_removes_stale_file(producer_store, stale) -> 
         authority.write_bytes(AUTHORITY_VALUE)
     result = _run_producer(os.environ.copy())
     assert result.returncode == 0, result.stderr
+    assert f"; removed {authority} (entry absent)\n" in result.stdout
     assert not authority.exists()
     assert common.read_bytes() == COMMON_BASELINE
     assert not store.has(AUTHORITY_ENTRY)
