@@ -22,7 +22,10 @@ from tests.scripts.test_hapax_codex_headless import (
         (writer, damage)
         for writer in ("admitted", "emergency", "remote")
         for damage in ("receipt-missing", "manifest-missing", "corrupt", "absent")
-        if (writer, damage) != ("admitted", "absent")
+        # With nothing installed the admitted route installs on first use, and the emergency route
+        # locks at the default roots (disclosed #4726 contract change; pinned positively by
+        # test_emergency_without_any_installation_locks_the_default_role_namespace).
+        if (writer, damage) not in {("admitted", "absent"), ("emergency", "absent")}
     ],
 )
 def test_writer_refuses_unqualified_installed_namespace(tmp_path, writer, damage):
