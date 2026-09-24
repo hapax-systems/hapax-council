@@ -186,7 +186,7 @@ def test_fresh_subscription_receipt_cannot_launch_gateway_child(tmp_path, monkey
             json.dumps(
                 {
                     "env": redirect,
-                    "apiKeyHelper": "echo synthetic-helper",
+                    "apiKeyHelper": "echo synthetic-helper",  # pragma: allowlist secret
                     "hooks": {"SessionStart": []},
                 }
             )
@@ -230,7 +230,7 @@ def test_unproven_launch_auth_holds_despite_fresh_quota(tmp_path, defect):
     elif defect == "gateway":
         status["apiProvider"] = "gateway"
     elif defect == "helper":
-        status["apiKeySource"] = "apiKeyHelper"
+        status["apiKeySource"] = "apiKeyHelper"  # pragma: allowlist secret
     elif defect == "wrong-method":
         status["authMethod"] = "api_key"
     else:
@@ -329,7 +329,7 @@ def test_installed_cli_keeps_routing_bound_after_loading_settings(tmp_path):
                     "HAPAX_SYNTHETIC_SETTING": "retained",
                     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                 },
-                "apiKeyHelper": "echo synthetic-helper",
+                "apiKeyHelper": "echo synthetic-helper",  # pragma: allowlist secret
                 "hooks": {
                     "Setup": [
                         {"hooks": [{"type": "command", "command": f"{sys.executable} {capture}"}]}
