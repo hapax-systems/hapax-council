@@ -21,7 +21,7 @@ import stat
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -1571,6 +1571,8 @@ class ClaimPublicationRecoveryResult:
     publication_id: str
     state: str
     reason_code: str | None = None
+    detail: str | None = field(default=None, kw_only=True)
+    repair_action: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -4881,7 +4883,7 @@ def _recover_one(
             except TaskStoreError as exc:
                 raise ClaimPublicationError(
                     "claim_publication_recovery_task_resolution_refused",
-                    "restore exactly one active task note and no closed duplicate before recovery",
+                    exc.repair_action,
                     exc.reason_code,
                 ) from exc
             if (
@@ -6204,7 +6206,15 @@ def recover_claim_publications(
                 )
             )
         except ClaimPublicationError as exc:
-            results.append(ClaimPublicationRecoveryResult(entry.name, "hold", exc.reason_code))
+            results.append(
+                ClaimPublicationRecoveryResult(
+                    entry.name,
+                    "hold",
+                    exc.reason_code,
+                    detail=exc.detail,
+                    repair_action=exc.repair_action,
+                )
+            )
     return tuple(results)
 
 

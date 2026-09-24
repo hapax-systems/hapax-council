@@ -113,7 +113,9 @@ stale-claim cleanup.
 
 Claim admission resolves the complete active and closed task namespace. Index
 construction can make up to three attempts, reusing only unchanged stat-bound
-parses between attempts. Every attempt checks the full frontier; continuing
+parses between attempts. Removal between directory listing and stat, in either
+inventory, consumes an attempt; unsafe directories refuse immediately.
+Every attempt checks the full frontier; continuing
 drift, duplicate identities and changed task preimages still HOLD. A supplied
 index is never silently refreshed.
 
@@ -133,6 +135,55 @@ gets `claim_publication_recovery_owner_mismatch` without applying that journal.
 The explicit `cc-claim --recover-claim-publications <task-id>` operation remains
 the governed recovery path; it completes the original admitted publication,
 not an ownership transfer. Resolve its durable result before retrying dispatch.
+
+Recovery holds retain the underlying task-store reason and its repair action.
+For example, `task_note_cross_state_duplicate` requires reconciling every state
+copy, while `task_store_frontier_changed_during_resolution` requires a stable
+frontier. Follow that action before repeating recovery; a generic journal
+quarantine cannot resolve a conflicting task identity.
+Publication-error observations also include the journal's stored refusal cause
+and the sealed inspection reference/hash, including for terminal aborted journals.
+
+The claim transaction holds the existing role lock and projected-path lock,
+including the task-identity key. A writer participating with that task identity
+cannot insert a conflicting note at another filename during recovery. This is
+not namespace exclusion against nonparticipating writers: a raw write after
+resolution can still cause a hold after partial projection. The unconverted
+writer inventory in `tests/shared/test_projected_path_writer_lock_coverage.py`
+and the concurrency contract in `shared/coord_projection.py::_transition_locks`
+define that remaining boundary. Keep the release hold until its independent
+disposition; another pre-write scan alone cannot close it.
+
+Run these behavioral rechecks from the repository root. The tests construct
+temporary vaults, claims and journals and do not recover a real task:
+
+```bash
+uv run --no-sync pytest -q tests/shared/test_sdlc_task_store.py \
+  -k 'bounded_index'
+uv run --no-sync pytest -q tests/shared/test_sdlc_claim.py \
+  -k 'pre_projection_frontier_refusal or recovery_checks_complete or automatic_recovery_preserves or cc_claim_fresh_session or recovery_reports_task_identity'
+uv run --no-sync pytest -q tests/scripts/test_cc_claim.py \
+  -k 'publication_failure_reports_durable_outcome or corrupt_install_receipt'
+uv run --no-sync pytest -q tests/shared/test_sdlc_claim.py \
+  -k 'rehydrate_refuses_current_identity_change'
+uv run --no-sync pytest -q tests/shared/test_sdlc_claim.py \
+  -k 'recovery_excludes_duplicate_writer or recovery_refuses_changed_unique_task'
+```
+
+The first command exercises full-namespace retries, removal races, exhaustion
+and unsafe-directory refusal. The next two check terminal preflight refusal,
+original-owner recovery, actionable reasons and actual CLI observations of
+pending, aborted, applied and unobservable outcomes. The fourth pins refusal
+when an applied claim loses its activation caches and its current owner changes,
+including an `offered/unassigned` note with surviving epoch/dispatch sidecars.
+That state needs reconciliation of the ownership change; missing caches alone
+do not authorize reconstructing an owner. The fifth checks the participating
+writer exclusion and changed unique-task preimage refusal.
+
+These checks cover the publication-availability prerequisite. They do not
+establish the governed-rebind task's positive ownership-transfer exit predicate.
+Qualified whole-attempt terminality, transfer races and launcher integration
+remain separate unfinished obligations; this increment cannot close that task.
 
 ## Emergency Fallback
 

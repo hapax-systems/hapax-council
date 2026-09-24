@@ -1610,12 +1610,20 @@ def test_rehydrate_only_missing_activation(tmp_path: Path, index: int) -> None:
     assert _file_identity_snapshot((projection.path,)) == before
 
 
-@pytest.mark.parametrize("change", ["owner", "authority_case", "mode", "path"])
+@pytest.mark.parametrize(
+    "change", ["owner", "offered_unassigned", "authority_case", "mode", "path"]
+)
 def test_rehydrate_refuses_current_identity_change(tmp_path: Path, change: str) -> None:
     fixture, receipt = _activation_fixture(tmp_path)
     note = fixture.intent.note_path
     if change == "owner":
         note.write_bytes(note.read_bytes().replace(b"assigned_to: cx-red", b"assigned_to: cx-blue"))
+    elif change == "offered_unassigned":
+        note.write_bytes(
+            note.read_bytes()
+            .replace(b"assigned_to: cx-red", b"assigned_to: unassigned")
+            .replace(b"status: claimed", b"status: offered")
+        )
     elif change == "authority_case":
         note.write_bytes(note.read_bytes().replace(b"CASE-CLAIM-001", b"CASE-CLAIM-002"))
     elif change == "mode":
@@ -3058,7 +3066,7 @@ def test_pre_projection_frontier_refusal_cannot_be_recovered_into_a_claim(
     assert not list(fixture.cache.glob("cc-active-task-*"))
 
 
-@pytest.mark.parametrize("state", ["active", "closed"])
+@pytest.mark.parametrize("state", ["active", "closed", "frontier_drift"])
 def test_recovery_checks_complete_task_identity_before_any_projection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
 ) -> None:
@@ -3077,7 +3085,17 @@ def test_recovery_checks_complete_task_identity_before_any_projection(
             lock_root=fixture.locks,
             failure_hook=fail_before_projection,
         )
-    (fixture.vault / state / "unrelated-filename.md").write_bytes(fixture.intent.note_before)
+    if state == "frontier_drift":
+        original_stat = os.stat
+
+        def unstable_stat(path, *args, **kwargs):
+            if path == fixture.intent.note_path.name and kwargs.get("dir_fd") is not None:
+                raise FileNotFoundError("simulated inventory race")
+            return original_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", unstable_stat)
+    else:
+        (fixture.vault / state / "unrelated-filename.md").write_bytes(fixture.intent.note_before)
     before = _tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)
     results = recover_claim_publications(
         cache_dir=fixture.cache,
@@ -3086,6 +3104,23 @@ def test_recovery_checks_complete_task_identity_before_any_projection(
         task_id=fixture.intent.task_id,
     )
     assert [result.state for result in results] == ["hold"]
+    assert results[0].reason_code == "claim_publication_recovery_task_resolution_refused"
+    assert (
+        results[0].detail
+        == {
+            "active": "task_note_identity_ambiguous",
+            "closed": "task_note_cross_state_duplicate",
+            "frontier_drift": "task_store_frontier_changed_during_resolution",
+        }[state]
+    )
+    assert (
+        results[0].repair_action
+        == {
+            "active": "retain exactly one task note for this parsed identity in each state",
+            "closed": "reconcile every state copy before lifecycle mutation",
+            "frontier_drift": "retry only after the complete task-store frontier stabilizes",
+        }[state]
+    )
     assert (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)) == before
 
 
@@ -3130,6 +3165,101 @@ def test_automatic_recovery_preserves_pending_claim_for_its_original_session(
     assert fixture.intent.note_path.read_bytes() == fixture.intent.note_after
 
 
+@pytest.mark.parametrize("change", ["bytes", "mode"])
+def test_recovery_refuses_changed_unique_task_before_projection(
+    tmp_path: Path, change: str
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def fail_before_projection(phase: str, index: int | None) -> None:
+        if phase == "before_projection" and index == 0:
+            raise RuntimeError("interrupted publication")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            failure_hook=fail_before_projection,
+        )
+    if change == "bytes":
+        fixture.intent.note_path.write_bytes(fixture.intent.note_before + b"\nChanged task.\n")
+    else:
+        fixture.intent.note_path.chmod(0o600)
+    before = _tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert [item.reason_code for item in results] == [
+        "claim_publication_recovery_task_image_changed"
+    ]
+    assert (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)) == before
+
+
+def test_recovery_excludes_duplicate_writer_in_claim_lock_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from shared.task_note_lock import TaskNoteLockError, projected_path_lock
+
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def fail_before_projection(phase: str, index: int | None) -> None:
+        if phase == "before_projection" and index == 0:
+            raise RuntimeError("interrupted publication")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            failure_hook=fail_before_projection,
+        )
+    original = sdlc_claim.resolve_task_note
+    duplicate = fixture.vault / "closed" / "different-filename.md"
+    writer_results = []
+    checked = False
+
+    def write_duplicate():
+        try:
+            with projected_path_lock(fixture.intent.task_id, (duplicate,), timeout=0):
+                duplicate.write_bytes(fixture.intent.note_before)
+                writer_results.append("wrote_duplicate")
+        except TaskNoteLockError as exc:
+            writer_results.append(exc.reason_code)
+
+    def race_after_resolution(*args, **kwargs):
+        nonlocal checked
+        result = original(*args, **kwargs)
+        if not checked:
+            checked = True
+            writer = threading.Thread(target=write_duplicate)
+            writer.start()
+            writer.join(timeout=5)
+            assert not writer.is_alive()
+        return result
+
+    monkeypatch.setattr(sdlc_claim, "resolve_task_note", race_after_resolution)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert checked
+    assert writer_results == ["task_note_lock_timeout"]
+    assert not duplicate.exists()
+    assert [item.state for item in results] == ["applied"]
+    assert fixture.intent.note_path.read_bytes() == fixture.intent.note_after
+    assert len(list(fixture.cache.glob("cc-active-task-*"))) == 2
+
+
 def test_cc_claim_fresh_session_does_not_apply_original_pending_publication(
     tmp_path: Path,
 ) -> None:
@@ -3161,9 +3291,65 @@ def test_cc_claim_fresh_session_does_not_apply_original_pending_publication(
     )
     assert result.returncode == 8, result.stderr
     assert "claim_publication_recovery_owner_mismatch" in result.stderr
+    assert f"role={fixture.intent.role};session={fixture.intent.session_id}" in result.stderr
+    assert "Next action: reconcile the pending publication using its original role and session" in (
+        result.stderr
+    )
     assert fixture.intent.note_path.read_bytes() == fixture.intent.note_before
     assert not list(fixture.cache.glob("cc-active-task-*"))
     assert not list(fixture.cache.glob("cc-claim-dispatch-*"))
+
+
+def test_cc_claim_recovery_reports_task_identity_reason_and_repair(tmp_path: Path) -> None:
+    from tests.scripts.test_cc_claim import _claim
+
+    fixture = _home_fixture(tmp_path)
+    fixture = replace(
+        fixture,
+        transactions=fixture.transactions / "gate0b-claim-publish-v1",
+        locks=fixture.cache / "coord" / "task-locks",
+    )
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def fail_before_projection(phase: str, index: int | None) -> None:
+        if phase == "before_projection" and index == 0:
+            raise RuntimeError("interrupted publication")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            failure_hook=fail_before_projection,
+        )
+    (fixture.vault / "closed" / "unrelated-filename.md").write_bytes(fixture.intent.note_before)
+    before = (
+        _tree_snapshot(fixture.vault),
+        tuple(
+            _tree_snapshot(projection.path)
+            for projection in sdlc_claim._projections(fixture.intent)
+        ),
+    )
+    result = _claim(
+        tmp_path / "home",
+        fixture.intent.task_id,
+        dispatch=False,
+        install_gate0b=False,
+        extra_args=["--recover-claim-publications"],
+    )
+    assert result.returncode == 8, result.stderr
+    assert "claim_publication_recovery_task_resolution_refused" in result.stdout
+    assert "task_note_cross_state_duplicate" in result.stdout
+    assert "Next action: reconcile every state copy before lifecycle mutation" in result.stdout
+    assert "quarantine" not in result.stderr
+    assert (
+        _tree_snapshot(fixture.vault),
+        tuple(
+            _tree_snapshot(projection.path)
+            for projection in sdlc_claim._projections(fixture.intent)
+        ),
+    ) == before
 
 
 def test_private_admitted_transaction_marks_recovery_after_untyped_exception(
@@ -3362,6 +3548,8 @@ def test_recovery_holds_legacy_history_without_mutation(tmp_path: Path) -> None:
             publication_id,
             "hold",
             "legacy_claim_publication_recovery_forbidden",
+            detail=publication_id,
+            repair_action="republish the claim through one current admitted claim-publication executor",
         ),
     )
     assert _tree_snapshot(tmp_path) == before
