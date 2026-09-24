@@ -533,11 +533,6 @@ def overage_state(info: dict) -> bool | None:
     return not (isinstance(value, str) and value.strip().lower() in {"false", "0", "0.0"})
 
 
-def overage_in_use(info: dict) -> bool:
-    """A refusal signal: only an explicit overage serve counts; absent is not overage."""
-    return overage_state(info) is True
-
-
 def harness_window_hours(text: str) -> int | None:
     """The window a Claude limit notice names, or None when it names none."""
     lowered = text.lower()

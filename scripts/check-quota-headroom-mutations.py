@@ -526,16 +526,16 @@ MUTANTS = [
         "probe-rejected-served",
         at(PROBE_TEST, "test_probe_rejected_window_is_a_wall_even_when_the_result_was_served"),
         OBSERVER,
-        'if any(info.get("status") == "rejected" or overage_in_use(info) for info in rate_limits):',
-        "if any(overage_in_use(info) for info in rate_limits):",
+        'info.get("status") == "rejected" or overage_state(info) is True for info in rate_limits',
+        "overage_state(info) is True for info in rate_limits",
     ),
     (
         "probe-overage-wall",
         at(PROBE_TEST, "test_probe_overage_refusal_alone_is_not_a_wall"),
         OBSERVER,
-        'if any(info.get("status") == "rejected" or overage_in_use(info) for info in rate_limits):',
-        'if any(info.get("status") == "rejected" or overage_in_use(info) '
-        'or info.get("overageStatus") == "rejected" for info in rate_limits):',
+        'info.get("status") == "rejected" or overage_state(info) is True for info in rate_limits',
+        'info.get("status") == "rejected" or overage_state(info) is True '
+        'or info.get("overageStatus") == "rejected" for info in rate_limits',
     ),
     (
         "probe-stream-text-scan",
@@ -799,8 +799,8 @@ MUTANTS = [
         "probe-overage-served",
         at(PROBE_TEST, "test_a_probe_served_from_overage_is_a_wall"),
         OBSERVER,
-        'if any(info.get("status") == "rejected" or overage_in_use(info) for info in rate_limits):',
-        'if any(info.get("status") == "rejected" for info in rate_limits):',
+        'info.get("status") == "rejected" or overage_state(info) is True for info in rate_limits',
+        'info.get("status") == "rejected" for info in rate_limits',
     ),
     (
         "live-v2-by-default",

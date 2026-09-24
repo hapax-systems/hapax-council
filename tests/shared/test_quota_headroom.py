@@ -915,6 +915,7 @@ def test_window_scoped_wall_needs_a_reading_of_the_same_window(tmp_path):
         "resetsAt": RESET_5H,
         "rateLimitType": "five_hour",
         "utilization": 0.9,
+        "isUsingOverage": False,  # a witnessed serve, so only the window clause can hold the wall
     }
     claude_stream(
         tmp_path,
@@ -1504,6 +1505,7 @@ def test_an_undated_refusal_is_dated_late_and_an_undated_reading_is_not_evidence
         stream_dated("2026-09-24T18:20:00Z"),
     )
     rows = claude_rows(tmp_path)
+    assert "claude.subscription.rate_limit_rejected" in by_id(rows), "the undated refusal was lost"
     wall = by_id(rows)["claude.subscription.rate_limit_rejected"]
     assert wall.observed_at == datetime(2026, 9, 24, 18, 20, tzinfo=UTC)
     assert wall.details["earliest_at"] is None
