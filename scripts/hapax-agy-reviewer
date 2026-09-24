@@ -414,7 +414,8 @@ def _review(args: argparse.Namespace, dossier: str, lifetime: int) -> int:
             return 124
         except InterruptedError:
             print(
-                "hapax-agy-reviewer: caller cancelled; owned group cleaned; review discarded",
+                "hapax-agy-reviewer: caller cancelled; owned group cleaned; review discarded; "
+                "inspect the caller's cancellation or timeout before retrying the same pinned review.",
                 file=sys.stderr,
             )
             return 125

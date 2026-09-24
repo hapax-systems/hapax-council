@@ -432,9 +432,13 @@ def test_caller_cancellation_still_cleans_group(
         pid = _await_record(child_record)
         cancelled_at = time.monotonic()
         proc.send_signal(sig)
-        stdout, _ = proc.communicate(timeout=3)
+        stdout, stderr = proc.communicate(timeout=3)
         assert time.monotonic() - cancelled_at < 1.5
     assert stdout == ""
+    assert (
+        "hapax-agy-reviewer: caller cancelled; owned group cleaned; review discarded; "
+        "inspect the caller's cancellation or timeout before retrying the same pinned review.\n"
+    ) in stderr
     assert not _running(pid)
     assert not Path((tmp_path / "root").read_text()).exists()
 
@@ -466,6 +470,20 @@ def test_ownership_mismatch_never_signals(monkeypatch) -> None:
     monkeypatch.setattr(os, "waitid", lambda *args: None)
     monkeypatch.setattr(os, "getpgid", lambda pid: 123)
     monkeypatch.setattr(os, "killpg", lambda *args: pytest.fail("unowned process group signalled"))
+    with pytest.raises(RuntimeError, match="ownership unavailable"):
+        wrapper["_stop_owned_group"](FakeProcess())
+
+
+def test_session_ownership_mismatch_never_signals(monkeypatch) -> None:
+    wrapper = runpy.run_path(str(WRAPPER))
+
+    class FakeProcess:
+        pid = 99999999
+
+    monkeypatch.setattr(os, "waitid", lambda *args: None)
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid)
+    monkeypatch.setattr(os, "getsid", lambda pid: 123)
+    monkeypatch.setattr(os, "killpg", lambda *args: pytest.fail("unowned session signalled"))
     with pytest.raises(RuntimeError, match="ownership unavailable"):
         wrapper["_stop_owned_group"](FakeProcess())
 
