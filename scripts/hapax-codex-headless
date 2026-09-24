@@ -370,7 +370,8 @@ PYEOF
   if [[ "$rc" -ne 0 ]]; then
     auth_output="$(cat "$output_file" "$error_file" 2>/dev/null || true)"
     auth_output_lc="${auth_output,,}"
-    auth_error="codex_saved_auth_exec_failed:rc=$rc"
+    auth_error="codex_exec_preflight_failed"
+    [[ "$rc" -eq 124 ]] && auth_error="codex_exec_preflight_timeout"
     case "$auth_output_lc" in
       *refresh_token_invalidated*)
         auth_error="codex_saved_auth_refresh_token_invalidated"
@@ -382,7 +383,11 @@ PYEOF
         auth_error="codex_saved_auth_login_required"
         ;;
     esac
-    echo "hapax-codex-headless: saved Codex auth was rejected by codex exec ($auth_error; rc=$rc); next action: repair saved Codex login on the dispatch host via codex login or the documented auth-cache transfer fallback, then retry governed dispatch" >&2
+    if [[ "$auth_error" == codex_saved_auth_* ]]; then
+      echo "hapax-codex-headless: saved Codex auth was rejected by codex exec ($auth_error; rc=$rc); next action: repair saved Codex login on the dispatch host via codex login or the documented auth-cache transfer fallback, then retry governed dispatch" >&2
+    else
+      echo "hapax-codex-headless: Codex execution preflight failed ($auth_error; rc=$rc); next action: inspect transport, certificate and bounded timeout evidence, then rerun the sentinel probe before dispatch; saved-login rejection is unproven" >&2
+    fi
     sed -n '1,4p' "$error_file" >&2 || true
     rm -f "$output_file" "$error_file"
     exit 78

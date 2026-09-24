@@ -377,6 +377,22 @@ Expected stderr must include `HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1` and
 `using legacy claim writer`. If that warning is absent, stop and inspect the
 script version before mutating source.
 
+The emergency writer rechecks the full role projection namespace under the
+installed role lock, before changing the task note. Another task/session,
+partial identity or admitted dispatch history returns `claim_emergency_role_occupied`.
+Unreadable or unsafe projections return `claim_emergency_role_unobservable`.
+Expiry and `--force` cannot bypass this final check or delete old projections.
+Preserve the files and use the existing governed release/publication path.
+A complete same-session emergency identity can resume an assigned ready task
+with its original epoch. Charter units retain their admitted path and parent
+lease; emergency mode cannot replace the charter's ownership.
+
+```bash
+uv run --no-sync pytest -q tests/scripts/test_cc_claim_role_exclusion.py \
+  -k 'emergency or open_failure or serializes_process'
+uv run --no-sync pytest -q tests/scripts/test_cc_claim_charter.py
+```
+
 ## Verify Fallback
 
 Check both legacy role-keyed and governed session-keyed cache files:
@@ -502,8 +518,10 @@ marker, or unavailable composition/lock is held. The whole namespace identity
 index is shared within one sweep and revalidated at use; concurrent changes
 narrow cleanup rather than allowing a convenient-path lookup.
 
-The final marker check reports `claim_sweep_marker_changed` for replacement or
-refresh, so the explicit CLI exits 8 even when no deletion occurred. Preserve the
+The final marker check compares device/inode, mode, link count, owner/group,
+size, nanosecond mtime/ctime and content. Reading can change atime; that field
+alone does not invalidate ownership. The check reports `claim_sweep_marker_changed`
+for replacement or refresh, so the explicit CLI exits 8 even when no deletion occurred. Preserve the
 new marker and reobserve ownership before cleanup. Symlinks, directories and
 other nonregular entries report `claim_sweep_marker_not_regular`; multiply linked
 regular files report `claim_sweep_marker_linked`. Neither kind is modified.
@@ -529,10 +547,21 @@ An unlink error reports `claim_sweep_unlink_failed` and names the pending decisi
 in its repair action. No deletion or completed outcome is reported. Preserve the
 decision and reconcile both the failed unlink and current marker before making a
 new cleanup decision; the pending event is not permission to replay deletion.
+Every candidate replays authoritative decision history under the same role lock.
+An unresolved decision for that cache/marker returns `claim_sweep_decision_pending`
+without appending another decision or retrying unlink, even when the transient
+filesystem failure has disappeared. A matching recorded deleted outcome resolves
+its own decision only. Unreadable/degraded history, or a missing database with
+a surviving mirror, holds with `claim_sweep_audit_unavailable`. A new empty
+ledger has no predecessor decisions; loss of both stores is outside this check.
+This increment has no mutating reconciliation command; preserve the pending
+event for governed outcome reconciliation. A marker already absent after an
+unrecorded successful unlink is outside the marker inventory; its pending event
+remains in the ledger and is not converted into a completed outcome by a later sweep.
 
 ```bash
 uv run --no-sync python -m pytest tests/scripts/test_hapax_methodology_dispatch.py -q \
-  -k 'unlink_failure_preserves_pending_witness or outcome_write_failure_keeps_pending_decision'
+  -k 'unlink_failure_preserves_pending_witness or outcome_write_failure_keeps_pending_decision or unreadable_decision_history or ignores_only_read_access_time'
 ```
 
 The sweep returns actual deletions, a held count, and up to twenty typed holds
@@ -562,3 +591,18 @@ age-only deletion path; the deleting process is unobserved. U8's earlier loss ha
 a distinct recorded coordinator-daemon reoffer at 07:29Z, including a task-row
 rewrite that this sweep does not perform. These observations do not attribute
 other marker losses or authorize real claim repair.
+
+## Codex local preflight diagnostics
+
+A failed local execution sentinel still stops dispatch before claim. Explicit
+invalid-token or login-required signatures retain the saved-login repair action.
+A timeout is `codex_exec_preflight_timeout`; other failures without an auth
+signature are `codex_exec_preflight_failed`. Certificate, network and unknown
+execution failures do not establish rejected saved login or prescribe login.
+The bounded timeout, certificate validation, provider and execution route stay
+unchanged. Recheck with temporary executables, without native execution:
+
+```bash
+uv run --no-sync pytest -q tests/scripts/test_hapax_codex_headless.py \
+  -k refuses_rejected_local_bearer_before_claim
+```

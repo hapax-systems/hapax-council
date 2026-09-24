@@ -290,8 +290,8 @@ lease_ttl="${HAPAX_CLAIM_LEASE_TTL_SECS:-21600}"
 # role's claim files — the legacy cc-active-task-<role> AND every session-keyed
 # cc-active-task-<role>-<session_id> (FM-2). Under admitted publication, expiry
 # is evidence for a governed release, never permission for this claim attempt to
-# delete another lease. The explicit legacy fallback preserves the historical
-# reaping behavior for slice-1 compatibility. Vault root comes from the L9
+# delete another lease. Emergency publication also preserves expired projections
+# for its locked ownership check. Vault root comes from the L9
 # resolver so the work plane can move.
 ROOT_HELPER="$SCRIPT_DIR/../hooks/scripts/cc-task-root.sh"
 if [[ ! -f "$ROOT_HELPER" ]]; then
@@ -334,11 +334,8 @@ for cf in "$legacy_claim_file" "$HOME/.cache/hapax/cc-active-task-$role-"*; do
       shopt -u nullglob
       exit 7
     fi
-    # Legacy fallback: reap session-keyed files (a dead session's lease
-    # auto-frees); leave the shared legacy file (it is overwritten below and
-    # never blocks once expired) for the out-of-scope consumers that still read
-    # it.
-    [[ "$cf" != "$legacy_claim_file" ]] && rm -f "$cf" 2>/dev/null || true
+    # Expiry does not prove release, including in emergency mode. Preserve all
+    # projections for the final ownership check under the installed role lock.
     continue
   fi
   [[ -n "$existing_task" && "$existing_task" != "$task_id" ]] || continue
@@ -382,7 +379,7 @@ sys.exit(0 if ok else 1)
     shopt -u nullglob
     exit 7
   fi
-  echo "cc-claim: --force override — releasing prior claim on '$existing_task'" >&2
+  echo "cc-claim: --force requested; the final locked ownership check still applies" >&2
 done
 shopt -u nullglob
 
@@ -1279,6 +1276,78 @@ if not canon_enforced:
             )
         legacy_lock_root = Path(installed_roots.claim_lock_root)
         with claim_role_exclusion(role, lock_root=legacy_lock_root):
+            # The shell scan is advisory and ran before exclusion. A publisher
+            # may have won since then, including one whose marker is now absent
+            # but whose epoch/dispatch survives. Emergency mode cannot transfer
+            # that ownership or turn a charter unit into a second lease.
+            keys = (role, f"{role}-{session_id}") if session_id else (role,)
+            families = ("cc-active-task-", "cc-claim-epoch-", "cc-claim-dispatch-", "cc-active-charter-")
+            expected_names = {
+                f"{family}{key}{'.json' if family == 'cc-claim-dispatch-' else ''}"
+                for family in families
+                for key in keys
+            }
+            from shared.coord_projection import ReadOnlyFsSnapshot, ReadOnlySnapshotError
+
+            try:
+                with ReadOnlyFsSnapshot(change_scope="observed_paths") as observation:
+                    directory = observation.pin_absolute_dir(cache_dir, private_final=False, allow_missing=True)
+                    observed = {}
+                    if directory is not None:
+                        for name in observation.list_names(directory):
+                            if not any(
+                                name in {f"{family}{role}", f"{family}{role}.json"}
+                                or name.startswith(f"{family}{role}-")
+                                for family in families
+                            ):
+                                continue
+                            captured = observation.observe_file_at(
+                                directory, name, private=False, max_bytes=65536
+                            ).captured
+                            if (
+                                name not in expected_names
+                                or captured is None
+                                or not sidecar_belongs_to(cache_dir / name, task_id)
+                                or charter_keep
+                            ):
+                                raise ClaimPublicationError(
+                                    "claim_emergency_role_occupied",
+                                    "preserve the current role projections; resume their exact owner "
+                                    "or use governed release before retrying; charter units use admitted publication",
+                                )
+                            observed[name] = captured.content
+                    if observed:
+                        # Only a complete same-session emergency projection can
+                        # resume here. Admitted/partial history needs its existing
+                        # publication/recovery path, never this fallback writer.
+                        required = {
+                            f"{family}{key}"
+                            for key in keys
+                            for family in ("cc-active-task-", "cc-claim-epoch-")
+                        }
+                        epochs = {observed.get(f"cc-claim-epoch-{key}") for key in keys}
+                        if (
+                            not required.issubset(observed)
+                            or any(name.startswith("cc-claim-dispatch-") for name in observed)
+                            or any(
+                                observed[f"cc-active-task-{key}"] != (task_id + "\n").encode() for key in keys
+                            )
+                            or len(epochs) != 1
+                            or not re.fullmatch(
+                                rb"[0-9]+ " + re.escape(task_id.encode()) + rb"\n", next(iter(epochs)) or b""
+                            )
+                        ):
+                            raise ClaimPublicationError(
+                                "claim_emergency_role_occupied",
+                                "preserve partial or admitted identity; resume through its governed publication path",
+                            )
+                        claim_epoch = int(next(iter(epochs)).split()[0])
+                    observation.seal()
+            except (ReadOnlySnapshotError, OSError, UnicodeError, ValueError, TypeError, AttributeError) as exc:
+                raise ClaimPublicationError(
+                    "claim_emergency_role_unobservable",
+                    "restore readable exact role projections before retrying emergency publication",
+                ) from exc
             with projected_path_lock(task_id, (path,)):
                 # PREIMAGE CHECK, not just an existence check. `text` was derived from
                 # `note_before`, read ~800 lines above this lock, and every decision between them —

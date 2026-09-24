@@ -5469,3 +5469,118 @@ def test_claim_sweep_unlink_failure_preserves_pending_witness(tmp_path, monkeypa
     assert events[0].event_type == "claim_sweep.delete_decided"
     assert events[0].event_id in result.holds[0].repair_action
     assert "failed unlink" in result.holds[0].repair_action
+
+    # Removing the transient filesystem failure is not reconciliation. A fresh
+    # sweep must preserve the same pending decision and all remaining bytes.
+    monkeypatch.setattr(Path, "unlink", unlink)
+    retry = module.sweep_stale_claims(claims, active, now=30001)
+    assert claim.read_text() == "task-a\n"
+    assert not retry.reaped
+    assert retry.holds[0].reason_code == "claim_sweep_decision_pending"
+    assert events[0].event_id in retry.holds[0].repair_action
+    assert module.coord_event_log_from_env().replay().events == events
+
+
+def test_claim_sweep_ignores_only_read_access_time(tmp_path, monkeypatch):
+    module = _dispatcher_module()
+    claims, active = tmp_path / "claims", tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    claim = claims / "cc-active-task-gamma"
+    claim.write_text("task-a\n")
+    os.utime(claim, (1000, 1000))
+    _task(active.parent, "task-a", "", status="done", assigned_to="gamma")
+    lstat = Path.lstat
+    calls = 0
+
+    def observed_access(path, *args, **kwargs):
+        nonlocal calls
+        original = lstat(path, *args, **kwargs)
+        if path != claim:
+            return original
+        calls += 1
+        # Model relatime without os.utime(), which also changes ctime.
+        from types import SimpleNamespace
+
+        fields = {name: getattr(original, name) for name in dir(original) if name.startswith("st_")}
+        fields.update(st_atime=1000 + calls, st_atime_ns=(1000 + calls) * 10**9)
+        return SimpleNamespace(**fields)
+
+    monkeypatch.setattr(Path, "lstat", observed_access)
+    result = module.sweep_stale_claims(claims, active, now=30000)
+    assert not result.holds
+    assert result.reaped == [(claim.name, "task-a", "terminal")]
+    assert not claim.exists()
+
+
+def test_claim_sweep_unreadable_decision_history_holds(tmp_path, monkeypatch):
+    from shared.coord_event_log import CoordEventLog, CoordEventLogError
+
+    module = _dispatcher_module()
+    claims, active = tmp_path / "claims", tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    claim = claims / "cc-active-task-gamma"
+    claim.write_text("task-a\n")
+    os.utime(claim, (1000, 1000))
+    _task(active.parent, "task-a", "", status="done", assigned_to="gamma")
+
+    def unreadable(*args, **kwargs):
+        raise CoordEventLogError("fixture history unreadable")
+
+    monkeypatch.setattr(CoordEventLog, "replay", unreadable)
+    result = module.sweep_stale_claims(claims, active, now=30000)
+    assert claim.read_text() == "task-a\n"
+    assert not result.reaped
+    assert result.holds[0].reason_code == "claim_sweep_audit_unavailable"
+
+
+def test_claim_sweep_completed_decision_allows_later_terminal_marker(tmp_path, monkeypatch):
+    module = _dispatcher_module()
+    claims, active = tmp_path / "claims", tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    claim = claims / "cc-active-task-gamma"
+    for task_id in ("task-a", "task-b"):
+        claim.write_text(task_id + "\n")
+        os.utime(claim, (1000, 1000))
+        _task(active.parent, task_id, "", status="done", assigned_to="gamma")
+        result = module.sweep_stale_claims(claims, active, now=30000)
+        assert result.reaped == [(claim.name, task_id, "terminal")]
+        assert not result.holds
+    events = module.coord_event_log_from_env().replay().events
+    assert [e.event_type for e in events] == [
+        "claim_sweep.delete_decided",
+        "claim_sweep.deleted",
+        "claim_sweep.delete_decided",
+        "claim_sweep.deleted",
+    ]
+
+
+def test_claim_sweep_missing_database_with_surviving_history_holds(tmp_path, monkeypatch):
+    module = _dispatcher_module()
+    claims, active = tmp_path / "claims", tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    claim = claims / "cc-active-task-gamma"
+    claim.write_text("task-a\n")
+    os.utime(claim, (1000, 1000))
+    _task(active.parent, "task-a", "", status="done", assigned_to="gamma")
+    unlink = Path.unlink
+
+    def refused(path, *args, **kwargs):
+        if path == claim:
+            raise PermissionError("fixture pending decision")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refused)
+    assert module.sweep_stale_claims(claims, active, now=30000).holds
+    monkeypatch.setattr(Path, "unlink", unlink)
+    log = module.coord_event_log_from_env()
+    assert log.jsonl_path.is_file()
+    log.db_path.rename(log.db_path.with_suffix(".preserved"))
+    result = module.sweep_stale_claims(claims, active, now=30001)
+    assert claim.exists()
+    assert not result.reaped
+    assert result.holds[0].reason_code == "claim_sweep_audit_unavailable"
+    assert not log.db_path.exists()
