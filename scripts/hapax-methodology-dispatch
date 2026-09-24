@@ -858,7 +858,14 @@ def sweep_stale_claims(
                 continue
             with claim_role_exclusion(role, lock_root=Path(roots.claim_lock_root)):
                 before = path.lstat()
-                if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                if not stat.S_ISREG(before.st_mode):
+                    result.hold(
+                        path.name,
+                        "claim_sweep_marker_not_regular",
+                        "preserve this nonregular entry and reconcile its file type before cleanup",
+                    )
+                    continue
+                if before.st_nlink != 1:
                     result.hold(
                         path.name, "claim_sweep_marker_linked", "reconcile the linked marker"
                     )
@@ -892,6 +899,11 @@ def sweep_stale_claims(
                         continue
                     # A replaced or refreshed marker belongs to a later observation.
                     if path.lstat() != before or path.read_text(encoding="utf-8") != raw:
+                        result.hold(
+                            path.name,
+                            "claim_sweep_marker_changed",
+                            "preserve the changed marker and reobserve its ownership before cleanup",
+                        )
                         continue
                     payload = {
                         "role": role,
@@ -924,7 +936,16 @@ def sweep_stale_claims(
                             "restore the coordination event log before retrying cleanup",
                         )
                         continue
-                    path.unlink()
+                    try:
+                        path.unlink()
+                    except OSError:
+                        result.hold(
+                            path.name,
+                            "claim_sweep_unlink_failed",
+                            f"preserve pending decision {decision_id}; reconcile the failed unlink "
+                            "and current marker before a new cleanup decision",
+                        )
+                        continue
                     result.reaped.append((path.name, task_id, reason))
                     try:
                         _record_claim_sweep(

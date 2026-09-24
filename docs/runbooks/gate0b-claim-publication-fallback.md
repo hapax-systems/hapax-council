@@ -122,6 +122,20 @@ Every attempt checks the full frontier; continuing
 drift, duplicate identities and changed task preimages still HOLD. A supplied
 index is never silently refreshed.
 
+Recheck the retry boundary from the repository root without touching live claims:
+
+```bash
+uv run --no-sync pytest -q tests/shared/test_sdlc_task_store.py -k bounded_index
+uv run --no-sync pytest -q tests/shared/test_sdlc_claim.py -k pre_projection_frontier_refusal
+rg -n 'index_build_attempts=3' shared/sdlc_claim.py scripts/cc-claim
+rg -n 'max_attempts: int = 1|index_build_attempts: int = 1' shared/sdlc_task_store.py
+rg -n 'index = build_task_identity_index\(active_dir.parent\)' scripts/hapax-methodology-dispatch
+```
+
+The tests exercise bounded retry, complete-namespace refusal and locked claim
+preflight. The source selectors check the exact caller attempt-count bindings;
+the tests alone do not certify each caller's configured count.
+
 A typed refusal in the second locked preflight, before projection begins,
 records an `aborted` journal. Recovery preserves that history and cannot turn
 the refusal into a delayed claim. Once projection may have begun, failures
@@ -153,6 +167,14 @@ frontier. Follow that action before repeating recovery; a generic journal
 quarantine cannot resolve a conflicting task identity.
 Publication-error observations also include the journal's stored refusal cause
 and the sealed inspection reference/hash, including for terminal aborted journals.
+
+Recheck exit-code 8 observations and pending-recovery refusal in temporary stores:
+
+```bash
+uv run --no-sync pytest -q tests/scripts/test_cc_claim.py -k publication_failure_reports_durable_outcome
+uv run --no-sync pytest -q tests/shared/test_sdlc_claim.py \
+  -k 'pre_projection_frontier_refusal or caller_cannot_replay or recovery_reports_task_identity'
+```
 
 The claim transaction holds the existing role lock and projected-path lock,
 including the task-identity key. A writer participating with that task identity
@@ -480,6 +502,17 @@ marker, or unavailable composition/lock is held. The whole namespace identity
 index is shared within one sweep and revalidated at use; concurrent changes
 narrow cleanup rather than allowing a convenient-path lookup.
 
+The final marker check reports `claim_sweep_marker_changed` for replacement or
+refresh, so the explicit CLI exits 8 even when no deletion occurred. Preserve the
+new marker and reobserve ownership before cleanup. Symlinks, directories and
+other nonregular entries report `claim_sweep_marker_not_regular`; multiply linked
+regular files report `claim_sweep_marker_linked`. Neither kind is modified.
+
+```bash
+uv run --no-sync python -m pytest tests/scripts/test_hapax_methodology_dispatch.py -q \
+  -k 'preserves_marker_changed_during_resolution or reports_unsafe_marker_type'
+```
+
 Before unlink, the dispatcher must append `claim_sweep.delete_decided` to the
 existing coordination event log. It records the task, note hash, marker hash and
 filesystem identity, installed composition roots, role, reason and observation
@@ -491,6 +524,16 @@ evidence path. Storage retains the existing SQLite WAL/NORMAL durability contrac
 this change adds no power-loss guarantee. These observations
 do not authorize replay or transfer. No alternate event store or audit fallback
 is introduced.
+
+An unlink error reports `claim_sweep_unlink_failed` and names the pending decision
+in its repair action. No deletion or completed outcome is reported. Preserve the
+decision and reconcile both the failed unlink and current marker before making a
+new cleanup decision; the pending event is not permission to replay deletion.
+
+```bash
+uv run --no-sync python -m pytest tests/scripts/test_hapax_methodology_dispatch.py -q \
+  -k 'unlink_failure_preserves_pending_witness or outcome_write_failure_keeps_pending_decision'
+```
 
 The sweep returns actual deletions, a held count, and up to twenty typed holds
 with repair actions. The explicit CLI prints the result and exits 8 when any

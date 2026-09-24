@@ -958,7 +958,11 @@ def test_claim_sweep_respects_installed_exclusion_across_processes(
     ]
 
 
-def test_claim_sweep_preserves_marker_changed_during_resolution(tmp_path, monkeypatch):
+@pytest.mark.parametrize("change", ["replacement", "refresh"])
+@pytest.mark.parametrize("consumer", ["direct", "cli"])
+def test_claim_sweep_preserves_marker_changed_during_resolution(
+    tmp_path, monkeypatch, capsys, change, consumer
+):
     module = _dispatcher_module()
     claims = tmp_path / "claims"
     active = tmp_path / "tasks" / "active"
@@ -969,14 +973,70 @@ def test_claim_sweep_preserves_marker_changed_during_resolution(tmp_path, monkey
     os.utime(claim, (1000, 1000))
     _task(active.parent, "task-a", "", status="done", assigned_to="gamma")
     classify = module._claim_task_dead_reason
+    changed_stats = []
 
     def replace_marker(fields):
-        claim.write_text("new-task\n")
+        if change == "replacement":
+            claim.write_text("new-task\n")
+        else:
+            os.utime(claim, (1001, 1001))
+        changed_stats.append(claim.lstat())
         return classify(fields)
 
     monkeypatch.setattr(module, "_claim_task_dead_reason", replace_marker)
-    assert module.sweep_stale_claims(claims, active, now=30000).reaped == []
-    assert claim.read_text() == "new-task\n"
+    if consumer == "direct":
+        result = module.sweep_stale_claims(claims, active, now=30000)
+        assert result.reaped == []
+        report = module.asdict(result)
+    else:
+        monkeypatch.setenv("HAPAX_CC_CLAIMS_DIR", str(claims))
+        monkeypatch.setenv("HAPAX_CC_TASK_ROOT", str(active.parent))
+        assert module.main(["--sweep-stale-claims"]) == 8
+        captured = capsys.readouterr()
+        assert "held 1" in captured.out
+        report = json.loads(captured.err)["claim_sweep"]
+        assert report["reaped"] == []
+    assert changed_stats
+    assert claim.lstat() == changed_stats[0]
+    assert claim.read_text() == ("new-task\n" if change == "replacement" else "task-a\n")
+    assert report["held_count"] == 1
+    assert report["holds"][0]["marker"] == claim.name
+    assert report["holds"][0]["reason_code"] == "claim_sweep_marker_changed"
+    assert "reobserve" in report["holds"][0]["repair_action"]
+    assert module.coord_event_log_from_env().replay().events == ()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory", "fifo", "hardlink"])
+def test_claim_sweep_reports_unsafe_marker_type(tmp_path, monkeypatch, kind):
+    module = _dispatcher_module()
+    claims, active = tmp_path / "claims", tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    claim = claims / "cc-active-task-gamma"
+    target = tmp_path / "target"
+    target.write_text("task-a\n")
+    if kind == "symlink":
+        claim.symlink_to(target)
+    elif kind == "directory":
+        claim.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(claim)
+    else:
+        claim.hardlink_to(target)
+    before = claim.lstat()
+
+    result = module.sweep_stale_claims(claims, active, now=30000)
+
+    assert claim.lstat() == before
+    assert target.read_text() == "task-a\n"
+    assert result.reaped == []
+    assert result.held_count == 1
+    assert result.holds[0].marker == claim.name
+    assert result.holds[0].reason_code == (
+        "claim_sweep_marker_linked" if kind == "hardlink" else "claim_sweep_marker_not_regular"
+    )
+    assert result.holds[0].repair_action
+    assert module.coord_event_log_from_env().replay().events == ()
 
 
 def test_claim_sweep_loads_installed_roots(tmp_path, monkeypatch):
@@ -5401,6 +5461,11 @@ def test_claim_sweep_unlink_failure_preserves_pending_witness(tmp_path, monkeypa
     result = module.sweep_stale_claims(claims, active, now=30000)
     assert claim.exists()
     assert not result.reaped
-    assert result.holds[0].reason_code == "claim_sweep_observation_failed"
+    assert result.held_count == 1
+    assert result.holds[0].marker == claim.name
+    assert result.holds[0].reason_code == "claim_sweep_unlink_failed"
     events = module.coord_event_log_from_env().replay().events
     assert len(events) == 1 and events[0].payload["outcome"] == "pending"
+    assert events[0].event_type == "claim_sweep.delete_decided"
+    assert events[0].event_id in result.holds[0].repair_action
+    assert "failed unlink" in result.holds[0].repair_action
