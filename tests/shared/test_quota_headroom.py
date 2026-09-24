@@ -1570,3 +1570,23 @@ def test_an_undated_refusal_is_dated_late_and_an_undated_reading_is_not_evidence
     assert wall.observed_at == datetime(2026, 9, 24, 18, 20, tzinfo=UTC)
     assert wall.details["earliest_at"] is None
     assert rows[0].label == "unobserved"  # the refusal's readings had nothing dated before them
+
+
+def test_routable_comes_from_this_ledgers_own_fresh_admission():
+    # The strict receipt-applied registry read is confined to reporting by the agentic-trust
+    # boundary, so the stage reads the admission this tick already produced instead.
+    base = load_quota_spend_ledger()
+    payload = base.model_dump(mode="json")
+    for row in payload["quota_snapshots"]:
+        if row["route_id"] == "claude.headless.full":
+            row["subscription_quota_state"] = "fresh"
+            row["fresh_until"] = (NOW + timedelta(minutes=10)).isoformat()
+    fresh = QuotaSpendLedger.model_validate(payload)
+
+    def claude_stage(ledger, now):
+        result = enrich_ledger(ledger, {}, registry=registry(), now=now)
+        return next(r.stage for r in result.quota_snapshots if r.family == "claude")
+
+    assert claude_stage(fresh, NOW) == "routable"
+    assert claude_stage(fresh, NOW + timedelta(minutes=20)) != "routable"  # admission expired
+    assert claude_stage(base, NOW) != "routable"  # the fixture's claude.headless.full is exhausted

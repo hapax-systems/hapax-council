@@ -1088,8 +1088,6 @@ def enrich_ledger(
     now: datetime,
 ) -> QuotaSpendLedger:
     """Project registry declarations and trace evidence without changing admission."""
-    from shared.platform_capability_registry import check_route_freshness
-
     routes = defaultdict(list)
     for route in registry.routes:
         family = FAMILY_ALIASES.get(str(route.platform), str(route.platform))
@@ -1165,7 +1163,17 @@ def enrich_ledger(
                 for budget in ledger.active_paid_budgets(now)
             )
         ]
-        if any(check_route_freshness(r, now=now).ok for r in budget_eligible):
+        # Routable from this ledger's own admission: a budget-eligible declared route whose
+        # admission snapshot is fresh now. No second, strict receipt-applied registry read: the
+        # agentic-trust boundary confines that loader to reporting.
+        eligible_ids = {route.route_id for route in budget_eligible}
+        if any(
+            snapshot.get("admission_compatible", True)
+            and snapshot.get("route_id") in eligible_ids
+            and snapshot.get("subscription_quota_state") == "fresh"
+            and (snapshot.get("fresh_until") is None or instant(snapshot["fresh_until"]) > now)
+            for snapshot in snapshots
+        ):
             stage, next_act, owner = (
                 "routable",
                 "Refresh measurements before they expire",

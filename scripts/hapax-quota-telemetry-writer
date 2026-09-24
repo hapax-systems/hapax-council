@@ -3805,8 +3805,9 @@ def main(argv: list[str] | None = None) -> int:
             "written without them. Next action: run with --check to see the failing source",
             file=sys.stderr,
         )
-    from shared.platform_capability_registry import load_platform_capability_registry
-
+    # Declarations only: which routes exist, their pools and paid profiles. Route freshness for
+    # the stage comes from this tick's own admission snapshots (enrich_ledger), never from a
+    # second strict receipt-applied read, which the agentic-trust boundary confines to reporting.
     registry = None
     try:
         registry = PlatformCapabilityRegistry.model_validate(
@@ -3819,20 +3820,6 @@ def main(argv: list[str] | None = None) -> int:
             "config/platform-capability-registry.json",
             file=sys.stderr,
         )
-    if registry is not None:
-        try:
-            registry = load_platform_capability_registry(
-                PLATFORM_CAPABILITY_REGISTRY,
-                receipt_dir=args.platform_capability_receipt_dir,
-                now=now,
-            )
-        except (OSError, ValueError):
-            # Keep declarations while the existing admission scanners fail closed
-            # on damaged runtime evidence. Never elevate a stage from a bad receipt.
-            print(
-                "hapax-quota-telemetry-writer: capability evidence unavailable; stages use declarations only",
-                file=sys.stderr,
-            )
     if args.check and (measurements is None or registry is None):
         return 1
     if args.check:

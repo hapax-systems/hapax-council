@@ -1029,6 +1029,21 @@ MUTANTS = [
         "CLAUDE_WINDOW_HORIZON = timedelta(days=8)",
         "CLAUDE_WINDOW_HORIZON = timedelta(days=5)",
     ),
+    # --- routable from this ledger's own admission (agentic-trust boundary, dev8's finding)
+    (
+        "routable-ignores-state",
+        "test_routable_comes_from_this_ledgers_own_fresh_admission",
+        READER,
+        'and snapshot.get("subscription_quota_state") == "fresh"',
+        "and True",
+    ),
+    (
+        "routable-ignores-expiry",
+        "test_routable_comes_from_this_ledgers_own_fresh_admission",
+        READER,
+        'and (snapshot.get("fresh_until") is None or instant(snapshot["fresh_until"]) > now)',
+        "and True",
+    ),
     (
         "route-probe-suppressed",
         at(PROBE_TEST, "test_a_refused_reading_never_suppresses_a_route_probe"),
