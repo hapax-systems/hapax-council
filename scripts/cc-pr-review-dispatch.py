@@ -80,9 +80,14 @@ from github_pr_status import (  # noqa: E402
     listing_unavailable_detail,
 )
 
-from shared import public_gate_receipts, quota_headroom  # noqa: E402
+from shared import public_gate_receipts, quota_headroom, review_artifact_manifest  # noqa: E402
 from shared.platform_capability_registry import (  # noqa: E402
     _route_specific_quota_admission_fresh,
+)
+from shared.review_artifact_manifest import (  # noqa: E402
+    ARTIFACT_HEAD_PREFIX,
+    ArtifactSetError,
+    artifact_head_sha,
 )
 from shared.route_metadata_schema import stable_payload_hash  # noqa: E402
 from shared.sdlc_lifecycle import (  # noqa: E402
@@ -118,7 +123,6 @@ QUOTA_WALL_OUTAGE_CAUSE = "quota_wall"
 #: The artifact a vault-only row is reviewed as must fit a reviewer prompt whole: acceptance of
 #: bytes no reviewer saw is refused rather than truncated.
 MAX_ARTIFACT_CHARS = MAX_DIFF_CHARS
-ARTIFACT_HEAD_PREFIX = "artifact-sha256:"
 DEFAULT_ARTIFACT_ROOT = DEFAULT_VAULT_ROOT.parent.parent
 ROUTE_ADMISSION_OBSERVED_AT_RE = re.compile(
     r"observed_at:(?P<observed_at>"
@@ -213,6 +217,7 @@ PUBLIC_GATE_AUTHORITY_RESERVED_BINDING_KEYS = frozenset(
         "degraded_family_route_blocked",
         "dossier_schema",
         "escalations",
+        "family_floor",
         "family_substitution",
         "findings",
         "head_sha",
@@ -567,6 +572,17 @@ PARSEABLE_VERDICTS = {"accept", "accept-with-findings", "block"}
 SEAT_OUTAGE_VERDICTS = review_team.FAMILY_OUTAGE_VERDICTS | {"invalid-output"}
 #: ``outage_cause`` recorded on a seat whose clean-exit reply was empty.
 EMPTY_OUTPUT_OUTAGE_CAUSE = "empty_output"
+
+
+#: agy's own notice when headless mode auto-denies a tool and it stops without a reply
+#: (recorded in frame/briefs/agy-flash-measure-20260905T1941Z/*.stderr). It reaches stdout when
+#: the caller merges stderr. It is a missing reply, not an unparseable one.
+_NO_OUTPUT_NOTICE_RE = re.compile(r"\Ajetski: no output produced\b[^\n]*\Z")
+
+
+def _is_empty_reply(reply: str) -> bool:
+    stripped = reply.strip()
+    return not stripped or bool(_NO_OUTPUT_NOTICE_RE.match(stripped))
 
 
 def _is_seat_output_outage(review: dict[str, Any]) -> bool:
@@ -1407,6 +1423,7 @@ def constitute_with_substitution(
         "excluded_for_outage": sorted(outage_families - set(inputs.walls)),
         "excluded_for_route_block": sorted(route_blocked_families),
         "seated_families": [],
+        "substitute_families_seated": [],
     }
     if inputs.wall_error:
         substitution["wall_evidence_error"] = inputs.wall_error
@@ -1421,7 +1438,11 @@ def constitute_with_substitution(
         )
     except ValueError as exc:
         return None, substitution, str(exc)
-    substitution["seated_families"] = sorted({seat.family for seat in constitution.seats})
+    seated = {seat.family for seat in constitution.seats}
+    substitution["seated_families"] = sorted(seated)
+    substitution["substitute_families_seated"] = sorted(
+        seated & review_team.substitute_families(registry)
+    )
     return constitution, substitution, None
 
 
@@ -2659,7 +2680,7 @@ def dispatch_reviews(
                     seat.family,
                 )
                 verdict = "provider-outage"
-            elif not process_failed and not (reply or "").strip():
+            elif not process_failed and _is_empty_reply(reply or ""):
                 # A clean exit that printed nothing delivered no review: the route produced
                 # no reply (e.g. a headless client that denied itself a tool and stopped).
                 LOG.warning(
@@ -3256,9 +3277,12 @@ def write_acceptance_receipt_if_due(
     }
     artifact_review = dossier.get("artifact_review")
     if isinstance(artifact_review, dict):
-        # A vault-only acceptance covers exactly these bytes; artifact_receipt_blockers
-        # recomputes the manifest to show whether the receipt still covers the files.
-        receipt["artifact_review"] = {"manifest": artifact_review.get("manifest")}
+        # A vault-only acceptance covers exactly these bytes. The closure gate
+        # (shared.sdlc_lifecycle.acceptance_receipt_blockers) re-hashes them under the root.
+        receipt["artifact_review"] = {
+            "artifact_root": artifact_review.get("artifact_root"),
+            "manifest": artifact_review.get("manifest"),
+        }
     _apply_public_gate_authority_context(receipt, frontmatter)
     _sign_public_gate_authority_evidence(receipt)
     receipt_path.write_text(yaml.safe_dump(receipt, sort_keys=False), encoding="utf-8")
@@ -3897,56 +3921,14 @@ def review_pr(
     return {"status": "multi_dispatched", "plan": plan, "results": results}
 
 
-class ArtifactSetError(ValueError):
-    """The file set cannot be reviewed whole (the message is a stable reason code)."""
-
-
 def build_artifact_manifest(
     paths: list[Path] | tuple[Path, ...], artifact_root: Path
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Content-address a vault artifact: sorted (path, sha256, bytes) entries plus the text.
+    """``shared.review_artifact_manifest``'s manifest, capped at what a reviewer sees whole."""
 
-    Relative paths resolve against ``artifact_root``. Refused, never truncated or skipped: an
-    empty set, a path that resolves (through any symlink) outside the root, a missing or
-    non-regular file, non-UTF-8 content, and a set too large for a reviewer to see whole.
-    """
-
-    if not paths:
-        raise ArtifactSetError("artifact_set_empty")
-    try:
-        root = artifact_root.resolve(strict=True)
-    except OSError as exc:
-        raise ArtifactSetError("artifact_root_missing") from exc
-    entries: dict[str, dict[str, Any]] = {}
-    contents: dict[str, str] = {}
-    total = 0
-    for raw in paths:
-        path = Path(raw) if Path(raw).is_absolute() else root / raw
-        resolved = path.resolve()
-        try:
-            rel = resolved.relative_to(root).as_posix()
-        except ValueError as exc:
-            raise ArtifactSetError(f"artifact_outside_root:{path.name}") from exc
-        if not resolved.is_file():
-            raise ArtifactSetError(f"artifact_missing_or_not_a_file:{rel}")
-        data = resolved.read_bytes()
-        try:
-            text = data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ArtifactSetError(f"artifact_not_utf8_text:{rel}") from exc
-        total += len(text)
-        if total > MAX_ARTIFACT_CHARS:
-            raise ArtifactSetError(f"artifact_set_too_large:>{MAX_ARTIFACT_CHARS}_chars")
-        entries[rel] = {"path": rel, "sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
-        contents[rel] = text
-    return [entries[rel] for rel in sorted(entries)], contents
-
-
-def artifact_head_sha(manifest: list[dict[str, Any]]) -> str:
-    """The artifact's head: a digest over the sorted manifest (paths and content hashes)."""
-
-    canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
-    return ARTIFACT_HEAD_PREFIX + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return review_artifact_manifest.build_artifact_manifest(
+        paths, artifact_root, max_chars=MAX_ARTIFACT_CHARS
+    )
 
 
 def artifact_lineage(
@@ -4262,7 +4244,7 @@ def review_artifact(
     )
     dossier["pr"] = None
     dossier["artifact_review"] = {
-        "artifact_root": str(artifact_root),
+        "artifact_root": str(artifact_root.resolve()),
         "manifest": manifest,
         "lineage": lineage,
     }

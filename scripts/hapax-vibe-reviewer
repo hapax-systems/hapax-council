@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Mistral Vibe substitute reviewer seat for the review-team registry (read-only).
+
+Runs `vibe -p` on the dispatcher's prompt in an empty temporary workdir with every tool
+disabled and one turn. Two refusals, each reported as a route outage:
+
+- Size. On 2026-09-24, `vibe -p` returned 0 B three times on 45-87 KB prompts and returned
+  verdicts at 22 KB and 60 KB. Prompts above the largest size measured below the smallest
+  failure (22 KB) are refused, so the seat never returns nothing silently.
+- Billing surface. The CLI can be bound to the metered API (`plan_type: api`) instead of the
+  Team allowance. The quota reader in shared/quota_headroom.py sees that binding, and while it
+  holds the seat is refused rather than switching billing implicitly (next action: operator
+  runs `vibe --setup` with the Team account).
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.review_seat_wrapper import SEAT_PREAMBLE, refuse  # noqa: E402
+
+WRAPPER = "hapax-vibe-reviewer"
+MAX_PROMPT_BYTES = 22_000
+MAX_PRICE_DOLLARS = "1.00"
+
+
+def vibe_bin() -> str | None:
+    return os.environ.get("HAPAX_VIBE_BIN") or shutil.which("vibe")
+
+
+def plan_type() -> str:
+    """The binding #4728's reader sees; any reader failure is 'unobserved' (refused)."""
+
+    from shared import quota_headroom
+
+    try:
+        rows = quota_headroom.read_other_family(Path.home(), "vibe")
+    except (ValueError, OSError):
+        return "unobserved"
+    return str((rows[0].details or {}).get("plan_type") or "unobserved") if rows else "unobserved"
+
+
+def command(binary: str, prompt: str, workdir: Path) -> list[str]:
+    return [
+        binary,
+        "-p",
+        prompt,
+        "--agent",
+        "plan",
+        "--max-turns",
+        "1",
+        "--max-price",
+        MAX_PRICE_DOLLARS,
+        "--output",
+        "text",
+        "--enabled-tools",
+        "re:^$",  # matches no tool: with -p, every other tool is disabled
+        "--workdir",
+        str(workdir),
+    ]
+
+
+def main() -> int:
+    prompt = sys.stdin.read()
+    if not prompt.strip():
+        return refuse(WRAPPER, "empty prompt on stdin; the dispatcher sends the review prompt")
+    text = f"{SEAT_PREAMBLE}\n\n{prompt.strip()}\n"
+    size = len(text.encode("utf-8"))
+    if size > MAX_PROMPT_BYTES:
+        return refuse(
+            WRAPPER,
+            f"prompt of {size} bytes exceeds the measured vibe -p ceiling of {MAX_PROMPT_BYTES} "
+            "(0 B at 45-87 KB on 2026-09-24); the constitution substitutes another family",
+        )
+    plan = plan_type()
+    if plan != "unknown":
+        return refuse(
+            WRAPPER,
+            f"vibe binding is plan_type={plan}, not the Team allowance; refusing to spend on the "
+            "API meter. Next action: operator runs `vibe --setup` with the Team account",
+        )
+    binary = vibe_bin()
+    if not binary:
+        return refuse(WRAPPER, "vibe binary not found; install vibe or set HAPAX_VIBE_BIN")
+    with tempfile.TemporaryDirectory(prefix="hapax-vibe-review-") as tmp:
+        try:
+            result = subprocess.run(
+                command(binary, text, Path(tmp)),
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            return refuse(WRAPPER, f"failed to launch vibe ({type(exc).__name__})")
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    return result.returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

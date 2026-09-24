@@ -330,6 +330,11 @@ def _acceptance_receipt_validity_blockers(receipt_path: Path) -> tuple[str, ...]
     verdict = _frontmatter_non_null_scalar(loaded.get("verdict"))
     if verdict and verdict.lower() not in ACCEPTANCE_RECEIPT_ACCEPTED_VERDICTS:
         blockers.append(f"acceptance_receipt_verdict_not_accepted:{verdict.lower()}")
+    # A vault-only acceptance covers exactly the bytes its manifest records; with no merged
+    # head behind it, the receipt stops counting the moment those bytes change.
+    from shared.review_artifact_manifest import artifact_receipt_blockers
+
+    blockers.extend(artifact_receipt_blockers(loaded))
     return tuple(blockers)
 
 

@@ -512,7 +512,8 @@ class TestConstitution:
         reg = rt.load_lens_registry()
         team = rt.constitute_team("t1_critical", "claude", reg, pr_number=7)
         assert 4 <= len(team.seats) <= 5
-        roster = {entry["family"] for entry in reg["families"]}
+        # every CORE family; substitute families only fill seats the core cannot
+        roster = {entry["family"] for entry in reg["families"] if not entry.get("substitute")}
         assert roster <= {seat.family for seat in team.seats}
 
     def test_t1_route_blocked_family_degrades_with_receipt_reason(self) -> None:
@@ -552,10 +553,11 @@ class TestConstitution:
             "codex",
             expanded,
             pr_number=0,
-            available_families=("claude", "haiku-review"),
+            available_families=("claude", "haiku-review", "muse"),
             route_blocked_families=blocked,
         )
-        assert {seat.family for seat in team.seats} == {"claude", "haiku-review"}
+        # the extra route is a core family and seats before the substitute; no reseat of claude
+        assert {seat.family for seat in team.seats} == {"claude", "haiku-review", "muse"}
         dossier = rt.synthesize_dossier(
             task_id="task-x",
             pr_number=99,
@@ -565,7 +567,7 @@ class TestConstitution:
             reviews=[
                 _review("claude-1", "claude", "accept"),
                 _review("haiku-review-1", "haiku-review", "accept"),
-                _review("claude-2", "claude", "invalid-output"),
+                _review("muse-1", "muse", "block"),
             ],
             lenses=ALWAYS_ON_LENSES,
             constituted_at="2026-06-11T20:00:00+00:00",
@@ -648,8 +650,16 @@ class TestConstitution:
         expanded = rt.review_registry_with_route_families(
             _registry(), platform_registry=platform_registry
         )
-        families = {entry["family"] for entry in rt.review_family_entries(expanded)}
-        assert {"vibe", "local_tool", "ornith", "fugu"}.isdisjoint(families)
+        entries = rt.review_family_entries(expanded)
+        families = {entry["family"] for entry in entries}
+        assert {"local_tool", "ornith", "fugu"}.isdisjoint(families)
+        # vibe reviews only as the declared static substitute seat, never via its worker route
+        assert not any(
+            entry.get("review_family_source") == "platform_capability_registry" for entry in entries
+        )
+        vibe = next(entry for entry in entries if entry["family"] == "vibe")
+        assert vibe["reviewer_command"] == ["scripts/hapax-vibe-reviewer"]
+        assert "route_id" not in vibe
 
     def test_static_review_roster_behavior_remains_unchanged_without_extra_descriptor(self) -> None:
         rt = _load_review_team_module()
@@ -779,7 +789,7 @@ class TestDistinctFamilyFloor:
     def test_registry_declares_the_granted_substitute_families(self) -> None:
         rt = _load_review_team_module()
         entries = {e["family"]: e for e in rt.review_family_entries(rt.load_lens_registry())}
-        assert self.SUBSTITUTES <= set(entries)
+        assert set(entries) >= self.SUBSTITUTES
         for family in self.SUBSTITUTES:
             entry = entries[family]
             assert entry["substitute"] is True
@@ -846,6 +856,20 @@ class TestDistinctFamilyFloor:
             team_class="t1_critical",
         )
         assert dossier["review_team_verdict"] == "quorum-accept"
+
+    def test_t1_merge_admission_requires_core_families_not_the_substitutes(self) -> None:
+        rt = _load_review_team_module()
+        reg = rt.load_lens_registry()
+        dossier = _synth(
+            rt,
+            [_review(f"{f}-1", f, "accept") for f in ("claude", "codex", "gemini", "glm")],
+            team_class="t1_critical",
+        )
+        blockers = rt._dossier_validity_blockers(
+            dossier, pr_head_sha="a" * 40, registry=reg, route_blocked_families={}
+        )
+        assert not [b for b in blockers if b.startswith("review_dossier_family_diversity")]
+        assert blockers == ()
 
     def test_a_dead_seat_leaves_the_team_below_floor(self) -> None:
         rt = _load_review_team_module()
@@ -2330,7 +2354,8 @@ class TestFamilyOutageDegradation:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                # a substitute fills the walled family's seat; a gemini reseat is below floor
+                _review("muse-1", "muse", "accept"),
             ],
             team_class="t1_critical",
             constitution_notes=notes,
@@ -2346,7 +2371,7 @@ class TestFamilyOutageDegradation:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("glm-1", "glm", "accept"),
                 _review("claude-1", "claude", "quota-wall", checklist={}),
             ],
             team_class="t1_critical",
@@ -2368,7 +2393,7 @@ class TestFamilyOutageDegradation:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("muse-1", "muse", "accept"),  # substitute, never a reseat
             ],
             team_class="t1_critical",
             constitution_notes=notes,
@@ -2446,7 +2471,7 @@ class TestFamilyOutageDegradation:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("muse-1", "muse", "accept"),  # substitute, never a reseat
             ],
             team_class="t2_standard",
             constitution_notes=notes,
@@ -2475,7 +2500,7 @@ class TestFamilyOutageDegradation:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("muse-1", "muse", "accept"),
             ],
             team_class="t2_standard",
             constitution_notes=notes,
@@ -2635,7 +2660,7 @@ class TestFamilyOutageDegradation:
             [
                 _review("codex-1", "codex", "accept"),
                 _review("gemini-1", "gemini", "accept"),
-                _review("gemini-2", "gemini", "accept"),
+                _review("muse-1", "muse", "accept"),
             ],
             team_class="t1_critical",
             constitution_notes=notes,
@@ -2990,7 +3015,9 @@ class TestGoGate:
         reviews = [
             _review("gemini-1", "gemini", "block", findings=[phantom]),
             _review("codex-1", "codex", "accept"),
-            _review("claude-1", "claude", "invalid-output"),
+            # a vote that is not an accept (a dead seat would leave the team below the
+            # distinct-family floor), so only the phantom-resolved block can make quorum
+            _review("claude-1", "claude", "block"),
         ]
         dossier = _synth(rt, reviews, repo_root=tmp_path)
 
@@ -3011,7 +3038,7 @@ class TestGoGate:
         reviews = [
             _review("gemini-1", "gemini", "block", findings=[phantom]),
             _review("codex-1", "codex", "accept"),
-            _review("claude-1", "claude", "invalid-output"),
+            _review("claude-1", "claude", "block"),  # a vote, not an accept (see above)
         ]
         dossier = _synth(rt, reviews, repo_root=tmp_path)
 

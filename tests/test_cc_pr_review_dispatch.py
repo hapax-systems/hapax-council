@@ -628,6 +628,8 @@ class TestDryRun:
                 "glm": (
                     "glmcp.review.direct:task_scoped_paid_spend_gate:refused_exhausted_budget",
                 ),
+                # substitute families unavailable too, so only one family remains
+                **{f: ("route_state_blocked",) for f in ("muse", "vibe", "local")},
             },
         )
 
@@ -1077,8 +1079,11 @@ class TestApply:
         )
         by_family = {r["family"]: r for r in dossier["reviewers"]}
         assert by_family["codex"]["verdict"] == "invalid-output"
-        # 2 valid accepts remain -> still quorum for t2
-        assert dossier["review_team_verdict"] == "quorum-accept"
+        # Superseded: "2 valid accepts remain -> still quorum for t2". The unparseable seat is an
+        # outage, so two families voted where three were seated: below the distinct-family
+        # floor (review-constitution-walled-family-substitution-20260924), no quorum.
+        assert dossier["review_team_verdict"] == "no-quorum"
+        assert dossier["family_floor"]["met"] is False
 
     def test_reviewer_runner_exception_records_internal_error(self, tmp_path: Path) -> None:
         reviewers = RaisingReviewers(failing_family="codex")
