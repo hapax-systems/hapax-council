@@ -35,6 +35,8 @@ def _run(tmp_path: Path, *args: str) -> str:
         # and a session-role marker under $HOME/.cache, and a test must never
         # touch the operator's.
         "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "XDG_CONFIG_HOME": str(home / ".config"),
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "HAPAX_FAKE_CLAUDE_ARGV": str(argv_file),
     }
