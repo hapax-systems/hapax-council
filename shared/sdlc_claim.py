@@ -68,7 +68,7 @@ from shared.sdlc_task_store import (
     load_claim_dispatch_binding,
     resolve_task_note,
 )
-from shared.task_note_lock import held_by_current_thread, projected_path_lock
+from shared.task_note_lock import TaskNoteLockError, held_by_current_thread, projected_path_lock
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -4865,19 +4865,25 @@ def resolve_applied_claim_publication_for_task(
 def _superseding_applied_publication(
     manifest_path: Path,
     intent: ClaimPublicationIntent,
+    *,
+    receipt_root: Path | None,
 ) -> str | None:
-    """Name a later applied publication whose note postimage is the current note.
+    """Name the latest applied publication that verifiably owns the task now.
 
-    An applied journal whose projections drifted is superseded, not damaged, when a later
-    admitted publication for the same task and note path applied and its note postimage is
-    exactly the live note (bytes and mode). Read-only: this classifies the older journal and
-    never writes; it takes no second role lock (the caller already holds a note lock).
+    An applied journal whose projections drifted is superseded, not damaged, when the latest
+    later admitted publication for the same task and note path passes the full applied
+    readback: its receipt, its live sidecars and a note postimage equal to the live note. A
+    manifest's ``applied`` flag alone proves nothing (PR4726 round 2, Muse new-1). Read-only.
+    The caller holds this task's note lock, which every writer of the successor's projections
+    takes, so the readback is consistent; the successor's role lock is not taken because a
+    second role lock under a held note lock is a lock-order inversion.
     """
 
     current_content, current_mode = _file_state(intent.note_path)
     if current_content is None:
         return None
     root = manifest_path.parent.parent
+    candidates: list[tuple[int, str, ClaimPublicationIntent, ClaimAdmissionConsumption]] = []
     for entry in sorted(root.iterdir(), key=lambda path: path.name):
         if (
             entry == manifest_path.parent
@@ -4897,11 +4903,25 @@ def _superseding_applied_publication(
             and other.task_id == intent.task_id
             and other.note_path == intent.note_path
             and other.claim_epoch > intent.claim_epoch
-            and other.note_after == current_content
-            and other.note_mode == current_mode
         ):
-            return other_id
-    return None
+            candidates.append((other.claim_epoch, other_id, other, other_consumption))
+    if not candidates:
+        return None
+    # Only the latest publication can own the task now; an older one never stands in for it.
+    _epoch, successor_id, successor, successor_consumption = max(candidates, key=lambda c: c[:2])
+    if successor.note_after != current_content or successor.note_mode != current_mode:
+        return None
+    try:
+        require_applied_admitted_claim_publication(
+            successor,
+            successor_consumption,
+            transaction_root=root,
+            receipt_root=receipt_root,
+            _already_locked=True,
+        )
+    except ClaimPublicationError:
+        return None
+    return successor_id
 
 
 def _recover_one(
@@ -4974,7 +4994,9 @@ def _recover_one(
             except ClaimPublicationError as exc:
                 if exc.reason_code != "claim_publication_postimage_drift":
                     raise
-                successor = _superseding_applied_publication(manifest_path, intent)
+                successor = _superseding_applied_publication(
+                    manifest_path, intent, receipt_root=receipt_directory
+                )
                 if successor is None:
                     raise
                 return ClaimPublicationRecoveryResult(
@@ -6395,13 +6417,15 @@ def recover_claim_publications(
                     expected_owner=expected_owner,
                 )
             )
-        except ClaimPublicationError as exc:
+        except (ClaimPublicationError, TaskNoteLockError) as exc:
+            # Note-lock contention (another writer of this task) holds this one journal,
+            # exactly like role contention; it never aborts the rest of the run.
             results.append(
                 ClaimPublicationRecoveryResult(
                     entry.name,
                     "hold",
                     exc.reason_code,
-                    detail=exc.detail,
+                    detail=getattr(exc, "detail", None),
                     repair_action=exc.repair_action,
                 )
             )
