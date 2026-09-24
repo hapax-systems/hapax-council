@@ -1289,9 +1289,22 @@ if not canon_enforced:
     from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
     try:
-        installed_roots = load_claim_publication_composition(
-            Path(default_claim_publication_roots(home=Path.home()).invocation_store_root)
-        ).receipt.roots
+        default_roots = default_claim_publication_roots(home=Path.home())
+        store = Path(default_roots.invocation_store_root)
+        try:
+            installed_roots = load_claim_publication_composition(store).receipt.roots
+        except ExecutionAdmissionError as exc:
+            # A fallback that fails whenever the admitted path fails is no fallback. With
+            # nothing installed, lock where the admitted route's first-use install would install
+            # and lock: its own predicate above (absent receipt, no install artifact at all).
+            # A damaged, partial or mismatched installation may name a lock root a live admitted
+            # writer holds, so it refuses; the manifest code also covers a corrupt manifest.
+            if exc.reason_code != "gate0b_install_receipt_missing" or any(
+                (store / name).exists() or (store / name).is_symlink()
+                for name in ("activation-receipt.json", "composition-manifest.json")
+            ):
+                raise
+            installed_roots = default_roots
         if (
             Path(installed_roots.claim_cache_dir) != cache_dir.resolve()
             or Path(installed_roots.claim_vault_root) != path.parent.parent.resolve()
