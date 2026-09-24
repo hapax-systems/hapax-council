@@ -195,8 +195,11 @@ class TestVibeReviewer:
         assert not record.exists()
 
     def test_conflicting_process_key_is_refused(self, tmp_path: Path) -> None:
+        # Both keys are Team-bound, so only the conflict itself (which key bills is not
+        # established) can refuse the seat.
+        both_team = {STALE_KEY: "chat", CURRENT_KEY: "chat"}
         result, record = self._run_vibe(
-            tmp_path, _vibe_home(tmp_path, TODAY), MISTRAL_API_KEY=STALE_KEY
+            tmp_path, _vibe_home(tmp_path, both_team), MISTRAL_API_KEY=STALE_KEY
         )
         _assert_route_outage(result)
         assert not record.exists()

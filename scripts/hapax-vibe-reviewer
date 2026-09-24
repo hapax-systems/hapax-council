@@ -8,13 +8,15 @@ disabled and one turn. Two refusals, each reported as a route outage:
   verdicts at 22 KB and 60 KB. Prompts above the largest size measured below the smallest
   failure (22 KB) are refused, so the seat never returns nothing silently.
 - Billing surface. The CLI can be bound to the metered API (`plan_type: api`) instead of the
-  Team allowance. The quota reader in shared/quota_headroom.py sees that binding, and while it
-  holds the seat is refused rather than switching billing implicitly (next action for the
-  coordinator: rebind Vibe to the Team account).
+  Team allowance (`plan_type: chat`). The seat runs only when the configured key's own whoami
+  entry is the Team plan; otherwise it is refused rather than switching billing implicitly (next
+  action for the coordinator: rebind Vibe to the Team account).
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -31,30 +33,59 @@ from shared.review_seat_wrapper import SEAT_PREAMBLE, refuse  # noqa: E402
 WRAPPER = "hapax-vibe-reviewer"
 MAX_PROMPT_BYTES = 22_000
 MAX_PRICE_DOLLARS = "1.00"
-#: The reading that admits the seat. shared/quota_headroom.py `read_other_family(home, "vibe")`
-#: projects ~/.vibe/whoami_cache.json to `"api" if "api" in plans else "unknown"`: it keeps only
-#: whether any cached binding is the metered API, so "unknown" is its reading of a whoami cache
-#: whose bindings are all non-API. The Team binding was observed as `plan_type chat`
-#: (frame/CAPABILITY-ROUTING-TABLE.md, vibe row: after the operator's `vibe --setup` browser
-#: sign-in, "the new key's whoami reads plan_type chat instead of api"), which that reader
-#: reports as "unknown". "api" (metered) and "unobserved" (no cache, or a reader error) refuse.
-TEAM_BINDING_READING = "unknown"
+#: The Team allowance's plan_type, observed after the Team sign-in (frame/CAPABILITY-ROUTING-TABLE.md
+#: vibe row: "the new key's whoami reads plan_type chat instead of api").
+TEAM_PLAN_TYPE = "chat"
+KEY_VARIABLE = "MISTRAL_API_KEY"
+
+
+def configured_key(home: Path) -> str | None:
+    """The key vibe runs with: ~/.vibe/.env, unless the process sets a different one (refused).
+
+    The key stays in this process: it is only hashed, never logged, printed or passed on.
+    """
+
+    from_file = None
+    try:
+        for line in (home / ".vibe" / ".env").read_text(encoding="utf-8").splitlines():
+            name, sep, value = line.strip().partition("=")
+            if sep and name.strip() == KEY_VARIABLE:
+                from_file = value.strip().strip("\"'") or None
+    except OSError:
+        from_file = None
+    from_process = os.environ.get(KEY_VARIABLE, "").strip() or None
+    if from_process and from_file and from_process != from_file:
+        return None  # two different keys: which one bills is not established
+    return from_process or from_file
+
+
+def binding_plan_type(home: Path) -> str:
+    """plan_type of the configured key's own whoami entry, or a refusal reason code.
+
+    The whoami cache is keyed by the first 32 hex of sha256(key) (measured by the seat against
+    the live cache, 2026-09-24T21:59Z). Only the configured key's entry counts: a stale entry
+    for an old key (the 09-19 API key is still cached) says nothing about today's binding.
+    #4728's `read_other_family` reports "api" if ANY entry is api, which is why this does not
+    reuse it (that conflation is a follow-up on the reader's row).
+    """
+
+    key = configured_key(home)
+    if not key:
+        return "no_configured_key"
+    try:
+        cache = json.loads((home / ".vibe" / "whoami_cache.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "whoami_cache_unreadable"
+    if not isinstance(cache, dict):
+        return "whoami_cache_unreadable"
+    entry = cache.get(hashlib.sha256(key.encode("utf-8")).hexdigest()[:32])
+    if not isinstance(entry, dict) or not isinstance(entry.get("payload"), dict):
+        return "no_entry_for_configured_key"
+    return str(entry["payload"].get("plan_type") or "plan_type_missing")
 
 
 def vibe_bin() -> str | None:
     return os.environ.get("HAPAX_VIBE_BIN") or shutil.which("vibe")
-
-
-def plan_type() -> str:
-    """The binding #4728's reader sees; any reader failure is 'unobserved' (refused)."""
-
-    from shared import quota_headroom
-
-    try:
-        rows = quota_headroom.read_other_family(Path.home(), "vibe")
-    except (ValueError, OSError):
-        return "unobserved"
-    return str((rows[0].details or {}).get("plan_type") or "unobserved") if rows else "unobserved"
 
 
 def command(binary: str, prompt: str, workdir: Path) -> list[str]:
@@ -89,12 +120,13 @@ def main() -> int:
             f"prompt of {size} bytes exceeds the measured vibe -p ceiling of {MAX_PROMPT_BYTES} "
             "(0 B at 45-87 KB on 2026-09-24); the constitution substitutes another family",
         )
-    plan = plan_type()
-    if plan != TEAM_BINDING_READING:
+    plan = binding_plan_type(Path.home())
+    if plan != TEAM_PLAN_TYPE:
         return refuse(
             WRAPPER,
-            f"vibe binding reads plan_type={plan}, not the Team allowance; refusing to spend on the "
-            "API meter. Next action (coordinator): rebind Vibe to the Team account",
+            f"the configured vibe key's binding reads {plan}, not the Team allowance "
+            f"(plan_type={TEAM_PLAN_TYPE}); refusing to spend on the API meter. "
+            "Next action (coordinator): rebind Vibe to the Team account",
         )
     binary = vibe_bin()
     if not binary:
