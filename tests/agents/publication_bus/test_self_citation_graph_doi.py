@@ -255,8 +255,8 @@ def test_main_commit_no_change_skips(tmp_path: Path, capsys, monkeypatch):
 
     persist_graph_state(
         graph_dir=graph,
-        concept_doi="10.x/concept",
-        version_doi="10.x/v1",
+        concept_doi="10.5281/zenodo.99",
+        version_doi="10.5281/zenodo.100",
         fingerprint=fp,
         deposit_id=100,
     )
@@ -317,7 +317,7 @@ def commit_case(tmp_path, monkeypatch):
     _seed_snapshot(snapshot, [("10.x/y", 1)])
     graph = tmp_path / "graph"
     http = Mock()
-    http.RequestException = RuntimeError
+    http.RequestException = type("RequestException", (Exception,), {})
 
     def response(body, status=201):
         result = Mock(status_code=status, text="synthetic response")
@@ -325,15 +325,15 @@ def commit_case(tmp_path, monkeypatch):
         return result
 
     http.post.side_effect = [
-        response({"id": 100, "doi": "10.x/v1"}),
-        response({"id": 100, "doi": "10.x/v1", "conceptdoi": "10.x/concept"}),
+        response({"id": 100, "doi": "10.5281/zenodo.100"}),
+        response({"id": 100, "doi": "10.5281/zenodo.100", "conceptdoi": "10.5281/zenodo.99"}),
         response(
             {
                 "id": 100,
                 "links": {"latest_draft": "https://zenodo.org/api/deposit/depositions/101"},
             }
         ),
-        response({"id": 101, "doi": "10.x/v2", "conceptdoi": "10.x/concept"}),
+        response({"id": 101, "doi": "10.5281/zenodo.101", "conceptdoi": "10.5281/zenodo.99"}),
     ]
     http.put.return_value = response({})
     monkeypatch.setattr(graph_publisher, "requests", http)
@@ -374,19 +374,19 @@ def test_commit_first_version_then_version_and_duplicate(commit_case, capsys):
     ]
     assert history == [
         {
-            "concept_doi": "10.x/concept",
-            "version_doi": "10.x/v1",
+            "concept_doi": "10.5281/zenodo.99",
+            "version_doi": "10.5281/zenodo.100",
             "deposit_id": 100,
             "fingerprint": first_fp,
         },
         {
-            "concept_doi": "10.x/concept",
-            "version_doi": "10.x/v2",
+            "concept_doi": "10.5281/zenodo.99",
+            "version_doi": "10.5281/zenodo.101",
             "deposit_id": 101,
             "fingerprint": graph_topology_fingerprint(snapshot),
         },
     ]
-    assert (graph / "concept-doi.txt").read_text().strip() == "10.x/concept"
+    assert (graph / "concept-doi.txt").read_text().strip() == "10.5281/zenodo.99"
     assert (graph / "last-deposit-id.txt").read_text().strip() == "101"
     assert (graph / "last-fingerprint.txt").read_text().strip() == history[-1]["fingerprint"]
     urls = [call.args[0] for call in http.post.call_args_list]
@@ -404,6 +404,159 @@ def test_commit_first_version_then_version_and_duplicate(commit_case, capsys):
     assert "no material change" in capsys.readouterr().out
     assert len(http.post.call_args_list) == 4
     assert {path.name: path.read_bytes() for path in graph.iterdir()} == before
+
+
+@pytest.mark.parametrize("depth", [1, 3])
+def test_commit_first_run_creates_and_syncs_missing_parents(commit_case, monkeypatch, depth):
+    argv, original_graph, _, http = commit_case
+    graph = original_graph.joinpath(*(["new-parent"] * depth), "self-citation-graph")
+    argv[argv.index("--graph-dir") + 1] = str(graph)
+    assert not graph.parent.exists()
+    synced = []
+    real_fsync = os.fsync
+
+    def record_sync(fd):
+        real_fsync(fd)
+        synced.append(Path(os.readlink(f"/proc/self/fd/{fd}")))
+
+    responses = iter(http.post.side_effect)
+
+    def post(*args, **kwargs):
+        # The fence and every newly created directory entry must be durable
+        # before the first remote side effect, including the existing ancestor.
+        assert graph / "mint-attempt.json" in synced
+        assert graph in synced
+        assert set(graph.parents).issubset(synced)
+        return next(responses)
+
+    monkeypatch.setattr(os, "fsync", record_sync)
+    http.post.side_effect = post
+    assert main(argv) == 0
+    assert http.post.call_count == 2
+    assert (graph / "concept-doi.txt").read_text().strip() == "10.5281/zenodo.99"
+    assert not (graph / "mint-attempt.json").exists()
+    assert main(argv) == 0
+    assert http.post.call_count == 2
+
+
+def test_commit_missing_parent_sync_failure_keeps_fence(commit_case, monkeypatch, capsys):
+    argv, original_graph, _, http = commit_case
+    graph = original_graph / "publications" / "self-citation-graph"
+    argv[argv.index("--graph-dir") + 1] = str(graph)
+    real_fsync = os.fsync
+    failures = []
+
+    def fail_sync(fd):
+        path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+        if path == graph.parent.parent:
+            failures.append(path)
+            raise OSError("synthetic ancestor sync failure")
+        real_fsync(fd)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(os, "fsync", fail_sync)
+        assert main(argv) == 1
+    assert failures
+    assert "reconcile" in capsys.readouterr().err
+    assert (graph / "mint-attempt.json").exists()
+    assert main(argv) == 1
+    http.post.assert_not_called()
+
+
+@pytest.mark.parametrize("existing_version", [False, True])
+@pytest.mark.parametrize("field", ["doi", "conceptdoi"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "not-a-doi",
+        "10.x/zenodo.100",
+        "10.5281/",
+        "10.5281zenodo.100",
+        "10..5281/zenodo.100",
+        "https://doi.org/10.5281/zenodo.100",
+        " 10.5281/zenodo.100",
+        "10.5281/zenodo.100 ",
+        "10.5281/zenodo.100\n",
+        "10.5281/zenodo.\t100",
+        "10.5281/zenodo.\x00100",
+        "10.5281/zenodo.\x1b100",
+        "10.5281/zenodo.\x7f100",
+        "10.5281/zenodo.\x85100",
+        "10.5281/zenodo.\u200b100",
+    ],
+)
+def test_commit_rejects_malformed_doi(commit_case, capsys, existing_version, field, value):
+    argv, graph, snapshot, http = commit_case
+    if existing_version:
+        assert main(argv) == 0
+        _seed_snapshot(snapshot, [("10.x/y", 2)])
+    capsys.readouterr()
+    prior = {p.name: p.read_bytes() for p in graph.iterdir()} if graph.exists() else {}
+    responses = list(http.post.side_effect)
+    responses[1].json.return_value[field] = value
+    http.post.side_effect = responses
+    assert main(argv) == 1
+    output = capsys.readouterr()
+    assert f"remote response missing or invalid {field}" in output.err
+    assert "minted" not in output.out
+    assert (graph / "mint-attempt.json").exists()
+    for name, content in prior.items():
+        assert (graph / name).read_bytes() == content
+    assert {p.name for p in graph.iterdir()} == set(prior) | {"mint-attempt.json"}
+    calls = http.post.call_count
+    assert main(argv) == 1
+    assert http.post.call_count == calls
+
+
+@pytest.mark.parametrize("prefix", ["10.5281", "10.5072"])
+def test_commit_accepts_zenodo_doi_forms(commit_case, capsys, prefix):
+    argv, graph, _, http = commit_case
+    responses = list(http.post.side_effect)
+    concept = f"{prefix}/zenodo.99"
+    version = f"{prefix}/zenodo.100"
+    responses[1].json.return_value.update(doi=version, conceptdoi=concept)
+    http.post.side_effect = responses
+    assert main(argv) == 0
+    output = capsys.readouterr().out
+    assert concept in output and version in output
+    history = json.loads((graph / "version-doi-history.jsonl").read_text())
+    assert history["concept_doi"] == concept
+    assert history["version_doi"] == version
+
+
+@pytest.mark.parametrize("existing_version", [False, True])
+@pytest.mark.parametrize("failure", ["doi", "conceptdoi", "id", "json", "http", "transport"])
+def test_commit_failed_publish_reports_known_deposit_only(
+    commit_case, capsys, existing_version, failure
+):
+    argv, graph, snapshot, http = commit_case
+    if existing_version:
+        assert main(argv) == 0
+        _seed_snapshot(snapshot, [("10.x/y", 2)])
+    capsys.readouterr()
+    responses = list(http.post.side_effect)
+    private = "synthetic-private-response-contents"
+    if failure == "transport":
+        responses[1] = http.RequestException(private)
+    elif failure == "http":
+        responses[1].status_code = 503
+        responses[1].text = private
+    elif failure == "json":
+        responses[1].json.side_effect = ValueError(private)
+    else:
+        responses[1].json.return_value[failure] = private
+    http.post.side_effect = responses
+    assert main(argv) == 1
+    output = capsys.readouterr()
+    assert f"deposit_id={101 if existing_version else 100}" in output.err
+    assert "reconcile" in output.err
+    assert "minted" not in output.out
+    assert private not in output.err
+    assert "synthetic-test-token" not in output.err
+    assert (graph / "mint-attempt.json").exists()
+    calls = http.post.call_count
+    assert main(argv) == 1
+    assert http.post.call_count == calls
 
 
 @pytest.mark.parametrize("token", [None, "", "   "])
@@ -470,8 +623,8 @@ def test_commit_save_failure_reports_remote_identity(
     assert "state persistence failed" in output.err
     assert "reconcile" in output.err
     assert f"deposit_id={101 if existing_version else 100}" in output.err
-    assert f"10.x/v{2 if existing_version else 1}" in output.err
-    assert "10.x/concept" in output.err
+    assert f"10.5281/zenodo.{101 if existing_version else 100}" in output.err
+    assert "10.5281/zenodo.99" in output.err
     assert "minted" not in output.out
     assert http.post.call_count == (4 if existing_version else 2)
     # Even failure before the FIRST history write must durably block another

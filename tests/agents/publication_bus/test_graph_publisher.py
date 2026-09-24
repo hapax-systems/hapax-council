@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+from requests import RequestException
 
 from agents.publication_bus.graph_publisher import (
     GRAPH_PUBLISHER_SURFACE,
@@ -106,7 +107,7 @@ def test_mint_or_version_first_call_creates_and_publishes(tmp_path: Path):
 
     with patch("agents.publication_bus.graph_publisher.requests") as mock_requests:
         mock_requests.post.side_effect = [create_resp, publish_resp]
-        mock_requests.RequestException = Exception
+        mock_requests.RequestException = RequestException
         concept_doi, version_doi, deposit_id = mint_or_version(
             zenodo_token="ztk",
             graph_dir=tmp_path / "graph",
@@ -136,7 +137,7 @@ def test_mint_or_version_first_call_requires_concept_doi_in_publish_response(
 
     with patch("agents.publication_bus.graph_publisher.requests") as mock_requests:
         mock_requests.post.side_effect = [create_resp, publish_resp]
-        mock_requests.RequestException = Exception
+        mock_requests.RequestException = RequestException
         with pytest.raises(GraphPublisherError, match="conceptdoi"):
             mint_or_version(
                 zenodo_token="ztk",
@@ -176,7 +177,7 @@ def test_mint_or_version_uses_newversion_endpoint_when_state_present(tmp_path: P
     with patch("agents.publication_bus.graph_publisher.requests") as mock_requests:
         mock_requests.post.side_effect = [newver_resp, publish_resp]
         mock_requests.put.return_value = put_resp
-        mock_requests.RequestException = Exception
+        mock_requests.RequestException = RequestException
         concept_doi, version_doi, deposit_id = mint_or_version(
             zenodo_token="ztk",
             graph_dir=graph_dir,
@@ -222,7 +223,7 @@ def test_mint_or_version_raises_on_non_2xx_create(tmp_path: Path):
 
     with patch("agents.publication_bus.graph_publisher.requests") as mock_requests:
         mock_requests.post.return_value = create_resp
-        mock_requests.RequestException = Exception
+        mock_requests.RequestException = RequestException
         with pytest.raises(GraphPublisherError) as excinfo:
             mint_or_version(
                 zenodo_token="ztk",

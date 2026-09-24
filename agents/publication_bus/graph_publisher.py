@@ -24,6 +24,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import ClassVar
 
@@ -146,7 +149,7 @@ def mint_or_version(
         graph_publisher_total.labels(
             outcome="mint-error" if is_first_version else "version-error"
         ).inc()
-        raise GraphPublisherError(f"Zenodo transport failure: {exc}") from exc
+        raise GraphPublisherError("Zenodo transport failure") from exc
     except GraphPublisherError:
         graph_publisher_total.labels(
             outcome="mint-error" if is_first_version else "version-error"
@@ -214,18 +217,19 @@ def _create_first_version(
     create_body = _safe_json(create_resp)
     deposit_id = _remote_deposit_id(create_body)
 
-    publish_resp = requests.post(
-        f"{ZENODO_DEPOSIT_ENDPOINT}/{deposit_id}/actions/publish",
-        headers=headers,
-        timeout=ZENODO_REQUEST_TIMEOUT_S,
-    )
-    _raise_for_status(publish_resp, "deposit publish")
-    publish_body = _safe_json(publish_resp)
-    if _remote_deposit_id(publish_body) != deposit_id:
-        raise GraphPublisherError("published deposit identity does not match created deposit")
-    version_doi = _remote_doi(publish_body, "doi")
-    concept_doi = _remote_doi(publish_body, "conceptdoi")
-    return deposit_id, version_doi, concept_doi
+    with _known_deposit(deposit_id):
+        publish_resp = requests.post(
+            f"{ZENODO_DEPOSIT_ENDPOINT}/{deposit_id}/actions/publish",
+            headers=headers,
+            timeout=ZENODO_REQUEST_TIMEOUT_S,
+        )
+        _raise_for_status(publish_resp, "deposit publish")
+        publish_body = _safe_json(publish_resp)
+        if _remote_deposit_id(publish_body) != deposit_id:
+            raise GraphPublisherError("published deposit identity does not match created deposit")
+        version_doi = _remote_doi(publish_body, "doi")
+        concept_doi = _remote_doi(publish_body, "conceptdoi")
+        return deposit_id, version_doi, concept_doi
 
 
 def _create_new_version(
@@ -260,27 +264,39 @@ def _create_new_version(
     if new_id == prev_id:
         raise GraphPublisherError("newversion response reused previous deposit identity")
 
-    put_resp = requests.put(
-        f"{ZENODO_DEPOSIT_ENDPOINT}/{new_id}",
-        json={"metadata": deposit_metadata},
-        headers=headers,
-        timeout=ZENODO_REQUEST_TIMEOUT_S,
-    )
-    _raise_for_status(put_resp, "metadata update")
+    with _known_deposit(new_id):
+        put_resp = requests.put(
+            f"{ZENODO_DEPOSIT_ENDPOINT}/{new_id}",
+            json={"metadata": deposit_metadata},
+            headers=headers,
+            timeout=ZENODO_REQUEST_TIMEOUT_S,
+        )
+        _raise_for_status(put_resp, "metadata update")
 
-    publish_resp = requests.post(
-        f"{ZENODO_DEPOSIT_ENDPOINT}/{new_id}/actions/publish",
-        headers=headers,
-        timeout=ZENODO_REQUEST_TIMEOUT_S,
-    )
-    _raise_for_status(publish_resp, "new-version publish")
-    publish_body = _safe_json(publish_resp)
-    if _remote_deposit_id(publish_body) != new_id:
-        raise GraphPublisherError("published deposit identity does not match new version")
-    version_doi = _remote_doi(publish_body, "doi")
-    if _remote_doi(publish_body, "conceptdoi") != prev_concept:
-        raise GraphPublisherError("published concept DOI does not match previous concept")
-    return new_id, version_doi
+        publish_resp = requests.post(
+            f"{ZENODO_DEPOSIT_ENDPOINT}/{new_id}/actions/publish",
+            headers=headers,
+            timeout=ZENODO_REQUEST_TIMEOUT_S,
+        )
+        _raise_for_status(publish_resp, "new-version publish")
+        publish_body = _safe_json(publish_resp)
+        if _remote_deposit_id(publish_body) != new_id:
+            raise GraphPublisherError("published deposit identity does not match new version")
+        version_doi = _remote_doi(publish_body, "doi")
+        if _remote_doi(publish_body, "conceptdoi") != prev_concept:
+            raise GraphPublisherError("published concept DOI does not match previous concept")
+        return new_id, version_doi
+
+
+@contextmanager
+def _known_deposit(deposit_id: int) -> Iterator[None]:
+    """Retain the validated reconciliation identity without response/token contents."""
+    try:
+        yield
+    except GraphPublisherError as exc:
+        raise GraphPublisherError(f"{exc}; deposit_id={deposit_id}") from exc
+    except requests.RequestException as exc:
+        raise GraphPublisherError(f"Zenodo transport failure; deposit_id={deposit_id}") from exc
 
 
 def _remote_deposit_id(body: dict) -> int:
@@ -292,7 +308,14 @@ def _remote_deposit_id(body: dict) -> int:
 
 def _remote_doi(body: dict, field: str) -> str:
     doi = body.get(field)
-    if not isinstance(doi, str) or not doi.strip():
+    # Bare DOI name, not a resolver URL. Preserve its spelling; do not trim
+    # malformed remote values into valid identities. This syntax check is not
+    # evidence that the DOI resolves or identifies the intended public version.
+    if (
+        not isinstance(doi, str)
+        or not doi.isprintable()
+        or re.fullmatch(r"10\.[0-9]+(?:\.[0-9]+)*/\S+", doi) is None
+    ):
         raise GraphPublisherError(f"remote response missing or invalid {field}")
     return doi
 
@@ -302,17 +325,16 @@ def _raise_for_status(response, op: str) -> None:
     try:
         status = response.status_code
     except Exception as exc:
-        raise GraphPublisherError(f"{op}: malformed response: {exc}") from exc
+        raise GraphPublisherError(f"{op}: malformed response") from exc
     if not (200 <= status < 300):
-        body = getattr(response, "text", "")[:160]
-        raise GraphPublisherError(f"{op}: HTTP {status}: {body}")
+        raise GraphPublisherError(f"{op}: HTTP {status}")
 
 
 def _safe_json(response) -> dict:
     try:
         body = response.json()
     except (ValueError, AttributeError) as exc:
-        raise GraphPublisherError(f"unparseable JSON response: {exc}") from exc
+        raise GraphPublisherError("unparseable JSON response") from exc
     if not isinstance(body, dict):
         raise GraphPublisherError(f"unexpected JSON shape: {type(body).__name__}")
     return body
@@ -370,15 +392,18 @@ def _begin_attempt(graph_dir: Path, fingerprint: str) -> None:
 
     Presence alone blocks; empty/torn records are also unresolved attempts.
     Never expire or automatically recover one: the remote outcome is unknown.
-    The graph's parent must already exist; refuse if it does not.
+    Create the intended directory chain on first use. Sync every ancestor
+    before remote I/O, including on retries after failed provisioning; merely
+    observing an existing directory does not establish its durability.
     """
-    graph_dir.mkdir(exist_ok=True)
+    graph_dir.mkdir(parents=True, exist_ok=True)
     with (graph_dir / "mint-attempt.json").open("x", encoding="utf-8") as f:
         json.dump({"fingerprint": fingerprint}, f)
         f.flush()
         os.fsync(f.fileno())
     _sync_directory(graph_dir)
-    _sync_directory(graph_dir.parent)
+    for parent in graph_dir.parents:
+        _sync_directory(parent)
 
 
 def _finish_attempt(graph_dir: Path) -> None:
