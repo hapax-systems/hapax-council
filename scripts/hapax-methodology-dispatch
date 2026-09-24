@@ -2058,6 +2058,10 @@ def launch_codex_headless(
         args.append("--no-claim")
     args.extend([lane, prompt])
     env = os.environ.copy()
+    if status == "offered":
+        # A fresh claim must not reuse the coordinator's session. Continuations
+        # above keep their original claim identity; this is not a rebind path.
+        env.pop("HAPAX_SESSION_ID", None)
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     if lifecycle_receipt is not None:
         env["HAPAX_NATIVE_LIFECYCLE_RECEIPT"] = str(lifecycle_receipt)

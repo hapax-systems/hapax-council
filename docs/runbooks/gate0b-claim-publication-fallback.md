@@ -191,6 +191,12 @@ establish the governed-rebind task's positive ownership-transfer exit predicate.
 Qualified whole-attempt terminality, transfer races and launcher integration
 remain separate unfinished obligations; this increment cannot close that task.
 
+For an offered Codex task, `hapax-methodology-dispatch` removes the inherited
+`HAPAX_SESSION_ID` before handing control to the headless launcher. Its existing
+session producer then mints a fresh ID. Claimed/in-progress continuations retain
+their supplied original identity and `--no-claim` behavior. This separation does
+not transfer a claim or repair a previously inherited session.
+
 ## Role exclusion interface and writer boundary
 
 `shared.sdlc_claim.claim_role_exclusion(role, *, lock_root)` exposes the
@@ -264,6 +270,8 @@ uv run --no-sync python -m pytest tests/shared/test_sdlc_claim.py -q \
   -k 'requires_explicit_valid_owner or fresh_session_does_not_apply or transaction_postimage_retries'
 uv run --no-sync python -m pytest tests/shared/test_task_note_lock.py -q \
   -k 'role_lock or claim_publication'
+uv run --no-sync python -m pytest tests/scripts/test_hapax_methodology_dispatch.py -q \
+  -k scrubs_fresh_session
 ```
 
 For the preserved, deliberately failing raw-writer counterexample, from this
@@ -271,7 +279,7 @@ source checkout on the dispatched host:
 
 ```bash
 uv run --no-sync python -m pytest \
-  /home/hapax/.cache/hapax/claim-rebind-20260924/test_role_raw_writer_race.py -q
+  "$HOME/.cache/hapax/claim-rebind-20260924/test_role_raw_writer_race.py" -q
 ```
 
 That last probe uses only temporary claims. Expected: one failure showing
