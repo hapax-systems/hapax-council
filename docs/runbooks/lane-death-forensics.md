@@ -12,7 +12,7 @@ unknown, it was *unmeasurable*. Task
 |---|---|---|
 | lane window (`hapax-claude`, `hapax-codex`) | tmux default: pane closes with its process | `remain-on-exit failed`: a signal death or non-zero exit **keeps** the pane; a clean exit still closes it |
 | supervisor liveness (`hapax-lane-supervisor`) | `tmux has-session` | a session is alive only if at least one of its panes has `pane_dead=0`; a session of only dead panes is DEAD |
-| respawn | `new-session` refused over the corpse (lane wedged) | the corpse is **captured, then killed**, then the launcher runs |
+| respawn | `new-session` refused over the corpse (lane wedged) | for an unclaimed lane, the corpse is **captured, then killed**, then the launcher runs after occupancy and claim rechecks; active claims hold recovery |
 | tmux targets | bare names | anchored `=name`; pane lists read server-wide and filtered on the exact name |
 
 ## Where the evidence is
@@ -40,8 +40,17 @@ journalctl --user -u hapax-lane-supervisor --since -1h | grep -E 'dead pane reta
 ```
 
 A supervisor line reading `forensics NOT written to …` means the capture failed (usually an
-unwritable log directory); the line names the fix. The corpse is still cleared so the lane
-can relaunch — the evidence for *that* death is lost, so fix the directory before the next.
+unwritable log directory); the line names the fix. For an unclaimed lane, the corpse is still
+cleared so the lane can relaunch after occupancy and claim rechecks — the evidence for
+*that* death is lost, so fix the directory before the next.
+
+An active claim holds automatic recovery even when its session is dead and another pane
+keeps the role alive. The supervisor reports `claim_holder_live`, `claim_orphaned`, or
+`claim_orphan_unresolved`; non-live observations retain claim, epoch and task-note hashes
+in the lane bus. Preserve the claim and use governed stale-lease/rebind repair after
+resolving session ownership. Do not copy claim sidecars or launch a second writer over a
+live pane or live claim. Missing or conflicting identity evidence remains an unresolved
+hold; output silence alone never authorizes recovery.
 
 If a launcher prints `could not set remain-on-exit on <session>`, the lane is running but a
 bad death will leave nothing to read; the message names the checks (`tmux -V` ≥ 3.2).

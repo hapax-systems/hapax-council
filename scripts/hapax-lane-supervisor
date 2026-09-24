@@ -703,7 +703,7 @@ def pid_state(path, sid, launcher=False):
         return "unknown", "pid_unreadable"
 
 
-def pane_holder_live(sid):
+def pane_holder_state(sid):
     # Walk all exact-session pane roots and descendants, never another role's
     # pane. A retained dead pane is not a live process. Failure proves nothing.
     try:
@@ -711,10 +711,19 @@ def pane_holder_live(sid):
             ["tmux", "list-panes", "-a", "-F", "#{session_name}\t#{pane_dead}\t#{pane_pid}"],
             capture_output=True, text=True, timeout=3, check=True,
         ).stdout.splitlines()
-        roots = {row.split("\t")[2] for row in rows
-                 if len(row.split("\t")) == 3 and row.split("\t")[:2] == [f"hapax-claude-{lane}", "0"]}
+        roots = set()
+        for row in rows:
+            fields = row.split("\t")
+            if fields[0] != f"hapax-claude-{lane}":
+                continue
+            if len(fields) != 3 or fields[1] not in {"0", "1"}:
+                return "unknown"
+            if fields[1] == "0":
+                if not fields[2].isdecimal() or int(fields[2]) <= 0:
+                    return "unknown"
+                roots.add(fields[2])
         if not roots:
-            return False
+            return "absent"
         parents = {}
         for proc in Path("/proc").iterdir():
             if not proc.name.isdecimal():
@@ -725,37 +734,63 @@ def pane_holder_live(sid):
                     parents[proc.name] = fields[1]
             except (OSError, IndexError):
                 continue
+        if not roots.issubset(parents):
+            return "unknown"
         descendants = set(roots)
         while True:
             expanded = descendants | {pid for pid, parent in parents.items() if parent in descendants}
             if expanded == descendants:
                 break
             descendants = expanded
+        unreadable = False
         for pid in descendants:
             try:
                 raw = (Path("/proc") / pid / "environ").read_bytes().split(b"\0")
                 if f"HAPAX_SESSION_ID={sid}".encode() in raw and f"HOME={Path.home()}".encode() in raw:
-                    return True
+                    return "live"
+            except FileNotFoundError:
+                continue  # this descendant has exited since the process snapshot
             except OSError:
-                continue
+                unreadable = True
+        return "unknown" if unreadable else "absent"
     except (OSError, subprocess.SubprocessError):
-        pass
-    return False
+        return "unknown"
 
 
 def holder_state(sid):
     if not sid:
         return "unknown", "legacy_claim_without_session"
-    if pane_holder_live(sid):
+    pane_state = pane_holder_state(sid)
+    if pane_state == "live":
         return "live", "pane_session_process"
     paths = [(Path(runtime) / f"{lane}-{sid}.pid", False),
              (Path(runtime) / f"{lane}-{sid}.launcher.pid", True)]
     observed = [pid_state(path, sid, launcher) for path, launcher in paths if path.exists()]
     if any(state == "live" for state, _ in observed):
         return "live", "session_process"
+    if pane_state == "unknown":
+        return "unknown", "pane_inspection_unresolved"
     if observed and all(state == "dead" for state, _ in observed):
         return "dead", "session_pids_exited"
     return "unknown", next((why for state, why in observed if state == "unknown"), "session_pid_unresolved")
+
+
+def record_claim_observation(path, sid, task, observed, why, note):
+    receipt = dict(lane=lane, session_id=sid or None, task_id=task, state=observed, reason=why,
+                   pid_bindings={str(p): digest(p) for p in Path(runtime).glob(f"{lane}-{sid}*.pid")} if sid else {},
+                   claim_sha256=digest(path), epoch_sha256=digest(cache / path.name.replace("cc-active-task-", "cc-claim-epoch-", 1)),
+                   note_sha256=digest(note) if note else None, next_action="preserve_claim; governed_rebind_required" if observed == "dead" else "preserve_claim; inspect_session")
+    if observed != "live":
+        current = Path(state_dir) / f"{lane}-{sid or 'legacy'}.claim-holder.json"
+        previous = json.loads(current.read_text()) if current.exists() else None
+        if previous != receipt:
+            folder = Path(bus) / lane
+            folder.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            with (folder / f"{stamp}-claim-holder-{sid or 'legacy'}.json").open("x") as output:
+                json.dump(dict(receipt, observed_at=stamp), output, sort_keys=True)
+                output.write("\n")
+            current.write_text(json.dumps(receipt, sort_keys=True) + "\n")
 
 
 try:
@@ -764,9 +799,6 @@ try:
         sid = path.name[len(prefix) + 1:]
         if not is_claim_keyable_session_id(sid):
             claims.append((path, ""))
-            continue
-        role_marker = session_role_marker_path(sid, cache_dir=cache)
-        if role_marker.exists() and role_marker.read_text().strip() != lane:
             continue
         claims.append((path, sid))
     covered = {path.read_text().strip() for path, _ in claims}
@@ -780,7 +812,8 @@ try:
             continue
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task):
             held = True
-            print(f"{lane}: claim_orphan_unresolved:invalid_task_id", flush=True)
+            print(f"{lane}: claim_orphan_unresolved:invalid_task_id; preserve claim and inspect {path} through governed repair", flush=True)
+            record_claim_observation(path, sid, None, "unknown", "invalid_task_id", None)
             continue
         note = Path(vault) / "active" / f"{task}.md"
         if not note.is_file():
@@ -789,29 +822,33 @@ try:
         frontmatter = text.split("---", 2)[1] if text.startswith("---\n") else ""
         if field(frontmatter, "status") in terminal:
             continue
+        # A role can prefix another role's marker key. Exclude a sibling only
+        # when the task's assigned role and the complete key identify it; a
+        # conflicting session-role marker for OUR key is uncertainty, not absence.
+        owner = field(frontmatter, "assigned_to")
+        if owner and owner != lane:
+            owner_prefix = f"cc-active-task-{owner}"
+            if path.name == owner_prefix:
+                continue
+            if path.name.startswith(owner_prefix + "-"):
+                owner_sid = path.name[len(owner_prefix) + 1:]
+                if is_claim_keyable_session_id(owner_sid):
+                    owner_marker = session_role_marker_path(owner_sid, cache_dir=cache)
+                    if owner_marker.is_file() and owner_marker.read_text().strip() == owner:
+                        continue
         held = True
         observed, why = holder_state(sid)
+        if sid:
+            role_marker = session_role_marker_path(sid, cache_dir=cache)
+            if role_marker.exists() and role_marker.read_text().strip() != lane:
+                observed, why = "unknown", "session_role_mismatch"
         if field(frontmatter, "assigned_to") != lane or not field(frontmatter, "status"):
             observed, why = "unknown", "task_note_unresolved"
         event = "claim_holder_live" if observed == "live" else "claim_orphaned" if observed == "dead" else "claim_orphan_unresolved"
-        print(f"{lane}: {event}:{task}:{sid or 'legacy'}:{why}", flush=True)
+        print(f"{lane}: {event}:{task}:{sid or 'legacy'}:{why}; preserve claim and inspect {path} and session identity before governed repair", flush=True)
         if observed == "dead":
             print(f"{lane}: claim_orphan_unresolved:governed_rebind_required:{task}:{sid}; preserve claim and use governed stale-lease/rebind repair", flush=True)
-        receipt = dict(lane=lane, session_id=sid or None, task_id=task, state=observed, reason=why,
-                       pid_bindings={str(p): digest(p) for p in Path(runtime).glob(f"{lane}-{sid}*.pid")} if sid else {},
-                       claim_sha256=digest(path), epoch_sha256=digest(cache / path.name.replace("cc-active-task-", "cc-claim-epoch-", 1)),
-                       note_sha256=digest(note), next_action="preserve_claim; governed_rebind_required" if observed == "dead" else "preserve_claim; inspect_session")
-        if observed != "live":
-            current = Path(state_dir) / f"{lane}-{sid or 'legacy'}.claim-holder.json"
-            previous = json.loads(current.read_text()) if current.exists() else None
-            if previous != receipt:
-                folder = Path(bus) / lane
-                folder.mkdir(parents=True, exist_ok=True)
-                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-                with (folder / f"{stamp}-claim-holder-{sid or 'legacy'}.json").open("x") as output:
-                    json.dump(dict(receipt, observed_at=stamp), output, sort_keys=True)
-                    output.write("\n")
-                current.write_text(json.dumps(receipt, sort_keys=True) + "\n")
+        record_claim_observation(path, sid, task, observed, why, note)
     sys.exit(1 if held else 0)
 except (OSError, ValueError) as exc:
     print(f"{lane}: claim_orphan_unresolved:observation_failed:{type(exc).__name__}; inspect claim inputs and receipt destination", flush=True)

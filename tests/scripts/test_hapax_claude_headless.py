@@ -1300,3 +1300,111 @@ def test_retire_reason_uses_only_last_child_output(
     )
     assert result.stdout.startswith(expected), result.stdout
     assert log.read_text() == history + current
+
+
+def test_launcher_attempt_wiring_and_supervisor_pid_binding(tmp_path: Path) -> None:
+    """Exercise both sides of the binding with actual launcher-produced PID files."""
+    home = tmp_path / "home"
+    (home / "projects/hapax-council--beta").mkdir(parents=True)
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    claim = cache / "cc-active-task-beta"
+    claim.write_text("task-x\n")
+    vault = tmp_path / "vault"
+    (vault / "active").mkdir(parents=True)
+    note = vault / "active/task-x.md"
+    note.write_text("---\ntask_id: task-x\nstatus: in_progress\nassigned_to: beta\n---\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    pipe = tmp_path / "pipe"
+    _stub_bin(
+        bin_dir,
+        "claude",
+        """if [ ! -f "$ATTEMPT_FILE" ]; then
+  printf 'first\n' > "$ATTEMPT_FILE"
+  printf '{"type":"result"}\n'
+  exit 0
+fi
+printf 'second\n' >> "$ATTEMPT_FILE"
+printf -- '---\ntask_id: task-x\nstatus: done\nassigned_to: beta\n---\n' > "$TEST_TASK_NOTE"
+: > "$HOME/.cache/hapax/cc-active-task-beta"
+exit 0
+""",
+    )
+    _stub_bin(bin_dir, "detect-quota-wall", "exit 0\n")
+    _stub_bin(bin_dir, "tmux", 'case "$1" in has-session) exit 1;; *) exit 0;; esac\n')
+    retire_scripts = tmp_path / "retire/scripts"
+    retire_scripts.mkdir(parents=True)
+    _stub_bin(retire_scripts, "hapax-relay-retire", 'printf "%s\\n" "$*" > "$RETIRE_LOG"\n')
+    env = _headless_env(home, bin_dir, pipe)
+    env.update(
+        HAPAX_CC_TASK_ROOT=str(vault),
+        HAPAX_COUNCIL_DIR=str(tmp_path / "retire"),
+        HAPAX_CLAUDE_HEADLESS_TERMINAL_POLL_SECONDS="60",
+        ATTEMPT_FILE=str(tmp_path / "attempts"),
+        TEST_TASK_NOTE=str(note),
+        RETIRE_LOG=str(tmp_path / "retire.log"),
+    )
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "beta", "governed prompt"],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "attempts").read_text().splitlines() == ["first", "second"]
+    assert "own_exit:code_0" in (tmp_path / "retire.log").read_text()
+    assert "clean exit" not in (tmp_path / "retire.log").read_text()
+    sid = next(cache.glob("session-role-*")).name.removeprefix("session-role-")
+    # Set up the lease left after a dead session, without synthesizing its PID
+    # observation: those bytes MUST come from the launcher above.
+    note.write_text("---\ntask_id: task-x\nstatus: in_progress\nassigned_to: beta\n---\n")
+    (cache / f"cc-active-task-beta-{sid}").write_text("task-x\n")
+    (cache / f"cc-claim-epoch-beta-{sid}").write_text("17|test-epoch\n")
+    before = {p.name: p.read_bytes() for p in cache.glob("cc-*")}
+    env.update(
+        HAPAX_SUPERVISOR_STATE_DIR=str(tmp_path / "state"),
+        HAPAX_SUPERVISOR_RUNTIME_DIR=env["HAPAX_CLAUDE_HEADLESS_PIPE_DIR"],
+        HAPAX_SUPERVISOR_VAULT_ROOT=str(vault),
+        HAPAX_SUPERVISOR_WORKTREE_ROOT=str(home / "projects"),
+        HAPAX_SUPERVISOR_CLAUDE_LANES="beta",
+        HAPAX_SUPERVISOR_CODEX_LANES="",
+        HAPAX_SUPERVISOR_REAP_OFF="1",
+        HAPAX_SUPERVISOR_PROGRESS_OFF="1",
+        HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS="0",
+        HAPAX_SUPERVISOR_P0_IDLE_RESPAWN="0",
+        HAPAX_LOCAL_DEV_MAINTENANCE_MODE="local",
+        HAPAX_SUPERVISOR_LANEBUS_DIR=str(tmp_path / "lanebus"),
+    )
+    result = subprocess.run(
+        [str(REPO_ROOT / "scripts/hapax-lane-supervisor")],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"claim_orphaned:task-x:{sid}" in result.stdout
+    assert "governed_rebind_required" in result.stdout
+    assert {p.name: p.read_bytes() for p in cache.glob("cc-*")} == before
+
+
+def test_launcher_and_supervisor_default_pid_directory_match():
+    """Production defaults must agree as well as explicitly bound test paths."""
+    supervisor = (REPO_ROOT / "scripts/hapax-lane-supervisor").read_text()
+    launcher = SCRIPT.read_text()
+    assignments = [
+        next(line for line in supervisor.splitlines() if line.startswith("RUNTIME_DIR=")),
+        next(line for line in launcher.splitlines() if line.startswith("PIPE_DIR=")),
+    ]
+    env = os.environ.copy()
+    env.pop("HAPAX_SUPERVISOR_RUNTIME_DIR", None)
+    env.pop("HAPAX_CLAUDE_HEADLESS_PIPE_DIR", None)
+    result = subprocess.run(
+        ["bash", "-c", "\n".join(assignments) + '\n[ "$RUNTIME_DIR" = "$PIPE_DIR" ]'],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr

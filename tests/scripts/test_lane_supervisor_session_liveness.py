@@ -40,10 +40,11 @@ def setup_lane(tmp_path, *, pane=False, claim=True):
         tmp_path / "bin/tmux",
         '#!/bin/bash\ncase "$1" in\n'
         ' has-session) [ "${TEST_PANE:-0}" = 1 ];;\n'
-        ' list-panes) [ "${TEST_PANE:-0}" = 1 ] && printf "hapax-claude-delta\\t0\\n";;\n'
+        ' list-panes) [ "${TEST_PANE:-0}" = 1 ] && printf "hapax-claude-delta\\t0\\t%s\\n" "$TEST_PANE_PID"; exit 0;;\n'
         " *) exit 0;;\nesac\n",
     )
     env["TEST_PANE"] = "1" if pane else "0"
+    env["TEST_PANE_PID"] = str(os.getpid())
     # Run exact source bytes with isolated siblings: the installed exhaustion
     # path resolves hapax-alert relative to itself, bypassing a PATH fake.
     runner = tmp_path / "supervisor/scripts/hapax-lane-supervisor"
@@ -312,3 +313,71 @@ def test_invalid_session_claim_key_holds_instead_of_disappearing(tmp_path):
     result = run(env)
     assert_no_recovery(env, calls, before, result)
     assert "claim_orphan_unresolved:" in result.stdout
+
+
+def test_failed_pane_inspection_is_unknown_even_with_dead_pid(tmp_path):
+    env, calls = setup_lane(tmp_path, pane=True)
+    session_claim(env, dead_pid())
+    _write_executable(
+        tmp_path / "bin/tmux",
+        '#!/bin/bash\ncase "$1" in\n'
+        'has-session) exit 0;;\nlist-panes) echo "inspection failed" >&2; exit 1;;\nesac\n',
+    )
+    before = claims_snapshot(env)
+    result = run(env)
+    assert_no_recovery(env, calls, before, result)
+    assert "pane_inspection_unresolved" in result.stdout
+    assert "claim_orphaned:" not in result.stdout
+
+
+@pytest.mark.parametrize("pid", ["", "broken", "0", "-1"])
+def test_invalid_role_pid_holds_with_repair_action(tmp_path, pid):
+    env, calls = setup_lane(tmp_path, claim=False)
+    (Path(env["HAPAX_SUPERVISOR_RUNTIME_DIR"]) / "delta.pid").write_text(pid)
+    before = claims_snapshot(env)
+    result = run(env)
+    assert_no_recovery(env, calls, before, result)
+    assert "writer_unresolved:invalid_pid" in result.stdout
+    assert "inspect" in result.stdout
+
+
+def test_invalid_task_claim_has_receipt_and_repair_action(tmp_path):
+    env, calls = setup_lane(tmp_path, claim=False)
+    cache = Path(env["HOME"]) / ".cache/hapax"
+    marker = cache / "cc-active-task-delta"
+    marker.write_text("../invalid-task\n")
+    before = claims_snapshot(env)
+    result = run(env)
+    assert_no_recovery(env, calls, before, result)
+    assert "claim_orphan_unresolved:invalid_task_id" in result.stdout
+    assert str(marker) in result.stdout and "inspect" in result.stdout
+    receipts = list((tmp_path / "lanebus/delta").glob("*claim-holder*.json"))
+    assert receipts
+    assert json.loads(receipts[-1].read_text())["reason"] == "invalid_task_id"
+
+
+def test_conflicting_session_role_is_unknown_not_absent(tmp_path):
+    env, calls = setup_lane(tmp_path)
+    session_claim(env, dead_pid())
+    cache = Path(env["HOME"]) / ".cache/hapax"
+    (cache / "cc-active-task-delta").unlink()
+    (cache / f"session-role-{SID}").write_text("delta-other\n")
+    before = claims_snapshot(env)
+    result = run(env)
+    assert_no_recovery(env, calls, before, result)
+    assert "claim_orphan_unresolved:" in result.stdout
+    assert "claim_orphaned:" not in result.stdout
+
+
+def test_known_prefix_sibling_claim_does_not_hold_unclaimed_lane(tmp_path):
+    env, calls = setup_lane(tmp_path, claim=False)
+    _write_claim(env, "delta-other", "sibling-task")
+    cache = Path(env["HOME"]) / ".cache/hapax"
+    (cache / f"cc-active-task-delta-other-{SID}").write_text("sibling-task\n")
+    (cache / f"session-role-{SID}").write_text("delta-other\n")
+    before = claims_snapshot(env)
+    result = run(env)
+    assert result.returncode == 0, result.stderr
+    assert (calls / "claude.txt").is_file(), result.stdout
+    assert "claim_orphan" not in result.stdout
+    assert claims_snapshot(env) == before
