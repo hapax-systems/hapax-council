@@ -176,12 +176,14 @@ RELAY_RETIRE="${HAPAX_COUNCIL_DIR:-$HOME/projects/hapax-council}/scripts/hapax-r
 # recent claude.
 LAST_KILL_REASON=""
 LAST_CHILD_EXIT_CODE=""
+LAST_CHILD_LOG_OFFSET=0
 
 last_log_line() {
   # Last non-empty line of claude's combined log (stdout+stderr both append to
   # LOG_FILE), sanitized to a single-line YAML-plain-scalar fragment.
   [[ -r "$LOG_FILE" ]] || return 0
-  awk 'NF { line = $0 } END { if (line) print line }' "$LOG_FILE" 2>/dev/null \
+  tail -c "+$(( LAST_CHILD_LOG_OFFSET + 1 ))" "$LOG_FILE" 2>/dev/null \
+    | awk 'NF { line = $0 } END { if (line) print line }' \
     | sed -E 's/:[[:space:]]+/:/g; s/[[:space:]]+#/ /g' \
     | cut -c1-120
 }
@@ -202,7 +204,25 @@ compute_retire_reason() {
     printf 'disabled_by_latch;launcher_rc=%s\n' "$launcher_rc"
     return 0
   fi
-  if [[ "$LAST_CHILD_EXIT_CODE" == "0" ]] && grep -q '"type":"result"' "$LOG_FILE" 2>/dev/null; then
+  if [[ "$LAST_CHILD_EXIT_CODE" == "0" ]] && python3 - "$LOG_FILE" "$LAST_CHILD_LOG_OFFSET" <<'PYRESULT'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "rb") as output:
+        output.seek(int(sys.argv[2]))
+        for line in output:
+            try:
+                event = json.loads(line)
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if isinstance(event, dict) and event.get("type") == "result":
+                sys.exit(0)
+except (OSError, ValueError):
+    pass
+sys.exit(1)
+PYRESULT
+  then
     printf 'clean exit (headless)\n'
     return 0
   fi
@@ -805,6 +825,11 @@ while true; do
     exit 77
   fi
 
+  # The combined log is append-only across child attempts. Preserve it while
+  # restricting teardown's result evidence to this particular child.
+  LAST_CHILD_LOG_OFFSET="$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)"
+  LAST_CHILD_EXIT_CODE=""
+  LAST_KILL_REASON=""
   if [[ -n "$DISPATCH_HOST" ]]; then
     # G2 inner exec on the Workshop: cd the lane's appendix-local worktree and
     # run THAT host's PATH `claude`. fd 3 (the podium FIFO) feeds the ssh child's
@@ -826,6 +851,13 @@ while true; do
   fi
   CLAUDE_PID=$!
   echo "$CLAUDE_PID" > "$PID_FILE"
+  # Extend the existing PID binding to the claim's session key. Retain these
+  # boot-local observations after exit so a live pane cannot mask this writer's
+  # death. Never bind a remote writer to the local SSH transport's PID.
+  if [[ -z "$DISPATCH_HOST" ]]; then
+    printf '%s\n' "$$" > "$PIPE_DIR/$ROLE-$SESSION_UUID.launcher.pid"
+    printf '%s\n' "$CLAUDE_PID" > "$PIPE_DIR/$ROLE-$SESSION_UUID.pid"
+  fi
   echo "hapax-claude-headless: pid=$CLAUDE_PID (restart #$RESTART_COUNT)"
 
   # Out-of-band teardown watchdog. claude reads its stdin from the FIFO whose

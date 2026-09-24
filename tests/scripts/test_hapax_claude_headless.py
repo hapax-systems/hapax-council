@@ -258,6 +258,7 @@ exec bash -c "$remote_cmd"
 
     assert result.returncode == 0, result.stderr
     assert not exploit.exists()
+    assert not list((tmp_path / "pipe").glob("beta-*.pid")), "SSH PID is not a local writer binding"
     args = claude_args.read_text(encoding="utf-8").splitlines()
     assert args[:5] == [
         "-p",
@@ -387,7 +388,7 @@ def test_headless_refuses_without_task_or_existing_claim(tmp_path: Path) -> None
     claude = bin_dir / "claude"
     claude.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     claude.chmod(0o755)
-    env = os.environ.copy()
+    env = _headless_env(home, bin_dir, tmp_path / "pipe")
     env["HOME"] = str(home)
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin"
     env["HAPAX_CLAUDE_HEADLESS_ALLOW"] = "1"
@@ -653,6 +654,14 @@ def test_headless_self_reaps_terminal_task_while_claude_persists(tmp_path: Path)
     assert result.returncode == 0, result.stderr
     assert "self-reaping" in result.stdout
     assert "stopping respawn loop" in result.stdout
+    markers = list(cache.glob("session-role-*"))
+    assert len(markers) == 1
+    sid = markers[0].name.removeprefix("session-role-")
+    child_pid = int((pipe_dir / f"beta-{sid}.pid").read_text())
+    launcher_pid = int((pipe_dir / f"beta-{sid}.launcher.pid").read_text())
+    assert not Path(f"/proc/{child_pid}").exists()
+    assert not Path(f"/proc/{launcher_pid}").exists()
+    assert not (pipe_dir / "beta.pid").exists()
 
 
 def test_headless_self_reap_keeps_persistent_claude_alive_while_task_live(tmp_path: Path) -> None:
@@ -1253,3 +1262,41 @@ def test_terminal_check_indeterminate_still_reaps_merged_pr(tmp_path: Path) -> N
         gh_state="MERGED",
     )
     assert rc == 0
+
+
+@pytest.mark.parametrize(
+    ("current", "exit_code", "kill_reason", "expected"),
+    [
+        ('{"type":"assistant"}\n', "0", "", "own_exit:code_0"),
+        ('{"type":"result"}\n', "0", "", "clean exit (headless)"),
+        ('{"type": "result"}\n', "0", "", "clean exit (headless)"),
+        ('{"type":"result"}\n', "143", "task_terminal", "self_reap:task_terminal"),
+        ('{"type":"result"}\n', "1", "", "own_exit:code_1"),
+    ],
+)
+def test_retire_reason_uses_only_last_child_output(
+    tmp_path, current, exit_code, kill_reason, expected
+):
+    """A previous child's result must not certify the last child's quiet exit."""
+    history = '{"type":"result","result":"previous attempt"}\n'
+    log = tmp_path / "output.jsonl"
+    log.write_text(history + current)
+    source = SCRIPT.read_text()
+    functions = source[source.index("last_log_line() {") : source.index("cleanup() {")]
+    env = {
+        **os.environ,
+        "LOG_FILE": str(log),
+        "LAST_CHILD_EXIT_CODE": exit_code,
+        "LAST_KILL_REASON": kill_reason,
+        "LAST_CHILD_LOG_OFFSET": str(len(history.encode())),
+        "DISABLE_FILE": str(tmp_path / "no-latch"),
+    }
+    result = subprocess.run(
+        ["bash", "-c", functions + "\ncompute_retire_reason 0\n"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.startswith(expected), result.stdout
+    assert log.read_text() == history + current
