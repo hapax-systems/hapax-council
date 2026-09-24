@@ -2497,6 +2497,34 @@ def test_check_mode_does_not_print_secret(
     assert "test-secret-token" not in captured.err
 
 
+def test_main_refuses_payg_before_any_request_when_the_priced_reservation_exceeds_the_task_cap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Review r3 dossier (claude-1, tests-cover-the-diff): through the reviewer's own entry
+    point, with config from the environment and the real live-ledger gate (nothing stubbed but
+    the network and the secret store), a prompt whose priced reservation exceeds the task cap
+    is refused after the Coding Plan wall and before any PAYG request leaves the host. No spend
+    receipt is written."""
+    module = _load_module()
+    _clean_env(monkeypatch)
+    _ledger_path, receipt_dir, seen_urls = _live_payg_setup(
+        module, monkeypatch, tmp_path, per_task_cap_usd="0.05"
+    )
+    monkeypatch.setattr(sys, "stdin", io.StringIO("x" * 100_000))
+    monkeypatch.setattr(module, "read_secret", lambda _entry: "test-secret-token")
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(_payg_reply("glm-5.3"), seen_urls))
+
+    rc = module.main([])
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "cap exhausted" in err
+    assert seen_urls == ["https://api.z.ai/api/coding/paas/v4/chat/completions"]
+    assert list(receipt_dir.glob("glmcp-payg-spend-*.yaml")) == []
+
+
 def test_main_prints_model_reply(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

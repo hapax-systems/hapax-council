@@ -5943,6 +5943,88 @@ def test_glmcp_payg_untrusted_placeholder_is_named_and_resolvable_by_its_spend_i
     assert decision.eligible, decision.blocking_reasons
 
 
+def test_glmcp_payg_real_relay_population_settles_to_the_claimed_ledger(tmp_path: Path) -> None:
+    """Review r3 dossier (claude-1, exit-predicate adequacy): the PR's post-release figures,
+    reproducible from this checkout. The committed fixture plus receipts shaped like the 76
+    real relay files: 51 glm-5.2 reconciled; 22 pending, 2 failed and 1 reconciled glm-5.3
+    stamped z_ai-glm-5.2; all from 09-17/18 under the expired break-glass budget. Outcome:
+    nothing dropped, 25 settled against the balance evidence, $3.80 held on the old budget,
+    and the new budget eligible with $76.539721 remaining."""
+    sys.path.insert(0, str(REPO_ROOT))
+    from collections import Counter
+
+    from shared.quota_spend_ledger import evaluate_paid_route_eligibility, load_quota_spend_ledger
+
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    breakglass = {
+        "budget_id": "tb-20260916-zai-glmcp-payg-breakglass",
+        "secret_source": "filestore:glmcp/api-key",
+    }
+    reconciled = {
+        "status": "spend_reconciled",
+        "reconciliation_state": "reconciled",
+        "actual_cost_usd": "0.05",
+        "cap_remaining_usd": "1.90",
+        "reconciliation_reason": "PAYG API call returned model output",
+    }
+    shapes = (
+        [("glm-5.2", "z_ai-glm-5.2", reconciled)] * 51
+        + [("glm-5.3", "z_ai-glm-5.2", {})] * 22
+        + [
+            (
+                "glm-5.3",
+                "z_ai-glm-5.2",
+                {**reconciled, "status": "spend_failed", "actual_cost_usd": "0.00"},
+            )
+        ]
+        * 2
+        + [("glm-5.3", "z_ai-glm-5.2", reconciled)]
+    )
+    for index, (model, model_id, extra) in enumerate(shapes):
+        created = datetime(2026, 9, 17, 12, 0, tzinfo=UTC) + timedelta(minutes=30 * index)
+        stamp = created.strftime("%Y%m%dT%H%M%SZ")
+        overrides = {
+            **breakglass,
+            **extra,
+            "spend_id": f"spend-{stamp}-glmcp-payg-review-shape-{index:03d}",
+            "model_or_engine": model,
+            "model_id": model_id,
+            "created_at": created.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "reconcile_by": (created + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        if "reconciliation_reason" in extra:
+            overrides["reconciled_at"] = (created + timedelta(seconds=10)).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
+        (relay / f"glmcp-payg-spend-{stamp.lower()}-shape-{index:03d}.yaml").write_text(
+            _untrusted_receipt_text(**overrides), encoding="utf-8"
+        )
+    now = "2026-09-24T21:00:00Z"
+
+    result, out = _run_writer(tmp_path, now=now)
+
+    assert result.returncode == 0, result.stderr
+    assert "ignoring GLMCP PAYG spend receipt" not in result.stderr
+    ledger = load_quota_spend_ledger(out)
+    glmcp = [r for r in ledger.spend_receipts if r.route_id == "glmcp.review.direct"]
+    assert len(glmcp) == 77  # 76 relay receipts + the committed identity probe
+    assert Counter((r.model_or_engine, r.reconciliation_state.value) for r in glmcp) == {
+        ("glm-5.2", "reconciled"): 51,
+        ("glm-5.3", "settled_by_provider_balance"): 25,
+        ("glm-5.3", "reconciled"): 1,
+    }
+    breakglass_budget = ledger.budget_by_id("tb-20260916-zai-glmcp-payg-breakglass")
+    burn_budget = ledger.budget_by_id(BURN_BUDGET_ID)
+    assert ledger._budget_spent_usd(breakglass_budget) == Decimal("3.80")
+    assert ledger._budget_remaining_usd(burn_budget) == Decimal("76.539721")
+    decision = evaluate_paid_route_eligibility(
+        ledger, _glmcp_review_request(), now=datetime.fromisoformat("2026-09-24T21:00:00+00:00")
+    )
+    assert decision.eligible, decision.blocking_reasons
+    assert decision.budget_id == BURN_BUDGET_ID
+
+
 def test_glmcp_payg_failed_spend_receipt_is_folded_at_zero_not_dropped(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
