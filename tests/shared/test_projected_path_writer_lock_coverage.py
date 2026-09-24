@@ -210,9 +210,11 @@ def _gate_stamp_source() -> str:
     """
 
     body = (REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh").read_text(encoding="utf-8")
+    root_match = re.search(r"^_cc_gate_repo_root\(\) \{.*?^\}", body, re.M | re.S)
+    assert root_match, "the gate's repo-root resolver was renamed; update this test with it"
     match = re.search(r"^_stamp_frontmatter_field\(\) \{.*?^\}", body, re.M | re.S)
     assert match, "the gate's stamp function was renamed; update this test with it"
-    return f"SCRIPT_DIR={str(REPO_ROOT / 'hooks' / 'scripts')!r}\n{match.group(0)}\n"
+    return f"SCRIPT_DIR={str(REPO_ROOT / 'hooks' / 'scripts')!r}\n{root_match.group(0)}\n{match.group(0)}\n"
 
 
 def test_the_gate_s_lock_bound_reaches_the_interpreter(tmp_path: Path) -> None:
@@ -335,14 +337,9 @@ def test_the_gate_stamp_refuses_rather_than_racing_a_held_lock(
     root = home / "coord" / "task-locks"
     before = note.read_text(encoding="utf-8")
 
-    # Source only the function under test. The impl script is a gate, not a library: sourcing
-    # the whole of it would run the gate's own logic, and an earlier draft did exactly that in a
-    # prelude that was then overwritten eight lines later — dead, and misleading about what was
-    # being exercised.
-    body = (REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh").read_text(encoding="utf-8")
-    match = re.search(r"^_stamp_frontmatter_field\(\) \{.*?^\}", body, re.M | re.S)
-    assert match, "the gate's stamp function was renamed; update this test with it"
-    stamp = f"SCRIPT_DIR={str(REPO_ROOT / 'hooks' / 'scripts')!r}\n{match.group(0)}\n"
+    # Source only the functions under test via the shared helper; its docstring
+    # explains why the impl script cannot be sourced whole.
+    stamp = _gate_stamp_source()
 
     holder = subprocess.Popen(
         [

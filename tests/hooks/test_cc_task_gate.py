@@ -352,6 +352,175 @@ class TestNoClaimFile:
         assert "no claimed task" in result.stderr.lower()
 
 
+class TestConnectorClassifierDeployedLayout:
+    """Canonical FM-6 deployment runs the impl AS ~/.local/lib/hapax/hooks/
+    cc-task-gate.sh, whose ../.. carries no shared/ tree. The connector
+    classifier must resolve a repo root that actually carries the
+    mcp_connector_policy module instead of failing closed on every mcp__* tool
+    (2026-09-17 incident: all MCP tools blocked with 'connector classifier
+    failed'). Regression coverage for _cc_gate_repo_root."""
+
+    def _deploy(self, tmp_path: Path) -> Path:
+        hooks_dir = tmp_path / "lib" / "hapax" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        for name in (
+            "cc-task-gate.impl.sh",
+            "agent-role.sh",
+            "escape-grant.sh",
+            "cc-task-root.sh",
+        ):
+            shutil.copy(REPO_ROOT / "hooks" / "scripts" / name, hooks_dir / name)
+        # Deployed canonical filename is cc-task-gate.sh, not .impl.sh.
+        (hooks_dir / "cc-task-gate.impl.sh").rename(hooks_dir / "cc-task-gate.sh")
+        return hooks_dir / "cc-task-gate.sh"
+
+    def _run_deployed(
+        self,
+        gate: Path,
+        tool_name: str,
+        tmp_path: Path,
+        extra_env: dict | None = None,
+        tool_input: dict | None = None,
+    ) -> subprocess.CompletedProcess:
+        env = os.environ.copy()
+        for key in _IDENTITY_ENV + _GATE_BYPASS_ENV:
+            env.pop(key, None)
+        env["HOME"] = str(tmp_path)
+        # Hermetic fallback ladder: no real ~/.cache or ~/projects consults.
+        env["XDG_CACHE_HOME"] = str(tmp_path / "xdg-cache")
+        env.pop("HAPAX_COORD_REPO_ROOT", None)
+        env.setdefault("CLAUDE_ROLE", "alpha")
+        # Hermetic interpreter: the suite runs under `uv run`, which prepends the
+        # project venv to PATH; that venv's editable install exposes shared/ from
+        # any cwd, so the gate's python3 would import the real classifier and the
+        # degrade-closed contract under test would silently pass through.
+        env["PATH"] = "/usr/bin:/bin"
+        env.pop("PYTHONPATH", None)
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.run(
+            ["bash", str(gate)],
+            input=json.dumps({"tool_name": tool_name, "tool_input": tool_input or {}}),
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(tmp_path),
+            timeout=10,
+        )
+
+    def test_deployed_readonly_connector_passes_with_override_root(self, tmp_path: Path) -> None:
+        gate = self._deploy(tmp_path)
+        result = self._run_deployed(
+            gate,
+            "mcp__context7__query-docs",
+            tmp_path,
+            extra_env={"HAPAX_COORD_REPO_ROOT": str(REPO_ROOT)},
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_deployed_mutating_connector_still_requires_claim(self, tmp_path: Path) -> None:
+        gate = self._deploy(tmp_path)
+        result = self._run_deployed(
+            gate,
+            "mcp__github__create_pull_request",
+            tmp_path,
+            extra_env={"HAPAX_COORD_REPO_ROOT": str(REPO_ROOT)},
+        )
+        assert result.returncode == 2
+        assert "no claimed task" in result.stderr.lower()
+
+    def test_deployed_without_any_module_root_degrades_closed(self, tmp_path: Path) -> None:
+        gate = self._deploy(tmp_path)
+        result = self._run_deployed(gate, "mcp__context7__query-docs", tmp_path)
+        assert result.returncode == 2
+        assert "connector classifier failed" in result.stderr
+
+    def _fake_rebuild_worktree(self, tmp_path: Path) -> None:
+        """A stable-checkout candidate that actually carries the classifier:
+        $XDG_CACHE_HOME/hapax/rebuild/worktree with a stub module honouring the
+        is-side-effecting CLI contract (exit 0 mutating, exit 10 read-only)."""
+        shared = tmp_path / "xdg-cache" / "hapax" / "rebuild" / "worktree" / "shared"
+        shared.mkdir(parents=True)
+        (shared / "__init__.py").write_text("")
+        (shared / "mcp_connector_policy.py").write_text(
+            "import sys\n"
+            "if sys.argv[1:2] == ['is-side-effecting']:\n"
+            "    sys.exit(0 if 'github' in sys.argv[2] else 10)\n"
+            "sys.exit(2)\n"
+        )
+
+    def test_stable_checkout_fallback_classifies_readonly(self, tmp_path: Path) -> None:
+        # Positive branch: the fallback candidate HAS the module, so a
+        # read-only connector classifies cleanly with no override set.
+        self._fake_rebuild_worktree(tmp_path)
+        gate = self._deploy(tmp_path)
+        result = self._run_deployed(gate, "mcp__context7__query-docs", tmp_path)
+        assert result.returncode == 0, result.stderr
+
+    def test_stable_checkout_fallback_gates_mutating(self, tmp_path: Path) -> None:
+        # Positive branch, mutating side: classification succeeds via the
+        # fallback and the claim requirement still binds.
+        self._fake_rebuild_worktree(tmp_path)
+        gate = self._deploy(tmp_path)
+        result = self._run_deployed(gate, "mcp__github__create_pull_request", tmp_path)
+        assert result.returncode == 2
+        assert "no claimed task" in result.stderr.lower()
+
+    def test_stale_checkout_without_module_is_skipped(self, tmp_path: Path) -> None:
+        # A shared/ directory that lacks the classifier module (the stale
+        # rebuild-worktree shape) must not be selected as the repo root.
+        stale = tmp_path / "xdg-cache" / "hapax" / "rebuild" / "worktree" / "shared"
+        stale.mkdir(parents=True)
+        (stale / "__init__.py").write_text("")
+        gate = self._deploy(tmp_path)
+        result = self._run_deployed(gate, "mcp__context7__query-docs", tmp_path)
+        assert result.returncode == 2
+        assert "connector classifier failed" in result.stderr
+
+    def test_deployed_stage_stamp_path_uses_fallback_root(self, tmp_path: Path) -> None:
+        # The FR-STAGE-S6-TRAP derive+stamp path imports shared.task_note_lock
+        # via the same repo-root resolution; a blank-stage, fully-authorized
+        # claimed task must get stamped (and the edit admitted) in the deployed
+        # layout. Pre-fix this failed closed with ModuleNotFoundError.
+        vault = tmp_path / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks" / "active"
+        vault.mkdir(parents=True)
+        note = vault / "test-001-test-task.md"
+        note.write_text(
+            "---\n"
+            "type: cc-task\n"
+            "task_id: test-001\n"
+            'title: "Fixture"\n'
+            "status: claimed\n"
+            "assigned_to: alpha\n"
+            "priority: normal\n"
+            f"parent_spec: {tmp_path}/parent-spec.md\n"
+            "authority_case: CASE-TEST-001\n"
+            "implementation_authorized: true\n"
+            "source_mutation_authorized: true\n"
+            "docs_mutation_authorized: true\n"
+            "route_metadata_schema: 1\n"
+            "mutation_scope_refs:\n"
+            "  - /tmp/x\n"
+            "created_at: 2026-04-20T00:00:00Z\n"
+            "updated_at: 2026-04-20T00:00:00Z\n"
+            "---\n\n"
+            "# Fixture\n\n"
+            "## Session log\n\n"
+            "- 2026-04-20T00:00:00Z fixture\n"
+        )
+        _write_claim(tmp_path, "alpha", "test-001")
+        gate = self._deploy(tmp_path)
+        result = self._run_deployed(
+            gate,
+            "Edit",
+            tmp_path,
+            extra_env={"HAPAX_COORD_REPO_ROOT": str(REPO_ROOT)},
+            tool_input={"file_path": "/tmp/x"},
+        )
+        assert result.returncode == 0, result.stderr
+        assert "stage: S6_IMPLEMENTATION" in note.read_text()
+
+
 class TestCognitionCarveOut:
     """Regression pin for the always-writable cognition carve-out (NEW-3).
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+import types
 from collections.abc import Iterator
 
 import pytest
@@ -101,6 +102,21 @@ def _restore_env_and_import_state() -> Iterator[None]:
                 delattr(pkg, child)
         else:
             setattr(pkg, child, original)
+
+    # The import machinery binds each imported child as an attribute of its
+    # parent. _PARENT_BINDINGS covers only the two bindings this module's own
+    # import always makes; importing the app can create grandchildren (e.g.
+    # logos.api.routes.orientation) on packages that were already cached. After
+    # the sys.modules restore those attributes point at module objects absent
+    # from the registry, and later string-form monkeypatch targets resolve
+    # through them to a stale module (pytest MonkeyPatch.resolve walks parent
+    # attributes), splitting the patch target from what a fresh import returns.
+    # Sweep every owned package still in sys.modules and drop such bindings.
+    for pkg_name in [n for n in sys.modules if _owned_module(n)]:
+        pkg = sys.modules[pkg_name]
+        for child_name, child in list(vars(pkg).items()):
+            if isinstance(child, types.ModuleType) and sys.modules.get(child.__name__) is not child:
+                delattr(pkg, child_name)
 
 
 def _routes(app) -> set[str]:

@@ -116,8 +116,9 @@ class TestOrientationRedaction:
 
     @pytest.mark.asyncio
     async def test_private_returns_untouched(self, monkeypatch):
-        monkeypatch.setattr("logos.api.routes.orientation.is_publicly_visible", lambda: False)
         import logos.api.routes.orientation as orient_mod
+
+        monkeypatch.setattr(orient_mod, "is_publicly_visible", lambda: False)
 
         class _FakeCache:
             orientation = self._orientation_dict()
@@ -137,8 +138,9 @@ class TestOrientationRedaction:
 
     @pytest.mark.asyncio
     async def test_public_omits_p0_stale_and_redacts_pii(self, monkeypatch):
-        monkeypatch.setattr("logos.api.routes.orientation.is_publicly_visible", lambda: True)
         import logos.api.routes.orientation as orient_mod
+
+        monkeypatch.setattr(orient_mod, "is_publicly_visible", lambda: True)
 
         class _FakeCache:
             orientation = self._orientation_dict()

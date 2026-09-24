@@ -371,10 +371,42 @@ bash_source_mutation_requires_scope() {
   return 1
 }
 
+# Resolve a repo root that actually carries the needed shared/ module.
+# In-repo the gate lives at <repo>/hooks/scripts, so ../.. works. In the
+# canonical FM-6 deployment the impl IS ~/.local/lib/hapax/hooks/cc-task-gate.sh,
+# whose ../.. (~/.local/lib) has no shared/ tree at all — and a bare shared/
+# presence check is not sufficient either, since stale checkouts (e.g.
+# ~/.cache/hapax/rebuild/worktree) can carry shared/ without the module. Gate
+# every candidate on the module file itself, mirroring the
+# _escape_grant_repo_root ladder; degrade-closed on the original ../.. output.
+_cc_gate_repo_root() {
+  local module_rel="$1"
+  local d r c
+  d="$SCRIPT_DIR"
+  r="$(cd "$d/../.." 2>/dev/null && pwd)"
+  if [[ -n "${HAPAX_COORD_REPO_ROOT:-}" && -f "$HAPAX_COORD_REPO_ROOT/$module_rel" ]]; then
+    printf '%s\n' "$HAPAX_COORD_REPO_ROOT"
+    return 0
+  fi
+  if [[ -n "$r" && -f "$r/$module_rel" ]]; then
+    printf '%s\n' "$r"
+    return 0
+  fi
+  for c in \
+    "${XDG_CACHE_HOME:-$HOME/.cache}/hapax/rebuild/worktree" \
+    "$HOME/projects/hapax-council"; do
+    if [[ -f "$c/$module_rel" ]]; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  printf '%s\n' "$r"
+}
+
 connector_tool_is_mutating() {
   local name="$1"
   local repo_root rc
-  repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+  repo_root="$(_cc_gate_repo_root shared/mcp_connector_policy.py)"
   if command -v python3 >/dev/null 2>&1; then
     set +e
     PYTHONPATH="$repo_root:${PYTHONPATH:-}" \
@@ -1056,7 +1088,7 @@ is_nullish() {
 # exactly the race this closes; the caller reports the refusal instead.
 _stamp_frontmatter_field() {
   local note="$1" key="$2" value="$3" repo_root
-  repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)" || return 1
+  repo_root="$(_cc_gate_repo_root shared/task_note_lock.py)" || return 1
   # Propagate the interpreter's exit code verbatim. `|| return 1` collapsed the 3 that
   # means "the projection lock is held" into the 1 that means "something else broke", so
   # the caller's contention branch could never fire and every failure was recorded as
