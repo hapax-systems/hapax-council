@@ -4598,6 +4598,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "tmux",
         "--task",
         "governed-build",
+        "--subscription-only",
         "--",
         "--model",
         "claude-opus-4-8",
