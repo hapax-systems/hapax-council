@@ -208,6 +208,55 @@ claim_epoch_for_task() {
   return 1
 }
 
+applied_claim_receipt_for_task() {
+  # Remote projection mirrors an admitted owner, never bare sidecars (PR4726 finding 5):
+  # resolve the applied publication on this dispatch host through the installed composition
+  # and require it to own this exact role, task and projected epoch. Prints
+  # "<receipt_hash> <publication_session_id>"; any failure refuses (fail closed).
+  local source_root="$1" role="$2" task="$3" epoch_line="$4" python_bin=""
+  python_bin="$source_root/.venv/bin/python"
+  [[ -x "$python_bin" ]] || { echo "claim_runtime_unavailable" >&2; return 1; }
+  "$python_bin" -I - "$source_root" "$role" "$task" "$epoch_line" <<'PYEOF'
+import sys
+from pathlib import Path
+
+source, role, task, epoch_line = sys.argv[1:5]
+sys.path.insert(0, source)
+try:
+    from shared.gate0b_claim_publication_install import (
+        default_claim_publication_roots,
+        load_claim_publication_composition,
+    )
+    from shared.sdlc_claim import resolve_applied_claim_publication_for_task
+
+    roots = load_claim_publication_composition(
+        Path(default_claim_publication_roots(home=Path.home()).invocation_store_root)
+    ).receipt.roots
+    applied = resolve_applied_claim_publication_for_task(
+        vault_root=Path(roots.claim_vault_root),
+        cache_dir=Path(roots.claim_cache_dir),
+        role=role,
+        task_id=task,
+        transaction_root=Path(roots.claim_transaction_root),
+        receipt_root=Path(roots.claim_receipt_root),
+        lock_root=Path(roots.claim_lock_root),
+    )
+except Exception as exc:  # any failure to prove the admitted owner refuses the projection
+    reason = getattr(exc, "reason_code", None) or f"claim_runtime_unavailable ({type(exc).__name__})"
+    print(reason, file=sys.stderr)
+    sys.exit(1)
+epoch, _, epoch_task = epoch_line.partition(" ")
+if (
+    applied.intent.task_id != task
+    or epoch_task != task
+    or str(applied.intent.claim_epoch) != epoch
+):
+    print("claim_remote_projection_epoch_mismatch", file=sys.stderr)
+    sys.exit(1)
+print(applied.receipt.receipt_hash, applied.intent.session_id)
+PYEOF
+}
+
 remote_python_command() {
   local payload="$1" code="$2"
   local code_b64="" bash_script="" quoted_script="" quoted_payload="" quoted_code=""
@@ -497,6 +546,8 @@ for name in (
     "HAPAX_PARENT_AGENT_NAME",
     "HAPAX_METHODOLOGY_DISPATCH_TASK",
     "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH",
+    "HAPAX_METHODOLOGY_DISPATCH_CLAIM_RECEIPT",
+    "HAPAX_METHODOLOGY_DISPATCH_CLAIM_SESSION",
     "HAPAX_IDLE_UPDATE_SECONDS",
     "HAPAX_CODEX_BIN_PATH",
     "NPM_CONFIG_PREFIX",
@@ -724,7 +775,7 @@ if codex_bin is None:
     sys.exit(78)
 if proof:
     os.makedirs(os.path.dirname(proof), exist_ok=True)
-    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex-headless","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":codex_bin,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"claim_materialized":materialized,"claim_epoch_verified":claim_epoch_verified}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
+    data={"schema_version":1,"event":"dispatch_remote_exec","platform":"codex-headless","session":p.get("session"),"task_id":p.get("task_id"),"requested_host":p.get("requested_host"),"actual_host":socket.gethostname(),"pid":os.getpid(),"cgroup":cgroup,"workdir":p.get("workdir"),"logos_base_url":os.environ.get("LOGOS_BASE_URL"),"argv0":codex_bin,"argc":len(p.get("argv",[])),"session_id":sid or None,"role":role or None,"claim_materialized":materialized,"claim_epoch_verified":claim_epoch_verified,"claim_receipt_hash":os.environ.get("HAPAX_METHODOLOGY_DISPATCH_CLAIM_RECEIPT") or None,"claim_publication_session_id":os.environ.get("HAPAX_METHODOLOGY_DISPATCH_CLAIM_SESSION") or None}; open(proof,"w",encoding="utf-8").write(json.dumps(data,sort_keys=True)+"\n")
 argv=p["argv"]; argv[0]=codex_bin; os.execv(codex_bin, argv)'
 
 usage() {
@@ -1250,6 +1301,12 @@ if [[ -n "$DISPATCH_HOST" ]]; then
     exit 78
   fi
   export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
+  if ! CLAIM_APPLIED="$(applied_claim_receipt_for_task "$EXECUTION_SOURCE_ROOT" "$SESSION" "$CODEX_TASK" "$CLAIM_EPOCH_LINE")"; then
+    echo "hapax-codex-headless: refusing remote dispatch: no applied admitted claim publication binds '$SESSION' to task '$CODEX_TASK' at the projected epoch; local claim sidecars alone are not projected. Next action: run the installed cc-claim for this task (or recover its publication), then retry." >&2
+    exit 78
+  fi
+  export HAPAX_METHODOLOGY_DISPATCH_CLAIM_RECEIPT="${CLAIM_APPLIED%% *}"
+  export HAPAX_METHODOLOGY_DISPATCH_CLAIM_SESSION="${CLAIM_APPLIED#* }"
   REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
   REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY" claim-runtime)"
 fi

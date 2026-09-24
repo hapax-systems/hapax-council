@@ -147,8 +147,10 @@ def _write_classifying_ssh(
     before_preflight_run: str = "",
     before_exec_run: str = "",
     after_preflight_success: str = "",
+    remote_home: Path | None = None,
 ) -> None:
     bash_bin = shutil.which("bash") or "/bin/bash"
+    as_execution_host = f'export HOME="{remote_home}"\n' if remote_home is not None else ""
     codex_stub = path.parent / "codex"
     if not codex_stub.exists():
         _write_executable(codex_stub, "exit 0\n")
@@ -181,7 +183,7 @@ def _write_classifying_ssh(
     _write_executable(
         path,
         f"""remote_cmd="${{@: -1}}"
-kind="$(python3 - "$remote_cmd" <<'PY'
+{as_execution_host}kind="$(python3 - "$remote_cmd" <<'PY'
 import base64
 import shlex
 import sys
@@ -354,6 +356,8 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
         activation / "shared",
         ignore=shutil.ignore_patterns("__pycache__", "execution_observer.py"),
     )
+    # The dispatch host's claim runtime (PR4726 finding 5) reads the stage metadata SSOT.
+    (activation / "docs").symlink_to(REPO_ROOT / "docs", target_is_directory=True)
     if activation_override:
         (default_activation / "shared").mkdir(parents=True)
         (default_activation / "shared/execution_observer.py").write_text(stale_module)
@@ -393,11 +397,12 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     _write_executable(
         bin_dir / "ssh",
         # A remote environment override must not move the caller's observer.
+        f'export HOME="{_execution_host_home(home)}"\n'
         'export HAPAX_SOURCE_ACTIVATE_WORKTREE="$HAPAX_CODEX_HEADLESS_WORKDIR"\n'
         'exec bash -c "${@: -1}"\n',
     )
     if remote:
-        _write_claim_epoch(cache, "cx-amber", "task-x")
+        _admit_dispatch_claim(home, "cx-amber", "task-x")
 
     receipt = tmp_path / "lifecycle.json"
     predecessor = '{"complete": true, "stream_path": "predecessor.jsonl"}\n'
@@ -491,10 +496,7 @@ def _init_primary_council_repo(path: Path) -> None:
 def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> None:
     home = tmp_path / "home"
     remote_roots = _install_remote_composition(home)
-    cache = home / ".cache" / "hapax"
-    cache.mkdir(parents=True)
-    (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
-    _write_claim_epoch(cache, "cx-amber", "task-x")
+    epoch_line = _admit_dispatch_claim(home, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     workdir = tmp_path / "worktree"
     workdir.mkdir()
@@ -504,7 +506,8 @@ def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> N
     env_file = tmp_path / "codex-env.txt"
     _write_executable(
         bin_dir / "ssh",
-        """remote_cmd="${@: -1}"
+        f'export HOME="{_execution_host_home(home)}"\n'
+        + """remote_cmd="${@: -1}"
 case "$remote_cmd" in
   HAPAX_REMOTE_PAYLOAD=*)
     echo 'fish: Expected a variable name after this $' >&2
@@ -515,7 +518,10 @@ if [[ "$remote_cmd" == *"\\$'"* ]]; then
   echo 'fish: Expected a variable name after this $' >&2
   exit 127
 fi
-exec bash -c "$remote_cmd"
+# ssh forwards none of the dispatch environment: the claim binding must travel in the payload.
+exec env -u HAPAX_METHODOLOGY_DISPATCH_TASK -u HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH \\
+  -u HAPAX_METHODOLOGY_DISPATCH_CLAIM_RECEIPT -u HAPAX_METHODOLOGY_DISPATCH_CLAIM_SESSION \\
+  bash -c "$remote_cmd"
 """,
     )
     _write_executable(
@@ -588,19 +594,82 @@ exit 0
         .strip()
         .partition(" ")
     )
-    assert legacy_epoch == "1234567890"
-    assert session_epoch == "1234567890"
+    assert legacy_epoch == epoch_line.split()[0]
+    assert session_epoch == epoch_line.split()[0]
     assert legacy_task == "task-x"
     assert session_task == "task-x"
+    # The projection names the admitted publication it mirrors (PR4726 finding 5).
+    assert proof["claim_receipt_hash"]
+    assert proof["claim_publication_session_id"] == "5d5d5d5d-6666-4777-8888-999900001111"
+
+
+@pytest.mark.parametrize("unsafe", ["journal_less_sidecars", "stale_session_epoch"])
+def test_codex_headless_remote_refuses_projection_without_applied_publication(
+    tmp_path: Path, unsafe: str
+) -> None:
+    """PR4726 finding 5: the dispatch host projects only an admitted owner. Sidecars with no
+    applied publication behind them, or a projected epoch line that the applied publication
+    does not own, refuse before any remote exec."""
+
+    home = tmp_path / "home"
+    _install_remote_composition(home)
+    cache = home / ".cache" / "hapax"
+    launcher_sid = "7a7a7a7a-1111-4222-8333-444455556666"
+    if unsafe == "journal_less_sidecars":
+        # The admitted composition and the task are installed; the sidecars name no publication.
+        from tests.scripts.test_cc_claim import _install_gate0b_claim_publication_root, _write_task
+
+        _install_gate0b_claim_publication_root(home)
+        _write_task(home, "active", "task-x")
+        cache.mkdir(parents=True, exist_ok=True)
+        _write_claim_epoch(cache, "cx-amber", "task-x")
+        reason = "claim_dispatch_binding_missing"
+    else:
+        # A real owner exists, but the launcher's own session sidecars still name an older
+        # epoch for the same task: the resolver passes and only the epoch binding refuses.
+        admitted = _admit_dispatch_claim(home, "cx-amber", "task-x")
+        stale = str(int(admitted.split()[0]) - 1)
+        _write_claim_epoch(cache, "cx-amber", "task-x", epoch=stale, sid=launcher_sid)
+        reason = "claim_remote_projection_epoch_mismatch"
+    (home / "projects" / "hapax-mcp").mkdir(parents=True)
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+    bin_dir = tmp_path / "bin"
+    ssh_log = tmp_path / "ssh.log"
+    codex_ran = tmp_path / "codex-ran"
+    _write_executable(bin_dir / "codex", f"printf ran > {codex_ran}\nexit 0\n")
+    _write_classifying_ssh(bin_dir / "ssh", ssh_log, remote_home=_execution_host_home(home))
+
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["HAPAX_COUNCIL_DIR"] = str(REPO_ROOT)
+    env["HAPAX_CODEX_HEADLESS_ALLOW"] = "1"
+    env["HAPAX_CODEX_HEADLESS_WORKDIR"] = str(workdir)
+    env["HAPAX_DISPATCH_HOST"] = "appendix-remote"
+    env["HAPAX_SESSION_ID"] = launcher_sid
+    env.pop("HAPAX_SOURCE_ACTIVATE_WORKTREE", None)
+
+    result = subprocess.run(
+        [str(SCRIPT), "--task", "task-x", "--no-claim", "--force", "cx-amber", "governed prompt"],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+
+    assert result.returncode == 78, result.stderr
+    assert "refusing remote dispatch: no applied admitted claim publication" in result.stderr
+    assert reason in result.stderr
+    assert "exec" not in (ssh_log.read_text().splitlines() if ssh_log.exists() else [])
+    assert not codex_ran.exists()
+    assert not list((cache / "orchestration" / "dispatch-host-proofs").glob("*.json"))
 
 
 def test_codex_headless_remote_uses_configured_codex_binary(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _install_remote_composition(home)
-    cache = home / ".cache" / "hapax"
-    cache.mkdir(parents=True)
-    (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
-    _write_claim_epoch(cache, "cx-amber", "task-x")
+    _admit_dispatch_claim(home, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     workdir = tmp_path / "worktree"
     workdir.mkdir()
@@ -611,6 +680,7 @@ def test_codex_headless_remote_uses_configured_codex_binary(tmp_path: Path) -> N
     _write_executable(
         bin_dir / "ssh",
         f"""remote_cmd="${{@: -1}}"
+export HOME="{_execution_host_home(home)}"
 env -u HAPAX_CODEX_BIN -u HAPAX_CODEX_BIN_PATH -u NPM_CONFIG_PREFIX PATH="{remote_path}" bash -c "$remote_cmd"
 """,
     )
@@ -1443,10 +1513,7 @@ exit 0
 def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) -> None:
     home = tmp_path / "home"
     _install_remote_composition(home)
-    cache = home / ".cache" / "hapax"
-    cache.mkdir(parents=True)
-    (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
-    _write_claim_epoch(cache, "cx-amber", "task-x")
+    _admit_dispatch_claim(home, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
@@ -1464,6 +1531,7 @@ def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) 
         bin_dir / "ssh",
         ssh_log,
         remove_workdir_on_worktree=workdir,
+        remote_home=_execution_host_home(home),
     )
     _write_executable(
         bin_dir / "codex",
@@ -2084,9 +2152,7 @@ def test_codex_headless_remote_bootstrap_uses_existing_branch_when_present(
 ) -> None:
     home = tmp_path / "home"
     _install_remote_composition(home)
-    cache = home / ".cache" / "hapax"
-    cache.mkdir(parents=True)
-    _write_claim_epoch(cache, "cx-amber", "task-x")
+    _admit_dispatch_claim(home, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
@@ -2101,6 +2167,7 @@ def test_codex_headless_remote_bootstrap_uses_existing_branch_when_present(
         bin_dir / "ssh",
         ssh_log,
         remove_workdir_on_worktree=workdir,
+        remote_home=_execution_host_home(home),
     )
     _write_executable(
         bin_dir / "codex",
@@ -2147,19 +2214,11 @@ def test_codex_headless_remote_exec_uses_preclaim_proven_token_handoff(
 ) -> None:
     home = tmp_path / "home"
     _install_remote_composition(home)
-    cache = home / ".cache" / "hapax"
-    cache.mkdir(parents=True)
+    _admit_dispatch_claim(home, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
-    _write_executable(
-        primary / "scripts" / "cc-claim",
-        """mkdir -p "$HOME/.cache/hapax"
-printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
-printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
-exit 0
-""",
-    )
+    _write_executable(primary / "scripts" / "cc-claim", _CONFIRM_ADMITTED_CLAIM)
     subprocess.run(["git", "-C", str(primary), "add", "scripts/cc-claim"], check=True)
     subprocess.run(
         ["git", "-C", str(primary), "commit", "-m", "add claim helper"],
@@ -2170,14 +2229,7 @@ exit 0
     subprocess.run(["git", "-C", str(primary), "branch", "codex/cx-amber"], check=True)
     workdir = home / "projects" / "hapax-council--cx-amber"
     workdir.mkdir(parents=True)
-    _write_executable(
-        workdir / "scripts" / "cc-claim",
-        """mkdir -p "$HOME/.cache/hapax"
-printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
-printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
-exit 0
-""",
-    )
+    _write_executable(workdir / "scripts" / "cc-claim", _CONFIRM_ADMITTED_CLAIM)
 
     token_file = _write_codex_access_token(
         home / ".cache" / "hapax" / "codex-oauth",
@@ -2201,6 +2253,7 @@ exit 0
         bin_dir / "ssh",
         ssh_log,
         remove_workdir_on_worktree=workdir,
+        remote_home=_execution_host_home(home),
         before_preflight_run=f"""  printf 'preflight token=%s home=%s codex_api=%s openai_api=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" "${{CODEX_HOME:+yes}}" "${{CODEX_API_KEY:+yes}}" "${{OPENAI_API_KEY:+yes}}" >> "{ssh_env_log}"
 """,
         before_exec_run=f"""  printf 'exec token=%s home=%s codex_api=%s openai_api=%s\\n' "${{CODEX_ACCESS_TOKEN:+yes}}" "${{CODEX_HOME:+yes}}" "${{CODEX_API_KEY:+yes}}" "${{OPENAI_API_KEY:+yes}}" >> "{ssh_env_log}"
@@ -2264,19 +2317,11 @@ def test_codex_headless_remote_preflight_does_not_materialize_token_handoff(
 ) -> None:
     home = tmp_path / "home"
     _install_remote_composition(home)
-    cache = home / ".cache" / "hapax"
-    cache.mkdir(parents=True)
+    _admit_dispatch_claim(home, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
-    _write_executable(
-        primary / "scripts" / "cc-claim",
-        """mkdir -p "$HOME/.cache/hapax"
-printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
-printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
-exit 0
-""",
-    )
+    _write_executable(primary / "scripts" / "cc-claim", _CONFIRM_ADMITTED_CLAIM)
     subprocess.run(["git", "-C", str(primary), "add", "scripts/cc-claim"], check=True)
     subprocess.run(
         ["git", "-C", str(primary), "commit", "-m", "add claim helper"],
@@ -2287,14 +2332,7 @@ exit 0
     subprocess.run(["git", "-C", str(primary), "branch", "codex/cx-amber"], check=True)
     workdir = home / "projects" / "hapax-council--cx-amber"
     workdir.mkdir(parents=True)
-    _write_executable(
-        workdir / "scripts" / "cc-claim",
-        """mkdir -p "$HOME/.cache/hapax"
-printf '1234567890 %s\\n' "$1" > "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"
-printf '%s\\n' "$1" > "$HOME/.cache/hapax/cc-active-task-cx-amber"
-exit 0
-""",
-    )
+    _write_executable(workdir / "scripts" / "cc-claim", _CONFIRM_ADMITTED_CLAIM)
 
     token_file = _write_codex_access_token(
         home / ".cache" / "hapax" / "codex-oauth",
@@ -2307,6 +2345,7 @@ exit 0
         bin_dir / "ssh",
         ssh_log,
         remove_workdir_on_worktree=workdir,
+        remote_home=_execution_host_home(home),
         before_preflight_run=f"""  python3 - "$remote_cmd" "{handoff_path_log}" <<'PY'
 import base64
 import json
@@ -2884,6 +2923,36 @@ exit 0
     assert used_openai_api_key.read_text(encoding="utf-8").strip() == ""
 
 
+def _execution_host_home(home: Path) -> Path:
+    """The remote execution host's own HOME; the fake ssh runs remote commands under it."""
+
+    return home.parent / f"{home.name}-execution-host"
+
+
+# A worktree cc-claim stand-in for a task already admitted by _admit_dispatch_claim: it confirms
+# the owner and leaves the applied publication's projections untouched.
+_CONFIRM_ADMITTED_CLAIM = 'test -s "$HOME/.cache/hapax/cc-claim-epoch-cx-amber"\n'
+
+
+def _admit_dispatch_claim(home: Path, role: str, task_id: str) -> str:
+    """A real admitted claim on the dispatch host (PR4726 finding 5): remote projection must
+    mirror an applied publication, never bare sidecars. Returns the projected epoch line."""
+
+    from tests.scripts.test_cc_claim import _claim, _write_task
+
+    _write_task(home, "active", task_id)
+    result = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=True,
+        session_id="5d5d5d5d-6666-4777-8888-999900001111",
+        extra_env={"HAPAX_AGENT_ROLE": role, "HAPAX_AGENT_NAME": role},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return (home / ".cache/hapax" / f"cc-claim-epoch-{role}").read_text(encoding="utf-8").strip()
+
+
 def _install_remote_composition(
     home: Path, *, custom_root: bool = False, separate_claim_cache: bool = True
 ):
@@ -2894,10 +2963,10 @@ def _install_remote_composition(
 
     roots = default_claim_publication_roots(home=home)
     if separate_claim_cache:
-        # SSH is executed locally by these fixtures, but the real execution host
-        # has a separate claim cache. Do not model remote startup as repair of a
-        # deliberately incomplete launcher-host mock claim.
-        roots = roots.model_copy(update={"claim_cache_dir": str(home / ".cache/remote-claims")})
+        # The execution host is a separate machine: its own HOME, composition and claim
+        # cache. The fake ssh switches HOME to it, so the dispatch host keeps its own
+        # installed composition for the admitted claim it projects.
+        roots = default_claim_publication_roots(home=_execution_host_home(home))
     if custom_root:
         roots = roots.model_copy(update={"claim_lock_root": str(home / "installed-role-locks")})
     install_claim_publication_composition(
@@ -3574,9 +3643,7 @@ def test_codex_headless_remote_bootstrap_falls_back_to_head_for_missing_base_ref
 ) -> None:
     home = tmp_path / "home"
     _install_remote_composition(home)
-    cache = home / ".cache" / "hapax"
-    cache.mkdir(parents=True)
-    _write_claim_epoch(cache, "cx-amber", "task-x")
+    _admit_dispatch_claim(home, "cx-amber", "task-x")
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
     primary = home / "projects" / "hapax-council"
     _init_primary_council_repo(primary)
@@ -3596,6 +3663,7 @@ def test_codex_headless_remote_bootstrap_falls_back_to_head_for_missing_base_ref
         bin_dir / "ssh",
         ssh_log,
         remove_workdir_on_worktree=workdir,
+        remote_home=_execution_host_home(home),
     )
     _write_executable(
         bin_dir / "codex",
