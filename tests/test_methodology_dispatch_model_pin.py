@@ -97,6 +97,8 @@ def test_every_claude_profile_in_registry_has_a_model_pin():
 
 @pytest.mark.parametrize("mode", ["headless", "interactive"])
 def test_descriptor_reaches_native_child_through_real_claude_launcher(tmp_path, mode):
+    import json
+    from datetime import UTC, datetime
     from types import SimpleNamespace
 
     from tests.scripts.test_hapax_claude_headless import _headless_env, _stub_bin
@@ -114,7 +116,25 @@ def test_descriptor_reaches_native_child_through_real_claude_launcher(tmp_path, 
     _stub_bin(
         bin_dir,
         "claude",
+        'if [[ "$1" == "--version" ]]; then echo "2.1.281 (Claude Code)"; exit 0; fi\n'
+        'if [[ " $* " == *" auth status "* ]]; then\n'
+        'printf \'%s\\n\' \'{"loggedIn":true,"authMethod":"oauth_token",'
+        '"apiProvider":"firstParty","apiKeySource":null}\'\nexit 0\nfi\n'
         'printf "%s\\n" "$@" > "$HAPAX_TEST_NATIVE_ARGV"\n: > "$HAPAX_TEST_CLAIM"\nexit 0\n',
+    )
+    config = home / ".claude"
+    config.mkdir()
+    (config / ".credentials.json").write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "synthetic-model-pin-token",
+                    "subscriptionType": "max",
+                    "scopes": ["user:inference"],
+                    "expiresAt": int(datetime.now(UTC).timestamp() * 1000) + 3600000,
+                }
+            }
+        )
     )
     # Execute the launcher's actual generated runner; no real tmux session or
     # native account is involved. The launcher and its argv handling are real.

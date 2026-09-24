@@ -1771,6 +1771,7 @@ def launch_claude_interactive(
         "tmux",
         "--task",
         task_id,
+        "--subscription-only",
         "--",
         "--model",
         str(descriptor.model_id),
