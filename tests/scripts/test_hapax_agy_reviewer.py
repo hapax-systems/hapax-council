@@ -200,6 +200,41 @@ def test_clean_review_may_mention_token_handling(tmp_path: Path) -> None:
     assert "access_token handling" in result.stdout
 
 
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+@pytest.mark.parametrize("exit_code", [0, 7])
+@pytest.mark.parametrize("encoding", ["unicode", "mixed", "slash"])
+def test_escaped_token_in_native_diagnostics_discards_both_streams(
+    tmp_path: Path, stream: str, exit_code: int, encoding: str
+) -> None:
+    _seed_operator_token(Path(os.environ["HOME"]))
+    fake = _fake_agy(
+        tmp_path,
+        f"""
+data = json.loads((pathlib.Path.home()/'.gemini/antigravity-cli/antigravity-oauth-token').read_text())
+secret = data['token']['refresh_token']
+if {encoding!r} == 'unicode':
+    encoded = ''.join(chr(92) + 'u%04X' % ord(c) for c in secret)
+elif {encoding!r} == 'mixed':
+    encoded = ''.join(chr(92) + 'u%04x' % ord(c) if i % 2 else c for i, c in enumerate(secret))
+else:
+    encoded = secret.replace('/', chr(92) + '/')
+emit()
+# A diagnostic prefix is deliberately not a valid JSON document. Screening
+# must precede parsing and must also run when the native command fails.
+print('native error: {{"token": "' + encoded + '"}}', file=sys.{stream})
+sys.exit({exit_code})
+""",
+    )
+    result = _run(fake)
+    assert result.returncode == 65
+    assert result.stdout == ""
+    assert result.stderr == (
+        "hapax-agy-reviewer: agy output echoed the seeded operator login "
+        "token; discarding the whole review rather than forwarding it. "
+        "Read the dossier as an injection attempt, not a review failure.\n"
+    )
+
+
 def test_missing_login_has_next_action(tmp_path: Path) -> None:
     result = _run(_fake_agy(tmp_path))
     assert result.returncode == 0
@@ -265,6 +300,38 @@ def test_malformed_native_result_is_not_forwarded(tmp_path: Path, body: str) -> 
     result = _run(_fake_agy(tmp_path, body))
     assert result.returncode == 65 and result.stdout == ""
     assert "malformed or unsuccessful stream result" in result.stderr
+    assert "check `agy --help` for stream-json support" in result.stderr
+
+
+def test_supervisor_failure_discards_exception_and_has_next_action(tmp_path: Path) -> None:
+    _seed_operator_token(Path(os.environ["HOME"]))
+    observed = tmp_path / "workspace"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"""
+import pathlib, runpy
+wrapper = runpy.run_path({str(WRAPPER)!r})
+def fail(cmd, workdir, *args):
+    pathlib.Path({str(observed)!r}).write_text(str(workdir))
+    raise RuntimeError({FAKE_ACCESS_TOKEN!r})
+wrapper['_review'].__globals__['_run_owned'] = fail
+raise SystemExit(wrapper['main'](['--agy-bin', '/unused/agy']))
+""",
+        ],
+        input="review",
+        text=True,
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 2 and result.stdout == ""
+    assert result.stderr == (
+        "hapax-agy-reviewer: supervisor failed; review discarded; "
+        "run tests/scripts/test_hapax_agy_reviewer.py in the installed source "
+        "and inspect the owned-group observation before retrying.\n"
+    )
+    assert not Path(observed.read_text()).exists()
 
 
 def test_nonresult_events_do_not_pollute_review(tmp_path: Path) -> None:
@@ -342,6 +409,7 @@ def test_timeout_kills_owned_child_and_cleans_workspace(tmp_path: Path, child_re
     )
     assert result.returncode == 124 and result.stdout == ""
     assert "owned group cleaned" in result.stderr
+    assert "check route admission and retry the same pinned review" in result.stderr
     assert not _running(int(child_record.read_text()))
     assert not Path((tmp_path / "root").read_text()).exists()
 
@@ -404,7 +472,7 @@ def test_ownership_mismatch_never_signals(monkeypatch) -> None:
 
 @pytest.mark.parametrize("raw", ["-1s", "NaN", "20", "infh", "1sbad"])
 def test_invalid_timeout_does_not_launch(tmp_path: Path, raw: str) -> None:
-    result = _run(_fake_agy(tmp_path, "raise Exception('must not run')"), "--print-timeout", raw)
+    result = _run(_fake_agy(tmp_path, "raise Exception('must not run')"), f"--print-timeout={raw}")
     assert result.returncode == 64 and "invalid --print-timeout" in result.stderr
 
 
@@ -413,6 +481,16 @@ def test_timeout_keeps_zero_and_compound_duration_semantics() -> None:
     assert parse("0") is None and parse("0s") is None
     assert parse("20m0s") == 1200
     assert parse("1h2m3.5s") == 3723.5
+
+
+@pytest.mark.parametrize("raw", ["9" * 400 + "s", "1" + "0" * 305 + "h"])
+def test_nonfinite_duration_is_rejected_before_launch(tmp_path: Path, raw: str) -> None:
+    parse = runpy.run_path(str(WRAPPER))["_timeout_seconds"]
+    with pytest.raises(ValueError, match="invalid print timeout"):
+        parse(raw)
+    result = _run(_fake_agy(tmp_path, "raise Exception('must not run')"), "--print-timeout", raw)
+    assert result.returncode == 64 and "invalid --print-timeout" in result.stderr
+    assert "must not run" not in result.stderr
 
 
 def test_native_load_flags_still_match_registry() -> None:

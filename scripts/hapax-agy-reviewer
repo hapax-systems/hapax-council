@@ -261,20 +261,27 @@ def _run_owned(
         return subprocess.CompletedProcess(cmd, proc.returncode, stdout.read(), stderr.read())
 
 
-def _stream_response(raw: str, guarded: tuple[str, ...]) -> str:
+def _reject_token_echo(raw: str, guarded: tuple[str, ...]) -> None:
+    """Screen literal and JSON-escaped text, including unstructured diagnostics.
+
+    Decode valid escape runs without requiring a valid JSON document: stderr
+    may have log prefixes, and malformed stdout must not bypass this check.
+    Only the comparison view is decoded; forwarded clean bytes stay intact.
+    """
+    if not guarded:
+        return
+    decoded = re.sub(
+        r'(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))+',
+        lambda match: json.loads('"' + match.group() + '"'),
+        raw,
+    )
+    if any(secret in raw or secret in decoded for secret in guarded):
+        raise PermissionError("seeded token echo")
+
+
+def _stream_response(raw: str) -> str:
     """Unwrap one native result; the caller still validates the YAML schema."""
     events = [json.loads(line) for line in raw.splitlines() if line.strip()]
-    # JSON escaping must not hide a token from the pre-forwarding guard, even
-    # in ignored init/tool events. Do not serialize these events to the caller.
-    stack = list(events)
-    while stack:
-        node = stack.pop()
-        if isinstance(node, dict):
-            stack.extend(node.values())
-        elif isinstance(node, list):
-            stack.extend(node)
-        elif isinstance(node, str) and any(secret in node for secret in guarded):
-            raise PermissionError("seeded token echo")
     if not events or any(not isinstance(event, dict) for event in events):
         raise ValueError("malformed stream")
     results = [event for event in events if event.get("event") == "result"]
@@ -311,7 +318,12 @@ def _supervise(args: argparse.Namespace, dossier: str) -> int:
         try:
             code = _review(args, dossier, read_fd)
         except Exception:
-            print("hapax-agy-reviewer: supervisor failed; review discarded", file=sys.stderr)
+            print(
+                "hapax-agy-reviewer: supervisor failed; review discarded; "
+                "run tests/scripts/test_hapax_agy_reviewer.py in the installed source "
+                "and inspect the owned-group observation before retrying.",
+                file=sys.stderr,
+            )
             code = 2
         sys.stdout.flush()
         sys.stderr.flush()
@@ -395,7 +407,8 @@ def _review(args: argparse.Namespace, dossier: str, lifetime: int) -> int:
             result = _run_owned(cmd, workdir, prompt, args.timeout_seconds, lifetime)
         except subprocess.TimeoutExpired:
             print(
-                "hapax-agy-reviewer: print timeout; owned group cleaned; review discarded",
+                "hapax-agy-reviewer: print timeout; owned group cleaned; review discarded; "
+                "check route admission and retry the same pinned review without changing its timeout.",
                 file=sys.stderr,
             )
             return 124
@@ -418,9 +431,9 @@ def _review(args: argparse.Namespace, dossier: str, lifetime: int) -> int:
         # token material read a moment ago, so the check is a comparison, not
         # a judgement about what the model was trying to do.
         try:
-            if any(secret in result.stdout or secret in result.stderr for secret in guarded):
-                raise PermissionError("seeded token echo")
-            response = _stream_response(result.stdout, guarded)
+            _reject_token_echo(result.stdout, guarded)
+            _reject_token_echo(result.stderr, guarded)
+            response = _stream_response(result.stdout)
         except PermissionError:
             print(
                 "hapax-agy-reviewer: agy output echoed the seeded operator login "
@@ -432,7 +445,8 @@ def _review(args: argparse.Namespace, dossier: str, lifetime: int) -> int:
         except (ValueError, TypeError):
             if result.returncode == 0:
                 print(
-                    "hapax-agy-reviewer: malformed or unsuccessful stream result; review discarded",
+                    "hapax-agy-reviewer: malformed or unsuccessful stream result; review discarded; "
+                    "check `agy --help` for stream-json support and retry the same pinned review.",
                     file=sys.stderr,
                 )
                 return 65

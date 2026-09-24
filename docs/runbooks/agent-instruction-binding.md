@@ -510,7 +510,8 @@ workspace monthly audit follows named aliases and deduplicates resolved targets.
 
 Run `uv run --no-sync pytest tests/scripts/test_hapax_agy_reviewer.py -q` from
 the candidate source. The doubles exercise short and 2.5 MB Unicode dossiers,
-OAuth isolation and raw/JSON-escaped echo suppression, native final-result
+OAuth isolation and raw/JSON-escaped echo suppression on both streams before
+parsing (including native failures), native final-result
 unwrapping, malformed output, timeout, caller cancellation and process ownership.
 The caller retains YAML schema/checklist validation after the wrapper extracts
 one successful native result's fenced response. Native errors retain nonzero
@@ -544,3 +545,123 @@ proven group remain after completion/timeout. Source doubles and native local
 provider reasoning, signed acceptance, or the installed runtime postimage. Do not
 alter existing reviewer sessions or admission, model, billing or review-seat rules
 while making that observation.
+
+
+Runnable recheck (bash, on the bound runtime host). These commands record
+identities, hashes and process metadata, never token files, environment contents
+or process arguments. The review launch requires independent acceptance and
+separate release/runtime authorization; source authors must leave it unexecuted
+while release is held. Select an admitted PR/head under that authorization.
+
+```bash
+agy_recheck_root=$(systemctl --user show hapax-pr-review-dispatch.service \
+  --property=WorkingDirectory --value)
+test -n "$agy_recheck_root" && test -d "$agy_recheck_root" || exit 1
+agy_recheck_dir=$(mktemp -d)
+export AGY_RECHECK_ROOT="$agy_recheck_root" AGY_RECHECK_DIR="$agy_recheck_dir"
+python3 - <<'PY_IDENTITIES'
+import hashlib, json, os
+from pathlib import Path
+root = Path(os.environ["AGY_RECHECK_ROOT"])
+paths = [root / "scripts/hapax-agy-reviewer", root / "scripts/cc-pr-review-dispatch.py",
+         Path.home() / ".local/bin/hapax-agy-reviewer", Path("/usr/bin/agy")]
+rows = [{"path": str(p), "resolved": str(p.resolve(strict=True)),
+         "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+         "mode": oct(p.stat().st_mode & 0o777), "size": p.stat().st_size} for p in paths]
+Path(os.environ["AGY_RECHECK_DIR"], "identities.json").write_text(json.dumps(rows, indent=2))
+print(json.dumps(rows, indent=2))
+PY_IDENTITIES
+/usr/bin/agy --help > "$agy_recheck_dir/agy-help.txt"
+# Compare identities.json with the exact accepted source hashes before continuing.
+# Set AGY_RECHECK_PR to the separately authorized, admitted PR number.
+: "${AGY_RECHECK_PR:?set the authorized PR number}"
+gh pr view "$AGY_RECHECK_PR" --repo hapax-systems/hapax-council \
+  --json headRefOid > "$agy_recheck_dir/head-before.json"
+uv --directory "$agy_recheck_root" run python scripts/cc-pr-review-dispatch.py \
+  --pr "$AGY_RECHECK_PR" > "$agy_recheck_dir/admission-plan.json"
+```
+
+Inspect the plan's route, quality floor and admission before applying it. Do not
+use `--force`, change routes or renew receipts to bypass a refusal. The following
+observer launches the installed caller once and samples only its descendants.
+It records start times as well as PID/PGID/SID, preserving the observed ancestry
+for the Agy session leader. It never signals any process.
+
+```bash
+export AGY_RECHECK_PR
+uv --directory "$agy_recheck_root" run python - <<'PY_OBSERVE'
+import json, os, subprocess, time
+from pathlib import Path
+root, evidence = Path(os.environ["AGY_RECHECK_ROOT"]), Path(os.environ["AGY_RECHECK_DIR"])
+agy = Path("/usr/bin/agy").resolve(strict=True)
+def snapshot():
+    rows = {}
+    for path in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            raw = path.read_text()
+            fields = raw.rsplit(")", 1)[1].split()
+            pid = int(path.parent.name)
+            rows[pid] = {"pid": pid, "ppid": int(fields[1]), "pgid": int(fields[2]),
+                         "sid": int(fields[3]), "start": fields[19], "state": fields[0],
+                         "name": raw.split("(", 1)[1].rsplit(")", 1)[0]}
+        except (OSError, ValueError, IndexError):
+            continue
+    return rows
+leaders, searches = {}, []
+with (evidence / "caller-output.json").open("x") as out, (evidence / "caller-stderr.txt").open("x") as err:
+    proc = subprocess.Popen(["uv", "--directory", str(root), "run", "python",
+                             "scripts/cc-pr-review-dispatch.py", "--pr",
+                             os.environ["AGY_RECHECK_PR"], "--apply"], stdout=out, stderr=err)
+    while proc.poll() is None:
+        rows = snapshot()
+        for pid, row in rows.items():
+            chain, parent = [row], row["ppid"]
+            while parent in rows and parent not in {item["pid"] for item in chain}:
+                chain.append(rows[parent])
+                if parent == proc.pid:
+                    try:
+                        if Path(f"/proc/{pid}/exe").resolve(strict=True) == agy:
+                            if row["pid"] == row["pgid"] == row["sid"]:
+                                leaders[(pid, row["start"])] = chain
+                        if row["name"] == "find":
+                            searches.append(row)
+                    except OSError:
+                        pass
+                    break
+                parent = rows[parent]["ppid"]
+        time.sleep(0.02)
+    time.sleep(1)  # allow the lifetime supervisor's cleanup grace to finish
+    groups = {pid for pid, start in leaders}
+    survivors = [row for row in snapshot().values() if row["pgid"] in groups]
+    result = {"caller_exit": proc.returncode, "leader_ancestries": list(leaders.values()),
+              "observed_find": searches, "group_members_after": survivors,
+              "coverage": "sampled /proc only; short-lived processes may be missed"}
+    (evidence / "owned-groups.json").write_text(json.dumps(result, indent=2))
+    print(json.dumps(result, indent=2))
+PY_OBSERVE
+gh pr view "$AGY_RECHECK_PR" --repo hapax-systems/hapax-council \
+  --json headRefOid > "$agy_recheck_dir/head-after.json"
+cmp "$agy_recheck_dir/head-before.json" "$agy_recheck_dir/head-after.json"
+```
+
+Re-run the installed caller's read-only plan to validate the stored exact-head
+dossier and report its admission blockers:
+
+```bash
+uv --directory "$agy_recheck_root" run python scripts/cc-pr-review-dispatch.py \
+  --pr "$AGY_RECHECK_PR" > "$agy_recheck_dir/post-review-validity.json"
+```
+
+Require independent signature verification under the existing FileStore signing
+binding, plus the dossier's exact head, Gemini verdict and `parse_path: fence`;
+disposition any route debt separately. An exit-zero caller alone is
+not a successful review: it can return a refusal or an already-reviewed result.
+Missing leader ancestry means the owned-group observation is **unobserved**.
+Any remaining member, including a zombie, needs disposition; never kill it from
+this sample. Sampling cannot certify absence of short-lived dossier searches or
+escaped descendants. Record that limit; a complete no-search claim still needs
+an authorized execution trace or equivalent native tool-event observation with
+credential-safe capture. Do not dump native logs, token files or `/proc/*/cmdline`.
+The source timeout tests do not substitute for a separately authorized installed
+timeout observation. Preserve this record as pending if release, admission or
+observation coverage is missing.
