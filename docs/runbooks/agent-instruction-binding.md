@@ -347,8 +347,9 @@ uv run --no-sync pytest tests/scripts/test_hapax_claude_reviewer.py -q
 
 The `agy.review.direct` wrapper also supplies blind-review context rather than
 worker instructions. It creates a temporary workspace and per-invocation
-HOME/XDG roots, writes `review-dossier.md` containing its fixed review prompt
-and the supplied packet, and asks the native client to read that file. Its load
+HOME/XDG roots and sends its fixed review prompt and complete supplied packet
+as one `event: user` message on native `--input-format stream-json` stdin.
+The packet is absent from argv and does not require a filesystem search. Its load
 declaration therefore does not require the operator's global `GEMINI.md` or a
 worker checkout's `AGENTS.md`. `source_refs` points to the wrapper that constructs
 the prompt. The optional configuration path is
@@ -503,3 +504,43 @@ extracted policy sources. An in-tree compatibility symlink is covered through
 its canonical target once. For an instruction symlink targeting outside that
 scan tree, pass the alias explicitly to `scripts/check-claude-md-rot.sh`; the
 workspace monthly audit follows named aliases and deduplicates resolved targets.
+
+
+### Recheck Agy dossier delivery and child cleanup
+
+Run `uv run --no-sync pytest tests/scripts/test_hapax_agy_reviewer.py -q` from
+the candidate source. The doubles exercise short and 2.5 MB Unicode dossiers,
+OAuth isolation and raw/JSON-escaped echo suppression, native final-result
+unwrapping, malformed output, timeout, caller cancellation and process ownership.
+The caller retains YAML schema/checklist validation after the wrapper extracts
+one successful native result's fenced response. Native errors retain nonzero
+status and stderr; partial model responses are not forwarded.
+
+The wrapper forks a small lifetime supervisor before launching Agy. Agy leads a
+new session/process group. The supervisor observes exit with `waitid(WNOWAIT)`
+and checks the unreaped child's PGID/SID before signalling that group. Keeping
+the child unreaped reserves its identifier until TERM, a 150 ms cleanup grace,
+KILL and wait finish. The original print timeout and pinned model are unchanged.
+The private lifetime pipe closes if the caller kills the outer wrapper, including
+SIGKILL from `subprocess.run(timeout=...)`, so the supervisor can finish cleanup
+and remove the temporary credential workspace. Captured output uses unlinked
+files, avoiding a hang on pipe descriptors inherited by descendants.
+
+This is bounded process-group cleanup. A descendant which deliberately leaves
+the group/session is not proven owned by that boundary and is not killed. Killing
+the supervisor itself with SIGKILL, host failure, or external child reaping is
+outside the cleanup guarantee. Do not remedy those limits by killing role-wide
+matches or guessing ownership from command names. The tests retain an escaped
+child and an unrelated process deliberately, then dispose of their own fixtures.
+Temporary HOME/cwd and Agy's sandbox flag are not proof of operating-system
+filesystem isolation.
+
+Before claiming activation, bind the installed wrapper path and SHA-256 to the
+accepted source, record local `agy --help` and binary identity, and observe an
+admitted exact-head review through the actual caller. Check that the final result
+parses, no dossier-search command is launched, and no members of that invocation's
+proven group remain after completion/timeout. Source doubles and native local
+`/help` parsing establish their respective boundaries only; they do not establish
+provider reasoning, signed acceptance, or the installed runtime postimage. Do not
+alter existing reviewer sessions or admission, model, billing or review-seat rules
+while making that observation.
