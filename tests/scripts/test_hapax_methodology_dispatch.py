@@ -653,12 +653,263 @@ def _recipient_row(db_path: Path, message_id: str, recipient: str) -> sqlite3.Ro
     return row
 
 
-def test_claim_sweep_reaps_blocked_unassigned_session_claim(tmp_path: Path) -> None:
+def _claim_sweep_composition(module, claims, active, monkeypatch):
+    from shared.gate0b_claim_publication_install import ClaimPublicationCompositionRoots
+
+    for state in ("active", "closed", "refused"):
+        (active.parent / state).mkdir(parents=True, exist_ok=True)
+    roots = ClaimPublicationCompositionRoots(
+        invocation_store_root=str(claims.parent / "invocations"),
+        claim_cache_dir=str(claims),
+        claim_vault_root=str(active.parent),
+        claim_transaction_root=str(claims.parent / "transactions"),
+        claim_receipt_root=str(claims.parent / "receipts"),
+        claim_lock_root=str(claims.parent / "non-default-role-locks"),
+    )
+    monkeypatch.setattr(module, "_claim_sweep_roots", lambda: roots, raising=False)
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(claims.parent / "coord"))
+    return roots
+
+
+@pytest.mark.parametrize("status", ["claimed", "in_progress", "pr_open", "offered", "blocked"])
+def test_claim_sweep_age_never_proves_attempt_death(tmp_path, monkeypatch, status):
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    active = tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    _task(
+        active.parent,
+        "long-running-task",
+        status=status,
+        assigned_to="gamma",
+        frontmatter="pr: 4726\npr_repo: hapax-systems/hapax-council",
+    )
+    paths = [
+        claims / ("cc-active-task-gamma" + suffix)
+        for suffix in ("", "-9b6ba5ca-513c-41aa-9900-d3026b42aad1")
+    ]
+    for path in paths:
+        path.write_text("long-running-task\n")
+        os.utime(path, (1000, 1000))
+    before = [(p.read_bytes(), p.stat()) for p in paths]
+
+    assert module.sweep_stale_claims(claims, active, now=1000 + 21601) == []
+    assert [(p.read_bytes(), p.stat()) for p in paths] == before
+
+
+@pytest.mark.parametrize(
+    "variant", ["missing", "empty", "wrong-id", "duplicate", "malformed", "symlink"]
+)
+def test_claim_sweep_uncertain_terminal_state_holds(tmp_path, monkeypatch, variant):
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    active = tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    claim = claims / "cc-active-task-gamma"
+    claim.write_text("" if variant == "empty" else "task-a\n")
+    os.utime(claim, (1000, 1000))
+    note = _task(active.parent, "task-a", "", status="done", assigned_to="gamma")
+    if variant in {"missing", "empty"}:
+        note.unlink()
+    elif variant == "wrong-id":
+        note.write_text(note.read_text().replace("task_id: task-a", "task_id: other"))
+    elif variant == "duplicate":
+        (active.parent / "closed" / note.name).write_bytes(note.read_bytes())
+    elif variant == "malformed":
+        note.write_text("---\nstatus: done\nassigned_to: [\n---\n")
+    elif variant == "symlink":
+        target = tmp_path / "terminal.md"
+        note.rename(target)
+        note.symlink_to(target)
+    before = claim.read_bytes(), claim.stat()
+
+    assert module.sweep_stale_claims(claims, active, now=1000 + 21601) == []
+    assert (claim.read_bytes(), claim.stat()) == before
+
+
+@pytest.mark.parametrize("state", ["active", "closed"])
+def test_claim_sweep_retains_terminal_cleanup(tmp_path, monkeypatch, state):
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    active = tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    claim = claims / "cc-active-task-gamma"
+    claim.write_text("task-a\n")
+    os.utime(claim, (1000, 1000))
+    note = _task(active.parent, "task-a", "", status="done", assigned_to="gamma")
+    if state == "closed":
+        note.rename(active.parent / "closed" / note.name)
+
+    assert module.sweep_stale_claims(claims, active, now=1300) == []
+    assert claim.exists()
+    assert module.sweep_stale_claims(claims, active, now=1301) == [
+        (claim.name, "task-a", "terminal")
+    ]
+    assert not claim.exists()
+
+
+@pytest.mark.parametrize("variant", ["missing", "corrupt", "wrong-cache", "wrong-vault"])
+def test_claim_sweep_unqualified_composition_holds(tmp_path, monkeypatch, variant):
+    from shared.execution_admission import ExecutionAdmissionError
+
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    active = tmp_path / "tasks" / "active"
+    claims.mkdir()
+    roots = _claim_sweep_composition(module, claims, active, monkeypatch)
+    claim = claims / "cc-active-task-gamma"
+    claim.write_text("task-a\n")
+    os.utime(claim, (1000, 1000))
+    _task(active.parent, "task-a", "", status="done", assigned_to="gamma")
+
+    def invalid_roots():
+        if variant == "missing":
+            raise ExecutionAdmissionError("gate0b_install_receipt_missing", "restore composition")
+        if variant == "corrupt":
+            raise ValueError("invalid composition")
+        key = "claim_cache_dir" if variant == "wrong-cache" else "claim_vault_root"
+        return roots.model_copy(update={key: str(tmp_path / "other")})
+
+    monkeypatch.setattr(module, "_claim_sweep_roots", invalid_roots)
+    assert module.sweep_stale_claims(claims, active, now=30000) == []
+    assert claim.read_text() == "task-a\n"
+
+
+@pytest.mark.parametrize("lock_kind", ["role", "note"])
+def test_claim_sweep_respects_installed_exclusion_across_processes(
+    tmp_path, monkeypatch, lock_kind
+):
+    import shared.sdlc_claim as claim_module
+
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    active = tmp_path / "tasks" / "active"
+    claims.mkdir()
+    roots = _claim_sweep_composition(module, claims, active, monkeypatch)
+    claim = claims / "cc-active-task-gamma"
+    claim.write_text("task-a\n")
+    os.utime(claim, (1000, 1000))
+    note = _task(active.parent, "task-a", "", status="done", assigned_to="gamma")
+    monkeypatch.setattr(claim_module, "_CLAIM_PUBLICATION_LOCK_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setenv("HAPAX_TASK_NOTE_LOCK_TIMEOUT", "0.02")
+    script = (
+        "from pathlib import Path\n"
+        "from shared.sdlc_claim import claim_role_exclusion\n"
+        "from shared.task_note_lock import projected_path_lock\n"
+        f"lock = claim_role_exclusion('gamma', lock_root=Path({roots.claim_lock_root!r}))\n"
+        if lock_kind == "role"
+        else "from pathlib import Path\n"
+        "from shared.task_note_lock import projected_path_lock\n"
+        f"lock = projected_path_lock('task-a', (Path({str(note)!r}),))\n"
+    ) + "with lock:\n print('locked', flush=True)\n input()\n"
+    process = subprocess.Popen(
+        [sys.executable, "-c", script],
+        cwd=REPO_ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdout.readline() == "locked\n"
+        assert module.sweep_stale_claims(claims, active, now=30000) == []
+        assert claim.read_text() == "task-a\n"
+    finally:
+        stdout, stderr = process.communicate("\n", timeout=10)
+    assert process.returncode == 0, (stdout, stderr)
+    assert module.sweep_stale_claims(claims, active, now=30000) == [
+        (claim.name, "task-a", "terminal")
+    ]
+
+
+def test_claim_sweep_preserves_marker_changed_during_resolution(tmp_path, monkeypatch):
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    active = tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    claim = claims / "cc-active-task-gamma"
+    claim.write_text("task-a\n")
+    os.utime(claim, (1000, 1000))
+    _task(active.parent, "task-a", "", status="done", assigned_to="gamma")
+    classify = module._claim_task_dead_reason
+
+    def replace_marker(fields):
+        claim.write_text("new-task\n")
+        return classify(fields)
+
+    monkeypatch.setattr(module, "_claim_task_dead_reason", replace_marker)
+    assert module.sweep_stale_claims(claims, active, now=30000) == []
+    assert claim.read_text() == "new-task\n"
+
+
+def test_claim_sweep_loads_installed_roots(tmp_path, monkeypatch):
+    import shared.gate0b_claim_publication_install as install
+
+    module = _dispatcher_module()
+    locator = str(tmp_path / "invocations")
+    installed = SimpleNamespace(claim_lock_root=tmp_path / "installed-locks")
+    monkeypatch.setattr(
+        install,
+        "default_claim_publication_roots",
+        lambda **kw: SimpleNamespace(invocation_store_root=locator),
+    )
+    observed = []
+
+    def load(path):
+        observed.append(path)
+        return SimpleNamespace(receipt=SimpleNamespace(roots=installed))
+
+    monkeypatch.setattr(install, "load_claim_publication_composition", load)
+    assert module._claim_sweep_roots() is installed
+    assert observed == [Path(locator)]
+
+
+def test_claim_sweep_holds_both_locks_at_unlink(tmp_path, monkeypatch):
+    import fcntl
+
+    from shared.sdlc_claim import _claim_publication_role_lock_digest
+    from shared.task_note_lock import held_by_current_thread
+
+    module = _dispatcher_module()
+    claims = tmp_path / "claims"
+    active = tmp_path / "tasks" / "active"
+    claims.mkdir()
+    roots = _claim_sweep_composition(module, claims, active, monkeypatch)
+    claim = claims / "cc-active-task-gamma"
+    claim.write_text("task-a\n")
+    os.utime(claim, (1000, 1000))
+    _task(active.parent, "task-a", "", status="done", assigned_to="gamma")
+    lock_path = Path(roots.claim_lock_root) / f"{_claim_publication_role_lock_digest('gamma')}.lock"
+    unlink = Path.unlink
+    observations = []
+
+    def observe_unlink(path, *args, **kwargs):
+        if path == claim:
+            assert held_by_current_thread()
+            with lock_path.open("r+") as handle:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            observations.append(path)
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", observe_unlink)
+    assert module.sweep_stale_claims(claims, active, now=30000) == [
+        (claim.name, "task-a", "terminal")
+    ]
+    assert observations == [claim]
+
+
+def test_claim_sweep_reaps_blocked_unassigned_session_claim(tmp_path: Path, monkeypatch) -> None:
     module = _dispatcher_module()
     claims = tmp_path / "claims"
     active = tmp_path / "tasks" / "active"
     claims.mkdir(parents=True)
     active.mkdir(parents=True)
+    _claim_sweep_composition(module, claims, active, monkeypatch)
     task_id = "p0-incident-blocked-task"
     claim = claims / "cc-active-task-gamma-9b6ba5ca-513c-41aa-9900-d3026b42aad1"
     claim.write_text(f"{task_id}\n", encoding="utf-8")
@@ -675,12 +926,13 @@ def test_claim_sweep_reaps_blocked_unassigned_session_claim(tmp_path: Path) -> N
     assert not claim.exists()
 
 
-def test_claim_sweep_ignores_body_status_lines(tmp_path: Path) -> None:
+def test_claim_sweep_ignores_body_status_lines(tmp_path: Path, monkeypatch) -> None:
     module = _dispatcher_module()
     claims = tmp_path / "claims"
     active = tmp_path / "tasks" / "active"
     claims.mkdir(parents=True)
     active.mkdir(parents=True)
+    _claim_sweep_composition(module, claims, active, monkeypatch)
     task_id = "p0-incident-body-status"
     claim = claims / "cc-active-task-gamma-9b6ba5ca-513c-41aa-9900-d3026b42aad1"
     claim.write_text(f"{task_id}\n", encoding="utf-8")

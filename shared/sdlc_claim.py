@@ -2518,6 +2518,101 @@ def claim_role_exclusion(
             os.close(fd)
 
 
+def materialize_remote_claim_identity(
+    *,
+    cache_dir: Path,
+    lock_root: Path,
+    role: str,
+    session_id: str,
+    task_id: str,
+    claim_epoch: str,
+) -> None:
+    """Project dispatch identity into an empty host cache, or preserve an exact retry.
+
+    The caller supplies validated installed roots and the already checked local
+    dispatch identity. This is neither admission nor ownership transfer. A partial
+    write (including a crash) stays held for governed reconciliation on retry.
+    Only participating role publishers are excluded; raw writers are unsupported.
+    """
+    from shared.session_identity import is_claim_keyable_session_id
+
+    repair = (
+        "preserve the execution-host claim files and obtain governed reconciliation before retrying"
+    )
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_-]+", role)
+        or not is_claim_keyable_session_id(session_id)
+        or (
+            task_id
+            and (
+                not re.fullmatch(r"[A-Za-z0-9_.-]+", task_id)
+                or not re.fullmatch(r"[0-9]+ " + re.escape(task_id), claim_epoch)
+            )
+        )
+    ):
+        raise ClaimPublicationError("claim_remote_identity_invalid", repair)
+    expected = {f"session-role-{session_id}": (role + "\n").encode()}
+    if task_id:
+        for key in (role, f"{role}-{session_id}"):
+            expected[f"cc-claim-epoch-{key}"] = (claim_epoch + "\n").encode()
+            expected[f"cc-active-task-{key}"] = (task_id + "\n").encode()
+    with claim_role_exclusion(role, lock_root=lock_root):
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            with ReadOnlyFsSnapshot(change_scope="observed_paths") as snapshot:
+                directory = snapshot.pin_absolute_dir(cache_dir, private_final=False)
+                assert directory is not None
+                names = snapshot.list_names(directory)
+                # A surviving different session is not an empty destination, even
+                # if the legacy role projections were lost. No liveness inference.
+                for name in names:
+                    if name not in expected and name.startswith(
+                        (
+                            f"cc-active-task-{role}-",
+                            f"cc-claim-epoch-{role}-",
+                        )
+                    ):
+                        raise ClaimPublicationError("claim_remote_identity_conflict", repair)
+                captured = {
+                    name: snapshot.observe_file_at(
+                        directory, name, private=False, max_bytes=4096
+                    ).captured
+                    for name in expected
+                }
+                present = [value for value in captured.values() if value is not None]
+                if present:
+                    if len(present) != len(expected):
+                        raise ClaimPublicationError("claim_remote_identity_incomplete", repair)
+                    if any(
+                        value is None or value.content != expected[name]
+                        for name, value in captured.items()
+                    ):
+                        raise ClaimPublicationError("claim_remote_identity_conflict", repair)
+                    snapshot.seal()
+                    return
+                snapshot.seal()
+            # Create once, never truncate or replace a peer or a partial projection.
+            for name, payload in expected.items():
+                fd = os.open(
+                    cache_dir / name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    0o600,
+                )
+                try:
+                    view = memoryview(payload)
+                    while view:
+                        written = os.write(fd, view)
+                        if written <= 0:
+                            raise OSError("remote identity write made no progress")
+                        view = view[written:]
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            _fsync_directory(cache_dir)
+        except (ReadOnlySnapshotError, OSError) as exc:
+            raise ClaimPublicationError("claim_remote_identity_unsafe", repair) from exc
+
+
 @contextmanager
 def _claim_publication_lock(
     intent: ClaimPublicationIntent,

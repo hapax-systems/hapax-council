@@ -265,11 +265,42 @@ imports. The worker checkout is not the helper source. Missing runtime or helper
 is a refusal, never permission to publish without exclusion. The lock does not
 make the existing multi-file materializer crash-atomic.
 
+The Codex launcher delegates remote projection to
+`shared.sdlc_claim.materialize_remote_claim_identity` under that installed
+role lock. A fresh destination must have no role/session claim or epoch files
+and no session-role marker. A complete matching retry checks the exact role,
+session, task and epoch and leaves identity bytes, inode, mode and timestamps
+unchanged. Another session's surviving role claim or epoch is a conflict even
+if the legacy role marker is absent. The helper never infers that an incumbent
+is dead.
+
+Conflicting, incomplete, malformed, symlinked, multiply linked or nonregular
+identity files refuse before any identity/proof write or native execution.
+Fresh files use exclusive creation. An interrupted fresh write may leave a
+partial projection; its retry is held for governed reconciliation, with those
+bytes preserved. This is not positive recovery or a crash-atomic transfer.
+The directory observation is conservative: concurrent changes can cause a
+typed hold; it never ignores uncertainty to publish.
+
+Remote refusals distinguish `claim_remote_composition_missing`,
+`claim_remote_composition_invalid`, `claim_publication_lock_unavailable`,
+and `claim_remote_identity_conflict|incomplete|unsafe|invalid`.
+Diagnostics give a bounded next action without disclosing the incumbent's
+coordinates or raw exceptions. Restore a governed execution-host installation
+for composition failures; let a participating publisher finish before retrying
+a busy lock; preserve identity conflicts and partial state for authorized
+reconciliation. Do not delete locks or rewrite sidecars to clear these holds.
+Normal CLI `claim_composition_invalid` likewise directs installed-composition
+repair without printing the invalid payload.
+
 Recheck the real temporary-HOME subprocess cases (no remote/native capability):
 
 ```bash
 uv run --no-sync python -m pytest tests/scripts/test_hapax_codex_headless.py \
   -k remote_materialization_ -q
+uv run --no-sync python -m pytest tests/shared/test_sdlc_task_store.py \
+  -k bounded_index_rejects_invalid_attempt_limit -q
+uv run --no-sync python -m pytest tests/scripts/test_cc_claim_installed_composition.py -q
 ```
 
 Metadata-only repair/stage/PR-link tools take projected-path locks and do not
@@ -425,3 +456,39 @@ cc-claim <task-id>
 
 If the normal command still holds, repair the Gate-0B install root or release the
 legacy claim through the exact stale-lease release procedure before continuing.
+
+
+## Dispatch sweep evidence boundary
+
+The methodology dispatcher may clean settled activation markers only when the
+installed composition binds the exact cache/vault roots and a complete task
+identity resolution yields one terminal record (`done`, `completed`, `closed`,
+`withdrawn`, `superseded`) or an explicitly `blocked` and unassigned record.
+It holds the installed role exclusion followed by the task/path lock across
+resolution, marker recheck and deletion. The five-minute settling delay remains.
+A changed/refreshed marker, duplicate identity, missing/malformed note, linked
+marker, or unavailable composition/lock is held. The whole namespace identity
+index is shared within one sweep and revalidated at use; concurrent changes
+narrow cleanup rather than allowing a convenient-path lookup.
+
+Six-hour age, expired sibling markers, absent progress or a missing task note
+cannot establish whole-attempt death. `lease_ttl` remains an accepted function
+argument for compatibility and grants no deletion authority. Assignment is not
+a permanent ownership grant: normal governed terminal/release transitions still
+permit cleanup. Unknown attempts require qualified lifecycle evidence that this
+consumer does not produce. This repair does not implement positive rebind or
+reconstruct partial claims. Epoch/dispatch residue retains its existing governed
+reconciliation path. Raw writers that ignore shared exclusion remain outside the
+contract; their containment is a separate runtime obligation.
+
+Recheck without touching the live claim plane:
+
+```bash
+uv run --no-sync python -m pytest tests/scripts/test_hapax_methodology_dispatch.py -q -k claim_sweep
+```
+
+The source-owner's September 24 marker loss is consistent with the predecessor's
+age-only deletion path; the deleting process is unobserved. U8's earlier loss has
+a distinct recorded coordinator-daemon reoffer at 07:29Z, including a task-row
+rewrite that this sweep does not perform. These observations do not attribute
+other marker losses or authorize real claim repair.

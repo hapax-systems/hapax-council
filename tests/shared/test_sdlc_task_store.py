@@ -427,8 +427,14 @@ def test_bounded_index_retry_does_not_retry_unsafe_directory(
     assert inventories == 1
 
 
-@pytest.mark.parametrize("max_attempts", [0, 4, -1, True, 1.0, "3", None])
-def test_bounded_index_rejects_invalid_attempt_limit(tmp_path: Path, max_attempts) -> None:
+@pytest.mark.parametrize("max_attempts", [0, 4, -1, True, False, 1.0, "3", None, float("nan")])
+def test_bounded_index_rejects_invalid_attempt_limit(
+    tmp_path: Path, monkeypatch, max_attempts
+) -> None:
+    def unexpected_inventory(*args, **kwargs):
+        pytest.fail("invalid attempt limit reached the task-store inventory")
+
+    monkeypatch.setattr("shared.sdlc_task_store._complete_frontier", unexpected_inventory)
     with pytest.raises(ValueError, match="max_attempts must be an integer from 1 to 3"):
         build_task_identity_index(tmp_path, max_attempts=max_attempts)
 
