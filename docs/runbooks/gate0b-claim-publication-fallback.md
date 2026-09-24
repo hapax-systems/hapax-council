@@ -132,8 +132,14 @@ applied, terminal aborted, held or unknown; preserve held/unknown evidence and
 reconcile it before choosing another session. Ordinary `cc-claim` recovery
 requires the pending journal's original role and session. A different session
 gets `claim_publication_recovery_owner_mismatch` without applying that journal.
-The explicit `cc-claim --recover-claim-publications <task-id>` operation remains
-the governed recovery path; it completes the original admitted publication,
+The explicit `cc-claim --recover-claim-publications <task-id>` operation also
+binds the caller's resolved role/session. The API refuses omitted, empty or
+malformed owner coordinates before filesystem access. Both CLI paths replay
+only the original owner's existing admitted publication. The coordinates
+select that admission; they are not a new grant. Cross-owner maintenance is
+unsupported here and requires a separately governed authority path, not an
+omitted argument or a caller inventing another session's identity. Recovery
+completes the original admitted publication,
 not an ownership transfer. Resolve its durable result before retrying dispatch.
 
 Recovery holds retain the underlying task-store reason and its repair action.
@@ -184,6 +190,94 @@ These checks cover the publication-availability prerequisite. They do not
 establish the governed-rebind task's positive ownership-transfer exit predicate.
 Qualified whole-attempt terminality, transfer races and launcher integration
 remain separate unfinished obligations; this increment cannot close that task.
+
+## Role exclusion interface and writer boundary
+
+`shared.sdlc_claim.claim_role_exclusion(role, *, lock_root)` exposes the
+existing exclusive role lock. Supply the exact `claim_lock_root` from the
+installed Gate-0B composition. The ordinary CLI binding is
+`default_claim_publication_roots(home=Path.home()).claim_lock_root`, currently
+`~/.local/state/hapax/task-locks/gate0b-claim-publish-v1`. The low-level library's
+historical default `~/.cache/hapax/task-locks` is a different namespace; a
+consumer must not substitute it for the installed root.
+
+The key is SHA-256 of `claim-publication-role\0` plus the exact role, shared
+across every task and session in that role. The root is a real euid-owned
+0700 directory; lock files are euid-owned, single-link 0600 regular files.
+The existing bounded `flock` acquisition returns
+`claim_publication_lock_unavailable` on contention. Descriptors close on
+normal return or exception. This is host-local, cooperative exclusion, not
+process liveness, cross-host exclusion, authorization, or a rebind receipt.
+
+Order is **role first, then task identity/note paths**. A caller already
+holding a projected-path lock gets `claim_publication_lock_order_inversion`
+before opening the role lock. The context is non-reentrant: a consumer holding
+it must not call an operation that acquires it again. The supervisor interface
+is to hold role exclusion across its final ownership observation and dependent
+action, with any necessary note lock inside; its independent authority,
+process identity and cleanup checks still apply. Source delivery alone does
+not qualify that supervisor integration or its installed postimage.
+
+The source/caller census covered `scripts/`, `shared/`, `agents/` and the
+existing projected-path writer inventory, using both publication/sidecar
+symbol searches and claim/close/repair/dispatch path inventories:
+
+| Writer | Exclusion supplied here |
+|---|---|
+| Admitted `cc-claim`, manual or dispatch-bound | Role then task identity/note, through the existing journal, receipt and activation writes. |
+| `recover_claim_publications`, activation-cache rehydration | Same role/task locks as admitted publication; the existing intent and receipt checks remain. |
+| Explicit emergency `cc-claim` | Same installed role namespace, then note lock through all note/epoch/activation/charter writes. It remains a non-admitted, non-journaled fallback. |
+| Charter-unit recording | Role then unit/parent note paths, recheck the parent receipt/lease and exact unit preimage, retain locks through the unit note, charter marker and ledger append. |
+| Charter mint's auxiliary marker | Reacquire role then note; revalidate the exact applied owner before writing. Contention reports the already-applied publication separately. An original-owner retry completes this projection. |
+| Local launchers / dispatch adapters | Call the publication path; they do not acquire or decide this shared lock themselves. Remote materialization is excluded below. |
+
+`cc-close` takes task/note locks and then removes matching cache projections;
+it does not participate in role exclusion. Terminal disappearance during
+supervisor cleanup therefore needs its own checked terminal case.
+Dispatch-residue archival, emergency stale-marker deletion, the explicit
+manual stale-release procedure, `codex-claim-audit`, supervisor legacy cleanup,
+and raw/manual/daemon task-note writes are also outside role exclusion.
+The `REMOTE_EXEC_PY` blocks in `scripts/hapax-claude-headless` and
+`scripts/hapax-codex-headless` directly write epoch/activation files on the
+execution host, without this lock. They are supported ownership writers
+outside the qualified population, not merely read-only adapters. Their exact
+source paths need same-task/peer reconciliation before any all-writer
+supervisor exclusion claim; this source increment does not repair them.
+Metadata-only repair/stage/PR-link tools take projected-path locks and do not
+publish a new claim. See the full unconverted inventory in
+`tests/shared/test_projected_path_writer_lock_coverage.py`, including
+`agents/coordinator/core.py`; stopping a daemon does not convert its writer.
+
+No no-partial-write guarantee covers a raw writer ignoring these locks. A
+duplicate inserted after task resolution can still produce a typed hold after
+note/epoch/dispatch changes, before receipt/activation. Preserve that partial
+state and its journal; do not call it rollback or a completed transfer. The
+source-author raw-writer counterexample remains a separate release finding.
+Neither this exclusion increment nor availability work satisfies the original
+positive-rebind exit predicate.
+
+Recheck the bounded contracts using isolated fixtures:
+
+```bash
+uv run --no-sync python -m pytest tests/scripts/test_cc_claim_role_exclusion.py -q
+uv run --no-sync python -m pytest tests/shared/test_sdlc_claim.py -q \
+  -k 'requires_explicit_valid_owner or fresh_session_does_not_apply or transaction_postimage_retries'
+uv run --no-sync python -m pytest tests/shared/test_task_note_lock.py -q \
+  -k 'role_lock or claim_publication'
+```
+
+For the preserved, deliberately failing raw-writer counterexample, from this
+source checkout on the dispatched host:
+
+```bash
+uv run --no-sync python -m pytest \
+  /home/hapax/.cache/hapax/claim-rebind-20260924/test_role_raw_writer_race.py -q
+```
+
+That last probe uses only temporary claims. Expected: one failure showing
+`claim_publication_task_projection_invalid`, a changed note and four sidecars,
+with no receipt/activation. Its failure documents the exclusion boundary; it
+is not a passing invariant check or permission to recover a real specimen.
 
 ## Emergency Fallback
 

@@ -145,13 +145,60 @@ for item in results:
 PYEOF
   exit $?
 fi
+# Resolve identity from the SAME source of truth as the gate (agent-role.sh):
+# explicit env → agent-role recovery → relay presence → role-less fallback. A
+# session with no role but a session id resolves to "roleless" so it can always
+# claim (FM-1: "no role" never means "no escape").
+if declare -F hapax_effective_role >/dev/null 2>&1; then
+  role="$(hapax_effective_role 2>/dev/null || true)"
+else
+  role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
+fi
+if [[ -z "$role" ]]; then
+  echo "cc-claim: cannot determine identity; set HAPAX_AGENT_ROLE/CODEX_ROLE/CLAUDE_ROLE or a session id (HAPAX_SESSION_ID). Next action: launch through scripts/hapax-codex or export a governed lane identity, then rerun cc-claim." >&2
+  exit 1
+fi
+session_id=""
+if declare -F hapax_session_id >/dev/null 2>&1; then
+  session_id="$(hapax_session_id 2>/dev/null || true)"
+fi
+# Claim-by-pid unrepresentable (taxonomy-a3-session-identity): only an id with
+# per-session entropy may key a claim. The predicate SSOT is
+# shared/session_identity.py::is_claim_keyable_session_id; a pid-shaped id —
+# the retired `<role>-$$` spawner fallback — degrades to legacy role keying
+# instead of minting an ambiguous key.
+identity_python="$python_runner"
+if [[ -n "$session_id" ]] && ! "$identity_python" -I -c '
+import sys
+sys.path.insert(0, sys.argv[2])
+from shared.session_identity import is_claim_keyable_session_id
+sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
+' "$session_id" "$SCRIPT_DIR/.." 2>/dev/null; then
+  if [[ "$canon_enforced" == "1" ]]; then
+    echo "cc-claim: canon enforcement requires a claim-keyable non-PID session id. Next action: relaunch the lane with a UUID-like HAPAX_SESSION_ID; pid-shaped session ids cannot own canonical claims." >&2
+    exit 2
+  fi
+  echo "cc-claim: session id '$session_id' is not claim-keyable (pid-shaped or malformed) — using legacy role-keyed claim only" >&2
+  session_id=""
+fi
+if [[ "$canon_enforced" == "1" && -z "$session_id" ]]; then
+  echo "cc-claim: canon enforcement requires a claim-keyable session id. Next action: relaunch through the governed session launcher so HAPAX_SESSION_ID is set, then rerun cc-claim." >&2
+  exit 2
+fi
+if [[ -n "$session_id" ]]; then
+  session_claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
+else
+  session_claim_file=""
+fi
+
 if [[ "$recover_claim_publications_only" == "true" ]]; then
-  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" <<'PYEOF'
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" "$role" "$session_id" <<'PYEOF'
 import sys
 from pathlib import Path
 
 repo_root = Path(sys.argv[1]).resolve()
 task_id = sys.argv[2] or None
+expected_owner = (sys.argv[3], sys.argv[4])
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
@@ -166,10 +213,11 @@ try:
         receipt_root=Path(roots.claim_receipt_root),
         lock_root=Path(roots.claim_lock_root),
         task_id=task_id,
+        expected_owner=expected_owner,
     )
 except ClaimPublicationError as exc:
     print(
-        f"cc-claim: HOLD — {exc}. Next action: repair the named recovery root, "
+        f"cc-claim: HOLD — {exc}. Next action: {exc.repair_action}; "
         "then rerun cc-claim --recover-claim-publications"
         + (f" {task_id}" if task_id else "")
         + ".",
@@ -221,51 +269,6 @@ fi
 if [[ "$canon_enforced" == "1" && "$force" == "true" ]]; then
   echo "cc-claim: --force is retired under canon enforcement; release the prior claim through a governed transition. Next action: run cc-close on the current task if terminal, or ask the operator to perform a governed release of the stale claim before retrying." >&2
   exit 2
-fi
-# Resolve identity from the SAME source of truth as the gate (agent-role.sh):
-# explicit env → agent-role recovery → relay presence → role-less fallback. A
-# session with no role but a session id resolves to "roleless" so it can always
-# claim (FM-1: "no role" never means "no escape").
-if declare -F hapax_effective_role >/dev/null 2>&1; then
-  role="$(hapax_effective_role 2>/dev/null || true)"
-else
-  role="${HAPAX_AGENT_ROLE:-${CODEX_ROLE:-${CLAUDE_ROLE:-}}}"
-fi
-if [[ -z "$role" ]]; then
-  echo "cc-claim: cannot determine identity; set HAPAX_AGENT_ROLE/CODEX_ROLE/CLAUDE_ROLE or a session id (HAPAX_SESSION_ID). Next action: launch through scripts/hapax-codex or export a governed lane identity, then rerun cc-claim." >&2
-  exit 1
-fi
-session_id=""
-if declare -F hapax_session_id >/dev/null 2>&1; then
-  session_id="$(hapax_session_id 2>/dev/null || true)"
-fi
-# Claim-by-pid unrepresentable (taxonomy-a3-session-identity): only an id with
-# per-session entropy may key a claim. The predicate SSOT is
-# shared/session_identity.py::is_claim_keyable_session_id; a pid-shaped id —
-# the retired `<role>-$$` spawner fallback — degrades to legacy role keying
-# instead of minting an ambiguous key.
-identity_python="$python_runner"
-if [[ -n "$session_id" ]] && ! "$identity_python" -I -c '
-import sys
-sys.path.insert(0, sys.argv[2])
-from shared.session_identity import is_claim_keyable_session_id
-sys.exit(0 if is_claim_keyable_session_id(sys.argv[1]) else 1)
-' "$session_id" "$SCRIPT_DIR/.." 2>/dev/null; then
-  if [[ "$canon_enforced" == "1" ]]; then
-    echo "cc-claim: canon enforcement requires a claim-keyable non-PID session id. Next action: relaunch the lane with a UUID-like HAPAX_SESSION_ID; pid-shaped session ids cannot own canonical claims." >&2
-    exit 2
-  fi
-  echo "cc-claim: session id '$session_id' is not claim-keyable (pid-shaped or malformed) — using legacy role-keyed claim only" >&2
-  session_id=""
-fi
-if [[ "$canon_enforced" == "1" && -z "$session_id" ]]; then
-  echo "cc-claim: canon enforcement requires a claim-keyable session id. Next action: relaunch through the governed session launcher so HAPAX_SESSION_ID is set, then rerun cc-claim." >&2
-  exit 2
-fi
-if [[ -n "$session_id" ]]; then
-  session_claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
-else
-  session_claim_file=""
 fi
 lease_ttl="${HAPAX_CLAIM_LEASE_TTL_SECS:-21600}"
 
@@ -496,6 +499,7 @@ if canon_enforced:
         ClaimPublicationIntent,
         ClaimResidueArchiveHold,
         archive_dispatch_only_claim_residue,
+        claim_role_exclusion,
         inspect_claim_publications,
         recover_claim_publications,
         resolve_applied_claim_publication,
@@ -585,6 +589,35 @@ if canon_enforced:
     transaction_root = Path(gate0b_roots.claim_transaction_root)
     receipt_root = Path(gate0b_roots.claim_receipt_root)
     lock_root = Path(gate0b_roots.claim_lock_root)
+
+    def _finish_admitted_charter_sidecar() -> None:
+        if not session_id or _frontmatter_scalar(text, "claim_form") != "charter":
+            return
+        from shared.task_note_lock import TaskNoteLockError, projected_path_lock
+
+        try:
+            with claim_role_exclusion(role, lock_root=lock_root):
+                with projected_path_lock(task_id, (path,)):
+                    resolve_applied_claim_publication(
+                        vault_root=path.parent.parent,
+                        cache_dir=cache_dir,
+                        role=role,
+                        session_id=session_id,
+                        task_id=task_id,
+                        transaction_root=transaction_root,
+                        receipt_root=receipt_root,
+                        lock_root=lock_root,
+                    )
+                    _write_charter_sidecar()
+        except (ClaimPublicationError, TaskNoteLockError) as exc:
+            print(
+                f"cc-claim: HOLD — {exc}; publication remains applied in its journal; "
+                "the auxiliary charter projection was refused. Next action: inspect "
+                "current ownership and retry with the original role/session binding.",
+                file=sys.stderr,
+            )
+            sys.exit(8)
+
     inspections = inspect_claim_publications(
         cache_dir=cache_dir,
         transaction_root=transaction_root,
@@ -718,6 +751,7 @@ if canon_enforced:
                 file=sys.stderr,
             )
             sys.exit(8)
+        _finish_admitted_charter_sidecar()
         print(
             f"cc-claim: applied publication already owns task '{task_id}' for role '{role}' "
             f"(receipt={applied.receipt.receipt_hash})"
@@ -1184,80 +1218,81 @@ text = re.sub(
 text = _insert_session_log(text, log_line)
 
 if not canon_enforced:
-    # The legacy writer, reached only via HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1. The admitted
-    # path takes the projection lock inside shared/sdlc_claim._claim_publication_lock; this
-    # fallback must too, or the documented emergency route would be the one way to write a task
-    # note while a transition holds it — a killswitch that does something *else* rather than
-    # less, which is the shape this estate refuses.
+    # The emergency route uses the same role namespace as admitted publication.
+    # It remains non-admitted; locking does not grant fallback authority.
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+    from shared.sdlc_claim import ClaimPublicationError, claim_role_exclusion
     from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
+    legacy_lock_root = Path(default_claim_publication_roots(home=Path.home()).claim_lock_root)
     try:
-        with projected_path_lock(task_id, (path,)):
-            # PREIMAGE CHECK, not just an existence check. `text` was derived from
-            # `note_before`, read ~800 lines above this lock, and every decision between them —
-            # claimability, status, dependency validity, the session-log insertion — was taken
-            # against those bytes. Locking only the write leaves that whole chain resting on a
-            # snapshot another writer may already have replaced, and `path.is_file()` sees a
-            # relocation but not a modification: the claim would be written over a note that
-            # had moved on, silently. Refuse on any change and let the caller re-derive, which
-            # is what the admitted path's own `_locked_preflight` does.
-            try:
-                note_now = path.read_bytes()
-            except FileNotFoundError:
-                note_now = None
-            if note_now != note_before:
-                moved = "moved" if note_now is None else "changed"
-                print(
-                    f"cc-claim: REFUSED — '{task_id}' {moved} while acquiring its lock; "
-                    "the claim was computed from the earlier bytes. Rerun to act on its "
-                    "current position",
-                    file=sys.stderr,
+        with claim_role_exclusion(role, lock_root=legacy_lock_root):
+            with projected_path_lock(task_id, (path,)):
+                # PREIMAGE CHECK, not just an existence check. `text` was derived from
+                # `note_before`, read ~800 lines above this lock, and every decision between them —
+                # claimability, status, dependency validity, the session-log insertion — was taken
+                # against those bytes. Locking only the write leaves that whole chain resting on a
+                # snapshot another writer may already have replaced, and `path.is_file()` sees a
+                # relocation but not a modification: the claim would be written over a note that
+                # had moved on, silently. Refuse on any change and let the caller re-derive, which
+                # is what the admitted path's own `_locked_preflight` does.
+                try:
+                    note_now = path.read_bytes()
+                except FileNotFoundError:
+                    note_now = None
+                if note_now != note_before:
+                    moved = "moved" if note_now is None else "changed"
+                    print(
+                        f"cc-claim: REFUSED — '{task_id}' {moved} while acquiring its lock; "
+                        "the claim was computed from the earlier bytes. Rerun to act on its "
+                        "current position",
+                        file=sys.stderr,
+                    )
+                    sys.exit(3)
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                tmp.write_text(text, encoding="utf-8")
+                tmp.replace(path)
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                # The `cc-claim-epoch-*` SIDECAR records the claim time out-of-band:
+                # several consumers read the claim file's FULL content as the task id, so
+                # the id file must stay single-line.
+                (cache_dir / f"cc-claim-epoch-{role}").write_text(
+                    f"{claim_epoch} {task_id}\n",
+                    encoding="utf-8",
                 )
-                sys.exit(3)
-            tmp = path.with_suffix(path.suffix + ".tmp")
-            tmp.write_text(text, encoding="utf-8")
-            tmp.replace(path)
-    except TaskNoteLockError as exc:
+                # Legacy role-keyed file: read by cc-close, session-context, the
+                # coordinator, the coordination TUI, and other consumers outside this
+                # slice's scope.
+                (cache_dir / f"cc-active-task-{role}").write_text(
+                    f"{task_id}\n",
+                    encoding="utf-8",
+                )
+                if session_id:
+                    (cache_dir / f"cc-claim-epoch-{role}-{session_id}").write_text(
+                        f"{claim_epoch} {task_id}\n",
+                        encoding="utf-8",
+                    )
+                    (cache_dir / f"cc-active-task-{role}-{session_id}").write_text(
+                        f"{task_id}\n",
+                        encoding="utf-8",
+                    )
+                    _write_charter_sidecar()
+                    if charter_keep and session_id:
+                        print(
+                            f"cc-claim: charter {charter_keep} remains; "
+                            f"'{task_id}' is its sub-claim"
+                        )
+                    print(result_message)
+                    print(
+                        f"cc-claim: wrote {cache_dir / f'cc-active-task-{role}-{session_id}'} "
+                        f"(+ legacy cc-active-task-{role})"
+                    )
+                else:
+                    print(result_message)
+                    print(f"cc-claim: wrote ~/.cache/hapax/cc-active-task-{role}")
+    except (ClaimPublicationError, TaskNoteLockError) as exc:
         print(f"cc-claim: REFUSED — {exc}", file=sys.stderr)
         sys.exit(3)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    # The `cc-claim-epoch-*` SIDECAR records the claim time out-of-band:
-    # several consumers read the claim file's FULL content as the task id, so
-    # the id file must stay single-line.
-    (cache_dir / f"cc-claim-epoch-{role}").write_text(
-        f"{claim_epoch} {task_id}\n",
-        encoding="utf-8",
-    )
-    # Legacy role-keyed file: read by cc-close, session-context, the
-    # coordinator, the coordination TUI, and other consumers outside this
-    # slice's scope.
-    (cache_dir / f"cc-active-task-{role}").write_text(
-        f"{task_id}\n",
-        encoding="utf-8",
-    )
-    if session_id:
-        (cache_dir / f"cc-claim-epoch-{role}-{session_id}").write_text(
-            f"{claim_epoch} {task_id}\n",
-            encoding="utf-8",
-        )
-        (cache_dir / f"cc-active-task-{role}-{session_id}").write_text(
-            f"{task_id}\n",
-            encoding="utf-8",
-        )
-        _write_charter_sidecar()
-        if charter_keep and session_id:
-            print(
-                f"cc-claim: charter {charter_keep} remains; "
-                f"'{task_id}' is its sub-claim"
-            )
-        print(result_message)
-        print(
-            f"cc-claim: wrote {cache_dir / f'cc-active-task-{role}-{session_id}'} "
-            f"(+ legacy cc-active-task-{role})"
-        )
-    else:
-        print(result_message)
-        print(f"cc-claim: wrote ~/.cache/hapax/cc-active-task-{role}")
     sys.exit(0)
 
 try:
@@ -1302,125 +1337,129 @@ except (ClaimPublicationError, TaskStoreError) as exc:
     sys.exit(8)
 
 if charter_keep:
-    # A unit continues under the charter's lease; no new claim is published.
-    # The parent must actually hold that lease: live sidecars for this role
-    # AND an applied publication that resolves. Naming the publication
-    # receipt check means performing it, and an absent lease is a hold, not
-    # a fallthrough to minting a fresh claim.
-    charter_note = None
-    for candidate in (
+    from shared.sdlc_claim import claim_role_exclusion  # noqa: E402
+    from shared.task_note_lock import TaskNoteLockError, projected_path_lock  # noqa: E402
+
+    parent_paths = (
         path.parent / f"{charter_keep}.md",
         *sorted(path.parent.glob(f"{charter_keep}-*.md")),
-    ):
-        if candidate.is_file():
-            charter_note = candidate
-            break
-    if charter_note is None or not child_may_mint(
-        charter_note.read_text(encoding="utf-8"), text
-    ):
-        print(
-            f"cc-claim: HOLD — '{task_id}' is not a valid unit of charter "
-            f"'{charter_keep}': the re-verification of parent_charter and "
-            "scope coverage failed, so the charter-keep grant cannot be "
-            "honored. Next action: on the unit note set parent_charter: "
-            f"'{charter_keep}' and keep every mutation_scope_ref inside that "
-            "charter's charter_scope, then rerun cc-claim.",
-            file=sys.stderr,
-        )
-        sys.exit(8)
-    live_parent = []
-    for key in (role, f"{role}-{session_id}" if session_id else ""):
-        if not key:
-            continue
-        for name in (
-            f"cc-active-task-{key}",
-            f"cc-claim-epoch-{key}",
-            f"cc-claim-dispatch-{key}.json",
-        ):
-            if sidecar_belongs_to(cache_dir / name, charter_keep):
-                live_parent.append(name)
-    if not live_parent:
-        print(
-            f"cc-claim: HOLD — charter '{charter_keep}' has no live lease "
-            "sidecars for this role, so the unit cannot be recorded under it. "
-            "Losing a lease file is not a release. Next action: restore the "
-            "charter's cc-active-task/cc-claim-epoch/cc-claim-dispatch "
-            "sidecars from its lineage, or close the charter through the "
-            "governed lifecycle before claiming new work.",
-            file=sys.stderr,
-        )
-        sys.exit(8)
-    required = []
-    for key in (role, f"{role}-{session_id}" if session_id else ""):
-        if not key:
-            continue
-        required.extend(
-            (
-                cache_dir / f"cc-active-task-{key}",
-                cache_dir / f"cc-claim-epoch-{key}",
-                cache_dir / f"cc-claim-dispatch-{key}.json",
-            )
-        )
-    missing = [item.name for item in required if not sidecar_belongs_to(item, charter_keep)]
-    if missing:
-        print(
-            f"cc-claim: HOLD — charter '{charter_keep}' does not have a "
-            f"complete lease ({', '.join(missing)}). A leftover active-task "
-            "file is not a grant. Next action: restore the missing epoch and "
-            "dispatch binding for that charter, or close it through the "
-            "governed lifecycle.",
-            file=sys.stderr,
-        )
-        sys.exit(8)
+    )
     try:
-        resolve_applied_claim_publication_for_task(
-            vault_root=path.parent.parent,
-            cache_dir=cache_dir,
-            role=role,
-            task_id=charter_keep,
-            transaction_root=transaction_root,
-            receipt_root=receipt_root,
-            lock_root=lock_root,
-        )
-    except ClaimPublicationError as exc:
-        print(
-            f"cc-claim: HOLD — charter '{charter_keep}' has no coherent "
-            f"applied claim publication ({exc}). The publication receipt was "
-            "checked and it did not resolve. Next action: recover or "
-            "re-publish the charter's claim through the Gate-0B admitted "
-            "path, then rerun cc-claim for this unit.",
-            file=sys.stderr,
-        )
-        sys.exit(8)
-    from shared.charter_claim import record_unit  # noqa: E402
-    from shared.task_note_lock import projected_path_lock  # noqa: E402
+        with claim_role_exclusion(role, lock_root=lock_root):
+            with projected_path_lock(task_id, (path, *parent_paths)):
+                # A unit continues under the charter's lease; no new claim is published.
+                # The parent must actually hold that lease: live sidecars for this role
+                # AND an applied publication that resolves. Naming the publication
+                # receipt check means performing it, and an absent lease is a hold, not
+                # a fallthrough to minting a fresh claim.
+                charter_note = None
+                for candidate in (
+                    path.parent / f"{charter_keep}.md",
+                    *sorted(path.parent.glob(f"{charter_keep}-*.md")),
+                ):
+                    if candidate.is_file():
+                        charter_note = candidate
+                        break
+                if charter_note is None or not child_may_mint(
+                    charter_note.read_text(encoding="utf-8"), text
+                ):
+                    print(
+                        f"cc-claim: HOLD — '{task_id}' is not a valid unit of charter "
+                        f"'{charter_keep}': the re-verification of parent_charter and "
+                        "scope coverage failed, so the charter-keep grant cannot be "
+                        "honored. Next action: on the unit note set parent_charter: "
+                        f"'{charter_keep}' and keep every mutation_scope_ref inside that "
+                        "charter's charter_scope, then rerun cc-claim.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(8)
+                live_parent = []
+                for key in (role, f"{role}-{session_id}" if session_id else ""):
+                    if not key:
+                        continue
+                    for name in (
+                        f"cc-active-task-{key}",
+                        f"cc-claim-epoch-{key}",
+                        f"cc-claim-dispatch-{key}.json",
+                    ):
+                        if sidecar_belongs_to(cache_dir / name, charter_keep):
+                            live_parent.append(name)
+                if not live_parent:
+                    print(
+                        f"cc-claim: HOLD — charter '{charter_keep}' has no live lease "
+                        "sidecars for this role, so the unit cannot be recorded under it. "
+                        "Losing a lease file is not a release. Next action: restore the "
+                        "charter's cc-active-task/cc-claim-epoch/cc-claim-dispatch "
+                        "sidecars from its lineage, or close the charter through the "
+                        "governed lifecycle before claiming new work.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(8)
+                required = []
+                for key in (role, f"{role}-{session_id}" if session_id else ""):
+                    if not key:
+                        continue
+                    required.extend(
+                        (
+                            cache_dir / f"cc-active-task-{key}",
+                            cache_dir / f"cc-claim-epoch-{key}",
+                            cache_dir / f"cc-claim-dispatch-{key}.json",
+                        )
+                    )
+                missing = [item.name for item in required if not sidecar_belongs_to(item, charter_keep)]
+                if missing:
+                    print(
+                        f"cc-claim: HOLD — charter '{charter_keep}' does not have a "
+                        f"complete lease ({', '.join(missing)}). A leftover active-task "
+                        "file is not a grant. Next action: restore the missing epoch and "
+                        "dispatch binding for that charter, or close it through the "
+                        "governed lifecycle.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(8)
+                try:
+                    resolve_applied_claim_publication_for_task(
+                        vault_root=path.parent.parent,
+                        cache_dir=cache_dir,
+                        role=role,
+                        task_id=charter_keep,
+                        transaction_root=transaction_root,
+                        receipt_root=receipt_root,
+                        lock_root=lock_root,
+                    )
+                except ClaimPublicationError as exc:
+                    print(
+                        f"cc-claim: HOLD — charter '{charter_keep}' has no coherent "
+                        f"applied claim publication ({exc}). The publication receipt was "
+                        "checked and it did not resolve. Next action: recover or "
+                        "re-publish the charter's claim through the Gate-0B admitted "
+                        "path, then rerun cc-claim for this unit.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(8)
+                from shared.charter_claim import record_unit  # noqa: E402
 
-    with projected_path_lock(task_id, (path,)):
-        if path.exists():
-            disk_status = ""
-            for line in path.read_text(encoding="utf-8").splitlines():
-                if line.startswith("status:"):
-                    disk_status = line.split(":", 1)[1].strip()
-                    break
-            if disk_status in {"withdrawn", "closed", "done", "completed", "superseded"}:
-                print(
-                    f"cc-claim: HOLD — note on disk is {disk_status}; not "
-                    f"replacing it with a claimed postimage. task_id={task_id}",
-                    file=sys.stderr,
+                if not path.is_file() or path.read_bytes() != note_before:
+                    raise ClaimPublicationError(
+                        "claim_publication_task_changed_during_preflight",
+                        "reload the exact active unit and repeat charter eligibility checks",
+                        task_id,
+                    )
+                path.write_text(text, encoding="utf-8")
+                _write_charter_sidecar()
+                record_unit(
+                    cache_dir / f"charter-units-{role}-{session_id}.jsonl",
+                    charter_id=charter_keep,
+                    unit_id=task_id,
                 )
-                sys.exit(8)
-        path.write_text(text, encoding="utf-8")
-    _write_charter_sidecar()
-    record_unit(
-        cache_dir / f"charter-units-{role}-{session_id}.jsonl",
-        charter_id=charter_keep,
-        unit_id=task_id,
-    )
-    print(
-        f"cc-claim: recorded '{task_id}' under charter '{charter_keep}'. "
-        "The lease stays. No new claim was requested."
-    )
-    sys.exit(0)
+                print(
+                    f"cc-claim: recorded '{task_id}' under charter '{charter_keep}'. "
+                    "The lease stays. No new claim was requested."
+                )
+                sys.exit(0)
+    except (ClaimPublicationError, TaskNoteLockError) as exc:
+        print(f"cc-claim: HOLD — {exc}", file=sys.stderr)
+        sys.exit(8)
 
 try:
     try:
@@ -1489,6 +1528,7 @@ except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueErr
     )
     sys.exit(8)
 
+_finish_admitted_charter_sidecar()
 print(result_message)
 if manual_binding_issued:
     print("cc-claim: claim binding provenance=manual")
@@ -1496,9 +1536,6 @@ print(
     "cc-claim: admitted publication applied "
     f"(publication={receipt.publication_id}, receipt={receipt.receipt_hash})"
 )
-# Charter sidecar for a canonical mint: the publication applied, so the
-# charter's lease sidecars exist and the session's charter record may too.
-_write_charter_sidecar()
 PYEOF
 
 exit 0

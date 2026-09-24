@@ -1515,6 +1515,7 @@ def test_rehydrate_applied_activation_preserves_evolved_note_and_survivors(tmp_p
             lock_root=fixture.locks,
         )
     recovered = recover_claim_publications(
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
         cache_dir=fixture.cache,
         transaction_root=fixture.transactions,
         receipt_root=receipt.receipt_path.parent,
@@ -2397,6 +2398,7 @@ def test_private_admitted_transaction_marks_recovery_after_projection_failure(
     assert inspections[0].disposition == "hold"
     assert inspections[0].reason_code == "admitted_claim_publication_reconciliation_required"
     results = recover_claim_publications(
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
         cache_dir=fixture.cache,
         transaction_root=fixture.transactions,
         receipt_root=receipt_root,
@@ -2509,6 +2511,7 @@ def test_pre_receipt_projection_failure_does_not_publish_claim_cache(
     assert "no claimed task" in gated.stderr
 
     results = recover_claim_publications(
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
         cache_dir=fixture.cache,
         transaction_root=fixture.transactions,
         receipt_root=receipt_root,
@@ -2676,6 +2679,7 @@ def test_active_claim_cache_is_not_published_before_receipt(
     ).read_text(encoding="utf-8")
 
     results = recover_claim_publications(
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
         cache_dir=fixture.cache,
         transaction_root=fixture.transactions,
         receipt_root=receipt_root,
@@ -3050,12 +3054,16 @@ def test_pre_projection_frontier_refusal_cannot_be_recovered_into_a_claim(
         )
     assert raised.value.reason_code == "claim_publication_task_resolution_refused"
     assert raised.value.detail == "task_store_frontier_changed_during_index_build"
+    assert raised.value.repair_action == (
+        "retry only through a distinct resolution after the complete frontier stabilizes"
+    )
     assert fixture.intent.note_path.read_bytes() == fixture.intent.note_before
     assert not list(fixture.cache.glob("cc-active-task-*"))
 
     # The next invocation's automatic recovery must not turn a terminal refusal
     # into the original session's delayed claim.
     results = recover_claim_publications(
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
         cache_dir=fixture.cache,
         transaction_root=fixture.transactions,
         lock_root=fixture.locks,
@@ -3098,6 +3106,7 @@ def test_recovery_checks_complete_task_identity_before_any_projection(
         (fixture.vault / state / "unrelated-filename.md").write_bytes(fixture.intent.note_before)
     before = _tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)
     results = recover_claim_publications(
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
         cache_dir=fixture.cache,
         transaction_root=fixture.transactions,
         lock_root=fixture.locks,
@@ -3190,6 +3199,7 @@ def test_recovery_refuses_changed_unique_task_before_projection(
         fixture.intent.note_path.chmod(0o600)
     before = _tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)
     results = recover_claim_publications(
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
         cache_dir=fixture.cache,
         transaction_root=fixture.transactions,
         lock_root=fixture.locks,
@@ -3247,6 +3257,7 @@ def test_recovery_excludes_duplicate_writer_in_claim_lock_domain(
 
     monkeypatch.setattr(sdlc_claim, "resolve_task_note", race_after_resolution)
     results = recover_claim_publications(
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
         cache_dir=fixture.cache,
         transaction_root=fixture.transactions,
         lock_root=fixture.locks,
@@ -3260,8 +3271,10 @@ def test_recovery_excludes_duplicate_writer_in_claim_lock_domain(
     assert len(list(fixture.cache.glob("cc-active-task-*"))) == 2
 
 
+@pytest.mark.parametrize("explicit_recovery", [False, True])
 def test_cc_claim_fresh_session_does_not_apply_original_pending_publication(
     tmp_path: Path,
+    explicit_recovery: bool,
 ) -> None:
     from tests.scripts.test_cc_claim import _claim
 
@@ -3288,12 +3301,14 @@ def test_cc_claim_fresh_session_does_not_apply_original_pending_publication(
         install_gate0b=True,
         session_id="fresh-session",
         extra_env={"HAPAX_AGENT_ROLE": "cx-red", "HAPAX_AGENT_NAME": "cx-red"},
+        extra_args=["--recover-claim-publications"] if explicit_recovery else None,
     )
     assert result.returncode == 8, result.stderr
-    assert "claim_publication_recovery_owner_mismatch" in result.stderr
-    assert f"role={fixture.intent.role};session={fixture.intent.session_id}" in result.stderr
+    report = result.stderr + result.stdout
+    assert "claim_publication_recovery_owner_mismatch" in report
+    assert f"role={fixture.intent.role};session={fixture.intent.session_id}" in report
     assert "Next action: reconcile the pending publication using its original role and session" in (
-        result.stderr
+        report
     )
     assert fixture.intent.note_path.read_bytes() == fixture.intent.note_before
     assert not list(fixture.cache.glob("cc-active-task-*"))
@@ -3337,6 +3352,11 @@ def test_cc_claim_recovery_reports_task_identity_reason_and_repair(tmp_path: Pat
         dispatch=False,
         install_gate0b=False,
         extra_args=["--recover-claim-publications"],
+        session_id=fixture.intent.session_id,
+        extra_env={
+            "HAPAX_AGENT_ROLE": fixture.intent.role,
+            "HAPAX_AGENT_NAME": fixture.intent.role,
+        },
     )
     assert result.returncode == 8, result.stderr
     assert "claim_publication_recovery_task_resolution_refused" in result.stdout
@@ -3465,6 +3485,7 @@ def test_private_admitted_transaction_wraps_receipt_failure_by_phase(
 
     monkeypatch.setattr(sdlc_claim, "_persist_admitted_receipt", original_persist_receipt)
     results = recover_claim_publications(
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
         cache_dir=fixture.cache,
         transaction_root=fixture.transactions,
         receipt_root=receipt_root,
@@ -3512,6 +3533,7 @@ def test_admitted_recovery_completes_postimage_without_receipt(
     monkeypatch.setattr(sdlc_claim, "_persist_admitted_receipt", original_persist_receipt)
 
     results = recover_claim_publications(
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
         cache_dir=fixture.cache,
         transaction_root=fixture.transactions,
         receipt_root=receipt_root,
@@ -3538,6 +3560,7 @@ def test_recovery_holds_legacy_history_without_mutation(tmp_path: Path) -> None:
     before = _tree_snapshot(tmp_path)
 
     results = recover_claim_publications(
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
         cache_dir=fixture.cache,
         transaction_root=fixture.transactions,
         lock_root=fixture.locks,
@@ -4724,3 +4747,77 @@ def test_require_refuses_missing_blob_and_unsafe_receipt(tmp_path: Path) -> None
         )
     assert raised.value.reason_code == "fs_snapshot_file_unsafe"
     assert not unsafe.locks.exists()
+
+
+@pytest.mark.parametrize("owner", [None, (), ("cx-red", ""), ["cx-red", "session-abc"]])
+def test_recovery_requires_explicit_valid_owner_before_any_io(tmp_path: Path, owner) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def interrupt(phase: str, index: int | None) -> None:
+        if phase == "before_projection" and index == 0:
+            raise RuntimeError("interrupted publication")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            failure_hook=interrupt,
+        )
+    before = _tree_snapshot(tmp_path)
+    kwargs = {} if owner is None else {"expected_owner": owner}
+    with pytest.raises(ClaimPublicationError) as refused:
+        recover_claim_publications(
+            cache_dir=fixture.cache,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            task_id=fixture.intent.task_id,
+            **kwargs,
+        )
+    assert refused.value.reason_code == "claim_publication_recovery_owner_required"
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_transaction_postimage_retries_list_to_stat_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    noise = fixture.vault / "active/noise.md"
+    # Use the fixture's actual ID rather than an assumed filename/identity.
+    noise.write_bytes(
+        fixture.intent.note_before.replace(
+            f"task_id: {fixture.intent.task_id}".encode(), b"task_id: noise"
+        )
+    )
+    original_check = sdlc_claim._require_exact_task_postimage
+    original_stat = os.stat
+    armed = False
+    removed = False
+
+    def check_postimage(intent):
+        nonlocal armed
+        armed = True
+        return original_check(intent)
+
+    def remove_during_stat(path, *args, **kwargs):
+        nonlocal removed
+        if armed and not removed and path == noise.name and kwargs.get("dir_fd") is not None:
+            noise.unlink()
+            removed = True
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(sdlc_claim, "_require_exact_task_postimage", check_postimage)
+    monkeypatch.setattr(os, "stat", remove_during_stat)
+    receipt = sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+    )
+    assert removed
+    assert fixture.intent.note_path.read_bytes() == fixture.intent.note_after
+    assert receipt.receipt_path.is_file()
+    assert len(list(fixture.cache.glob("cc-active-task-*"))) == 2

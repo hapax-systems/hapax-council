@@ -2434,13 +2434,22 @@ def _persist_admitted_receipt(
 
 
 @contextmanager
-def _claim_publication_lock(
-    intent: ClaimPublicationIntent,
+def claim_role_exclusion(
+    role: str,
     *,
-    lock_root: Path | None,
+    lock_root: Path,
 ) -> Iterator[None]:
-    # Direction, checked at the moment of use. This lock takes a projected-path lock INSIDE
-    # it, so a caller that already holds one and asks for this is hold-and-wait across two
+    """Exclude participating publishers for one exact role on this host.
+
+    The consumer must supply the installed composition's ``claim_lock_root``;
+    a private caller-selected root cannot exclude installed publishers. This
+    non-reentrant lock supplies exclusion, never liveness or action authority.
+    Hold it across the consumer's final ownership check and dependent action.
+    Acquire any task/note locks only inside it. Close/reoffer/manual writers
+    outside this protocol are not excluded (see the claim lifecycle runbook).
+    """
+    # Direction, checked at the moment of use. Publication callers take a projected-path
+    # lock INSIDE this role lock, so a caller that already holds one is hold-and-wait across two
     # lock domains: it would sit on the role lock while a publisher on the other side sits on
     # its note. Both waits are bounded, so the failure is mutual refusal rather than a wedge —
     # but "bounded" is not "safe", and a count of acquisition sites cannot see this shape at
@@ -2456,7 +2465,7 @@ def _claim_publication_lock(
         )
     root = _lock_root(lock_root)
     _ensure_claim_private_directory(root)
-    digest = _claim_publication_role_lock_digest(intent.role)
+    digest = _claim_publication_role_lock_digest(role)
     path = root / f"{digest}.lock"
     try:
         fd = os.open(
@@ -2498,18 +2507,7 @@ def _claim_publication_lock(
                         str(path),
                     ) from exc
                 time.sleep(_CLAIM_PUBLICATION_LOCK_RETRY_SECONDS)
-        # The role lock above serializes one role's publications against each other. It does
-        # NOT exclude a lifecycle transition over this task's note: it is keyed by the role,
-        # not by the note, and it lives under a different root. So the publication's
-        # _apply_projections calls — which take no lock of their own — could land between a
-        # transition's preimage pin and its atomic install. Take the projection lock too.
-        #
-        # Order is role-then-note, always. One direction only means no cycle — and the
-        # direction is enforced at the top of this function, not inferred from the number of
-        # places the role lock is taken: the guard refuses when the calling thread already holds
-        # any projected-path lock. tests/shared/test_task_note_lock.py drives both orders.
-        with projected_path_lock(intent.task_id, (intent.note_path,)):
-            yield
+        yield
     finally:
         if locked:
             try:
@@ -2518,6 +2516,27 @@ def _claim_publication_lock(
                 os.close(fd)
         else:
             os.close(fd)
+
+
+@contextmanager
+def _claim_publication_lock(
+    intent: ClaimPublicationIntent,
+    *,
+    lock_root: Path | None,
+) -> Iterator[None]:
+    with claim_role_exclusion(intent.role, lock_root=_lock_root(lock_root)):
+        # The role lock above serializes one role's publications against each other. It does
+        # NOT exclude a lifecycle transition over this task's note: it is keyed by the role,
+        # not by the note, and it lives under a different root. So the publication's
+        # _apply_projections calls — which take no lock of their own — could land between a
+        # transition's preimage pin and its atomic install. Take the projection lock too.
+        #
+        # Order is role-then-note, always. One direction only means no cycle — and the
+        # direction is enforced by claim_role_exclusion, not inferred from the number of
+        # places the role lock is taken: the guard refuses when the calling thread already holds
+        # any projected-path lock. tests/shared/test_task_note_lock.py drives both orders.
+        with projected_path_lock(intent.task_id, (intent.note_path,)):
+            yield
 
 
 def _static_manifest(
@@ -3440,7 +3459,7 @@ def _locked_preflight(
     except TaskStoreError as exc:
         raise ClaimPublicationError(
             "claim_publication_task_resolution_refused",
-            "restore exactly one active task note and no closed duplicate",
+            exc.repair_action,
             exc.reason_code,
         ) from exc
     if (
@@ -4752,7 +4771,7 @@ def _recover_one(
     *,
     lock_root: Path,
     receipt_root: Path | None,
-    expected_owner: tuple[str, str] | None = None,
+    expected_owner: tuple[str, str],
 ) -> ClaimPublicationRecoveryResult:
     """Complete one interrupted admitted publication without spending a new claim."""
 
@@ -4803,11 +4822,7 @@ def _recover_one(
                 "preserve historical non-authorizing bytes and republish through the current executor",
                 publication_id,
             )
-        if (
-            state != "aborted"
-            and expected_owner is not None
-            and (intent.role, intent.session_id) != expected_owner
-        ):
+        if state != "aborted" and (intent.role, intent.session_id) != expected_owner:
             raise ClaimPublicationError(
                 "claim_publication_recovery_owner_mismatch",
                 "reconcile the pending publication using its original role and session",
@@ -6176,7 +6191,26 @@ def recover_claim_publications(
     task_id: str | None = None,
     expected_owner: tuple[str, str] | None = None,
 ) -> tuple[ClaimPublicationRecoveryResult, ...]:
-    """Recover interrupted admitted claim-publication journals under role locks."""
+    """Replay only the original owner's admitted publication under role locks.
+
+    The owner coordinates select the existing admitted attempt; they do not
+    grant new authority. Missing coordinates refuse before filesystem access.
+    Cross-owner operator maintenance needs a separately admitted authority path
+    and is not implemented by omitting this argument.
+    """
+
+    if (
+        not isinstance(expected_owner, tuple)
+        or len(expected_owner) != 2
+        or any(
+            not isinstance(item, str) or not item or item != item.strip() for item in expected_owner
+        )
+    ):
+        raise ClaimPublicationError(
+            "claim_publication_recovery_owner_required",
+            "supply the original admitted role/session for owner-bound recovery; "
+            "cross-owner maintenance requires a separately governed authority path",
+        )
 
     trusted_cache = _normalized(cache_dir or (Path.home() / ".cache" / "hapax"))
     root = _manifest_root(transaction_root, trusted_cache)
@@ -6383,6 +6417,7 @@ __all__ = [
     "claim_publication_id",
     "claim_publication_mutation_scope_address",
     "claim_publication_receipt_path",
+    "claim_role_exclusion",
     "load_admitted_claim_publication_receipt",
     "load_claim_publication_receipt",
     "publish_admitted_claim",
