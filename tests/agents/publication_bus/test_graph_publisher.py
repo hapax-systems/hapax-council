@@ -18,6 +18,42 @@ from agents.publication_bus.graph_publisher import (
 )
 from agents.publication_bus.publisher_kit import PublisherPayload
 
+
+@pytest.fixture(autouse=True)
+def declared_creator(monkeypatch):
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Synthetic, Creator")
+
+
+@pytest.mark.parametrize(
+    "creators",
+    [
+        None,
+        [],
+        [{"name": "Undeclared, Creator"}],
+        [{"name": "Synthetic, Creator", "orcid": "undeclared"}],
+    ],
+)
+def test_emit_refuses_conflicting_creator_before_fence(tmp_path, creators):
+    pub = GraphPublisher(zenodo_token="synthetic-token", graph_dir=tmp_path / "graph")
+    payload = PublisherPayload(
+        target=GRAPH_PUBLISHER_SURFACE,
+        text="snapshot description",
+        metadata={
+            "snapshot_path": str(tmp_path / "snap.json"),
+            "fingerprint": "abc",
+            "deposit_metadata": {"creators": creators},
+        },
+    )
+    with patch("agents.publication_bus.graph_publisher.requests") as http:
+        result = pub.publish(payload)
+    assert result.refused
+    assert "creator identity" in result.detail
+    assert "Next action" in result.detail
+    http.post.assert_not_called()
+    http.put.assert_not_called()
+    assert not pub.graph_dir.exists()
+
+
 # === GraphPublisher class shape ===
 
 

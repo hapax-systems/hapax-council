@@ -22,6 +22,7 @@ from agents.publication_bus.self_citation_graph_doi import (
 
 @pytest.fixture(autouse=True)
 def isolated_publication_io(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", "Synthetic, Creator")
     monkeypatch.setenv("HAPAX_PUBLICATION_LOG_PATH", str(tmp_path / "witness.jsonl"))
     monkeypatch.setenv("HAPAX_REFUSALS_LOG_PATH", str(tmp_path / "refusals.jsonl"))
 
@@ -339,6 +340,95 @@ def commit_case(tmp_path, monkeypatch):
     monkeypatch.setattr(graph_publisher, "requests", http)
     argv = ["--mirror-dir", str(mirror), "--graph-dir", str(graph), "--commit"]
     return argv, graph, snapshot, http
+
+
+def test_commit_creator_binding_reaches_outbound_metadata(commit_case, capsys, monkeypatch):
+    argv, graph, snapshot, http = commit_case
+    name = "Synthetic, Authorized Creator"
+    monkeypatch.setenv("HAPAX_OPERATOR_NAME", name)
+    responses = iter(http.post.side_effect)
+
+    def post(url, **kwargs):
+        if url.endswith("/depositions"):
+            assert kwargs["json"]["metadata"]["creators"] == [{"name": name}]
+        return next(responses)
+
+    def put(url, **kwargs):
+        assert kwargs["json"]["metadata"]["creators"] == [{"name": name}]
+        return Mock(status_code=200)
+
+    http.post.side_effect = post
+    http.put.side_effect = put
+    assert main(argv) == 0
+    _seed_snapshot(snapshot, [("10.x/y", 2)])
+    assert main(argv) == 0
+    assert http.post.call_count == 4
+    assert http.put.call_count == 1
+    output = capsys.readouterr()
+    assert name not in output.out + output.err
+    assert all(name not in p.read_text() for p in graph.iterdir())
+    witness = Path(os.environ["HAPAX_PUBLICATION_LOG_PATH"]).read_text()
+    assert name not in witness
+
+
+@pytest.mark.parametrize("name", [None, "", "   ", "Synthetic\nCreator", "Synthetic\x7fCreator"])
+@pytest.mark.parametrize("existing_version", [False, True])
+def test_commit_missing_creator_holds_before_fence(
+    commit_case, monkeypatch, capsys, name, existing_version
+):
+    argv, graph, snapshot, http = commit_case
+    if existing_version:
+        assert main(argv) == 0
+        _seed_snapshot(snapshot, [("10.x/y", 2)])
+    capsys.readouterr()
+    prior = {p.name: p.read_bytes() for p in graph.iterdir()} if graph.exists() else {}
+    http.reset_mock()
+    if name is None:
+        monkeypatch.delenv("HAPAX_OPERATOR_NAME")
+    else:
+        monkeypatch.setenv("HAPAX_OPERATOR_NAME", name)
+    for _ in range(2):
+        assert main(argv) == 1
+        output = capsys.readouterr()
+        assert "creator identity" in output.err
+        assert "HAPAX_OPERATOR_NAME" in output.err
+        assert "Next action" in output.err
+        assert "minted" not in output.out
+        http.post.assert_not_called()
+        http.put.assert_not_called()
+        actual = {p.name: p.read_bytes() for p in graph.iterdir()} if graph.exists() else {}
+        assert actual == prior
+        assert not (graph / "mint-attempt.json").exists()
+
+
+@pytest.mark.parametrize("field", ["concept_doi", "version_doi"])
+@pytest.mark.parametrize(
+    "value", ["not-a-doi", "10.x/legacy", "10.5281/", "10.5281/legacy\x00", "10.5281/legacy "]
+)
+@pytest.mark.parametrize("changed", [False, True])
+def test_commit_malformed_legacy_checkpoint_held(commit_case, capsys, field, value, changed):
+    from agents.publication_bus.graph_publisher import persist_graph_state
+
+    argv, graph, snapshot, http = commit_case
+    identity = {"concept_doi": "10.5281/zenodo.99", "version_doi": "10.5281/zenodo.100"}
+    identity[field] = value
+    fingerprint = graph_topology_fingerprint(snapshot)
+    persist_graph_state(graph_dir=graph, fingerprint=fingerprint, deposit_id=100, **identity)
+    prior = {p.name: p.read_bytes() for p in graph.iterdir()}
+    if changed:
+        _seed_snapshot(snapshot, [("10.x/y", 2)])
+    for _ in range(2):
+        assert main(argv) == 1
+        output = capsys.readouterr()
+        assert "reconcile" in output.err
+        assert "no material change" not in output.out
+        assert "minted" not in output.out
+        http.post.assert_not_called()
+        http.put.assert_not_called()
+        assert (graph / "mint-attempt.json").exists()
+        assert {p.name for p in graph.iterdir()} == set(prior) | {"mint-attempt.json"}
+        for filename, content in prior.items():
+            assert (graph / filename).read_bytes() == content
 
 
 def test_commit_refused_before_http_or_state(commit_case, monkeypatch, capsys):

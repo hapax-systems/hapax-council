@@ -41,6 +41,7 @@ from agents.publication_bus.publisher_kit.allowlist import (
     AllowlistGate,
     load_allowlist,
 )
+from shared.governance.omg_referent import ENV_OPERATOR_LEGAL_NAME
 
 try:
     import requests
@@ -89,6 +90,29 @@ DEFAULT_GRAPH_PUBLISHER_ALLOWLIST: AllowlistGate = load_allowlist(
 
 class GraphPublisherError(RuntimeError):
     """Transport / API failure during a Zenodo mint or new-version flow."""
+
+
+def _bound_graph_creators(base: dict) -> list[dict[str, str]]:
+    """Use the existing formal-name binding only at the admitted egress boundary.
+
+    The graph caller has no separately authorized coauthor input. Refuse a
+    conflicting override instead of inventing identity or silently replacing it.
+    Never include the binding's value in diagnostics or local graph state.
+    """
+    raw_name = os.environ.get(ENV_OPERATOR_LEGAL_NAME, "")
+    name = raw_name.strip()
+    creators = [{"name": name}]
+    if (
+        not name
+        or not raw_name.isprintable()
+        or ("creators" in base and base["creators"] != creators)
+    ):
+        raise GraphPublisherError(
+            "creator identity unavailable, invalid or conflicts with the declared binding. "
+            "Next action: reconcile HAPAX_OPERATOR_NAME and graph creator metadata under "
+            "the publication authority before retry; no remote attempt was started"
+        )
+    return creators
 
 
 def mint_or_version(
@@ -431,9 +455,8 @@ def _persisted_fingerprint(graph_dir: Path) -> str | None:
     try:
         if not any(path.exists() for path in paths):
             return None
-        concept, deposit, fingerprint = [
-            path.read_text(encoding="utf-8").strip() for path in paths[:3]
-        ]
+        concept = paths[0].read_text(encoding="utf-8").removesuffix("\n")
+        deposit, fingerprint = [path.read_text(encoding="utf-8").strip() for path in paths[1:3]]
         last = json.loads(paths[3].read_text(encoding="utf-8").splitlines()[-1])
         if (
             not concept
@@ -447,7 +470,9 @@ def _persisted_fingerprint(graph_dir: Path) -> str | None:
             or not last["version_doi"]
         ):
             raise ValueError("checkpoint does not match latest history entry")
-    except (OSError, ValueError, IndexError) as exc:
+        _remote_doi({"conceptdoi": concept}, "conceptdoi")
+        _remote_doi(last, "version_doi")
+    except (GraphPublisherError, OSError, ValueError, IndexError) as exc:
         raise GraphPublisherError(
             "graph state incomplete or inconsistent; reconcile remote DOI and local state before retry"
         ) from exc
@@ -496,6 +521,10 @@ class GraphPublisher(Publisher):
                 detail="payload missing snapshot_path or fingerprint",
             )
         deposit_metadata = dict(payload.metadata.get("deposit_metadata", {}) or {})
+        try:
+            deposit_metadata["creators"] = _bound_graph_creators(deposit_metadata)
+        except GraphPublisherError as exc:
+            return PublisherResult(refused=True, detail=str(exc))
         recovery = (
             f"reconcile remote DOI and local state before retry; inspect "
             f"{self.graph_dir / 'mint-attempt.json'}, verify the remote outcome and repair "

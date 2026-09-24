@@ -103,13 +103,22 @@ arrival, a running timer and an `ok` counter do not establish public delivery.
 **Current source, PR #4722 (2026-09-24; release held):**
 
 1. `self_citation_graph_doi --commit` enters `GraphPublisher.publish` admission.
-   With credentials and an admitted target, the publisher creates the intended
-   state directory chain and exclusively creates `mint-attempt.json`. The fence,
+   The graph creator comes from the existing formal-name binding
+   `HAPAX_OPERATOR_NAME`; there is no placeholder, inferred name or coauthor
+   fallback. Missing, control-bearing or conflicting identity returns an
+   actionable refusal before creating a fence or making a remote call. The
+   value is sent only in formal creator metadata, not printed or saved in local
+   graph state. This binding is an input to authorized publication, not release
+   authority. With credentials, a valid creator and an admitted target, the
+   publisher creates the intended state directory chain and exclusively creates
+   `mint-attempt.json`. The fence,
    graph directory and every ancestor are synced before remote calls. Directory,
    fence or sync failure permits no remote mint.
 2. The publisher checks the existing checkpoint against the latest history row.
+   Both stored DOIs must pass the same bounded syntax check as remote DOIs.
    A consistent unchanged fingerprint clears the fence and returns a skip; it
-   does not create a DOI. Incomplete or inconsistent state remains held.
+   does not create a DOI. Incomplete, inconsistent or malformed legacy state
+   remains held without rewriting history or making a remote call.
 3. First mint creates and publishes a deposit; later changes use the verified
    new-version draft. Published deposit identity and bare concept/version DOI
    syntax must validate before success or checkpoint persistence. Syntax alone
@@ -135,14 +144,70 @@ Independent remote readback is required to confirm the intended public DOI and
 version. The local files and counters are bounded local evidence. No real deposit,
 installation or runtime release is authorized by this source correction.
 
+### Read-only rechecks
+
+From the reviewed checkout, select the graph directory from the caller's
+declared `--graph-dir` binding (the default below is only the historical local
+binding). This reads state without invoking `--commit`, creating an attempt,
+rewriting a checkpoint or printing the creator binding:
+
+```bash
+graph_state_dir="$HOME/hapax-state/publications/self-citation-graph"
+uv run --no-sync python - "$graph_state_dir" <<'PY'
+import json
+import sys
+from pathlib import Path
+from agents.publication_bus.graph_publisher import GraphPublisherError, _persisted_fingerprint
+
+root = Path(sys.argv[1])
+fence = root / "mint-attempt.json"
+print("attempt_fence_present:", fence.exists())
+if fence.exists():
+    try:
+        attempt = json.loads(fence.read_text())
+        print("attempt_fingerprint:", attempt["fingerprint"])
+    except (OSError, ValueError, KeyError, TypeError):
+        print("attempt unreadable or malformed; HOLD remains")
+try:
+    print("consistent_checkpoint_fingerprint:", _persisted_fingerprint(root))
+except GraphPublisherError:
+    print("checkpoint invalid; reconcile remote identity and local evidence")
+PY
+```
+
+A valid fingerprint does not override an existing fence. Preserve the four
+checkpoint/history files and fence for authorized reconciliation. A read-only
+observation can race an active publisher; it is not permission to clear state.
+
+The focused regression selectors use fake HTTP and temporary state; they do not
+make a real deposit:
+
+```bash
+uv run --no-sync pytest tests/agents/publication_bus/test_self_citation_graph_doi.py -q \
+  -k 'creator or malformed_legacy or save_failure or first_version_then_version'
+```
+
+When a validated deposit ID is known, the public record can be checked without
+credentials using `GET https://zenodo.org/api/records/{deposit_id}`. Verify the
+returned ID, concept/version DOI, actual files and their checksums against the
+intended snapshot and publication evidence. An HTTP success or syntactically
+valid DOI alone does not prove artifact identity. Missing public state leaves
+the outcome unresolved; draft inspection may require separately authorized
+credentialed reads. No readback instruction authorizes minting or retrying.
+
+The [Zenodo metadata contract](https://developers.zenodo.org/#representation)
+requires creators and defines access rights and licensing. The source repair
+does not establish rights clearance, artifact upload/identity, public resolution
+or independent release acceptance. Those remain explicit publication boundaries;
+credential insertion alone discharges none of them.
+
 ## Disposition for `pub-bus-datacite-graphql-mirror` (parent task)
 
-The parent task should be marked **Phase 2 complete; Phase 2B
-operational wiring closed by this PR; first-mint blocked on
-operator credential insertion**. Follow-on cc-task
-`datacite-citation-graph-refresh-diff-publish` already covers the
-graph-refresh / diff-publish loop and is appropriately blocked on
-operator ORCID config + Zenodo token; no new follow-up needed.
+The historical Phase 2B disposition concerned timer wiring and frontmatter
+writeback. It is not current first-mint acceptance. PR #4722 remains a source
+candidate with release held; current creator admission, rights clearance,
+artifact/remote identity and independent review must be established before
+publication. This correction does not change either historical task's status.
 
 ## Acceptance status
 
@@ -157,13 +222,13 @@ operator ORCID config + Zenodo token; no new follow-up needed.
   out-of-scope; canonical trail at
   `~/hapax-state/publications/self-citation-graph/` is sufficient.
 - [x] Record first-mint confirmation evidence or explain the
-  concrete blocker → §"First-mint confirmation status" — blocked
-  on `pass insert zenodo/api-token`, observable via cred-watch
-  arrival log + the persistence trail.
+  concrete blocker → [First-mint and reconciliation contract](#first-mint-and-reconciliation-contract)
+  and its read-only rechecks. No current public first-mint confirmation is
+  claimed; creator/rights/artifact identity and release acceptance remain open.
 - [x] Update `pub-bus-datacite-graphql-mirror` with the Phase 2B
   disposition → §"Disposition for pub-bus-datacite-graphql-mirror"
-  records "Phase 2 complete; Phase 2B closed; first-mint
-  cred-blocked".
+  distinguishes the historical wiring disposition from current publication
+  acceptance; it does not authorize a task-state change.
 
 ## Pointers
 
@@ -173,5 +238,6 @@ operator ORCID config + Zenodo token; no new follow-up needed.
 - New chained timer (this PR): `systemd/units/hapax-datacite-graph-publish.{service,timer}` (04:30 UTC daily)
 - Wire-status: `agents/publication_bus/wire_status.py::PUBLISHER_WIRE_REGISTRY["agents.publication_bus.graph_publisher"]`
 - Persistence: `~/hapax-state/publications/self-citation-graph/{concept-doi.txt,last-fingerprint.txt,last-deposit-id.txt,version-doi-history.jsonl}`
-- Credential gate: `pass zenodo/api-token` → `HAPAX_ZENODO_TOKEN` via hapax-secrets-loader; missing-state observable in `~/.cache/hapax/cred-watch-state.json` (PR #1948)
+- Credential binding: `hapax-secret`/FileStore → `HAPAX_ZENODO_TOKEN`; the dated cred-watch observation above does not prove current availability.
+- Formal creator binding: `HAPAX_OPERATOR_NAME`, used only for the admitted graph's creator metadata; never echo it into diagnostic evidence.
 - Predecessor PR: #1726 `feat(publication-bus): wire DataCite graph publisher Phase 2 (mint + version)`
