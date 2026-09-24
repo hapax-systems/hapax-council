@@ -58,6 +58,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -343,8 +344,65 @@ PROBE_ARGV = (
     "--strict-mcp-config",
     "--mcp-config",
     '{"mcpServers":{}}',
+    "--setting-sources",
+    "",
+    "--tools",
+    "",
+    "--no-session-persistence",
 )
 PROBE_TIMEOUT_SECONDS = 180
+
+# Claude's documented Linux system-policy binding. Managed configurations need
+# their own request-time proof; do not suppress or override their policy.
+PROBE_MANAGED_DIR = Path("/etc/claude-code")
+
+
+def _unmanaged_linux_probe() -> bool:
+    if sys.platform != "linux" or "microsoft" in os.uname().release.lower():
+        return False
+    try:
+        PROBE_MANAGED_DIR.stat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
+def _subscription_probe_token(now: datetime) -> str | None:
+    """Read the CLI's explicit saved-login binding; keep the token in memory only.
+
+    Only Pro/Max personal subscriptions are supported by this isolated producer.
+    Team/Enterprise can acquire server-managed policy after startup, so they hold
+    rather than being treated as equivalent to an unmanaged personal account.
+    No refresh, key helper, inherited token or API credential is a fallback.
+    """
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    try:
+        data = json.loads((config / ".credentials.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
+    if not isinstance(oauth, dict):
+        return None
+    token = oauth.get("accessToken")
+    scopes = oauth.get("scopes")
+    expires = oauth.get("expiresAt")
+    if (
+        not isinstance(token, str)
+        or not token
+        or any(char.isspace() for char in token)
+        or oauth.get("subscriptionType") not in ("pro", "max")
+        or not isinstance(scopes, list)
+        or "user:inference" not in scopes
+        or isinstance(expires, bool)
+        or not isinstance(expires, (int, float))
+        or not 0 < expires < 253402300800000
+        or expires / 1000 <= now.timestamp() + PROBE_TIMEOUT_SECONDS
+    ):
+        return None
+    return token
+
 
 #: Known provider controls that the operator-subscription probe deliberately removes. Only names,
 #: never values, are persisted in a probe-backed admission receipt so the measurement discloses
@@ -375,9 +433,10 @@ def provider_redirect_env(env: Mapping[str, str] | None = None) -> list[str]:
 def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
     """Actively observe account-live by making one bounded real request.
 
-    Known provider controls are removed from the subprocess environment. Any redirecting
-    variable not in that explicit scrub list still refuses the probe. Returning ``None`` means
-    "no evidence", which holds the route; it never mints.
+    A fresh private HOME/config/cwd, no file settings sources, and an allowlisted
+    environment bind this request to a validated saved subscription OAuth token.
+    ``cwd`` is retained for callers but is never used as a configuration source.
+    Missing proof returns ``None`` and keeps admission held without an inference.
     """
     probe_env = dict(os.environ)
     for name in PROBE_ENV_SCRUBBED:
@@ -391,22 +450,49 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
             file=sys.stderr,
         )
         return None
-    try:
-        proc = subprocess.run(
-            list(PROBE_ARGV),
-            capture_output=True,
-            text=True,
-            timeout=PROBE_TIMEOUT_SECONDS,
-            cwd=cwd,
-            env=probe_env,
+    token = _subscription_probe_token(now) if _unmanaged_linux_probe() else None
+    if token is None:
+        print(
+            "probe refused: isolated subscription authentication is unproven. "
+            "Next action: restore a current Pro/Max Claude saved login on an unmanaged "
+            "Linux host, or obtain a governed subscription observation for this "
+            "configuration. Admission remains held; no API fallback was attempted.",
+            file=sys.stderr,
         )
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="hapax-claude-subscription-probe-") as root:
+            config = Path(root) / ".claude"
+            config.mkdir(mode=0o700)
+            # An allowlist also excludes alternate profile/gateway bindings,
+            # runtime injection and proxy controls, including future additions.
+            # No credential is written into the temporary home or a log.
+            child_env = {
+                name: probe_env[name] for name in ("PATH", "LANG", "LC_ALL") if name in probe_env
+            }
+            child_env.update(
+                HOME=root,
+                CLAUDE_CONFIG_DIR=str(config),
+                CLAUDE_CODE_OAUTH_TOKEN=token,
+            )
+            proc = subprocess.run(
+                list(PROBE_ARGV),
+                capture_output=True,
+                text=True,
+                timeout=PROBE_TIMEOUT_SECONDS,
+                cwd=root,
+                env=child_env,
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         # A probe that could not RUN is a broken instrument, not an absence of evidence.
         # Collapsing the two made a missing `claude` binary or a timed-out request exit 4,
         # which SuccessExitStatus accepts — so the unit would stay green forever while
         # never observing anything. This is the same declined-vs-failed distinction the
         # determination spine enforces; it belongs here too.
-        return Observation("probe_failed", now, "active-probe", f"{type(exc).__name__}: {exc}")
+        # Exceptions may embed argv, output or environment. Retain only the type.
+        return Observation("probe_failed", now, "active-probe", type(exc).__name__)
+    if not _unmanaged_linux_probe():
+        return None
     blob = (proc.stdout or "").strip()
     try:
         record = json.loads(blob)
@@ -421,7 +507,11 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         return None
     if any(marker.search(_wall_text(record)) for marker in WALL_MARKERS):
         return Observation("wall", now, "active-probe", "provider-quota-refusal")
-    if not record.get("is_error") and _served_tokens(record.get("usage")) > 0:
+    if (
+        proc.returncode == 0
+        and not record.get("is_error")
+        and _served_tokens(record.get("usage")) > 0
+    ):
         # Record the model the response ACTUALLY reports, never the one requested. The
         # request is an intention; only the response is evidence, and a serve with no
         # identifiable Anthropic model witnesses nothing (same rule as the passive path).

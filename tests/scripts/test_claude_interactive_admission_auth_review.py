@@ -17,6 +17,9 @@ from shared.platform_capability_receipts import EvidenceStatus, receipt_is_fresh
 from shared.platform_capability_registry import load_platform_capability_registry
 from shared.quota_spend_ledger import _is_claude_admission_evidence_ref
 from tests.scripts.test_claude_account_live_observe_per_route import _served, obs
+from tests.scripts.test_claude_probe_subscription_boundary import (
+    subscription_probe_home as subscription_probe_home,
+)
 from tests.scripts.test_hapax_claude_interactive_admission import NOW, ROUTE
 from tests.scripts.test_hapax_methodology_dispatch import (
     _availability_degraded_registry,
@@ -105,6 +108,7 @@ def test_retained_platform_receipt_drops_expired_account_attestation(
 
 
 @pytest.mark.parametrize("model", ["claude-opus-5", "claude-sonnet-4-5", None, "wall"])
+@pytest.mark.usefixtures("subscription_probe_home")
 def test_real_probe_result_reaches_interactive_mint(tmp_path, monkeypatch, capsys, model):
     # Only the provider process is simulated. The real probe, selector, mint,
     # admission writer and receipt readback run without a live provider call.
@@ -118,7 +122,9 @@ def test_real_probe_result_reaches_interactive_mint(tmp_path, monkeypatch, capsy
     def provider_run(argv, **kwargs):
         if argv == list(obs.PROBE_ARGV):
             calls.append(argv)
-            assert kwargs["cwd"] == "/"
+            assert kwargs["cwd"] == kwargs["env"]["HOME"]
+            assert kwargs["cwd"] != str(Path.home())
+            assert kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "synthetic-subscription-access-token"
             assert not any(name in kwargs["env"] for name in obs.PROBE_ENV_SCRUBBED)
             record = {
                 "is_error": model == "wall",

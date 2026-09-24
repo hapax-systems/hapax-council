@@ -20,6 +20,38 @@ token usage cannot establish headroom. They can only report quota walls. Use
 when an unbound passive Opus serve exists. The existing active subscription probe
 remains the positive observation path. Current login state cannot authenticate
 an earlier passive request.
+
+The active probe reads the existing Claude saved-login credential binding
+`$CLAUDE_CONFIG_DIR/.credentials.json` (default `~/.claude/.credentials.json`).
+It requires Pro/Max subscription metadata, the `user:inference` scope, and an
+access token valid beyond the entire 180-second request timeout. The token is
+passed only in the child's environment. Refresh tokens and saved API credentials
+are never forwarded, and credentials are not copied into a temporary file or
+receipt. An inherited OAuth token cannot replace this validated saved login.
+
+The request runs in a private temporary home/configuration/working directory,
+with file settings sources excluded and only PATH/locale plus the validated
+OAuth binding in its environment. This prevents user, project, local and custom
+config settings from restoring a gateway after environment cleanup. The probe
+does not run tools or retain a session. The temporary configuration is removed
+after success, failure or timeout, and exception messages expose only the type.
+
+This producer currently supports unmanaged Linux personal subscriptions. A
+present or unreadable `/etc/claude-code` policy directory, WSL/other operating
+systems, Team/Enterprise or unknown subscription metadata, missing/malformed
+credentials, and an expired token all hold admission before inference. A policy
+directory appearing during the probe also prevents a positive result. Policy is
+never disabled or rewritten. Restore the saved subscription login when that is
+the missing prerequisite; a managed/unsupported configuration needs a governed
+account observation with its own authentication proof. There is no API-key or
+credential-refresh fallback. These bounds follow the documented
+[authentication precedence](https://code.claude.com/docs/en/authentication),
+[settings sources](https://code.claude.com/docs/en/cli-reference), and
+[server-managed policy eligibility](https://code.claude.com/docs/en/server-managed-settings).
+Recheck settings loaded inside the actual child process, invalid credentials,
+managed configuration holds, cleanup and sanitized failures with
+`tests/scripts/test_claude_probe_subscription_boundary.py`.
+
 Recheck the probe-to-writer path with
 `tests/scripts/test_claude_interactive_admission_auth_review.py::test_real_probe_result_reaches_interactive_mint`;
 only its provider subprocess is simulated, while the probe, selector, writer and
@@ -93,6 +125,7 @@ Run the regression from the source checkout using its declared test environment:
 uv run pytest tests/scripts/test_hapax_claude_interactive_admission.py \
   tests/scripts/test_claude_interactive_admission_review.py \
   tests/scripts/test_claude_interactive_admission_auth_review.py \
+  tests/scripts/test_claude_probe_subscription_boundary.py \
   tests/shared/test_capability_availability_guarantor.py -q
 ```
 

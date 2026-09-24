@@ -21,6 +21,10 @@ from pathlib import Path
 
 import pytest
 
+from tests.scripts.test_claude_probe_subscription_boundary import (
+    subscription_probe_home as subscription_probe_home,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = REPO_ROOT / "scripts" / "hapax-claude-account-live-observe"
 # Explicit loader: the script is extensionless (a CLI on PATH), so suffix-based
@@ -37,6 +41,7 @@ _spec.loader.exec_module(obs)
 NOW = datetime(2026, 8, 19, 16, 0, 0, tzinfo=UTC)
 
 
+@pytest.mark.usefixtures("subscription_probe_home")
 class TestScrubsContaminatedEnvironment:
     """The probe must not measure a redirected endpoint and call it the subscription.
 
@@ -56,6 +61,7 @@ class TestScrubsContaminatedEnvironment:
             child_env.update(kwargs["env"])
 
             class R:
+                returncode = 0
                 stdout = json.dumps(
                     {
                         "is_error": False,
@@ -138,6 +144,7 @@ class TestOnlyAnthropicServesWitnessTheSubscription:
         assert all("would_run" in r for r in planned)
 
 
+@pytest.mark.usefixtures("subscription_probe_home")
 class TestProbeCarriesTheModelItObserved:
     """Two review families independently flagged this: a probe with no model minted NOTHING.
 
@@ -152,6 +159,7 @@ class TestProbeCarriesTheModelItObserved:
             payload["modelUsage"] = {model: {"inputTokens": 5}}
 
         class R:
+            returncode = 0
             stdout = json.dumps(payload)
             stderr = ""
 
@@ -256,6 +264,7 @@ class TestPrefilterMatchesTheWallFields:
         assert verdict == "walled", "a wall reported only via api_error_status must be seen"
 
 
+@pytest.mark.usefixtures("subscription_probe_home")
 class TestProbeFailureIsNotAbsentEvidence:
     """A probe that could not RUN is a broken instrument, not an observation of nothing."""
 
