@@ -1,7 +1,9 @@
+import base64
 import fcntl
 import json
 import os
 import subprocess
+import sys
 import textwrap
 import time
 from pathlib import Path
@@ -207,6 +209,7 @@ def test_appendix_hop_passes_remote_args_without_shell_interpolation(tmp_path: P
     home = tmp_path / "home"
     workdir = home / "projects" / "hapax-council--beta"
     workdir.mkdir(parents=True)
+    _remote_contract_modules(workdir)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     claim_file = cache / "cc-active-task-beta"
@@ -809,6 +812,7 @@ def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> Non
     home = tmp_path / "home"
     workdir = home / "projects" / "hapax-council--beta"
     workdir.mkdir(parents=True)
+    _remote_contract_modules(workdir)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     claim_file = cache / "cc-active-task-beta"
@@ -1408,3 +1412,254 @@ def test_launcher_and_supervisor_default_pid_directory_match():
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+# Consumer tests substitute the dependency interface. The actual PR4726 interface
+# is independently qualified before deployment; these tests do not confer that.
+def _remote_contract_modules(workdir: Path) -> None:
+    shared = workdir / "shared"
+    shared.mkdir(exist_ok=True)
+    (shared / "__init__.py").touch()
+    (shared / "session_identity.py").write_bytes(
+        (REPO_ROOT / "shared/session_identity.py").read_bytes()
+    )
+    (shared / "gate0b_claim_publication_install.py").write_text(
+        "from types import SimpleNamespace\n"
+        "def default_claim_publication_roots(*, home):\n"
+        "    return SimpleNamespace(\n"
+        '        claim_lock_root=str(home / ".local/state/hapax/task-locks/gate0b-claim-publish-v1"),\n'
+        '        claim_cache_dir=str(home / ".cache/hapax"))\n'
+    )
+    (shared / "sdlc_claim.py").write_text(
+        textwrap.dedent("""
+        import builtins
+        import fcntl
+        import json
+        from contextlib import contextmanager
+        from pathlib import Path
+
+        class Busy(Exception):
+            reason_code = "claim_publication_lock_unavailable"
+
+        @contextmanager
+        def claim_role_exclusion(role, *, lock_root):
+            lock_root.mkdir(parents=True, exist_ok=True)
+            path = lock_root / (role + ".test-lock")
+            trace = Path.home() / "lock-observation.json"
+            observation = {"role": role, "root": str(lock_root), "writes": []}
+            trace.write_text(json.dumps(observation))
+            with path.open("a") as held:
+                try:
+                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError as exc:
+                    raise Busy() from exc
+                original_open = builtins.open
+
+                def checked_open(target, mode="r", *args, **kwargs):
+                    name = Path(target).name
+                    if "w" in mode and (Path.home() / "fail-write").exists() and name == "cc-active-task-beta":
+                        raise OSError("injected write failure")
+                    if "w" in mode and name.startswith(("cc-", "session-role-")):
+                        with path.open("a") as rival:
+                            try:
+                                fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            except BlockingIOError:
+                                observation["writes"].append(name)
+                            else:
+                                raise AssertionError("materialization outside role exclusion")
+                        trace.write_text(json.dumps(observation))
+                    return original_open(target, mode, *args, **kwargs)
+
+                builtins.open = checked_open
+                try:
+                    yield
+                finally:
+                    builtins.open = original_open
+                    fcntl.flock(held, fcntl.LOCK_UN)
+    """)
+    )
+
+
+def _remote_materialization(tmp_path: Path, *, identity=None):
+    home = tmp_path / "execution-home"
+    workdir = tmp_path / "execution-source"
+    home.mkdir()
+    workdir.mkdir()
+    _remote_contract_modules(workdir)
+    sid = "9381e195-f8e6-43ce-83bf-ea7e5b846723"
+    identity = identity or {
+        "HAPAX_SESSION_ID": sid,
+        "HAPAX_AGENT_ROLE": "beta",
+        "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+    }
+    proof = home / "proof/dispatch.json"
+    executed = home / "executed"
+    payload = {
+        "workdir": str(workdir),
+        "env": identity,
+        "proof_file": str(proof),
+        "requested_host": "synthetic-execution-host",
+        "argv": [
+            sys.executable,
+            "-c",
+            f"from pathlib import Path; Path({str(executed)!r}).touch()",
+        ],
+    }
+    env = os.environ.copy()
+    env.update(
+        HOME=str(home), HAPAX_REMOTE_PAYLOAD=base64.b64encode(json.dumps(payload).encode()).decode()
+    )
+    # This is the complete remote program, through proof and native-exec boundary.
+    program = SCRIPT.read_text().split("REMOTE_EXEC_PY='", 1)[1].split("'\n", 1)[0]
+    return home, workdir, proof, executed, [sys.executable, "-I", "-c", program], env
+
+
+def test_remote_materialization_busy_role_never_writes_or_executes(tmp_path: Path) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    lock_root = home / ".local/state/hapax/task-locks/gate0b-claim-publish-v1"
+    lock_root.mkdir(parents=True)
+    with (lock_root / "beta.test-lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 75, result.stderr
+    assert not executed.exists()
+    assert not list((home / ".cache/hapax").glob("*"))
+    data = json.loads(proof.read_text())
+    assert data["claim_materialized"] is False
+    assert data["claim_materialization_reason"] == "claim_publication_lock_unavailable"
+    assert data["dispatch_state"] == "hold"
+    observation = json.loads((home / "lock-observation.json").read_text())
+    assert observation == {"role": "beta", "root": str(lock_root), "writes": []}
+
+
+def test_remote_materialization_all_writes_share_execution_host_lock(tmp_path: Path) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert executed.exists()
+    data = json.loads(proof.read_text())
+    sid = data["session_id"]
+    assert data["role"] == "beta" and data["task_id"] == "task-x"
+    assert data["claim_materialized"] is True
+    assert data["dispatch_state"] == "ready"
+    cache = home / ".cache/hapax"
+    assert (cache / f"session-role-{sid}").read_text() == "beta\n"
+    for key in ("beta", f"beta-{sid}"):
+        assert (cache / f"cc-active-task-{key}").read_text() == "task-x\n"
+        assert (cache / f"cc-claim-epoch-{key}").read_text().split() == [
+            str(data["claim_epoch"]),
+            "task-x",
+        ]
+    observation = json.loads((home / "lock-observation.json").read_text())
+    assert observation["role"] == "beta"
+    assert observation["root"] == str(
+        home / ".local/state/hapax/task-locks/gate0b-claim-publish-v1"
+    )
+    assert observation["writes"] == [
+        f"session-role-{sid}",
+        "cc-claim-epoch-beta",
+        f"cc-claim-epoch-beta-{sid}",
+        "cc-active-task-beta",
+        f"cc-active-task-beta-{sid}",
+    ]
+
+
+def test_remote_materialization_missing_contract_holds(tmp_path: Path) -> None:
+    home, workdir, proof, executed, command, env = _remote_materialization(tmp_path)
+    (workdir / "shared/sdlc_claim.py").write_text("# Interface not installed yet.\n")
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 75, result.stderr
+    assert not executed.exists()
+    assert not list((home / ".cache/hapax").glob("*"))
+    data = json.loads(proof.read_text())
+    assert data["dispatch_state"] == "hold"
+    assert data["claim_materialization_reason"] == "remote_claim_contract_unavailable"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("HAPAX_SESSION_ID", "beta-1234"),
+        ("HAPAX_SESSION_ID", " valid-session-uuid "),
+        ("HAPAX_AGENT_ROLE", "../elsewhere"),
+        ("HAPAX_METHODOLOGY_DISPATCH_TASK", "task\nother"),
+        ("HAPAX_METHODOLOGY_DISPATCH_TASK", ""),
+    ],
+)
+def test_remote_materialization_invalid_identity_holds(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    identity = {
+        "HAPAX_SESSION_ID": "9381e195-f8e6-43ce-83bf-ea7e5b846723",
+        "HAPAX_AGENT_ROLE": "beta",
+        "HAPAX_METHODOLOGY_DISPATCH_TASK": "task-x",
+    }
+    identity[field] = value
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path, identity=identity)
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 75, result.stderr
+    assert not executed.exists()
+    assert not list((home / ".cache/hapax").glob("*"))
+    assert (
+        json.loads(proof.read_text())["claim_materialization_reason"]
+        == "remote_claim_identity_invalid"
+    )
+
+
+def test_remote_materialization_io_failure_cannot_launch(tmp_path: Path) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    # Fail after marker and epochs; preserve partial evidence, but never exec.
+    (home / "fail-write").touch()
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 75, result.stderr
+    assert not executed.exists()
+    data = json.loads(proof.read_text())
+    assert data["claim_materialized"] is False
+    assert data["claim_materialization_reason"] == "remote_claim_materialization_failed"
+    assert data["dispatch_state"] == "hold"
+    assert (cache / "cc-claim-epoch-beta").exists()
+    assert not (cache / "cc-active-task-beta").exists()
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        {"cc-active-task-beta": "other-task\n"},
+        {"cc-active-task-beta-old-session-uuid": "task-x\n"},
+        {"cc-active-task-beta": ""},
+        {"cc-claim-epoch-beta": "123 other-task\n"},
+    ],
+)
+def test_remote_materialization_conflicting_claim_holds(tmp_path: Path, existing) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    for name, content in existing.items():
+        (cache / name).write_text(content)
+    before = {p.name: p.read_bytes() for p in cache.iterdir()}
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 75, result.stderr
+    assert not executed.exists()
+    assert {p.name: p.read_bytes() for p in cache.iterdir()} == before
+    assert (
+        json.loads(proof.read_text())["claim_materialization_reason"]
+        == "remote_claim_binding_unresolved"
+    )
+
+
+def test_remote_materialization_preserves_matching_epoch(tmp_path: Path) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    sid = "9381e195-f8e6-43ce-83bf-ea7e5b846723"
+    for key in ("beta", f"beta-{sid}"):
+        (cache / f"cc-claim-epoch-{key}").write_text("123 task-x\n")
+        (cache / f"cc-active-task-{key}").write_text("task-x\n")
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert executed.exists()
+    assert json.loads(proof.read_text())["claim_epoch"] == 123
+    for key in ("beta", f"beta-{sid}"):
+        assert (cache / f"cc-claim-epoch-{key}").read_text() == "123 task-x\n"

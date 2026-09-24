@@ -11,7 +11,7 @@ unknown, it was *unmeasurable*. Task
 | piece | before | now |
 |---|---|---|
 | lane window (`hapax-claude`, `hapax-codex`) | tmux default: pane closes with its process | `remain-on-exit failed`: a signal death or non-zero exit **keeps** the pane; a clean exit still closes it |
-| supervisor liveness (`hapax-lane-supervisor`) | `tmux has-session` | a session is alive only if at least one of its panes has `pane_dead=0`; a session of only dead panes is DEAD |
+| supervisor liveness (`hapax-lane-supervisor`) | `tmux has-session` | a session is alive only if at least one of its panes has `pane_dead=0`; a session of only dead panes is DEAD; empty, malformed or failed pane observations hold as occupied |
 | respawn | `new-session` refused over the corpse (lane wedged) | for an unclaimed lane, the corpse is **captured, then killed**, then the launcher runs after occupancy and claim rechecks; active claims hold recovery |
 | tmux targets | bare names | anchored `=name`; pane lists read server-wide and filtered on the exact name |
 
@@ -233,3 +233,25 @@ break/red/exact-restore/green checks in an isolated, claimed source checkout, us
 The runner preserves logs and source hashes in that create-once directory. Historical
 local mutation receipts are evidence of their recorded heads, not substitutes for
 rerunning the committed tests against the head under review.
+
+
+## Remote claim materialization holds
+
+The Claude remote wrapper acquires `claim_role_exclusion` using the execution
+host composition roots from `default_claim_publication_roots(home=Path.home())`,
+keyed by the exact `HAPAX_AGENT_ROLE`. It holds that role lock across the marker,
+role/session epochs and role/session claim writes. The lock does not cover a
+different host, confer rebind authority or establish writer liveness. Existing
+conflicting or empty claims/epochs hold; a matching epoch is preserved.
+
+An unavailable interface, invalid identity, busy lock or failed write exits 75
+before native exec. The existing remote dispatch proof records `dispatch_state:
+hold`, `claim_materialized: false` and `claim_materialization_reason`, retaining
+role, session and task. A successful materialization also records `claim_epoch`.
+Inspect the proof on the execution host (use its configured
+`HAPAX_DISPATCH_PROOF_DIR`), then inspect its role/session claims and epochs before
+retrying. Partial files after an I/O failure remain evidence; do not delete them
+or copy a peer claim to force a handoff. Qualify the shared interface and its
+Python dependencies on that execution host through the governed installation
+path. Source-only tests are not installed-interface or cross-host qualification;
+the supervisor signal exclusion and normal-close cleanup remain release blockers.
