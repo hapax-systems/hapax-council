@@ -5821,6 +5821,128 @@ def test_glmcp_payg_untrusted_spend_receipt_is_frozen_and_counted_never_dropped(
     assert "freezing GLMCP PAYG spend receipt" in stderr
 
 
+def _glmcp_review_request(task_id: str = "another-review-task") -> Any:
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import PaidRouteRequest
+
+    return PaidRouteRequest.model_validate(
+        {
+            "route_id": "glmcp.review.direct",
+            "task_id": task_id,
+            "provider": "z_ai",
+            "profile": "glmcp-review-direct",
+            "task_class": "independent-review",
+            "quality_floor": "frontier_review_required",
+            "estimated_cost_usd": "0.05",
+            "capacity_pool": "api_paid_spend",
+        }
+    )
+
+
+def test_glmcp_payg_receipt_with_no_glmcp_budget_is_held_on_an_unbudgeted_block(
+    tmp_path: Path,
+) -> None:
+    """Review r3 (Vibe, Muse N3): with no GLMCP budget at all, a receipt that may have billed
+    must still not be dropped. It is held frozen on a synthetic retired "unbudgeted" GLMCP
+    budget, which matches the route, so any GLMCP budget added later is refused until the
+    spend is resolved."""
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import evaluate_paid_route_eligibility, load_quota_spend_ledger
+
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-payg-spend-20260924t200000z-orphan.yaml").write_text(
+        _untrusted_receipt_text(
+            budget_id="tb-20260924-zai-glm-payg-balance-burn",
+            created_at="2026-09-24T20:00:00Z",
+            reconcile_by="2026-09-25T20:00:00Z",
+        ),
+        encoding="utf-8",
+    )
+    base_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    base_payload["transition_budgets"] = [
+        budget
+        for budget in base_payload["transition_budgets"]
+        if "glmcp-review-direct" not in budget["profiles_allowed"]
+    ]
+    base_payload["spend_receipts"] = [
+        receipt
+        for receipt in base_payload["spend_receipts"]
+        if receipt["route_id"] != "glmcp.review.direct"
+    ]
+    base = tmp_path / "base-without-glmcp-budgets.json"
+    base.write_text(json.dumps(base_payload), encoding="utf-8")
+    now = "2026-09-24T21:00:00Z"
+
+    result, out = _run_writer(tmp_path, "--base", str(base), now=now)
+
+    assert result.returncode == 0, result.stderr
+    ledger = load_quota_spend_ledger(out)
+    [receipt] = [r for r in ledger.spend_receipts if r.route_id == "glmcp.review.direct"]
+    assert receipt.reconciliation_state.value == "frozen_refused"
+    [block] = [b for b in ledger.transition_budgets if b.budget_id == receipt.budget_id]
+    assert block.lifecycle_state.value == "retired"
+    assert block.matches_request(_glmcp_review_request())
+    decision = evaluate_paid_route_eligibility(
+        ledger, _glmcp_review_request(), now=datetime.fromisoformat("2026-09-24T21:00:00+00:00")
+    )
+    assert not decision.eligible
+    assert "ignoring GLMCP PAYG spend receipt" not in result.stderr
+
+
+def test_glmcp_payg_untrusted_placeholder_is_named_and_resolvable_by_its_spend_id(
+    tmp_path: Path,
+) -> None:
+    """Review r3 (Muse N1): a placeholder's id is synthetic, so the writer prints it with the
+    freeze, and a reviewed governance receipt of that id resolves it like any other."""
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import evaluate_paid_route_eligibility, load_quota_spend_ledger
+
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-payg-spend-20260924t200000z-bad.yaml").write_text(
+        _untrusted_receipt_text(
+            budget_id="tb-20260924-zai-glm-payg-balance-burn",
+            authority_case="CASE-SOMETHING-ELSE",
+            created_at="2026-09-24T20:00:00Z",
+            reconcile_by="2026-09-25T20:00:00Z",
+        ),
+        encoding="utf-8",
+    )
+    now = "2026-09-24T21:00:00Z"
+    when = datetime.fromisoformat("2026-09-24T21:00:00+00:00")
+
+    result, out = _run_writer(tmp_path, now=now)
+    assert result.returncode == 0, result.stderr
+    [placeholder] = [
+        r for r in load_quota_spend_ledger(out).spend_receipts if "untrusted" in r.spend_id
+    ]
+    assert placeholder.spend_id in result.stderr
+    assert not evaluate_paid_route_eligibility(
+        load_quota_spend_ledger(out), _glmcp_review_request(), now=when
+    ).eligible
+
+    base_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    resolution = placeholder.model_dump(mode="json")
+    resolution.update(
+        reconciliation_state="reconciled",
+        actual_cost_usd=resolution["estimated_cost_usd"],
+        cap_remaining_usd="76.0",
+        reconciled_at="2026-09-24T20:30:00Z",
+        reconciliation_reason="governance resolution of an untrusted receipt at its held figure",
+    )
+    base_payload["spend_receipts"].append(resolution)
+    base = tmp_path / "base-with-resolution.json"
+    base.write_text(json.dumps(base_payload), encoding="utf-8")
+
+    result, out = _run_writer(tmp_path, "--base", str(base), now=now)
+    assert result.returncode == 0, result.stderr
+    decision = evaluate_paid_route_eligibility(
+        load_quota_spend_ledger(out), _glmcp_review_request(), now=when
+    )
+    assert decision.eligible, decision.blocking_reasons
+
+
 def test_glmcp_payg_failed_spend_receipt_is_folded_at_zero_not_dropped(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()

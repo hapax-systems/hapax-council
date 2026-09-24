@@ -1364,12 +1364,16 @@ def _observed_actual_cost_usd(
 
 
 def _unidentified_spend_ceiling_usd(observation: ProviderObservation) -> Decimal:
+    # Zero leaves the frozen receipt holding its reservation as the figure.
     if not observation.has_usage():
-        return Decimal("0")  # the frozen receipt keeps its reservation as the held figure
-    return glmcp_payg_usage_ceiling_usd(
-        prompt_tokens=observation.prompt_tokens or 0,
-        completion_tokens=observation.completion_tokens or 0,
-    )
+        return Decimal("0")
+    try:
+        return glmcp_payg_usage_ceiling_usd(
+            prompt_tokens=observation.prompt_tokens or 0,
+            completion_tokens=observation.completion_tokens or 0,
+        )
+    except Exception:  # noqa: BLE001 - an unpriceable report still freezes, at the reservation
+        return Decimal("0")
 
 
 def _mark_payg_spend_receipt_frozen(
@@ -1430,9 +1434,10 @@ def _mark_payg_spend_receipt_succeeded(
             config=config,
             observation=observation,
         )
-    except QuotaSpendLedgerError as exc:
-        # A usage report the price function cannot accept (e.g. cached above prompt tokens)
-        # prices nothing: freeze at the reservation or the dearest-rate ceiling.
+    except Exception as exc:  # noqa: BLE001 - a billed call's pricing failure must freeze, not escape
+        # A usage report the price function cannot accept (e.g. cached above prompt tokens),
+        # or any other pricing failure, prices nothing: freeze at the reservation or the
+        # dearest-rate ceiling rather than leave the reservation pending.
         return _mark_payg_spend_receipt_frozen(
             reservation=reservation,
             ledger_path=ledger_path,

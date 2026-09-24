@@ -1379,6 +1379,31 @@ def test_call_glm_payg_inconsistent_usage_freezes_instead_of_crashing(
     assert "inconsistent" in receipt.reconciliation_reason
 
 
+@pytest.mark.parametrize("error", [ValueError, KeyError, ArithmeticError, TypeError])
+def test_call_glm_payg_any_pricing_failure_freezes_instead_of_leaving_a_pending_reservation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    error: type[Exception],
+) -> None:
+    """Review r3 (Muse N4): pricing a billed response must not escape with the reservation left
+    pending, whatever it raises; the spend freezes at the reservation or the ceiling."""
+    module = _load_module()
+    ledger_path, _receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(_payg_reply("glm-5.3"), seen_urls))
+
+    def broken_price(**_kwargs: object) -> object:
+        raise error("pricing failed")
+
+    monkeypatch.setattr(module, "glmcp_payg_usage_cost_usd", broken_price)
+
+    reply = module.call_glm("x" * 2_000, _payg_config(module), "test-secret-token")
+
+    assert reply == "```yaml\nverdict: accept\n```"
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.reconciliation_state is module.SpendReconciliationState.FROZEN_REFUSED
+    assert "pricing failed" in receipt.reconciliation_reason
+
+
 def test_call_glm_payg_billed_empty_reply_is_reconciled_not_left_pending(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

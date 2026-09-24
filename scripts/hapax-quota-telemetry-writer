@@ -216,6 +216,7 @@ from shared.quota_spend_ledger import (  # noqa: E402
     QuotaSpendLedger,
     QuotaSpendLedgerError,
     SpendReceipt,
+    TransitionBudget,
     evaluate_paid_route_eligibility,
     frozen_spend_receipt_payload,
     glmcp_payg_usage_ceiling_usd,
@@ -939,11 +940,12 @@ def _warn_ignored_glmcp_admission(path: Path, reason: str) -> str:
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
 
 
-def _warn_frozen_glmcp_payg_spend(path: Path, reasons: list[str]) -> None:
+def _warn_frozen_glmcp_payg_spend(path: Path, reasons: list[str], spend_id: str) -> None:
     print(
-        f"hapax-quota-telemetry-writer: freezing GLMCP PAYG spend receipt {_receipt_label(path)}: "
-        f"{'; '.join(reasons)}; its spend counts and paid GLMCP spend is refused until a "
-        "reviewed governance receipt with the same spend_id lands in the fixtures",
+        f"hapax-quota-telemetry-writer: freezing GLMCP PAYG spend receipt {_receipt_label(path)} "
+        f"as spend_id {spend_id}: {'; '.join(_reason_code(reason) for reason in reasons)}; its "
+        "spend counts and paid GLMCP spend is refused until a reviewed governance SpendReceipt "
+        f"with spend_id {spend_id} lands in config/quota-spend-ledger-fixtures.json",
         file=sys.stderr,
     )
 
@@ -2092,14 +2094,7 @@ def active_glmcp_payg_spend_receipts(
         placeholder = _untrusted_glmcp_payg_placeholder(
             path, raw, fields, reasons, glmcp_budgets=glmcp_budgets, now=now
         )
-        if placeholder is None:
-            ignored_refs.append(
-                _warn_ignored_glmcp_payg_spend(
-                    path, "untrusted and no GLMCP budget exists to hold it against"
-                )
-            )
-            return
-        _warn_frozen_glmcp_payg_spend(path, reasons)
+        _warn_frozen_glmcp_payg_spend(path, reasons, placeholder["spend_id"])
         receipts.append(SpendReceipt.model_validate(placeholder))
 
     for path in sorted(receipt_dir.glob(GLMCP_PAYG_SPEND_RECEIPT_GLOB)):
@@ -2205,7 +2200,7 @@ def active_glmcp_payg_spend_receipts(
                     "governance receipt of the same spend_id"
                 ),
             )
-            _warn_frozen_glmcp_payg_spend(path, freeze_reasons)
+            _warn_frozen_glmcp_payg_spend(path, freeze_reasons, spend_id)
         receipt_payload["spend_receipt_schema"] = 1
         try:
             receipts.append(SpendReceipt.model_validate(receipt_payload))
@@ -2222,6 +2217,39 @@ GLMCP_PAYG_SPEND_STATUSES = frozenset(
 )
 GLMCP_PAYG_SPEND_TASK_ID_RE = re.compile(r"\A[a-z0-9][a-z0-9_.:-]{0,199}\Z")
 GLMCP_PAYG_UNATTRIBUTED_TASK_ID = "unattributed-glmcp-payg-spend"
+GLMCP_PAYG_UNBUDGETED_BUDGET_ID = "tb-19700101-glmcp-payg-unbudgeted-spend"
+
+
+def _unbudgeted_glmcp_payg_budget() -> TransitionBudget:
+    """A retired, zero-cap GLMCP budget that holds spend found when no GLMCP budget existed.
+
+    It admits nothing, but it matches the GLMCP PAYG route. A frozen receipt held on it refuses
+    paid GLMCP spend on any budget added later until a reviewed receipt resolves that spend.
+    """
+
+    return TransitionBudget.model_validate(
+        {
+            "budget_schema": 1,
+            "budget_id": GLMCP_PAYG_UNBUDGETED_BUDGET_ID,
+            "authority_case": "unbudgeted-glmcp-payg-spend",
+            "approved_by": "later_authority_packet",
+            "created_at": "1970-01-01T00:00:00Z",
+            "expires_at": "1970-01-02T00:00:00Z",
+            "capacity_pool": GLMCP_ADMISSION_PAYG_CAPACITY_POOL,
+            "providers_allowed": [GLMCP_PAYG_BUDGET_PROVIDER],
+            "profiles_allowed": [GLMCP_PAYG_BUDGET_PROFILE],
+            "task_classes_allowed": [GLMCP_PAYG_BUDGET_TASK_CLASS],
+            "quality_floors_allowed": [GLMCP_PAYG_BUDGET_QUALITY_FLOOR],
+            "total_cap_usd": "0",
+            "per_task_cap_usd": "0",
+            "daily_cap_usd": "0",
+            "reason_subscription_path_not_used": (
+                "synthetic: holds GLMCP PAYG spend receipts found when no GLMCP budget existed"
+            ),
+            "ledger_owner": "hapax-quota-telemetry-writer",
+            "lifecycle_state": "retired",
+        }
+    )
 
 
 def _glmcp_payg_spend_contract_problems(
@@ -2299,16 +2327,18 @@ def _untrusted_glmcp_payg_placeholder(
     *,
     glmcp_budgets: list[Any],
     now: datetime,
-) -> dict[str, Any] | None:
+) -> dict[str, Any]:
     """A normalized frozen SpendReceipt payload for a receipt file that cannot be trusted.
 
     Only what can be vouched for is carried: an admitted model name, a safe task id, a
     countable reservation and a creation time no later than now. Everything else is fixed to
     the GLMCP PAYG route. The spend is attributed to the GLMCP budget named in the file, else
-    the one whose window holds the creation time, else the latest. It holds the largest of the
+    the one whose window holds the creation time, else the latest, else (no GLMCP budget at
+    all) the synthetic unbudgeted block, which refuses the route. It holds the largest of the
     file's reservation, the dearest-rate ceiling of its reported usage and, when nothing is
     countable, that budget's per-task cap. The id derives from the file's hash, so the same
-    bytes map to the same record every tick and a governance receipt can supersede it.
+    bytes map to the same record every tick. The writer prints it, and a governance receipt
+    of that id supersedes it.
     """
 
     digest = hashlib.sha256(raw).hexdigest()
@@ -2325,12 +2355,14 @@ def _untrusted_glmcp_payg_placeholder(
     if budget is None and glmcp_budgets:
         budget = max(glmcp_budgets, key=lambda b: b.created_at)
     if budget is None:
-        return None
+        budget = _unbudgeted_glmcp_payg_budget()
     candidates = [_glmcp_payg_usage_ceiling_from_fields(fields)]
     estimated = fields.get("estimated_cost_usd", "")
     if GLMCP_PAYG_SPEND_COST_RE.fullmatch(estimated) and Decimal(estimated) > 0:
         candidates.append(Decimal(estimated))
         basis = "its reservation or usage ceiling"
+    elif budget.budget_id == GLMCP_PAYG_UNBUDGETED_BUDGET_ID:
+        basis = "nothing countable and no budget; the unbudgeted block refuses the route"
     else:
         candidates.append(budget.per_task_cap_usd)
         basis = "no countable reservation, so the budget's per-task cap"
@@ -2397,6 +2429,13 @@ def _ledger_with_glmcp_payg_spend_receipts(
         *payload["spend_receipts"],
         *new_receipts,
     ]
+    budget_ids = {budget["budget_id"] for budget in payload["transition_budgets"]}
+    if GLMCP_PAYG_UNBUDGETED_BUDGET_ID not in budget_ids and any(
+        receipt["budget_id"] == GLMCP_PAYG_UNBUDGETED_BUDGET_ID for receipt in new_receipts
+    ):
+        payload["transition_budgets"].append(
+            _unbudgeted_glmcp_payg_budget().model_dump(mode="json")
+        )
     return settle_spend_covered_by_provider_balance(QuotaSpendLedger.model_validate(payload))
 
 

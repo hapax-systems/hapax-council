@@ -1136,6 +1136,9 @@ def test_unresolved_spend_blocks_until_settled_against_a_later_provider_balance(
     assert settled.reconciliation_state is SpendReconciliationState.SETTLED_BY_PROVIDER_BALANCE
     assert settled.actual_cost_usd is None
     assert settled.cost_against_cap() == Decimal("0.05")
+    # review r3 (Muse N6): settled spend stays in the budget's cap arithmetic
+    earlier_budget = settled_ledger.budget_by_id(EARLIER_GLMCP_BUDGET_ID)
+    assert settled_ledger._budget_spent_usd(earlier_budget) == Decimal("0.05")
     assert "operator-console-balance-2026-05-17" in (settled.reconciliation_reason or "")
     assert after.eligible, after.blocking_reasons
     assert after.budget_id == "tb-20260517-zai-glmcp-payg-review"
