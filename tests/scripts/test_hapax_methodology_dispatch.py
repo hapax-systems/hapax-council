@@ -837,6 +837,36 @@ def test_claim_sweep_holds_marker_whose_binding_does_not_prove_it(
     }
 
 
+def test_claim_sweep_rechecks_the_binding_immediately_before_deleting(tmp_path, monkeypatch):
+    # PR4726 round 2 (Muse minor): the binding recheck ran right after the marker read, well
+    # before the unlink; a binding swapped in between left the wrong owner's marker deleted.
+    import shared.sdlc_task_store as task_store
+
+    module = _dispatcher_module()
+    claims, active = tmp_path / "claims", tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    name = f"gamma-{_SWEEP_UUID}"
+    claim = claims / f"cc-active-task-{name}"
+    claim.write_text("task-a\n")
+    os.utime(claim, (1000, 1000))
+    _sweep_binding(claims, name, lane="gamma", session_id=_SWEEP_UUID, task_id="task-a")
+    _task(active.parent, "task-a", "", status="done", assigned_to="gamma")
+    original_build = task_store.build_task_identity_index
+
+    def build_then_swap_binding(*args, **kwargs):
+        index = original_build(*args, **kwargs)
+        (claims / f"cc-claim-dispatch-{name}.json").unlink()
+        _sweep_binding(claims, name, lane="gamma", session_id=_SWEEP_UUID, task_id="other-task")
+        return index
+
+    monkeypatch.setattr(task_store, "build_task_identity_index", build_then_swap_binding)
+    result = module.sweep_stale_claims(claims, active, now=30000)
+    assert claim.exists(), "a marker whose binding changed was deleted"
+    assert not result.reaped
+    assert result.holds[0].reason_code == "claim_sweep_role_binding_changed"
+
+
 def test_claim_sweep_never_acts_on_a_stale_cached_index_and_recovers(tmp_path, monkeypatch):
     # PR4726 review (Gemini, finding 8): the index is cached across markers. Revalidation
     # inside the task lock refuses drift; the stale index is then dropped so the next marker

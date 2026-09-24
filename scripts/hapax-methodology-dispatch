@@ -982,16 +982,6 @@ def sweep_stale_claims(
                         path.name, "claim_sweep_marker_invalid", "reconcile the malformed marker"
                     )
                     continue
-                if bound is not None and _claim_role_binding(claims_dir, claim_key) != (
-                    role,
-                    task_id,
-                ):
-                    result.hold(
-                        path.name,
-                        "claim_sweep_role_binding_changed",
-                        "reobserve the marker and its exact dispatch binding before cleanup",
-                    )
-                    continue
                 if index is None:
                     index = build_task_identity_index(active_dir.parent)
                 matches = index.by_task_id.get(task_id, ())
@@ -1027,6 +1017,19 @@ def sweep_stale_claims(
                             path.name,
                             "claim_sweep_marker_changed",
                             "preserve the changed marker and reobserve its ownership before cleanup",
+                        )
+                        continue
+                    # Recheck the exact binding immediately before the destructive step
+                    # (PR4726 round 2, Muse minor): a binding swapped at any earlier point
+                    # would leave the wrong owner's lock held at the unlink.
+                    if bound is not None and _claim_role_binding(claims_dir, claim_key) != (
+                        role,
+                        task_id,
+                    ):
+                        result.hold(
+                            path.name,
+                            "claim_sweep_role_binding_changed",
+                            "reobserve the marker and its exact dispatch binding before cleanup",
                         )
                         continue
                     payload = {

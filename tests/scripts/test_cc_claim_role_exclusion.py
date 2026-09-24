@@ -371,6 +371,49 @@ def test_emergency_holds_while_an_admitted_publication_of_the_task_is_pending(
     assert "assigned_to: cx-test" in note.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("note_state", ["still_claimed", "reoffered"])
+def test_emergency_after_an_applied_journal_drifted_relies_on_note_claimability(
+    tmp_path, monkeypatch, note_state
+):
+    # PR4726 round 2 (Muse new-3): inspection reports an applied journal as terminal without
+    # checking its live postimage, and emergency blocks only on holds. Why that suffices: the
+    # emergency writer claims only a claimable note, rechecked byte-for-byte under the note
+    # lock. A drifted applied claim whose note still names its owner blocks by status; one
+    # whose note was legitimately re-offered no longer owns anything.
+    home = tmp_path / "home"
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    helper = _helper("test_cc_claim")
+    note = helper._write_task(home, "active", "drifted")
+    owner = helper._claim(
+        home,
+        "drifted",
+        dispatch=False,
+        session_id="4b4b4b4b-0000-4000-8000-000000000001",
+        extra_env={"HAPAX_AGENT_ROLE": "cx-owner", "HAPAX_AGENT_NAME": "cx-owner"},
+    )
+    assert owner.returncode == 0, owner.stderr
+    cache = home / ".cache/hapax"
+    for marker in cache.glob("cc-active-task-cx-owner*"):
+        marker.unlink()  # the applied journal's postimage has drifted
+    if note_state == "reoffered":
+        note.write_text(
+            note.read_text()
+            .replace("status: claimed", "status: offered")
+            .replace("assigned_to: cx-owner", "assigned_to: unassigned")
+        )
+    before = _ownership_bytes(home)
+
+    result = helper._claim(home, "drifted", legacy=True, install_gate0b=False)
+
+    if note_state == "still_claimed":
+        assert result.returncode == 4, (result.stdout, result.stderr)
+        assert "already assigned to 'cx-owner'" in result.stderr or "not 'offered'" in result.stderr
+        assert _ownership_bytes(home) == before
+    else:
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        assert "assigned_to: cx-test" in note.read_text()
+
+
 def test_emergency_refuses_a_charter_unit_even_after_the_charter_lease_vanishes(
     tmp_path, monkeypatch
 ):
