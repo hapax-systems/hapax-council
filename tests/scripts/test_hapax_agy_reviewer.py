@@ -110,6 +110,164 @@ def _run_contained(fake: Path, *args: str):
     )
 
 
+@pytest.mark.parametrize("timeout_owner", ["wrapper", "caller"])
+def test_full_contained_wrapper_timeout_cleans_descendants_and_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, timeout_owner: str
+) -> None:
+    _require_containment_runtime()
+    _seed_operator_token(Path(os.environ["HOME"]))
+    temporary_root = tmp_path / "review-tmp"
+    temporary_root.mkdir()
+    monkeypatch.setenv("TMPDIR", str(temporary_root))
+    fake = _shell_agy(
+        tmp_path,
+        """
+/bin/bash -c 'trap "" TERM; printf "%s" "$BASHPID" > child.ready; while :; do :; done' &
+while :; do :; done
+""",
+    )
+    processes = []
+    observation = {}
+    launched = threading.Event()
+    native_popen = subprocess.Popen
+
+    def launch(*args, **kwargs):
+        # Observe only the caller's handle. The wrapper runs as its real script
+        # in a separate interpreter, with no substituted containment/supervisor.
+        proc = native_popen(*args, **kwargs)
+        processes.append(proc)
+        launched.set()
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+
+    def observe():
+        try:
+            assert launched.wait(2), "wrapper never launched"
+            deadline = time.monotonic() + 2
+            records = []
+            while not records and time.monotonic() < deadline:
+                records = list(temporary_root.glob("hapax-agy-review-*/child.ready"))
+                time.sleep(0.01)
+            assert len(records) == 1, "contained child never became ready"
+            workspace = records[0].parent
+            child_nspid = int(records[0].read_text())
+            snapshot = {}
+            for entry in Path("/proc").iterdir():
+                if not entry.name.isdigit():
+                    continue
+                try:
+                    fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+                    snapshot[int(entry.name)] = (int(fields[1]), fields[19])
+                except (OSError, ValueError, IndexError):
+                    pass
+            owned = {}
+            for pid, (_, start) in snapshot.items():
+                ancestor, seen = pid, set()
+                while ancestor in snapshot and ancestor not in seen:
+                    if ancestor == processes[0].pid:
+                        owned[pid] = start
+                        break
+                    seen.add(ancestor)
+                    ancestor = snapshot[ancestor][0]
+            # Retain proven ancestry/start times before any assertions so the
+            # deliberately broken case can rescue only these fixture processes.
+            observation.update(workspace=workspace, owned=owned)
+            children = []
+            for pid in owned:
+                procdir = Path(f"/proc/{pid}")
+                nspid = next(
+                    line.split()[1:]
+                    for line in (procdir / "status").read_text().splitlines()
+                    if line.startswith("NSpid:")
+                )
+                if len(nspid) > 1 and int(nspid[-1]) == child_nspid:
+                    children.append(pid)
+            assert len(children) == 1, "live child was not in a private PID namespace"
+            child = Path(f"/proc/{children[0]}")
+            assert os.readlink(child / "cwd") == str(workspace)
+            assert os.readlink(child / "ns/mnt") != os.readlink("/proc/self/ns/mnt")
+            assert _running(children[0]), "child exited before the timeout"
+            assert (workspace / "home/.gemini/antigravity-cli/antigravity-oauth-token").is_file()
+            observation["ready"] = True
+        except Exception as exc:
+            observation["error"] = repr(exc)
+
+    observer = threading.Thread(target=observe)
+    observer.start()
+    try:
+        started = time.monotonic()
+        command = [str(WRAPPER), "--agy-bin", str(fake), "--print-timeout", "3s"]
+        if timeout_owner == "caller":
+            # Exactly the review caller's stdlib timeout path: kill the outer
+            # wrapper only. POSIX run() closes the output pipes on return; its
+            # exception contains only output captured before the timeout.
+            with pytest.raises(subprocess.TimeoutExpired) as caught:
+                subprocess.run(
+                    command, input="synthetic", text=True, capture_output=True, timeout=1
+                )
+            stdout = caught.value.stdout
+            assert processes[0].returncode == -signal.SIGKILL
+        else:
+            result = subprocess.run(
+                command, input="synthetic", text=True, capture_output=True, timeout=5
+            )
+            stdout, stderr = result.stdout, result.stderr
+            assert result.returncode == 124, stderr
+            assert "print timeout; owned group cleaned; review discarded" in stderr
+        observer.join(3)
+        assert not observer.is_alive()
+        assert observation.get("ready"), observation
+        assert not stdout
+        deadline = time.monotonic() + 1
+        while True:
+            survivors = []
+            for pid, start in observation["owned"].items():
+                try:
+                    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                except FileNotFoundError:
+                    continue
+                if fields[19] == start and fields[0] != "Z":
+                    survivors.append(pid)
+            if not survivors or time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        assert not survivors, f"owned processes survived timeout: {survivors}"
+        if timeout_owner == "caller":
+            assert time.monotonic() - started < 2.5, "caller EOF did not trigger prompt cleanup"
+        assert not observation["workspace"].exists(), "seeded workspace survived timeout"
+    finally:
+        observer.join(3)
+        monkeypatch.setattr(subprocess, "Popen", native_popen)
+        # The system Python provides pidfds; the uv Python may not. Open the
+        # handle before checking start time, then signal only that exact process.
+        subprocess.run(
+            [
+                "/usr/bin/python3",
+                "-c",
+                """
+import json, os, pathlib, signal, sys
+for pid, start in json.loads(sys.argv[1]).items():
+    try:
+        fd = os.pidfd_open(int(pid))
+    except ProcessLookupError:
+        continue
+    try:
+        fields = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        if fields[19] == start and fields[0] != "Z":
+            signal.pidfd_send_signal(fd, signal.SIGKILL)
+    except (FileNotFoundError, ProcessLookupError):
+        pass
+    finally:
+        os.close(fd)
+""",
+                json.dumps(observation.get("owned", {})),
+            ],
+            check=True,
+            timeout=3,
+        )
+
+
 def test_host_root_search_cannot_read_host_only_marker(tmp_path: Path) -> None:
     marker = tmp_path / "host-only-marker"
     marker.write_text("HOST_MARKER_MUST_STAY_OUTSIDE_REVIEW")

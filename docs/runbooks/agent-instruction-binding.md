@@ -602,6 +602,22 @@ marker outside the bound workspace for a negative read/search probe and inspect
 the actual Agy executable hash, mount/PID namespaces, pinned model and native
 result. Keep that source-probe evidence separate from installed qualification.
 
+The qualified-host full-wrapper regression exercises both the wrapper's print
+timeout and the actual caller's `subprocess.run(timeout=...)` SIGKILL path with
+real Bubblewrap. It observes a live descendant in separate PID/mount namespaces,
+then checks the recorded process identities and removal of the seeded temporary
+workspace. It does not replace the wrapper's containment command. Reproduce it
+in the source checkout with:
+
+```bash
+uv run --no-sync pytest tests/scripts/test_hapax_agy_reviewer.py \
+  -k full_contained_wrapper_timeout -q -rs
+```
+
+A skip means the host lacks a declared runtime binding; it is unobserved evidence,
+not a containment pass. On the qualified host both cases must pass without skips.
+Generic CI and this synthetic-client regression do not qualify installed Agy.
+
 Before claiming activation, bind the installed wrapper path and SHA-256 to the
 accepted source, record local `agy --help` and binary identity, and observe an
 admitted exact-head review through the actual caller. Check that the final result
