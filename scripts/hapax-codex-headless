@@ -678,6 +678,8 @@ try:
     keyable=is_claim_keyable_session_id(sid)
 except Exception:
     keyable=bool(sid) and "/" not in sid and not sid.isdigit() and not sid.rsplit("-",1)[-1].isdigit()
+failure_code="claim_remote_runtime_unavailable"
+failure_action="restore the installed claim-role helper on the execution host before retrying"
 try:
     if keyable and role:
         if task:
@@ -686,24 +688,30 @@ try:
                 print("hapax-codex-headless: refusing remote claim materialization without matching local cc-claim epoch; next action: run governed cc-claim locally for the dispatch task or omit --no-claim before remote dispatch", file=sys.stderr)
                 sys.exit(78)
         from pathlib import Path
+        from shared.execution_admission import ExecutionAdmissionError
         from shared.gate0b_claim_publication_install import default_claim_publication_roots, load_claim_publication_composition
-        from shared.sdlc_claim import claim_role_exclusion
-        # Execution-host publishers use the installed composition namespace.
-        # Acquire role exclusion before any ownership write (and before any note lock).
-        roots=load_claim_publication_composition(Path(default_claim_publication_roots(home=Path.home()).invocation_store_root)).receipt.roots
-        with claim_role_exclusion(role,lock_root=Path(roots.claim_lock_root)):
-            cache=roots.claim_cache_dir
-            os.makedirs(cache,exist_ok=True)
-            open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
-            if task:
-                epoch_line=claim_epoch+"\n"
-                open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
-                open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
-                open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
-                open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
-                materialized=True; claim_epoch_verified=True
-except Exception as exc:
-    print("hapax-codex-headless: failed to materialize remote claim cache ("+exc.__class__.__name__+"); next action: restore the installed claim-role exclusion helper and its lock/cache permissions on the dispatch host before retrying", file=sys.stderr)
+        from shared.sdlc_claim import ClaimPublicationError, materialize_remote_claim_identity
+        failure_code="claim_remote_composition_invalid"
+        failure_action="restore the validated installed claim composition on the execution host before retrying"
+        try:
+            roots=load_claim_publication_composition(Path(default_claim_publication_roots(home=Path.home()).invocation_store_root)).receipt.roots
+        except ExecutionAdmissionError as exc:
+            if exc.reason_code == "gate0b_install_receipt_missing":
+                failure_code="claim_remote_composition_missing"
+                failure_action="install the governed claim composition on the execution host before retrying"
+            raise
+        failure_code="claim_remote_identity_unsafe"
+        failure_action="preserve the execution-host claim files and obtain governed reconciliation before retrying"
+        try:
+            materialize_remote_claim_identity(cache_dir=Path(roots.claim_cache_dir),lock_root=Path(roots.claim_lock_root),role=role,session_id=sid,task_id=task,claim_epoch=claim_epoch)
+        except ClaimPublicationError as exc:
+            failure_code=exc.reason_code
+            if failure_code.startswith("claim_publication_"):
+                failure_action="check the installed role-lock namespace and retry after the participating publisher finishes; preserve existing locks and claims"
+            raise
+        materialized=bool(task); claim_epoch_verified=bool(task)
+except Exception:
+    print("hapax-codex-headless: failed to materialize remote claim cache: "+failure_code+"; next action: "+failure_action, file=sys.stderr)
     sys.exit(78)
 codex_bin,codex_resolution_error=_resolve_codex_bin()
 if codex_bin is None:

@@ -567,8 +567,10 @@ if canon_enforced:
         ):
             print(f"cc-claim: HOLD — {exc}. Next action: {exc.repair_action}.", file=sys.stderr)
             sys.exit(8)
-    except ValueError as exc:
-        print(f"cc-claim: HOLD — claim_composition_invalid: {exc}", file=sys.stderr)
+    except ValueError:
+        print("cc-claim: HOLD — claim_composition_invalid. "
+              "Next action: restore the validated installed claim composition before retrying.",
+              file=sys.stderr)
         sys.exit(8)
     if (
         Path(gate0b_roots.claim_cache_dir) != cache_dir.resolve()

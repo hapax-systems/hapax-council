@@ -32,7 +32,9 @@ def test_writer_refuses_unqualified_installed_namespace(tmp_path, writer, damage
     home = tmp_path / "home"
     roots = default_claim_publication_roots(home=home)
     if writer == "remote":
-        env, home, files, proof, ran, *_ = _remote_materialization_case(tmp_path, install=False)
+        env, home, files, proof, ran, *_ = _remote_materialization_case(
+            tmp_path, install=False, existing="matching"
+        )
     else:
         _write_task(home, "active", "namespace-test")
     if damage != "absent":
@@ -62,6 +64,28 @@ def test_writer_refuses_unqualified_installed_namespace(tmp_path, writer, damage
     assert result.returncode != 0, result.stdout
     assert _ownership_bytes(home) == before
     assert not Path(roots.claim_lock_root).exists()
+
+
+def test_claim_composition_invalid_gives_bounded_repair(tmp_path):
+    import json
+
+    home = tmp_path / "home"
+    _write_task(home, "active", "invalid-composition")
+    roots = default_claim_publication_roots(home=home)
+    install_claim_publication_composition(
+        roots=roots, installed_at="2026-09-24T00:00:00Z", install_task_ref="test-install"
+    )
+    manifest = Path(roots.invocation_store_root) / "composition-manifest.json"
+    payload = json.loads(manifest.read_text())
+    payload["schema_version"] = "malformed-sensitive-composition"
+    manifest.write_text(json.dumps(payload))
+    before = _ownership_bytes(home)
+    result = _claim(home, "invalid-composition", install_gate0b=False)
+    assert result.returncode == 8
+    assert "claim_composition_invalid" in result.stderr
+    assert "Next action: restore the validated installed claim composition" in result.stderr
+    assert "malformed-sensitive-composition" not in result.stderr
+    assert _ownership_bytes(home) == before
 
 
 def test_activation_cache_repair_uses_custom_installed_role_root(tmp_path, monkeypatch):
