@@ -4910,6 +4910,28 @@ def test_recovery_caller_cannot_replay_disclosed_owner(
     assert _file_identity_snapshot(tuple(row[0] for row in files_before)) == files_before
 
 
+def test_remote_identity_unpinned_cache_is_a_typed_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # PR4726 review (Muse, minor): an unpinned execution-host cache surfaced as a bare
+    # AssertionError (and would be skipped entirely under python -O), not a governed hold.
+    monkeypatch.setattr(
+        sdlc_claim.ReadOnlyFsSnapshot, "pin_absolute_dir", lambda self, *args, **kwargs: None
+    )
+    cache = tmp_path / "cache"
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim.materialize_remote_claim_identity(
+            cache_dir=cache,
+            lock_root=tmp_path / "locks",
+            role="cx-red",
+            session_id="9b6ba5ca-513c-41aa-9900-d3026b42aad1",
+            task_id="task-a",
+            claim_epoch="123 task-a",
+        )
+    assert raised.value.reason_code == "claim_remote_identity_unsafe"
+    assert not list(cache.glob("cc-*"))
+
+
 # --- Reconciliation by observation (PR4726 three-family review, finding 6) -----------------
 # The admitted transaction holds the role lock and the note lock from its existence check to
 # its terminal state, so recovery under those locks observes only journals with no live

@@ -2561,7 +2561,8 @@ def materialize_remote_claim_identity(
             cache_dir.mkdir(parents=True, exist_ok=True)
             with ReadOnlyFsSnapshot(change_scope="observed_paths") as snapshot:
                 directory = snapshot.pin_absolute_dir(cache_dir, private_final=False)
-                assert directory is not None
+                if directory is None:
+                    raise ClaimPublicationError("claim_remote_identity_unsafe", repair)
                 names = snapshot.list_names(directory)
                 # A surviving different session is not an empty destination, even
                 # if the legacy role projections were lost. No liveness inference.
