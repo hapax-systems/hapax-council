@@ -122,10 +122,10 @@ def test_mint_or_version_first_call_creates_and_publishes(tmp_path: Path):
     assert mock_requests.post.call_count == 2
 
 
-def test_mint_or_version_first_call_no_concept_doi_in_response_uses_top_level(
+def test_mint_or_version_first_call_requires_concept_doi_in_publish_response(
     tmp_path: Path,
 ):
-    """Some Zenodo responses omit conceptdoi; fall back to the top-level doi."""
+    """A version DOI cannot stand in for a missing published concept DOI."""
     snapshot = tmp_path / "snap.json"
     snapshot.write_text("{}", encoding="utf-8")
 
@@ -137,17 +137,14 @@ def test_mint_or_version_first_call_no_concept_doi_in_response_uses_top_level(
     with patch("agents.publication_bus.graph_publisher.requests") as mock_requests:
         mock_requests.post.side_effect = [create_resp, publish_resp]
         mock_requests.RequestException = Exception
-        concept_doi, version_doi, _ = mint_or_version(
-            zenodo_token="ztk",
-            graph_dir=tmp_path / "graph",
-            snapshot_path=snapshot,
-            fingerprint="fp1",
-            metadata={"title": "graph"},
-        )
-
-    # When conceptdoi missing, fall back to top-level doi (single-version concept)
-    assert concept_doi == "10.5281/zenodo.200"
-    assert version_doi == "10.5281/zenodo.200"
+        with pytest.raises(GraphPublisherError, match="conceptdoi"):
+            mint_or_version(
+                zenodo_token="ztk",
+                graph_dir=tmp_path / "graph",
+                snapshot_path=snapshot,
+                fingerprint="fp1",
+                metadata={"title": "graph"},
+            )
 
 
 # === mint_or_version: new version path ===

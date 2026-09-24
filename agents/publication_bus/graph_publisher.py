@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import ClassVar
 
@@ -137,6 +138,7 @@ def mint_or_version(
             deposit_id, version_doi = _create_new_version(
                 headers=headers,
                 prev_id=prev_id,
+                prev_concept=prev_concept,
                 deposit_metadata=deposit_metadata,
             )
             concept_doi = prev_concept
@@ -210,7 +212,7 @@ def _create_first_version(
     )
     _raise_for_status(create_resp, "deposit create")
     create_body = _safe_json(create_resp)
-    deposit_id = int(create_body.get("id"))
+    deposit_id = _remote_deposit_id(create_body)
 
     publish_resp = requests.post(
         f"{ZENODO_DEPOSIT_ENDPOINT}/{deposit_id}/actions/publish",
@@ -219,8 +221,10 @@ def _create_first_version(
     )
     _raise_for_status(publish_resp, "deposit publish")
     publish_body = _safe_json(publish_resp)
-    version_doi = str(publish_body.get("doi") or create_body.get("doi") or "")
-    concept_doi = str(publish_body.get("conceptdoi") or version_doi)
+    if _remote_deposit_id(publish_body) != deposit_id:
+        raise GraphPublisherError("published deposit identity does not match created deposit")
+    version_doi = _remote_doi(publish_body, "doi")
+    concept_doi = _remote_doi(publish_body, "conceptdoi")
     return deposit_id, version_doi, concept_doi
 
 
@@ -228,6 +232,7 @@ def _create_new_version(
     *,
     headers: dict,
     prev_id: int,
+    prev_concept: str,
     deposit_metadata: dict,
 ) -> tuple[int, str]:
     """POST /actions/newversion → PUT metadata → POST /actions/publish; returns (id, version_doi)."""
@@ -238,9 +243,9 @@ def _create_new_version(
     )
     _raise_for_status(newver_resp, "newversion")
     newver_body = _safe_json(newver_resp)
-    new_id = int(newver_body.get("id") or 0)
-    if not new_id:
-        raise GraphPublisherError("newversion response missing id")
+    new_id = _remote_deposit_id(newver_body)
+    if new_id == prev_id:
+        raise GraphPublisherError("newversion response reused previous deposit identity")
 
     put_resp = requests.put(
         f"{ZENODO_DEPOSIT_ENDPOINT}/{new_id}",
@@ -257,8 +262,26 @@ def _create_new_version(
     )
     _raise_for_status(publish_resp, "new-version publish")
     publish_body = _safe_json(publish_resp)
-    version_doi = str(publish_body.get("doi") or newver_body.get("doi") or "")
+    if _remote_deposit_id(publish_body) != new_id:
+        raise GraphPublisherError("published deposit identity does not match new version")
+    version_doi = _remote_doi(publish_body, "doi")
+    if _remote_doi(publish_body, "conceptdoi") != prev_concept:
+        raise GraphPublisherError("published concept DOI does not match previous concept")
     return new_id, version_doi
+
+
+def _remote_deposit_id(body: dict) -> int:
+    deposit_id = body.get("id")
+    if type(deposit_id) is not int or deposit_id <= 0:
+        raise GraphPublisherError("remote response missing or invalid deposit identity")
+    return deposit_id
+
+
+def _remote_doi(body: dict, field: str) -> str:
+    doi = body.get(field)
+    if not isinstance(doi, str) or not doi.strip():
+        raise GraphPublisherError(f"remote response missing or invalid {field}")
+    return doi
 
 
 def _raise_for_status(response, op: str) -> None:
@@ -293,9 +316,9 @@ def persist_graph_state(
     """Persist the freshly-minted DOI state.
 
     Append the remote identity before updating the three checkpoint files,
-    with the fingerprint last. A partial checkpoint is rejected on the next
-    admitted invocation. This is not an atomic transaction: a crash or failure
-    before the history append still requires remote reconciliation.
+    with the fingerprint last. Flush each file and its directory before the
+    publisher can clear its attempt fence. On any failure the fence remains,
+    including failure before the first history write.
     """
     graph_dir.mkdir(parents=True, exist_ok=True)
     history_entry = {
@@ -307,9 +330,48 @@ def persist_graph_state(
     history_path = graph_dir / "version-doi-history.jsonl"
     with history_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(history_entry) + "\n")
-    (graph_dir / "concept-doi.txt").write_text(concept_doi + "\n", encoding="utf-8")
-    (graph_dir / "last-deposit-id.txt").write_text(str(deposit_id) + "\n", encoding="utf-8")
-    (graph_dir / "last-fingerprint.txt").write_text(fingerprint + "\n", encoding="utf-8")
+        f.flush()
+        os.fsync(f.fileno())
+    for name, value in (
+        ("concept-doi.txt", concept_doi),
+        ("last-deposit-id.txt", str(deposit_id)),
+        ("last-fingerprint.txt", fingerprint),
+    ):
+        with (graph_dir / name).open("w", encoding="utf-8") as f:
+            f.write(value + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    _sync_directory(graph_dir)
+
+
+def _sync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _begin_attempt(graph_dir: Path, fingerprint: str) -> None:
+    """Exclusively fence this graph before reading state or sending a request.
+
+    Presence alone blocks; empty/torn records are also unresolved attempts.
+    Never expire or automatically recover one: the remote outcome is unknown.
+    The graph's parent must already exist; refuse if it does not.
+    """
+    graph_dir.mkdir(exist_ok=True)
+    with (graph_dir / "mint-attempt.json").open("x", encoding="utf-8") as f:
+        json.dump({"fingerprint": fingerprint}, f)
+        f.flush()
+        os.fsync(f.fileno())
+    _sync_directory(graph_dir)
+    _sync_directory(graph_dir.parent)
+
+
+def _finish_attempt(graph_dir: Path) -> None:
+    """Only called after durable persistence or a validated no-change result."""
+    (graph_dir / "mint-attempt.json").unlink()
+    _sync_directory(graph_dir)
 
 
 def _persisted_fingerprint(graph_dir: Path) -> str | None:
@@ -359,8 +421,11 @@ class GraphPublisher(Publisher):
 
     ``payload.metadata`` MUST contain ``snapshot_path`` and
     ``fingerprint``; may include ``deposit_metadata`` (Zenodo metadata
-    block override). Checks the existing checkpoint, skips unchanged graphs,
-    then mints and persists within admission. The result's ``detail`` carries
+    block override). Exclusively fences the attempt, checks the existing
+    checkpoint, skips unchanged graphs, then mints and persists within admission.
+    A surviving fence requires remote reconciliation before another invocation;
+    clearing it is a separate recovery act, never a retry/timeout policy.
+    The result's ``detail`` carries
     the remote DOIs and deposit ID, including when persistence fails after
     emission. No automatic retry is performed on an ambiguous outcome.
 
@@ -393,10 +458,17 @@ class GraphPublisher(Publisher):
                 detail="payload missing snapshot_path or fingerprint",
             )
         deposit_metadata = dict(payload.metadata.get("deposit_metadata", {}) or {})
+        recovery = (
+            f"reconcile remote DOI and local state before retry; inspect "
+            f"{self.graph_dir / 'mint-attempt.json'}, verify the remote outcome and repair "
+            "the checkpoint before clearing the attempt fence"
+        )
 
         try:
+            _begin_attempt(self.graph_dir, str(fingerprint))
             previous_fingerprint = _persisted_fingerprint(self.graph_dir)
             if previous_fingerprint == str(fingerprint):
+                _finish_attempt(self.graph_dir)
                 return PublisherResult(
                     ok=True, detail="(no material change since last deposit; skipping mint)"
                 )
@@ -407,8 +479,8 @@ class GraphPublisher(Publisher):
                 fingerprint=str(fingerprint),
                 metadata=deposit_metadata,
             )
-        except GraphPublisherError as exc:
-            return PublisherResult(error=True, detail=f"{exc}")
+        except (GraphPublisherError, OSError) as exc:
+            return PublisherResult(error=True, detail=f"graph publication held: {exc}; {recovery}")
 
         remote_identity = (
             f"concept-DOI={concept_doi} version-DOI={version_doi} (deposit_id={deposit_id})"
@@ -421,13 +493,13 @@ class GraphPublisher(Publisher):
                 fingerprint=str(fingerprint),
                 deposit_id=deposit_id,
             )
+            _finish_attempt(self.graph_dir)
         except OSError:
             log.exception("graph publisher: state persistence failed after %s", remote_identity)
             return PublisherResult(
                 error=True,
                 detail=(
-                    f"state persistence failed after remote mint: {remote_identity}; "
-                    "reconcile remote DOI and local state before retry"
+                    f"state persistence failed after remote mint: {remote_identity}; {recovery}"
                 ),
             )
 

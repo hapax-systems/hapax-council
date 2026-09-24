@@ -267,6 +267,11 @@ def _run_commit(
     if not result.ok:
         self_citation_graph_doi_total.labels(outcome="commit-failed").inc()
         sys.stderr.write(f"# --commit: publication failed: {result.detail}\n")
+        if result.refused:
+            sys.stderr.write(
+                "# Next action: review target admission and credentials under the active "
+                "publication authority before retry; do not bypass publisher admission.\n"
+            )
         return 1
 
     if not has_change:

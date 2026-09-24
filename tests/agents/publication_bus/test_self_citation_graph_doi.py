@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -326,8 +327,8 @@ def commit_case(tmp_path, monkeypatch):
     http.post.side_effect = [
         response({"id": 100, "doi": "10.x/v1"}),
         response({"id": 100, "doi": "10.x/v1", "conceptdoi": "10.x/concept"}),
-        response({"id": 101, "doi": "10.x/v2"}),
-        response({"id": 101, "doi": "10.x/v2"}),
+        response({"id": 101, "doi": "10.x/v2", "conceptdoi": "10.x/concept"}),
+        response({"id": 101, "doi": "10.x/v2", "conceptdoi": "10.x/concept"}),
     ]
     http.put.return_value = response({})
     monkeypatch.setattr(graph_publisher, "requests", http)
@@ -346,7 +347,9 @@ def test_commit_refused_before_http_or_state(commit_case, monkeypatch, capsys):
     )
     before = counter._value.get()
     assert main(argv) == 1
-    assert "allowlist deny" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "allowlist deny" in error
+    assert "review target admission" in error
     assert counter._value.get() == before + 1
     http.post.assert_not_called()
     http.put.assert_not_called()
@@ -420,7 +423,11 @@ def test_commit_http_failure_does_not_persist_or_retry(commit_case, capsys, fail
     assert main(argv) == 1
     assert "HTTP 503" in capsys.readouterr().err
     assert http.post.call_count == failure_leg + 1
-    assert not graph.exists()
+    assert not (graph / "version-doi-history.jsonl").exists()
+    calls = http.post.call_count
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    assert http.post.call_count == calls
 
 
 @pytest.mark.parametrize(
@@ -462,14 +469,186 @@ def test_commit_save_failure_reports_remote_identity(
     assert "10.x/concept" in output.err
     assert "minted" not in output.out
     assert http.post.call_count == (4 if existing_version else 2)
-    # Once any state was written, a subsequent invocation must refuse the
-    # inconsistent checkpoint. Failure before the first write remains an
-    # explicit recovery limitation; this test does not claim crash idempotency.
-    if filename != "version-doi-history.jsonl":
-        calls = http.post.call_count
+    # Even failure before the FIRST history write must durably block another
+    # invocation after the write fault is removed (first mint and new version).
+    calls = http.post.call_count
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    assert http.post.call_count == calls
+
+
+@pytest.mark.parametrize("existing_version", [False, True])
+@pytest.mark.parametrize(
+    "response_leg,field,value",
+    [
+        (0, "id", None),
+        (0, "id", 0),
+        (0, "id", -1),
+        (0, "id", True),
+        (0, "id", 1.5),
+        (0, "id", "bad"),
+        (1, "id", None),
+        (1, "id", 999),
+        (1, "doi", None),
+        (1, "doi", "   "),
+        (1, "doi", 123),
+        (1, "conceptdoi", None),
+        (1, "conceptdoi", "   "),
+        (1, "conceptdoi", []),
+    ],
+)
+def test_commit_rejects_invalid_remote_identity(
+    commit_case, capsys, existing_version, response_leg, field, value
+):
+    argv, graph, snapshot, http = commit_case
+    if existing_version:
+        assert main(argv) == 0
+        _seed_snapshot(snapshot, [("10.x/y", 2)])
+    capsys.readouterr()
+    prior = {p.name: p.read_bytes() for p in graph.iterdir()} if graph.exists() else {}
+    calls = http.post.call_count
+    responses = list(http.post.side_effect)
+    # A draft DOI must never substitute for missing published identifiers.
+    responses[response_leg].json.return_value[field] = value
+    http.post.side_effect = responses
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    for name, content in prior.items():
+        assert (graph / name).read_bytes() == content
+    if not existing_version:
+        assert not (graph / "version-doi-history.jsonl").exists()
+    assert http.post.call_count == calls + response_leg + 1
+    calls = http.post.call_count
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    assert http.post.call_count == calls
+
+
+@pytest.mark.parametrize(
+    "filename,after_remote",
+    [
+        ("mint-attempt.json", False),
+        (".", False),
+        ("..", False),
+        ("version-doi-history.jsonl", True),
+        ("concept-doi.txt", True),
+        ("last-deposit-id.txt", True),
+        ("last-fingerprint.txt", True),
+        (".", True),
+    ],
+)
+def test_commit_sync_failure_holds_attempt(
+    commit_case, monkeypatch, capsys, filename, after_remote
+):
+    argv, graph, _, http = commit_case
+    target = (graph / filename).resolve()
+    real_fsync = os.fsync
+    failures = []
+
+    def fail_sync(fd):
+        if (
+            Path(os.readlink(f"/proc/self/fd/{fd}")) == target
+            and bool(http.post.call_count) == after_remote
+        ):
+            failures.append(target)
+            raise OSError("synthetic durability failure")
+        real_fsync(fd)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(os, "fsync", fail_sync)
         assert main(argv) == 1
-        assert "reconcile" in capsys.readouterr().err
-        assert http.post.call_count == calls
+    assert failures
+    assert "reconcile" in capsys.readouterr().err
+    calls = http.post.call_count
+    assert calls == (2 if after_remote else 0)
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    assert http.post.call_count == calls
+
+
+def test_commit_attempt_creation_failure_makes_no_call(commit_case, monkeypatch, capsys):
+    argv, graph, _, http = commit_case
+    real_open = Path.open
+    failures = []
+
+    def fail_create(path, mode="r", *args, **kwargs):
+        if path == graph / "mint-attempt.json" and mode == "x":
+            failures.append(path)
+            raise OSError("synthetic fence creation failure")
+        return real_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_create)
+    assert main(argv) == 1
+    assert failures
+    assert "reconcile" in capsys.readouterr().err
+    http.post.assert_not_called()
+
+
+def test_commit_concurrent_invocation_refused_before_transport(commit_case, capsys):
+    argv, _, _, http = commit_case
+    responses = iter(http.post.side_effect)
+    nested = []
+
+    def remote(*args, **kwargs):
+        if not nested:
+            nested.append("entered")
+            assert main(argv) == 1
+            assert "reconcile" in capsys.readouterr().err
+            assert http.post.call_count == 1
+        return next(responses)
+
+    http.post.side_effect = remote
+    assert main(argv) == 0
+    assert nested == ["entered"]
+    assert http.post.call_count == 2
+
+
+def test_commit_interrupted_remote_call_holds_attempt(commit_case, capsys):
+    argv, _, _, http = commit_case
+    http.post.side_effect = KeyboardInterrupt("synthetic crash after request started")
+    with pytest.raises(KeyboardInterrupt):
+        main(argv)
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    assert http.post.call_count == 1
+
+
+@pytest.mark.parametrize("contents", ["", "{", '{"fingerprint": "unrelated"}'])
+def test_commit_existing_attempt_is_never_expired_or_replaced(commit_case, capsys, contents):
+    argv, graph, _, http = commit_case
+    graph.mkdir()
+    attempt = graph / "mint-attempt.json"
+    attempt.write_text(contents)
+    os.utime(attempt, (1, 1))
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    assert attempt.read_text() == contents
+    http.post.assert_not_called()
+
+
+@pytest.mark.parametrize("wrong_identity", ["deposit", "concept"])
+def test_commit_version_must_preserve_concept_and_change_deposit(
+    commit_case, capsys, wrong_identity
+):
+    argv, graph, snapshot, http = commit_case
+    assert main(argv) == 0
+    capsys.readouterr()
+    original_history = (graph / "version-doi-history.jsonl").read_bytes()
+    _seed_snapshot(snapshot, [("10.x/y", 2)])
+    responses = list(http.post.side_effect)
+    if wrong_identity == "deposit":
+        responses[0].json.return_value["id"] = 100
+    else:
+        responses[1].json.return_value["conceptdoi"] = "10.x/different-concept"
+    http.post.side_effect = responses
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    assert (graph / "version-doi-history.jsonl").read_bytes() == original_history
+    calls = http.post.call_count
+    assert calls == (3 if wrong_identity == "deposit" else 4)
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    assert http.post.call_count == calls
 
 
 def test_commit_incomplete_matching_fingerprint_is_not_no_change(commit_case, capsys):
