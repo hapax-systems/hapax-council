@@ -833,9 +833,15 @@ def holder_state(sid):
 
 
 def record_claim_observation(path, sid, task, observed, why, note):
+    # Invalid session keys are still observed claims. Preserve their exact path
+    # instead of reconstructing a legacy key from the unresolved session ID.
+    epoch = cache / path.name.replace("cc-active-task-", "cc-claim-epoch-", 1)
+    if (path.parent != cache or not (path.name == prefix or path.name.startswith(prefix + "-"))
+            or path.is_symlink() or epoch.is_symlink()):
+        raise ValueError("claim_path_outside_cache_namespace")
     receipt = dict(lane=lane, session_id=sid or None, task_id=task, state=observed, reason=why,
                    pid_bindings={str(p): digest(p) for p in Path(runtime).glob(f"{lane}-{sid}*.pid")} if sid else {},
-                   claim_sha256=digest(path), epoch_sha256=digest(cache / path.name.replace("cc-active-task-", "cc-claim-epoch-", 1)),
+                   claim_path=str(path), claim_sha256=digest(path), epoch_sha256=digest(epoch),
                    note_sha256=digest(note) if note else None, next_action="preserve_claim; governed_rebind_required" if observed == "dead" else "preserve_claim; inspect_session")
     if observed != "live":
         current = Path(state_dir) / f"{lane}-{sid or 'legacy'}.claim-holder.json"

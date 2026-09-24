@@ -69,16 +69,28 @@ python3 - '<receipt-path>' <<'PY'
 import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 receipt = json.loads(Path(sys.argv[1]).read_text())
-key = receipt['lane'] + ('-' + receipt['session_id'] if receipt['session_id'] else '')
 cache = Path.home() / '.cache/hapax'
+lane = receipt.get('lane')
+raw_path = receipt.get('claim_path')
+if not isinstance(lane, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', lane):
+    sys.exit('receipt_path_unresolved: invalid lane; preserve receipt and inspect supervisor inputs')
+if not isinstance(raw_path, str) or not raw_path:
+    sys.exit('receipt_path_unresolved: missing observed path; preserve receipt and obtain a fresh observation')
+claim = Path(raw_path)
+prefix = 'cc-active-task-' + lane
+if claim.parent != cache or not (claim.name == prefix or claim.name.startswith(prefix + '-')):
+    sys.exit('receipt_path_unresolved: outside lane claim namespace; preserve receipt and inspect supervisor inputs')
+epoch = cache / claim.name.replace('cc-active-task-', 'cc-claim-epoch-', 1)
+if claim.is_symlink() or epoch.is_symlink():
+    sys.exit('receipt_path_unresolved: symlinked input; preserve receipt and inspect claim publication')
 vault = Path(os.environ.get('HAPAX_SUPERVISOR_VAULT_ROOT',
                            str(Path.home() / 'Documents/Personal/20-projects/hapax-cc-tasks')))
-inputs = {'claim_sha256': cache / ('cc-active-task-' + key),
-          'epoch_sha256': cache / ('cc-claim-epoch-' + key)}
+inputs = {'claim_sha256': claim, 'epoch_sha256': epoch}
 if receipt['task_id']:
     note = vault / 'active' / (receipt['task_id'] + '.md')
     if not note.is_file():
@@ -92,7 +104,14 @@ for field, path in inputs.items():
 PY
 ```
 
-Use the service's configured vault root too. A changed or missing input requires fresh
+`claim_path` is the observed direct file in this lane's claim cache namespace;
+`session_id: null` can mean an invalid session key as well as a legacy claim. The
+command uses that exact path and derives its corresponding epoch filename. It
+refuses paths outside the namespace and symlinked inputs. Older receipts without
+`claim_path` remain preserved evidence; obtain a fresh supervisor observation
+before rechecking rather than inferring a path from an unresolved session ID.
+
+Use the service's HOME and configured vault root too. A changed or missing input requires fresh
 inspection; a stored hash does not certify current ownership. A live holder requires
 the session and HOME to match and the process executable to match the native `claude`
 resolved on the supervisor's PATH. A surviving helper or launcher is insufficient;
