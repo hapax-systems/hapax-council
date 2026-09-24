@@ -95,6 +95,22 @@ if [[ -z "$task_id" && "$recover_claim_publications_only" != "true" ]]; then
   usage
   exit 1
 fi
+# Journal inspection pins descriptors for the whole claim-publication transaction root, so
+# an inherited soft nofile limit (1024 for lanes resumed under some launchers) turns into
+# claim_publication_inspection_failed for every task once enough journals accumulate
+# (measured 2026-09-24: 91 journals fail at 1024, pass at 2048). Raise only the soft limit,
+# only upward, never past the hard limit or 65536; a refusal to raise keeps the inherited one.
+claim_nofile_soft="$(ulimit -Sn)"
+claim_nofile_hard="$(ulimit -Hn)"
+if [[ "$claim_nofile_soft" =~ ^[0-9]+$ ]]; then
+  claim_nofile_want=65536
+  if [[ "$claim_nofile_hard" =~ ^[0-9]+$ && "$claim_nofile_hard" -lt "$claim_nofile_want" ]]; then
+    claim_nofile_want="$claim_nofile_hard"
+  fi
+  if [[ "$claim_nofile_soft" -lt "$claim_nofile_want" ]]; then
+    ulimit -Sn "$claim_nofile_want" 2>/dev/null || true
+  fi
+fi
 PROJECT_PYTHON="$SCRIPT_DIR/../.venv/bin/python"
 if [[ "$canon_enforced" == "1" && ! -x "$PROJECT_PYTHON" ]]; then
   echo "cc-claim: project_runtime_unprovisioned: expected pinned interpreter at $PROJECT_PYTHON; Next action: run 'uv sync' in this worktree, then rerun cc-claim." >&2
