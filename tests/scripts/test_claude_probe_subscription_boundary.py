@@ -31,7 +31,7 @@ def subscription_probe_home(tmp_path, monkeypatch, request):
                     "scopes": ["user:inference", "user:profile"],
                     "expiresAt": int(request.module.NOW.timestamp() * 1000) + 3600000,
                 },
-                "primaryApiKey": "synthetic-saved-api-key-must-not-be-forwarded",
+                "primaryApiKey": "synthetic-saved-api-key-must-not-be-forwarded",  # pragma: allowlist secret
             }
         )
     )
@@ -110,7 +110,9 @@ def test_probe_request_cannot_reapply_gateway_settings(
             }
         )
     )
-    (home / ".claude.json").write_text('{"primaryApiKey":"synthetic-api-key"}')
+    (home / ".claude.json").write_text(
+        '{"primaryApiKey":"synthetic-api-key"}'  # pragma: allowlist secret
+    )
     observed = _fake_claude(tmp_path, monkeypatch)
     event = obs.probe(NOW, cwd=str(project))
     assert event is not None and event.kind == "served"
