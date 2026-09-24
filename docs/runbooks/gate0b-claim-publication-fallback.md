@@ -109,6 +109,31 @@ If default mode holds on install corruption or stale claim state, repair that
 condition and rerun `cc-claim`. Do not switch to the fallback for routine
 stale-claim cleanup.
 
+## Claim publication interruption and retry
+
+Claim admission resolves the complete active and closed task namespace. Index
+construction can make up to three attempts, reusing only unchanged stat-bound
+parses between attempts. Every attempt checks the full frontier; continuing
+drift, duplicate identities and changed task preimages still HOLD. A supplied
+index is never silently refreshed.
+
+A typed refusal in the second locked preflight, before projection begins,
+records an `aborted` journal. Recovery preserves that history and cannot turn
+the refusal into a delayed claim. Once projection may have begun, failures
+remain recoverable. Recovery validates the complete task identity and exact
+preimage or postimage before writing any missing projection.
+
+Do not interpret exit code 8 alone as evidence that nothing was published.
+Publication errors report the original role, session, epoch, intent and binding
+hash, plus read-only journal observations. An observation can be terminal
+applied, terminal aborted, held or unknown; preserve held/unknown evidence and
+reconcile it before choosing another session. Ordinary `cc-claim` recovery
+requires the pending journal's original role and session. A different session
+gets `claim_publication_recovery_owner_mismatch` without applying that journal.
+The explicit `cc-claim --recover-claim-publications <task-id>` operation remains
+the governed recovery path; it completes the original admitted publication,
+not an ownership transfer. Resolve its durable result before retrying dispatch.
+
 ## Emergency Fallback
 
 ```bash
