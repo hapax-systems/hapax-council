@@ -390,6 +390,12 @@ class TestConnectorClassifierDeployedLayout:
         env["XDG_CACHE_HOME"] = str(tmp_path / "xdg-cache")
         env.pop("HAPAX_COORD_REPO_ROOT", None)
         env.setdefault("CLAUDE_ROLE", "alpha")
+        # Hermetic interpreter: the suite runs under `uv run`, which prepends the
+        # project venv to PATH; that venv's editable install exposes shared/ from
+        # any cwd, so the gate's python3 would import the real classifier and the
+        # degrade-closed contract under test would silently pass through.
+        env["PATH"] = "/usr/bin:/bin"
+        env.pop("PYTHONPATH", None)
         if extra_env:
             env.update(extra_env)
         return subprocess.run(
