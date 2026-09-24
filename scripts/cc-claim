@@ -220,7 +220,8 @@ from pathlib import Path
 
 repo_root = Path(sys.argv[1]).resolve()
 task_id = sys.argv[2] or None
-expected_owner = (sys.argv[3], sys.argv[4])
+# Selection coordinates only (they authenticate nothing); a role-only legacy session omits them.
+expected_owner = (sys.argv[3], sys.argv[4]) if sys.argv[3] and sys.argv[4] else None
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
@@ -296,6 +297,12 @@ if [[ "$dispatch_present" -gt 0 && "$dispatch_missing" -gt 0 ]]; then
 fi
 if [[ "$canon_enforced" == "1" && "$force" == "true" ]]; then
   echo "cc-claim: --force is retired under canon enforcement; release the prior claim through a governed transition. Next action: run cc-close on the current task if terminal, or ask the operator to perform a governed release of the stale claim before retrying." >&2
+  exit 2
+fi
+if [[ "$force" == "true" ]]; then
+  # The emergency writer's locked ownership check never yields to --force, so accepting the
+  # flag would be a silent no-op (PR4726 review: Muse, finding 9). Refuse it instead.
+  echo "cc-claim: --force is retired in the emergency writer too; it cannot override the locked ownership check. Next action: run cc-close on the current task if terminal, or ask the operator to perform a governed release of the stale claim, then rerun cc-claim without --force." >&2
   exit 2
 fi
 lease_ttl="${HAPAX_CLAIM_LEASE_TTL_SECS:-21600}"
@@ -388,14 +395,8 @@ sys.exit(0 if ok else 1)
   else
     echo "  Next action: close it first with cc-close $existing_task if terminal, or resume that task instead." >&2
   fi
-  if [[ "$canon_enforced" == "0" ]]; then
-    echo "  Legacy fallback only: cc-claim --force $task_id" >&2
-  fi
-  if [[ "$canon_enforced" == "1" || "$force" != "true" ]]; then
-    shopt -u nullglob
-    exit 7
-  fi
-  echo "cc-claim: --force requested; the final locked ownership check still applies" >&2
+  shopt -u nullglob
+  exit 7
 done
 shopt -u nullglob
 
@@ -684,7 +685,7 @@ if canon_enforced:
                 receipt_root=receipt_root,
                 lock_root=lock_root,
                 task_id=task_id,
-                expected_owner=(role, session_id),
+                expected_owner=(role, session_id) if session_id else None,
             )
         except ClaimPublicationError as exc:
             print(

@@ -294,7 +294,8 @@ def test_emergency_matching_resume_preserves_epoch(tmp_path, monkeypatch):
     assert {p.name: p.read_bytes() for p in cache.glob("cc-*") if p.is_file()} == before
 
 
-def test_emergency_expiry_cannot_delete_foreign_session_before_lock(tmp_path, monkeypatch):
+@pytest.mark.parametrize("force", [False, True])
+def test_emergency_expiry_cannot_delete_foreign_session_before_lock(tmp_path, monkeypatch, force):
     home = tmp_path / "home"
     monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
     helper = _helper("test_cc_claim")
@@ -306,9 +307,14 @@ def test_emergency_expiry_cannot_delete_foreign_session_before_lock(tmp_path, mo
     claim.write_text("incumbent\n")
     os.utime(claim, (1, 1))
     before = _ownership_bytes(home)
-    result = helper._claim(home, "new-task", legacy=True, extra_args=["--force"])
-    assert result.returncode == 3, result.stderr
-    assert "claim_emergency_role_occupied" in result.stderr
+    result = helper._claim(home, "new-task", legacy=True, extra_args=["--force"] if force else None)
+    if force:
+        # PR4726 review (Muse, finding 9): --force was a silent no-op; it is refused outright.
+        assert result.returncode == 2, result.stderr
+        assert "--force is retired in the emergency writer too" in result.stderr
+    else:
+        assert result.returncode == 3, result.stderr
+        assert "claim_emergency_role_occupied" in result.stderr
     assert _ownership_bytes(home) == before
 
 
