@@ -921,11 +921,15 @@ def test_window_scoped_wall_needs_a_reading_of_the_same_window(tmp_path):
         stream_init(),
         stream_dated("2026-09-24T18:00:00Z"),
         rate_limit_event(rejected),
+        stream_dated("2026-09-24T18:05:00Z"),  # dates the wall late: 18:05
         stream_dated("2026-09-24T18:10:00Z"),
-        rate_limit_event(five_only),
+        rate_limit_event(five_only),  # served, newer (18:10), but another window
     )
     rows = claude_rows(tmp_path)
-    assert wall_is_live(by_id(rows)["claude.subscription.rate_limit_rejected"], rows, now=A1_NOW)
+    wall = by_id(rows)["claude.subscription.rate_limit_rejected"]
+    reading = by_id(rows)["claude.subscription.five_hour"]
+    assert wall.observed_at < reading.observed_at  # only the window keeps it standing
+    assert wall_is_live(wall, rows, now=A1_NOW)
 
 
 def test_kimi_response_after_the_wall_is_a_post_wall_observation(tmp_path):
