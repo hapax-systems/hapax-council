@@ -232,6 +232,7 @@ def test_consent_containment_lane_surfaces_is_exact() -> None:
     # axioms/contracts (person-named deletions) and the test trees (not egress
     # surfaces; landing layer is the merge-queue full shard) are directories.
     assert LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES == (
+        ".github/workflows/ci.yml",
         "agents/_governance.py",
         "agents/_governance/carrier.py",
         "agents/_governance/consent.py",
@@ -270,12 +271,14 @@ def test_consent_containment_lane_surfaces_is_exact() -> None:
         "tests/shared",
         "tests/test_affordance_pipeline.py",
         "tests/test_archive_purge.py",
+        "tests/test_consent_gate.py",
+        "tests/test_consent_label.py",
         "tests/test_consent_pipeline_reader.py",
         "tests/test_revocation_wiring.py",
     )
     # The count is machine-checked so prose can never understate the lane's
-    # governance blast radius (review F round 3): 40 entries, not fewer.
-    assert len(LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES) == 40
+    # governance blast radius (review F round 3): 43 entries, not fewer.
+    assert len(LIVE_EGRESS_CONSENT_CONTAINMENT_SURFACES) == 43
 
 
 def test_consent_containment_lane_admits_lane_shapes() -> None:
@@ -295,6 +298,9 @@ def test_consent_containment_lane_admits_lane_shapes() -> None:
             "agents/_governance/consent_reader.py",
             "tests/shared/test_consent_round_ten.py",
             "agents/studio_compositor/consent_live_egress.py",
+            ".github/workflows/ci.yml",
+            "tests/test_consent_gate.py",
+            "tests/test_consent_label.py",
             "docs/runbooks/pii-containment.md",
         ],
     )
@@ -337,6 +343,12 @@ def test_consent_containment_lane_membership_is_exact_and_degenerate_safe() -> N
     assert _path_in_consent_containment_lane("shared/governance/consent.py")
     assert _path_in_consent_containment_lane("agents/_governance.py")
     assert _path_in_consent_containment_lane("tests/logos/test_anything.py")
+    assert _path_in_consent_containment_lane(".github/workflows/ci.yml")
+    assert _path_in_consent_containment_lane("tests/test_consent_gate.py")
+    assert _path_in_consent_containment_lane("tests/test_consent_label.py")
+    assert not _path_in_consent_containment_lane(".github/workflows/ci.yml.bak")
+    assert not _path_in_consent_containment_lane(".github/workflows/other.yml")
+    assert not _path_in_consent_containment_lane("tests/test_consent_gate.py.bak")
     assert not _path_in_consent_containment_lane("shared/governance/other.py")
     assert not _path_in_consent_containment_lane("agents/_governance.py.bak")
     assert not _path_in_consent_containment_lane("tests/logos-other/x.py")
