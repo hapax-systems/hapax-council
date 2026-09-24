@@ -36,8 +36,8 @@ dead, empty or unparseable seat is an outage, never a vote.
 A row with no PR (``--task``) is reviewed as an artifact: its head is a digest
 of the file manifest, the prompt carries the files and their vault lineage, and
 quorum-accept issues the same signed ``<task_id>.acceptance.yaml``. Changing
-any byte needs a new review; ``artifact_receipt_blockers`` shows whether a
-receipt still covers the files.
+any byte needs a new review; ``--task <id> --artifact ... --check-receipt``
+exits 0 only while the receipt still covers exactly those bytes.
 Reviewer CLIs (claude/codex/agy-backed gemini/glm) are configured in
 ``config/review-lenses/registry.yaml`` ``families[].reviewer_command``.
 """
@@ -4389,6 +4389,14 @@ def main(argv: list[str] | None = None) -> int:
         help="a file of the --task artifact (repeat per file; relative to --artifact-root)",
     )
     parser.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
+    parser.add_argument(
+        "--check-receipt",
+        action="store_true",
+        help=(
+            "with --task/--artifact: exit 0 only if the row's acceptance receipt covers exactly "
+            "these bytes now (reviews nothing)"
+        ),
+    )
     parser.add_argument("--apply", action="store_true", help="dispatch reviewers (default: plan)")
     parser.add_argument("--force", action="store_true", help="re-review an already-reviewed sha")
     parser.add_argument("--repo", default=DEFAULT_REPO)
@@ -4421,6 +4429,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.artifact and not args.task:
         parser.error("--artifact belongs to --task")
+    if args.check_receipt and not args.task:
+        parser.error("--check-receipt belongs to --task")
+    if args.check_receipt:
+        blockers = artifact_receipt_blockers(
+            args.vault_root / "active" / f"{args.task}.md",
+            list(args.artifact),
+            artifact_root=args.artifact_root,
+        )
+        json.dump({"task_id": args.task, "blockers": list(blockers)}, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 1 if blockers else 0
     if args.task:
         results: Any = review_artifact(
             args.task,

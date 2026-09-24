@@ -6350,6 +6350,24 @@ class TestVaultArtifactAcceptance:
         assert "codex" not in {family for _, family, _ in reviewers.invocations}
         assert result["dossier"]["degraded_family_outage"] == ["codex"]
 
+    def test_cli_check_receipt_exits_nonzero_once_the_bytes_change(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        root, vault, _, files = _artifact_setup(tmp_path)
+        dispatch.review_artifact("vault-row", files, **_artifact_kwargs(tmp_path, vault, root))
+        capsys.readouterr()
+        argv = ["--task", "vault-row", "--check-receipt", "--vault-root", str(vault)]
+        argv += ["--artifact-root", str(root)]
+        for path in files:
+            argv += ["--artifact", str(path.relative_to(root))]
+        assert dispatch.main(argv) == 0
+        assert json.loads(capsys.readouterr().out)["blockers"] == []
+        files[0].write_text("# Census\n\nchanged\n", encoding="utf-8")
+        assert dispatch.main(argv) == 1
+        assert json.loads(capsys.readouterr().out)["blockers"][0].startswith(
+            "artifact_receipt_stale:"
+        )
+
     def test_cli_routes_task_and_artifacts(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
