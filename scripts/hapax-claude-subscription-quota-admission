@@ -206,6 +206,7 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--receipt-dir", type=Path, default=DEFAULT_RECEIPT_DIR)
     parser.add_argument("--receipt-name")
+    parser.add_argument("--credential-binding", help="Opaque proof from the governed active probe")
     parser.add_argument("--now")
     parser.add_argument(
         "--evidence-ref",
@@ -249,6 +250,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"{MAX_STALE_AFTER_SECONDS}"
             )
         observation = _observation(args.observation)
+        if (
+            args.credential_binding is not None
+            and re.fullmatch(r"[0-9a-f]{64}", args.credential_binding) is None
+        ):
+            raise ValueError("invalid credential binding; expected an opaque probe proof")
         route_id = _route_id(args.route_id)
         evidence_ref = _safe_reference(args.evidence_ref, label="evidence-ref")
         receipt_name = _receipt_name(args, route_id=route_id, observed_at=observed_at)
@@ -261,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
             ("capacity_pool", CAPACITY_POOL),
             ("auth_surface", AUTH_SURFACE),
             ("observation", observation),
+            *([("credential_binding", args.credential_binding)] if args.credential_binding else []),
             *(
                 [("probe_environment_scrubbed", PROBE_ENV_SCRUBBED_RECEIPT_VALUE)]
                 if args.probe_environment_scrubbed

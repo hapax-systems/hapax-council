@@ -283,6 +283,8 @@ fi
 # tmux server does not necessarily inherit the dispatcher's environment.
 CLAUDE_COMMAND=("$CLAUDE_BIN")
 if [ "$SUBSCRIPTION_ONLY" -eq 1 ]; then
+  # Pin the admitted ledger path along with HOME/config across the tmux server.
+  export HAPAX_QUOTA_SPEND_LEDGER="$(realpath -m -- "${HAPAX_QUOTA_SPEND_LEDGER:-${HAPAX_QUOTA_SPEND_LEDGER_LIVE:-$HOME/.cache/hapax/orchestration/quota-spend-ledger-live.json}}")"
   SUBSCRIPTION_GUARD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hapax-claude-account-live-observe"
   SUBSCRIPTION_PYTHON="$(command -v python3)"
   (cd "$WORKDIR" && "$SUBSCRIPTION_PYTHON" "$SUBSCRIPTION_GUARD" \
@@ -394,6 +396,7 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
     # Pin the credential/configuration binding, never the credential value.
     printf 'export HOME=%q\n' "$HOME"
     printf 'export CLAUDE_CONFIG_DIR=%q\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+    printf 'export HAPAX_QUOTA_SPEND_LEDGER=%q\n' "$HAPAX_QUOTA_SPEND_LEDGER"
   fi
   if [ -n "$CLAUDE_TASK" ]; then
     printf 'export HAPAX_METHODOLOGY_DISPATCH_TASK=%q\n' "$CLAUDE_TASK"

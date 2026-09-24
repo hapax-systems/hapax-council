@@ -9,8 +9,8 @@ session presence cannot substitute for account evidence.
 The source change requires independent review and coordinator release. It does
 not itself observe live headroom or authorize launching work. After release,
 the coordinator must obtain a genuine account-live subscription observation,
-record its actual observation time, and use the installed
-`hapax-claude-subscription-quota-admission --route-id claude.interactive.full`.
+record its actual observation time through the installed account-live observer,
+which invokes `hapax-claude-subscription-quota-admission --route-id claude.interactive.full`.
 The scheduled account-live observer now includes this route and requires an
 Opus-family serve, matching the declared interactive model family. A Haiku or
 Sonnet serve cannot witness interactive admission. Passive transcripts and headless
@@ -56,8 +56,22 @@ Governed interactive dispatch also passes `--subscription-only` to `hapax-claude
 The launcher checks before claiming/spawning and repeats the binding inside the
 actual tmux runner (or immediately before a direct terminal exec). A tmux server's
 ambient environment cannot substitute its own provider or saved-login directory.
-Only the home/configuration paths are recorded in the runner; the saved access
-token is read and validated again in memory at execution.
+The registry and `--list-platform-paths` also advertise this guarded invocation.
+Only the home/configuration and quota-ledger paths are recorded in the runner;
+the saved access token is read and validated again in memory at execution.
+
+The probe binds its exact request credential to the observation time using an
+opaque HMAC proof. The existing receipt's optional `credential_binding` field
+passes through telemetry into its composite ledger evidence. No credential or
+account identifier is persisted. The launcher rechecks fresh quota and matches
+that proof against the credential it will actually pass to the child, including
+after its CLI authentication check. A receipt measured for account A cannot
+admit account B via another `CLAUDE_CONFIG_DIR`, a changed credential file or
+tmux's environment. Even a same-account credential rotation requires a new
+authorized observation and telemetry regeneration. Legacy/manual receipts without
+the proof retain their existing quota meaning but cannot authorize an interactive
+child. Missing, malformed or stale ledgers hold; launch never substitutes fixtures.
+Status and registry projections omit the opaque proof; launch checks the raw ledger.
 
 The child retains its normal home, hooks, MCP configuration, plugins and history.
 Provider, proxy and runtime-injection variables inherited from the caller are
@@ -66,11 +80,13 @@ settings files from restoring provider/authentication overrides. A command-line
 settings layer retains that control, disables `apiKeyHelper`, and selects the
 subscription login method. Caller `--settings`/`--setting-sources` overrides hold.
 Managed configurations remain unsupported and held, not overridden. This relies
-on the vendor's [host routing contract](https://code.claude.com/docs/en/env-vars)
+on the vendor's [host routing contract](https://code.claude.com/docs/ko/env-vars)
 and [settings precedence](https://code.claude.com/docs/en/settings), checked
-2026-09-24 against installed CLI 2.1.281. Earlier or unparseable versions hold;
-2.1.281 is the earliest version this producer has exercised, not a claim about
-when the vendor introduced the feature.
+2026-09-24 against installed CLI 2.1.281. The host-control entry was present in
+the vendor's Korean reference but absent from the English page retrieved on that
+date. The executable effect, not documentation alone, is the boundary: versions
+other than the exercised 2.1.281 hold until the isolated contract is rechecked
+and its source pin is reviewed. This does not claim when the feature was introduced.
 
 Before exec, the CLI must report `loggedIn: true`, `authMethod: oauth_token`,
 `apiProvider: firstParty`, and no API-key source for the child's environment and
@@ -85,10 +101,17 @@ saved login and a governed restart, never automatic credential substitution.
 Recheck the real dispatch/launcher/runner path with
 `tests/scripts/test_claude_interactive_launch_auth.py`. For a separate installed
 CLI check, set `HAPAX_CLAUDE_CONTRACT_BINARY` to its absolute path and run that
-file's `test_installed_cli_keeps_routing_bound_after_loading_settings`. It uses
-synthetic credentials, a temporary home and `--init-only` in an unshared network
-namespace. Its actual Setup-hook observation establishes settings application
-and preserved useful configuration, not live headroom or a production lane.
+file's tests selected by `-k installed_cli`. They use synthetic credentials and a
+temporary home in an unshared network namespace. The first uses `--init-only`;
+its actual Setup-hook observation establishes settings application
+and preserved useful configuration. A second test makes a real CLI request against
+a namespace-local HTTP canary as a positive control, then requires the guarded
+request to avoid that gateway. Networking outside the namespace is unavailable;
+these tests establish routing behavior, not live headroom or a production lane.
+
+Recheck account/config substitution before dispatch and inside tmux, the real
+probe→receipt→telemetry→launch path, legacy-proof holds, expiry during the CLI
+check and sanitized exec failure with `tests/scripts/test_claude_interactive_launch_auth.py`.
 
 Recheck the probe-to-writer path with
 `tests/scripts/test_claude_interactive_admission_auth_review.py::test_real_probe_result_reaches_interactive_mint`;
@@ -165,6 +188,7 @@ uv run pytest tests/scripts/test_hapax_claude_interactive_admission.py \
   tests/scripts/test_claude_interactive_admission_auth_review.py \
   tests/scripts/test_claude_probe_subscription_boundary.py \
   tests/scripts/test_claude_interactive_launch_auth.py \
+  tests/scripts/test_claude_interactive_credential_binding.py \
   tests/shared/test_capability_availability_guarantor.py -q
 ```
 

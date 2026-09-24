@@ -534,6 +534,7 @@ CLAUDE_ADMISSION_FIELDS = frozenset(
         "auth_surface",
         "observation",
         "probe_environment_scrubbed",
+        "credential_binding",
         "observed_at",
         "stale_after_seconds",
         "evidence_ref",
@@ -1727,6 +1728,13 @@ def active_claude_admission_receipts(
             reject(path, "observation missing or unsupported", route_id)
             continue
         probe_environment_scrubbed = fields.get("probe_environment_scrubbed", "").strip()
+        credential_binding = fields.get("credential_binding", "")
+        if (
+            "credential_binding" in fields
+            and re.fullmatch(r"[0-9a-f]{64}", credential_binding) is None
+        ):
+            reject(path, "credential binding malformed", route_id)
+            continue
         if (
             probe_environment_scrubbed
             and probe_environment_scrubbed != CLAUDE_ADMISSION_PROBE_ENV_SCRUBBED
@@ -1798,7 +1806,8 @@ def active_claude_admission_receipts(
                     f"route_id:{route_id}:"
                     f"observed_at:{_iso_z_seconds(observed_at)}:"
                     f"fresh_until:{_iso_z_seconds(fresh_until)}:"
-                    f"{CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX}"
+                    + (f"credential_binding:{credential_binding}:" if credential_binding else "")
+                    + f"{CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX}"
                 ),
                 observed_at=observed_at,
                 fresh_until=fresh_until,

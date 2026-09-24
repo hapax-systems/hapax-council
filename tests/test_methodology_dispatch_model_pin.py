@@ -101,6 +101,7 @@ def test_descriptor_reaches_native_child_through_real_claude_launcher(tmp_path, 
     from datetime import UTC, datetime
     from types import SimpleNamespace
 
+    from tests.scripts.test_claude_interactive_launch_auth import bound_ledger
     from tests.scripts.test_hapax_claude_headless import _headless_env, _stub_bin
 
     home = tmp_path / "home"
@@ -128,7 +129,7 @@ def test_descriptor_reaches_native_child_through_real_claude_launcher(tmp_path, 
         json.dumps(
             {
                 "claudeAiOauth": {
-                    "accessToken": "synthetic-model-pin-token",
+                    "accessToken": "synthetic-subscription-access-token",
                     "subscriptionType": "max",
                     "scopes": ["user:inference"],
                     "expiresAt": int(datetime.now(UTC).timestamp() * 1000) + 3600000,
@@ -154,6 +155,7 @@ def test_descriptor_reaches_native_child_through_real_claude_launcher(tmp_path, 
         HAPAX_METHODOLOGY_CLAUDE_LAUNCHER=str(REPO_ROOT / "scripts/hapax-claude"),
         HAPAX_CLAUDE_EFFORT="low",
         HAPAX_CLAUDE_MODEL="haiku",
+        HAPAX_QUOTA_SPEND_LEDGER=str(bound_ledger(tmp_path)),
         XDG_CACHE_HOME=str(home / ".cache"),
     )
 

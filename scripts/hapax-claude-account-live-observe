@@ -65,6 +65,7 @@ from pathlib import Path
 from typing import Final
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 ADMISSION_WRITER = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admission"
 
 #: The witness name the receipt validator's allowlist requires for this observation.
@@ -110,7 +111,7 @@ ROUTE_MODEL_PREFIXES: Final[dict[str, tuple[str, ...]]] = {
 
 
 class Observation:
-    __slots__ = ("kind", "at", "source", "detail", "model", "scrubbed_env")
+    __slots__ = ("kind", "at", "source", "detail", "model", "scrubbed_env", "credential_binding")
 
     def __init__(
         self,
@@ -120,6 +121,7 @@ class Observation:
         detail: str = "",
         model: str | None = None,
         scrubbed_env: tuple[str, ...] = (),
+        credential_binding: str | None = None,
     ) -> None:
         self.kind = kind  # "served" | "wall"
         self.at = at
@@ -127,6 +129,7 @@ class Observation:
         self.detail = detail
         self.model = model
         self.scrubbed_env = scrubbed_env
+        self.credential_binding = credential_binding
 
 
 def _anthropic_model(record: Mapping[str, object]) -> str | None:
@@ -462,15 +465,40 @@ INTERACTIVE_ENV_NAMES = frozenset(
         "CLAUDE_CONFIG_DIR",
     }
 )
-# Earliest CLI whose host-routing effect this producer has actually exercised.
-# A silently ignored env flag on an older CLI is not an authentication boundary.
-INTERACTIVE_MINIMUM_CLI = (2, 1, 281)
+# CLI whose host-routing effect this producer has actually exercised. An
+# unmeasured version's interpretation of the flag is not an auth boundary.
+INTERACTIVE_VALIDATED_CLI = (2, 1, 281)
+
+
+def _interactive_credential_admitted(token: str) -> bool:
+    # Read the same explicit/live ledger as dispatch. No fixture fallback and no
+    # receipt refresh: a delayed tmux child must still hold at actual execution.
+    try:
+        from shared.quota_spend_ledger import (
+            DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
+            QuotaSpendLedgerError,
+            claude_interactive_credential_admitted,
+            load_quota_spend_ledger,
+        )
+    except ImportError:
+        return False
+    path = Path(
+        os.environ.get("HAPAX_QUOTA_SPEND_LEDGER")
+        or os.environ.get("HAPAX_QUOTA_SPEND_LEDGER_LIVE")
+        or DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+    ).expanduser()
+    try:
+        return claude_interactive_credential_admitted(
+            load_quota_spend_ledger(path), token, now=datetime.now(UTC)
+        )
+    except (OSError, ValueError, QuotaSpendLedgerError):
+        return False
 
 
 def interactive_subscription(argv: list[str], *, execute: bool) -> int:
     """Bind the admitted child, not just its probe, to saved subscription OAuth.
 
-    This does not observe quota or mint evidence. The dispatcher owns admission.
+    This rechecks existing quota evidence; it does not observe or mint headroom.
     No token is written to argv, spawn scripts, status output or another store.
     """
 
@@ -479,7 +507,9 @@ def interactive_subscription(argv: list[str], *, execute: bool) -> int:
             f"interactive subscription launch held: {reason}. Next action: restore "
             "a current Pro/Max saved login on unmanaged Linux and a Claude CLI that "
             "supports host-managed provider routing; reconcile any gateway or managed "
-            "configuration through its owner, then retry governed dispatch. No API fallback.",
+            "configuration through its owner. Obtain an authorized account-live observation "
+            "for this saved credential, regenerate quota telemetry, then retry governed "
+            "dispatch. No API fallback.",
             file=sys.stderr,
         )
         return 4
@@ -492,6 +522,8 @@ def interactive_subscription(argv: list[str], *, execute: bool) -> int:
     token = _subscription_probe_token(datetime.now(UTC)) if _unmanaged_linux_probe() else None
     if token is None:
         return hold("subscription authentication or host policy is unproven")
+    if not _interactive_credential_admitted(token):
+        return hold("current quota evidence does not bind the launch credential")
     # Like the probe, exclude provider, proxy and runtime-injection controls.
     # Retain coordination, terminal, locale and desktop bindings for full tools.
     child_env = {
@@ -514,10 +546,11 @@ def interactive_subscription(argv: list[str], *, execute: bool) -> int:
         if (
             version_result.returncode != 0
             or version is None
-            or tuple(map(int, version.groups())) < INTERACTIVE_MINIMUM_CLI
+            or tuple(map(int, version.groups())) != INTERACTIVE_VALIDATED_CLI
         ):
             return hold(
-                "Claude CLI 2.1.281 or later is required for the measured host-routing contract"
+                "Claude CLI 2.1.281 is the validated host-routing version; other versions "
+                "require the isolated CLI contract recheck before route admission"
             )
         # Check the installed interpreter's selection with the exact child env
         # and settings. Old/unsupported CLIs and saved gateway sessions hold.
@@ -543,6 +576,8 @@ def interactive_subscription(argv: list[str], *, execute: bool) -> int:
     ):
         return hold("the actual CLI did not select the bound first-party OAuth route")
     if execute:
+        if not _interactive_credential_admitted(token):
+            return hold("launch credential evidence expired or changed during authentication check")
         try:
             os.execvpe(argv[0], [*argv, *settings], child_env)
         except OSError:
@@ -646,8 +681,15 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
             "active-probe",
             model=model,
             scrubbed_env=PROBE_ENV_SCRUBBED,
+            credential_binding=_probe_credential_binding(token, now),
         )
     return None
+
+
+def _probe_credential_binding(token: str, now: datetime) -> str:
+    from shared.quota_spend_ledger import claude_subscription_credential_binding
+
+    return claude_subscription_credential_binding(token, now)
 
 
 def _mtime(path: Path) -> datetime | None:
@@ -829,6 +871,8 @@ def mint(
             argv += ["--receipt-dir", str(receipt_dir)]
         if route_evidence.scrubbed_env:
             argv.append("--probe-environment-scrubbed")
+        if route_evidence.credential_binding:
+            argv += ["--credential-binding", route_evidence.credential_binding]
         if dry_run:
             results.append({"route_id": route_id, "would_run": argv[2:]})
             continue

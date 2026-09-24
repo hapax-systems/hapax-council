@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import shlex
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -23,8 +26,38 @@ from tests.scripts.test_hapax_methodology_dispatch import (
     _task,
     _worktree,
 )
+from tests.scripts.test_hapax_quota_telemetry_writer import _run_writer
 
 NOW = datetime.now(UTC)
+
+
+def bound_ledger(tmp_path):
+    """Synthetic fresh A observation, independently construct the opaque proof."""
+    path = _fresh_claude_subscription_quota_ledger(tmp_path, route_id="claude.interactive.full")
+    payload = json.loads(path.read_text())
+    for snapshot in payload["quota_snapshots"]:
+        if snapshot["route_id"] != "claude.interactive.full":
+            continue
+        refs = []
+        for ref in snapshot["evidence_refs"]:
+            stamp = datetime.fromisoformat(
+                ref.split(":observed_at:")[1].split(":fresh_until:")[0]
+            ).isoformat()
+            proof = hmac.new(
+                b"synthetic-subscription-access-token",
+                f"hapax:claude:subscription:first-party:credential-binding:v1:{stamp}".encode(),
+                hashlib.sha256,
+            ).hexdigest()
+            refs.append(
+                ref.replace(
+                    ":account-live-quota:observed",
+                    f":credential_binding:{proof}:account-live-quota:observed",
+                )
+            )
+        snapshot["evidence_refs"] = refs
+    path = tmp_path / "bound-ledger.json"
+    path.write_text(json.dumps(payload))
+    return path
 
 
 def launch_fixture(tmp_path):
@@ -124,6 +157,7 @@ else:
         "export ANTHROPIC_AUTH_TOKEN=synthetic-tmux-token\n"
         "unset CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST CLAUDE_CODE_OAUTH_TOKEN\n"
         "export HOME=/synthetic-unbound-home CLAUDE_CONFIG_DIR=/synthetic-unbound-config\n"
+        "export HAPAX_QUOTA_SPEND_LEDGER=/synthetic-unbound-ledger\n"
         'exec "$runner" ;;\n*) exit 0 ;;\nesac\n'
     )
     (binary / "tmux").chmod(0o700)
@@ -133,9 +167,7 @@ else:
         "HAPAX_METHODOLOGY_CLAUDE_LAUNCHER": str(REPO_ROOT / "scripts/hapax-claude"),
         "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
         "HAPAX_CLAUDE_WORKTREE_ROOT": str(home / "projects"),
-        "HAPAX_QUOTA_SPEND_LEDGER": str(
-            _fresh_claude_subscription_quota_ledger(tmp_path, route_id="claude.interactive.full")
-        ),
+        "HAPAX_QUOTA_SPEND_LEDGER": str(bound_ledger(tmp_path)),
         "CLAUDE_CONFIG_DIR": str(config),
         "XDG_CACHE_HOME": str(home / ".cache"),
     }
@@ -281,6 +313,7 @@ def test_auth_check_failure_never_executes_or_exposes_output(
         )
 
     monkeypatch.setattr(obs.subprocess, "run", check)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER", str(bound_ledger(tmp_path)))
     monkeypatch.setattr(obs.os, "execvpe", lambda *args: pytest.fail("unproven launch executed"))
     assert obs.interactive_subscription(["claude"], execute=True) == 4
     error = capsys.readouterr().err
@@ -299,6 +332,190 @@ def test_tmux_rechecks_credentials_at_actual_execution(tmp_path):
     assert result.returncode != 0
     assert "subscription authentication or host policy is unproven" in result.stderr
     assert not observed.exists()
+
+
+@pytest.mark.parametrize("when", ["before-dispatch", "inside-tmux"])
+def test_receipt_for_account_a_cannot_launch_account_b(tmp_path, when):
+    env, config, _, observed, credential = launch_fixture(tmp_path)
+    other = tmp_path / "account-b"
+    other.mkdir()
+    data = json.loads(credential.read_text())
+    data["claudeAiOauth"]["accessToken"] = "synthetic-distinct-account-b"
+    (other / ".credentials.json").write_text(json.dumps(data))
+    if when == "before-dispatch":
+        env["CLAUDE_CONFIG_DIR"] = str(other)
+    else:
+        tmux = tmp_path / "bin/tmux"
+        tmux.write_text(
+            tmux.read_text().replace(
+                "for runner; do :; done",
+                f'for runner; do :; done\ncp "{other}/.credentials.json" "{config}/.credentials.json"',
+            )
+        )
+    result = dispatch(tmp_path, env)
+    assert result.returncode != 0
+    assert "credential" in result.stderr and "Next action:" in result.stderr
+    assert "synthetic-distinct-account-b" not in result.stdout + result.stderr
+    assert not observed.exists()
+    if when == "before-dispatch":
+        assert not (tmp_path / "home/.cache/hapax/claude-spawns").exists()
+
+
+@pytest.mark.parametrize("source", ["registry", "listed"])
+def test_advertised_interactive_launcher_invokes_subscription_guard(tmp_path, source):
+    env, _, _, observed, credential = launch_fixture(tmp_path)
+    if source == "registry":
+        registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+        route = next(r for r in registry["routes"] if r["route_id"] == "claude.interactive.full")
+    else:
+        result = subprocess.run(
+            [str(REPO_ROOT / "scripts/hapax-methodology-dispatch"), "--list-platform-paths"],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        line = next(
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("claude/interactive/full:")
+        )
+        route = {"launcher": line.split(" -> ", 1)[1]}
+    command = shlex.split(
+        route["launcher"].replace("<lane>", "beta").replace("<task>", "governed-build")
+    )
+    assert "--subscription-only" in command
+    credential.unlink()
+    result = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        env={**os.environ, **env, "HOME": str(tmp_path / "home")},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "subscription authentication or host policy is unproven" in result.stderr
+    assert not observed.exists()
+
+
+@pytest.mark.parametrize("defect", ["legacy", "malformed", "missing", "wrong-proof"])
+def test_launch_holds_without_readable_matching_proof(tmp_path, defect):
+    env, _, _, observed, _ = launch_fixture(tmp_path)
+    path = Path(env["HAPAX_QUOTA_SPEND_LEDGER"])
+    if defect == "missing":
+        path.unlink()
+    elif defect == "malformed":
+        path.write_text("{}")
+    else:
+        payload = json.loads(path.read_text())
+        for snapshot in payload["quota_snapshots"]:
+            if snapshot["route_id"] != "claude.interactive.full":
+                continue
+            ref = snapshot["evidence_refs"][0]
+            start, suffix = ref.split(":credential_binding:")
+            proof, end = suffix.split(":", 1)
+            snapshot["evidence_refs"] = [
+                start + ":" + end
+                if defect == "legacy"
+                else start + ":credential_binding:" + "0" * 64 + ":" + end
+            ]
+        path.write_text(json.dumps(payload))
+    result = dispatch(tmp_path, env)
+    assert result.returncode != 0
+    assert not observed.exists()
+
+
+@pytest.mark.parametrize("failure", ["exec", "evidence-expired"])
+@pytest.mark.usefixtures("subscription_probe_home")
+def test_final_exec_boundary_holds_without_leaking_errors(tmp_path, monkeypatch, capsys, failure):
+    ledger = bound_ledger(tmp_path)
+    monkeypatch.setenv("HAPAX_QUOTA_SPEND_LEDGER", str(ledger))
+
+    def check(argv, **kwargs):
+        if "--version" in argv:
+            return subprocess.CompletedProcess(argv, 0, "2.1.281 (Claude Code)", "")
+        if failure == "evidence-expired":
+            ledger.unlink()
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            json.dumps(
+                {
+                    "loggedIn": True,
+                    "authMethod": "oauth_token",
+                    "apiProvider": "firstParty",
+                    "apiKeySource": None,
+                }
+            ),
+            "",
+        )
+
+    calls = []
+
+    def fail_exec(*args):
+        calls.append(True)
+        raise OSError("synthetic-sensitive-exec-error")
+
+    monkeypatch.setattr(obs.subprocess, "run", check)
+    monkeypatch.setattr(obs.os, "execvpe", fail_exec)
+    assert obs.interactive_subscription(["claude"], execute=True) == 4
+    assert bool(calls) is (failure == "exec")
+    error = capsys.readouterr().err
+    expected = "bound CLI could not start" if failure == "exec" else "evidence expired or changed"
+    assert expected in error and "Next action:" in error
+    assert "synthetic-sensitive-exec-error" not in error
+
+
+@pytest.mark.parametrize("change_account", [False, True])
+def test_real_probe_receipt_and_telemetry_bind_actual_launch(tmp_path, monkeypatch, change_account):
+    env, _, _, observed, credential = launch_fixture(tmp_path)
+    now = datetime.now(UTC).replace(microsecond=0)
+    real_run = subprocess.run
+
+    def served(argv, **kwargs):
+        if argv == list(obs.PROBE_ARGV):
+            assert kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "synthetic-subscription-access-token"
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                json.dumps(
+                    {
+                        "model": "claude-opus-5",
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                        "is_error": False,
+                    }
+                ),
+                "",
+            )
+        return real_run(argv, **kwargs)
+
+    with monkeypatch.context() as context:
+        context.setenv("CLAUDE_CONFIG_DIR", env["CLAUDE_CONFIG_DIR"])
+        for name in list(obs.provider_redirect_env()):
+            context.delenv(name)
+        context.setattr(obs.subprocess, "run", served)
+        observation = obs.probe(now)
+        assert observation is not None and observation.kind == "served"
+        results = obs.mint(
+            observation,
+            now=now,
+            route_ids=("claude.interactive.full",),
+            stale_after_seconds=900,
+            receipt_dir=tmp_path / "relay-receipts",
+            dry_run=False,
+        )
+        assert results[0]["returncode"] == 0
+    writer, ledger = _run_writer(tmp_path, now=now.isoformat())
+    assert writer.returncode == 0, writer.stderr
+    env["HAPAX_QUOTA_SPEND_LEDGER"] = str(ledger)
+    if change_account:
+        data = json.loads(credential.read_text())
+        data["claudeAiOauth"]["accessToken"] = "synthetic-distinct-account-b"
+        credential.write_text(json.dumps(data))
+    result = dispatch(tmp_path, env)
+    assert (result.returncode == 0) is not change_account, result.stdout + result.stderr
+    assert observed.exists() is not change_account
+    for path in [ledger, *list((tmp_path / "relay-receipts").glob("*.yaml"))]:
+        assert "synthetic-subscription-access-token" not in path.read_text()
 
 
 def test_installed_cli_keeps_routing_bound_after_loading_settings(tmp_path):
@@ -343,6 +560,7 @@ def test_installed_cli_keeps_routing_bound_after_loading_settings(tmp_path):
         "HOME": str(tmp_path / "home"),
         "CLAUDE_CONFIG_DIR": str(config),
         "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin",
+        "HAPAX_QUOTA_SPEND_LEDGER": str(bound_ledger(tmp_path)),
     }
     result = subprocess.run(
         [
@@ -371,3 +589,41 @@ def test_installed_cli_keeps_routing_bound_after_loading_settings(tmp_path):
         "useful_setting": True,
     }
     assert (config / "settings.json").read_bytes() == before
+
+
+def test_installed_cli_request_does_not_reach_settings_gateway(tmp_path):
+    """Positive canary control plus guarded real request, isolated from all providers."""
+    binary = os.environ.get("HAPAX_CLAUDE_CONTRACT_BINARY")
+    if not binary:
+        pytest.skip("set HAPAX_CLAUDE_CONTRACT_BINARY for isolated installed-CLI check")
+    env, config, workdir, _, _ = launch_fixture(tmp_path)
+    result = subprocess.run(
+        [
+            "unshare",
+            "--user",
+            "--map-root-user",
+            "--net",
+            sys.executable,
+            str(REPO_ROOT / "tests/fixtures/claude_gateway_contract.py"),
+            binary,
+            str(REPO_ROOT / "scripts/hapax-claude-account-live-observe"),
+        ],
+        cwd=workdir,
+        env={
+            "HOME": str(tmp_path / "home"),
+            "CLAUDE_CONFIG_DIR": str(config),
+            "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin",
+            "HAPAX_QUOTA_SPEND_LEDGER": env["HAPAX_QUOTA_SPEND_LEDGER"],
+        },
+        capture_output=True,
+        text=True,
+        timeout=100,
+    )
+    assert result.returncode == 0, result.stderr
+    evidence = json.loads(result.stdout)
+    (tmp_path / "gateway-observation.json").write_text(result.stdout)
+    assert evidence["unguarded"]["gateway_requests"] > 0, evidence
+    assert evidence["guarded"]["gateway_requests"] == 0, evidence
+    assert evidence["guarded"]["connection_failure"] is True, evidence
+    assert evidence["guarded"]["timed_out"] is False, evidence
+    assert evidence["settings_unchanged"] is True
