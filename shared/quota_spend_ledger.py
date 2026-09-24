@@ -37,7 +37,7 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
 CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
-    {"claude.headless.full", "claude.review.opus"}
+    {"claude.headless.full", "claude.review.opus", "claude.interactive.full"}
 )
 RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
     {
@@ -52,6 +52,7 @@ RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "glmcp.review.direct": "z_ai-glm-coding-plan",
     "claude.headless.full": "anthropic-claude-subscription",
     "claude.review.opus": "anthropic-claude-subscription",
+    "claude.interactive.full": "anthropic-claude-subscription",
     "kimi.interactive.lane": "moonshot-kimi-code-managed",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"

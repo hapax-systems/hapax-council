@@ -348,7 +348,11 @@ SUBSCRIPTION_ROUTES = {
     "glmcp": "glmcp.review.direct",
     "kimi": "kimi.interactive.lane",
 }
-CLAUDE_SUBSCRIPTION_ROUTES = ("claude.headless.full", "claude.review.opus")
+CLAUDE_SUBSCRIPTION_ROUTES = (
+    "claude.headless.full",
+    "claude.review.opus",
+    "claude.interactive.full",
+)
 CLAUDE_HEADLESS_ROLES = frozenset(
     {"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
 )

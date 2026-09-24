@@ -90,6 +90,7 @@ AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
 GLMCP_REVIEW_ROUTE_ID = "glmcp.review.direct"
 GLMCP_REVIEW_ADMISSION_BLOCKER = "glmcp_review_seat_receipt_admission_required"
 CLAUDE_HEADLESS_ROUTE_ID = "claude.headless.full"
+CLAUDE_INTERACTIVE_ROUTE_ID = "claude.interactive.full"
 CLAUDE_REVIEW_ROUTE_ID = "claude.review.opus"
 CLAUDE_REVIEW_ADMISSION_BLOCKER = "claude_review_seat_receipt_admission_required"
 CLAUDE_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER = "claude_review_route_specific_quota_receipt_absent"
@@ -99,11 +100,12 @@ KIMI_ROUTE_SPECIFIC_QUOTA_BLOCKER = "route_specific_quota_receipt_absent"
 ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS = {
     AGY_REVIEW_ROUTE_ID: AGY_ROUTE_SPECIFIC_QUOTA_BLOCKER,
     GLMCP_REVIEW_ROUTE_ID: GLMCP_REVIEW_ADMISSION_BLOCKER,
-    # claude.headless.full: a fresh live ledger admission (telemetry-writer-folded) injects the
+    # Claude full routes: a fresh live ledger admission (telemetry-writer-folded) injects the
     # account-live-quota:observed evidence ref into quota freshness so the availability guarantor
     # attests. Without a live ledger, _route_specific_quota_admission_fresh returns (False, ()) and
     # the route stays held — lane/session presence never clears this.
     CLAUDE_HEADLESS_ROUTE_ID: CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER,
+    CLAUDE_INTERACTIVE_ROUTE_ID: CLAUDE_ACCOUNT_LIVE_QUOTA_BLOCKER,
     CLAUDE_REVIEW_ROUTE_ID: CLAUDE_REVIEW_ROUTE_SPECIFIC_QUOTA_BLOCKER,
     # kimi.interactive.lane: same contract — a hapax.kimi_quota_admission.v1 receipt minted by
     # ~/.local/bin/hapax-kimi-quota-admission and folded into the live ledger by the telemetry
@@ -2242,7 +2244,10 @@ def _apply_receipt_to_route_payload(
         route_payload.get("route_id")
     )
     quota_admission_refs_to_inject = quota_admission_refs
-    if not quota_admission_fresh and route_payload.get("route_id") == CLAUDE_HEADLESS_ROUTE_ID:
+    if not quota_admission_fresh and route_payload.get("route_id") in {
+        CLAUDE_HEADLESS_ROUTE_ID,
+        CLAUDE_INTERACTIVE_ROUTE_ID,
+    }:
         quota_admission_refs_to_inject = tuple(
             ref
             for ref in quota_admission_refs
