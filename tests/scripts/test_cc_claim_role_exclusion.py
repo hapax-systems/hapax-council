@@ -68,15 +68,24 @@ def _ownership_bytes(home: Path) -> dict[str, bytes]:
 
 
 @pytest.mark.parametrize("writer", ["admitted", "emergency", "charter"])
+@pytest.mark.parametrize("custom_root", [False, True])
 def test_same_role_different_task_excludes_cli_publication(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, writer: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, writer: str, custom_root: bool
 ) -> None:
     home = tmp_path / "home"
     monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
     helper = _helper("test_cc_claim_charter" if writer == "charter" else "test_cc_claim")
+    from shared.gate0b_claim_publication_install import install_claim_publication_composition
+
+    roots = default_claim_publication_roots(home=home)
+    if custom_root:
+        roots = roots.model_copy(update={"claim_lock_root": str(home / "installed-role-locks")})
+    install_claim_publication_composition(
+        roots=roots, installed_at="2026-09-24T00:00:00Z", install_task_ref="test-install"
+    )
     if writer == "charter":
         helper._write_charter(home)
-        result = helper._claim(home, "charter-x")
+        result = helper._claim(home, "charter-x", install_gate0b=False)
         assert result.returncode == 0, result.stderr
         helper._write_unit(home, "new-task", ["shared/cx/new.py"])
         role = helper._ROLE
@@ -84,10 +93,10 @@ def test_same_role_different_task_excludes_cli_publication(
     else:
         helper._write_task(home, "active", "new-task")
         role = "cx-test"
-        kwargs = {"legacy": writer == "emergency"}
+        kwargs = {"legacy": writer == "emergency", "install_gate0b": False}
     helper.SCRIPT = _short_lock_timeout_cli(tmp_path)
     before = _ownership_bytes(home)
-    lock_root = Path(default_claim_publication_roots(home=home).claim_lock_root)
+    lock_root = Path(roots.claim_lock_root)
     old = SimpleNamespace(role=role, task_id="different-old-task", note_path=home / "old.md")
     # The holder has a different task/note. A note-only writer will complete here,
     # so the refusal and exact projection preimages below are behavioral evidence.

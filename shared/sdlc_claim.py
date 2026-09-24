@@ -4773,7 +4773,9 @@ def _recover_one(
     receipt_root: Path | None,
     expected_owner: tuple[str, str],
 ) -> ClaimPublicationRecoveryResult:
-    """Complete one interrupted admitted publication without spending a new claim."""
+    """Inspect a publication; pending replay lacks an independent authority witness."""
+
+    del expected_owner  # Caller coordinates are never an authority proof.
 
     manifest_path = _normalized(manifest_path)
     intent, projections, publication_id, state, consumption = _load_any_manifest(manifest_path)
@@ -4822,12 +4824,6 @@ def _recover_one(
                 "preserve historical non-authorizing bytes and republish through the current executor",
                 publication_id,
             )
-        if state != "aborted" and (intent.role, intent.session_id) != expected_owner:
-            raise ClaimPublicationError(
-                "claim_publication_recovery_owner_mismatch",
-                "reconcile the pending publication using its original role and session",
-                f"{publication_id}:role={intent.role};session={intent.session_id}",
-            )
         if state == "applied":
             require_applied_admitted_claim_publication(
                 intent,
@@ -4851,37 +4847,6 @@ def _recover_one(
                 "inspect the journal state and recover only created/projecting/postimage/recovery journals",
                 f"{publication_id}:{state}",
             )
-
-        live_projections = projections[:7]
-        receipt_before_activation_plan = _receipt_before_activation_projection_plan(
-            live_projections
-        )
-        pre_receipt_projections = _phase_projections(receipt_before_activation_plan.pre_receipt)
-        pre_receipt_scratches = _phase_scratches(
-            receipt_before_activation_plan.pre_receipt, publication_id
-        )
-        activation_projections = _phase_projections(receipt_before_activation_plan.activation)
-        activation_scratches = _phase_scratches(
-            receipt_before_activation_plan.activation, publication_id
-        )
-
-        def apply_missing_postimages(
-            target_projections: Sequence[FileProjection],
-            target_scratches: Sequence[_ProjectionScratch],
-        ) -> None:
-            for projection, scratch in zip(target_projections, target_scratches, strict=True):
-                current_content, current_mode = _file_state(projection.path)
-                if current_content == projection.after and current_mode == projection.after_mode:
-                    continue
-                if current_content == projection.before and current_mode == projection.before_mode:
-                    _apply_projections((projection,), (scratch,), None)
-                    continue
-                raise ClaimPublicationError(
-                    "claim_publication_recovery_projection_conflict",
-                    "preserve every live projection and inspect the conflicting path before retrying recovery",
-                    str(projection.path),
-                )
-            _finalize_applied_scratches(target_projections, target_scratches)
 
         try:
             # Recovery can start with either the exact preimage or postimage,
@@ -4913,10 +4878,6 @@ def _recover_one(
                 )
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
-            apply_missing_postimages(pre_receipt_projections, pre_receipt_scratches)
-            _require_exact_task_postimage(intent)
-            _assert_preimages(projections[7:])
-            consumption.require_source_proofs(intent)
         except LifecycleTransitionError as exc:
             raise _translate_lifecycle_error(
                 "claim_publication_recovery_projection_failed",
@@ -4924,53 +4885,15 @@ def _recover_one(
                 exc,
             ) from exc
 
-        _persist_admitted_manifest_state(
-            manifest_path,
-            intent,
-            consumption,
-            projections,
+        # A journal and a caller-supplied owner tuple identify an attempt but
+        # cannot authorize another process to finish it. No qualified authority
+        # witness is consumed here. Preserve the pending journal and projections.
+        raise ClaimPublicationError(
+            "claim_publication_recovery_authority_unverified",
+            "preserve the pending journal and projections; obtain independently "
+            "verified recovery authority through a governed producer before replay",
             publication_id,
-            state="postimage_complete",
         )
-        _ensure_claim_private_directory(receipt_directory)
-        if receipt_path.exists() or receipt_path.is_symlink():
-            _as_admitted_receipt(
-                manifest_path,
-                receipt_path,
-                intent,
-                consumption,
-                projections,
-                publication_id,
-                recovered=True,
-            )
-        else:
-            _persist_admitted_receipt(
-                receipt_path,
-                intent,
-                consumption,
-                projections,
-                publication_id,
-            )
-        try:
-            apply_missing_postimages(activation_projections, activation_scratches)
-            _require_exact_task_postimage(intent)
-            _assert_preimages(projections[7:])
-            consumption.require_source_proofs(intent)
-        except LifecycleTransitionError as exc:
-            raise _translate_lifecycle_error(
-                "claim_publication_recovery_projection_failed",
-                "preserve the admitted journal and retry recovery after the activation path stabilizes",
-                exc,
-            ) from exc
-        _persist_admitted_manifest_state(
-            manifest_path,
-            intent,
-            consumption,
-            projections,
-            publication_id,
-            state="applied",
-        )
-        return ClaimPublicationRecoveryResult(publication_id, "applied", None)
 
 
 def _content_address_for_file(path: Path, content: bytes) -> ContentAddress:
@@ -6191,12 +6114,11 @@ def recover_claim_publications(
     task_id: str | None = None,
     expected_owner: tuple[str, str] | None = None,
 ) -> tuple[ClaimPublicationRecoveryResult, ...]:
-    """Replay only the original owner's admitted publication under role locks.
+    """Inspect admitted journals under role locks; hold every pending replay.
 
-    The owner coordinates select the existing admitted attempt; they do not
-    grant new authority. Missing coordinates refuse before filesystem access.
-    Cross-owner operator maintenance needs a separately admitted authority path
-    and is not implemented by omitting this argument.
+    ``expected_owner`` remains a syntactically validated legacy API input only. It authenticates no caller. Applied/aborted journals can be
+    observed without replay; incomplete journals require a future independently
+    verified authority producer, even when the supplied owner tuple matches.
     """
 
     if (
@@ -6208,8 +6130,8 @@ def recover_claim_publications(
     ):
         raise ClaimPublicationError(
             "claim_publication_recovery_owner_required",
-            "supply the original admitted role/session for owner-bound recovery; "
-            "cross-owner maintenance requires a separately governed authority path",
+            "supply well-formed role/session selection coordinates; pending replay "
+            "still requires independently verified recovery authority",
         )
 
     trusted_cache = _normalized(cache_dir or (Path.home() / ".cache" / "hapax"))
