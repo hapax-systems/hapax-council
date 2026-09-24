@@ -4186,8 +4186,12 @@ from shared.quota_spend_ledger import (  # noqa: E402
 from shared.quota_spend_ledger import (  # noqa: E402
     glmcp_payg_usage_cost_usd as _glmcp_payg_usage_cost_usd,
 )
+from shared.quota_spend_ledger import (  # noqa: E402
+    settle_spend_covered_by_provider_balance as _settle_spend_covered_by_provider_balance,
+)
 
 _frozen_spend_receipt_payload
+_settle_spend_covered_by_provider_balance
 _glmcp_payg_reservation_usd
 _glmcp_payg_usage_ceiling_usd
 _glmcp_payg_usage_cost_usd
