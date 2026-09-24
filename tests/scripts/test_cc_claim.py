@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 import textwrap
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1019,6 +1020,93 @@ def test_recover_claim_publications_subcommand_uses_live_gate0b_roots(
     assert f"cc-claim: recovery claim-pub-{'a' * 64}:hold" in result.stdout
     assert "cc-claim --recover-claim-publications recover-live-root" in result.stderr
     assert not (home / ".cache" / "hapax" / "claim-publications").exists()
+
+
+_NEXT_SESSION_ID = "1f1f1f1f-2222-3333-4444-555566667777"
+_NEXT_ROLE_ENV = {"HAPAX_AGENT_ROLE": "cx-next", "HAPAX_AGENT_NAME": "cx-next"}
+
+
+def _journal_for_role(home: Path, role: str) -> str:
+    root = home / ".local/share/hapax/claim-publications/gate0b-claim-publish-v1"
+    found = [
+        manifest.parent.name
+        for manifest in root.glob("claim-pub-*/manifest.json")
+        if json.loads(manifest.read_text(encoding="ascii"))["intent"]["role"] == role
+    ]
+    assert len(found) == 1, found
+    return found[0]
+
+
+@pytest.mark.parametrize("note_moved_on", [False, True])
+def test_recover_reports_applied_journal_superseded_by_later_owner_not_drift(
+    tmp_path: Path, note_moved_on: bool
+) -> None:
+    # PRIORITY specimen 2026-09-24T20:03Z (U3, claim-pub-07127dd1): an applied claim whose
+    # note was later re-offered and claimed by another role through a second applied
+    # publication. Recovery reported the first journal as postimage drift (a hold), which
+    # reads as a live blocker. Supersession is machine-checkable: a later applied journal
+    # for the same task whose note postimage is the current note.
+    home = tmp_path / "home"
+    task_id = "superseded-owner"
+    note = _write_task(home, "active", task_id)
+    first = _claim(home, task_id, dispatch=False)
+    assert first.returncode == 0, first.stderr
+    claimed = note.read_text(encoding="utf-8")
+    note.write_text(
+        claimed.replace("status: claimed", "status: offered").replace(
+            "assigned_to: cx-test", "assigned_to: unassigned"
+        ),
+        encoding="utf-8",
+    )
+    for marker in (home / ".cache/hapax").glob("cc-active-task-cx-test*"):
+        marker.unlink()
+    # cc-claim mints epochs in whole seconds; a same-second tie is (correctly) never ordered,
+    # so make the successor's epoch strictly later instead of depending on scheduling.
+    first_manifest = (
+        home
+        / ".local/share/hapax/claim-publications/gate0b-claim-publish-v1"
+        / _journal_for_role(home, "cx-test")
+        / "manifest.json"
+    )
+    first_epoch = json.loads(first_manifest.read_text(encoding="ascii"))["intent"]["claim_epoch"]
+    while int(time.time()) <= first_epoch:
+        time.sleep(0.05)
+    second = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        session_id=_NEXT_SESSION_ID,
+        extra_env=_NEXT_ROLE_ENV,
+    )
+    assert second.returncode == 0, second.stderr
+    if note_moved_on:
+        note.write_text(note.read_text(encoding="utf-8") + "- later edit\n", encoding="utf-8")
+
+    result = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        session_id=_NEXT_SESSION_ID,
+        extra_env=_NEXT_ROLE_ENV,
+        extra_args=["--recover-claim-publications"],
+    )
+
+    superseded = _journal_for_role(home, "cx-test")
+    if note_moved_on:
+        # Unsafe counterpart: without a later applied postimage equal to the current note,
+        # supersession is not proven and the drift must still hold.
+        assert result.returncode == 8
+        assert f"{superseded}:hold:claim_publication_postimage_drift" in result.stdout
+        return
+    successor = _journal_for_role(home, "cx-next")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        f"cc-claim: recovery {superseded}:superseded:"
+        f"claim_publication_superseded_by_later_applied ({successor})"
+    ) in result.stdout
+    assert f"cc-claim: recovery {successor}:applied" in result.stdout
 
 
 def test_body_bullets_are_not_claim_dependencies(tmp_path: Path) -> None:

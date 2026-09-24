@@ -4861,6 +4861,48 @@ def resolve_applied_claim_publication_for_task(
     )
 
 
+def _superseding_applied_publication(
+    manifest_path: Path,
+    intent: ClaimPublicationIntent,
+) -> str | None:
+    """Name a later applied publication whose note postimage is the current note.
+
+    An applied journal whose projections drifted is superseded, not damaged, when a later
+    admitted publication for the same task and note path applied and its note postimage is
+    exactly the live note (bytes and mode). Read-only: this classifies the older journal and
+    never writes; it takes no second role lock (the caller already holds a note lock).
+    """
+
+    current_content, current_mode = _file_state(intent.note_path)
+    if current_content is None:
+        return None
+    root = manifest_path.parent.parent
+    for entry in sorted(root.iterdir(), key=lambda path: path.name):
+        if (
+            entry == manifest_path.parent
+            or _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(entry.name) is None
+        ):
+            continue
+        try:
+            other, _projections, other_id, other_state, other_consumption = _load_any_manifest(
+                entry / "manifest.json"
+            )
+        except ClaimPublicationError:
+            continue
+        if (
+            other_state == "applied"
+            and isinstance(other_consumption, ClaimAdmissionConsumption)
+            and other_id == entry.name
+            and other.task_id == intent.task_id
+            and other.note_path == intent.note_path
+            and other.claim_epoch > intent.claim_epoch
+            and other.note_after == current_content
+            and other.note_mode == current_mode
+        ):
+            return other_id
+    return None
+
+
 def _recover_one(
     manifest_path: Path,
     *,
@@ -4920,13 +4962,26 @@ def _recover_one(
                 publication_id,
             )
         if state == "applied":
-            require_applied_admitted_claim_publication(
-                intent,
-                consumption,
-                transaction_root=manifest_path.parent.parent,
-                receipt_root=receipt_directory,
-                _already_locked=True,
-            )
+            try:
+                require_applied_admitted_claim_publication(
+                    intent,
+                    consumption,
+                    transaction_root=manifest_path.parent.parent,
+                    receipt_root=receipt_directory,
+                    _already_locked=True,
+                )
+            except ClaimPublicationError as exc:
+                if exc.reason_code != "claim_publication_postimage_drift":
+                    raise
+                successor = _superseding_applied_publication(manifest_path, intent)
+                if successor is None:
+                    raise
+                return ClaimPublicationRecoveryResult(
+                    publication_id,
+                    "superseded",
+                    "claim_publication_superseded_by_later_applied",
+                    detail=successor,
+                )
             return ClaimPublicationRecoveryResult(publication_id, "applied", None)
         if state == "aborted":
             if receipt_path.exists() or receipt_path.is_symlink():
