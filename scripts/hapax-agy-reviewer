@@ -317,14 +317,51 @@ def _reject_semantic_token_echo(response: str, guarded: tuple[str, ...]) -> None
             stack.extend(node)
 
 
+class UnsupportedReviewActivity(ValueError):
+    """The stream cannot qualify as a dossier-only review."""
+
+
 def _stream_response(raw: str) -> str:
-    """Unwrap one native result; the caller still validates the YAML schema."""
+    """Accept only known non-tool steps, then unwrap the single final result.
+
+    This is an acceptance check on the buffered native stream, not prevention
+    of tool execution or proof that the native client reports every action.
+    """
     events = [json.loads(line) for line in raw.splitlines() if line.strip()]
     if not events or any(not isinstance(event, dict) for event in events):
         raise ValueError("malformed stream")
     results = [event for event in events if event.get("event") == "result"]
     if len(results) != 1 or events[-1] is not results[0]:
         raise ValueError("expected one final result")
+    for event in events:
+        kind = event.get("event")
+        if kind not in ("init", "step_update", "result"):
+            raise UnsupportedReviewActivity("unknown event")
+        if kind != "step_update":
+            continue
+        step = event.get("step_update")
+        if set(event) - {"event", "step_update"} or not isinstance(step, dict):
+            raise UnsupportedReviewActivity("unknown step envelope")
+        # Presence (including null) of tool/subagent metadata must be refused,
+        # even if the event claims to be an otherwise supported response step.
+        if set(step) - {
+            "conversation_id",
+            "step_index",
+            "state",
+            "step_type",
+            "text_delta",
+            "duration_seconds",
+            "usage",
+        }:
+            raise UnsupportedReviewActivity("unknown step fields")
+        if (
+            step.get("step_type") not in ("user_input", "agent_response", "checkpoint")
+            or step.get("state") not in ("ACTIVE", "DONE")
+            or type(step.get("step_index")) is not int
+            or step["step_index"] < 0
+            or ("text_delta" in step and not isinstance(step["text_delta"], str))
+        ):
+            raise UnsupportedReviewActivity("unsupported step")
     result = results[0].get("result")
     if not isinstance(result, dict) or result.get("status") != "SUCCESS" or result.get("error"):
         raise ValueError("unsuccessful result")
@@ -482,6 +519,14 @@ def _review(args: argparse.Namespace, dossier: str, lifetime: int) -> int:
                 file=sys.stderr,
             )
             return TOKEN_ECHO_EXIT
+        except UnsupportedReviewActivity:
+            print(
+                "hapax-agy-reviewer: tool/subagent activity or unsupported stream shape; "
+                "review discarded; qualify a native no-tool configuration on the same admitted "
+                "route before retrying; retain the complete-trace limitation.",
+                file=sys.stderr,
+            )
+            return result.returncode or 65
         except (ValueError, TypeError):
             if result.returncode == 0:
                 print(

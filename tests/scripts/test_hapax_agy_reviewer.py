@@ -353,6 +353,134 @@ def test_nonresult_events_do_not_pollute_review(tmp_path: Path) -> None:
     assert result.returncode == 0 and result.stdout == REVIEW
 
 
+@pytest.mark.parametrize("exit_code", [0, 7])
+@pytest.mark.parametrize(
+    "event",
+    [
+        {
+            "event": "step_update",
+            "step_update": {"step_type": "tool", "state": "DONE", "step_index": 1},
+        },
+        {
+            "event": "step_update",
+            "step_update": {"step_type": "subagent", "state": "DONE", "step_index": 1},
+        },
+        *[
+            {
+                "event": "step_update",
+                "step_update": {
+                    "step_type": "agent_response",
+                    "state": "DONE",
+                    "step_index": 1,
+                    key: value,
+                },
+            }
+            for key, value in [
+                ("tool_info", {}),
+                ("subagent_info", {}),
+                ("tool_name", "run_command"),
+                ("subagent_info", None),
+                ("future_invocation", {}),
+            ]
+        ],
+        {"event": "step_update"},
+        {"event": "step_update", "step_update": []},
+        {"event": "step_update", "step_update": {}},
+        *[
+            {
+                "event": "step_update",
+                "step_update": {
+                    "step_type": "agent_response",
+                    "state": "DONE",
+                    "step_index": 1,
+                }
+                | changes,
+            }
+            for changes in [
+                {"step_type": "future_step"},
+                {"step_type": []},
+                {"state": "UNKNOWN"},
+                {"state": []},
+                {"step_index": -1},
+                {"step_index": True},
+                {"step_index": "1"},
+                {"text_delta": {}},
+            ]
+        ],
+        {"event": "future_event"},
+        {
+            "event": "step_update",
+            "subagent_info": {},
+            "step_update": {
+                "step_type": "checkpoint",
+                "state": "DONE",
+                "step_index": 2,
+            },
+        },
+    ],
+)
+def test_unsupported_stream_activity_discards_valid_review(
+    tmp_path: Path, event: dict, exit_code: int
+) -> None:
+    result = _run(
+        _fake_agy(tmp_path, f"print({json.dumps(event)!r})\nemit()\nsys.exit({exit_code})")
+    )
+    assert result.returncode == (exit_code or 65)
+    assert result.stdout == ""
+    assert "tool/subagent activity or unsupported stream shape; review discarded" in result.stderr
+    assert "qualify a native no-tool configuration on the same admitted route" in result.stderr
+
+
+@pytest.mark.parametrize("step_type", ["user_input", "agent_response", "checkpoint"])
+@pytest.mark.parametrize("state", ["ACTIVE", "DONE"])
+def test_known_non_tool_steps_preserve_review(tmp_path: Path, step_type: str, state: str) -> None:
+    event = {
+        "event": "step_update",
+        "step_update": {
+            "conversation_id": "synthetic",
+            "step_index": 2,
+            "step_type": step_type,
+            "state": state,
+            "text_delta": "partial response",
+            "duration_seconds": 0.1,
+            "usage": {"input_tokens": 5},
+        },
+    }
+    result = _run(_fake_agy(tmp_path, f"print({json.dumps(event)!r})\nemit()"))
+    assert result.returncode == 0 and result.stdout == REVIEW
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_tool_refusal_still_screens_secrets_first(tmp_path: Path, stream: str) -> None:
+    _seed_operator_token(Path(os.environ["HOME"]))
+    result = _run(
+        _fake_agy(
+            tmp_path,
+            (
+                "print(json.dumps({'event': 'step_update', 'step_update': {'step_type': 'tool'}}))\n"
+                f"print({FAKE_ACCESS_TOKEN!r}, file=sys.{stream})\nemit()"
+            ),
+        )
+    )
+    assert result.returncode == 65 and result.stdout == ""
+    assert "seeded operator login token" in result.stderr
+    assert FAKE_ACCESS_TOKEN not in result.stderr
+
+
+def test_tool_refusal_cleans_owned_child(tmp_path: Path, child_record: Path) -> None:
+    fake = _fake_agy(
+        tmp_path,
+        (
+            "print(json.dumps({'event': 'step_update', 'step_update': {'step_type': 'tool'}}))\n"
+            + _child_script(tmp_path)
+        ),
+    )
+    result = _run(fake)
+    assert result.returncode == 65 and result.stdout == ""
+    assert not _running(int(child_record.read_text()))
+    assert not Path((tmp_path / "root").read_text()).exists()
+
+
 def _running(pid: int) -> bool:
     try:
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"

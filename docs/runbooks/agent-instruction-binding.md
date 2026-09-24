@@ -520,7 +520,25 @@ SafeLoader to check all string keys/values and binary scalars for seeded secrets
 YAML escapes and line continuations therefore cannot reconstruct a token after
 the guard. Malformed YAML is refused; the wrapper does not delegate an unexamined
 document to the caller's prose-repair path. Native errors retain nonzero
-status and stderr; partial model responses are not forwarded.
+status and screened stderr; partial model responses are not forwarded.
+
+Before accepting a result, the wrapper also checks every native `step_update`.
+Only known `user_input`, `agent_response` and `checkpoint` steps are accepted.
+Tool/subagent steps, invocation metadata (even null), unknown fields/categories,
+and malformed step envelopes are refused with a next action. This also discards
+native stderr for that review; an existing nonzero native status is preserved.
+Raw secret screening still runs first, and owned-group cleanup precedes parsing.
+The native event contract is described in the
+[headless reference](https://antigravity.google/docs/cli/headless/).
+
+This is refusal of a completed stream, not prevention of tool execution. A valid
+fenced result, prompt prohibition, or stream without tool events does not prove
+complete no-search. Qualify any proposed isolated native no-tool configuration
+with a negative tool-attempt probe and compare observed client/model, credential
+binding, admission route, billing surface and timeout before adopting it. Keep
+tool-attempt reviews refused if that qualification is unavailable. CLI help and
+official permission/custom-agent documentation are candidate configuration
+evidence; neither replaces an observed enforcement boundary.
 
 The wrapper forks a small lifetime supervisor before launching Agy. Agy leads a
 new session/process group. The supervisor observes exit with `waitid(WNOWAIT)`
