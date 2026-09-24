@@ -312,6 +312,109 @@ def test_emergency_expiry_cannot_delete_foreign_session_before_lock(tmp_path, mo
     assert _ownership_bytes(home) == before
 
 
+def test_emergency_holds_while_an_admitted_publication_of_the_task_is_pending(
+    tmp_path, monkeypatch
+):
+    # PR4726 review (Muse critical): the emergency path observed only role sidecars, so an
+    # admitted publisher that crashed after its journal write but before any projection left
+    # a pending journal the emergency writer overran. It must hold, name the journal, and
+    # leave the task to governed recovery; after recovery retires the attempt it may proceed.
+    home = tmp_path / "home"
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    helper = _helper("test_cc_claim")
+    note = helper._write_task(home, "active", "contested")
+    crashed = _helper("test_cc_claim")
+    crashed.SCRIPT = _short_lock_timeout_cli(
+        tmp_path / "crash",
+        textwrap.dedent("""\
+            def _crash(*args, **kwargs):
+                raise RuntimeError("simulated admitted publisher crash before any projection")
+            claim._apply_projections = _crash
+            """),
+    )
+    first = crashed._claim(
+        home,
+        "contested",
+        session_id="3a3a3a3a-0000-4000-8000-000000000001",
+        extra_env={"HAPAX_AGENT_ROLE": "cx-other", "HAPAX_AGENT_NAME": "cx-other"},
+    )
+    assert first.returncode == 8, first.stderr
+    transactions = Path(default_claim_publication_roots(home=home).claim_transaction_root)
+    pending = sorted(path.parent.name for path in transactions.glob("claim-pub-*/manifest.json"))
+    assert len(pending) == 1
+    assert "status: offered" in note.read_text(encoding="utf-8")
+    before = _ownership_bytes(home)
+
+    result = helper._claim(home, "contested", legacy=True, install_gate0b=False)
+
+    assert result.returncode == 3, (result.stdout, result.stderr)
+    assert "claim_emergency_pending_publication" in result.stderr
+    assert pending[0] in result.stderr
+    assert _ownership_bytes(home) == before
+
+    recovered = helper._claim(
+        home,
+        "contested",
+        install_gate0b=False,
+        extra_args=["--recover-claim-publications"],
+    )
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert f"{pending[0]}:aborted" in recovered.stdout
+    retried = helper._claim(home, "contested", legacy=True, install_gate0b=False)
+    assert retried.returncode == 0, retried.stderr
+    assert "assigned_to: cx-test" in note.read_text(encoding="utf-8")
+
+
+def test_emergency_refuses_a_charter_unit_even_after_the_charter_lease_vanishes(
+    tmp_path, monkeypatch
+):
+    # PR4726 review (Gemini major): the charter-keep grant comes from the pre-lock shell scan.
+    # If the charter's markers disappear before the in-lock observation, the emergency writer
+    # saw a clean cache and published the unit as a plain claim with no parent-lease check.
+    home = tmp_path / "home"
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    helper = _helper("test_cc_claim_charter")
+    helper._write_charter(home)
+    charter = helper._claim(home, "charter-x")
+    assert charter.returncode == 0, charter.stderr
+    helper._write_unit(home, "unit-a", ["shared/cx/unit-a.py"])
+    cache = home / ".cache/hapax"
+    helper.SCRIPT = _short_lock_timeout_cli(
+        tmp_path,
+        textwrap.dedent(f"""\
+            from contextlib import contextmanager
+            from pathlib import Path
+            original = claim.claim_role_exclusion
+            @contextmanager
+            def lease_vanishes(*args, **kwargs):
+                with original(*args, **kwargs):
+                    for path in Path({str(cache)!r}).glob("cc-*"):
+                        path.unlink()
+                    yield
+            claim.claim_role_exclusion = lease_vanishes
+            """),
+    )
+    unit_note = helper._task_root(home) / "active/unit-a.md"
+    unit_before = unit_note.read_bytes()
+    cache_before = {path.name: path.read_bytes() for path in cache.glob("*") if path.is_file()}
+
+    result = helper._claim(
+        home,
+        "unit-a",
+        install_gate0b=False,
+        extra_env={"HAPAX_GATE0B_CLAIM_PUBLICATION_OFF": "1"},
+    )
+
+    assert result.returncode == 3, (result.stdout, result.stderr)
+    assert "claim_emergency_charter_unit_forbidden" in result.stderr
+    assert unit_note.read_bytes() == unit_before
+    # Refused before exclusion: the charter's lease is untouched and no unit was recorded.
+    assert {path.name: path.read_bytes() for path in cache.glob("*") if path.is_file()} == (
+        cache_before
+    )
+    assert not any(b"unit-a" in content for content in cache_before.values())
+
+
 def test_charter_mint_sidecar_cannot_publish_after_exclusion_begins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
