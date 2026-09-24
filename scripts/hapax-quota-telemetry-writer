@@ -172,6 +172,7 @@ from collections.abc import Iterable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -206,6 +207,7 @@ from shared.platform_capability_registry import (  # noqa: E402
 )
 from shared.quota_spend_ledger import (  # noqa: E402
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
+    GLMCP_MODEL_IDS,
     QUOTA_SPEND_LEDGER_FIXTURES,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
     PaidRouteEligibility,
@@ -633,8 +635,9 @@ GLMCP_ADMISSION_CONTRACT_BY_ENDPOINT = {
     },
 }
 # Keep this fail-closed. This receipt gates the direct GLM review route, so the
-# model must match scripts/hapax-glmcp-reviewer's Coding Plan adapter.
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2"})
+# model must match scripts/hapax-glmcp-reviewer's adapter (default glm-5.3 since #4692;
+# glm-5.2 still named by the seat refresh). Mirrors shared/quota_spend_ledger.py.
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5.3", "glm-5.2"})
 GLMCP_ADMISSION_FIELDS = frozenset(
     {
         "billing_mode",
@@ -700,9 +703,11 @@ GLMCP_PAYG_SPEND_FIELDS = frozenset(
         "endpoint",
         "estimated_cost_usd",
         "actual_cost_usd",
+        "finish_reason",
         "model_id",
         "model_or_engine",
         "payg_fallback",
+        "price_basis_ref",
         "primary_error_class",
         "prompt_or_output_persisted",
         "provider",
@@ -717,6 +722,7 @@ GLMCP_PAYG_SPEND_FIELDS = frozenset(
         "schema",
         "secret_source",
         "secret_value_persisted",
+        "served_model",
         "spend_id",
         "spend_reason",
         "status",
@@ -724,8 +730,13 @@ GLMCP_PAYG_SPEND_FIELDS = frozenset(
         "supported_tool",
         "task_hash",
         "task_id",
+        "usage_cached_tokens",
+        "usage_completion_tokens",
+        "usage_prompt_tokens",
+        "usage_reasoning_tokens",
     }
 )
+GLMCP_PAYG_SPEND_COST_RE = re.compile(r"\A[0-9]{1,6}(?:\.[0-9]{1,6})?\Z")
 GLMCP_PAYG_SPEND_NULLABLE_FIELDS = frozenset(
     {
         "actual_cost_usd",
@@ -1896,7 +1907,8 @@ def active_glmcp_admission_receipts(
         if model not in GLMCP_ADMISSION_MODELS:
             reject(
                 path,
-                "model missing or unsupported; expected documented GLM review model id glm-5.2",
+                "model missing or unsupported; expected documented GLM review model id "
+                "glm-5.3 or glm-5.2",
             )
             continue
         receipt_evidence_ref = fields.get("evidence_ref", "").strip()
@@ -2109,15 +2121,27 @@ def active_glmcp_payg_spend_receipts(
         if fields.get("provider", "") != GLMCP_PAYG_BUDGET_PROVIDER:
             reject(path, "provider missing or unsupported")
             continue
-        if fields.get("model_or_engine", "") != "glm-5.2":
+        model = fields.get("model_or_engine", "")
+        if model not in GLMCP_ADMISSION_MODELS:
             reject(path, "model_or_engine missing or unsupported")
             continue
-        if fields.get("estimated_cost_usd", "") != GLMCP_PAYG_ESTIMATED_COST_USD:
-            reject(path, "estimated_cost_usd missing or unsupported")
+        model_id = fields.get("model_id", "")
+        if not _glmcp_payg_spend_field_is_nullish("model_id", model_id) and (
+            model_id != GLMCP_MODEL_IDS.get(model)
+        ):
+            reject(path, "model_id does not name model_or_engine; identity mislabelled")
             continue
         budget = budget_by_id.get(fields.get("budget_id", ""))
         if budget is None:
             reject(path, "budget_id missing or unknown")
+            continue
+        # Reservations are priced per call (shared.quota_spend_ledger.glmcp_payg_reservation_usd);
+        # one call can never reserve more than the task cap it is charged against.
+        estimated = fields.get("estimated_cost_usd", "")
+        if not GLMCP_PAYG_SPEND_COST_RE.fullmatch(estimated) or not (
+            Decimal("0") < Decimal(estimated) <= budget.per_task_cap_usd
+        ):
+            reject(path, "estimated_cost_usd missing, malformed or above the budget task cap")
             continue
         if fields.get("authority_case", "") != budget.authority_case:
             reject(path, "authority_case does not match budget")

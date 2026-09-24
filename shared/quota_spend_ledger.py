@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -166,6 +166,8 @@ GLMCP_PAYG_BUDGET_PROVIDER = "z_ai"
 GLMCP_PAYG_BUDGET_PROFILE = "glmcp-review-direct"
 GLMCP_PAYG_BUDGET_TASK_CLASS = "independent-review"
 GLMCP_PAYG_BUDGET_QUALITY_FLOOR = "frontier_review_required"
+# Nominal amount for "can this budget still admit a GLMCP PAYG call" checks (seat admission,
+# review-team constitution). A real call reserves glmcp_payg_reservation_usd(...) instead.
 GLMCP_PAYG_ESTIMATED_COST_USD = "0.05"
 GLMCP_ADMISSION_TOOL_ENDPOINTS = {
     "hapax-glmcp-reviewer": frozenset(
@@ -180,8 +182,26 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
     endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
 )
 # Mirrors scripts/hapax-quota-telemetry-writer and the direct
-# scripts/hapax-glmcp-reviewer route metadata.
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2"})
+# scripts/hapax-glmcp-reviewer route metadata. glm-5.3 is the reviewer's default since #4692;
+# glm-5.2 stays admitted because the seat refresh and older receipts still name it. Each
+# request id maps to exactly one structured ModelId — a receipt never borrows another's.
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5.3", "glm-5.2"})
+GLMCP_MODEL_IDS = {"glm-5.3": "z_ai-glm-5.3", "glm-5.2": "z_ai-glm-5.2"}
+# Z.ai PAYG list prices for these models, USD per 1M tokens (docs.z.ai/guides/overview/pricing,
+# read 2026-09-24). Reasoning tokens are billed inside completion_tokens (observed on the
+# 2026-09-24 identity probe), so the output price covers them.
+GLMCP_PAYG_PRICE_BASIS_REF = "docs.z.ai-guides-overview-pricing-20260924"
+GLMCP_PAYG_PRICES_USD_PER_MTOK = {
+    model: {
+        "input": Decimal("1.40"),
+        "cached_input": Decimal("0.26"),
+        "output": Decimal("4.40"),
+    }
+    for model in ("glm-5.3", "glm-5.2")
+}
+# Chat-template tokens the provider adds around the messages; generous so the bound holds.
+GLMCP_PAYG_TEMPLATE_TOKEN_ALLOWANCE = 256
+GLMCP_PAYG_COST_QUANTUM = Decimal("0.000001")
 GLMCP_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
     r"(?:[a-z0-9_.+-]*glmcp-quota-admission[a-z0-9_.+-]*\.yaml|"
@@ -265,6 +285,7 @@ class ModelId(StrEnum):
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
+    Z_AI_GLM_5_3 = "z_ai-glm-5.3"
     KIMI_K3 = "kimi-code/k3"
     UNKNOWN = "unknown"
 
@@ -1753,7 +1774,7 @@ def successful_task_scoped_glmcp_payg_review_spend_receipts(
         model_id = receipt.model_id.value if receipt.model_id is not None else None
         if (
             receipt.model_or_engine not in GLMCP_ADMISSION_MODELS
-            and model_id != ModelId.Z_AI_GLM_5_2.value
+            and model_id not in GLMCP_MODEL_IDS.values()
         ):
             continue
         if not _glmcp_payg_budget_allows_review_spend(budget, receipt):
@@ -1767,6 +1788,61 @@ def has_successful_task_scoped_glmcp_payg_review_spend(
     task_id: str,
 ) -> bool:
     return bool(successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id))
+
+
+def _glmcp_payg_prices(model: str) -> dict[str, Decimal]:
+    prices = GLMCP_PAYG_PRICES_USD_PER_MTOK.get(model)
+    if prices is None:
+        raise QuotaSpendLedgerError(
+            f"no Z.ai PAYG list price for model {model!r}; admitted: "
+            f"{sorted(GLMCP_PAYG_PRICES_USD_PER_MTOK)}"
+        )
+    return prices
+
+
+def glmcp_payg_reservation_usd(
+    *,
+    model: str,
+    prompt_utf8_bytes: int,
+    max_tokens: int,
+    attempts: int = 1,
+) -> Decimal:
+    """Upper bound on one PAYG call at list price, charged against caps before the call.
+
+    A byte-level tokenizer emits at most one token per prompt byte, so UTF-8 bytes plus a
+    template allowance bound the input tokens; every input token is priced uncached and every
+    allowed output token (reasoning included) as output. ``attempts`` counts provider calls
+    whose input may bill, such as a rejected first attempt before a contract retry.
+    """
+
+    if prompt_utf8_bytes < 0 or max_tokens < 1 or attempts < 1:
+        raise QuotaSpendLedgerError(
+            "PAYG reservation needs bytes >= 0, max_tokens >= 1, attempts >= 1"
+        )
+    prices = _glmcp_payg_prices(model)
+    input_tokens = (prompt_utf8_bytes + GLMCP_PAYG_TEMPLATE_TOKEN_ALLOWANCE) * attempts
+    cost = (input_tokens * prices["input"] + max_tokens * prices["output"]) / Decimal(1_000_000)
+    return cost.quantize(GLMCP_PAYG_COST_QUANTUM, rounding=ROUND_CEILING)
+
+
+def glmcp_payg_usage_cost_usd(
+    *,
+    model: str,
+    prompt_tokens: int,
+    cached_tokens: int,
+    completion_tokens: int,
+) -> Decimal:
+    """List-price cost of provider-reported usage. An estimate from usage, not an invoice."""
+
+    if min(prompt_tokens, cached_tokens, completion_tokens) < 0 or cached_tokens > prompt_tokens:
+        raise QuotaSpendLedgerError("PAYG usage must be non-negative with cached <= prompt tokens")
+    prices = _glmcp_payg_prices(model)
+    cost = (
+        (prompt_tokens - cached_tokens) * prices["input"]
+        + cached_tokens * prices["cached_input"]
+        + completion_tokens * prices["output"]
+    ) / Decimal(1_000_000)
+    return cost.quantize(GLMCP_PAYG_COST_QUANTUM, rounding=ROUND_CEILING)
 
 
 def _glmcp_payg_budget_request(task_id: str) -> PaidRouteRequest:

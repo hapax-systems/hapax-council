@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,6 +14,10 @@ from pydantic import ValidationError
 
 from shared.quota_spend_ledger import (
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
+    GLMCP_ADMISSION_MODELS,
+    GLMCP_MODEL_IDS,
+    GLMCP_PAYG_PRICES_USD_PER_MTOK,
+    GLMCP_PAYG_TEMPLATE_TOKEN_ALLOWANCE,
     QUOTA_SPEND_LEDGER_FIXTURES,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
     RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS,
@@ -27,6 +32,7 @@ from shared.quota_spend_ledger import (
     PaidRouteRequest,
     Quantization,
     QuotaSpendLedger,
+    QuotaSpendLedgerError,
     SpendGateDecisionState,
     SpendReceipt,
     SpendReconciliationState,
@@ -35,6 +41,8 @@ from shared.quota_spend_ledger import (
     SupportArtifactDisposition,
     build_dashboard,
     evaluate_paid_route_eligibility,
+    glmcp_payg_reservation_usd,
+    glmcp_payg_usage_cost_usd,
     has_successful_task_scoped_glmcp_payg_review_spend,
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
@@ -957,6 +965,86 @@ def test_pending_task_scoped_glmcp_payg_review_spend_is_not_successful_witness()
 
     assert successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id) == ()
     assert has_successful_task_scoped_glmcp_payg_review_spend(ledger, task_id) is False
+
+
+def test_successful_task_scoped_glmcp_payg_review_spend_counts_the_glm_5_3_default() -> None:
+    """The reviewer calls glm-5.3 by default; its reconciled spend is the same witness."""
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    task_id = "cc-task-glmcp-review-seat-glm52-model-contract-20260706"
+    _add_glmcp_payg_spend_receipt(payload, budget_id, task_id=task_id)
+    receipt = payload["spend_receipts"][-1]
+    receipt["model_or_engine"] = "glm-5.3"
+    receipt["model_id"] = "z_ai-glm-5.3"
+    receipt["actual_cost_usd"] = "0.002772"
+    receipt["cap_remaining_usd"] = "1.95"
+    receipt["reconciliation_state"] = "reconciled"
+    receipt["reconciled_at"] = "2026-05-17T08:00:00Z"
+    receipt["reconciliation_reason"] = "actual from provider-reported usage at list price"
+    ledger = QuotaSpendLedger.model_validate(payload)
+
+    assert has_successful_task_scoped_glmcp_payg_review_spend(ledger, task_id) is True
+
+
+def test_glmcp_model_ids_name_one_structured_identity_each() -> None:
+    assert (
+        set(GLMCP_MODEL_IDS) == set(GLMCP_ADMISSION_MODELS) == set(GLMCP_PAYG_PRICES_USD_PER_MTOK)
+    )
+    assert {ModelId(value) for value in GLMCP_MODEL_IDS.values()} == {
+        ModelId.Z_AI_GLM_5_3,
+        ModelId.Z_AI_GLM_5_2,
+    }
+
+
+def test_glmcp_payg_usage_cost_prices_uncached_cached_and_output_tokens() -> None:
+    # (1000 x 1.40 + 200 x 0.26 + 300 x 4.40) / 1M, rounded up to the micro-dollar
+    assert glmcp_payg_usage_cost_usd(
+        model="glm-5.3", prompt_tokens=1200, cached_tokens=200, completion_tokens=300
+    ) == Decimal("0.002772")
+    # the 2026-09-24 identity probe: 20 in, 57 out (51 of them reasoning)
+    assert glmcp_payg_usage_cost_usd(
+        model="glm-5.3", prompt_tokens=20, cached_tokens=0, completion_tokens=57
+    ) == Decimal("0.000279")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"model": "glm-4.6", "prompt_tokens": 1, "cached_tokens": 0, "completion_tokens": 1},
+        {"model": "glm-5.3", "prompt_tokens": 1, "cached_tokens": 2, "completion_tokens": 1},
+        {"model": "glm-5.3", "prompt_tokens": -1, "cached_tokens": 0, "completion_tokens": 1},
+    ],
+)
+def test_glmcp_payg_usage_cost_refuses_unpriced_or_impossible_usage(kwargs: dict) -> None:
+    with pytest.raises(QuotaSpendLedgerError):
+        glmcp_payg_usage_cost_usd(**kwargs)
+
+
+@pytest.mark.parametrize("prompt_bytes", [0, 1, 17_000, 250_000])
+@pytest.mark.parametrize("max_tokens", [1, 8192])
+def test_glmcp_payg_reservation_bounds_any_usage_the_call_can_bill(
+    prompt_bytes: int, max_tokens: int
+) -> None:
+    """Unsafe case: a reservation below the call's possible charge lets spend pass the cap.
+
+    Byte-level tokenization gives at most one input token per byte (+ template allowance);
+    output is capped by max_tokens. The worst billable usage, all uncached, stays under it."""
+    reserved = glmcp_payg_reservation_usd(
+        model="glm-5.3", prompt_utf8_bytes=prompt_bytes, max_tokens=max_tokens
+    )
+    worst = glmcp_payg_usage_cost_usd(
+        model="glm-5.3",
+        prompt_tokens=prompt_bytes + GLMCP_PAYG_TEMPLATE_TOKEN_ALLOWANCE,
+        cached_tokens=0,
+        completion_tokens=max_tokens,
+    )
+    assert reserved >= worst
+    assert (
+        glmcp_payg_reservation_usd(
+            model="glm-5.3", prompt_utf8_bytes=prompt_bytes, max_tokens=max_tokens, attempts=2
+        )
+        > reserved
+    )
 
 
 def test_receipt_bounded_route_rejects_payg_when_witness_task_cap_exhausted() -> None:

@@ -131,6 +131,25 @@ def test_observe_success_writes_payg_api_credit_receipt(tmp_path: Path) -> None:
     assert fields["prompt_or_output_persisted"] == "false"
 
 
+def test_observe_success_records_the_reviewer_default_glm_5_3(tmp_path: Path) -> None:
+    """The reviewer calls glm-5.3 by default (#4692); its admission must name that model."""
+    payg_glm53_args = tuple(
+        "glm-5.3" if value == "glm-5.2" else value for value in PAYG_SUCCESS_METADATA_ARGS
+    )
+    result, receipt_dir = _run(
+        tmp_path,
+        "observe-success",
+        "--evidence-ref",
+        "sanctioned-glmcp-payg-usage-002",
+        *payg_glm53_args,
+    )
+
+    assert result.returncode == 0, result.stderr
+    fields = _read_flat_fields(receipt_dir / "glmcp-quota-admission.yaml")
+    assert fields["model"] == "glm-5.3"
+    assert fields["endpoint"] == "https://api.z.ai/api/paas/v4"
+
+
 def test_observe_success_rejects_payg_without_quota_wall_witness(tmp_path: Path) -> None:
     result, receipt_dir = _run(
         tmp_path,
@@ -247,7 +266,7 @@ def test_observe_success_rejects_unsafe_evidence_refs(
                 "--model",
                 "glm-5",
             ),
-            "--model must be glm-5.2",
+            "--model must be one of ['glm-5.2', 'glm-5.3']",
         ),
         (
             (
@@ -258,7 +277,7 @@ def test_observe_success_rejects_unsafe_evidence_refs(
                 "--model",
                 "glm-5.2[1m]",
             ),
-            "--model must be glm-5.2",
+            "--model must be one of ['glm-5.2', 'glm-5.3']",
         ),
     ],
 )
