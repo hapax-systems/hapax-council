@@ -40,6 +40,11 @@ SERVED_STATUSES = frozenset({"allowed", "allowed_warning"})
 # reset binds at most that long. This bounds the wall and invents no reset. A wall whose
 # evidence names no window gets no bound: it binds until its reset or a witnessed serve.
 WINDOW_HOURS = {"seven_day": 168, "weekly": 168, "five_hour": 5, "session": 5}
+# Claude enumerates its own subscription windows (rate_limit_event.unifiedWindows: five_hour and
+# seven_day only), so any Claude wall binds at most its longest window, including one whose
+# evidence names no window or states a later reset. The eight-day source horizon relies on it:
+# no Claude wall in a file untouched for longer can still be live.
+CLAUDE_LONGEST_WINDOW_HOURS = WINDOW_HOURS["seven_day"]
 # Burn pairs: closer than the minimum the rate is noise; beyond the maximum it is history.
 BURN_MIN_SPAN = timedelta(minutes=20)
 BURN_MAX_SPAN = timedelta(hours=6)
@@ -368,7 +373,10 @@ def read_receipt_measurements(receipts: Path, family: str) -> list[QuotaMeasurem
                     source=source_ref(path, "quota_wall_receipt"),
                     reason_code="provider_refusal_without_fraction",
                     details={
-                        "binds_at_most_hours": WINDOW_HOURS.get(str(data.get("rate_limit_type")))
+                        "binds_at_most_hours": WINDOW_HOURS.get(
+                            str(data.get("rate_limit_type")),
+                            CLAUDE_LONGEST_WINDOW_HOURS if family == "claude" else None,
+                        )
                     },
                 )
             )
@@ -533,14 +541,12 @@ def overage_state(info: dict) -> bool | None:
     return not (isinstance(value, str) and value.strip().lower() in {"false", "0", "0.0"})
 
 
-def harness_window_hours(text: str) -> int | None:
-    """The window a Claude limit notice names, or None when it names none."""
-    lowered = text.lower()
-    if "weekly limit" in lowered:
-        return WINDOW_HOURS["weekly"]
-    if "session limit" in lowered:
+def harness_window_hours(text: str) -> int:
+    """Five hours for a "session limit" notice; any other Claude notice, "weekly limit" included,
+    binds at most Claude's longest window."""
+    if "session limit" in text.lower():
         return WINDOW_HOURS["session"]
-    return None
+    return CLAUDE_LONGEST_WINDOW_HOURS
 
 
 def request_details(info: dict) -> dict[str, Any]:
@@ -573,7 +579,9 @@ def stream_wall(info: dict, earliest, source: str, *, at: datetime, now: datetim
         details={
             "rate_limit_type": limit if isinstance(limit, str) else None,
             "earliest_at": earliest.isoformat() if earliest else None,
-            "binds_at_most_hours": WINDOW_HOURS.get(limit) if isinstance(limit, str) else None,
+            "binds_at_most_hours": WINDOW_HOURS.get(limit, CLAUDE_LONGEST_WINDOW_HOURS)
+            if isinstance(limit, str)
+            else CLAUDE_LONGEST_WINDOW_HOURS,
         },
     )
 
@@ -1032,12 +1040,9 @@ def wall_is_live(wall: QuotaMeasurement, rows, *, now: datetime) -> bool:
     if wall.resets_at is not None and now >= wall.resets_at:
         return False
     family = wall.capacity_id.split(".", 1)[0]
+    # The bound caps a stated reset too: a window full at the refusal ends by refusal + length.
     bound = wall.details.get("binds_at_most_hours")
-    if (
-        wall.resets_at is None
-        and isinstance(bound, int)
-        and now >= wall.observed_at + timedelta(hours=bound)
-    ):
+    if isinstance(bound, int) and now >= wall.observed_at + timedelta(hours=bound):
         return False
     return not any(
         row.label == "observed"

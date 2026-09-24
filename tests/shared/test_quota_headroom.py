@@ -1415,7 +1415,9 @@ def test_a_probe_receipt_lifts_a_wall_only_when_it_recorded_the_serve(tmp_path, 
     [
         ("You've hit your weekly limit · resets Sep 26, 5pm (America/Chicago)", 168),
         ("You've hit your session limit · resets 11pm (America/Chicago)", 5),
-        ("Claude usage limit reached", None),
+        # Names no window: still a Claude limit, and Claude's windows are five_hour and
+        # seven_day only (the provider's unifiedWindows keys), so it binds at most 168 h.
+        ("Claude usage limit reached", 168),
     ],
 )
 def test_a_harness_wall_is_bounded_only_by_the_window_it_names(tmp_path, text, bound_hours):
@@ -1436,7 +1438,7 @@ def test_a_harness_wall_is_bounded_only_by_the_window_it_names(tmp_path, text, b
         assert wall_is_live(wall, rows, now=wall.observed_at + timedelta(hours=hours)) is expected
 
 
-@pytest.mark.parametrize("limit,bound_hours", [("seven_day", 168), ("five_hour", 5), (None, None)])
+@pytest.mark.parametrize("limit,bound_hours", [("seven_day", 168), ("five_hour", 5), (None, 168)])
 def test_a_receipt_wall_is_bounded_by_its_recorded_window(tmp_path, limit, bound_hours):
     body = (
         "role: beta\nstatus: quota_blocked\ndetected_at: 2026-09-24T18:00:00Z\nresets_at: unknown\n"
@@ -1494,6 +1496,64 @@ def test_an_old_transcript_never_holds_a_live_subscription_wall(tmp_path):
     old = (A1_NOW - timedelta(days=9)).timestamp()
     os.utime(path, (old, old))
     assert not any(r.capacity_id.endswith("harness_wall") for r in claude_rows(tmp_path))
+
+
+CLAUDE_NOTICES = [
+    "You've hit your weekly limit · resets Sep 26, 5pm (America/Chicago)",
+    "You've hit your session limit · resets 11pm (America/Chicago)",
+    "Claude usage limit reached",
+    "You've hit your limit; resets 2026-09-26T18:00:00Z",  # a stated reset past any window
+]
+
+
+@pytest.mark.parametrize("text", CLAUDE_NOTICES)
+def test_the_transcript_skip_never_changes_which_walls_are_live(tmp_path, text):
+    # Round 4: the skip is sound only if no Claude wall outlives the horizon. Read the same
+    # nine-day-old notice with the file fresh (read) and old (skipped): the live walls agree.
+    notice_at = A1_NOW - timedelta(days=9)
+    record = {"timestamp": notice_at.isoformat(), "isApiErrorMessage": True}
+    path = jsonl(tmp_path / "transcripts/old.jsonl", record | {"message": {"content": text}})
+
+    def live_walls():
+        rows = claude_rows(tmp_path)
+        return [
+            r.capacity_id
+            for r in rows
+            if r.label == "wall-signal" and wall_is_live(r, rows, now=A1_NOW)
+        ]
+
+    os.utime(path, (A1_NOW.timestamp(), A1_NOW.timestamp()))
+    read = live_walls()
+    os.utime(path, (notice_at.timestamp(), notice_at.timestamp()))
+    assert read == live_walls() == []
+
+
+def test_a_stream_refusal_of_an_unrecognized_window_binds_at_most_a_week(tmp_path):
+    rejected = {"status": "rejected", "rateLimitType": "seven_day_overage_included"}
+    claude_stream(
+        tmp_path, stream_init(), stream_dated("2026-09-24T18:00:00Z"), rate_limit_event(rejected)
+    )
+    rows = claude_rows(tmp_path)
+    assert "claude.subscription.rate_limit_rejected" in by_id(rows)
+    wall = by_id(rows)["claude.subscription.rate_limit_rejected"]
+    assert wall.details["binds_at_most_hours"] == 168
+    assert not wall_is_live(wall, rows, now=wall.observed_at + timedelta(hours=168))
+
+
+def test_an_old_transcript_with_a_still_live_wall_is_read_and_walled(tmp_path):
+    # The seat's case: an old transcript whose only record is a wall naming no window, no later
+    # serve. Within Claude's longest window it is still read, and still binds.
+    notice_at = A1_NOW - timedelta(days=6)
+    record = {"timestamp": notice_at.isoformat(), "isApiErrorMessage": True}
+    path = jsonl(
+        tmp_path / "transcripts/old.jsonl",
+        record | {"message": {"content": "Claude usage limit reached"}},
+    )
+    os.utime(path, (notice_at.timestamp(), notice_at.timestamp()))
+    rows = claude_rows(tmp_path)
+    assert "claude.subscription.harness_wall" in by_id(rows)
+    assert wall_is_live(by_id(rows)["claude.subscription.harness_wall"], rows, now=A1_NOW)
+    assert freeze_predicate(rows, now=A1_NOW)["active"] is False  # no reset: live, not frozen
 
 
 def test_an_undated_refusal_is_dated_late_and_an_undated_reading_is_not_evidence(tmp_path):

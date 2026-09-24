@@ -859,8 +859,8 @@ MUTANTS = [
         "longest-window-unbounded",
         "test_a_windowless_wall_without_a_reset_binds_no_longer_than_its_window",
         READER,
-        "        and now >= wall.observed_at + timedelta(hours=bound)\n",
-        "        and False\n",
+        "if isinstance(bound, int) and now >= wall.observed_at + timedelta(hours=bound):",
+        "if False:",
     ),
     (
         "overage-strict-true",
@@ -921,11 +921,11 @@ MUTANTS = [
         'served = {"subscription_served": 1}',
     ),
     (
-        "harness-weekly-unbounded",
+        "harness-session-unbounded",
         "test_a_harness_wall_is_bounded_only_by_the_window_it_names",
         READER,
-        '    if "weekly limit" in lowered:\n        return WINDOW_HOURS["weekly"]\n',
-        "",
+        '        return WINDOW_HOURS["session"]\n',
+        "        return CLAUDE_LONGEST_WINDOW_HOURS\n",
     ),
     (
         "session-notice-missed",
@@ -938,8 +938,8 @@ MUTANTS = [
         "receipt-window-ignored",
         "test_a_receipt_wall_is_bounded_by_its_recorded_window",
         READER,
-        '"binds_at_most_hours": WINDOW_HOURS.get(str(data.get("rate_limit_type")))',
-        '"binds_at_most_hours": None',
+        'str(data.get("rate_limit_type")),',
+        "str(None),",
     ),
     (
         "kimi-bound-dropped",
@@ -952,8 +952,8 @@ MUTANTS = [
         "unnamed-window-bounded",
         "test_a_wall_naming_no_window_binds_until_its_reset_or_a_witnessed_serve",
         READER,
-        "        and isinstance(bound, int)\n",
-        "        and (isinstance(bound, int) or (bound := 168))\n",
+        'CLAUDE_LONGEST_WINDOW_HOURS if family == "claude" else None,',
+        "CLAUDE_LONGEST_WINDOW_HOURS,",
     ),
     (
         "undated-refusal-dropped",
@@ -998,6 +998,36 @@ MUTANTS = [
         '                "--subscription-served comes only',
         "if False:\n            raise ValueError(\n"
         '                "--subscription-served comes only',
+    ),
+    # --- PR #4728 review round 4: the transcript skip must never change which walls are live
+    (
+        "claude-unnamed-unbounded",
+        "test_the_transcript_skip_never_changes_which_walls_are_live",
+        READER,
+        "    return CLAUDE_LONGEST_WINDOW_HOURS\n",
+        "    return None\n",
+    ),
+    (
+        "reset-uncapped",
+        "test_the_transcript_skip_never_changes_which_walls_are_live",
+        READER,
+        "if isinstance(bound, int) and now >= wall.observed_at + timedelta(hours=bound):",
+        "if wall.resets_at is None and isinstance(bound, int)"
+        " and now >= wall.observed_at + timedelta(hours=bound):",
+    ),
+    (
+        "stream-type-unbounded",
+        "test_a_stream_refusal_of_an_unrecognized_window_binds_at_most_a_week",
+        READER,
+        "WINDOW_HOURS.get(limit, CLAUDE_LONGEST_WINDOW_HOURS)",
+        "WINDOW_HOURS.get(limit)",
+    ),
+    (
+        "horizon-skips-live-wall",
+        "test_an_old_transcript_with_a_still_live_wall_is_read_and_walled",
+        READER,
+        "CLAUDE_WINDOW_HORIZON = timedelta(days=8)",
+        "CLAUDE_WINDOW_HORIZON = timedelta(days=5)",
     ),
     (
         "route-probe-suppressed",
