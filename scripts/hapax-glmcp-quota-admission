@@ -28,6 +28,7 @@ from shared.failure_classification import (  # noqa: E402
     FailureCode,
     failure_code_for_zai,
 )
+from shared.quota_spend_ledger import GLMCP_ADMISSION_MODELS  # noqa: E402
 
 DEFAULT_RECEIPT_DIR = Path(
     os.environ.get(
@@ -48,9 +49,9 @@ CODING_PLAN_ENDPOINT = "https://api.z.ai/api/coding/paas/v4"
 PAYG_ENDPOINT = "https://api.z.ai/api/paas/v4"
 ENDPOINT = CODING_PLAN_ENDPOINT
 MODEL = "glm-5.2"
-# Success receipts name the model the reviewer actually called; glm-5.3 is its default since
-# #4692. Mirrors GLMCP_ADMISSION_MODELS in shared/quota_spend_ledger.py.
-MODELS = frozenset({"glm-5.3", MODEL})
+# Success receipts name the model the reviewer actually called (glm-5.3 by default since
+# #4692). One allowlist, shared with the ledger and the telemetry writer.
+MODELS = GLMCP_ADMISSION_MODELS
 SECRET_SOURCE = "pass:glmcp/api-key"
 CODING_PLAN_BILLING_MODE = "coding_plan_subscription"
 PAYG_BILLING_MODE = "api_credit_payg"

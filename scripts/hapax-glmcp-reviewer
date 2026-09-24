@@ -57,7 +57,9 @@ from shared.quota_spend_ledger import (  # noqa: E402
     SpendReceipt,
     SpendReconciliationState,
     evaluate_paid_route_eligibility,
+    frozen_spend_receipt_payload,
     glmcp_payg_reservation_usd,
+    glmcp_payg_usage_ceiling_usd,
     glmcp_payg_usage_cost_usd,
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
@@ -860,21 +862,45 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
                             f"({type(reconcile_exc).__name__});"
                         )
                 elif isinstance(fallback_exc, ProviderReplyUnusable):
-                    # The provider answered, so the call billed: reconcile from its reported
-                    # usage rather than leave an unevidenced pending reservation behind.
+                    # The provider answered, so the call billed. From the named, requested
+                    # model: reconcile from its reported usage. From an unidentified model the
+                    # price is unknown: freeze, holding at least the dearest known rates.
+                    observation = fallback_exc.observation
+                    identity_error = _payg_identity_error(observation, config)
                     try:
                         with _quota_spend_live_lock():
-                            _mark_payg_spend_receipt_succeeded(
-                                reservation=reservation,
-                                ledger_path=gate.ledger_path,
-                                config=config,
-                                primary_error=exc,
-                                observation=fallback_exc.observation,
-                                reply_used=False,
-                            )
-                        reservation_note = (
-                            " spend receipt reconciled from the billed response; reply not used;"
-                        )
+                            if identity_error is None:
+                                _mark_payg_spend_receipt_succeeded(
+                                    reservation=reservation,
+                                    ledger_path=gate.ledger_path,
+                                    config=config,
+                                    primary_error=exc,
+                                    observation=observation,
+                                    reply_used=False,
+                                )
+                                reservation_note = (
+                                    " spend receipt reconciled from the billed response; "
+                                    "reply not used;"
+                                )
+                            else:
+                                _mark_payg_spend_receipt_frozen(
+                                    reservation=reservation,
+                                    ledger_path=gate.ledger_path,
+                                    config=config,
+                                    primary_error=exc,
+                                    observation=observation,
+                                    count_usd=_unidentified_spend_ceiling_usd(observation),
+                                    reason=(
+                                        f"reviewer froze: {identity_error}; the executing "
+                                        "model's price is unknown, so the higher of the "
+                                        "reservation and the usage at the dearest known rates "
+                                        "is held"
+                                    ),
+                                )
+                                reservation_note = (
+                                    " spend frozen: the executing model is unidentified; "
+                                    "reply not used;"
+                                )
                     except ApiError as reconcile_exc:
                         reservation_note = (
                             " billed-response reconciliation failed "
@@ -895,7 +921,11 @@ def call_glm(prompt: str, config: ReviewConfig, api_key: str) -> str:
 
 
 def _payg_identity_error(observation: ProviderObservation, config: ReviewConfig) -> str | None:
-    """A PAYG reply is used only when the provider names the model that was requested."""
+    """A PAYG reply is used only when the provider names the model that was requested.
+
+    The name is the provider's own attestation (the response ``model`` field); nothing here
+    can verify it from outside. It catches a substitution the provider reports, not one it hides.
+    """
 
     if observation.served_model is None:
         return (
@@ -1319,20 +1349,67 @@ def _observed_actual_cost_usd(
     config: ReviewConfig,
     observation: ProviderObservation | None,
 ) -> tuple[Decimal, str]:
-    """Actual cost from provider-reported usage at list price; else keep the upper bound."""
+    """Actual cost of an identified call (served == requested model, which reserving already
+    priced) from provider-reported usage at list price; else keep the upper bound."""
 
     if observation is None or not observation.has_usage():
         return estimated_cost, "no provider usage reported, so the pre-call upper bound stands"
-    try:
-        actual = glmcp_payg_usage_cost_usd(
-            model=observation.served_model or config.model,
-            prompt_tokens=observation.prompt_tokens or 0,
-            cached_tokens=observation.cached_tokens or 0,
-            completion_tokens=observation.completion_tokens or 0,
-        )
-    except QuotaSpendLedgerError:
-        return estimated_cost, "served model has no recorded list price, so the upper bound stands"
+    actual = glmcp_payg_usage_cost_usd(
+        model=config.model,
+        prompt_tokens=observation.prompt_tokens or 0,
+        cached_tokens=observation.cached_tokens or 0,
+        completion_tokens=observation.completion_tokens or 0,
+    )
     return actual, f"actual from provider-reported usage at list price {GLMCP_PAYG_PRICE_BASIS_REF}"
+
+
+def _unidentified_spend_ceiling_usd(observation: ProviderObservation) -> Decimal:
+    if not observation.has_usage():
+        return Decimal("0")  # the frozen receipt keeps its reservation as the held figure
+    return glmcp_payg_usage_ceiling_usd(
+        prompt_tokens=observation.prompt_tokens or 0,
+        completion_tokens=observation.completion_tokens or 0,
+    )
+
+
+def _mark_payg_spend_receipt_frozen(
+    *,
+    reservation: PaygSpendReservation,
+    ledger_path: Path,
+    config: ReviewConfig,
+    primary_error: ZaiHttpError,
+    observation: ProviderObservation | None,
+    count_usd: Decimal,
+    reason: str,
+) -> PaygSpendReservation:
+    """Freeze spend the reviewer cannot trust: it counts, and paid GLMCP spend stops."""
+
+    frozen_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    receipt_payload = frozen_spend_receipt_payload(
+        reservation.spend_receipt.model_dump(mode="json"),
+        count_usd=count_usd,
+        frozen_at=frozen_at,
+        reason=reason,
+    )
+    spend_receipt = SpendReceipt.model_validate(receipt_payload)
+    _write_flat_yaml_atomic(
+        reservation.path,
+        _payg_spend_receipt_fields(
+            receipt_payload=receipt_payload,
+            config=config,
+            primary_error=primary_error,
+            status="spend_frozen",
+            observation=observation,
+        ),
+    )
+    _replace_spend_receipt_in_live_ledger(ledger_path=ledger_path, receipt=spend_receipt)
+    print(
+        f"hapax-glmcp-reviewer: spend frozen spend_receipt={reservation.path.name} "
+        f"held_usd={spend_receipt.cost_against_cap()}: {reason}; paid GLMCP spend is refused "
+        "until a reviewed governance receipt with the same spend_id resolves it",
+        file=sys.stderr,
+    )
+    return PaygSpendReservation(path=reservation.path, spend_receipt=spend_receipt)
 
 
 def _mark_payg_spend_receipt_succeeded(
@@ -1352,6 +1429,21 @@ def _mark_payg_spend_receipt_succeeded(
         config=config,
         observation=observation,
     )
+    if actual_cost > estimated_cost:
+        # The reservation was meant to bound this call; the bound failed. Count the higher
+        # figure and stop paid spend until someone looks.
+        return _mark_payg_spend_receipt_frozen(
+            reservation=reservation,
+            ledger_path=ledger_path,
+            config=config,
+            primary_error=primary_error,
+            observation=observation,
+            count_usd=actual_cost,
+            reason=(
+                f"reviewer froze: provider-reported actual {actual_cost} exceeds the reservation "
+                f"{estimated_cost}; {basis}"
+            ),
+        )
     if receipt_payload.get("cap_remaining_usd") is not None:
         cap_remaining = Decimal(str(receipt_payload["cap_remaining_usd"]))
         receipt_payload["cap_remaining_usd"] = str(cap_remaining + estimated_cost - actual_cost)

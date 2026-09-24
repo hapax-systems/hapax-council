@@ -1283,15 +1283,17 @@ def _glmcp_receipts(module: ModuleType, ledger_path: Path) -> list[object]:
     ("served", "expected"),
     [("glm-4.6", "differs from requested 'glm-5.3'"), (None, "named no served model")],
 )
-def test_call_glm_payg_refuses_reply_from_unrequested_or_unnamed_model_and_reconciles_spend(
+def test_call_glm_payg_refuses_reply_from_unrequested_or_unnamed_model_and_freezes_spend(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     served: str | None,
     expected: str,
 ) -> None:
-    """Unsafe case: a PAYG reply from a model we did not ask for enters review quorum as GLM-5.3.
+    """Unsafe case: a PAYG reply from a model we did not ask for enters review quorum as GLM-5.3,
+    or its spend is recorded at the requested model's price when a dearer model ran.
 
-    The call billed, so the refusal must still reconcile the spend from reported usage."""
+    The call billed at an unknown price: the reply is refused and the spend is frozen, holding
+    the higher of the reservation and the usage at the dearest known rates."""
     module = _load_module()
     ledger_path, receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
     body = _payg_reply("glm-5.3")
@@ -1300,25 +1302,54 @@ def test_call_glm_payg_refuses_reply_from_unrequested_or_unnamed_model_and_recon
     else:
         body["model"] = served
     monkeypatch.setattr(module, "open_no_redirect", _walled_then(body, seen_urls))
+    config = _payg_config(module)
+    reserved = module._payg_reservation_usd("review prompt", config)
+    # 1200 prompt + 300 completion tokens at the dearest known rates ($1.40 / $4.40 per 1M)
+    ceiling = Decimal("0.003000")
 
     with pytest.raises(module.ApiError) as excinfo:
-        module.call_glm("review prompt", _payg_config(module), "test-secret-token")
+        module.call_glm("review prompt", config, "test-secret-token")
 
     message = str(excinfo.value)
     assert expected in message
-    assert "reconciled from the billed response; reply not used" in message
+    assert "spend frozen" in message
     [receipt] = _glmcp_receipts(module, ledger_path)
-    assert receipt.reconciliation_state is module.SpendReconciliationState.RECONCILED
-    if served is None:
-        # usage priced at the requested model's list price
-        assert receipt.actual_cost_usd == Decimal("0.002772")
-    else:
-        # an unpriced served model cannot be priced from usage: the reservation stands
-        assert receipt.actual_cost_usd == receipt.estimated_cost_usd
-        assert "no recorded list price" in receipt.reconciliation_reason
-    assert "reply was not used" in receipt.reconciliation_reason
+    assert receipt.reconciliation_state is module.SpendReconciliationState.FROZEN_REFUSED
+    assert receipt.actual_cost_usd is None
+    assert receipt.cost_against_cap() == max(reserved, ceiling)
     [body_file] = receipt_dir.glob("glmcp-payg-spend-*.yaml")
-    assert "status: spend_reconciled" in body_file.read_text(encoding="utf-8")
+    text = body_file.read_text(encoding="utf-8")
+    assert "status: spend_frozen" in text
+    assert "reconciliation_state: frozen_refused" in text
+
+
+def test_call_glm_payg_actual_above_reservation_freezes_spend_at_the_actual(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Unsafe case: the provider reports more usage than the reservation allowed, and the
+    ledger records it as an ordinary reconciliation. The reservation bound failed: the higher
+    figure counts and further paid spend is refused until someone looks."""
+    module = _load_module()
+    ledger_path, _receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    body = _payg_reply("glm-5.3")
+    body["usage"]["prompt_tokens"] = 100_000
+    body["usage"]["prompt_tokens_details"]["cached_tokens"] = 0
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(body, seen_urls))
+    config = _payg_config(module)
+    # (100000 x 1.40 + 300 x 4.40) / 1M
+    actual = Decimal("0.141320")
+    assert actual > module._payg_reservation_usd("review prompt", config)
+
+    reply = module.call_glm("review prompt", config, "test-secret-token")
+
+    assert reply == "```yaml\nverdict: accept\n```"
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.reconciliation_state is module.SpendReconciliationState.FROZEN_REFUSED
+    assert receipt.cost_against_cap() == actual
+    assert "exceeds the reservation" in receipt.reconciliation_reason
+    assert "spend frozen" in capsys.readouterr().err
 
 
 def test_call_glm_payg_billed_empty_reply_is_reconciled_not_left_pending(
@@ -1334,8 +1365,11 @@ def test_call_glm_payg_billed_empty_reply_is_reconciled_not_left_pending(
     body["choices"][0]["finish_reason"] = "length"
     monkeypatch.setattr(module, "open_no_redirect", _walled_then(body, seen_urls))
 
+    # A prompt large enough for the reported 1200 prompt tokens, so the byte bound holds.
+    prompt = "x" * 2_000
+
     with pytest.raises(module.ApiError, match="reasoning_content was present"):
-        module.call_glm("review prompt", _payg_config(module), "test-secret-token")
+        module.call_glm(prompt, _payg_config(module), "test-secret-token")
 
     [receipt] = _glmcp_receipts(module, ledger_path)
     assert receipt.reconciliation_state is module.SpendReconciliationState.RECONCILED

@@ -207,6 +207,7 @@ from shared.platform_capability_registry import (  # noqa: E402
 )
 from shared.quota_spend_ledger import (  # noqa: E402
     DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
+    GLMCP_ADMISSION_MODELS,
     GLMCP_MODEL_IDS,
     QUOTA_SPEND_LEDGER_FIXTURES,
     QUOTA_SPEND_LEDGER_LIVE_ENV,
@@ -216,6 +217,7 @@ from shared.quota_spend_ledger import (  # noqa: E402
     QuotaSpendLedgerError,
     SpendReceipt,
     evaluate_paid_route_eligibility,
+    frozen_spend_receipt_payload,
     load_quota_spend_ledger,
 )
 
@@ -634,10 +636,8 @@ GLMCP_ADMISSION_CONTRACT_BY_ENDPOINT = {
         "payg_fallback": "true",
     },
 }
-# Keep this fail-closed. This receipt gates the direct GLM review route, so the
-# model must match scripts/hapax-glmcp-reviewer's adapter (default glm-5.3 since #4692;
-# glm-5.2 still named by the seat refresh). Mirrors shared/quota_spend_ledger.py.
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5.3", "glm-5.2"})
+# GLMCP_ADMISSION_MODELS (imported above) is the one allowlist, shared with the ledger and the
+# reviewer: keep it fail-closed, since this receipt gates the direct GLM review route.
 GLMCP_ADMISSION_FIELDS = frozenset(
     {
         "billing_mode",
@@ -935,6 +935,15 @@ def _warn_ignored_glmcp_admission(path: Path, reason: str) -> str:
         file=sys.stderr,
     )
     return f"relay-receipt:{receipt_label}:ignored:{_reason_code(reason)}"
+
+
+def _warn_frozen_glmcp_payg_spend(path: Path, reasons: list[str]) -> None:
+    print(
+        f"hapax-quota-telemetry-writer: freezing GLMCP PAYG spend receipt {_receipt_label(path)}: "
+        f"{'; '.join(reasons)}; its spend counts and paid GLMCP spend is refused until a "
+        "reviewed governance receipt with the same spend_id lands in the fixtures",
+        file=sys.stderr,
+    )
 
 
 def _warn_ignored_glmcp_payg_spend(path: Path, reason: str) -> str:
@@ -2082,8 +2091,12 @@ def active_glmcp_payg_spend_receipts(
                 path, f"schema missing or unsupported; expected {GLMCP_PAYG_SPEND_RECEIPT_SCHEMA}"
             )
             continue
-        if fields.get("status", "") not in {"spend_estimated", "spend_reconciled"}:
-            reject(path, "status missing or unsupported; expected spend_estimated/spend_reconciled")
+        if fields.get("status", "") not in {"spend_estimated", "spend_reconciled", "spend_frozen"}:
+            reject(
+                path,
+                "status missing or unsupported; expected spend_estimated/spend_reconciled/"
+                "spend_frozen",
+            )
             continue
         if fields.get("supported_tool", "") != "hapax-glmcp-reviewer":
             reject(path, "supported_tool missing or unsupported")
@@ -2125,24 +2138,35 @@ def active_glmcp_payg_spend_receipts(
         if model not in GLMCP_ADMISSION_MODELS:
             reject(path, "model_or_engine missing or unsupported")
             continue
-        model_id = fields.get("model_id", "")
-        if not _glmcp_payg_spend_field_is_nullish("model_id", model_id) and (
-            model_id != GLMCP_MODEL_IDS.get(model)
-        ):
-            reject(path, "model_id does not name model_or_engine; identity mislabelled")
-            continue
         budget = budget_by_id.get(fields.get("budget_id", ""))
         if budget is None:
             reject(path, "budget_id missing or unknown")
             continue
-        # Reservations are priced per call (shared.quota_spend_ledger.glmcp_payg_reservation_usd);
-        # one call can never reserve more than the task cap it is charged against.
+        # Reservations are priced per call (shared.quota_spend_ledger.glmcp_payg_reservation_usd).
+        # Without a positive reservation there is nothing to hold against the caps.
         estimated = fields.get("estimated_cost_usd", "")
-        if not GLMCP_PAYG_SPEND_COST_RE.fullmatch(estimated) or not (
-            Decimal("0") < Decimal(estimated) <= budget.per_task_cap_usd
-        ):
-            reject(path, "estimated_cost_usd missing, malformed or above the budget task cap")
+        if not GLMCP_PAYG_SPEND_COST_RE.fullmatch(estimated) or Decimal(estimated) <= 0:
+            reject(path, "estimated_cost_usd missing or not a positive decimal")
             continue
+        # A receipt that may have billed but cannot be trusted is folded frozen, never dropped:
+        # dropping it would let the caps admit spend that already happened.
+        freeze_reasons: list[str] = []
+        held = Decimal(estimated)
+        model_id = fields.get("model_id", "")
+        if model_id != GLMCP_MODEL_IDS[model]:
+            freeze_reasons.append(
+                f"identity unverified: model_id {model_id or 'absent'} does not name {model}"
+            )
+        if held > budget.per_task_cap_usd:
+            freeze_reasons.append("reservation exceeds the budget task cap")
+        actual = fields.get("actual_cost_usd", "")
+        actual_is_countable = not _glmcp_payg_spend_field_is_nullish("actual_cost_usd", actual)
+        if actual_is_countable and not GLMCP_PAYG_SPEND_COST_RE.fullmatch(actual):
+            freeze_reasons.append("actual_cost_usd malformed")
+            actual_is_countable = False
+        if actual_is_countable and Decimal(actual) > held:
+            freeze_reasons.append(f"provider-reported actual {actual} exceeds the reservation")
+            held = Decimal(actual)
         if fields.get("authority_case", "") != budget.authority_case:
             reject(path, "authority_case does not match budget")
             continue
@@ -2194,6 +2218,21 @@ def active_glmcp_payg_spend_receipts(
         if isinstance(task_hash, str) and not GLMCP_PAYG_SPEND_TASK_HASH_RE.fullmatch(task_hash):
             _warn_stripped_glmcp_payg_spend_task_hash(path, task_hash)
             receipt_payload.pop("task_hash", None)
+        if freeze_reasons:
+            if not actual_is_countable:
+                receipt_payload.pop("actual_cost_usd", None)
+            receipt_payload = frozen_spend_receipt_payload(
+                receipt_payload,
+                count_usd=held,
+                frozen_at=now.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+                reason=(
+                    "writer froze: "
+                    + "; ".join(freeze_reasons)
+                    + "; the higher figure counts against the caps; resolve with a reviewed "
+                    "governance receipt of the same spend_id"
+                ),
+            )
+            _warn_frozen_glmcp_payg_spend(path, freeze_reasons)
         receipt_payload["spend_receipt_schema"] = 1
         try:
             receipts.append(SpendReceipt.model_validate(receipt_payload))

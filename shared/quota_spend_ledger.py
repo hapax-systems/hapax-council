@@ -389,6 +389,14 @@ class SteadyStateReplacement(StrictModel):
         return all((self.target_route_id, self.blocker_to_remove, self.exit_criterion))
 
 
+PROVIDER_BALANCE_FIELDS = (
+    "provider_balance_usd",
+    "provider_balance_observed_at",
+    "provider_balance_covers_spend_before",
+    "provider_balance_evidence_ref",
+)
+
+
 class TransitionBudget(StrictModel):
     """Time-boxed paid/API authority. Dates and caps are gates, not hints."""
 
@@ -413,6 +421,13 @@ class TransitionBudget(StrictModel):
     ledger_owner: str | None = None
     dashboard_visibility: Literal["required"] = "required"
     lifecycle_state: BudgetLifecycleState = BudgetLifecycleState.ACTIVE
+    # A provider-reported balance the cap was set from. Spend that settled before
+    # ``provider_balance_covers_spend_before`` is already out of that balance, so unresolved
+    # receipts from before it on *other* budgets cannot overspend it and do not block this one.
+    provider_balance_usd: Decimal | None = Field(default=None, ge=Decimal("0"))
+    provider_balance_observed_at: datetime | None = None
+    provider_balance_covers_spend_before: datetime | None = None
+    provider_balance_evidence_ref: str | None = None
 
     @model_validator(mode="after")
     def _budget_contract(self) -> Self:
@@ -420,6 +435,26 @@ class TransitionBudget(StrictModel):
         _require_aware(self.expires_at, "expires_at")
         if self.expires_at <= self.created_at:
             raise ValueError(f"{self.budget_id} expires_at must be after created_at")
+        balance = self.provider_balance_usd
+        observed = self.provider_balance_observed_at
+        covers = self.provider_balance_covers_spend_before
+        evidence = self.provider_balance_evidence_ref
+        if any(field is not None for field in (balance, observed, covers, evidence)):
+            if (
+                balance is None
+                or observed is None
+                or covers is None
+                or not (evidence or "").strip()
+            ):
+                raise ValueError(f"{self.budget_id} provider balance evidence must be complete")
+            _require_aware(observed, "provider_balance_observed_at")
+            _require_aware(covers, "provider_balance_covers_spend_before")
+            if covers > observed:
+                raise ValueError(
+                    f"{self.budget_id} a balance cannot cover spend after it was observed"
+                )
+            if self.total_cap_usd > balance:
+                raise ValueError(f"{self.budget_id} total cap exceeds the observed balance")
         if self.capacity_pool.value not in PAID_CAPACITY_POOLS:
             raise ValueError(f"{self.budget_id} must use a paid/API capacity pool")
         if self.lifecycle_state is BudgetLifecycleState.ACTIVE:
@@ -458,10 +493,33 @@ class TransitionBudget(StrictModel):
                 *self.task_classes_allowed,
                 *self.quality_floors_allowed,
                 self.ledger_owner,
+                self.provider_balance_evidence_ref,
             ),
             "transition budget",
         )
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_without_absent_provider_balance(self, handler: Any) -> dict[str, Any]:
+        # Budgets without provider balance evidence dump exactly as before the fields existed,
+        # so governance records carry over byte-identical through the telemetry writer.
+        payload = handler(self)
+        for key in PROVIDER_BALANCE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+    def provider_balance_covers(self, receipt: SpendReceipt) -> bool:
+        """Whether this budget's observed provider balance already reflects ``receipt``.
+
+        Never for the budget's own spend, and never for spend after the settlement cut-off.
+        """
+
+        return (
+            self.provider_balance_covers_spend_before is not None
+            and receipt.budget_id != self.budget_id
+            and receipt.created_at < self.provider_balance_covers_spend_before
+        )
 
     def matches_request(self, request: PaidRouteRequest) -> bool:
         return (
@@ -1080,24 +1138,37 @@ def evaluate_paid_route_eligibility(
             blocking_reasons=tuple(blocking),
         )
 
-    overdue = tuple(
-        budget for budget in matching if ledger.budget_has_overdue_reconciliation(budget, when)
-    )
-    if overdue:
-        blocking.append(
-            "unreconciled spend receipts overdue for " + ", ".join(b.budget_id for b in overdue)
-        )
-    frozen = tuple(budget for budget in matching if ledger.budget_has_frozen_refused_spend(budget))
-    if frozen:
-        blocking.append(
-            "frozen/refused spend receipts for " + ", ".join(b.budget_id for b in frozen)
-        )
-
     unexpired = tuple(
         budget
         for budget in matching
         if budget.lifecycle_state is BudgetLifecycleState.ACTIVE and budget.is_unexpired_at(when)
     )
+    unresolved = tuple(
+        receipt
+        for budget in matching
+        for receipt in ledger._budget_receipts(budget)
+        if receipt.is_unreconciled_overdue(when) or receipt.is_frozen_refused()
+    )
+    # An unresolved receipt blocks unless an open budget's observed provider balance already
+    # reflects it (TransitionBudget.provider_balance_covers); without such evidence, all block.
+    residual = tuple(
+        receipt
+        for receipt in unresolved
+        if not any(budget.provider_balance_covers(receipt) for budget in unexpired)
+    )
+    overdue_ids = {r.budget_id for r in residual if r.is_unreconciled_overdue(when)}
+    overdue = tuple(budget for budget in matching if budget.budget_id in overdue_ids)
+    if overdue:
+        blocking.append(
+            "unreconciled spend receipts overdue for " + ", ".join(b.budget_id for b in overdue)
+        )
+    frozen_ids = {r.budget_id for r in residual if r.is_frozen_refused()}
+    frozen = tuple(budget for budget in matching if budget.budget_id in frozen_ids)
+    if frozen:
+        blocking.append(
+            "frozen/refused spend receipts for " + ", ".join(b.budget_id for b in frozen)
+        )
+
     if not unexpired:
         blocking.append("matching TransitionBudget expired or inactive")
         return PaidRouteEligibility(
@@ -1133,6 +1204,16 @@ def evaluate_paid_route_eligibility(
             evidence_refs=tuple(b.budget_id for b in unexpired),
         )
 
+    clear = [
+        (budget, remaining)
+        for budget, remaining in cap_eligible
+        if all(budget.provider_balance_covers(receipt) for receipt in unresolved)
+    ]
+    if not clear and not blocking:
+        blocking.append(
+            "unresolved spend receipts not covered by the chosen budget's provider balance: "
+            + ", ".join(sorted({r.budget_id or "unbudgeted" for r in unresolved}))
+        )
     if blocking:
         return PaidRouteEligibility(
             eligible=False,
@@ -1141,7 +1222,7 @@ def evaluate_paid_route_eligibility(
             evidence_refs=tuple(b.budget_id for b, _ in cap_eligible),
         )
 
-    budget, cap_remaining = cap_eligible[0]
+    budget, cap_remaining = clear[0]
     evidence_refs.append(budget.budget_id)
     return PaidRouteEligibility(
         eligible=True,
@@ -1843,6 +1924,50 @@ def glmcp_payg_usage_cost_usd(
         + completion_tokens * prices["output"]
     ) / Decimal(1_000_000)
     return cost.quantize(GLMCP_PAYG_COST_QUANTUM, rounding=ROUND_CEILING)
+
+
+def glmcp_payg_usage_ceiling_usd(*, prompt_tokens: int, completion_tokens: int) -> Decimal:
+    """Usage priced at the dearest known input and output rates, all input uncached.
+
+    For a served model with no recorded list price: it bounds what any known model would
+    charge for the reported usage; it cannot bound an unknown dearer model, which is why
+    callers freeze such spend rather than reconcile it.
+    """
+
+    if min(prompt_tokens, completion_tokens) < 0:
+        raise QuotaSpendLedgerError("PAYG usage must be non-negative")
+    dearest_input = max(p["input"] for p in GLMCP_PAYG_PRICES_USD_PER_MTOK.values())
+    dearest_output = max(p["output"] for p in GLMCP_PAYG_PRICES_USD_PER_MTOK.values())
+    cost = (prompt_tokens * dearest_input + completion_tokens * dearest_output) / Decimal(1_000_000)
+    return cost.quantize(GLMCP_PAYG_COST_QUANTUM, rounding=ROUND_CEILING)
+
+
+def frozen_spend_receipt_payload(
+    payload: dict[str, Any],
+    *,
+    count_usd: Decimal,
+    frozen_at: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Freeze a spend receipt that may have billed but cannot be trusted as reconciled.
+
+    No actual is claimed. The higher of ``count_usd`` and whatever the receipt already
+    counted is held against the caps as its estimate, and the frozen state refuses further
+    paid spend on every matching budget until a reviewed governance record supersedes it.
+    """
+
+    counted = [count_usd]
+    for key in ("estimated_cost_usd", "actual_cost_usd"):
+        value = payload.get(key)
+        if value is not None and str(value).strip():
+            counted.append(Decimal(str(value)))
+    frozen = dict(payload)
+    frozen.pop("actual_cost_usd", None)
+    frozen["estimated_cost_usd"] = str(max(counted))
+    frozen["reconciliation_state"] = SpendReconciliationState.FROZEN_REFUSED.value
+    frozen["reconciled_at"] = frozen_at
+    frozen["reconciliation_reason"] = reason
+    return frozen
 
 
 def _glmcp_payg_budget_request(task_id: str) -> PaidRouteRequest:

@@ -4165,6 +4165,12 @@ from shared.quota_spend_ledger import SpendReceipt as _QuotaSpendLedgerSpendRece
 
 _QuotaSpendLedgerSpendReceipt._serialize_without_empty_task_hash
 
+from shared.quota_spend_ledger import (  # noqa: E402
+    TransitionBudget as _QuotaSpendLedgerTransitionBudget,
+)
+
+_QuotaSpendLedgerTransitionBudget._serialize_without_absent_provider_balance
+
 # GLMCP PAYG list-price helpers: called by the extensionless scripts/hapax-glmcp-reviewer
 # (reservation before the paid call, usage-based reconciliation after it), which vulture
 # does not scan.
