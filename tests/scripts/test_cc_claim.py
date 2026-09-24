@@ -1113,6 +1113,43 @@ def test_recover_reports_applied_journal_superseded_by_later_owner_not_drift(
     assert f"cc-claim: recovery {successor}:applied" in result.stdout
 
 
+@pytest.mark.parametrize("legacy", [False, True], ids=["admitted", "emergency"])
+def test_claim_never_publishes_epoch_zero_when_the_clock_is_unavailable(
+    tmp_path: Path, legacy: bool
+) -> None:
+    # PR4726 seat review (19:55Z): the embedded claim writer read an empty epoch argument as
+    # 0 and would publish it. An unavailable clock must fail closed before any write.
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "epoch-zero")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    real_date = subprocess.run(
+        ["bash", "-c", "command -v date"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (fake_bin / "date").write_text(
+        f'#!/bin/bash\nif [[ "$*" == "+%s" ]]; then exit 0; fi\nexec {real_date} "$@"\n',
+        encoding="utf-8",
+    )
+    (fake_bin / "date").chmod(0o755)
+    before = note.read_bytes()
+
+    result = _claim(
+        home,
+        "epoch-zero",
+        legacy=legacy,
+        dispatch=False,
+        install_gate0b=True,
+        extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "claim epoch unavailable" in result.stderr
+    assert note.read_bytes() == before
+    cache = home / ".cache" / "hapax"
+    assert not list(cache.glob("cc-claim-epoch-*"))
+    assert not list(cache.glob("cc-active-task-*"))
+
+
 def test_claim_survives_a_low_inherited_descriptor_limit(tmp_path: Path) -> None:
     # 2026-09-24 (U3 and the bootstrap lane): lanes resumed with soft nofile 1024 failed every
     # claim with claim_publication_inspection_failed (OSError), because journal inspection
