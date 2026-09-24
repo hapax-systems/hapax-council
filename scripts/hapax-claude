@@ -288,6 +288,7 @@ if [ "$SUBSCRIPTION_ONLY" -eq 1 ]; then
   export HAPAX_SOURCE_ACTIVATE_WORKTREE="$(realpath -m -- "${HAPAX_SOURCE_ACTIVATE_WORKTREE:-$HOME/.cache/hapax/source-activation/worktree}")"
   # Pin the admitted ledger path along with HOME/config across the tmux server.
   export HAPAX_QUOTA_SPEND_LEDGER="$(realpath -m -- "${HAPAX_QUOTA_SPEND_LEDGER:-${HAPAX_QUOTA_SPEND_LEDGER_LIVE:-$HOME/.cache/hapax/orchestration/quota-spend-ledger-live.json}}")"
+  export HAPAX_RELAY_RECEIPT_DIR="$(realpath -m -- "${HAPAX_RELAY_RECEIPT_DIR:-$HOME/.cache/hapax/relay/receipts}")"
   SUBSCRIPTION_GUARD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/hapax-claude-account-live-observe"
   SUBSCRIPTION_PYTHON="$(command -v python3)"
   (cd "$WORKDIR" && "$SUBSCRIPTION_PYTHON" "$SUBSCRIPTION_GUARD" \
@@ -400,6 +401,7 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
     printf 'export HOME=%q\n' "$HOME"
     printf 'export CLAUDE_CONFIG_DIR=%q\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
     printf 'export HAPAX_QUOTA_SPEND_LEDGER=%q\n' "$HAPAX_QUOTA_SPEND_LEDGER"
+    printf 'export HAPAX_RELAY_RECEIPT_DIR=%q\n' "$HAPAX_RELAY_RECEIPT_DIR"
     printf 'export HAPAX_SOURCE_ACTIVATE_WORKTREE=%q\n' "$HAPAX_SOURCE_ACTIVATE_WORKTREE"
   fi
   if [ -n "$CLAUDE_TASK" ]; then

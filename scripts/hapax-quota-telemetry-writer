@@ -213,6 +213,7 @@ from shared.quota_spend_ledger import (  # noqa: E402
     QuotaSpendLedger,
     QuotaSpendLedgerError,
     SpendReceipt,
+    claude_subscription_wall_observed_at,
     evaluate_paid_route_eligibility,
     load_quota_spend_ledger,
 )
@@ -808,6 +809,7 @@ class QuotaWall:
     detected_at: datetime | None
     resets_at: datetime | None
     route_id: str | None = None
+    subscription_bound: bool = False
 
 
 LOCAL_COMPUTE_ROUTE = "litellm.local.command-r-35b"
@@ -1153,6 +1155,11 @@ def active_quota_walls(
                 detected_at=detected_at,
                 resets_at=resets_at,
                 route_id=route_id,
+                subscription_bound=(
+                    claude_subscription_wall_observed_at(fields, now=now) is not None
+                    if platform == "claude"
+                    else False
+                ),
             )
         )
     return walls
@@ -1333,7 +1340,7 @@ def _claude_shared_pool_quota_walls(
     after the wall.
     """
 
-    return [wall for wall in walls if _active_quota_wall(wall, now=now)]
+    return [wall for wall in walls if wall.subscription_bound and _active_quota_wall(wall, now=now)]
 
 
 def _claude_after_wall_admissions(
@@ -1346,9 +1353,7 @@ def _claude_after_wall_admissions(
         return []
     wall_recovery_times: list[datetime] = []
     for wall in walls:
-        if wall.resets_at is not None:
-            wall_recovery_times.append(wall.resets_at)
-        elif wall.detected_at is not None:
+        if wall.detected_at is not None:
             wall_recovery_times.append(wall.detected_at)
         else:
             return []

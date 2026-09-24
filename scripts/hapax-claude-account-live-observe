@@ -493,6 +493,7 @@ def _interactive_credential_admitted(token: str) -> bool:
             DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
             QuotaSpendLedgerError,
             claude_interactive_credential_admitted,
+            claude_subscription_wall_observed_at,
             load_quota_spend_ledger,
         )
     except ImportError:
@@ -503,8 +504,32 @@ def _interactive_credential_admitted(token: str) -> bool:
         or DEFAULT_QUOTA_SPEND_LEDGER_LIVE
     ).expanduser()
     try:
+        # Observe new bound refusals independently of the ledger's writer tick.
+        # This read also runs in the delayed child and after its auth check.
+        walls = []
+        now = datetime.now(UTC)
+        receipt_dir = Path(
+            os.environ.get("HAPAX_RELAY_RECEIPT_DIR") or Path.home() / ".cache/hapax/relay/receipts"
+        ).expanduser()
+        if receipt_dir.exists():
+            for receipt in receipt_dir.iterdir():
+                if not (
+                    receipt.name.startswith("claude-subscription-observed-")
+                    and receipt.name.endswith("-quota-wall.yaml")
+                ):
+                    continue
+                fields = dict(line.split(": ", 1) for line in receipt.read_text().splitlines())
+                # Unreadable/malformed producer evidence cannot restore an old positive.
+                at = _parse_ts(fields.get("detected_at"))
+                if at is None:
+                    return False
+                if now - at > timedelta(hours=24):
+                    continue
+                if claude_subscription_wall_observed_at(fields, now=now) is None:
+                    return False
+                walls.append(fields)
         return claude_interactive_credential_admitted(
-            load_quota_spend_ledger(path), token, now=datetime.now(UTC)
+            load_quota_spend_ledger(path), token, now=now, quota_walls=walls
         )
     except (OSError, ValueError, QuotaSpendLedgerError):
         return False
@@ -678,12 +703,24 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         # how codex reports its wall — so classify it rather than discarding it.
         combined = f"{blob} {proc.stderr or ''}"
         if any(marker.search(combined) for marker in WALL_MARKERS):
-            return Observation("wall", now, "active-probe", "provider-quota-refusal")
+            return Observation(
+                "wall",
+                now,
+                "active-probe",
+                "provider-quota-refusal",
+                credential_binding=_probe_credential_binding(token, now),
+            )
         return None
     if not isinstance(record, dict):
         return None
     if any(marker.search(_wall_text(record)) for marker in WALL_MARKERS):
-        return Observation("wall", now, "active-probe", "provider-quota-refusal")
+        return Observation(
+            "wall",
+            now,
+            "active-probe",
+            "provider-quota-refusal",
+            credential_binding=_probe_credential_binding(token, now),
+        )
     if (
         proc.returncode == 0
         and not record.get("is_error")
@@ -926,6 +963,42 @@ def mint_failed(receipts: list[dict]) -> bool:
     return any(r.get("returncode") not in (0, None) for r in receipts)
 
 
+def publish_bound_wall(evidence: Observation, receipt_dir: Path | None) -> Path:
+    """Publish one immutable negative observation in the existing relay wall format."""
+    if evidence.source != "active-probe" or not evidence.credential_binding:
+        raise ValueError("bound subscription refusal required")
+    receipt_dir = (
+        receipt_dir
+        or Path(
+            os.environ.get("HAPAX_RELAY_RECEIPT_DIR") or Path.home() / ".cache/hapax/relay/receipts"
+        ).expanduser()
+    )
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    fields = {
+        "role": "claude-subscription-observed",
+        "status": "quota_blocked",
+        "detected_at": evidence.at.isoformat().replace("+00:00", "Z"),
+        "signal_kind": "provider-quota-refusal",
+        "failure_class": "quota_exhausted",
+        "rate_limit_type": "unknown",
+        "resets_at": "unknown",
+        "provider": "anthropic-claude-subscription",
+        "auth_surface": "subscription",
+        "source": "scripts/hapax-claude-account-live-observe",
+        "observation": "subscription_quota_wall_observed",
+        "credential_binding": evidence.credential_binding,
+    }
+    # Publish complete bytes atomically; never overwrite earlier evidence.
+    with tempfile.NamedTemporaryFile(mode="w", dir=receipt_dir, prefix=".bound-wall-") as handle:
+        handle.write("".join(f"{key}: {value}\n" for key, value in fields.items()))
+        handle.flush()
+        os.fsync(handle.fileno())
+        name = f"claude-subscription-observed-{Path(handle.name).name.removeprefix('.bound-wall-')}-quota-wall.yaml"
+        path = receipt_dir / name
+        os.link(handle.name, path)
+    return path
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--max-age-seconds", type=int, default=DEFAULT_MAX_AGE_SECONDS)
@@ -1025,19 +1098,37 @@ def main(argv: list[str] | None = None) -> int:
                 "observation succeeded but at least one receipt write FAILED — the route is "
                 "not vouched for. Exit 5 is deliberately outside SuccessExitStatus so this "
                 "surfaces instead of leaving systemd green with no receipts."
+                " Next action: check receipt-directory permissions, repair the writer, "
+                "then rerun `hapax-claude-account-live-observe --probe --json` for the "
+                "same authorized route and regenerate `hapax-quota-telemetry-writer --json`."
             )
             rc = 5
         elif not args.dry_run and not any(r.get("returncode") == 0 for r in payload["receipts"]):
-            payload["hint"] = "every route was skipped; no receipt was written"
+            payload["hint"] = (
+                "every route was skipped; no receipt was written. Next action: restore "
+                "the declared Opus probe model and rerun "
+                "`hapax-claude-account-live-observe --probe --json` for the same route."
+            )
             rc = 5
         else:
             rc = 0
     elif verdict == "walled":
+        try:
+            payload["wall_receipt"] = str(publish_bound_wall(evidence, args.receipt_dir))
+        except (OSError, ValueError):
+            payload["wall_receipt_write_failed"] = True
         payload["hint"] = (
             "the controlled subscription probe refused for quota reasons; "
-            "holding the route rather than minting availability"
+            "no availability was minted. Next action: after "
+            "quota recovery rerun `hapax-claude-account-live-observe --probe --json` "
+            "for the same authorized route, then `hapax-quota-telemetry-writer --json`."
         )
-        rc = 3
+        rc = 5 if payload.get("wall_receipt_write_failed") else 3
+        if rc == 5:
+            payload["hint"] += (
+                " Negative receipt publication failed: check receipt-directory permissions "
+                "and restore the writer before any launch; earlier telemetry is not revoked."
+            )
     elif verdict == "probe_failed":
         # NOT exit 4. The instrument broke; nothing was observed either way. Exit 7 is
         # outside SuccessExitStatus so a missing binary or a hung request surfaces instead

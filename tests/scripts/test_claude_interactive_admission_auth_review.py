@@ -173,7 +173,14 @@ def test_real_probe_result_reaches_interactive_mint(tmp_path, monkeypatch, capsy
         assert "synthetic-redirect-value" not in written[0].read_text()
     else:
         assert rc == {"claude-sonnet-4-5": 5, "wall": 3, None: 4}[model]
-        assert not written
+        if model == "wall":
+            assert len(written) == 1
+            receipt = yaml.safe_load(written[0].read_text())
+            assert receipt["status"] == "quota_blocked"
+            assert receipt["auth_surface"] == "subscription"
+            assert receipt["credential_binding"]
+        else:
+            assert not written
 
 
 @pytest.mark.parametrize("route_id", [ROUTE, "claude.headless.full", "claude.review.opus"])

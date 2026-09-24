@@ -11,7 +11,8 @@ import hashlib
 import hmac
 import json
 import re
-from datetime import UTC, datetime
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
@@ -1616,13 +1617,25 @@ def claude_subscription_credential_binding(credential: str, observed_at: datetim
 
 
 def claude_interactive_credential_admitted(
-    ledger: QuotaSpendLedger, credential: str, *, now: datetime
+    ledger: QuotaSpendLedger,
+    credential: str,
+    *,
+    now: datetime,
+    quota_walls: Iterable[Mapping[str, str]] = (),
 ) -> bool:
     """Require fresh quota and a current receipt for the exact launch credential."""
     route_id = "claude.interactive.full"
     state, _ = subscription_quota_state_for_route(ledger, route_id, now=now)
     if state is not SubscriptionQuotaState.FRESH or ledger.ledger_stale(now):
         return False
+    bound_wall_times = [
+        at
+        for wall in quota_walls
+        if (at := claude_subscription_wall_observed_at(wall, now=now)) is not None
+        and hmac.compare_digest(
+            wall["credential_binding"], claude_subscription_credential_binding(credential, at)
+        )
+    ]
     # Public evidence projection deliberately omits the opaque credential proof.
     refs = (
         ref
@@ -1636,15 +1649,43 @@ def claude_interactive_credential_admitted(
             continue
         match = CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref)
         assert match is not None
+        observed_at = datetime.fromisoformat(match.group("observed_at"))
+        if any(at >= observed_at for at in bound_wall_times):
+            continue
         proof = match.group("credential_binding")
         if proof and hmac.compare_digest(
             proof,
-            claude_subscription_credential_binding(
-                credential, datetime.fromisoformat(match.group("observed_at"))
-            ),
+            claude_subscription_credential_binding(credential, observed_at),
         ):
             return True
     return False
+
+
+def claude_subscription_wall_observed_at(
+    fields: Mapping[str, str], *, now: datetime
+) -> datetime | None:
+    """Validate the controlled producer's binding, never a lane/model inference.
+
+    Reset predictions cannot authenticate a wall or override a newer serve.
+    The existing resetless-wall lifetime bounds this negative observation.
+    This validates provenance; actual launch additionally matches the credential.
+    """
+    if (
+        fields.get("status") != "quota_blocked"
+        or fields.get("provider") != "anthropic-claude-subscription"
+        or fields.get("auth_surface") != "subscription"
+        or fields.get("source") != "scripts/hapax-claude-account-live-observe"
+        or fields.get("observation") != "subscription_quota_wall_observed"
+        or re.fullmatch(r"[0-9a-f]{64}", fields.get("credential_binding", "")) is None
+    ):
+        return None
+    try:
+        at = datetime.fromisoformat(fields.get("detected_at", ""))
+    except ValueError:
+        return None
+    if at.tzinfo is None or not timedelta(0) <= now - at <= timedelta(hours=24):
+        return None
+    return at
 
 
 def _is_claude_admission_evidence_ref(
@@ -2139,6 +2180,7 @@ __all__ = [
     "build_dashboard",
     "claude_interactive_credential_admitted",
     "claude_subscription_credential_binding",
+    "claude_subscription_wall_observed_at",
     "evaluate_paid_route_eligibility",
     "load_quota_spend_ledger",
     "load_quota_spend_ledger_resolved",
