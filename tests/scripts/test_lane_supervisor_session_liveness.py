@@ -105,8 +105,11 @@ def test_live_pane_stale_headless_output_never_recovers(tmp_path, exhausted):
     assert "progress_hold:" in result.stdout
 
 
-def test_live_headless_silence_never_nudges_or_reoffers(tmp_path):
+@pytest.mark.parametrize("reaper_enabled", [False, True])
+def test_live_headless_silence_never_nudges_or_reoffers(tmp_path, reaper_enabled):
     env, calls = setup_lane(tmp_path)
+    env["HAPAX_SUPERVISOR_REAP_OFF"] = "0" if reaper_enabled else "1"
+    env["HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S"] = "0"
     runtime = Path(env["HAPAX_SUPERVISOR_RUNTIME_DIR"])
     proc = _spawn_launcher(env, runtime, "delta")
     fifo = runtime / "delta.stdin"

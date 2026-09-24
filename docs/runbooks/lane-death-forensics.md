@@ -80,7 +80,10 @@ vault = Path(os.environ.get('HAPAX_SUPERVISOR_VAULT_ROOT',
 inputs = {'claim_sha256': cache / ('cc-active-task-' + key),
           'epoch_sha256': cache / ('cc-claim-epoch-' + key)}
 if receipt['task_id']:
-    inputs['note_sha256'] = vault / 'active' / (receipt['task_id'] + '.md')
+    note = vault / 'active' / (receipt['task_id'] + '.md')
+    if not note.is_file():
+        note = vault / 'closed' / (receipt['task_id'] + '.md')
+    inputs['note_sha256'] = note
 for field, path in inputs.items():
     expected = receipt.get(field)
     actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
@@ -102,6 +105,13 @@ request the exact-path approval required by
 and follow that procedure only after approval. Do not copy claim sidecars or launch a second writer over a
 live pane or live claim. Missing or conflicting identity evidence remains an unresolved
 hold; output silence alone never authorizes recovery.
+
+Launcher cleanup also holds active or unresolved claims, including beyond the six-hour
+lifetime ceiling. Immediately before SIGTERM, the reaper requires an observed terminal
+task assigned to the lane, no active/unresolved lane claims, and an unchanged launcher
+PID binding. Missing claims or notes do not prove completion. For `reap_hold`, inspect
+the claim events and receipts above plus the launcher's task and PID binding, then
+recheck the next tick; preserve the lease until governed repair is authorized.
 
 If a launcher prints `could not set remain-on-exit on <session>`, the lane is running but a
 bad death will leave nothing to read; the message names the checks (`tmux -V` ≥ 3.2).

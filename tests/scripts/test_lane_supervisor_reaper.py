@@ -8,11 +8,11 @@ launcher then pins the lane (lifetime flock) and blocks re-dispatch. This was th
 dispatch-blocking class: ``pgrep -fc hapax-claude-headless`` ~= 60 while only ~5
 lanes were genuinely live.
 
-The supervisor's reaper leg is the PID-targeted backstop. For a lane with a live
-launcher it reaps (SIGTERM, single pid — NEVER a process group) when:
-  1. the claimed task is terminal (note left active/, terminal status, or PR
-     merged), gated on admission_state so a pressure-closed window defers; or
-  2. the launcher exceeds a hard lifetime ceiling, regardless of task state.
+The supervisor's reaper leg is the PID-targeted backstop. Verified terminal
+tasks permit cleanup (SIGTERM, single pid — NEVER a process group), gated on
+admission_state below the lifetime ceiling. Age never authorizes terminating
+an active or unresolved claim. Claims and launcher identity are rechecked at
+the signal boundary, including for lifetime cleanup.
 
 The ceiling reap is routine and silent — every launcher parks there once its
 lane idles after a completed turn, and the reap self-heals. Only a ceiling reap
@@ -25,10 +25,13 @@ pid, never ``kill -- -PGID`` / a negative pid / killpg.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import textwrap
 import time
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SUPERVISOR = REPO_ROOT / "scripts" / "hapax-lane-supervisor"
@@ -92,6 +95,10 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path, Path]
             "HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS": "0",
             # Deterministic admission gate (default open; the defer test sets closed).
             "HAPAX_SUPERVISOR_ADMISSION_CMD": "echo open",
+            "HAPAX_LOCAL_DEV_MAINTENANCE_MODE": "local",
+            "HAPAX_SUPERVISOR_P0_IDLE_RESPAWN": "0",
+            "HAPAX_SUPERVISOR_REAP_OFF": "0",
+            "HAPAX_SUPERVISOR_LANEBUS_DIR": str(tmp_path / "lanebus"),
         }
     )
     env.update(overrides)
@@ -113,8 +120,7 @@ def _mark_claude_alive(runtime_dir: Path, lane: str) -> None:
 def _write_claim(
     env: dict[str, str], lane: str, task_id: str, *, status: str | None, pr: str | None = None
 ) -> None:
-    """Write the lane's claim file. ``status=None`` leaves NO active note (the
-    note was moved to closed/) → terminal. A status writes an active/ note."""
+    """Write a legacy claim; ``status=None`` leaves the task note unresolved."""
     claim_dir = Path(env["HOME"]) / ".cache" / "hapax"
     claim_dir.mkdir(parents=True, exist_ok=True)
     (claim_dir / f"cc-active-task-{lane}").write_text(f"{task_id}\n", encoding="utf-8")
@@ -182,13 +188,17 @@ def _cleanup(proc: subprocess.Popen[bytes]) -> None:
 # ─── core: reap a terminal-task launcher (AC2) ────────────────────────────────
 
 
-def test_supervisor_reaps_launcher_when_task_terminal(tmp_path: Path) -> None:
-    """A live launcher whose claimed task is terminal (note left active/) is
-    SIGTERM'd within one sweep."""
+@pytest.mark.parametrize("location", ["active", "closed"])
+def test_supervisor_reaps_launcher_when_task_terminal(tmp_path: Path, location: str) -> None:
+    """A verified terminal task permits cleanup within one sweep."""
     env, calls, runtime_dir = _base(tmp_path)
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
-    _write_claim(env, "delta", "done-task", status=None)  # no active note → terminal
+    _write_claim(env, "delta", "done-task", status="done")
+    if location == "closed":
+        vault = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"])
+        (vault / "closed").mkdir()
+        (vault / "active/done-task.md").rename(vault / "closed/done-task.md")
     proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
@@ -215,13 +225,168 @@ def test_supervisor_keeps_launcher_when_task_live(tmp_path: Path) -> None:
         _cleanup(proc)
 
 
+@pytest.mark.parametrize("ceiling", ["0", "21600"])
+@pytest.mark.parametrize("status", ["in_progress", "claimed", "pr_open", "blocked", None])
+def test_reaper_preserves_active_or_unresolved_claim(
+    tmp_path: Path, ceiling: str, status: str | None
+) -> None:
+    env, calls, runtime_dir = _base(tmp_path, HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S=ceiling)
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime_dir, "delta")
+    _write_claim(env, "delta", "held-task", status=status)
+    cache = Path(env["HOME"]) / ".cache/hapax"
+    vault = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"])
+    before = {p: p.read_bytes() for root in (cache, vault) for p in root.rglob("*") if p.is_file()}
+    proc = _spawn_launcher(env, runtime_dir, "delta")
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _alive(proc), result.stdout
+        assert "reap_hold:" in result.stdout
+        assert not list(calls.iterdir())
+        assert {
+            p: p.read_bytes() for root in (cache, vault) for p in root.rglob("*") if p.is_file()
+        } == before
+        state = Path(env["HAPAX_SUPERVISOR_STATE_DIR"])
+        assert not (state / "delta.launcher-lifetime-reaped").exists()
+        assert not (state / "launchers_reaped_total").exists()
+        assert not (state / "launcher_lifetime_reaps_total").exists()
+    finally:
+        _cleanup(proc)
+
+
+def test_lifetime_reaper_requires_observed_terminal_task(tmp_path: Path) -> None:
+    """No claim is not proof that a launcher has finished its work."""
+    env, calls, runtime_dir = _base(tmp_path, HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0")
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _alive(proc), result.stdout
+        assert "reap_hold:terminal_state_unverified" in result.stdout
+        assert not list(calls.iterdir())
+    finally:
+        _cleanup(proc)
+
+
+@pytest.mark.parametrize("owner", ["", "other-lane"])
+def test_reaper_requires_terminal_task_owner(tmp_path: Path, owner: str) -> None:
+    env, calls, runtime_dir = _base(tmp_path, HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0")
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime_dir, "delta")
+    _write_claim(env, "delta", "done-task", status="done")
+    note = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"]) / "active/done-task.md"
+    note.write_text(note.read_text().replace("assigned_to: delta", f"assigned_to: {owner}"))
+    proc = _spawn_launcher(env, runtime_dir, "delta")
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _alive(proc), result.stdout
+        assert "reap_hold:terminal_state_unverified" in result.stdout
+    finally:
+        _cleanup(proc)
+
+
+def test_active_claim_after_prior_lifetime_reap_never_escalates(tmp_path: Path) -> None:
+    notify_log = _write_notify_recorder(tmp_path)
+    env, calls, runtime_dir = _base(
+        tmp_path,
+        HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0",
+        HAPAX_SUPERVISOR_LIFETIME_REAP_GRACE_S="0",
+        HAPAX_SUPERVISOR_NOTIFY_CMD=str(tmp_path / "bin/notify-recorder"),
+    )
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime_dir, "delta")
+    _write_claim(env, "delta", "held-task", status="in_progress")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
+    marker = Path(env["HAPAX_SUPERVISOR_STATE_DIR"]) / "delta.launcher-lifetime-reaped"
+    prior = f"{proc.pid} {int(time.time()) - 600}\n"
+    marker.write_text(prior)
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _alive(proc), result.stdout
+        assert "reap_hold:active_or_unresolved_claim" in result.stdout
+        assert not notify_log.exists(), "an active-claim hold must not recommend termination"
+        assert marker.read_text() == prior
+    finally:
+        _cleanup(proc)
+
+
+def test_terminal_legacy_claim_cannot_mask_active_session_claim(tmp_path: Path) -> None:
+    env, calls, runtime_dir = _base(tmp_path, HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0")
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime_dir, "delta")
+    _write_claim(env, "delta", "held-task", status="in_progress")
+    cache = Path(env["HOME"]) / ".cache/hapax"
+    session = "a81c4e9a-1111-4444-8888-123456abcdef"
+    claim = cache / f"cc-active-task-delta-{session}"
+    epoch = cache / f"cc-claim-epoch-delta-{session}"
+    claim.write_text("held-task\n")
+    epoch.write_text("17 held-task\n")
+    _write_claim(env, "delta", "done-task", status="done")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _alive(proc), result.stdout
+        assert "reap_hold:active_or_unresolved_claim" in result.stdout
+        assert claim.read_text() == "held-task\n"
+        assert epoch.read_text() == "17 held-task\n"
+        assert not list(calls.iterdir())
+    finally:
+        _cleanup(proc)
+
+
+def test_reaper_rechecks_claim_after_admission(tmp_path: Path) -> None:
+    """A task reopened during admission must hold the final signal."""
+    env, calls, runtime_dir = _base(tmp_path)
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime_dir, "delta")
+    _write_claim(env, "delta", "done-task", status="done")
+    note = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"]) / "active/done-task.md"
+    env["HAPAX_SUPERVISOR_ADMISSION_CMD"] = (
+        f"sed -i 's/status: done/status: in_progress/' {shlex.quote(str(note))}; echo open"
+    )
+    proc = _spawn_launcher(env, runtime_dir, "delta")
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert "status: in_progress" in note.read_text()
+        assert _alive(proc), result.stdout
+        assert "reap_hold:active_or_unresolved_claim" in result.stdout
+    finally:
+        _cleanup(proc)
+
+
+def test_reaper_rechecks_launcher_after_admission(tmp_path: Path) -> None:
+    env, calls, runtime_dir = _base(tmp_path)
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime_dir, "delta")
+    _write_claim(env, "delta", "done-task", status="done")
+    other = _spawn_launcher(env, runtime_dir, "delta")
+    proc = _spawn_launcher(env, runtime_dir, "delta")
+    pidfile = shlex.quote(str(runtime_dir / "delta.launcher.pid"))
+    env["HAPAX_SUPERVISOR_ADMISSION_CMD"] = f"echo {other.pid} > {pidfile}; echo open"
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _alive(proc) and _alive(other), result.stdout
+        assert "reap_hold:launcher_changed" in result.stdout
+    finally:
+        _cleanup(proc)
+        _cleanup(other)
+
+
 def test_supervisor_reap_deferred_when_admission_closed(tmp_path: Path) -> None:
     """Terminal-task reap is gated on admission_state: a pressure-closed window
     defers (queue, never drop) — the launcher survives this tick."""
     env, calls, runtime_dir = _base(tmp_path, HAPAX_SUPERVISOR_ADMISSION_CMD="echo closed")
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
-    _write_claim(env, "delta", "done-task", status=None)
+    _write_claim(env, "delta", "done-task", status="done")
     proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
@@ -246,16 +411,7 @@ def _write_notify_recorder(tmp_path: Path) -> Path:
 def test_supervisor_reaps_launcher_over_lifetime_ceiling_without_escalating(
     tmp_path: Path,
 ) -> None:
-    """A launcher past the hard lifetime ceiling is reaped even when its task is
-    still live — but the FIRST crossing does not escalate.
-
-    A launcher parks here as a matter of course: claude never EOFs the FIFO the
-    launcher holds open, so it idles after a completed turn, and its only
-    self-teardown fires on task terminality. The ceiling reap is the routine
-    garbage collection for that, and it self-heals (the next sweep brings the
-    lane back into idle-await). Escalating it minted a governed P0 cc-task per
-    lane per 6h of launcher life for a fault that was never there.
-    """
+    """Verified terminal cleanup over the ceiling stays quiet on first reap."""
     notify_log = _write_notify_recorder(tmp_path)
     env, calls, runtime_dir = _base(
         tmp_path,
@@ -264,7 +420,7 @@ def test_supervisor_reaps_launcher_over_lifetime_ceiling_without_escalating(
     )
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
-    _write_claim(env, "delta", "live-task", status="in_progress")  # task LIVE
+    _write_claim(env, "delta", "done-task", status="done")
     proc = _spawn_launcher(env, runtime_dir, "delta")
     time.sleep(1.2)  # ensure etimes >= 1 so the ceiling=0 trigger is unambiguous
     try:
@@ -296,7 +452,7 @@ def test_supervisor_escalates_when_lifetime_reap_does_not_take(tmp_path: Path) -
     )
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
-    _write_claim(env, "delta", "live-task", status="in_progress")
+    _write_claim(env, "delta", "done-task", status="done")
     # A launcher that ignores SIGTERM — the reap cannot take.
     proc = subprocess.Popen(
         [
@@ -343,7 +499,7 @@ def test_supervisor_reaps_pidfile_free_launcher_over_lifetime_ceiling(tmp_path: 
     )
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
-    _write_claim(env, "delta", "live-task", status="in_progress")
+    _write_claim(env, "delta", "done-task", status="done")
     launcher = Path(env["HAPAX_CLAUDE_HEADLESS_BIN"])
     _write_executable(
         launcher,
@@ -358,7 +514,7 @@ def test_supervisor_reaps_pidfile_free_launcher_over_lifetime_ceiling(tmp_path: 
         """,
     )
     proc = subprocess.Popen(
-        [str(launcher), "--task", "live-task", "delta", "prompt"],
+        [str(launcher), "--task", "done-task", "delta", "prompt"],
         env=env,
         start_new_session=True,
     )
@@ -379,7 +535,7 @@ def test_supervisor_reaper_dry_run_does_not_kill(tmp_path: Path) -> None:
     env, calls, runtime_dir = _base(tmp_path, HAPAX_SUPERVISOR_DRY_RUN="1")
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
-    _write_claim(env, "delta", "done-task", status=None)
+    _write_claim(env, "delta", "done-task", status="done")
     proc = _spawn_launcher(env, runtime_dir, "delta")
     try:
         result = _run(env)
