@@ -1,21 +1,8 @@
-"""Tests for the lane PROGRESS watchdog leg of hapax-lane-supervisor.
+"""Output age is diagnostic, never authority to relaunch, nudge, or reoffer.
 
-The FM-11 supervisor guarantees lane *process* liveness (dead -> respawn). But a
-lane can be process-alive yet make no PROGRESS: it did a bounded chunk, the turn
-ended, and nothing drives a continuation, so ``output.jsonl`` freezes while the
-slot stays occupied ``in_progress`` and no PR opens (observed 2026-06-01: theta
-output-stale 100min with a live launcher; delta orphaned). The supervisor's
-``claude_alive`` check (claude pidfile / tmux) says "fine" and skips it.
-
-This is the missing leg: detect an ``in_progress`` lane whose ``output.jsonl`` is
-stale > STALL_T and RESUME it on the SAME task, bounded by per-(lane,task)
-attempts + ntfy escalation + pressure-gating. Recovery adapts to launcher state
-(the empirically-correct split, not the note's assumed "launcher always dead"):
-
-  * launcher DEAD  -> re-launch via hapax-claude-headless (fresh, flock-free).
-  * launcher ALIVE -> nudge the live launcher's stdin FIFO with a resume message
-    (its own injection mechanism; a re-launch would flock-fail). Both resume the
-    same task from the same worktree.
+These supersede the historical watchdog recovery assertions under the
+2026-09-24 repair spec. Dead unclaimed lanes still recover through guard;
+quiet claimed writers and uncertain owners hold for inspection.
 """
 
 from __future__ import annotations
@@ -26,8 +13,12 @@ import textwrap
 import time
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SUPERVISOR = REPO_ROOT / "scripts" / "hapax-lane-supervisor"
+SUPERVISOR = Path(
+    os.environ.get("HAPAX_TEST_SUPERVISOR", REPO_ROOT / "scripts/hapax-lane-supervisor")
+)
 
 
 # ─── harness (mirrors test_lane_supervisor.py, extended for the progress leg) ──
@@ -98,6 +89,10 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path]:
     _write_recorder(bin_dir / "hapax-codex", calls / "codex.txt")
     _write_recorder(bin_dir / "hapax-antigrav", calls / "antigrav.txt")
     _write_recorder(bin_dir / "curl", calls / "curl.txt")
+    runner = tmp_path / "supervisor/scripts/hapax-lane-supervisor"
+    _write_executable(runner, SUPERVISOR.read_text())
+    (runner.parent.parent / "shared").symlink_to(REPO_ROOT / "shared", target_is_directory=True)
+    _write_recorder(runner.parent / "hapax-alert", calls / "alert.txt")
 
     env = os.environ.copy()
     for leaky in ("CLAUDE_ROLE", "HAPAX_AGENT_NAME", "HAPAX_AGENT_ROLE", "TMUX_LIVE"):
@@ -105,6 +100,7 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path]:
     env.update(
         {
             "HOME": str(home),
+            "TEST_SUPERVISOR_BIN": str(runner),
             "PATH": f"{bin_dir}:{env['PATH']}",
             "HAPAX_SUPERVISOR_STATE_DIR": str(state_dir),
             "HAPAX_SUPERVISOR_RUNTIME_DIR": str(runtime_dir),
@@ -115,6 +111,10 @@ def _base(tmp_path: Path, **overrides: str) -> tuple[dict[str, str], Path]:
             "HAPAX_SUPERVISOR_ANTIGRAV_LANES": "",
             "HAPAX_SUPERVISOR_RESTART_COOLDOWN_S": "0",
             "HAPAX_SUPERVISOR_PROC_SCAN_LAUNCHERS": "0",
+            "HAPAX_SUPERVISOR_REAP_OFF": "1",
+            "HAPAX_SUPERVISOR_PROGRESS_OFF": "0",
+            "HAPAX_SUPERVISOR_P0_IDLE_RESPAWN": "0",
+            "HAPAX_LOCAL_DEV_MAINTENANCE_MODE": "local",
             "HAPAX_CLAUDE_HEADLESS_BIN": str(bin_dir / "hapax-claude-headless"),
             "HAPAX_CLAUDE_BIN": str(bin_dir / "hapax-claude"),
             "HAPAX_CODEX_BIN": str(bin_dir / "hapax-codex"),
@@ -210,7 +210,7 @@ def _stalled_lane(
     age_s: float = 3600.0,
     status: str = "in_progress",
 ) -> Path:
-    """Set up a process-alive but output-stalled lane: the missing-leg scenario."""
+    """Set up a live writer with quiet output, which cannot prove a stall."""
     _make_worktree(env, lane)
     note = _write_claim(env, lane, task_id, status=status)
     _set_claude_alive(env, lane)  # claude_alive TRUE -> supervisor would skip
@@ -236,7 +236,9 @@ def _spawn_headless_launcher(env: dict[str, str], lane: str, task_id: str) -> su
 
 
 def _run(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([str(SUPERVISOR)], env=env, capture_output=True, text=True)
+    return subprocess.run(
+        [env["TEST_SUPERVISOR_BIN"]], env=env, capture_output=True, text=True, timeout=30
+    )
 
 
 def _reads(calls: Path, name: str) -> str:
@@ -244,38 +246,33 @@ def _reads(calls: Path, name: str) -> str:
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
-def _wait_reads(calls: Path, name: str, *, timeout: float = 8.0) -> str:
-    deadline = time.monotonic() + timeout
-    text = ""
-    while time.monotonic() < deadline:
-        text = _reads(calls, name)
-        if text.strip():
-            return text
-        time.sleep(0.05)
-    return text
+def _ownership_snapshot(env: dict[str, str]) -> dict[str, bytes]:
+    roots = (Path(env["HOME"]) / ".cache/hapax", Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"]))
+    return {str(p): p.read_bytes() for root in roots for p in root.rglob("*") if p.is_file()}
 
 
-# ─── AC1: a stalled lane is auto-resumed on its SAME task ──────────────────────
+def _assert_progress_hold(env, calls, before, result):
+    assert result.returncode == 0, result.stderr
+    assert "progress_hold:output_silence" in result.stdout
+    assert _ownership_snapshot(env) == before
+    assert not list(calls.iterdir()), result.stdout
+    assert not (Path(env["HAPAX_SUPERVISOR_STATE_DIR"]) / "lanes_resumed_total").exists()
 
 
-def test_dead_launcher_stall_relaunches_same_task(tmp_path: Path) -> None:
-    """Orphaned (launcher-dead) + output-stale in_progress -> re-launch headless
-    on the SAME task with a resume prompt (flock-free; resumes from worktree)."""
+# ─── Output silence preserves both writer and ownership ──────────────────────
+
+
+def test_dead_launcher_with_live_writer_holds_same_task(tmp_path: Path) -> None:
+    """A missing wrapper and stale output cannot authorize a second writer."""
     env, calls = _base(tmp_path, HAPAX_SUPERVISOR_CLAUDE_LANES="delta")
     _stalled_lane(env, "delta", "reform-clog-i-20260601", launcher_alive=False)
 
-    result = _run(env)
-    assert result.returncode == 0, result.stderr
-
-    headless = _wait_reads(calls, "claude-headless.txt")
-    assert "--task reform-clog-i-20260601" in headless
-    assert "delta" in headless
-    assert "stall" in headless.lower() or "resume" in headless.lower()
+    before = _ownership_snapshot(env)
+    _assert_progress_hold(env, calls, before, _run(env))
 
 
-def test_live_launcher_stall_nudges_fifo_same_task(tmp_path: Path) -> None:
-    """Live launcher + output-stale (the observed theta case) -> nudge the live
-    launcher's stdin FIFO with a resume message; do NOT re-launch (flock)."""
+def test_live_launcher_silence_never_nudges_fifo(tmp_path: Path) -> None:
+    """A quiet live writer can think without receiving an injected turn."""
     env, calls = _base(tmp_path, HAPAX_SUPERVISOR_CLAUDE_LANES="theta")
     task_id = "reform-native-merge-queue-20260601"
     _stalled_lane(env, "theta", task_id, launcher_alive=False)
@@ -284,32 +281,21 @@ def test_live_launcher_stall_nudges_fifo_same_task(tmp_path: Path) -> None:
         f"{launcher.pid}\n", encoding="utf-8"
     )
 
-    # A real FIFO with a background reader (claude would be the reader in prod).
+    # Nonblocking read witnesses no bytes without a timing-only sleep.
     fifo = Path(env["HAPAX_SUPERVISOR_RUNTIME_DIR"]) / "theta.stdin"
     os.mkfifo(fifo)
-    capture = tmp_path / "fifo-capture.txt"
-    reader = subprocess.Popen(["bash", "-c", f'cat "{fifo}" > "{capture}"'])
+    reader = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+    before = _ownership_snapshot(env)
     try:
         result = _run(env)
-        assert result.returncode == 0, result.stderr
-        deadline = time.monotonic() + 8.0
-        text = ""
-        while time.monotonic() < deadline:
-            text = capture.read_text(encoding="utf-8") if capture.exists() else ""
-            if text.strip():
-                break
-            time.sleep(0.05)
+        _assert_progress_hold(env, calls, before, result)
+        with pytest.raises(BlockingIOError):
+            os.read(reader, 4096)
+        assert launcher.poll() is None
     finally:
-        reader.terminate()
-        reader.wait(timeout=5)
+        os.close(reader)
         launcher.terminate()
         launcher.wait(timeout=5)
-
-    # No re-launch when a live launcher holds the lane.
-    assert _reads(calls, "claude-headless.txt").strip() == ""
-    # The FIFO got a stream-json user message naming the task.
-    assert "reform-native-merge-queue-20260601" in text
-    assert '"type":"user"' in text
 
 
 # ─── AC2: a genuinely-working lane is NOT disrupted ────────────────────────────
@@ -349,20 +335,15 @@ def test_claimed_but_not_in_progress_not_resumed(tmp_path: Path) -> None:
     assert _reads(calls, "claude-headless.txt").strip() == ""
 
 
-def test_session_keyed_claim_stall_relaunches_same_task(tmp_path: Path) -> None:
-    """A stale in_progress lane with only a session-keyed claim is still owned
-    work and must be resumed, not treated as claimless."""
+def test_session_keyed_quiet_claim_is_preserved(tmp_path: Path) -> None:
+    """A session claim remains owned work when its writer is quiet."""
     env, calls = _base(tmp_path, HAPAX_SUPERVISOR_CLAUDE_LANES="gamma")
     task_id = "p0-incident-session-keyed-progress"
     _stalled_lane(env, "gamma", task_id, launcher_alive=False)
     _move_claim_to_session(env, "gamma", task_id)
 
-    result = _run(env)
-
-    assert result.returncode == 0, result.stderr
-    headless = _wait_reads(calls, "claude-headless.txt")
-    assert f"--task {task_id}" in headless
-    assert "gamma" in headless
+    before = _ownership_snapshot(env)
+    _assert_progress_hold(env, calls, before, _run(env))
 
 
 def test_pr_open_not_resumed(tmp_path: Path) -> None:
@@ -375,63 +356,52 @@ def test_pr_open_not_resumed(tmp_path: Path) -> None:
     assert _reads(calls, "claude-headless.txt").strip() == ""
 
 
-# ─── AC3: bounded attempts -> reoffer + ntfy (no infinite relaunch) ────────────
+# ─── Historical retry exhaustion cannot authorize a claim transfer ──────────
 
 
-def test_attempts_exhausted_reoffers_and_ntfys(tmp_path: Path) -> None:
-    """After MAX failed resumes in the window the task reverts to offered +
-    assigned_to:unassigned, the claim slot is cleared, and an ntfy fires."""
+def test_attempts_exhausted_preserves_claim_and_task(tmp_path: Path) -> None:
     env, calls = _base(
         tmp_path,
         HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
         HAPAX_SUPERVISOR_RESUME_MAX_ATTEMPTS="2",
     )
-    note = _stalled_lane(env, "delta", "reform-clog-i-20260601", launcher_alive=False)
-    claim = Path(env["HOME"]) / ".cache" / "hapax" / "cc-active-task-delta"
-
-    # Two ticks resume (attempts 1, 2); the third sees the cap reached -> reoffer.
-    _run(env)
-    _run(env)
-    result = _run(env)
-    assert result.returncode == 0, result.stderr
-
-    text = note.read_text(encoding="utf-8")
-    assert "status: offered" in text
-    assert "assigned_to: unassigned" in text
-    assert claim.read_text(encoding="utf-8").strip() == ""
-    curl = _reads(calls, "curl.txt")
-    assert "delta" in curl and "reform-clog-i-20260601" in curl
+    task_id = "reform-clog-i-20260601"
+    _stalled_lane(env, "delta", task_id, launcher_alive=False)
+    history = Path(env["HAPAX_SUPERVISOR_STATE_DIR"]) / f"delta.{task_id}.resume-log"
+    history.write_text(f"{int(time.time())}\n" * 2)
+    before = _ownership_snapshot(env)
+    old_history = history.read_bytes()
+    for _ in range(3):
+        _assert_progress_hold(env, calls, before, _run(env))
+    assert history.read_bytes() == old_history
 
 
-def test_attempts_exhausted_clears_session_keyed_claim(tmp_path: Path) -> None:
+def test_attempts_exhausted_preserves_session_claim_and_epoch(tmp_path: Path) -> None:
     env, calls = _base(
         tmp_path,
         HAPAX_SUPERVISOR_CLAUDE_LANES="gamma",
         HAPAX_SUPERVISOR_RESUME_MAX_ATTEMPTS="1",
     )
     task_id = "p0-incident-session-exhausted"
-    note = _stalled_lane(env, "gamma", task_id, launcher_alive=False)
+    _stalled_lane(env, "gamma", task_id, launcher_alive=False)
     session = _move_claim_to_session(env, "gamma", task_id)
     legacy = Path(env["HOME"]) / ".cache" / "hapax" / "cc-active-task-gamma"
-
-    _run(env)
-    result = _run(env)
-
-    assert result.returncode == 0, result.stderr
-    text = note.read_text(encoding="utf-8")
-    assert "status: offered" in text
-    assert "assigned_to: unassigned" in text
-    assert legacy.read_text(encoding="utf-8").strip() == ""
-    assert not session.exists()
-    assert "gamma" in _reads(calls, "curl.txt")
+    session.with_name(session.name.replace("cc-active-task-", "cc-claim-epoch-")).write_text(
+        "17|preserve-epoch\n"
+    )
+    history = Path(env["HAPAX_SUPERVISOR_STATE_DIR"]) / f"gamma.{task_id}.resume-log"
+    history.write_text(f"{int(time.time())}\n")
+    before = _ownership_snapshot(env)
+    for _ in range(2):
+        _assert_progress_hold(env, calls, before, _run(env))
+    assert not legacy.exists()
 
 
-# ─── AC4: pressure gating (queue, never drop) ──────────────────────────────────
+# ─── Admission state does not authorize output-age recovery ─────────────────
 
 
-def test_pressure_closed_defers_resume(tmp_path: Path) -> None:
-    """admission_state closed -> defer the resume this tick (queued, not dropped)
-    and do NOT re-launch."""
+def test_closed_admission_keeps_quiet_writer_held(tmp_path: Path) -> None:
+    """Closed admission leaves the existing writer and claim intact."""
     env, calls = _base(
         tmp_path,
         HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
@@ -439,27 +409,23 @@ def test_pressure_closed_defers_resume(tmp_path: Path) -> None:
     )
     _stalled_lane(env, "delta", launcher_alive=False)
 
-    result = _run(env)
-    assert result.returncode == 0, result.stderr
-    assert _reads(calls, "claude-headless.txt").strip() == ""
-    assert "pressure" in result.stdout.lower() or "closed" in result.stdout.lower()
+    before = _ownership_snapshot(env)
+    _assert_progress_hold(env, calls, before, _run(env))
 
 
-def test_pressure_clears_resumes_after_defer(tmp_path: Path) -> None:
-    """The deferred resume is queued, not dropped: once admission re-opens the
-    next tick resumes it (no attempt was burned while pressure was closed)."""
+def test_pressure_clearing_does_not_authorize_silent_writer_recovery(tmp_path: Path) -> None:
+    """Restored capacity does not prove that a quiet writer needs recovery."""
     env, calls = _base(
         tmp_path,
         HAPAX_SUPERVISOR_CLAUDE_LANES="delta",
         HAPAX_SUPERVISOR_ADMISSION_CMD="printf closed",
     )
     _stalled_lane(env, "delta", launcher_alive=False)
-    _run(env)  # closed -> defer
-    assert _reads(calls, "claude-headless.txt").strip() == ""
+    before = _ownership_snapshot(env)
+    _assert_progress_hold(env, calls, before, _run(env))
 
     env_open = dict(env, HAPAX_SUPERVISOR_ADMISSION_CMD="printf open")
-    _run(env_open)
-    assert _wait_reads(calls, "claude-headless.txt").strip() != ""
+    _assert_progress_hold(env_open, calls, before, _run(env_open))
 
 
 # ─── guards: dry-run, kill-switch, alive-via-pidfile precondition ──────────────
@@ -516,11 +482,9 @@ def test_emits_resume_metrics(tmp_path: Path) -> None:
 
     result = _run(env)
     assert result.returncode == 0, result.stderr
-    _wait_reads(tmp_path / "calls", "claude-headless.txt")
-
     text = metrics.read_text(encoding="utf-8") if metrics.exists() else ""
-    assert "hapax_lane_supervisor_lanes_resumed_total" in text
-    assert "hapax_lane_supervisor_lanes_stalled" in text
+    assert "hapax_lane_supervisor_lanes_resumed_total 0\n" in text
+    assert "hapax_lane_supervisor_lanes_stalled 1\n" in text
 
 
 def test_shell_syntax() -> None:

@@ -17,7 +17,7 @@ unknown, it was *unmeasurable*. Task
 
 ## Where the evidence is
 
-Each death writes one file:
+When an unclaimed lane reaches dead-pane capture, the supervisor attempts to write:
 
 ```
 ~/.cache/hapax/tmux-pane-exits/<UTC stamp>-<lane>.log
@@ -26,6 +26,9 @@ Each death writes one file:
 containing, per pane: `pane_dead_status`, `pane_dead_signal` (mutually exclusive — a signal
 death has an empty status), `pane_dead_time`, `pane_start_command`, and the last 60 lines of
 scrollback. Retention is 30 days, pruned after each capture.
+
+An active claim holds recovery before this capture step. Its retained pane may therefore
+have no pane-exit file; inspect the claim-holder receipt and the retained pane instead.
 
 Knobs: `HAPAX_PANE_EXIT_LOG_DIR` (default above), `HAPAX_PANE_EXIT_RETENTION_DAYS` (default 30).
 
@@ -52,12 +55,42 @@ in the lane bus when those inputs exist (otherwise the hash is null). Inspect th
 ```bash
 journalctl --user -u hapax-lane-supervisor --since -1h | rg 'claim_holder_live|claim_orphaned|claim_orphan_unresolved|pane_changed_during_capture'
 lane=gamma  # replace with the lane named in the supervisor event
-ls -t "$HOME/Documents/Personal/30-areas/hapax/lanebus/$lane/"*claim-holder*.json | head
+claim_bus="${HAPAX_SUPERVISOR_LANEBUS_DIR:-$HOME/Documents/Personal/30-areas/hapax/lanebus}"
+ls -t "$claim_bus/$lane/"*claim-holder*.json | head
 # Read the exact receipt path returned above:
 python3 -m json.tool '<receipt-path>'
 ```
 
-Receipts use `HAPAX_SUPERVISOR_LANEBUS_DIR` if configured. A live holder requires
+Use the supervisor service's configured `HAPAX_SUPERVISOR_LANEBUS_DIR` value when
+it differs from the inspecting shell. To compare the receipt with current inputs:
+
+```bash
+python3 - '<receipt-path>' <<'PY'
+import hashlib
+import json
+import os
+import sys
+from pathlib import Path
+
+receipt = json.loads(Path(sys.argv[1]).read_text())
+key = receipt['lane'] + ('-' + receipt['session_id'] if receipt['session_id'] else '')
+cache = Path.home() / '.cache/hapax'
+vault = Path(os.environ.get('HAPAX_SUPERVISOR_VAULT_ROOT',
+                           str(Path.home() / 'Documents/Personal/20-projects/hapax-cc-tasks')))
+inputs = {'claim_sha256': cache / ('cc-active-task-' + key),
+          'epoch_sha256': cache / ('cc-claim-epoch-' + key)}
+if receipt['task_id']:
+    inputs['note_sha256'] = vault / 'active' / (receipt['task_id'] + '.md')
+for field, path in inputs.items():
+    expected = receipt.get(field)
+    actual = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+    outcome = 'unobserved' if expected is None else 'match' if actual == expected else 'changed/missing'
+    print(field, outcome, path)
+PY
+```
+
+Use the service's configured vault root too. A changed or missing input requires fresh
+inspection; a stored hash does not certify current ownership. A live holder requires
 the session and HOME to match and the process executable to match the native `claude`
 resolved on the supervisor's PATH. A surviving helper or launcher is insufficient;
 an unresolved executable binding holds for inspection. For a pane-change hold, use
