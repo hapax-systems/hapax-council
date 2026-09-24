@@ -1201,19 +1201,30 @@ def build_task_identity_index(vault_root: Path, *, max_attempts: int = 1) -> Tas
     root = _normalized_path(vault_root)
     previous: dict[Path, TaskIdentityEntry] = {}
     for attempt in range(max_attempts):
-        frontier = _complete_frontier(root)
-        entries = tuple(
-            old
-            if (
-                (old := previous.get(path)) is not None
-                and old.state == state
-                and old.stat_vector == stat_vector
+        try:
+            frontier = _complete_frontier(root)
+            entries = tuple(
+                old
+                if (
+                    (old := previous.get(path)) is not None
+                    and old.state == state
+                    and old.stat_vector == stat_vector
+                )
+                else _index_entry(path, state=state, stat_vector=stat_vector)
+                for state in _TASK_STATES
+                for path, stat_vector in frontier[state]
             )
-            else _index_entry(path, state=state, stat_vector=stat_vector)
-            for state in _TASK_STATES
-            for path, stat_vector in frontier[state]
-        )
-        post_frontier = _complete_frontier(root)
+            previous = {entry.path: entry for entry in entries}
+            post_frontier = _complete_frontier(root)
+        except TaskStoreError as exc:
+            # A list-to-stat race invalidates this whole construction attempt.
+            # Reuse still requires an exact stat vector in the next inventory.
+            if (
+                exc.reason_code != "task_store_frontier_changed_during_resolution"
+                or attempt + 1 == max_attempts
+            ):
+                raise
+            continue
         if post_frontier == frontier:
             return _make_identity_index(root, frontier, entries)
         if attempt + 1 == max_attempts:
@@ -1223,7 +1234,6 @@ def build_task_identity_index(vault_root: Path, *, max_attempts: int = 1) -> Tas
                 before=frontier,
                 after=post_frontier,
             )
-        previous = {entry.path: entry for entry in entries}
     raise AssertionError("unreachable: bounded index construction did not return or refuse")
 
 

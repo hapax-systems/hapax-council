@@ -183,11 +183,13 @@ if not results:
 holds = [item for item in results if item.state == "hold"]
 for item in results:
     suffix = f":{item.reason_code}" if item.reason_code else ""
-    print(f"cc-claim: recovery {item.publication_id}:{item.state}{suffix}")
+    detail = f" ({item.detail})" if item.detail else ""
+    repair = f". Next action: {item.repair_action}" if item.repair_action else ""
+    print(f"cc-claim: recovery {item.publication_id}:{item.state}{suffix}{detail}{repair}")
 if holds:
     print(
         "cc-claim: HOLD — admitted claim-publication recovery still has held journals. "
-        "Next action: repair or quarantine the named journal/projection/receipt path, "
+        "Next action: follow each recovery result's repair action, preserving its evidence, "
         "then rerun cc-claim --recover-claim-publications"
         + (f" {task_id}" if task_id else "")
         + ".",
@@ -620,6 +622,8 @@ if canon_enforced:
             recovered_summary = " Recovery results: " + ",".join(
                 f"{item.publication_id}:{item.state}"
                 + (f":{item.reason_code}" if item.reason_code else "")
+                + (f" ({item.detail})" if item.detail else "")
+                + (f". Next action: {item.repair_action}" if item.repair_action else "")
                 for item in recovered
             )
         print(
@@ -627,8 +631,8 @@ if canon_enforced:
             + ",".join(f"{item.publication_id}:{item.reason_code}" for item in held)
             + "."
             + recovered_summary
-            + f" Next action: run `cc-claim --recover-claim-publications {task_id}` "
-            "after repairing the listed journal/projection/receipt path, then rerun cc-claim.",
+            + " Next action: follow each recovery result's repair action, preserving its evidence; "
+            + f"then run `cc-claim --recover-claim-publications {task_id}` and rerun cc-claim.",
             file=sys.stderr,
         )
         sys.exit(8)
@@ -1451,8 +1455,11 @@ except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueErr
                 "publication_id": item.publication_id,
                 "disposition": item.disposition,
                 "journal_state": item.journal_state,
+                "journal_reason_code": item.journal_reason_code,
                 "reason_code": item.reason_code,
                 "binding_receipt_hash": item.binding_receipt_hash,
+                "inspection_ref": item.inspection_ref,
+                "inspection_hash": item.inspection_hash,
             }
             for item in inspect_claim_publications(
                 cache_dir=cache_dir,

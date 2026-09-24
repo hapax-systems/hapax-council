@@ -2,6 +2,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import textwrap
 from datetime import UTC, datetime
 from pathlib import Path
@@ -716,6 +717,121 @@ def test_default_claim_holds_corrupt_install_receipt_without_overwrite(
     assert "publication_observations=[]" in result.stderr
     assert receipt.read_text(encoding="ascii") == "{}\n"
     assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("outcome", ["pending", "aborted", "applied", "unknown"])
+def test_publication_failure_reports_durable_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    # Run the unchanged Bash CLI with an isolated interpreter shim. Inject a
+    # fault at the real transaction boundary; journal inspection stays real
+    # except for the case exercising an inspection failure itself.
+    import tests.scripts.test_cc_claim as cli_tests
+
+    repo = tmp_path / "repo"
+    script = repo / "scripts" / "cc-claim"
+    script.parent.mkdir(parents=True)
+    script.write_bytes(SCRIPT.read_bytes())
+    (repo / "hooks").symlink_to(REPO_ROOT / "hooks", target_is_directory=True)
+    runner = repo / ".venv" / "bin" / "python"
+    runner.parent.mkdir(parents=True)
+    runner.write_text(
+        f"#!{sys.executable}\n"
+        + textwrap.dedent(
+            f"""\
+            import os
+            import sys
+            if sys.argv[1:3] != ["-I", "-"]:
+                os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
+            code = sys.stdin.read()
+            sys.argv = sys.argv[2:]
+            sys.path.insert(0, {str(REPO_ROOT)!r})
+            if "receipt = publish_gate0b_claim(" in code:
+                import shared.sdlc_claim as claim
+                import shared.gate0b_claim_publication_effect as effect
+                outcome = {outcome!r}
+                original_publish = effect.publish_gate0b_claim
+                original_preflight = claim._locked_preflight
+                preflights = 0
+                def preflight(*args, **kwargs):
+                    global preflights
+                    preflights += 1
+                    if outcome == "aborted" and preflights == 2:
+                        raise claim.ClaimPublicationError("test_preflight_refusal", "test refusal")
+                    return original_preflight(*args, **kwargs)
+                claim._locked_preflight = preflight
+                def interruption(phase, index):
+                    if outcome in {{"pending", "unknown"}} and phase == "before_projection" and index == 0:
+                        raise RuntimeError("test interrupted publication")
+                def unavailable_inspection(**kwargs):
+                    raise claim.ClaimPublicationError("test_inspection_unavailable", "restore inspection")
+                def publish(*args, **kwargs):
+                    try:
+                        original_publish(*args, **kwargs, failure_hook=interruption)
+                    finally:
+                        if outcome == "unknown":
+                            globals()["inspect_claim_publications"] = unavailable_inspection
+                    raise claim.ClaimPublicationError("test_return_failure", "inspect committed receipt")
+                effect.publish_gate0b_claim = publish
+            exec(compile(code, "<cc-claim>", "exec"))
+            """
+        ),
+        encoding="utf-8",
+    )
+    runner.chmod(0o755)
+    monkeypatch.setattr(cli_tests, "SCRIPT", script)
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "publication-outcome")
+    result = _claim(home, "publication-outcome")
+    assert result.returncode == 8, result.stderr
+    assert f"session={_SESSION_ID}; claim_epoch=" in result.stderr
+    wire = result.stderr.split("publication_observations=", 1)[1].split(". Next action:", 1)[0]
+    observations = json.loads(wire)
+    assert len(observations) == 1
+    observed = observations[0]
+    if outcome == "unknown":
+        assert observed == {"disposition": "unknown", "reason_code": "test_inspection_unavailable"}
+    else:
+        assert (
+            observed["disposition"]
+            == {"pending": "hold", "aborted": "terminal_aborted", "applied": "terminal_applied"}[
+                outcome
+            ]
+        )
+        assert (
+            observed["journal_state"]
+            == {"pending": "recovery_required", "aborted": "aborted", "applied": "applied"}[outcome]
+        )
+        assert observed["publication_id"].startswith("claim-pub-")
+        assert len(observed["binding_receipt_hash"]) == 64
+        assert observed["inspection_ref"].endswith(observed["inspection_hash"])
+        assert len(observed["inspection_hash"]) == 64
+        assert observed["journal_reason_code"] == (
+            "test_preflight_refusal"
+            if outcome == "aborted"
+            else "claim_publication_projection_failed"
+            if outcome == "pending"
+            else None
+        )
+    cache = home / ".cache" / "hapax"
+    markers = list(cache.glob("cc-active-task-*"))
+    assert len(markers) == (2 if outcome == "applied" else 0)
+    assert f"status: {'claimed' if outcome == 'applied' else 'offered'}" in note.read_text()
+    manifests = list(
+        (home / ".local/share/hapax/claim-publications/gate0b-claim-publish-v1").glob(
+            "*/manifest.json"
+        )
+    )
+    assert len(manifests) == 1
+    assert (
+        json.loads(manifests[0].read_text())["state"]
+        == {
+            "pending": "recovery_required",
+            "aborted": "aborted",
+            "applied": "applied",
+            "unknown": "recovery_required",
+        }[outcome]
+    )
 
 
 def test_default_claim_is_idempotent_for_existing_applied_publication(
