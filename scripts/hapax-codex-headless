@@ -214,6 +214,11 @@ remote_python_command() {
   code_b64="$(printf '%s' "$code" | python3 -c 'import base64,sys; print(base64.b64encode(sys.stdin.buffer.read()).decode())')"
   # shellcheck disable=SC2016
   bash_script='export HAPAX_REMOTE_PAYLOAD="$1"; export HAPAX_REMOTE_CODE="$2"; exec python3 -c "import base64,os; exec(base64.b64decode(os.environ[\"HAPAX_REMOTE_CODE\"]))"'
+  if [[ "${3:-}" == claim-runtime ]]; then
+    # Resolve the execution host binding, not a sender path or worker checkout.
+    # Claim publication imports require the installed, provisioned interpreter.
+    bash_script='export HAPAX_REMOTE_PAYLOAD="$1"; export HAPAX_REMOTE_CODE="$2"; claim_source="${HAPAX_SOURCE_ACTIVATE_WORKTREE:-${HAPAX_COUNCIL_DIR:-$HOME/.cache/hapax/source-activation/worktree}}"; if [[ ! -x "$claim_source/.venv/bin/python" ]]; then echo "hapax-codex-headless: remote claim runtime unavailable; next action: restore the execution host source binding and its provisioned .venv before retrying" >&2; exit 78; fi; claim_source="$(cd -- "$claim_source" && pwd -P)" || exit 78; export HAPAX_SOURCE_ACTIVATE_WORKTREE="$claim_source"; exec "$claim_source/.venv/bin/python" -I -c "import base64,os; exec(base64.b64decode(os.environ[\"HAPAX_REMOTE_CODE\"]))"'
+  fi
   quoted_script="${bash_script//\'/\'\\\'\'}"
   quoted_payload="${payload//\'/\'\\\'\'}"
   quoted_code="${code_b64//\'/\'\\\'\'}"
@@ -667,29 +672,38 @@ os.environ.pop("CODEX_ACCESS_TOKEN",None); os.environ.pop("CODEX_HOME",None); os
 # back to stale legacy lane state and reject the governed dispatch.
 sid=os.environ.get("HAPAX_SESSION_ID",""); role=os.environ.get("HAPAX_AGENT_ROLE",""); task=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_TASK",""); claim_epoch=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH",""); keyable=False; materialized=False; claim_epoch_verified=False
 try:
-    sys.path.insert(0, p["workdir"])
+    claim_source=os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE") or os.environ.get("HAPAX_COUNCIL_DIR") or os.path.expanduser("~/.cache/hapax/source-activation/worktree")
+    sys.path.insert(0, os.path.realpath(claim_source))
     from shared.session_identity import is_claim_keyable_session_id
     keyable=is_claim_keyable_session_id(sid)
 except Exception:
     keyable=bool(sid) and "/" not in sid and not sid.isdigit() and not sid.rsplit("-",1)[-1].isdigit()
 try:
     if keyable and role:
-        cache=os.path.join(os.path.expanduser("~"),".cache","hapax")
-        os.makedirs(cache,exist_ok=True)
-        open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
         if task:
             epoch,sep,epoch_task=claim_epoch.partition(" ")
             if not sep or not epoch.isdigit() or epoch_task != task:
                 print("hapax-codex-headless: refusing remote claim materialization without matching local cc-claim epoch; next action: run governed cc-claim locally for the dispatch task or omit --no-claim before remote dispatch", file=sys.stderr)
                 sys.exit(78)
-            epoch_line=claim_epoch+"\n"
-            open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
-            open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
-            open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
-            open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
-            materialized=True; claim_epoch_verified=True
+        from pathlib import Path
+        from shared.gate0b_claim_publication_install import default_claim_publication_roots
+        from shared.sdlc_claim import claim_role_exclusion
+        # Execution-host publishers use the installed composition namespace.
+        # Acquire role exclusion before any ownership write (and before any note lock).
+        roots=default_claim_publication_roots(home=Path.home())
+        with claim_role_exclusion(role,lock_root=Path(roots.claim_lock_root)):
+            cache=roots.claim_cache_dir
+            os.makedirs(cache,exist_ok=True)
+            open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
+            if task:
+                epoch_line=claim_epoch+"\n"
+                open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
+                open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
+                open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
+                open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
+                materialized=True; claim_epoch_verified=True
 except Exception as exc:
-    print("hapax-codex-headless: failed to materialize remote claim cache ("+exc.__class__.__name__+"); next action: repair ~/.cache/hapax permissions on the dispatch host before retrying", file=sys.stderr)
+    print("hapax-codex-headless: failed to materialize remote claim cache ("+exc.__class__.__name__+"); next action: restore the installed claim-role exclusion helper and its lock/cache permissions on the dispatch host before retrying", file=sys.stderr)
     sys.exit(78)
 codex_bin,codex_resolution_error=_resolve_codex_bin()
 if codex_bin is None:
@@ -1224,7 +1238,7 @@ if [[ -n "$DISPATCH_HOST" ]]; then
   fi
   export HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH="$CLAIM_EPOCH_LINE"
   REMOTE_EXEC_PAYLOAD="$(remote_exec_payload_b64 "$DISPATCH_PROOF_FILE" codex "${CODEX_ARGS[@]}")"
-  REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY")"
+  REMOTE_EXEC_COMMAND="$(remote_python_command "$REMOTE_EXEC_PAYLOAD" "$REMOTE_EXEC_PY" claim-runtime)"
 fi
 
 # A signal between fork and recording $! must not strand the new child.
