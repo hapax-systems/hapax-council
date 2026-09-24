@@ -5,8 +5,8 @@ review-constitution-walled-family-substitution-20260924, option (a) granted 2026
 
 from __future__ import annotations
 
+import hashlib
 import http.server
-import importlib.machinery
 import importlib.util
 import json
 import os
@@ -114,48 +114,58 @@ class TestMuseReviewer:
         _assert_route_outage(result)
 
 
-def _vibe_home(tmp_path: Path, plan: str | tuple[str, ...] | None) -> Path:
+# Fixture keys: stand-ins, not credentials. The whoami cache is keyed by the first 32 hex of
+# sha256(key) (measured by the seat 2026-09-24T21:59Z against the live cache and ~/.vibe/.env).
+CURRENT_KEY = "fixture-current-team-key"
+STALE_KEY = "fixture-stale-api-key"
+
+
+def _key_id(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
+
+
+def _vibe_home(
+    tmp_path: Path,
+    entries: dict[str, str] | None,
+    *,
+    configured: str | None = CURRENT_KEY,
+    raw_cache: str | None = None,
+) -> Path:
+    """HOME with ~/.vibe/.env naming the configured key and a whoami cache of key -> plan_type."""
+
     home = tmp_path / "home"
     (home / ".vibe").mkdir(parents=True)
-    if plan is not None:
-        plans = (plan,) if isinstance(plan, str) else plan
-        cache = {f"account-{i}": {"payload": {"plan_type": p}} for i, p in enumerate(plans)}
-        (home / ".vibe" / "whoami_cache.json").write_text(json.dumps(cache), encoding="utf-8")
+    if configured is not None:
+        (home / ".vibe" / ".env").write_text(f"MISTRAL_API_KEY={configured}\n", encoding="utf-8")
+    cache_path = home / ".vibe" / "whoami_cache.json"
+    if raw_cache is not None:
+        cache_path.write_text(raw_cache, encoding="utf-8")
+    elif entries is not None:
+        cache = {
+            _key_id(key): {"payload": {"plan_type": plan}, "stored_at_timestamp": 1790273791}
+            for key, plan in entries.items()
+        }
+        cache_path.write_text(json.dumps(cache), encoding="utf-8")
     return home
 
 
-# The Team binding as observed: `vibe --setup` with the Team sign-in made whoami read
-# `plan_type chat` (frame/CAPABILITY-ROUTING-TABLE.md, vibe row).
-OBSERVED_TEAM_PLAN = "chat"
+# Today's live shape (seat-measured 21:59Z): a stale 09-19 API entry for the old key and the
+# current key's Team entry (`plan_type chat`). The configured key's entry must decide.
+TODAY = {STALE_KEY: "api", CURRENT_KEY: "chat"}
 
 
 class TestVibeReviewer:
-    def test_observed_team_binding_is_the_reading_the_wrapper_admits(self, tmp_path: Path) -> None:
-        # Pins the dependency on #4728's reader: it projects any non-API binding to "unknown",
-        # which is the one reading the wrapper admits. If the reader changes, this fails first.
-        from shared import quota_headroom
-
-        spec = importlib.util.spec_from_loader(
-            "hapax_vibe_reviewer",
-            importlib.machinery.SourceFileLoader(
-                "hapax_vibe_reviewer", str(SCRIPTS / "hapax-vibe-reviewer")
-            ),
-        )
-        assert spec is not None and spec.loader is not None
-        wrapper = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(wrapper)
-        home = _vibe_home(tmp_path, OBSERVED_TEAM_PLAN)
-        row = quota_headroom.read_other_family(home, "vibe")[0]
-        assert row.details["plan_type"] == wrapper.TEAM_BINDING_READING == "unknown"
-        mixed = _vibe_home(tmp_path / "mixed", (OBSERVED_TEAM_PLAN, "api"))
-        assert quota_headroom.read_other_family(mixed, "vibe")[0].details["plan_type"] == "api"
-
-    def test_team_binding_runs_one_turn_with_no_tools(self, tmp_path: Path) -> None:
+    def _run_vibe(self, tmp_path: Path, home: Path, prompt: str = "REVIEW", **env: str):
         fake, record = _fake_cli(tmp_path, "vibe")
-        home = _vibe_home(tmp_path, "chat")
         result = _run(
-            "hapax-vibe-reviewer", "REVIEW", {"HAPAX_VIBE_BIN": str(fake), "HOME": str(home)}
+            "hapax-vibe-reviewer",
+            prompt,
+            {"HAPAX_VIBE_BIN": str(fake), "HOME": str(home), "MISTRAL_API_KEY": "", **env},
         )
+        return result, record
+
+    def test_current_team_entry_wins_over_a_stale_api_entry(self, tmp_path: Path) -> None:
+        result, record = self._run_vibe(tmp_path, _vibe_home(tmp_path, TODAY))
         assert result.returncode == 0, result.stderr
         assert result.stdout == FENCE
         argv = json.loads(record.read_text())["argv"]
@@ -163,24 +173,45 @@ class TestVibeReviewer:
         assert argv[argv.index("--max-turns") + 1] == "1"
         assert "REVIEW" in argv[argv.index("-p") + 1]
 
-    @pytest.mark.parametrize("plan", ["api", None, (OBSERVED_TEAM_PLAN, "api")])
-    def test_metered_mixed_or_unobserved_binding_is_refused(
-        self, tmp_path: Path, plan: str | tuple[str, ...] | None
+    @pytest.mark.parametrize(
+        "case",
+        ["current_is_api", "no_matching_entry", "no_configured_key", "no_cache", "malformed_cache"],
+    )
+    def test_binding_other_than_the_current_team_entry_is_refused(
+        self, tmp_path: Path, case: str
     ) -> None:
-        fake, record = _fake_cli(tmp_path, "vibe")
-        home = _vibe_home(tmp_path, plan)
-        result = _run(
-            "hapax-vibe-reviewer", "REVIEW", {"HAPAX_VIBE_BIN": str(fake), "HOME": str(home)}
-        )
+        home = {
+            "current_is_api": lambda: _vibe_home(tmp_path, {STALE_KEY: "chat", CURRENT_KEY: "api"}),
+            "no_matching_entry": lambda: _vibe_home(tmp_path, {STALE_KEY: "chat"}),
+            "no_configured_key": lambda: _vibe_home(tmp_path, TODAY, configured=None),
+            "no_cache": lambda: _vibe_home(tmp_path, None),
+            "malformed_cache": lambda: _vibe_home(tmp_path, None, raw_cache="[not a mapping"),
+        }[case]()
+        result, record = self._run_vibe(tmp_path, home)
         _assert_route_outage(result)
         # A mechanical next action for the coordinator, never a question parked on the operator.
         assert "Next action (coordinator): rebind Vibe to the Team account" in result.stderr
         assert "operator" not in result.stderr
         assert not record.exists()
 
+    def test_conflicting_process_key_is_refused(self, tmp_path: Path) -> None:
+        result, record = self._run_vibe(
+            tmp_path, _vibe_home(tmp_path, TODAY), MISTRAL_API_KEY=STALE_KEY
+        )
+        _assert_route_outage(result)
+        assert not record.exists()
+
+    def test_the_key_never_reaches_output(self, tmp_path: Path) -> None:
+        for home_dir, entries in (("ok", TODAY), ("refused", {STALE_KEY: "api"})):
+            result, _ = self._run_vibe(
+                tmp_path / home_dir, _vibe_home(tmp_path / home_dir, entries)
+            )
+            for key in (CURRENT_KEY, STALE_KEY):
+                assert key not in result.stdout and key not in result.stderr
+
     def test_prompt_above_the_measured_ceiling_is_a_route_outage(self, tmp_path: Path) -> None:
         fake, record = _fake_cli(tmp_path, "vibe")
-        home = _vibe_home(tmp_path, "chat")
+        home = _vibe_home(tmp_path, TODAY)
         result = _run(
             "hapax-vibe-reviewer", "x" * 22_001, {"HAPAX_VIBE_BIN": str(fake), "HOME": str(home)}
         )
