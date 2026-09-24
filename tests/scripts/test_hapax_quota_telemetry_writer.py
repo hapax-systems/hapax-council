@@ -22,6 +22,11 @@ NOW = "2026-06-10T00:00:00Z"
 PAYG_NOW = "2026-07-06T14:05:00Z"
 
 
+@pytest.fixture(autouse=True)
+def isolate_measurement_traces(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_QUOTA_TRACE_HOME", str(tmp_path / "trace-home"))
+
+
 def _fake_nvidia_smi(tmp_path: Path, body: str) -> Path:
     stub = tmp_path / "fake-nvidia-smi"
     stub.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
@@ -3718,11 +3723,10 @@ def test_registry_pools_loaded_flag_witnesses_the_fail_closed_state(
         ]
     )
 
-    assert rc == 0
-    captured = capsys.readouterr()
-    summary = json.loads(captured.out)
-    assert summary["registry_pools_loaded"] is False
-    assert "static capability registry unavailable" in captured.err
+    # Schema v2 requires registry declarations to identify capacity families.
+    assert rc == 1
+    assert not out.exists()
+    assert "static capability registry unavailable" in capsys.readouterr().err
 
 
 POOL_SOURCE_COMBOS = [
@@ -5330,7 +5334,7 @@ def test_retired_gemini_quota_wall_receipts_warn_and_do_not_seed_routes(tmp_path
     assert "WARNING ignoring retired Gemini quota-wall receipt" in result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
     route_ids = {snapshot["route_id"] for snapshot in payload["quota_snapshots"]}
-    assert all(not route_id.startswith("gemini.") for route_id in route_ids)
+    assert all(not route_id.startswith("gemini.") for route_id in route_ids if route_id is not None)
     summary = json.loads(result.stdout)
     assert "retired-gemini" not in summary["quota_walls"]
 
@@ -6541,6 +6545,46 @@ def test_claude_admission_writer_output_marks_claude_fresh(tmp_path: Path) -> No
     assert json.loads(result.stdout)["claude_admissions"] == 1
 
 
+def test_claude_probe_windows_keep_the_admission_receipt_admitted(tmp_path: Path) -> None:
+    """The strict receipt parser rejects unknown keys, so the window keys must be admitted."""
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    admission_result = subprocess.run(
+        [
+            sys.executable,
+            str(CLAUDE_ADMISSION_SCRIPT),
+            "--receipt-dir",
+            str(relay),
+            "--now",
+            "2026-06-09T23:55:00Z",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260609t2355z",
+            "--probe-environment-scrubbed",
+            "--five-hour-used-percent",
+            "8",
+            "--five-hour-resets-at",
+            "2026-06-10T03:00:00Z",
+            "--seven-day-used-percent",
+            "9",
+            "--seven-day-resets-at",
+            "2026-06-12T22:00:00Z",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    assert admission_result.returncode == 0, admission_result.stderr
+    assert "seven_day_used_percent" in next(relay.glob("*.yaml")).read_text(encoding="utf-8")
+
+    result, out = _run_writer(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = _claude_snapshot(json.loads(out.read_text(encoding="utf-8")))
+    assert snapshot["subscription_quota_state"] == "fresh"
+    assert json.loads(result.stdout)["claude_admissions"] == 1
+
+
 def test_claude_admission_writer_can_target_review_route(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
@@ -7134,21 +7178,10 @@ def test_ignored_agy_admission_warning_omits_secretish_receipt_dir(tmp_path: Pat
 
     result, out = _run_writer(tmp_path, "--relay-receipt-dir", str(secretish_dir))
 
-    assert result.returncode == 0, result.stderr
-    payload = json.loads(out.read_text(encoding="utf-8"))
-    agy_snapshot = next(
-        snapshot
-        for snapshot in payload["quota_snapshots"]
-        if snapshot["route_id"] == "agy.review.direct"
-    )
-    assert agy_snapshot["subscription_quota_state"] == "unknown"
-    assert (
-        "ignoring agy admission receipt: reason=unreadable-receipt-unicodedecodeerror; recheck:"
-    ) in result.stderr
+    assert result.returncode == 1
+    assert not out.exists()
+    assert "local measurement source corrupt or unreadable" in result.stderr
     assert secretish_dir.name not in result.stderr
-    summary = json.loads(result.stdout)
-    assert summary["agy_admissions"] == 0
-    assert summary["agy_ignored_admissions"] == 1
 
 
 def test_agy_admission_rejects_missing_smoke_validation(tmp_path: Path) -> None:
@@ -8203,18 +8236,10 @@ def test_unreadable_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) 
 
     result, out = _run_writer(tmp_path)
 
-    assert result.returncode == 0, result.stderr
-    payload = json.loads(out.read_text(encoding="utf-8"))
-    states = {
-        snapshot["route_id"]: snapshot["subscription_quota_state"]
-        for snapshot in payload["quota_snapshots"]
-    }
-    assert states["glmcp.review.direct"] == "unknown"
-    assert "unreadable receipt UnicodeDecodeError" in result.stderr
-    assert "unreadable receipt IsADirectoryError" in result.stderr
+    assert result.returncode == 1
+    assert not out.exists()
+    assert "local measurement source corrupt or unreadable" in result.stderr
     assert unsafe_dir_name not in result.stderr
-    summary = json.loads(result.stdout)
-    assert summary["glmcp_admissions"] == 0
 
 
 def test_ignored_glmcp_admission_warning_omits_secretish_receipt_dir(tmp_path: Path) -> None:
@@ -8224,18 +8249,10 @@ def test_ignored_glmcp_admission_warning_omits_secretish_receipt_dir(tmp_path: P
 
     result, out = _run_writer(tmp_path, "--relay-receipt-dir", str(secretish_dir))
 
-    assert result.returncode == 0, result.stderr
-    payload = json.loads(out.read_text(encoding="utf-8"))
-    states = {
-        snapshot["route_id"]: snapshot["subscription_quota_state"]
-        for snapshot in payload["quota_snapshots"]
-    }
-    assert states["glmcp.review.direct"] == "unknown"
-    assert "unreadable receipt UnicodeDecodeError" in result.stderr
+    assert result.returncode == 1
+    assert not out.exists()
+    assert "local measurement source corrupt or unreadable" in result.stderr
     assert secretish_dir.name not in result.stderr
-    summary = json.loads(result.stdout)
-    assert summary["glmcp_admissions"] == 0
-    assert summary["glmcp_ignored_admissions"] == 1
 
 
 def test_resource_probe_failure_fails_closed_to_unknown(tmp_path: Path) -> None:

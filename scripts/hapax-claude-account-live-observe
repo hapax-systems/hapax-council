@@ -66,6 +66,10 @@ from typing import Final
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ADMISSION_WRITER = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admission"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.quota_headroom import claude_rate_limit_windows  # noqa: E402
 
 #: The witness name the receipt validator's allowlist requires for this observation.
 WITNESS_PREFIX = "claude-subscription-headroom-observed"
@@ -109,7 +113,7 @@ ROUTE_MODEL_PREFIXES: Final[dict[str, tuple[str, ...]]] = {
 
 
 class Observation:
-    __slots__ = ("kind", "at", "source", "detail", "model", "scrubbed_env")
+    __slots__ = ("kind", "at", "source", "detail", "model", "scrubbed_env", "windows")
 
     def __init__(
         self,
@@ -119,6 +123,7 @@ class Observation:
         detail: str = "",
         model: str | None = None,
         scrubbed_env: tuple[str, ...] = (),
+        windows: Mapping[str, tuple[float, datetime]] | None = None,
     ) -> None:
         self.kind = kind  # "served" | "wall"
         self.at = at
@@ -126,6 +131,8 @@ class Observation:
         self.detail = detail
         self.model = model
         self.scrubbed_env = scrubbed_env
+        # Subscription windows the provider reported on this request; only the probe has them.
+        self.windows = dict(windows or {})
 
 
 def _anthropic_model(record: Mapping[str, object]) -> str | None:
@@ -341,6 +348,9 @@ def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
 #: probe covers both routes; probing per family would double the spend for nothing.
 PROBE_MODEL = "claude-opus-5"
 
+#: stream-json, because only the stream carries ``rate_limit_event`` with the subscription's
+#: five-hour and seven-day utilization; the single ``json`` reply drops it. Print mode refuses
+#: stream-json without --verbose.
 PROBE_ARGV = (
     "claude",
     "-p",
@@ -348,7 +358,8 @@ PROBE_ARGV = (
     "--model",
     PROBE_MODEL,
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--strict-mcp-config",
     "--mcp-config",
     '{"mcpServers":{}}',
@@ -417,16 +428,18 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         # determination spine enforces; it belongs here too.
         return Observation("probe_failed", now, "active-probe", f"{type(exc).__name__}: {exc}")
     blob = (proc.stdout or "").strip()
-    try:
-        record = json.loads(blob)
-    except ValueError:
+    record, rate_limits, unparsed = _probe_records(blob)
+    if any(info.get("status") == "rejected" for info in rate_limits):
+        # The subscription refused this request. A result served after the refusal came from
+        # somewhere other than the subscription window, so it can never witness headroom.
+        return Observation("wall", now, "active-probe", "provider-rate-limit-rejected")
+    if record is None:
         # A non-JSON failure still carries the provider's refusal wording — this is exactly
-        # how codex reports its wall — so classify it rather than discarding it.
-        combined = f"{blob} {proc.stderr or ''}"
+        # how codex reports its wall — so classify it rather than discarding it. Only text
+        # that is not a stream record is read: every stream names "rate_limit_event".
+        combined = f"{unparsed} {proc.stderr or ''}"
         if any(marker.search(combined) for marker in WALL_MARKERS):
             return Observation("wall", now, "active-probe", "provider-quota-refusal")
-        return None
-    if not isinstance(record, dict):
         return None
     if any(marker.search(_wall_text(record)) for marker in WALL_MARKERS):
         return Observation("wall", now, "active-probe", "provider-quota-refusal")
@@ -437,14 +450,51 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         model = _anthropic_model(record)
         if model is None:
             return None
+        windows: dict[str, tuple[float, datetime]] = {}
+        for info in rate_limits:  # stream order; a later event is the newer reading
+            windows.update(claude_rate_limit_windows(info))
         return Observation(
             "served",
             now,
             "active-probe",
             model=model,
             scrubbed_env=PROBE_ENV_SCRUBBED,
+            windows=windows,
         )
     return None
+
+
+def _probe_records(blob: str) -> tuple[dict | None, list[dict], str]:
+    """The probe's ``result`` record, every ``rate_limit_info`` it streamed, and other text.
+
+    Reads stream-json lines and still accepts a single-object ``json`` reply, which carries
+    no window. A stream without a result record served nothing. The text is only the output
+    that is not a JSON record, for refusal wording printed outside the stream.
+    """
+    try:
+        whole = json.loads(blob)
+    except ValueError:
+        whole = None
+    if isinstance(whole, dict) and whole.get("type") != "rate_limit_event":
+        return whole, [], ""
+    result: dict | None = None
+    rate_limits: list[dict] = []
+    unparsed: list[str] = []
+    for line in blob.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            unparsed.append(line)
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("type") == "result":
+            result = record
+        elif record.get("type") == "rate_limit_event" and isinstance(
+            record.get("rate_limit_info"), dict
+        ):
+            rate_limits.append(record["rate_limit_info"])
+    return result, rate_limits, "\n".join(unparsed)
 
 
 def _mtime(path: Path) -> datetime | None:
@@ -635,6 +685,15 @@ def mint(
             argv += ["--receipt-dir", str(receipt_dir)]
         if route_evidence.scrubbed_env:
             argv.append("--probe-environment-scrubbed")
+        # Keep the number the probe saw; the receipt used to reduce it to quota_available.
+        for name, (used_percent, resets_at) in sorted(route_evidence.windows.items()):
+            flag = name.replace("_", "-")
+            argv += [
+                f"--{flag}-used-percent",
+                repr(float(used_percent)),
+                f"--{flag}-resets-at",
+                resets_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            ]
         if dry_run:
             results.append({"route_id": route_id, "would_run": argv[2:]})
             continue
