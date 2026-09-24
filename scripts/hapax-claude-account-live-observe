@@ -75,6 +75,7 @@ from shared.quota_headroom import (  # noqa: E402
     overage_in_use,
     read_claude_probe_receipts,
     read_claude_stream_windows,
+    request_details,
 )
 
 #: The witness name the receipt validator's allowlist requires for this observation.
@@ -127,7 +128,16 @@ ROUTE_MODEL_PREFIXES: Final[dict[str, tuple[str, ...]]] = {
 
 
 class Observation:
-    __slots__ = ("kind", "at", "source", "detail", "model", "scrubbed_env", "windows")
+    __slots__ = (
+        "kind",
+        "at",
+        "source",
+        "detail",
+        "model",
+        "scrubbed_env",
+        "windows",
+        "subscription_served",
+    )
 
     def __init__(
         self,
@@ -138,6 +148,7 @@ class Observation:
         model: str | None = None,
         scrubbed_env: tuple[str, ...] = (),
         windows: Mapping[str, tuple[float, datetime]] | None = None,
+        subscription_served: bool = False,
     ) -> None:
         self.kind = kind  # "served" | "wall"
         self.at = at
@@ -147,6 +158,8 @@ class Observation:
         self.scrubbed_env = scrubbed_env
         # Subscription windows the provider reported on this request; only the probe has them.
         self.windows = dict(windows or {})
+        # True only when every rate event said an allowed status and explicitly no overage.
+        self.subscription_served = subscription_served
 
 
 def _anthropic_model(record: Mapping[str, object]) -> str | None:
@@ -467,6 +480,9 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         windows: dict[str, tuple[float, datetime]] = {}
         for info in rate_limits:  # stream order; a later event is the newer reading
             windows.update(claude_rate_limit_windows(info))
+        witnessed = bool(rate_limits) and all(
+            request_details(info)["subscription_served"] == 1 for info in rate_limits
+        )
         return Observation(
             "served",
             now,
@@ -474,6 +490,7 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
             model=model,
             scrubbed_env=PROBE_ENV_SCRUBBED,
             windows=windows,
+            subscription_served=witnessed,
         )
     return None
 
@@ -699,6 +716,8 @@ def mint(
             argv += ["--receipt-dir", str(receipt_dir)]
         if route_evidence.scrubbed_env:
             argv.append("--probe-environment-scrubbed")
+        if route_evidence.subscription_served:
+            argv.append("--subscription-served")
         # Keep the number the probe saw; the receipt used to reduce it to quota_available. A
         # window already reset at the observation is dropped, never allowed to cost the receipt.
         for name, (used_percent, resets_at) in sorted(route_evidence.windows.items()):

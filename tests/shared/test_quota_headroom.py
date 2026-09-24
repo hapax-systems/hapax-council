@@ -1230,11 +1230,13 @@ def test_every_live_harness_wall_is_kept(tmp_path):
 @pytest.mark.parametrize(
     "info",
     [
-        # The subscription refused the request; its windows describe a refusal.
+        # The subscription refused the request; its windows describe a refusal. The overage
+        # flag is explicitly false, so the refusal alone is what stops the lift.
         {
             "status": "rejected",
             "rateLimitType": "five_hour",
             "resetsAt": RESET_5H,
+            "isUsingOverage": False,
             "unifiedWindows": {
                 "five_hour": {"utilization": 0.3, "resetsAt": RESET_5H},
                 "seven_day": {"utilization": 0.5, "resetsAt": RESET_7D},
@@ -1268,6 +1270,7 @@ def test_a_served_reading_of_any_window_lifts_a_windowless_wall(tmp_path):
         "resetsAt": RESET_5H,
         "rateLimitType": "five_hour",
         "utilization": 0.9,
+        "isUsingOverage": False,  # every recorded event carries it (423/423)
     }
     claude_stream(
         tmp_path, stream_init(), stream_dated("2026-09-24T18:10:00Z"), rate_limit_event(five_only)
@@ -1360,3 +1363,148 @@ def test_codex_burn_names_both_readings_sources(tmp_path):
     row = by_id(rows)["codex.subscription.weekly.burn"]
     assert row.details["from_source"] != row.source
     assert row.source == by_id(rows)["codex.subscription.weekly"].source
+
+
+# PR #4728 review round 3.
+
+A_WEEK_LATER = datetime(2026, 10, 1, 18, tzinfo=UTC)
+
+
+def claude_wall_at_18(tmp_path):
+    write(
+        tmp_path / "receipts/claude-weekly-quota-wall.yaml",
+        "status: quota_blocked\nobserved_at: 2026-09-24T18:00:00Z\n",
+    )
+
+
+def test_a_reading_without_an_overage_field_never_lifts_a_wall(tmp_path):
+    # Absent means "not established": only an explicit non-overage serve is a witness.
+    claude_wall_at_18(tmp_path)
+    info = unified_info()
+    del info["isUsingOverage"]
+    claude_stream(
+        tmp_path, stream_init(), stream_dated("2026-09-24T18:10:00Z"), rate_limit_event(info)
+    )
+    rows = claude_rows(tmp_path)
+    assert wall_is_live(by_id(rows)["claude.subscription.wall"], rows, now=A1_NOW)
+
+
+@pytest.mark.parametrize("flag", [False, 0, 0.0, "false", "0", "0.0"])
+def test_explicit_non_overage_values_are_not_overage(tmp_path, flag):
+    claude_wall_at_18(tmp_path)
+    info = unified_info() | {"isUsingOverage": flag}
+    claude_stream(
+        tmp_path, stream_init(), stream_dated("2026-09-24T18:10:00Z"), rate_limit_event(info)
+    )
+    rows = claude_rows(tmp_path)
+    assert not wall_is_live(by_id(rows)["claude.subscription.wall"], rows, now=A1_NOW)
+
+
+@pytest.mark.parametrize("witnessed,live", [(None, True), ("true", False)])
+def test_a_probe_receipt_lifts_a_wall_only_when_it_recorded_the_serve(tmp_path, witnessed, live):
+    claude_wall_at_18(tmp_path)
+    probe_receipt(tmp_path, at="2026-09-24T18:10:00Z", subscription_served=witnessed)
+    rows = claude_rows(tmp_path)
+    assert "claude.subscription.wall" in by_id(rows)
+    assert wall_is_live(by_id(rows)["claude.subscription.wall"], rows, now=A1_NOW) is live
+
+
+@pytest.mark.parametrize(
+    "text,bound_hours",
+    [
+        ("You've hit your weekly limit · resets Sep 26, 5pm (America/Chicago)", 168),
+        ("You've hit your session limit · resets 11pm (America/Chicago)", 5),
+        ("Claude usage limit reached", None),
+    ],
+)
+def test_a_harness_wall_is_bounded_only_by_the_window_it_names(tmp_path, text, bound_hours):
+    jsonl(
+        tmp_path / "transcripts/a.jsonl",
+        {
+            "timestamp": "2026-09-24T18:00:00Z",
+            "isApiErrorMessage": True,
+            "message": {"content": text},
+        },
+    )
+    rows = claude_rows(tmp_path)
+    assert "claude.subscription.harness_wall" in by_id(rows)
+    wall = by_id(rows)["claude.subscription.harness_wall"]
+    assert wall.resets_at is None
+    assert wall.details.get("binds_at_most_hours") == bound_hours
+    for hours, expected in ((1, True), (200, bound_hours is None)):
+        assert wall_is_live(wall, rows, now=wall.observed_at + timedelta(hours=hours)) is expected
+
+
+@pytest.mark.parametrize("limit,bound_hours", [("seven_day", 168), ("five_hour", 5), (None, None)])
+def test_a_receipt_wall_is_bounded_by_its_recorded_window(tmp_path, limit, bound_hours):
+    body = (
+        "role: beta\nstatus: quota_blocked\ndetected_at: 2026-09-24T18:00:00Z\nresets_at: unknown\n"
+    )
+    if limit:
+        body += f"rate_limit_type: {limit}\n"
+    write(tmp_path / "beta-quota-wall.yaml", body)
+    wall = next(
+        r
+        for r in read_claude_wall_and_spend(tmp_path, tmp_path / "t", now=A1_NOW)
+        if r.label == "wall-signal"
+    )
+    assert wall.details.get("binds_at_most_hours") == bound_hours
+    assert wall_is_live(wall, [wall], now=A_WEEK_LATER) is (bound_hours is None)
+
+
+def test_a_wall_naming_no_window_binds_until_its_reset_or_a_witnessed_serve(tmp_path):
+    write(
+        tmp_path / "glmcp-other-quota-wall.yaml",
+        "status: quota_blocked\nobserved_at: 2026-09-24T18:00:00Z\n",
+    )
+    wall = read_receipt_measurements(tmp_path, "glm")[0]
+    assert wall.label == "wall-signal" and wall.resets_at is None
+    assert wall_is_live(wall, [wall], now=datetime(2026, 12, 24, tzinfo=UTC))
+
+
+def test_any_exception_in_one_family_stays_in_that_family(tmp_path, monkeypatch):
+    import shared.quota_headroom as quota_headroom
+
+    def broken(*args, **kwargs):
+        raise KeyError("shape")
+
+    monkeypatch.setattr(quota_headroom, "read_kimi_403_signal", broken)
+    jsonl(tmp_path / ".codex/sessions/rollout-a.jsonl", token_event())
+    try:
+        readings = collect_measurements(tmp_path, tmp_path / "receipts", now=NOW)
+    except KeyError:
+        readings = None
+    assert readings is not None, "one family's failure stopped every family"
+    assert readings["kimi"][0].details == {"error": "KeyError"}
+
+
+def test_an_old_transcript_never_holds_a_live_subscription_wall(tmp_path):
+    # A notice in a file untouched for nine days is at least nine days old; every Claude
+    # subscription window is at most seven days (unifiedWindows keys; rateLimitType census), so
+    # a reset still ahead is not a subscription window's. The skip loses no live subscription wall.
+    path = jsonl(
+        tmp_path / "transcripts/old.jsonl",
+        {
+            "timestamp": "2026-09-15T18:00:00Z",
+            "isApiErrorMessage": True,
+            "message": {"content": "You've hit your limit; resets 2026-09-26T18:00:00Z"},
+        },
+    )
+    old = (A1_NOW - timedelta(days=9)).timestamp()
+    os.utime(path, (old, old))
+    assert not any(r.capacity_id.endswith("harness_wall") for r in claude_rows(tmp_path))
+
+
+def test_an_undated_refusal_is_dated_late_and_an_undated_reading_is_not_evidence(tmp_path):
+    # Nothing dated precedes either event; a record after them dates the refusal only.
+    claude_stream(
+        tmp_path,
+        stream_init(),
+        rate_limit_event(REJECTED_7D | {"unifiedWindows": unified_info()["unifiedWindows"]}),
+        stream_dated("2026-09-24T18:20:00Z"),
+    )
+    rows = claude_rows(tmp_path)
+    wall = by_id(rows)["claude.subscription.rate_limit_rejected"]
+    assert wall.observed_at == datetime(2026, 9, 24, 18, 20, tzinfo=UTC)
+    assert wall.details["earliest_at"] is None
+    assert rows[0].label == "unobserved"  # the refusal's readings had nothing dated before them

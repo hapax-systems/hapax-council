@@ -545,6 +545,7 @@ CLAUDE_ADMISSION_FIELDS = frozenset(
         "five_hour_resets_at",
         "seven_day_used_percent",
         "seven_day_resets_at",
+        "subscription_served",
     }
 )
 

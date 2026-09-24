@@ -266,6 +266,8 @@ def test_writer_records_probe_windows(tmp_path: Path) -> None:
             "--seven-day-resets-at",
             "2026-09-25T22:00:00Z",
         ),
+        # The serve witness, like the numbers, comes only from the scrubbed probe.
+        ("--subscription-served",),
         # A window is a pair; half of one is not a reading.
         ("--probe-environment-scrubbed", "--seven-day-used-percent", "9"),
         ("--probe-environment-scrubbed", "--five-hour-resets-at", "2026-09-24T21:30:00Z"),
@@ -569,3 +571,77 @@ def test_a_probe_served_from_overage_is_a_wall(monkeypatch: pytest.MonkeyPatch, 
         monkeypatch, {"type": "rate_limit_event", "rate_limit_info": overage}, served_result()
     )
     assert event is not None and event.kind == "wall"
+
+
+# PR #4728 review round 3.
+
+
+def test_a_probe_witnesses_the_subscription_only_on_an_explicit_non_overage_serve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    unknown = info()
+    del unknown["isUsingOverage"]
+    for rate_info, witnessed in ((info(), True), (unknown, False)):
+        event = probe_stream(
+            monkeypatch, {"type": "rate_limit_event", "rate_limit_info": rate_info}, served_result()
+        )
+        assert event is not None and event.kind == "served"
+        assert event.subscription_served is witnessed
+    monkeypatch.undo()
+    for witnessed in (True, False):
+        receipts = tmp_path / str(witnessed)
+        event = obs.Observation(
+            "served",
+            NOW,
+            "active-probe",
+            model="claude-opus-5",
+            scrubbed_env=obs.PROBE_ENV_SCRUBBED,
+            windows={"seven_day": (9.0, datetime(2026, 9, 25, 22, tzinfo=UTC))},
+            subscription_served=witnessed,
+        )
+        assert mint(event, receipts)[0]["returncode"] == 0
+        text = next(receipts.glob("*.yaml")).read_text(encoding="utf-8")
+        assert ("subscription_served: true" in text) is witnessed
+
+
+def test_a_failed_probe_mints_exactly_what_passive_evidence_alone_would(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    # The probe failing is an instrument fault, not evidence against the account: the routes it
+    # leaves minted are the ones a run that never probes would mint from the same serves.
+    path = tmp_path / "projects/proj/session.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "type": "assistant",
+        "timestamp": iso(NOW - timedelta(minutes=1)),
+        "message": {"model": "claude-fable-5-1", "usage": {"input_tokens": 3, "output_tokens": 4}},
+    }
+    path.write_text(json.dumps(record) + "\n")
+    broken = obs.Observation("probe_failed", NOW, "active-probe", "TimeoutExpired")
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=broken)
+    with_failed_probe = minted(tmp_path)
+    for receipt in (tmp_path / "receipts").glob("*.yaml"):
+        receipt.unlink()
+    rc_passive, _, _ = run_main(monkeypatch, tmp_path, capsys, "--no-probe")
+    assert rc == 7 and rc_passive == 0
+    assert with_failed_probe and with_failed_probe == minted(tmp_path)
+
+
+def test_a_refused_reading_never_suppresses_a_route_probe(monkeypatch, tmp_path: Path, capsys):
+    # The suppression in N1 is confined to the quantity trigger: with no passive serve, the
+    # route-driven probe still runs.
+    stream = tmp_path / "headless/lane/output.jsonl"
+    stream.parent.mkdir(parents=True)
+    records = [
+        {"type": "system", "subtype": "init", "session_id": "s", "model": "claude-opus-5"}
+        | {"apiKeySource": "none"},  # pragma: allowlist secret
+        {"type": "user", "session_id": "s", "timestamp": iso(NOW - timedelta(minutes=5))},
+        {
+            "type": "rate_limit_event",
+            "session_id": "s",
+            "rate_limit_info": info(status="rejected", seven=1.0),
+        },
+    ]
+    stream.write_text("".join(json.dumps(r) + "\n" for r in records))
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
+    assert payload["quantity"]["stale"] is False and calls == [NOW]

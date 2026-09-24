@@ -35,14 +35,11 @@ CLAUDE_WINDOWS = {
 # A file untouched for longer than the longest window cannot hold an open window's reading.
 CLAUDE_WINDOW_HORIZON = timedelta(days=8)
 SERVED_STATUSES = frozenset({"allowed", "allowed_warning"})
-# The longest window each family's walls can name. A wall with no reset cannot bind past it:
-# Claude's windows are five-hour and seven-day; Kimi's 403 names a "weekly (7-day)" limit;
-# the GLM Coding Plan limits are five-hour and weekly. This bounds a wall; it invents no reset.
-LONGEST_WINDOW = {
-    "claude": timedelta(days=7),
-    "kimi": timedelta(days=7),
-    "glm": timedelta(days=7),
-}
+# Hours in the window a wall's own evidence names. A window full at the refusal ends no later
+# than the refusal plus its length, whether rolling, calendar or first-use, so a wall with no
+# reset binds at most that long. This bounds the wall and invents no reset. A wall whose
+# evidence names no window gets no bound: it binds until its reset or a witnessed serve.
+WINDOW_HOURS = {"seven_day": 168, "weekly": 168, "five_hour": 5, "session": 5}
 # Burn pairs: closer than the minimum the rate is noise; beyond the maximum it is history.
 BURN_MIN_SPAN = timedelta(minutes=20)
 BURN_MAX_SPAN = timedelta(hours=6)
@@ -370,6 +367,9 @@ def read_receipt_measurements(receipts: Path, family: str) -> list[QuotaMeasurem
                     reset=instant(data.get("resets_at")),
                     source=source_ref(path, "quota_wall_receipt"),
                     reason_code="provider_refusal_without_fraction",
+                    details={
+                        "binds_at_most_hours": WINDOW_HOURS.get(str(data.get("rate_limit_type")))
+                    },
                 )
             )
         elif data.get("status") == "quota_available":
@@ -519,19 +519,47 @@ def read_claude_stream_windows(stream_root: Path, *, now: datetime) -> list[Quot
     return rows
 
 
+def overage_state(info: dict) -> bool | None:
+    """True, False, or None when the event does not say. Recorded events carry a JSON boolean
+    (423/423 local samples ``false``); an explicit false-y value, numeric or string, is False;
+    any other present value is True (fail closed)."""
+    value = info.get("isUsingOverage")
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return not (isinstance(value, str) and value.strip().lower() in {"false", "0", "0.0"})
+
+
 def overage_in_use(info: dict) -> bool:
-    """Recorded events carry a JSON boolean; anything but an explicit false-y value fails closed."""
-    return info.get("isUsingOverage") not in (None, False, 0, "false", "False", "0")
+    """A refusal signal: only an explicit overage serve counts; absent is not overage."""
+    return overage_state(info) is True
+
+
+def harness_window_hours(text: str) -> int | None:
+    """The window a Claude limit notice names, or None when it names none."""
+    lowered = text.lower()
+    if "weekly limit" in lowered:
+        return WINDOW_HOURS["weekly"]
+    if "session limit" in lowered:
+        return WINDOW_HOURS["session"]
+    return None
 
 
 def request_details(info: dict) -> dict[str, Any]:
-    """Whether the subscription itself served the request the reading came with."""
+    """Whether the subscription itself served the request the reading came with.
+
+    ``subscription_served`` needs both an allowed status and an explicit non-overage flag:
+    absent is "not established", never a serve.
+    """
     status = info.get("status") if isinstance(info.get("status"), str) else None
-    overage = overage_in_use(info)
+    overage = overage_state(info)
     return {
         "status": status,
-        "using_overage": int(overage),
-        "subscription_served": int(status in SERVED_STATUSES and not overage),
+        "using_overage": int(overage is True),
+        "subscription_served": int(status in SERVED_STATUSES and overage is False),
     }
 
 
@@ -550,6 +578,7 @@ def stream_wall(info: dict, earliest, source: str, *, at: datetime, now: datetim
         details={
             "rate_limit_type": limit if isinstance(limit, str) else None,
             "earliest_at": earliest.isoformat() if earliest else None,
+            "binds_at_most_hours": WINDOW_HOURS.get(limit) if isinstance(limit, str) else None,
         },
     )
 
@@ -588,7 +617,9 @@ def read_claude_probe_receipts(receipts: Path, *, now: datetime) -> list[QuotaMe
                 windows[name] = (used, reset)
         source = source_ref(path, "claude_probe_admission_receipt")
         # The probe mints only for a request the subscription served (no refusal, no overage).
-        served = {"subscription_served": 1}
+        # Witnessed at mint time by the probe (explicit allowed status, explicit non-overage);
+        # a receipt without the field carries the numbers but never lifts a wall.
+        served = {"subscription_served": int(data.get("subscription_served") is True)}
         rows.extend(claude_window_rows(windows, at=at, source=source, details=served))
     return rows
 
@@ -632,7 +663,8 @@ def read_claude_wall_and_spend(
                 content = msg.get("content", event.get("content", ""))
                 text = json.dumps(content)
                 if re.search(
-                    r"(?i)(usage limit|weekly limit|hit your limit|quota.exhausted)", text
+                    r"(?i)(usage limit|weekly limit|session limit|hit your limit|quota.exhausted)",
+                    text,
                 ):
                     reset_match = ISO_TIME.search(text)
                     walls.append(
@@ -644,6 +676,9 @@ def read_claude_wall_and_spend(
                             reset=instant(reset_match[0]) if reset_match else None,
                             source=source_ref(path, "claude_harness_limit_notice"),
                             reason_code="harness_limit_notice",
+                            # Recorded wording: "You've hit your weekly limit · resets …" and
+                            # "You've hit your session limit · resets …" (five-hour).
+                            details={"binds_at_most_hours": harness_window_hours(text)},
                         )
                     )
             usage = msg.get("usage")
@@ -744,7 +779,14 @@ def read_kimi_403_signal(kimi_sessions_root: Path) -> list[QuotaMeasurement]:
         else:
             hits += file_hits
             files_with_hit += bool(file_hits)
-    details = {"files_with_hit": files_with_hit, "hit_count": hits, "global_log_hits": global_hits}
+    # Only a "weekly (7-day)" 403 is a wall here; recorded wording: "Your quota will reset when
+    # the current 7-day window ends", so the wall binds at most a week.
+    details = {
+        "files_with_hit": files_with_hit,
+        "hit_count": hits,
+        "global_log_hits": global_hits,
+        "binds_at_most_hours": WINDOW_HOURS["weekly"],
+    }
     responses = []
     if last_response is not None:
         responses.append(
@@ -959,7 +1001,7 @@ def collect_measurements(
                     details={"source": str(exc).partition(":")[2]},
                 )
             ]
-        except (ValueError, OSError) as exc:
+        except Exception as exc:  # noqa: BLE001 - the family boundary: nothing crosses it
             # Anything else a reader raises also stays inside its family; only the type is kept.
             result[family] = [
                 measurement(
@@ -995,8 +1037,12 @@ def wall_is_live(wall: QuotaMeasurement, rows, *, now: datetime) -> bool:
     if wall.resets_at is not None and now >= wall.resets_at:
         return False
     family = wall.capacity_id.split(".", 1)[0]
-    longest = LONGEST_WINDOW.get(family)
-    if wall.resets_at is None and longest is not None and now >= wall.observed_at + longest:
+    bound = wall.details.get("binds_at_most_hours")
+    if (
+        wall.resets_at is None
+        and isinstance(bound, int)
+        and now >= wall.observed_at + timedelta(hours=bound)
+    ):
         return False
     return not any(
         row.label == "observed"

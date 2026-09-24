@@ -606,15 +606,23 @@ MUTANTS = [
         "writer-unscrubbed-numbers",
         at(PROBE_TEST, "test_writer_refuses_a_window_it_cannot_vouch_for"),
         ADMISSION,
-        "if not args.probe_environment_scrubbed or observation != ALLOWED_OBSERVATIONS[0]:",
-        "if observation != ALLOWED_OBSERVATIONS[0]:",
+        "if not args.probe_environment_scrubbed or observation != ALLOWED_OBSERVATIONS[0]:\n"
+        "            raise ValueError(\n"
+        '                "subscription windows come only',
+        "if observation != ALLOWED_OBSERVATIONS[0]:\n"
+        "            raise ValueError(\n"
+        '                "subscription windows come only',
     ),
     (
         "writer-operator-numbers",
         at(PROBE_TEST, "test_writer_refuses_a_window_it_cannot_vouch_for"),
         ADMISSION,
-        "if not args.probe_environment_scrubbed or observation != ALLOWED_OBSERVATIONS[0]:",
-        "if not args.probe_environment_scrubbed:",
+        "if not args.probe_environment_scrubbed or observation != ALLOWED_OBSERVATIONS[0]:\n"
+        "            raise ValueError(\n"
+        '                "subscription windows come only',
+        "if not args.probe_environment_scrubbed:\n"
+        "            raise ValueError(\n"
+        '                "subscription windows come only',
     ),
     (
         "writer-half-window",
@@ -678,14 +686,14 @@ MUTANTS = [
         "refused-reading-lifts",
         "test_a_reading_the_subscription_did_not_serve_never_lifts_a_wall",
         READER,
-        '"subscription_served": int(status in SERVED_STATUSES and not overage),',
-        '"subscription_served": int(not overage),',
+        '"subscription_served": int(status in SERVED_STATUSES and overage is False),',
+        '"subscription_served": int(overage is False),',
     ),
     (
         "overage-reading-lifts",
         "test_a_reading_the_subscription_did_not_serve_never_lifts_a_wall",
         READER,
-        '"subscription_served": int(status in SERVED_STATUSES and not overage),',
+        '"subscription_served": int(status in SERVED_STATUSES and overage is False),',
         '"subscription_served": int(status in SERVED_STATUSES),',
     ),
     (
@@ -851,22 +859,22 @@ MUTANTS = [
         "longest-window-unbounded",
         "test_a_windowless_wall_without_a_reset_binds_no_longer_than_its_window",
         READER,
-        "if wall.resets_at is None and longest is not None and now >= wall.observed_at + longest:",
-        "if False:",
+        "        and now >= wall.observed_at + timedelta(hours=bound)\n",
+        "        and False\n",
     ),
     (
         "overage-strict-true",
         "test_any_truthy_overage_flag_is_overage",
         READER,
-        'return info.get("isUsingOverage") not in (None, False, 0, "false", "False", "0")',
-        'return info.get("isUsingOverage") is True',
+        'return not (isinstance(value, str) and value.strip().lower() in {"false", "0", "0.0"})',
+        "return False",
     ),
     (
         "reader-error-spreads",
-        "test_any_failure_in_one_family_stays_in_that_family",
+        "test_any_exception_in_one_family_stays_in_that_family",
         READER,
-        "        except (ValueError, OSError) as exc:\n",
-        "        except KeyError as exc:\n",
+        "        except Exception as exc:  # noqa: BLE001",
+        "        except ValueError as exc:  # noqa: BLE001",
     ),
     (
         "writer-defaults-to-v2",
@@ -889,6 +897,114 @@ MUTANTS = [
         '        if row.capacity_id == "claude.subscription.weekly"\n',
         '        if row.capacity_id == "claude.subscription.weekly"\n'
         '        and row.details.get("subscription_served") == 1\n',
+    ),
+    # --- PR #4728 review round 3
+    (
+        "overage-absent-is-served",
+        "test_a_reading_without_an_overage_field_never_lifts_a_wall",
+        READER,
+        '"subscription_served": int(status in SERVED_STATUSES and overage is False),',
+        '"subscription_served": int(status in SERVED_STATUSES and overage is not True),',
+    ),
+    (
+        "overage-numeric-zero",
+        "test_explicit_non_overage_values_are_not_overage",
+        READER,
+        "    if isinstance(value, (int, float)):\n        return value != 0\n",
+        "    if isinstance(value, (int, float)):\n        return True\n",
+    ),
+    (
+        "receipt-witness-assumed",
+        "test_a_probe_receipt_lifts_a_wall_only_when_it_recorded_the_serve",
+        READER,
+        'served = {"subscription_served": int(data.get("subscription_served") is True)}',
+        'served = {"subscription_served": 1}',
+    ),
+    (
+        "harness-weekly-unbounded",
+        "test_a_harness_wall_is_bounded_only_by_the_window_it_names",
+        READER,
+        '    if "weekly limit" in lowered:\n        return WINDOW_HOURS["weekly"]\n',
+        "",
+    ),
+    (
+        "session-notice-missed",
+        "test_a_harness_wall_is_bounded_only_by_the_window_it_names",
+        READER,
+        "usage limit|weekly limit|session limit|hit your limit",
+        "usage limit|weekly limit|hit your limit",
+    ),
+    (
+        "receipt-window-ignored",
+        "test_a_receipt_wall_is_bounded_by_its_recorded_window",
+        READER,
+        '"binds_at_most_hours": WINDOW_HOURS.get(str(data.get("rate_limit_type")))',
+        '"binds_at_most_hours": None',
+    ),
+    (
+        "kimi-bound-dropped",
+        "test_a_windowless_wall_without_a_reset_binds_no_longer_than_its_window",
+        READER,
+        '"binds_at_most_hours": WINDOW_HOURS["weekly"],',
+        '"binds_at_most_hours": None,',
+    ),
+    (
+        "unnamed-window-bounded",
+        "test_a_wall_naming_no_window_binds_until_its_reset_or_a_witnessed_serve",
+        READER,
+        "        and isinstance(bound, int)\n",
+        "        and (isinstance(bound, int) or (bound := 168))\n",
+    ),
+    (
+        "undated-refusal-dropped",
+        "test_an_undated_refusal_is_dated_late_and_an_undated_reading_is_not_evidence",
+        READER,
+        "pending.append((info, dated, source))",
+        "pending.append((info, dated, source)) if dated is not None else None",
+    ),
+    (
+        "probe-witness-assumed",
+        at(
+            PROBE_TEST,
+            "test_a_probe_witnesses_the_subscription_only_on_an_explicit_non_overage_serve",
+        ),
+        OBSERVER,
+        "witnessed = bool(rate_limits) and all(",
+        "witnessed = True or all(",
+    ),
+    (
+        "mint-drops-witness",
+        at(
+            PROBE_TEST,
+            "test_a_probe_witnesses_the_subscription_only_on_an_explicit_non_overage_serve",
+        ),
+        OBSERVER,
+        "        if route_evidence.subscription_served:\n",
+        "        if False:\n",
+    ),
+    (
+        "failed-probe-mints-nothing",
+        at(PROBE_TEST, "test_a_failed_probe_mints_exactly_what_passive_evidence_alone_would"),
+        OBSERVER,
+        "            elif not any(by_route.values()):\n",
+        "            else:\n",
+    ),
+    (
+        "writer-unscrubbed-witness",
+        at(PROBE_TEST, "test_writer_refuses_a_window_it_cannot_vouch_for"),
+        ADMISSION,
+        "if not args.probe_environment_scrubbed or observation != ALLOWED_OBSERVATIONS[0]:\n"
+        "            raise ValueError(\n"
+        '                "--subscription-served comes only',
+        "if False:\n            raise ValueError(\n"
+        '                "--subscription-served comes only',
+    ),
+    (
+        "route-probe-suppressed",
+        at(PROBE_TEST, "test_a_refused_reading_never_suppresses_a_route_probe"),
+        OBSERVER,
+        'and (routes_missing_passive_evidence or quantity["stale"])',
+        'and quantity["stale"]',
     ),
 ]
 

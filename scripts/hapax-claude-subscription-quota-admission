@@ -220,6 +220,13 @@ def _probe_windows(
                 "a window that already reset is not the current window"
             )
         fields += [(f"{name}_used_percent", percent), (f"{name}_resets_at", _iso(resets_at))]
+    if args.subscription_served:
+        if not args.probe_environment_scrubbed or observation != ALLOWED_OBSERVATIONS[0]:
+            raise ValueError(
+                "--subscription-served comes only from the scrubbed account-live probe's reply"
+            )
+        # The probe saw an allowed status and an explicit non-overage flag on every rate event.
+        fields.append(("subscription_served", True))
     return fields
 
 
@@ -278,6 +285,11 @@ def _parser() -> argparse.ArgumentParser:
         "--probe-environment-scrubbed",
         action="store_true",
         help="Record the fixed provider-environment controls removed by the active probe",
+    )
+    parser.add_argument(
+        "--subscription-served",
+        action="store_true",
+        help="The probe's reply witnessed an allowed, explicitly non-overage serve (probe only)",
     )
     for name in PROBE_WINDOWS:
         flag = name.replace("_", "-")
