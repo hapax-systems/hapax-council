@@ -2649,8 +2649,9 @@ def build_live_ledger(
     return QuotaSpendLedger.model_validate(payload)
 
 
-def write_ledger_atomic(ledger: QuotaSpendLedger, path: Path, *, schema_version: int = 2) -> None:
-    """Replace ``path`` atomically; ``schema_version=1`` writes the strict-v1 projection."""
+def write_ledger_atomic(ledger: QuotaSpendLedger, path: Path, *, schema_version: int = 1) -> None:
+    """Replace ``path`` atomically. The default is the strict-v1 projection every live reader
+    accepts; schema 2 is written only when a caller asks for it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     data = ledger.schema_v1_payload() if schema_version == 1 else ledger.model_dump(mode="json")
     payload = json.dumps(data, indent=1, sort_keys=True) + "\n"
@@ -3658,7 +3659,9 @@ def append_operator_report(argv: list[str]) -> int:
             payload = ledger.model_dump(mode="json")
             payload["schema_version"] = 2
             payload["operator_reports"].append(report.model_dump(mode="json"))
-            write_ledger_atomic(QuotaSpendLedger.model_validate(payload), args.out)
+            write_ledger_atomic(
+                QuotaSpendLedger.model_validate(payload), args.out, schema_version=2
+            )
     except (ValueError, OSError, QuotaSpendLedgerError, LiveLedgerLockTimeout):
         print(
             "operator report rejected; check family, timestamp and quote; ledger preserved",

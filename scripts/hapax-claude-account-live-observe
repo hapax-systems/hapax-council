@@ -72,6 +72,7 @@ if str(REPO_ROOT) not in sys.path:
 from shared.quota_headroom import (  # noqa: E402
     TraceReadError,
     claude_rate_limit_windows,
+    overage_in_use,
     read_claude_probe_receipts,
     read_claude_stream_windows,
 )
@@ -442,10 +443,7 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         return Observation("probe_failed", now, "active-probe", f"{type(exc).__name__}: {exc}")
     blob = (proc.stdout or "").strip()
     record, rate_limits, unparsed = _probe_records(blob)
-    if any(
-        info.get("status") == "rejected" or info.get("isUsingOverage") is True
-        for info in rate_limits
-    ):
+    if any(info.get("status") == "rejected" or overage_in_use(info) for info in rate_limits):
         # The subscription refused this request, or served it from overage. Either way the
         # window is spent: a result served after that never witnesses subscription headroom.
         return Observation("wall", now, "active-probe", "provider-rate-limit-rejected")
@@ -878,11 +876,12 @@ def main(argv: list[str] | None = None) -> int:
                 verdict, evidence, _ = _verdict(found)
             elif probed.kind == "wall":
                 # A measured refusal is the live state, whatever the passive evidence said.
+                # Only a "served" verdict reaches mint() below, so nothing is minted.
                 verdict, evidence = "walled", probed
-            elif routes_missing_passive_evidence:
+            elif not any(by_route.values()):
                 verdict, evidence = probed.kind, probed
-            # Otherwise the probe ran only for the quantity and could not run: the passive
-            # admission stands, and the failed refresh stays visible in probe.outcome.
+            # Otherwise the probe could not run, but passive serves vouch for the routes that
+            # have them: those are minted, the rest stay held, and the unit still exits 7.
         else:
             probe_report["outcome"] = "no_evidence"
             probe_report["witnessed_routes"] = []
@@ -920,6 +919,13 @@ def main(argv: list[str] | None = None) -> int:
         elif not args.dry_run and not any(r.get("returncode") == 0 for r in payload["receipts"]):
             payload["hint"] = "every route was skipped; no receipt was written"
             rc = 5
+        elif probe_report is not None and probe_report.get("outcome") == "probe_failed":
+            # Passive routes were minted; the probe itself is still a broken instrument.
+            payload["hint"] = (
+                "the active probe could not run; passive evidence was minted for the routes it "
+                "covers. Next action: run `claude -p ok` by hand under the observer's environment"
+            )
+            rc = 7
         else:
             rc = 0
     elif verdict == "walled":

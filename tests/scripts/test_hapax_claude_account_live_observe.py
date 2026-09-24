@@ -460,13 +460,56 @@ def test_a_quantity_probe_that_hits_a_wall_holds_the_route(
 def test_a_failed_quantity_probe_keeps_the_passive_admission(
     monkeypatch, tmp_path: Path, capsys
 ) -> None:
+    # The passive admission is minted; the broken instrument still surfaces (exit 7).
     passive_serve(tmp_path, NOW - timedelta(minutes=1))
     broken = obs.Observation("probe_failed", NOW, "active-probe", "TimeoutExpired")
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=broken)
     assert calls == [NOW]
-    assert (payload["verdict"], rc) == ("served", 0)
+    assert (payload["verdict"], rc) == ("served", 7)
     assert payload["probe"]["outcome"] == "probe_failed"
     assert len(minted(tmp_path)) == 2
+
+
+def test_a_failed_probe_still_mints_the_routes_passive_evidence_covers(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    # A Fable serve witnesses headless.full but not review.opus, so the probe runs for opus.
+    path = tmp_path / "projects/proj/session.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "type": "assistant",
+        "timestamp": iso(NOW - timedelta(minutes=1)),
+        "message": {"model": "claude-fable-5-1", "usage": {"input_tokens": 3, "output_tokens": 4}},
+    }
+    path.write_text(json.dumps(record) + "\n")
+    broken = obs.Observation("probe_failed", NOW, "active-probe", "TimeoutExpired")
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=broken)
+    assert calls == [NOW] and rc == 7
+    assert payload["probe"]["requested_for_routes"] == ["claude.review.opus"]
+    assert minted(tmp_path) and all("headless-full" in name for name in minted(tmp_path))
+
+
+def test_a_refused_requests_reading_is_still_the_current_quantity(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    # The quantity is the provider's number whether or not it served that request; a fresh one
+    # is not re-bought. Admission is decided by walls and serves, not by this check.
+    stream = tmp_path / "headless/lane/output.jsonl"
+    stream.parent.mkdir(parents=True)
+    records = [
+        {"type": "system", "subtype": "init", "session_id": "s", "model": "claude-opus-5"}
+        | {"apiKeySource": "none"},  # pragma: allowlist secret
+        {"type": "user", "session_id": "s", "timestamp": iso(NOW - timedelta(minutes=5))},
+        {
+            "type": "rate_limit_event",
+            "session_id": "s",
+            "rate_limit_info": info(status="rejected", seven=1.0),
+        },
+    ]
+    stream.write_text("".join(json.dumps(r) + "\n" for r in records))
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
+    assert payload["quantity"]["stale"] is False and calls == []
 
 
 @pytest.mark.parametrize(
@@ -518,8 +561,10 @@ def test_an_expired_probe_window_never_costs_the_receipt(tmp_path: Path) -> None
     assert "seven_day" not in text and "five_hour_used_percent: 8.0" in text
 
 
-def test_a_probe_served_from_overage_is_a_wall(monkeypatch: pytest.MonkeyPatch) -> None:
-    overage = info() | {"isUsingOverage": True}
+@pytest.mark.parametrize("flag", [True, 1, "true"])
+def test_a_probe_served_from_overage_is_a_wall(monkeypatch: pytest.MonkeyPatch, flag) -> None:
+    # Recorded samples carry a JSON boolean; anything but an explicit false-y value fails closed.
+    overage = info() | {"isUsingOverage": flag}
     event = probe_stream(
         monkeypatch, {"type": "rate_limit_event", "rate_limit_info": overage}, served_result()
     )

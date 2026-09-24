@@ -34,6 +34,15 @@ CLAUDE_WINDOWS = {
 }
 # A file untouched for longer than the longest window cannot hold an open window's reading.
 CLAUDE_WINDOW_HORIZON = timedelta(days=8)
+SERVED_STATUSES = frozenset({"allowed", "allowed_warning"})
+# The longest window each family's walls can name. A wall with no reset cannot bind past it:
+# Claude's windows are five-hour and seven-day; Kimi's 403 names a "weekly (7-day)" limit;
+# the GLM Coding Plan limits are five-hour and weekly. This bounds a wall; it invents no reset.
+LONGEST_WINDOW = {
+    "claude": timedelta(days=7),
+    "kimi": timedelta(days=7),
+    "glm": timedelta(days=7),
+}
 # Burn pairs: closer than the minimum the rate is noise; beyond the maximum it is history.
 BURN_MIN_SPAN = timedelta(minutes=20)
 BURN_MAX_SPAN = timedelta(hours=6)
@@ -510,11 +519,19 @@ def read_claude_stream_windows(stream_root: Path, *, now: datetime) -> list[Quot
     return rows
 
 
+def overage_in_use(info: dict) -> bool:
+    """Recorded events carry a JSON boolean; anything but an explicit false-y value fails closed."""
+    return info.get("isUsingOverage") not in (None, False, 0, "false", "False", "0")
+
+
 def request_details(info: dict) -> dict[str, Any]:
     """Whether the subscription itself served the request the reading came with."""
+    status = info.get("status") if isinstance(info.get("status"), str) else None
+    overage = overage_in_use(info)
     return {
-        "status": info.get("status") if isinstance(info.get("status"), str) else None,
-        "using_overage": int(info.get("isUsingOverage") is True),
+        "status": status,
+        "using_overage": int(overage),
+        "subscription_served": int(status in SERVED_STATUSES and not overage),
     }
 
 
@@ -570,7 +587,9 @@ def read_claude_probe_receipts(receipts: Path, *, now: datetime) -> list[QuotaMe
             if used is not None and used >= 0 and reset is not None:
                 windows[name] = (used, reset)
         source = source_ref(path, "claude_probe_admission_receipt")
-        rows.extend(claude_window_rows(windows, at=at, source=source))
+        # The probe mints only for a request the subscription served (no refusal, no overage).
+        served = {"subscription_served": 1}
+        rows.extend(claude_window_rows(windows, at=at, source=source, details=served))
     return rows
 
 
@@ -940,12 +959,26 @@ def collect_measurements(
                     details={"source": str(exc).partition(":")[2]},
                 )
             ]
+        except (ValueError, OSError) as exc:
+            # Anything else a reader raises also stays inside its family; only the type is kept.
+            result[family] = [
+                measurement(
+                    f"{family}.capacity",
+                    reason="reader_error",
+                    details={"error": type(exc).__name__},
+                )
+            ]
     return result
 
 
 def served_by_the_subscription(row: QuotaMeasurement) -> bool:
-    """False for a reading that came with a refused request or one served from overage."""
-    return row.details.get("status") != "rejected" and not row.details.get("using_overage")
+    """True only for a reading that says the subscription itself served its request.
+
+    Positive evidence, never absence of it: a refused or overage reading says no, and a row
+    from a source that cannot tell (a served Kimi response may be booster-paid; derived spend
+    may be another provider) does not say yes.
+    """
+    return row.details.get("subscription_served") == 1
 
 
 def wall_is_live(wall: QuotaMeasurement, rows, *, now: datetime) -> bool:
@@ -962,6 +995,9 @@ def wall_is_live(wall: QuotaMeasurement, rows, *, now: datetime) -> bool:
     if wall.resets_at is not None and now >= wall.resets_at:
         return False
     family = wall.capacity_id.split(".", 1)[0]
+    longest = LONGEST_WINDOW.get(family)
+    if wall.resets_at is None and longest is not None and now >= wall.observed_at + longest:
+        return False
     return not any(
         row.label == "observed"
         and served_by_the_subscription(row)

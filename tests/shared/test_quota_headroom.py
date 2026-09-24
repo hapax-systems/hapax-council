@@ -932,7 +932,9 @@ def test_window_scoped_wall_needs_a_reading_of_the_same_window(tmp_path):
     assert wall_is_live(wall, rows, now=A1_NOW)
 
 
-def test_kimi_response_after_the_wall_is_a_post_wall_observation(tmp_path):
+def test_kimi_response_is_a_served_turn_but_never_lifts_the_wall(tmp_path):
+    # Kimi can serve from a paid booster wallet after its weekly quota (E0 census), so a served
+    # response does not witness subscription quota. It is still the last served turn.
     sessions = kimi_fixture(tmp_path)
     write(
         sessions / "e/f/logs/kimi-code.log",
@@ -945,24 +947,85 @@ def test_kimi_response_after_the_wall_is_a_post_wall_observation(tmp_path):
     assert (served.label, served.quantity, served.unit) == ("observed", 487, "tokens")
     assert served.observed_at == datetime(2026, 9, 19, 7, 30, 0, 209000, tzinfo=UTC)
     assert rows[0].label == "wall-signal"
-    assert not wall_is_live(rows[0], rows, now=NOW)
+    assert wall_is_live(rows[0], rows, now=NOW)
+
+
+def test_a_windowless_wall_without_a_reset_binds_no_longer_than_its_window(tmp_path):
+    # The 403 names a weekly (7-day) limit: it cannot bind past a week after it, with no
+    # reset invented for the row itself.
+    rows = read_kimi_403_signal(kimi_fixture(tmp_path))  # newest 403 at 2026-09-19T07:05Z
+    assert rows[0].resets_at is None
+    assert wall_is_live(rows[0], rows, now=datetime(2026, 9, 26, 7, 4, tzinfo=UTC))
+    assert not wall_is_live(rows[0], rows, now=datetime(2026, 9, 26, 7, 6, tzinfo=UTC))
 
 
 @pytest.mark.parametrize(
     "line",
     [
-        "2026-09-19T06:59:00Z INFO  llm response  turnStep=0.1 outputTokens=487\n",
         "2026-09-19T07:30:00Z INFO  llm response  turnStep=0.1 outputTokens=0\n",
         "2026-09-19T07:30:00Z INFO  llm request  turnStep=0.1\n",
         "note: 2026-09-19T07:30:00Z INFO  llm response outputTokens=487\n",
     ],
 )
-def test_kimi_wall_stands_without_a_later_serve(tmp_path, line):
+def test_kimi_non_responses_are_not_served_turns(tmp_path, line):
     sessions = kimi_fixture(tmp_path)
     write(sessions / "e/f/logs/kimi-code.log", line)
-    rows = read_kimi_403_signal(sessions)
-    assert rows[0].label == "wall-signal"
-    assert wall_is_live(rows[0], rows, now=NOW)
+    assert "kimi.usage.last_response" not in by_id(read_kimi_403_signal(sessions))
+
+
+def test_a_reading_without_a_subscription_witness_never_lifts_a_wall(tmp_path):
+    # Rows that do not say the subscription served them (other families' usage, derived
+    # spend) never lift a wall: parity with the Claude refusal/overage rule.
+    from shared.quota_headroom import evidence
+
+    wall = read_kimi_403_signal(kimi_fixture(tmp_path))[0]
+    later = evidence(
+        "kimi.subscription.usage",
+        at=datetime(2026, 9, 19, 7, 30, tzinfo=UTC),
+        quantity=3,
+        unit="percent_used",
+        label="observed",
+        source="fixture",
+    )
+    assert wall_is_live(wall, [wall, later], now=NOW)
+
+
+def test_any_failure_in_one_family_stays_in_that_family(tmp_path, monkeypatch):
+    import shared.quota_headroom as quota_headroom
+
+    def broken(*args, **kwargs):
+        raise ValueError("unexpected shape")
+
+    monkeypatch.setattr(quota_headroom, "read_kimi_403_signal", broken)
+    jsonl(tmp_path / ".codex/sessions/rollout-a.jsonl", token_event())
+    try:
+        readings = collect_measurements(tmp_path, tmp_path / "receipts", now=NOW)
+    except ValueError:
+        readings = None
+    assert readings is not None, "one family's failure stopped every family"
+    assert readings["codex"][0].label == "observed"
+    assert readings["kimi"][0].reason_code == "reader_error"
+
+
+@pytest.mark.parametrize("flag", [1, "true", "yes"])
+def test_any_truthy_overage_flag_is_overage(tmp_path, flag):
+    write(
+        tmp_path / "receipts/claude-weekly-quota-wall.yaml",
+        "status: quota_blocked\nobserved_at: 2026-09-24T18:00:00Z\n",
+    )
+    info = unified_info() | {"isUsingOverage": flag}
+    claude_stream(
+        tmp_path, stream_init(), stream_dated("2026-09-24T18:10:00Z"), rate_limit_event(info)
+    )
+    rows = claude_rows(tmp_path)
+    assert wall_is_live(by_id(rows)["claude.subscription.wall"], rows, now=A1_NOW)
+
+
+def test_the_ledger_writer_defaults_to_the_live_schema(tmp_path):
+    namespace = runpy.run_path(str(SCRIPT))
+    out = tmp_path / "ledger.json"
+    namespace["write_ledger_atomic"](enriched(tmp_path), out)
+    assert json.loads(out.read_text())["schema_version"] == 1
 
 
 def test_collect_reads_claude_headless_streams_into_the_ledger(tmp_path):
