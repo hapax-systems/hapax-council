@@ -9,8 +9,9 @@ session presence cannot substitute for account evidence.
 The source change requires independent review and coordinator release. It does
 not itself observe live headroom or authorize launching work. After release,
 the coordinator must obtain a genuine account-live subscription observation,
-record its actual observation time, and use the installed writer with
-`--route-id claude.interactive.full`. The writer's `--help` lists the permitted
+record its actual observation time, and use the installed
+`hapax-claude-subscription-quota-admission --route-id claude.interactive.full`.
+That admission script's `--help` lists the permitted
 observation kinds and sanitized evidence-reference format. Preserve the default
 900-second lifetime unless a governed observation specifies another allowed
 bound; never refresh the timestamp of an old observation.
@@ -35,3 +36,61 @@ The deterministic end-to-end regression is
 `tests/scripts/test_hapax_claude_interactive_admission.py`. Its observations and
 platform receipts are synthetic and isolated under temporary directories. A
 passing test demonstrates the producer/consumer contract, not live admission.
+
+Run the regression from the source checkout using its declared test environment:
+
+```bash
+uv run pytest tests/scripts/test_hapax_claude_interactive_admission.py \
+  tests/shared/test_capability_availability_guarantor.py -q
+```
+
+After activation, run this read-only check from the activated release checkout
+with the runtime's declared Python environment and ledger/receipt bindings:
+
+```bash
+uv run --no-sync python - <<'PY'
+import json
+from datetime import UTC, datetime
+from shared.capability_availability_guarantor import (
+    RefreshStrategyRegistry, evaluate_registry_availability,
+)
+from shared.platform_capability_registry import (
+    _quota_spend_live_path_from_env, load_platform_capability_registry,
+)
+from shared.quota_spend_ledger import (
+    load_quota_spend_ledger_resolved, subscription_quota_state_for_route,
+)
+
+route_id = "claude.interactive.full"
+now = datetime.now(UTC)
+resolved = load_quota_spend_ledger_resolved(live_path=_quota_spend_live_path_from_env())
+state, refs = subscription_quota_state_for_route(resolved.ledger, route_id, now=now)
+registry = load_platform_capability_registry(now=now)
+availability = evaluate_registry_availability(
+    registry, route_ids=[route_id], now=now,
+    refresh_strategies=RefreshStrategyRegistry(()),
+)
+print(json.dumps({"ledger_source": resolved.source, "ledger_path": str(resolved.path),
+                  "ledger_error": resolved.live_error, "quota_state": state.value,
+                  "quota_evidence": refs, "availability": availability.to_dict()}, indent=2))
+PY
+```
+
+Require `ledger_source: live`, `quota_state: fresh`, the bounded account-live
+evidence reference, and an availability receipt with `status: available` and
+`predicate.account_live_quota_attested: true`. A held or expired result remains
+a refusal. This check does not launch or refresh anything.
+
+The coordinator can then recheck the currently allocated privacy task through
+the existing dispatcher (no `--launch`):
+
+```bash
+scripts/hapax-methodology-dispatch \
+  --task pii-reland-post-recovery-review-repair-20260924 --lane alpha \
+  --platform claude --mode interactive --profile full
+```
+
+Retain the emitted route-decision id and reasons. Its selected route must be
+`claude.interactive.full`; account evidence alone does not clear unrelated task,
+authority, resource or lane holds. Reconcile allocation before using this dated
+task/lane example. Actual launch remains a separate coordinator action.
