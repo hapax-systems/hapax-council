@@ -1010,6 +1010,59 @@ def test_foot_onto_an_existing_session_is_witnessed(
     assert not any(b[:1] == ["new-session"] for b in launch.tmux_calls())
 
 
+@pytest.mark.parametrize(
+    "pane",
+    [
+        pytest.param(REPL_FOOTER, id="idle"),
+        pytest.param(f"❯ {BRIEF}\n{REPL_FOOTER}", id="brief-on-screen"),
+    ],
+)
+def test_foot_onto_an_existing_session_never_drops_the_brief(tmp_path: Path, pane: str) -> None:
+    """Round 2, N1: a launch delivers its brief as claude's argv, and an existing
+    session's claude is already running. So the brief cannot arrive: fail with 23,
+    and never report ready over an undelivered brief, whatever the pane shows."""
+    launch = Launch(tmp_path)
+    _executable(launch.bin / "footclient", "#!/usr/bin/env bash\nexit 0\n")
+    (launch.state / "session").write_text("")
+    launch.show(pane)
+    out = launch.result_path()
+    res = launch.run(
+        "--role", "dev9", "--terminal", "foot", "--force", "--result-json", str(out),
+        "--", BRIEF, FAKE_TRANSCRIPT="user",
+    )  # fmt: skip
+    assert res.returncode == 23, res.stderr
+    assert "NOT delivered" in res.stderr and "hapax-claude-send" in res.stderr
+    result = json.loads(out.read_text())
+    assert result["outcome"] == "brief_not_delivered"
+    assert result["brief_sent"] is True and result["brief_delivered"] is False
+    assert result["readiness"]["witnessed"] is False
+
+
+def test_the_witness_timeout_is_never_inherited(tmp_path: Path) -> None:
+    """Round 2, N2: the timeout configures one launch. A parent that exported 0 must
+    not unwitness the launches its lane makes later."""
+    launch = Launch(tmp_path)
+    res = launch.run("--role", "dev9", "--terminal", "none", HAPAX_CLAUDE_READY_TIMEOUT="0")
+    assert res.returncode == 0, res.stderr
+    assert "HAPAX_CLAUDE_READY_TIMEOUT" not in launch.claude_env.read_text()
+
+
+def test_the_runner_drops_an_inherited_witness_timeout(tmp_path: Path) -> None:
+    """A pane gets the tmux server's environment, which may carry the export."""
+    launch = Launch(tmp_path)
+    launch.show(REPL_FOOTER)
+    assert _spawn(launch, "--readonly").returncode == 0
+    (runner,) = (tmp_path / "cache" / "hapax" / "claude-spawns").glob("run-*.sh")
+    subprocess.run(
+        [str(runner)],
+        env={**launch.env, "HAPAX_CLAUDE_READY_TIMEOUT": "0"},
+        capture_output=True,
+        timeout=60,
+        check=True,
+    )
+    assert "HAPAX_CLAUDE_READY_TIMEOUT" not in launch.claude_env.read_text()
+
+
 # ── Review round 1: witness matching ────────────────────────────────────────
 
 

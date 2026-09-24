@@ -62,8 +62,10 @@ Defaults:
     records the brief; the screen does not count. A launch without one is
     ready at the idle REPL. A blocking modal on the pane fails either. Exit
     20 = a modal is showing, 21 = no witness in time, 22 = the lane died
-    first. The pane text goes to stderr, and the session is left alive to
-    inspect or answer
+    first, 23 = --force --terminal foot onto a live session with a brief,
+    which cannot be delivered. The pane text goes to stderr, and the session
+    is left alive to inspect or answer. The timeout applies to this launch
+    only and is never inherited by the lane
   - --result-json PATH (tmux/foot only): also write the launch outcome as one
     JSON object (outcome, role, tmux_session, session ids, trace_path,
     readiness, modal, child_nofile_soft, claude_version). PATH must lie under
@@ -243,6 +245,10 @@ if [ "$READY_TIMEOUT" -gt 3600 ]; then
   echo "hapax-claude: invalid HAPAX_CLAUDE_READY_TIMEOUT '$READY_TIMEOUT' (whole seconds, 0..3600; 0 disables the readiness witness)" >&2
   exit 2
 fi
+# The timeout configures THIS launch only. Once read, it is unset here and again in the
+# runner, so neither the lane nor anything its tools launch inherits it. Otherwise one
+# stray export of 0 would silently unwitness every launch downstream of it.
+unset HAPAX_CLAUDE_READY_TIMEOUT
 
 # --result-json writes only under one declared directory, never through a symlink,
 # and only where there is a witness to report.
@@ -585,8 +591,11 @@ TRUST_ROOTS_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/hapax/claude-trust-roots"
 
 # The lane roots whose folders are pre-accepted: the vault, the project checkouts,
 # the governed clone area, and any absolute path listed in $TRUST_ROOTS_FILE (one
-# per line, '#' comments). The list comes from files, never from the caller's
-# environment, so a caller cannot widen it.
+# per line, '#' comments). This bound protects against accidents, not intent. HOME,
+# XDG_CONFIG_HOME and CLAUDE_CONFIG_DIR locate these files and the config, and they
+# are the one principal's own environment; a caller that sets them on purpose is
+# that principal. (Same stance as the 2026-09-20 ruling on the cc-task gate:
+# accidents do not evade it, and intent is out of scope.)
 trust_roots() {
   printf '%s\n' "$HOME/Documents/Personal" "$HOME/projects" /store-fast/tmp/hapax-wt
   if [ -r "$TRUST_ROOTS_FILE" ]; then
@@ -776,7 +785,7 @@ RUNNER="$(mktemp "$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE-XXXXXX.sh")"
   printf '%s\n' "$NOFILE_RAISE"
   printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
   printf 'cd %q\n' "$WORKDIR"
-  printf 'unset %s\n' "${PARENT_IDENTITY_VARS[*]}"
+  printf 'unset %s HAPAX_CLAUDE_READY_TIMEOUT\n' "${PARENT_IDENTITY_VARS[*]}"
   printf 'export HAPAX_AGENT_INTERFACE=claude\n'
   printf 'export HAPAX_AGENT_NAME=%q\n' "$ROLE"
   printf 'export CLAUDE_ROLE=%q\n' "$ROLE"
@@ -1142,12 +1151,22 @@ case "$TERMINAL" in
       # Witness before opening the window; the window then shows the operator the
       # same pane either way.
       spawn_and_witness || foot_rc=$?
+    elif [ -n "$BRIEF" ]; then
+      # --force onto a session that already exists, with a brief: a launch delivers
+      # its brief as claude's argv, and that session's claude is already running, so
+      # this brief cannot arrive. Fail (23); never drop the brief and report ready.
+      # Typing into a running pane is the send helper's job (hapax-claude-send).
+      OUTCOME="brief_not_delivered"
+      HARNESS_SESSION_ID=""
+      TRACE_PATH=""
+      foot_rc=23
+      echo "hapax-claude: $TMUX_NAME already exists, so this launch's brief was NOT delivered (exit 23). Next: send it with hapax-claude-send, or kill the session and relaunch." >&2
+      write_launch_result "$foot_rc"
     else
-      # --force onto a session that already exists: nothing was launched and no
-      # brief was sent, but the caller still gets that pane's state, never a bare
-      # success. It may be a lane stuck at a dialog, or a dead one.
+      # --force onto a session that already exists, no brief: nothing was launched,
+      # but the caller still gets that pane's state, never a bare success. It may
+      # be a lane stuck at a dialog, or a dead one.
       echo "hapax-claude: $TMUX_NAME already exists; not launching, witnessing its current state" >&2
-      BRIEF=""
       HARNESS_SESSION_ID=""
       TRACE_PATH=""
       await_lane_ready || foot_rc=$?
