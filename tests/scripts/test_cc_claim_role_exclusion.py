@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import importlib.util
+import os
 import subprocess
 import sys
 import textwrap
@@ -134,7 +136,7 @@ def test_public_role_exclusion_serializes_process_and_releases_on_exception(
     with pytest.raises(RuntimeError, match="holder failure"):
         with sdlc_claim.claim_role_exclusion("role-a", lock_root=root):
             result = subprocess.run(
-                [sys.executable, "-I", "-c", code], capture_output=True, text=True
+                [sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=5
             )
             assert result.returncode == 3, result.stderr
             assert result.stdout.strip() == "claim_publication_lock_unavailable"
@@ -142,7 +144,9 @@ def test_public_role_exclusion_serializes_process_and_releases_on_exception(
             with sdlc_claim.claim_role_exclusion("role-b", lock_root=root):
                 pass
             raise RuntimeError("holder failure")
-    result = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True)
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code], capture_output=True, text=True, timeout=5
+    )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "acquired"
 
@@ -156,6 +160,156 @@ def test_public_role_exclusion_rejects_note_first(tmp_path: Path) -> None:
                 pytest.fail("role lock admitted in reverse order")
     assert error.value.reason_code == "claim_publication_lock_order_inversion"
     assert not (tmp_path / "roles").exists()
+
+
+def test_public_role_exclusion_open_failure_keeps_typed_cause(tmp_path, monkeypatch):
+    root = tmp_path / "locks"
+    root.mkdir(mode=0o700)
+    original = sdlc_claim.os.open
+
+    def denied(path, *args, **kwargs):
+        if Path(path).parent == root:
+            raise PermissionError(errno.EACCES, "fixture lock denied")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(sdlc_claim.os, "open", denied)
+    with pytest.raises(sdlc_claim.ClaimPublicationError) as error:
+        with sdlc_claim.claim_role_exclusion("role-a", lock_root=root):
+            pytest.fail("lock opened")
+    assert error.value.reason_code == "claim_publication_lock_unavailable"
+    assert isinstance(error.value.__cause__, PermissionError)
+
+
+@pytest.mark.parametrize("residue", ["complete", "session-only", "epoch-only", "dispatch-only"])
+def test_emergency_claim_rechecks_vacancy_inside_role_lock(tmp_path, monkeypatch, residue):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    helper = _helper("test_cc_claim")
+    helper._write_task(home, "active", "new-task")
+    helper._write_task(home, "active", "incumbent", status="claimed", assigned_to="cx-test")
+    cache = home / ".cache/hapax"
+    key = "cx-test-session-incumbent"
+    incumbent = {
+        "cc-active-task-cx-test": "incumbent\n",
+        f"cc-active-task-{key}": "incumbent\n",
+        "cc-claim-epoch-cx-test": "123 incumbent\n",
+        f"cc-claim-epoch-{key}": "123 incumbent\n",
+    }
+    if residue == "session-only":
+        incumbent = {f"cc-active-task-{key}": "incumbent\n"}
+    elif residue == "epoch-only":
+        incumbent = {f"cc-claim-epoch-{key}": "123 incumbent\n"}
+    elif residue == "dispatch-only":
+        incumbent = {f"cc-claim-dispatch-{key}.json": '{"task_id":"incumbent"}\n'}
+    helper.SCRIPT = _short_lock_timeout_cli(
+        tmp_path,
+        textwrap.dedent(f"""\
+            from contextlib import contextmanager
+            from pathlib import Path
+            original = claim.claim_role_exclusion
+            @contextmanager
+            def publish_first(*args, **kwargs):
+                with original(*args, **kwargs):
+                    cache = Path({str(cache)!r})
+                    cache.mkdir(parents=True, exist_ok=True)
+                    for name, content in {incumbent!r}.items():
+                        (cache / name).write_text(content)
+                with original(*args, **kwargs):
+                    yield
+            claim.claim_role_exclusion = publish_first
+            """),
+    )
+    before = _ownership_bytes(home)
+    result = helper._claim(home, "new-task", legacy=True)
+    assert result.returncode == 3, (result.stdout, result.stderr)
+    assert "claim_emergency_role_occupied" in result.stderr
+    before.update(
+        {str((cache / name).relative_to(home)): value.encode() for name, value in incumbent.items()}
+    )
+    assert _ownership_bytes(home) == before
+
+
+def test_emergency_loses_to_real_publisher_and_winner_retries(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    helper = _helper("test_cc_claim")
+    helper._write_task(home, "active", "loser")
+    helper._write_task(home, "active", "winner")
+    ready, proceed = tmp_path / "ready", tmp_path / "proceed"
+    helper.SCRIPT = _short_lock_timeout_cli(
+        tmp_path,
+        textwrap.dedent(f"""\
+        from contextlib import contextmanager
+        from pathlib import Path
+        import time
+        original = claim.claim_role_exclusion
+        @contextmanager
+        def pause(*args, **kwargs):
+            Path({str(ready)!r}).touch()
+            deadline = time.monotonic() + 15
+            while not Path({str(proceed)!r}).exists():
+                if time.monotonic() > deadline:
+                    raise RuntimeError("test publication barrier timed out")
+                time.sleep(0.01)
+            with original(*args, **kwargs):
+                yield
+        claim.claim_role_exclusion = pause
+        """),
+    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        loser = pool.submit(helper._claim, home, "loser", legacy=True)
+        deadline = time.monotonic() + 15
+        while not ready.exists():
+            assert not loser.done(), loser.result() if loser.done() else ""
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        winner = _helper("test_cc_claim")
+        won = winner._claim(home, "winner", install_gate0b=False, session_id="session-winner01")
+        assert won.returncode == 0, won.stderr
+        before = _ownership_bytes(home)
+        proceed.touch()
+        lost = loser.result(timeout=15)
+    assert lost.returncode == 3, lost.stderr
+    assert "claim_emergency_role_occupied" in lost.stderr
+    assert _ownership_bytes(home) == before
+    retry = winner._claim(home, "winner", install_gate0b=False, session_id="session-winner01")
+    assert retry.returncode == 0, retry.stderr
+    assert "already owns task" in retry.stdout
+    assert _ownership_bytes(home) == before
+
+
+def test_emergency_matching_resume_preserves_epoch(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    helper = _helper("test_cc_claim")
+    note = helper._write_task(home, "active", "task-a")
+    assert helper._claim(home, "task-a", legacy=True).returncode == 0
+    note.write_text(note.read_text().replace("status: claimed", "status: pr_open"))
+    cache = home / ".cache/hapax"
+    for path in cache.glob("cc-claim-epoch-*"):
+        path.write_text("123 task-a\n")
+    before = {p.name: p.read_bytes() for p in cache.glob("cc-*") if p.is_file()}
+    result = helper._claim(home, "task-a", legacy=True, install_gate0b=False)
+    assert result.returncode == 0, result.stderr
+    assert {p.name: p.read_bytes() for p in cache.glob("cc-*") if p.is_file()} == before
+
+
+def test_emergency_expiry_cannot_delete_foreign_session_before_lock(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    helper = _helper("test_cc_claim")
+    helper._write_task(home, "active", "new-task")
+    helper._write_task(home, "active", "incumbent", status="claimed", assigned_to="cx-test")
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    claim = cache / "cc-active-task-cx-test-session-incumbent"
+    claim.write_text("incumbent\n")
+    os.utime(claim, (1, 1))
+    before = _ownership_bytes(home)
+    result = helper._claim(home, "new-task", legacy=True, extra_args=["--force"])
+    assert result.returncode == 3, result.stderr
+    assert "claim_emergency_role_occupied" in result.stderr
+    assert _ownership_bytes(home) == before
 
 
 def test_charter_mint_sidecar_cannot_publish_after_exclusion_begins(

@@ -75,13 +75,14 @@ def _write_rejecting_codex(
     fallback_body: str = "exit 0\n",
     *,
     auth_message: str = "login required",
+    auth_rc: int = 77,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         f"""#!/usr/bin/env bash
 if [ "${{1:-}}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
   echo "{auth_message}" >&2
-  exit 77
+  exit {auth_rc}
 fi
 """
         + fallback_body,
@@ -1307,7 +1308,25 @@ exit 0
     assert codex_called.exists()
 
 
-def test_codex_headless_refuses_rejected_local_bearer_before_claim(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("message", "rc", "reason", "rejected"),
+    [
+        ("login required", 77, "codex_saved_auth_login_required", True),
+        ("refresh_token_invalidated", 77, "codex_saved_auth_refresh_token_invalidated", True),
+        (
+            "responses_websocket: invalid peer certificate: UnknownIssuer",
+            124,
+            "codex_exec_preflight_timeout",
+            False,
+        ),
+        ("invalid peer certificate: UnknownIssuer", 1, "codex_exec_preflight_failed", False),
+        ("connection refused", 1, "codex_exec_preflight_failed", False),
+        ("unexpected executable failure", 1, "codex_exec_preflight_failed", False),
+    ],
+)
+def test_codex_headless_refuses_rejected_local_bearer_before_claim(
+    tmp_path: Path, message: str, rc: int, reason: str, rejected: bool
+) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -1323,6 +1342,8 @@ def test_codex_headless_refuses_rejected_local_bearer_before_claim(tmp_path: Pat
         f"""printf '%s\\n' "$*" > "{codex_args}"
 exit 0
 """,
+        auth_message=message,
+        auth_rc=rc,
     )
     _write_executable(
         workdir / "scripts" / "cc-claim",
@@ -1350,8 +1371,9 @@ exit 0
     )
 
     assert result.returncode == 78
-    assert "saved Codex auth was rejected by codex exec" in result.stderr
-    assert "codex_saved_auth_login_required" in result.stderr
+    assert ("saved Codex auth was rejected by codex exec" in result.stderr) == rejected
+    assert ("via codex login" in result.stderr) == rejected
+    assert reason in result.stderr
     assert not claim_log.exists()
     assert not codex_args.exists()
 

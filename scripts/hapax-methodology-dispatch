@@ -771,7 +771,10 @@ def _record_claim_sweep(
         event, writer=CoordWriter.daemon("hapax-methodology-dispatch"), fail_open=False
     )
     if not receipt.appended:
-        raise CoordEventLogError("claim cleanup decision was not appended")
+        raise CoordEventLogError(
+            "claim cleanup decision was not appended; next action: restore the "
+            "authoritative coordination event log before retrying cleanup"
+        )
     return event.event_id
 
 
@@ -783,6 +786,58 @@ def _claim_sweep_roots():
 
     locator = default_claim_publication_roots(home=Path.home()).invocation_store_root
     return load_claim_publication_composition(Path(locator)).receipt.roots
+
+
+def _pending_claim_sweep_decisions(path: Path) -> list[str]:
+    """Read existing cleanup history inside role exclusion; never replay effects."""
+    pending: dict[str, CoordEvent] = {}
+    log = coord_event_log_from_env()
+    if not log.db_path.exists() and log.jsonl_path.exists():
+        raise CoordEventLogError(
+            "authoritative cleanup database is absent with surviving history; "
+            "next action: reconcile the preserved ledger before cleanup"
+        )
+    replay = log.replay(fail_open=False)
+    if replay.degraded or replay.errors:
+        raise CoordEventLogError("claim cleanup history is degraded")
+    for event in replay.events:
+        if event.actor != "hapax-methodology-dispatch":
+            continue
+        if event.event_type == "claim_sweep.delete_decided":
+            marker = event.payload.get("marker", {})
+            roots = event.payload.get("installed_roots", {})
+            if Path(str(marker.get("path", ""))).name == path.name and roots.get(
+                "claim_cache_dir"
+            ) == str(path.parent.resolve()):
+                pending[event.event_id] = event
+        elif event.event_type == "claim_sweep.deleted":
+            decision_id = event.payload.get("decision_event_id")
+            decision = pending.get(decision_id)
+            if decision is not None and (
+                event.subject == decision.subject
+                and event.payload.get("marker") == decision.payload.get("marker")
+                and event.payload.get("installed_roots") == decision.payload.get("installed_roots")
+                and event.payload.get("role") == decision.payload.get("role")
+                and event.payload.get("outcome") == "deleted"
+            ):
+                del pending[decision_id]
+    return list(pending)
+
+
+def _claim_marker_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    # Reading may change atime. Every replacement, refresh or permission/link
+    # change still invalidates the observation, including subsecond changes.
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
 
 
 def _claim_task_dead_reason(fields: dict) -> str | None:
@@ -857,6 +912,23 @@ def sweep_stale_claims(
                 )
                 continue
             with claim_role_exclusion(role, lock_root=Path(roots.claim_lock_root)):
+                try:
+                    pending = _pending_claim_sweep_decisions(path)
+                except (OSError, ValueError, TypeError, AttributeError, CoordEventLogError):
+                    result.hold(
+                        path.name,
+                        "claim_sweep_audit_unavailable",
+                        "restore readable authoritative coordination cleanup history before retrying",
+                    )
+                    continue
+                if pending:
+                    result.hold(
+                        path.name,
+                        "claim_sweep_decision_pending",
+                        f"preserve pending decisions {', '.join(pending)} and the current marker; "
+                        "obtain governed outcome reconciliation before another cleanup decision",
+                    )
+                    continue
                 before = path.lstat()
                 if not stat.S_ISREG(before.st_mode):
                     result.hold(
@@ -898,7 +970,10 @@ def sweep_stale_claims(
                     if reason is None:
                         continue
                     # A replaced or refreshed marker belongs to a later observation.
-                    if path.lstat() != before or path.read_text(encoding="utf-8") != raw:
+                    if (
+                        _claim_marker_identity(path.lstat()) != _claim_marker_identity(before)
+                        or path.read_text(encoding="utf-8") != raw
+                    ):
                         result.hold(
                             path.name,
                             "claim_sweep_marker_changed",
