@@ -1459,6 +1459,12 @@ def _remote_contract_modules(workdir: Path) -> None:
 
                 def checked_open(target, mode="r", *args, **kwargs):
                     name = Path(target).name
+                    race = Path.home() / "sidecar-race.json"
+                    if any(flag in mode for flag in "wx") and race.exists():
+                        injection = json.loads(race.read_text())
+                        if name == injection["name"]:
+                            race.unlink()
+                            Path(target).symlink_to(injection["target"])
                     if name.startswith("session-role-") and any(flag in mode for flag in "wx"):
                         barrier = Path.home() / "marker-race"
                         if barrier.exists():
@@ -1468,7 +1474,7 @@ def _remote_contract_modules(workdir: Path) -> None:
                                 if time.monotonic() >= deadline:
                                     raise AssertionError("second role never reached marker publication")
                                 time.sleep(0.01)
-                    if "w" in mode and (Path.home() / "fail-write").exists() and name == "cc-active-task-beta":
+                    if any(flag in mode for flag in "wx") and (Path.home() / "fail-write").exists() and name == "cc-active-task-beta":
                         raise OSError("injected write failure")
                     if any(flag in mode for flag in "wx") and name.startswith(("cc-", "session-role-")):
                         with path.open("a") as rival:
@@ -1668,12 +1674,129 @@ def test_remote_materialization_preserves_matching_epoch(tmp_path: Path) -> None
     for key in ("beta", f"beta-{sid}"):
         (cache / f"cc-claim-epoch-{key}").write_text("123 task-x\n")
         (cache / f"cc-active-task-{key}").write_text("task-x\n")
+    before = {path.name: path.stat() for path in cache.iterdir()}
     result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
     assert result.returncode == 0, result.stderr
     assert executed.exists()
     assert json.loads(proof.read_text())["claim_epoch"] == 123
     for key in ("beta", f"beta-{sid}"):
         assert (cache / f"cc-claim-epoch-{key}").read_text() == "123 task-x\n"
+    for name, previous in before.items():
+        current = (cache / name).stat()
+        assert (current.st_ino, current.st_mtime_ns) == (previous.st_ino, previous.st_mtime_ns)
+
+
+_REMOTE_SIDECARS = [
+    prefix + key
+    for prefix in ("cc-active-task-", "cc-claim-epoch-")
+    for key in ("beta", "beta-9381e195-f8e6-43ce-83bf-ea7e5b846723")
+]
+
+
+@pytest.mark.parametrize("name", _REMOTE_SIDECARS)
+@pytest.mark.parametrize("kind", ["symlink", "dangling", "directory", "fifo", "hardlink"])
+def test_remote_materialization_nonregular_sidecar_holds(
+    tmp_path: Path, name: str, kind: str
+) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    sidecar, target = cache / name, home / "unrelated-target"
+    content = "123 task-x\n" if "epoch" in name else "task-x\n"
+    if kind != "dangling":
+        target.write_text(content)
+    if kind in ("symlink", "dangling"):
+        sidecar.symlink_to(target)
+    elif kind == "directory":
+        sidecar.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(sidecar)
+    else:
+        os.link(target, sidecar)
+    before = target.stat() if target.exists() else None
+    observed = sidecar.lstat()
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=3)
+    assert result.returncode == 75, result.stderr
+    assert not executed.exists()
+    assert list(cache.iterdir()) == [sidecar]
+    assert sidecar.lstat() == observed
+    if before is None:
+        assert not target.exists()
+    else:
+        assert target.read_text() == content
+        after = target.stat()
+        assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    data = json.loads(proof.read_text())
+    assert data["dispatch_state"] == "hold"
+    assert data["claim_materialized"] is False and data["claim_epoch"] is None
+    assert data["claim_materialization_reason"] == "remote_claim_binding_unresolved"
+
+
+@pytest.mark.parametrize("name", _REMOTE_SIDECARS)
+def test_remote_materialization_sidecar_changed_at_publication_holds(
+    tmp_path: Path, name: str
+) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    target = home / "unrelated-target"
+    content = "123 task-x\n" if "epoch" in name else "task-x\n"
+    target.write_text(content)
+    before = target.stat()
+    # Inject at the write itself, after every initial sidecar read has finished.
+    (home / "sidecar-race.json").write_text(json.dumps({"name": name, "target": str(target)}))
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=3)
+    assert result.returncode == 75, result.stderr
+    assert not executed.exists()
+    assert (home / ".cache/hapax" / name).is_symlink()
+    assert target.read_text() == content
+    after = target.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    data = json.loads(proof.read_text())
+    assert data["dispatch_state"] == "hold" and data["claim_materialized"] is False
+    assert data["claim_materialization_reason"] == "remote_claim_binding_unresolved"
+
+
+@pytest.mark.parametrize("content", ["", "123 task-x", "123  task-x\n", "0123 task-x\n"])
+def test_remote_materialization_incomplete_epoch_holds(tmp_path: Path, content: str) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    epoch = cache / "cc-claim-epoch-beta"
+    epoch.write_text(content)
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=3)
+    assert result.returncode == 75, result.stderr
+    assert not executed.exists()
+    assert list(cache.iterdir()) == [epoch] and epoch.read_text() == content
+    assert (
+        json.loads(proof.read_text())["claim_materialization_reason"]
+        == "remote_claim_binding_unresolved"
+    )
+
+
+@pytest.mark.parametrize(
+    "name", _REMOTE_SIDECARS + ["session-role-9381e195-f8e6-43ce-83bf-ea7e5b846723"]
+)
+def test_remote_materialization_carriage_return_holds(tmp_path: Path, name: str) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    sidecar = cache / name
+    value = "beta" if name.startswith("session-role-") else "task-x"
+    if "epoch" in name:
+        value = "123 " + value
+    content = (value + "\r\n").encode()
+    sidecar.write_bytes(content)
+    previous = sidecar.stat()
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=3)
+    assert result.returncode == 75, result.stderr
+    assert not executed.exists()
+    assert list(cache.iterdir()) == [sidecar] and sidecar.read_bytes() == content
+    assert sidecar.stat().st_mtime_ns == previous.st_mtime_ns
+    reason = (
+        "remote_session_role_unresolved"
+        if name.startswith("session-role-")
+        else "remote_claim_binding_unresolved"
+    )
+    assert json.loads(proof.read_text())["claim_materialization_reason"] == reason
 
 
 @pytest.mark.parametrize("existing", ["gamma\n", "", "beta", "beta\nextra\n"])

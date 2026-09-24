@@ -242,7 +242,14 @@ host composition roots from `default_claim_publication_roots(home=Path.home())`,
 keyed by the exact `HAPAX_AGENT_ROLE`. It holds that role lock across the marker,
 role/session epochs and role/session claim writes. The lock does not cover a
 different host, confer rebind authority or establish writer liveness. Existing
-conflicting or empty claims/epochs hold; a matching epoch is preserved. The
+conflicting, incomplete or noncanonical claims/epochs hold. Sidecar reads open
+without following symlinks and reject nonregular or multiply linked files;
+FIFOs hold without waiting for a writer. Every sidecar is created exclusively,
+or checked for exact matching bytes through that safe read. No sidecar is
+truncated: matching retries preserve bytes, inode and mtime. A conflicting or
+symlinked entry arriving between inspection and publication holds with
+`remote_claim_binding_unresolved` before native execution; partial earlier
+writes remain evidence. A matching epoch is preserved. The
 session-role marker is created exclusively before any epoch or claim write;
 different roles racing for one session cannot overwrite it under separate role
 locks. An exact matching regular-file marker is retained without rewriting it.
@@ -263,6 +270,10 @@ or copy a peer claim to force a handoff. Qualify the shared interface and its
 Python dependencies on that execution host through the governed installation
 path. Source-only tests are not installed-interface or cross-host qualification;
 the supervisor signal exclusion and normal-close cleanup remain release blockers.
+The candidate's default-root lookup still needs reconciliation with the peer's
+independently accepted installed composition. Its source tests substitute that
+interface; they do not prove exclusion with an installed publisher using a
+nondefault root. Keep deployment held until that dependency is qualified.
 
 Run this on the **execution host**, using its qualified Python environment and
 the execution source root recorded for that dispatch. The proof path is the exact

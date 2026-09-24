@@ -741,6 +741,41 @@ except OSError:
 # permission to fall back to a legacy role claim or to transfer ownership.
 from pathlib import Path
 import re
+import stat
+
+def read_sidecar(path):
+    # Opening with NOFOLLOW closes the inspection/open symlink gap. NONBLOCK
+    # lets fstat reject a FIFO without waiting for a writer. Never read devices,
+    # directories or multiply linked evidence through this binding.
+    try:
+        fd=os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError("sidecar unavailable") from exc
+    try:
+        metadata=os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink!=1:
+            raise ValueError("sidecar is not a regular single-link file")
+        # Newline normalization would accept nonmatching CRLF bytes as a retry.
+        with os.fdopen(fd,"r",encoding="utf-8",newline="",closefd=False) as source:
+            data=source.read(4097)
+        if len(data)>4096:
+            raise ValueError("sidecar oversized")
+        return data
+    finally:
+        os.close(fd)
+
+def publish_sidecar(path, line):
+    # Exclusive creation cannot follow even a dangling link. A racing existing
+    # entry must be safely inspected and match exactly; never truncate it.
+    try:
+        with open(path,"x",encoding="utf-8") as target:
+            target.write(line)
+    except FileExistsError:
+        if read_sidecar(path)!=line:
+            raise ValueError("sidecar publication binding unresolved")
+
 sid=os.environ.get("HAPAX_SESSION_ID",""); role=os.environ.get("HAPAX_AGENT_ROLE",""); task=os.environ.get("HAPAX_METHODOLOGY_DISPATCH_TASK","")
 materialized=False; materialization_reason="remote_claim_contract_unavailable"; claim_epoch=None
 try:
@@ -768,18 +803,25 @@ else:
                 cache_path=Path(cache)
                 keys=(role,role+"-"+sid)
                 try:
-                    claims=[cache_path / ("cc-active-task-"+role)] if (cache_path / ("cc-active-task-"+role)).exists() else []
+                    claims=[cache_path / ("cc-active-task-"+role)]
                     claims+=list(cache_path.glob("cc-active-task-"+role+"-*"))
-                    epochs=[cache_path / ("cc-claim-epoch-"+role)] if (cache_path / ("cc-claim-epoch-"+role)).exists() else []
+                    epochs=[cache_path / ("cc-claim-epoch-"+role)]
                     epochs+=list(cache_path.glob("cc-claim-epoch-"+role+"-*"))
                     for candidate in claims:
-                        if candidate.name not in ("cc-active-task-"+key for key in keys) or candidate.read_text() != task+"\n":
+                        content=read_sidecar(candidate)
+                        if content is None:
+                            continue
+                        if candidate.name not in ("cc-active-task-"+key for key in keys) or content != task+"\n":
                             raise ValueError("claim binding unresolved")
                     epoch_values=set()
                     for candidate in epochs:
-                        fields=candidate.read_text().split()
+                        content=read_sidecar(candidate)
+                        if content is None:
+                            continue
+                        fields=content.split()
                         if (candidate.name not in ("cc-claim-epoch-"+key for key in keys) or
-                                len(fields)!=2 or not fields[0].isdigit() or int(fields[0])<=0 or fields[1]!=task):
+                                len(fields)!=2 or not fields[0].isdigit() or int(fields[0])<=0 or
+                                content!=str(int(fields[0]))+" "+task+"\n"):
                             raise ValueError("epoch binding unresolved")
                         epoch_values.add(int(fields[0]))
                     if len(epoch_values)>1:
@@ -793,20 +835,22 @@ else:
                 # overwrite each other. Preserve matching and partial markers.
                 marker=cache_path / ("session-role-"+sid)
                 try:
-                    with open(marker,"x",encoding="utf-8") as session_marker:
-                        session_marker.write(role+"\n")
-                except FileExistsError:
-                    if marker.is_symlink() or not marker.is_file() or marker.read_text()!=role+"\n":
-                        materialization_reason="remote_session_role_unresolved"
-                        raise ValueError("session role binding unresolved")
+                    publish_sidecar(marker,role+"\n")
+                except ValueError:
+                    materialization_reason="remote_session_role_unresolved"
+                    raise
                 import time as _time
                 claim_epoch=next(iter(epoch_values)) if epoch_values else int(_time.time())
                 epoch_line=str(claim_epoch)+" "+task+"\n"
                 # Epochs precede the caches they vouch for, under the same lock.
-                open(os.path.join(cache,"cc-claim-epoch-"+role),"w",encoding="utf-8").write(epoch_line)
-                open(os.path.join(cache,"cc-claim-epoch-"+role+"-"+sid),"w",encoding="utf-8").write(epoch_line)
-                open(os.path.join(cache,"cc-active-task-"+role),"w",encoding="utf-8").write(task+"\n")
-                open(os.path.join(cache,"cc-active-task-"+role+"-"+sid),"w",encoding="utf-8").write(task+"\n")
+                try:
+                    for key in keys:
+                        publish_sidecar(cache_path / ("cc-claim-epoch-"+key),epoch_line)
+                    for key in keys:
+                        publish_sidecar(cache_path / ("cc-active-task-"+key),task+"\n")
+                except ValueError:
+                    materialization_reason="remote_claim_binding_unresolved"
+                    raise
             materialized=True
             materialization_reason=None
         except Exception as exc:
