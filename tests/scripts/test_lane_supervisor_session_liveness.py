@@ -199,6 +199,18 @@ def test_live_pane_without_claim_has_no_orphan_or_respawn(tmp_path):
     assert "claim_orphan" not in result.stdout
 
 
+@pytest.mark.parametrize("contents", ["", "corrupt", "0", "-1"])
+def test_invalid_role_pidfile_holds_unclaimed_lane(tmp_path, contents):
+    env, calls = setup_lane(tmp_path, claim=False)
+    pidfile = Path(env["HAPAX_SUPERVISOR_RUNTIME_DIR"]) / "delta.pid"
+    pidfile.write_text(contents)
+    before = claims_snapshot(env)
+    result = run(env)
+    assert_no_recovery(env, calls, before, result)
+    assert "writer_unresolved:invalid_pid" in result.stdout
+    assert pidfile.read_text() == contents
+
+
 def test_dead_holder_without_other_writer_waits_for_governed_rebind(tmp_path):
     env, calls = setup_lane(tmp_path)
     session_claim(env, dead_pid())

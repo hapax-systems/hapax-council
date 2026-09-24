@@ -651,9 +651,10 @@ PY
 # orphaned. This observer never writes a task, claim marker, or epoch sidecar.
 claim_holder_guard() {
   python3 - "$REPO_DIR" "$VAULT_ROOT" "$1" "$RUNTIME_DIR" "$STATE_DIR" \
-    "${HAPAX_SUPERVISOR_LANEBUS_DIR:-$HOME/Documents/Personal/30-areas/hapax/lanebus}" "${2:-observe}" <<'PYCLAIM'
+    "${HAPAX_SUPERVISOR_LANEBUS_DIR:-$HOME/Documents/Personal/30-areas/hapax/lanebus}" "${2:-observe}" "${3:-}" <<'PYCLAIM'
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -661,7 +662,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-repo, vault, lane, runtime, state_dir, bus, mode = sys.argv[1:]
+repo, vault, lane, runtime, state_dir, bus, mode, reap_pid = sys.argv[1:]
 sys.path.insert(0, repo)
 from shared.session_identity import is_claim_keyable_session_id, session_role_marker_path
 
@@ -677,6 +678,37 @@ def digest(path):
 def field(text, name):
     match = re.search(rf"^{name}:[ \t]*(.*)$", text, re.MULTILINE)
     return match.group(1).strip().strip("\"'") if match else ""
+
+
+def launcher_binding():
+    # Use the launcher's existing session PID and current-task producers. A
+    # role marker, old terminal session, or inherited environment is not its
+    # task identity. Missing/ambiguous/older-than-process bindings hold.
+    if not re.fullmatch(r"[1-9][0-9]*", reap_pid):
+        raise ValueError("invalid_launcher_pid")
+    proc = Path("/proc") / reap_pid
+    stat = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+    if stat[0] in {"Z", "X"}:
+        raise ValueError("launcher_exited")
+    boot = next(line.split()[1] for line in Path("/proc/stat").read_text().splitlines()
+                if line.startswith("btime "))
+    started = int(boot) + int(stat[19]) / os.sysconf("SC_CLK_TCK")
+    bindings = []
+    for path in Path(runtime).glob(f"{lane}-*.launcher.pid"):
+        if path.read_text().strip() != reap_pid:
+            continue
+        sid = path.name[len(lane) + 1:-len(".launcher.pid")]
+        if not is_claim_keyable_session_id(sid) or path.stat().st_mtime < started:
+            raise ValueError("stale_or_invalid_session_pid")
+        if session_role_marker_path(sid, cache_dir=cache).read_text().strip() != lane:
+            raise ValueError("launcher_session_role_mismatch")
+        bindings.append(sid)
+    if len(bindings) != 1:
+        raise ValueError("launcher_session_not_unique")
+    task = (Path(runtime) / f"{lane}.current-task").read_text().strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task):
+        raise ValueError("launcher_task_unresolved")
+    return bindings[0], task
 
 
 def writer_process_state(proc, sid):
@@ -831,10 +863,13 @@ try:
     if legacy.exists() and legacy.read_text().strip() not in covered:
         claims.append((legacy, ""))
     held = False
-    terminal_seen = False
+    terminal_claims = set()
     for path, sid in claims:
         task = path.read_text().strip()
         if not task:
+            held = True
+            print(f"{lane}: claim_orphan_unresolved:empty_claim; preserve claim and inspect publication at {path}", flush=True)
+            record_claim_observation(path, sid, None, "unknown", "empty_claim", None)
             continue
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task):
             held = True
@@ -847,7 +882,7 @@ try:
         text = note.read_text() if note.is_file() else ""
         frontmatter = text.split("---", 2)[1] if text.startswith("---\n") else ""
         if field(frontmatter, "status") in terminal and (mode != "reap" or field(frontmatter, "assigned_to") == lane):
-            terminal_seen = True
+            terminal_claims.add((sid, task))
             continue
         # A role can prefix another role's marker key. Exclude a sibling only
         # when the task's assigned role and the complete key identify it; a
@@ -876,9 +911,21 @@ try:
         if observed == "dead":
             print(f"{lane}: claim_orphan_unresolved:governed_rebind_required:{task}:{sid}; preserve claim and use governed stale-lease/rebind repair", flush=True)
         record_claim_observation(path, sid, task, observed, why, note)
-    if mode == "reap" and not terminal_seen:
-        print(f"{lane}: reap_hold:terminal_state_unverified; preserve launcher and inspect its task binding and task note", flush=True)
-        held = True
+    if mode == "reap":
+        if not terminal_claims:
+            print(f"{lane}: reap_hold:terminal_state_unverified; preserve launcher and inspect its task binding and task note", flush=True)
+            held = True
+        try:
+            sid, task = launcher_binding()
+            # A terminal claim from a previous launcher must never authorize
+            # killing the current one, even when the new claim is absent.
+            if (sid, task) not in terminal_claims:
+                raise ValueError("terminal_claim_mismatch")
+            if (cache / f"{prefix}-{sid}").read_text().strip() != task:
+                raise ValueError("launcher_claim_changed")
+        except (OSError, ValueError, IndexError, StopIteration) as exc:
+            print(f"{lane}: reap_hold:launcher_binding_unresolved:{type(exc).__name__}:{exc}; preserve launcher and inspect session PID/current-task/claim bindings", flush=True)
+            held = True
     sys.exit(1 if held else 0)
 except (OSError, ValueError) as exc:
     print(f"{lane}: claim_orphan_unresolved:observation_failed:{type(exc).__name__}; inspect claim inputs and receipt destination", flush=True)
@@ -1297,7 +1344,7 @@ reap_launcher() {
   # Reuse the claim observation boundary after admission/age inspection. Every
   # active or unresolved lease holds, even beneath a newer terminal role claim.
   # A missing note/claim is uncertainty, not proof that the launcher is idle.
-  if ! claim_holder_guard "$lane" reap; then
+  if ! claim_holder_guard "$lane" reap "$pid"; then
     log "$lane: reap_hold:active_or_unresolved_claim — preserve launcher; inspect claim-holder evidence and task state"
     return 1
   fi

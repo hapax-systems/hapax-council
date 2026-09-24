@@ -29,6 +29,7 @@ import shlex
 import subprocess
 import textwrap
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -135,6 +136,19 @@ def _write_claim(
         )
 
 
+def _bind_launcher(env, runtime_dir, lane, proc, task):
+    """Publish the existing launcher's session PID, role and current-task bindings."""
+    sid = str(uuid.uuid4())
+    cache = Path(env["HOME"]) / ".cache/hapax"
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / f"session-role-{sid}").write_text(f"{lane}\n")
+    claim = cache / f"cc-active-task-{lane}-{sid}"
+    claim.write_text(f"{task}\n")
+    (runtime_dir / f"{lane}-{sid}.launcher.pid").write_text(f"{proc.pid}\n")
+    (runtime_dir / f"{lane}.current-task").write_text(f"{task}\n")
+    return claim
+
+
 def _spawn_launcher(env: dict[str, str], runtime_dir: Path, lane: str) -> subprocess.Popen[bytes]:
     """A real, long-lived process standing in for a live headless launcher, in
     its OWN session (setsid) so a hypothetical process-group kill would be
@@ -152,6 +166,9 @@ def _spawn_launcher(env: dict[str, str], runtime_dir: Path, lane: str) -> subpro
         start_new_session=True,
     )
     (runtime_dir / f"{lane}.launcher.pid").write_text(f"{proc.pid}\n", encoding="utf-8")
+    claim = Path(env["HOME"]) / f".cache/hapax/cc-active-task-{lane}"
+    if claim.exists():
+        _bind_launcher(env, runtime_dir, lane, proc, claim.read_text().strip())
     return proc
 
 
@@ -236,8 +253,8 @@ def test_reaper_preserves_active_or_unresolved_claim(
     _write_claim(env, "delta", "held-task", status=status)
     cache = Path(env["HOME"]) / ".cache/hapax"
     vault = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"])
-    before = {p: p.read_bytes() for root in (cache, vault) for p in root.rglob("*") if p.is_file()}
     proc = _spawn_launcher(env, runtime_dir, "delta")
+    before = {p: p.read_bytes() for root in (cache, vault) for p in root.rglob("*") if p.is_file()}
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr
@@ -361,6 +378,117 @@ def test_reaper_rechecks_claim_after_admission(tmp_path: Path) -> None:
         _cleanup(proc)
 
 
+@pytest.mark.parametrize("publication", ["empty", "in_progress", "missing"])
+@pytest.mark.parametrize("ceiling", ["0", "21600"])
+def test_old_terminal_claim_cannot_authorize_current_launcher(
+    tmp_path: Path, publication: str, ceiling: str
+) -> None:
+    env, calls, runtime = _base(tmp_path, HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S=ceiling)
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime, "delta")
+    _write_claim(env, "delta", "old-task", status="done")
+    cache = Path(env["HOME"]) / ".cache/hapax"
+    old = cache / "cc-active-task-delta-a81c4e9a-1111-4444-8888-123456abcdef"
+    old.write_text("old-task\n")
+    _write_claim(env, "delta", "current-task", status="in_progress")
+    proc = _spawn_launcher(env, runtime, "delta")
+    current = next(p for p in cache.glob("cc-active-task-delta-*") if p != old)
+    # The role marker still points at the old terminal task during publication.
+    (cache / "cc-active-task-delta").write_text("old-task\n")
+    if publication == "empty":
+        current.write_text("")
+    elif publication == "missing":
+        current.unlink()
+    before = {p: p.read_bytes() for p in cache.iterdir()}
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _alive(proc), result.stdout
+        assert "reap_hold:" in result.stdout
+        if publication == "empty":
+            assert "empty_claim" in result.stdout
+        assert {p: p.read_bytes() for p in cache.iterdir()} == before
+        assert not list(calls.iterdir())
+        state = Path(env["HAPAX_SUPERVISOR_STATE_DIR"])
+        assert not (state / "launchers_reaped_total").exists()
+        assert not (state / "delta.launcher-lifetime-reaped").exists()
+    finally:
+        _cleanup(proc)
+
+
+@pytest.mark.parametrize(
+    "damage", ["missing", "wrong_pid", "stale_pid", "ambiguous", "wrong_role", "wrong_task"]
+)
+def test_terminal_cleanup_requires_current_launcher_binding(tmp_path: Path, damage: str) -> None:
+    env, calls, runtime = _base(tmp_path, HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0")
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime, "delta")
+    _write_claim(env, "delta", "done-task", status="done")
+    proc = _spawn_launcher(env, runtime, "delta")
+    binding = next(runtime.glob("delta-*.launcher.pid"))
+    sid = binding.name.removeprefix("delta-").removesuffix(".launcher.pid")
+    if damage == "missing":
+        binding.unlink()
+    elif damage == "wrong_pid":
+        binding.write_text(f"{os.getpid()}\n")
+    elif damage == "stale_pid":
+        os.utime(binding, (1, 1))
+    elif damage == "ambiguous":
+        _bind_launcher(env, runtime, "delta", proc, "done-task")
+    elif damage == "wrong_role":
+        (Path(env["HOME"]) / f".cache/hapax/session-role-{sid}").write_text("gamma\n")
+    else:
+        (runtime / "delta.current-task").write_text("other-task\n")
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _alive(proc), result.stdout
+        assert "reap_hold:launcher_binding_unresolved" in result.stdout
+        assert not list(calls.iterdir())
+    finally:
+        _cleanup(proc)
+
+
+def test_empty_claim_published_after_admission_holds_reap(tmp_path: Path) -> None:
+    env, calls, runtime = _base(tmp_path)
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime, "delta")
+    _write_claim(env, "delta", "done-task", status="done")
+    proc = _spawn_launcher(env, runtime, "delta")
+    claim = next((Path(env["HOME"]) / ".cache/hapax").glob("cc-active-task-delta-*"))
+    env["HAPAX_SUPERVISOR_ADMISSION_CMD"] = f": > {shlex.quote(str(claim))}; echo open"
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert claim.read_text() == ""
+        assert _alive(proc), result.stdout
+        assert "empty_claim" in result.stdout
+        assert not list(calls.iterdir())
+    finally:
+        _cleanup(proc)
+
+
+@pytest.mark.parametrize("key", ["legacy", "session"])
+def test_empty_parallel_claim_holds_bound_terminal_launcher(tmp_path: Path, key: str) -> None:
+    env, calls, runtime = _base(tmp_path, HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0")
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime, "delta")
+    _write_claim(env, "delta", "done-task", status="done")
+    proc = _spawn_launcher(env, runtime, "delta")
+    suffix = "" if key == "legacy" else "-a81c4e9a-1111-4444-8888-123456abcdef"
+    claim = Path(env["HOME"]) / f".cache/hapax/cc-active-task-delta{suffix}"
+    claim.write_text("")
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _alive(proc), result.stdout
+        assert "empty_claim" in result.stdout
+        assert claim.read_text() == ""
+        assert not list(calls.iterdir())
+    finally:
+        _cleanup(proc)
+
+
 def test_reaper_rechecks_launcher_after_admission(tmp_path: Path) -> None:
     env, calls, runtime_dir = _base(tmp_path)
     _make_worktree(env, "delta")
@@ -471,6 +599,7 @@ def test_supervisor_escalates_when_lifetime_reap_does_not_take(tmp_path: Path) -
         start_new_session=True,
     )
     (runtime_dir / "delta.launcher.pid").write_text(f"{proc.pid}\n", encoding="utf-8")
+    _bind_launcher(env, runtime_dir, "delta", proc, "done-task")
     time.sleep(1.2)
     try:
         first = _run(env)
@@ -518,6 +647,7 @@ def test_supervisor_reaps_pidfile_free_launcher_over_lifetime_ceiling(tmp_path: 
         env=env,
         start_new_session=True,
     )
+    _bind_launcher(env, runtime_dir, "delta", proc, "done-task")
     try:
         result = _run(env)
         assert result.returncode == 0, result.stderr

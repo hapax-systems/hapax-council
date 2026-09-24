@@ -53,7 +53,7 @@ keeps the role alive. The supervisor reports `claim_holder_live`, `claim_orphane
 in the lane bus when those inputs exist (otherwise the hash is null). Inspect them with:
 
 ```bash
-journalctl --user -u hapax-lane-supervisor --since -1h | rg 'claim_holder_live|claim_orphaned|claim_orphan_unresolved|pane_changed_during_capture'
+journalctl --user -u hapax-lane-supervisor --since -1h | grep -E 'claim_holder_live|claim_orphaned|claim_orphan_unresolved|pane_changed_during_capture'
 lane=gamma  # replace with the lane named in the supervisor event
 claim_bus="${HAPAX_SUPERVISOR_LANEBUS_DIR:-$HOME/Documents/Personal/30-areas/hapax/lanebus}"
 ls -t "$claim_bus/$lane/"*claim-holder*.json | head
@@ -109,9 +109,48 @@ hold; output silence alone never authorizes recovery.
 Launcher cleanup also holds active or unresolved claims, including beyond the six-hour
 lifetime ceiling. Immediately before SIGTERM, the reaper requires an observed terminal
 task assigned to the lane, no active/unresolved lane claims, and an unchanged launcher
-PID binding. Missing claims or notes do not prove completion. For `reap_hold`, inspect
+PID binding. The terminal claim must match the launcher's unique session PID binding
+and current-task file. An empty claim is unresolved publication; another session's
+terminal task cannot authorize cleanup. A session PID file older than the process is
+stale evidence and holds. Missing claims or notes do not prove completion. For `reap_hold`, inspect
 the claim events and receipts above plus the launcher's task and PID binding, then
 recheck the next tick; preserve the lease until governed repair is authorized.
+
+```bash
+python3 - "$lane" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+lane = sys.argv[1]
+runtime = Path(os.environ.get('HAPAX_SUPERVISOR_RUNTIME_DIR',
+                             f'/run/user/{os.getuid()}/hapax-claude'))
+cache = Path.home() / '.cache/hapax'
+paths = [runtime / f'{lane}.launcher.pid', runtime / f'{lane}.current-task']
+for binding in sorted(runtime.glob(f'{lane}-*.launcher.pid')):
+    sid = binding.name[len(lane) + 1:-len('.launcher.pid')]
+    paths += [binding, cache / f'session-role-{sid}', cache / f'cc-active-task-{lane}-{sid}']
+for path in paths:
+    print(path, repr(path.read_text()) if path.is_file() else 'MISSING')
+    if path.is_file():
+        print('mtime_ns', path.stat().st_mtime_ns)
+pidfile = runtime / f'{lane}.launcher.pid'
+pid = pidfile.read_text().strip() if pidfile.is_file() else ''
+if pid.isdecimal() and int(pid) > 0:
+    statfile = Path('/proc') / pid / 'stat'
+    if statfile.is_file():
+        fields = statfile.read_text().rsplit(')', 1)[1].split()
+        print('launcher pid', pid, 'state', fields[0], 'start_ticks', fields[19])
+    else:
+        print('launcher process missing')
+else:
+    print('launcher PID unresolved; inspect the supervisor event for any /proc-discovered PID')
+PY
+```
+
+Use the service's runtime-directory setting. Older or remote launchers without a
+local session PID binding remain held; these inspection outputs do not authorize a
+signal or claim transfer.
 
 If a launcher prints `could not set remain-on-exit on <session>`, the lane is running but a
 bad death will leave nothing to read; the message names the checks (`tmux -V` ≥ 3.2).
@@ -139,3 +178,11 @@ bad death will leave nothing to read; the message names the checks (`tmux -V` �
 exact-name resolution, failure paths) and real-tmux cases on a private socket
 (`tmux -L`). Real-tmux cases skip without tmux ≥ 3.2; set `HAPAX_TEST_REQUIRE_TMUX=1` to make
 that skip a failure, so a run that never touched a real server cannot pass as one that did.
+
+Reaper publication and binding regressions are in
+`tests/scripts/test_lane_supervisor_reaper.py`. To rerun the corresponding deliberate
+break/red/exact-restore/green checks in an isolated, claimed source checkout, use
+`uv run python tests/scripts/test_lane_supervisor_reaper_mutations.py --output <new-directory>`.
+The runner preserves logs and source hashes in that create-once directory. Historical
+local mutation receipts are evidence of their recorded heads, not substitutes for
+rerunning the committed tests against the head under review.
