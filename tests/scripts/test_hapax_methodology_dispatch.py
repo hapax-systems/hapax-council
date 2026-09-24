@@ -4578,6 +4578,14 @@ printf '%s\\n' "$@" > {launcher_args}
     if not quota_admitted:
         assert result.returncode == 10, result.stderr
         assert "subscription_route_quota_not_fresh" in result.stderr
+        assert "Next action:" in result.stderr
+        assert "genuine Opus-family account-live observation" in result.stderr
+        assert (
+            "hapax-claude-subscription-quota-admission --route-id claude.interactive.full"
+            in result.stderr
+        )
+        assert "hapax-quota-telemetry-writer --json" in result.stderr
+        assert "retry" in result.stderr
         assert not launcher_args.exists()
         return
 

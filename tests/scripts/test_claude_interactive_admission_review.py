@@ -270,6 +270,148 @@ def test_legacy_composite_holds_until_telemetry_regenerates_route_binding(tmp_pa
     assert state is SubscriptionQuotaState.STALE
 
 
+@pytest.mark.parametrize("route_id", ["claude.headless.full", "claude.review.opus", ROUTE])
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [
+        ("fresh", "fresh"),
+        ("expiry_boundary", "stale"),
+        ("expired", "stale"),
+        ("expired_with_fresh_sibling", "stale"),
+        ("expired_with_fresh_match", "fresh"),
+        ("wrong_route", "unknown"),
+        ("malformed_date", "unknown"),
+        ("future_observation", "stale"),
+        ("reversed_window", "unknown"),
+        ("snapshot_expires_first", "stale"),
+    ],
+)
+def test_ledger_read_checks_receipt_window_independently_of_snapshot(
+    tmp_path, route_id, condition, expected
+):
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, route_id=route_id, observed_at="2026-06-09T23:55:00Z")
+    result, path = _run_writer(tmp_path)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(path.read_text())
+    snapshot = next(s for s in payload["quota_snapshots"] if s["route_id"] == route_id)
+    payload["quota_snapshots"] = [snapshot]
+    # A schema-valid persisted snapshot can outlive its embedded receipt.
+    snapshot["fresh_until"] = "2026-06-10T00:30:00Z"
+    ref = next(r for r in snapshot["evidence_refs"] if ":account-live-quota:" in r)
+    sibling = "claude.review.opus" if route_id != "claude.review.opus" else ROUTE
+    checked_at = NOW + timedelta(minutes=20)
+    if condition == "fresh":
+        checked_at = NOW
+    elif condition == "expiry_boundary":
+        checked_at = NOW + timedelta(minutes=10)
+    elif condition in {"expired_with_fresh_sibling", "expired_with_fresh_match"}:
+        additional = ref.replace("00:10:00Z", "00:25:00Z")
+        if condition == "expired_with_fresh_sibling":
+            additional = additional.replace(f"route_id:{route_id}:", f"route_id:{sibling}:")
+        snapshot["evidence_refs"].append(additional)
+    elif condition == "wrong_route":
+        snapshot["evidence_refs"] = [ref.replace(f"route_id:{route_id}:", f"route_id:{sibling}:")]
+    elif condition == "malformed_date":
+        snapshot["evidence_refs"] = [ref.replace("2026-06-10T00:10:00Z", "2026-06-31T00:10:00Z")]
+    elif condition == "future_observation":
+        snapshot["evidence_refs"] = [
+            ref.replace("2026-06-09T23:55:00Z", "2026-06-10T00:21:00Z").replace(
+                "00:10:00Z", "00:25:00Z"
+            )
+        ]
+    elif condition == "reversed_window":
+        snapshot["evidence_refs"] = [ref.replace("2026-06-09T23:55:00Z", "2026-06-10T00:11:00Z")]
+    elif condition == "snapshot_expires_first":
+        snapshot["fresh_until"] = "2026-06-10T00:01:00Z"
+        checked_at = NOW + timedelta(minutes=1)
+    ledger = QuotaSpendLedger.model_validate(payload)
+    state, _ = subscription_quota_state_for_route(ledger, route_id, now=checked_at)
+    assert state.value == expected
+
+
+def test_expired_receipt_holds_registry_and_dispatch_with_later_snapshot(tmp_path, monkeypatch):
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _claude_admission(relay, route_id=ROUTE, observed_at="2026-06-09T23:55:00Z")
+    result, path = _run_writer(tmp_path)
+    assert result.returncode == 0, result.stderr
+    _, availability = _availability(tmp_path, monkeypatch, path)
+    assert availability.available is True
+    earlier_registry = load_platform_capability_registry(
+        receipt_dir=tmp_path / "claude-platform", now=NOW
+    )
+    payload = json.loads(path.read_text())
+    snapshot = next(s for s in payload["quota_snapshots"] if s["route_id"] == ROUTE)
+    snapshot["fresh_until"] = "2026-06-10T00:30:00Z"
+    path.write_text(json.dumps(payload))
+    checked_at = NOW + timedelta(minutes=20)
+    _, availability = _availability(tmp_path, monkeypatch, path, now=checked_at)
+    assert availability.available is False
+    assert availability.predicate.account_live_quota_attested is False
+    request = build_dispatch_request(
+        task_id="policy-test",
+        lane="cx-green",
+        platform="claude",
+        mode="interactive",
+        profile="full",
+        task_fields=_task_fields(),
+        registry=earlier_registry,
+        quota_ledger=QuotaSpendLedger.model_validate(payload),
+        now=checked_at,
+    )
+    decision = evaluate_dispatch_policy(request, now=checked_at)
+    assert decision.action is DispatchAction.HOLD
+    assert "route_subscription_quota_state:stale" in decision.reason_codes
+    assert decision.quota_freshness_green is False
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "missing",
+        "stale",
+        "unknown",
+        "exhausted",
+        "ledger_stale",
+        "ledger_unknown",
+        "no_capability",
+        "fresh",
+    ],
+)
+def test_interactive_quota_hold_names_recovery_steps(condition):
+    request = _request(
+        platform="claude",
+        mode="interactive",
+        route_id=ROUTE,
+        capability=None if condition == "no_capability" else _capability(route_id=ROUTE),
+        quota=None
+        if condition == "missing"
+        else _quota(
+            route_subscription_quota_state=condition
+            if condition in {"stale", "unknown", "exhausted"}
+            else "fresh",
+            budget_ledger_stale=True
+            if condition == "ledger_stale"
+            else None
+            if condition == "ledger_unknown"
+            else False,
+        ),
+    )
+    decision = evaluate_dispatch_policy(request, now=NOW)
+    if condition == "fresh":
+        assert decision.action is DispatchAction.LAUNCH
+        assert "Next action:" not in decision.message
+    else:
+        assert decision.action is DispatchAction.HOLD
+        assert "Next action:" in decision.message
+        assert "genuine Opus-family account-live observation" in decision.message
+        assert f"hapax-claude-subscription-quota-admission --route-id {ROUTE}" in decision.message
+        assert "hapax-quota-telemetry-writer --json" in decision.message
+        assert "retry" in decision.message
+
+
 @pytest.mark.parametrize("condition", ["missing", "fresh", "expired"])
 def test_runbook_exact_readback_is_executable(tmp_path, monkeypatch, condition):
     now = datetime.now(UTC).replace(microsecond=0)

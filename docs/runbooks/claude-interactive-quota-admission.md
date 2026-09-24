@@ -40,7 +40,13 @@ Expected boundaries:
 - Only the route named by the positive receipt becomes quota-fresh. Headless
   and review receipts do not admit the interactive route, or vice versa.
 - Missing, expired, future-dated, wrong-provider or lane-presence evidence
-  keeps admission closed. Ledger provenance and expiry are required at read.
+  keeps admission closed. At ledger read, a fresh Claude snapshot requires
+  trusted producer/provider provenance and at least one matching route receipt
+  whose parsed window satisfies `observed_at <= now < fresh_until`. The snapshot
+  must also remain unexpired. A later snapshot expiry cannot extend the receipt,
+  and a fresh sibling-route receipt cannot witness this route. Malformed or
+  reversed receipt windows are untrusted. A second current matching receipt may
+  admit the route while an earlier matching receipt has expired.
 - Unexpired quota walls on the shared Claude subscription pool inhibit the
   interactive route too, using the existing wall precedence and recovery rules.
 - No billing mode, model, quality floor or interactive-only task rule changes.

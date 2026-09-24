@@ -1392,6 +1392,11 @@ def subscription_quota_state_for_route(
         for snapshot in snapshots
         if _subscription_quota_missing_required_fresh_until(snapshot)
     )
+    noncurrent_receipt_refs = tuple(
+        f"quota-snapshot:{snapshot.snapshot_id}:claude_receipt_not_current"
+        for snapshot in snapshots
+        if _subscription_quota_missing_current_claude_receipt(snapshot, now=checked_at)
+    )
     untrusted_fresh_refs = tuple(
         "quota-snapshot:"
         f"{snapshot.snapshot_id}:"
@@ -1408,6 +1413,7 @@ def subscription_quota_state_for_route(
         *evidence_refs,
         *expired_refs,
         *missing_fresh_until_refs,
+        *noncurrent_receipt_refs,
         *untrusted_fresh_refs,
         *missing_payg_spend_gate_refs,
     )
@@ -1460,7 +1466,23 @@ def _effective_subscription_quota_state(
         return SubscriptionQuotaState.UNKNOWN
     if _subscription_quota_fresh_until_expired(snapshot, now=now):
         return SubscriptionQuotaState.STALE
+    if _subscription_quota_missing_current_claude_receipt(snapshot, now=now):
+        return SubscriptionQuotaState.STALE
     return snapshot.subscription_quota_state
+
+
+def _subscription_quota_missing_current_claude_receipt(
+    snapshot: QuotaSnapshot, *, now: datetime
+) -> bool:
+    route_id = _normalize_route_id(snapshot.route_id)
+    return (
+        snapshot.subscription_quota_state is SubscriptionQuotaState.FRESH
+        and route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+        and not any(
+            _is_claude_admission_evidence_ref(ref, route_id=route_id, now=now)
+            for ref in snapshot.evidence_refs
+        )
+    )
 
 
 def _subscription_quota_missing_required_fresh_until(snapshot: QuotaSnapshot) -> bool:
@@ -1579,11 +1601,23 @@ def _is_kimi_admission_evidence_ref(ref: str) -> bool:
     )
 
 
-def _is_claude_admission_evidence_ref(ref: str, *, route_id: str | None = None) -> bool:
+def _is_claude_admission_evidence_ref(
+    ref: str, *, route_id: str | None = None, now: datetime | None = None
+) -> bool:
     match = CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref)
     if match is None or (route_id is not None and match.group("route_id") != route_id):
         return False
-    return _has_safe_claude_admission_receipt_label(ref) and _has_safe_claude_admission_witness(ref)
+    try:
+        observed_at = datetime.fromisoformat(match.group("observed_at"))
+        fresh_until = datetime.fromisoformat(match.group("fresh_until"))
+    except ValueError:
+        return False
+    return (
+        observed_at < fresh_until
+        and (now is None or observed_at <= now < fresh_until)
+        and _has_safe_claude_admission_receipt_label(ref)
+        and _has_safe_claude_admission_witness(ref)
+    )
 
 
 def _has_safe_claude_admission_receipt_label(ref: str) -> bool:

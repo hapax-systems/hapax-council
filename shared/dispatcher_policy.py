@@ -3031,6 +3031,24 @@ def _decision(
     compatibility_degraded = compatibility_mode != "none" or degraded_state is not None
     route_policy_green = action is DispatchAction.LAUNCH and not compatibility_degraded
     cloud_burst_receipt = _cloud_burst_receipt_fields(request, reasons)
+    message = "; ".join(reason for reason in reasons if reason) or action.value
+    if (
+        normalize_route_id(request.route_id) == "claude.interactive.full"
+        and action is not DispatchAction.LAUNCH
+        and {
+            "subscription_route_quota_unavailable",
+            "subscription_route_quota_not_fresh",
+            "subscription_quota_ledger_stale",
+            "subscription_quota_ledger_unknown",
+        }.intersection(reasons)
+    ):
+        message += (
+            "; Next action: obtain a genuine Opus-family account-live observation; "
+            "record its actual observation time with "
+            "hapax-claude-subscription-quota-admission --route-id claude.interactive.full; "
+            "regenerate telemetry with hapax-quota-telemetry-writer --json, then retry "
+            "the same governed dispatch. Preserve the original receipt expiry."
+        )
     decision = RouteDecision(
         decision_id=_decision_id(request, action, reasons, created_at),
         created_at=created_at,
@@ -3065,7 +3083,7 @@ def _decision(
         ),
         **cloud_burst_receipt,
         reason_codes=tuple(reason for reason in reasons if reason),
-        message="; ".join(reason for reason in reasons if reason) or action.value,
+        message=message,
         quota_evidence_refs=_quota_evidence_refs(request.quota),
         resource_state_refs=request.resource_state_refs,
     )
