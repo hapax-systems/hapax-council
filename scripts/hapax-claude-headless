@@ -788,7 +788,17 @@ else:
                     materialization_reason="remote_claim_binding_unresolved"
                     raise
                 os.makedirs(cache,exist_ok=True)
-                open(os.path.join(cache,"session-role-"+sid),"w",encoding="utf-8").write(role+"\n")
+                # Different roles hold different locks. Publish this session
+                # identity create-once so their concurrent arrivals cannot
+                # overwrite each other. Preserve matching and partial markers.
+                marker=cache_path / ("session-role-"+sid)
+                try:
+                    with open(marker,"x",encoding="utf-8") as session_marker:
+                        session_marker.write(role+"\n")
+                except FileExistsError:
+                    if marker.is_symlink() or not marker.is_file() or marker.read_text()!=role+"\n":
+                        materialization_reason="remote_session_role_unresolved"
+                        raise ValueError("session role binding unresolved")
                 import time as _time
                 claim_epoch=next(iter(epoch_values)) if epoch_values else int(_time.time())
                 epoch_line=str(claim_epoch)+" "+task+"\n"

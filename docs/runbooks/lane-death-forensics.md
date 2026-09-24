@@ -242,7 +242,15 @@ host composition roots from `default_claim_publication_roots(home=Path.home())`,
 keyed by the exact `HAPAX_AGENT_ROLE`. It holds that role lock across the marker,
 role/session epochs and role/session claim writes. The lock does not cover a
 different host, confer rebind authority or establish writer liveness. Existing
-conflicting or empty claims/epochs hold; a matching epoch is preserved.
+conflicting or empty claims/epochs hold; a matching epoch is preserved. The
+session-role marker is created exclusively before any epoch or claim write;
+different roles racing for one session cannot overwrite it under separate role
+locks. An exact matching regular-file marker is retained without rewriting it.
+A conflicting, incomplete or symlinked marker produces
+`remote_session_role_unresolved` and holds before native execution. Preserve that
+marker and reconcile the dispatch identity through the governed path; do not
+replace it or invent another session ID to bypass the hold. This excludes other
+participating remote materializers, not legacy writers that truncate markers.
 
 An unavailable interface, invalid identity, busy lock or failed write exits 75
 before native exec. The existing remote dispatch proof records `dispatch_state:
@@ -255,3 +263,76 @@ or copy a peer claim to force a handoff. Qualify the shared interface and its
 Python dependencies on that execution host through the governed installation
 path. Source-only tests are not installed-interface or cross-host qualification;
 the supervisor signal exclusion and normal-close cleanup remain release blockers.
+
+Run this on the **execution host**, using its qualified Python environment and
+the execution source root recorded for that dispatch. The proof path is the exact
+file under that host's configured `HAPAX_DISPATCH_PROOF_DIR`, not a coordinator
+copy. It prints the proof identity and current marker/claim/epoch hashes, checks
+the host and bindings, and exits 75 for partial, conflicting or held evidence.
+These reads are an inspection snapshot; they do not authorize retry, transfer or
+signal and do not certify that the writer is alive.
+
+```bash
+python3 - '<execution-source-root>' '<dispatch-proof-path>' <<'PY'
+import hashlib
+import json
+import re
+import socket
+import sys
+from pathlib import Path
+
+def hold(reason):
+    print('remote_claim_recheck_hold: ' + reason + '; preserve proof and sidecars; inspect dispatch identity', file=sys.stderr)
+    sys.exit(75)
+
+sys.path.insert(0, sys.argv[1])
+try:
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+    from shared.session_identity import is_claim_keyable_session_id
+    proof_path = Path(sys.argv[2])
+    proof_bytes = proof_path.read_bytes()
+    proof = json.loads(proof_bytes)
+    cache = Path(default_claim_publication_roots(home=Path.home()).claim_cache_dir)
+except Exception as exc:
+    hold('contract or proof unavailable: ' + type(exc).__name__)
+if not isinstance(proof, dict):
+    hold('proof is not an object')
+print('proof_sha256', hashlib.sha256(proof_bytes).hexdigest(), proof_path)
+for field in ('actual_host', 'role', 'session_id', 'task_id', 'claim_epoch',
+              'dispatch_state', 'claim_materialized', 'claim_materialization_reason'):
+    print(field, repr(proof.get(field)))
+role, sid, task = (proof.get(key) for key in ('role', 'session_id', 'task_id'))
+if (proof.get('event') != 'dispatch_remote_exec' or proof.get('platform') != 'claude-headless'
+        or proof.get('actual_host') != socket.gethostname()):
+    hold('wrong execution host or proof kind')
+if (not isinstance(sid, str) or sid != sid.strip() or not is_claim_keyable_session_id(sid)
+        or any(not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', value)
+               for value in (role, task))):
+    hold('invalid role, session or task')
+epoch = proof.get('claim_epoch')
+valid_epoch = type(epoch) is int and epoch > 0
+expected = {cache / ('session-role-' + sid): (role + '\n').encode()}
+for key in (role, role + '-' + sid):
+    expected[cache / ('cc-active-task-' + key)] = (task + '\n').encode()
+    expected[cache / ('cc-claim-epoch-' + key)] = (f'{epoch} {task}\n').encode() if valid_epoch else None
+matched = True
+for path, wanted in expected.items():
+    if path.is_symlink() or not path.is_file():
+        print('missing/nonregular', path)
+        matched = False
+        continue
+    try:
+        data = path.read_bytes()
+        metadata = path.stat()
+    except OSError as exc:
+        hold('input unavailable: ' + type(exc).__name__)
+    match = wanted is not None and data == wanted
+    print('match' if match else 'unresolved', path, 'sha256', hashlib.sha256(data).hexdigest(),
+          'inode', metadata.st_ino, 'mtime_ns', metadata.st_mtime_ns)
+    matched = matched and match
+if (not matched or not valid_epoch or proof.get('dispatch_state') != 'ready'
+        or proof.get('claim_materialized') is not True):
+    hold('materialization or current binding unresolved')
+print('bindings match at inspection; independent installed qualification and liveness remain separate')
+PY
+```

@@ -1,5 +1,6 @@
 import base64
 import fcntl
+import hashlib
 import json
 import os
 import subprocess
@@ -1435,6 +1436,7 @@ def _remote_contract_modules(workdir: Path) -> None:
         import builtins
         import fcntl
         import json
+        import time
         from contextlib import contextmanager
         from pathlib import Path
 
@@ -1457,9 +1459,18 @@ def _remote_contract_modules(workdir: Path) -> None:
 
                 def checked_open(target, mode="r", *args, **kwargs):
                     name = Path(target).name
+                    if name.startswith("session-role-") and any(flag in mode for flag in "wx"):
+                        barrier = Path.home() / "marker-race"
+                        if barrier.exists():
+                            (barrier / role).touch()
+                            deadline = time.monotonic() + 5
+                            while len(list(barrier.iterdir())) != 2:
+                                if time.monotonic() >= deadline:
+                                    raise AssertionError("second role never reached marker publication")
+                                time.sleep(0.01)
                     if "w" in mode and (Path.home() / "fail-write").exists() and name == "cc-active-task-beta":
                         raise OSError("injected write failure")
-                    if "w" in mode and name.startswith(("cc-", "session-role-")):
+                    if any(flag in mode for flag in "wx") and name.startswith(("cc-", "session-role-")):
                         with path.open("a") as rival:
                             try:
                                 fcntl.flock(rival, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1663,3 +1674,161 @@ def test_remote_materialization_preserves_matching_epoch(tmp_path: Path) -> None
     assert json.loads(proof.read_text())["claim_epoch"] == 123
     for key in ("beta", f"beta-{sid}"):
         assert (cache / f"cc-claim-epoch-{key}").read_text() == "123 task-x\n"
+
+
+@pytest.mark.parametrize("existing", ["gamma\n", "", "beta", "beta\nextra\n"])
+def test_remote_materialization_session_role_conflict_holds(tmp_path: Path, existing: str) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    marker = cache / "session-role-9381e195-f8e6-43ce-83bf-ea7e5b846723"
+    marker.write_text(existing)
+    before = marker.stat()
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 75, result.stderr
+    assert not executed.exists()
+    assert list(cache.iterdir()) == [marker]
+    assert marker.read_text() == existing
+    assert (marker.stat().st_ino, marker.stat().st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+    data = json.loads(proof.read_text())
+    assert data["dispatch_state"] == "hold"
+    assert data["claim_materialization_reason"] == "remote_session_role_unresolved"
+    assert data["claim_materialized"] is False
+    assert data["claim_epoch"] is None
+    assert data["session_id"] == marker.name.removeprefix("session-role-")
+    assert data["role"] == "beta" and data["task_id"] == "task-x"
+
+
+def test_remote_materialization_matching_session_role_is_not_rewritten(tmp_path: Path) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    marker = cache / "session-role-9381e195-f8e6-43ce-83bf-ea7e5b846723"
+    marker.write_text("beta\n")
+    os.utime(marker, ns=(1_000_000_000, 1_000_000_000))
+    before = marker.stat()
+    for _ in range(2):
+        result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+        assert result.returncode == 0, result.stderr
+        assert executed.exists()
+        assert marker.read_text() == "beta\n"
+        assert (marker.stat().st_ino, marker.stat().st_mtime_ns) == (
+            before.st_ino,
+            before.st_mtime_ns,
+        )
+        data = json.loads(proof.read_text())
+        assert data["dispatch_state"] == "ready"
+        assert data["claim_materialized"] is True
+        assert (cache / "cc-claim-epoch-beta").read_text() == f"{data['claim_epoch']} task-x\n"
+
+
+def test_remote_materialization_symlink_session_role_holds(tmp_path: Path) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    target = home / "unrelated-marker"
+    target.write_text("beta\n")
+    before = target.stat()
+    marker = cache / "session-role-9381e195-f8e6-43ce-83bf-ea7e5b846723"
+    marker.symlink_to(target)
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 75, result.stderr
+    assert not executed.exists()
+    assert marker.is_symlink()
+    assert list(cache.iterdir()) == [marker]
+    assert target.read_text() == "beta\n"
+    assert target.stat().st_mtime_ns == before.st_mtime_ns
+    assert (
+        json.loads(proof.read_text())["claim_materialization_reason"]
+        == "remote_session_role_unresolved"
+    )
+
+
+def test_remote_materialization_concurrent_roles_cannot_share_session(tmp_path: Path) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    # Both roles hold their independent role locks and reach marker publication
+    # before either can create it. A read-then-truncate check cannot pass this.
+    (home / "marker-race").mkdir()
+    payload = json.loads(base64.b64decode(env["HAPAX_REMOTE_PAYLOAD"]))
+    payload["env"]["HAPAX_AGENT_ROLE"] = "gamma"
+    payload["env"]["HAPAX_METHODOLOGY_DISPATCH_TASK"] = "task-y"
+    rival_proof, rival_executed = home / "proof/gamma.json", home / "executed-gamma"
+    payload["proof_file"] = str(rival_proof)
+    payload["argv"][-1] = f"from pathlib import Path; Path({str(rival_executed)!r}).touch()"
+    rival_env = env | {
+        "HAPAX_REMOTE_PAYLOAD": base64.b64encode(json.dumps(payload).encode()).decode()
+    }
+    processes = [
+        subprocess.Popen(
+            command, env=child_env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        for child_env in (env, rival_env)
+    ]
+    try:
+        outputs = [process.communicate(timeout=10) for process in processes]
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+    assert sorted(process.returncode for process in processes) == [0, 75], outputs
+    proofs = [json.loads(path.read_text()) for path in (proof, rival_proof)]
+    winner = next(data for data in proofs if data["dispatch_state"] == "ready")
+    loser = next(data for data in proofs if data["dispatch_state"] == "hold")
+    assert loser["claim_materialization_reason"] == "remote_session_role_unresolved"
+    assert loser["claim_materialized"] is False and loser["claim_epoch"] is None
+    assert winner["session_id"] == loser["session_id"]
+    cache = home / ".cache/hapax"
+    sid = winner["session_id"]
+    assert (cache / f"session-role-{sid}").read_text() == winner["role"] + "\n"
+    expected = {f"session-role-{sid}"}
+    for key in (winner["role"], f"{winner['role']}-{sid}"):
+        expected.update({f"cc-active-task-{key}", f"cc-claim-epoch-{key}"})
+        assert (cache / f"cc-active-task-{key}").read_text() == winner["task_id"] + "\n"
+        assert (
+            cache / f"cc-claim-epoch-{key}"
+        ).read_text() == f"{winner['claim_epoch']} {winner['task_id']}\n"
+    assert {path.name for path in cache.iterdir()} == expected
+    assert executed.exists() == (winner["role"] == "beta")
+    assert rival_executed.exists() == (winner["role"] == "gamma")
+
+
+@pytest.mark.parametrize("changed", [None, "marker", "epoch", "host", "identity", "hold"])
+def test_remote_materialization_runbook_recheck(tmp_path: Path, changed: str | None) -> None:
+    home, workdir, proof, _, command, env = _remote_materialization(tmp_path)
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    cache = home / ".cache/hapax"
+    data = json.loads(proof.read_text())
+    if changed == "marker":
+        (cache / f"session-role-{data['session_id']}").write_text("gamma\n")
+    elif changed == "epoch":
+        (cache / "cc-claim-epoch-beta").write_text("123 other-task\n")
+    elif changed == "host":
+        data["actual_host"] = "another-execution-host"
+    elif changed == "identity":
+        del data["session_id"]
+    elif changed == "hold":
+        data.update(dispatch_state="hold", claim_materialized=False)
+    proof.write_text(json.dumps(data))
+    before = {path: path.read_bytes() for path in cache.iterdir()}
+    doc = (REPO_ROOT / "docs/runbooks/lane-death-forensics.md").read_text()
+    program = doc.split("python3 - '<execution-source-root>' '<dispatch-proof-path>' <<'PY'\n", 1)[
+        1
+    ].split("\nPY", 1)[0]
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", program, str(workdir), str(proof)],
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == (75 if changed else 0), result.stdout + result.stderr
+    assert hashlib.sha256(proof.read_bytes()).hexdigest() in result.stdout
+    assert {path: path.read_bytes() for path in cache.iterdir()} == before
+    if changed:
+        assert "remote_claim_recheck_hold:" in result.stderr
+    else:
+        for content in before.values():
+            assert hashlib.sha256(content).hexdigest() in result.stdout
+        assert result.stdout.count("\nmatch ") == 5
