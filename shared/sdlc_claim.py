@@ -2614,9 +2614,18 @@ def materialize_remote_claim_identity(
             raise ClaimPublicationError("claim_remote_identity_unsafe", repair) from exc
 
 
+@dataclass(frozen=True)
+class _ClaimLockSubject:
+    """The role/task/note coordinates the role-then-note lock pair needs, outside an intent."""
+
+    role: str
+    task_id: str
+    note_path: Path
+
+
 @contextmanager
 def _claim_publication_lock(
-    intent: ClaimPublicationIntent,
+    intent: ClaimPublicationIntent | _ClaimLockSubject,
     *,
     lock_root: Path | None,
 ) -> Iterator[None]:
@@ -7150,200 +7159,197 @@ def release_claim_lease(
             "claim_release_incumbent_invalid", "restore a valid assigned_to role", role
         )
 
-    with claim_role_exclusion(role, lock_root=lock_root):
-        with projected_path_lock(task_id, (note_path,)):
-            started = [
-                item
-                for item in _pending_releases(vault_root, task_id)
-                if dict(item[1]["incumbent"]).get("role") == role  # type: ignore[arg-type]
-            ]
-            if started:
-                return _resume_release(
-                    started[0][0],
-                    started[0][1],
-                    cache_dir=cache_dir,
-                    note_path=note_path,
-                    fault=fault,
-                )
-            locked_path, note_state, note_before, frontmatter = _release_note(vault_root, task_id)
-            if locked_path != note_path or _release_scalar(frontmatter, "assigned_to") != role:
-                raise ClaimPublicationError(
-                    "claim_release_no_incumbent",
-                    "the task moved or its holder changed; reobserve before releasing",
-                    task_id,
-                )
-            status = _release_scalar(frontmatter, "status")
-            note_mode = stat.S_IMODE(note_path.stat().st_mode)
-            status_after: str | None = None
-            assigned_after: str | None = None
-            if note_state == "active" and status in _CLAIM_RELEASABLE_STATUSES:
-                status_after, assigned_after = "offered", "unassigned"
-            elif note_state == "active" and status in TASK_RESUMABLE_STATUSES:
-                if not successor_role or successor_role == role:
-                    raise ClaimPublicationError(
-                        "claim_release_successor_required",
-                        "a merge-ready task keeps its status; name the successor role with --to",
-                        task_id,
-                    )
-                if not _CLAIM_RELEASE_NAME_RE.fullmatch(successor_role):
-                    raise ClaimPublicationError(
-                        "claim_release_successor_invalid", "name a valid role", successor_role
-                    )
-                assigned_after = successor_role
-            elif note_state == "active" and status not in TASK_TERMINAL_STATUSES:
-                raise ClaimPublicationError(
-                    "claim_release_status_unsupported",
-                    "release only a claimed, in-progress, merge-ready or finished task",
-                    f"{task_id}:{status or 'missing'}",
-                )
-
-            selected, foreign = _claim_lease_census(cache_dir, role, task_id)
-            sessions = {item.session_id for item in selected if item.session_id}
-            epochs = {item.epoch for item in selected if item.epoch is not None}
-            if len(sessions) > 1 or len(epochs) > 1:
-                raise ClaimPublicationError(
-                    "claim_release_incumbent_ambiguous",
-                    "more than one session or epoch holds this task; preserve them and "
-                    "reconcile the lease before release",
-                    json.dumps(
-                        {"sessions": sorted(sessions), "epochs": sorted(epochs)}, sort_keys=True
-                    ),
-                )
-            incumbent = ClaimLeaseIncumbent(
-                task_id=task_id,
-                role=role,
-                session_id=next(iter(sessions)) if sessions else None,
-                claim_epoch=next(iter(epochs)) if epochs else None,
-                note_path=note_path,
-                note_state=note_state,
-                note_status=status,
-                sidecars=tuple((item.name, _sha256(item.content)) for item in selected),
-            )
-            holds = [
-                item.publication_id
-                for item in inspect_claim_publications(
-                    cache_dir=cache_dir,
-                    transaction_root=transaction_root,
-                    receipt_root=receipt_root,
-                    task_id=task_id,
-                )
-                if item.disposition == "hold"
-            ]
-            if holds:
-                raise ClaimPublicationError(
-                    "claim_release_pending_publication",
-                    f"run cc-claim --recover-claim-publications {task_id} to reconcile the "
-                    "publication first; a release never strands an unfinished attempt",
-                    ",".join(holds),
-                )
-            evidence = _verify_release_witness(
-                witness_kind,
-                incumbent,
-                releaser_role=releaser_role,
-                releaser_session_id=releaser_session_id,
-                now=now,
-                provider_wall_verifier=provider_wall_verifier,
-                authority_ref=authority_ref,
-            )
-            if not selected and status_after is None and assigned_after is None:
-                raise ClaimPublicationError(
-                    "claim_release_nothing_to_release",
-                    "no lease sidecar of this role names the task",
-                    task_id,
-                )
-            witness = {"kind": witness_kind, "evidence": evidence}
-            identity = {
-                "schema": CLAIM_RELEASE_SCHEMA,
-                "task_id": task_id,
-                "incumbent": {
-                    "role": role,
-                    "session_id": incumbent.session_id,
-                    "claim_epoch": incumbent.claim_epoch,
-                },
-                "sidecars": [
-                    {"name": name, "sha256": digest} for name, digest in incumbent.sidecars
-                ],
-                "note_before_sha256": _sha256(note_before),
-                "witness_sha256": _sha256(_canonical(witness)),
-                "successor_role": successor_role,
-            }
-            release_id = _sha256(_canonical(identity))
-            archive_dir = (
-                vault_root
-                / "_lineage"
-                / _safe_lineage_component(task_id)
-                / f"governed-release-{release_id[:16]}"
-            )
-            note_after: bytes | None = None
-            if status_after is not None or assigned_after is not None:
-                note_after = _release_note_postimage(
-                    note_before,
-                    status=status_after,
-                    assigned_to=assigned_after,
-                    now_text=now_text,
-                    log_line=(
-                        f"- {now_text} {releaser_role} — governed release of {role} "
-                        f"(session {incumbent.session_id or 'unknown'}, epoch "
-                        f"{incumbent.claim_epoch or 'unknown'}); witness {witness_kind}; "
-                        f"release {release_id}; lease archived under "
-                        f"_lineage/{_safe_lineage_component(task_id)}/{archive_dir.name}/"
-                    ),
-                )
-                after_frontmatter = _release_frontmatter(note_after)
-                if (
-                    status_after and _release_scalar(after_frontmatter, "status") != status_after
-                ) or (
-                    assigned_after
-                    and _release_scalar(after_frontmatter, "assigned_to") != assigned_after
-                ):
-                    raise ClaimPublicationError(
-                        "claim_release_note_malformed",
-                        "the note's status or assigned_to line could not be rewritten exactly",
-                        task_id,
-                    )
-            record: dict[str, object] = {
-                **identity,
-                "release_id": release_id,
-                "state": "pending",
-                "witness": witness,
-                "sidecars": [
-                    {
-                        "name": item.name,
-                        "family": item.family,
-                        "session_id": item.session_id,
-                        "sha256": _sha256(item.content),
-                    }
-                    for item in selected
-                ],
-                "retained_foreign_sidecars": list(foreign),
-                "note": {
-                    "path": str(note_path),
-                    "state": note_state,
-                    "mode": note_mode,
-                    "before_sha256": _sha256(note_before),
-                    "after_sha256": _sha256(note_after) if note_after is not None else None,
-                    "status_after": status_after or status,
-                    "assigned_to_after": assigned_after,
-                },
-                "releaser": {"role": releaser_role, "session_id": releaser_session_id},
-                "released_at": now_text,
-            }
-            (archive_dir / "sidecars").mkdir(parents=True, exist_ok=True)
-            _release_write_once(archive_dir / "note.before", note_before)
-            if note_after is not None:
-                _release_write_once(archive_dir / "note.after", note_after)
-            _release_replace(archive_dir / "release.json", _canonical(record) + b"\n")
-            fault("intent_recorded")
-            archived = _apply_release(
-                archive_dir,
-                record,
+    # The same single role-then-note acquisition site every claim publication uses.
+    lock_subject = _ClaimLockSubject(role=role, task_id=task_id, note_path=note_path)
+    with _claim_publication_lock(lock_subject, lock_root=lock_root):
+        started = [
+            item
+            for item in _pending_releases(vault_root, task_id)
+            if dict(item[1]["incumbent"]).get("role") == role  # type: ignore[arg-type]
+        ]
+        if started:
+            return _resume_release(
+                started[0][0],
+                started[0][1],
                 cache_dir=cache_dir,
                 note_path=note_path,
-                note_before=note_before,
-                note_after=note_after,
-                note_mode=note_mode,
                 fault=fault,
             )
+        locked_path, note_state, note_before, frontmatter = _release_note(vault_root, task_id)
+        if locked_path != note_path or _release_scalar(frontmatter, "assigned_to") != role:
+            raise ClaimPublicationError(
+                "claim_release_no_incumbent",
+                "the task moved or its holder changed; reobserve before releasing",
+                task_id,
+            )
+        status = _release_scalar(frontmatter, "status")
+        note_mode = stat.S_IMODE(note_path.stat().st_mode)
+        status_after: str | None = None
+        assigned_after: str | None = None
+        if note_state == "active" and status in _CLAIM_RELEASABLE_STATUSES:
+            status_after, assigned_after = "offered", "unassigned"
+        elif note_state == "active" and status in TASK_RESUMABLE_STATUSES:
+            if not successor_role or successor_role == role:
+                raise ClaimPublicationError(
+                    "claim_release_successor_required",
+                    "a merge-ready task keeps its status; name the successor role with --to",
+                    task_id,
+                )
+            if not _CLAIM_RELEASE_NAME_RE.fullmatch(successor_role):
+                raise ClaimPublicationError(
+                    "claim_release_successor_invalid", "name a valid role", successor_role
+                )
+            assigned_after = successor_role
+        elif note_state == "active" and status not in TASK_TERMINAL_STATUSES:
+            raise ClaimPublicationError(
+                "claim_release_status_unsupported",
+                "release only a claimed, in-progress, merge-ready or finished task",
+                f"{task_id}:{status or 'missing'}",
+            )
+
+        selected, foreign = _claim_lease_census(cache_dir, role, task_id)
+        sessions = {item.session_id for item in selected if item.session_id}
+        epochs = {item.epoch for item in selected if item.epoch is not None}
+        if len(sessions) > 1 or len(epochs) > 1:
+            raise ClaimPublicationError(
+                "claim_release_incumbent_ambiguous",
+                "more than one session or epoch holds this task; preserve them and "
+                "reconcile the lease before release",
+                json.dumps(
+                    {"sessions": sorted(sessions), "epochs": sorted(epochs)}, sort_keys=True
+                ),
+            )
+        incumbent = ClaimLeaseIncumbent(
+            task_id=task_id,
+            role=role,
+            session_id=next(iter(sessions)) if sessions else None,
+            claim_epoch=next(iter(epochs)) if epochs else None,
+            note_path=note_path,
+            note_state=note_state,
+            note_status=status,
+            sidecars=tuple((item.name, _sha256(item.content)) for item in selected),
+        )
+        holds = [
+            item.publication_id
+            for item in inspect_claim_publications(
+                cache_dir=cache_dir,
+                transaction_root=transaction_root,
+                receipt_root=receipt_root,
+                task_id=task_id,
+            )
+            if item.disposition == "hold"
+        ]
+        if holds:
+            raise ClaimPublicationError(
+                "claim_release_pending_publication",
+                f"run cc-claim --recover-claim-publications {task_id} to reconcile the "
+                "publication first; a release never strands an unfinished attempt",
+                ",".join(holds),
+            )
+        evidence = _verify_release_witness(
+            witness_kind,
+            incumbent,
+            releaser_role=releaser_role,
+            releaser_session_id=releaser_session_id,
+            now=now,
+            provider_wall_verifier=provider_wall_verifier,
+            authority_ref=authority_ref,
+        )
+        if not selected and status_after is None and assigned_after is None:
+            raise ClaimPublicationError(
+                "claim_release_nothing_to_release",
+                "no lease sidecar of this role names the task",
+                task_id,
+            )
+        witness = {"kind": witness_kind, "evidence": evidence}
+        identity = {
+            "schema": CLAIM_RELEASE_SCHEMA,
+            "task_id": task_id,
+            "incumbent": {
+                "role": role,
+                "session_id": incumbent.session_id,
+                "claim_epoch": incumbent.claim_epoch,
+            },
+            "sidecars": [{"name": name, "sha256": digest} for name, digest in incumbent.sidecars],
+            "note_before_sha256": _sha256(note_before),
+            "witness_sha256": _sha256(_canonical(witness)),
+            "successor_role": successor_role,
+        }
+        release_id = _sha256(_canonical(identity))
+        archive_dir = (
+            vault_root
+            / "_lineage"
+            / _safe_lineage_component(task_id)
+            / f"governed-release-{release_id[:16]}"
+        )
+        note_after: bytes | None = None
+        if status_after is not None or assigned_after is not None:
+            note_after = _release_note_postimage(
+                note_before,
+                status=status_after,
+                assigned_to=assigned_after,
+                now_text=now_text,
+                log_line=(
+                    f"- {now_text} {releaser_role} — governed release of {role} "
+                    f"(session {incumbent.session_id or 'unknown'}, epoch "
+                    f"{incumbent.claim_epoch or 'unknown'}); witness {witness_kind}; "
+                    f"release {release_id}; lease archived under "
+                    f"_lineage/{_safe_lineage_component(task_id)}/{archive_dir.name}/"
+                ),
+            )
+            after_frontmatter = _release_frontmatter(note_after)
+            if (status_after and _release_scalar(after_frontmatter, "status") != status_after) or (
+                assigned_after
+                and _release_scalar(after_frontmatter, "assigned_to") != assigned_after
+            ):
+                raise ClaimPublicationError(
+                    "claim_release_note_malformed",
+                    "the note's status or assigned_to line could not be rewritten exactly",
+                    task_id,
+                )
+        record: dict[str, object] = {
+            **identity,
+            "release_id": release_id,
+            "state": "pending",
+            "witness": witness,
+            "sidecars": [
+                {
+                    "name": item.name,
+                    "family": item.family,
+                    "session_id": item.session_id,
+                    "sha256": _sha256(item.content),
+                }
+                for item in selected
+            ],
+            "retained_foreign_sidecars": list(foreign),
+            "note": {
+                "path": str(note_path),
+                "state": note_state,
+                "mode": note_mode,
+                "before_sha256": _sha256(note_before),
+                "after_sha256": _sha256(note_after) if note_after is not None else None,
+                "status_after": status_after or status,
+                "assigned_to_after": assigned_after,
+            },
+            "releaser": {"role": releaser_role, "session_id": releaser_session_id},
+            "released_at": now_text,
+        }
+        (archive_dir / "sidecars").mkdir(parents=True, exist_ok=True)
+        _release_write_once(archive_dir / "note.before", note_before)
+        if note_after is not None:
+            _release_write_once(archive_dir / "note.after", note_after)
+        _release_replace(archive_dir / "release.json", _canonical(record) + b"\n")
+        fault("intent_recorded")
+        archived = _apply_release(
+            archive_dir,
+            record,
+            cache_dir=cache_dir,
+            note_path=note_path,
+            note_before=note_before,
+            note_after=note_after,
+            note_mode=note_mode,
+            fault=fault,
+        )
     return ClaimReleaseResult(
         state="applied",
         release_id=release_id,
