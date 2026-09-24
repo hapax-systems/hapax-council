@@ -122,25 +122,26 @@ index is never silently refreshed.
 A typed refusal in the second locked preflight, before projection begins,
 records an `aborted` journal. Recovery preserves that history and cannot turn
 the refusal into a delayed claim. Once projection may have begun, failures
-remain recoverable. Recovery validates the complete task identity and exact
-preimage or postimage before writing any missing projection.
+retain their pending journals and partial projections. Recovery validates the
+complete task identity and exact preimage or postimage, but does not replay
+pending effects in this increment.
 
 Do not interpret exit code 8 alone as evidence that nothing was published.
 Publication errors report the original role, session, epoch, intent and binding
 hash, plus read-only journal observations. An observation can be terminal
 applied, terminal aborted, held or unknown; preserve held/unknown evidence and
-reconcile it before choosing another session. Ordinary `cc-claim` recovery
-requires the pending journal's original role and session. A different session
-gets `claim_publication_recovery_owner_mismatch` without applying that journal.
-The explicit `cc-claim --recover-claim-publications <task-id>` operation also
-binds the caller's resolved role/session. The API refuses omitted, empty or
-malformed owner coordinates before filesystem access. Both CLI paths replay
-only the original owner's existing admitted publication. The coordinates
-select that admission; they are not a new grant. Cross-owner maintenance is
-unsupported here and requires a separately governed authority path, not an
-omitted argument or a caller inventing another session's identity. Recovery
-completes the original admitted publication,
-not an ownership transfer. Resolve its durable result before retrying dispatch.
+reconcile it before choosing another session. Both ordinary and explicit
+`cc-claim --recover-claim-publications <task-id>` return
+`claim_publication_recovery_authority_unverified` for otherwise valid pending
+journals. Caller role/session coordinates are identifiers, not independently
+verified authority. Matching the recorded owner (including a forged retry) does
+not permit replay. The former owner-mismatch response that disclosed journal
+owner coordinates has been removed. The compatibility API still requires well-formed coordinates, but
+applied/aborted results are observations and incomplete publications stay held.
+This is an intentional availability limitation until a governed producer can
+supply independently verified recovery authority at use. Preserve all journals,
+receipts and partial projections; do not reconstruct markers or choose a fresh
+session to work around the hold. No ownership transfer is implemented.
 
 Recovery holds retain the underlying task-store reason and its repair action.
 For example, `task_note_cross_state_duplicate` requires reconciling every state
@@ -167,7 +168,7 @@ temporary vaults, claims and journals and do not recover a real task:
 uv run --no-sync pytest -q tests/shared/test_sdlc_task_store.py \
   -k 'bounded_index'
 uv run --no-sync pytest -q tests/shared/test_sdlc_claim.py \
-  -k 'pre_projection_frontier_refusal or recovery_checks_complete or automatic_recovery_preserves or cc_claim_fresh_session or recovery_reports_task_identity'
+  -k 'pre_projection_frontier_refusal or recovery_checks_complete or automatic_recovery_preserves or cc_claim_fresh_session or recovery_reports_task_identity or caller_cannot_replay'
 uv run --no-sync pytest -q tests/scripts/test_cc_claim.py \
   -k 'publication_failure_reports_durable_outcome or corrupt_install_receipt'
 uv run --no-sync pytest -q tests/shared/test_sdlc_claim.py \
@@ -178,7 +179,7 @@ uv run --no-sync pytest -q tests/shared/test_sdlc_claim.py \
 
 The first command exercises full-namespace retries, removal races, exhaustion
 and unsafe-directory refusal. The next two check terminal preflight refusal,
-original-owner recovery, actionable reasons and actual CLI observations of
+pending-replay refusal, actionable reasons and actual CLI observations of
 pending, aborted, applied and unobservable outcomes. The fourth pins refusal
 when an applied claim loses its activation caches and its current owner changes,
 including an `offered/unassigned` note with surviving epoch/dispatch sidecars.
@@ -201,11 +202,18 @@ not transfer a claim or repair a previously inherited session.
 
 `shared.sdlc_claim.claim_role_exclusion(role, *, lock_root)` exposes the
 existing exclusive role lock. Supply the exact `claim_lock_root` from the
-installed Gate-0B composition. The ordinary CLI binding is
-`default_claim_publication_roots(home=Path.home()).claim_lock_root`, currently
-`~/.local/state/hapax/task-locks/gate0b-claim-publish-v1`. The low-level library's
-historical default `~/.cache/hapax/task-locks` is a different namespace; a
-consumer must not substitute it for the installed root.
+installed Gate-0B composition. The CLI and remote Codex materializer load and validate the execution host's
+installed composition using `load_claim_publication_composition`, then take
+`receipt.roots.claim_lock_root`. The default roots locate the invocation store;
+they do not override its installed lock root. Custom installed lock roots are
+covered by real subprocess contention tests for admitted, emergency, charter
+and remote publication. Emergency and remote paths refuse missing/corrupt
+installations before ownership writes. Ordinary first-use installation is
+allowed only when both install artifacts are absent. The CLI refuses a
+vault/cache binding that disagrees with its current paths. The low-level
+library's historical default is a different namespace; consumers must pass
+the installed root explicitly. Installation replacement during use remains a
+coordinator-controlled release boundary, not a source-author operation.
 
 The key is SHA-256 of `claim-publication-role\0` plus the exact role, shared
 across every task and session in that role. The root is a real euid-owned
@@ -231,12 +239,12 @@ symbol searches and claim/close/repair/dispatch path inventories:
 | Writer | Exclusion supplied here |
 |---|---|
 | Admitted `cc-claim`, manual or dispatch-bound | Role then task identity/note, through the existing journal, receipt and activation writes. |
-| `recover_claim_publications`, activation-cache rehydration | Same role/task locks as admitted publication; the existing intent and receipt checks remain. |
+| `recover_claim_publications`, activation-cache rehydration | Same role/task locks; pending recovery is held without replay. The separate already-applied rehydration checks remain. |
 | Explicit emergency `cc-claim` | Same installed role namespace, then note lock through all note/epoch/activation/charter writes. It remains a non-admitted, non-journaled fallback. |
 | Charter-unit recording | Role then unit/parent note paths, recheck the parent receipt/lease and exact unit preimage, retain locks through the unit note, charter marker and ledger append. |
 | Charter mint's auxiliary marker | Reacquire role then note; revalidate the exact applied owner before writing. Contention reports the already-applied publication separately. An original-owner retry completes this projection. |
 | Local launchers / dispatch adapters | Call the publication path; they do not acquire or decide this shared lock themselves. |
-| Codex remote `REMOTE_EXEC_PY` materializer | Takes the execution host's installed role lock before session-role, epoch and activation writes. Missing helper/import or unavailable lock refuses before those writes, proof or native exec. No note lock is taken; any future note lock must follow role exclusion. |
+| Codex remote `REMOTE_EXEC_PY` materializer | Takes the execution host's installed role lock before session-role, epoch and activation writes. Missing/corrupt installed composition, missing helper/import or unavailable lock refuses before those writes, proof or native exec. No note lock is taken; any future note lock must follow role exclusion. |
 
 `cc-close` takes task/note locks and then removes matching cache projections;
 it does not participate in role exclusion. Terminal disappearance during
@@ -280,9 +288,10 @@ positive-rebind exit predicate.
 Recheck the bounded contracts using isolated fixtures:
 
 ```bash
-uv run --no-sync python -m pytest tests/scripts/test_cc_claim_role_exclusion.py -q
+uv run --no-sync python -m pytest tests/scripts/test_cc_claim_role_exclusion.py \
+  tests/scripts/test_cc_claim_installed_composition.py -q
 uv run --no-sync python -m pytest tests/shared/test_sdlc_claim.py -q \
-  -k 'requires_explicit_valid_owner or fresh_session_does_not_apply or transaction_postimage_retries'
+  -k 'requires_explicit_valid_owner or fresh_session_does_not_apply or caller_cannot_replay or transaction_postimage_retries'
 uv run --no-sync python -m pytest tests/shared/test_task_note_lock.py -q \
   -k 'role_lock or claim_publication'
 uv run --no-sync python -m pytest tests/scripts/test_hapax_methodology_dispatch.py -q \

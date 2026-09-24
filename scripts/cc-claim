@@ -118,14 +118,19 @@ task_id = sys.argv[2]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+from shared.gate0b_claim_publication_install import (  # noqa: E402
+    default_claim_publication_roots, load_claim_publication_composition,
+)
+from shared.execution_admission import ExecutionAdmissionError  # noqa: E402
 from shared.sdlc_claim import (  # noqa: E402
     ClaimPublicationError,
     rehydrate_applied_activation_projections,
 )
 
-roots = default_claim_publication_roots(home=Path.home())
 try:
+    roots = load_claim_publication_composition(
+        Path(default_claim_publication_roots(home=Path.home()).invocation_store_root)
+    ).receipt.roots
     results = rehydrate_applied_activation_projections(
         cache_dir=Path(roots.claim_cache_dir),
         transaction_root=Path(roots.claim_transaction_root),
@@ -133,10 +138,11 @@ try:
         lock_root=Path(roots.claim_lock_root),
         task_id=task_id,
     )
-except ClaimPublicationError as exc:
-    detail = f" ({exc.detail})" if exc.detail else ""
+except (ClaimPublicationError, ExecutionAdmissionError, ValueError) as exc:
+    detail = f" ({exc.detail})" if getattr(exc, "detail", None) else ""
     print(
-        f"cc-claim: HOLD — {exc.reason_code}{detail}. Next action: {exc.repair_action}.",
+        f"cc-claim: HOLD — {getattr(exc, 'reason_code', 'claim_composition_invalid')}{detail}. "
+        f"Next action: {getattr(exc, 'repair_action', 'restore the installed composition')}.",
         file=sys.stderr,
     )
     sys.exit(8)
@@ -202,11 +208,16 @@ expected_owner = (sys.argv[3], sys.argv[4])
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from shared.gate0b_claim_publication_install import default_claim_publication_roots  # noqa: E402
+from shared.gate0b_claim_publication_install import (  # noqa: E402
+    default_claim_publication_roots, load_claim_publication_composition,
+)
+from shared.execution_admission import ExecutionAdmissionError  # noqa: E402
 from shared.sdlc_claim import ClaimPublicationError, recover_claim_publications  # noqa: E402
 
-roots = default_claim_publication_roots(home=Path.home())
 try:
+    roots = load_claim_publication_composition(
+        Path(default_claim_publication_roots(home=Path.home()).invocation_store_root)
+    ).receipt.roots
     results = recover_claim_publications(
         cache_dir=Path(roots.claim_cache_dir),
         transaction_root=Path(roots.claim_transaction_root),
@@ -215,9 +226,10 @@ try:
         task_id=task_id,
         expected_owner=expected_owner,
     )
-except ClaimPublicationError as exc:
+except (ClaimPublicationError, ExecutionAdmissionError, ValueError) as exc:
     print(
-        f"cc-claim: HOLD — {exc}. Next action: {exc.repair_action}; "
+        f"cc-claim: HOLD — {exc}. Next action: "
+        f"{getattr(exc, 'repair_action', 'restore the installed composition')}; "
         "then rerun cc-claim --recover-claim-publications"
         + (f" {task_id}" if task_id else "")
         + ".",
@@ -542,6 +554,30 @@ if canon_enforced:
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     gate0b_roots = default_claim_publication_roots(home=Path.home())
+    try:
+        installed = load_claim_publication_composition(Path(gate0b_roots.invocation_store_root))
+        gate0b_roots = installed.receipt.roots
+    except ExecutionAdmissionError as exc:
+        # Only an entirely absent installation may take the existing first-use
+        # install path. A partial or corrupt installation cannot select defaults.
+        store = Path(gate0b_roots.invocation_store_root)
+        if exc.reason_code != "gate0b_install_receipt_missing" or any(
+            (store / name).exists() or (store / name).is_symlink()
+            for name in ("activation-receipt.json", "composition-manifest.json")
+        ):
+            print(f"cc-claim: HOLD — {exc}. Next action: {exc.repair_action}.", file=sys.stderr)
+            sys.exit(8)
+    except ValueError as exc:
+        print(f"cc-claim: HOLD — claim_composition_invalid: {exc}", file=sys.stderr)
+        sys.exit(8)
+    if (
+        Path(gate0b_roots.claim_cache_dir) != cache_dir.resolve()
+        or Path(gate0b_roots.claim_vault_root) != path.parent.parent.resolve()
+    ):
+        print("cc-claim: HOLD — claim_composition_projection_binding_mismatch. "
+              "Next action: reconcile the CLI vault/cache bindings with the installed composition.",
+              file=sys.stderr)
+        sys.exit(8)
     if not dispatch_message_id:
         manual_authority_case = _frontmatter_scalar(text, "authority_case")
         if not manual_authority_case:
@@ -1220,12 +1256,26 @@ text = _insert_session_log(text, log_line)
 if not canon_enforced:
     # The emergency route uses the same role namespace as admitted publication.
     # It remains non-admitted; locking does not grant fallback authority.
-    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+    from shared.gate0b_claim_publication_install import (
+        default_claim_publication_roots, load_claim_publication_composition,
+    )
+    from shared.execution_admission import ExecutionAdmissionError
     from shared.sdlc_claim import ClaimPublicationError, claim_role_exclusion
     from shared.task_note_lock import TaskNoteLockError, projected_path_lock
 
-    legacy_lock_root = Path(default_claim_publication_roots(home=Path.home()).claim_lock_root)
     try:
+        installed_roots = load_claim_publication_composition(
+            Path(default_claim_publication_roots(home=Path.home()).invocation_store_root)
+        ).receipt.roots
+        if (
+            Path(installed_roots.claim_cache_dir) != cache_dir.resolve()
+            or Path(installed_roots.claim_vault_root) != path.parent.parent.resolve()
+        ):
+            raise ClaimPublicationError(
+                "claim_composition_projection_binding_mismatch",
+                "reconcile the CLI vault/cache bindings with the installed composition",
+            )
+        legacy_lock_root = Path(installed_roots.claim_lock_root)
         with claim_role_exclusion(role, lock_root=legacy_lock_root):
             with projected_path_lock(task_id, (path,)):
                 # PREIMAGE CHECK, not just an existence check. `text` was derived from
@@ -1290,7 +1340,7 @@ if not canon_enforced:
                 else:
                     print(result_message)
                     print(f"cc-claim: wrote ~/.cache/hapax/cc-active-task-{role}")
-    except (ClaimPublicationError, TaskNoteLockError) as exc:
+    except (ClaimPublicationError, TaskNoteLockError, ExecutionAdmissionError, ValueError) as exc:
         print(f"cc-claim: REFUSED — {exc}", file=sys.stderr)
         sys.exit(3)
     sys.exit(0)

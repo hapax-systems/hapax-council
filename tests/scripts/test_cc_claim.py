@@ -178,7 +178,7 @@ def _claim(
     elif dispatch:
         env.update(_dispatch_env(task_id))
     if install_gate0b is None:
-        install_gate0b = not legacy and dispatch
+        install_gate0b = legacy or dispatch
     if install_gate0b:
         _install_gate0b_claim_publication_root(home)
     if extra_env:
@@ -314,6 +314,7 @@ def test_rehydrate_refusal_branches_leave_every_file_unchanged(
 
     home = tmp_path / "home"
     _write_task(home, "active", "unchanged-sentinel")
+    _install_gate0b_claim_publication_root(home)
     roots = default_claim_publication_roots(home=home)
     if task_id == "bounded":
         journals = Path(roots.claim_transaction_root)
@@ -711,10 +712,9 @@ def test_default_claim_holds_corrupt_install_receipt_without_overwrite(
 
     assert result.returncode == 8
     assert "gate0b_install_receipt_malformed" in result.stderr
-    assert "Next action: provision or repair the Gate-0B" in result.stderr
-    assert f"session={_SESSION_ID}; claim_epoch=" in result.stderr
-    assert "prepared_intent=" in result.stderr
-    assert "publication_observations=[]" in result.stderr
+    assert "Next action: restore a canonical Gate-0B install receipt" in result.stderr
+    assert "prepared_intent=" not in result.stderr
+    assert not list((home / ".cache/hapax").glob("cc-active-task-*"))
     assert receipt.read_text(encoding="ascii") == "{}\n"
     assert "status: offered" in note.read_text(encoding="utf-8")
 
@@ -1011,7 +1011,7 @@ def test_recover_claim_publications_subcommand_uses_live_gate0b_roots(
         home,
         task_id,
         dispatch=False,
-        install_gate0b=False,
+        install_gate0b=True,
         extra_args=["--recover-claim-publications"],
     )
 
@@ -1261,7 +1261,10 @@ def test_explicit_read_only_intake_without_parent_spec_allows_claim(
     assert "status: claimed" in note.read_text(encoding="utf-8")
 
 
-def test_hapax_cc_tasks_root_wins_over_the_home_default(tmp_path: Path) -> None:
+@pytest.mark.parametrize("binding_matches", [False, True])
+def test_hapax_cc_tasks_root_requires_installed_binding(
+    tmp_path: Path, binding_matches: bool
+) -> None:
     """The gate-path consumer must use the resolver, not a welded $HOME path."""
     home = tmp_path / "home"
     override = tmp_path / "elsewhere"
@@ -1271,14 +1274,27 @@ def test_hapax_cc_tasks_root_wins_over_the_home_default(tmp_path: Path) -> None:
     real = override / "active" / "override-root.md"
     real.write_text(decoy.read_text(encoding="utf-8"), encoding="utf-8")
 
+    roots = default_claim_publication_roots(home=home)
+    if binding_matches:
+        roots = roots.model_copy(update={"claim_vault_root": str(override)})
+    install_claim_publication_composition(
+        roots=roots, installed_at="2026-09-24T00:00:00Z", install_task_ref="test-install"
+    )
     result = _claim(
         home,
         "override-root",
         extra_env={"HAPAX_CC_TASKS_ROOT": str(override)},
+        install_gate0b=False,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "status: claimed" in real.read_text(encoding="utf-8")
+    if binding_matches:
+        assert result.returncode == 0, result.stderr
+        assert "status: claimed" in real.read_text(encoding="utf-8")
+    else:
+        assert result.returncode == 8
+        assert "claim_composition_projection_binding_mismatch" in result.stderr
+        assert "status: offered" in real.read_text()
+
     assert "status: offered" in decoy.read_text(encoding="utf-8")
 
 

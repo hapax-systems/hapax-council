@@ -305,6 +305,7 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     tmp_path: Path, activation_override: bool, remote: bool, case: str
 ) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache/hapax"
     cache.mkdir(parents=True)
     (home / "projects/hapax-mcp").mkdir(parents=True)
@@ -488,6 +489,7 @@ def _init_primary_council_repo(path: Path) -> None:
 
 def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
@@ -592,6 +594,7 @@ exit 0
 
 def test_codex_headless_remote_uses_configured_codex_binary(tmp_path: Path) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
@@ -1416,6 +1419,7 @@ exit 0
 
 def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
@@ -2056,6 +2060,7 @@ def test_codex_headless_remote_bootstrap_uses_existing_branch_when_present(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     _write_claim_epoch(cache, "cx-amber", "task-x")
@@ -2118,6 +2123,7 @@ def test_codex_headless_remote_exec_uses_preclaim_proven_token_handoff(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
@@ -2234,6 +2240,7 @@ def test_codex_headless_remote_preflight_does_not_materialize_token_handoff(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
@@ -2854,9 +2861,32 @@ exit 0
     assert used_openai_api_key.read_text(encoding="utf-8").strip() == ""
 
 
-def _remote_materialization_case(tmp_path: Path, *, workdir: Path = REPO_ROOT):
+def _install_remote_composition(home: Path, *, custom_root: bool = False):
+    from shared.gate0b_claim_publication_install import (
+        default_claim_publication_roots,
+        install_claim_publication_composition,
+    )
+
+    roots = default_claim_publication_roots(home=home)
+    if custom_root:
+        roots = roots.model_copy(update={"claim_lock_root": str(home / "installed-role-locks")})
+    install_claim_publication_composition(
+        roots=roots, installed_at="2026-09-24T00:00:00Z", install_task_ref="test-install"
+    )
+    return roots
+
+
+def _remote_materialization_case(
+    tmp_path: Path,
+    *,
+    workdir: Path = REPO_ROOT,
+    custom_root: bool = False,
+    install: bool = True,
+):
     home = tmp_path / "home"
     home.mkdir()
+    if install:
+        _install_remote_composition(home, custom_root=custom_root)
     role, task, sid = "cx-remote-lock", "new-remote-task", "remote-lock-session"
     proof, ran = tmp_path / "proof.json", tmp_path / "native-ran"
     codex = tmp_path / "bin" / "codex"
@@ -2900,11 +2930,22 @@ def _remote_materialization_case(tmp_path: Path, *, workdir: Path = REPO_ROOT):
     return env, home, files, proof, ran, role, task, sid
 
 
-def test_remote_materialization_waits_for_installed_role_exclusion(tmp_path: Path) -> None:
-    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+@pytest.mark.parametrize("custom_root", [False, True])
+def test_remote_materialization_waits_for_installed_role_exclusion(
+    tmp_path: Path, custom_root: bool
+) -> None:
+    from shared.gate0b_claim_publication_install import (
+        default_claim_publication_roots,
+        load_claim_publication_composition,
+    )
     from shared.sdlc_claim import claim_role_exclusion
 
-    env, home, files, proof, ran, role, task, sid = _remote_materialization_case(tmp_path)
+    env, home, files, proof, ran, role, task, sid = _remote_materialization_case(
+        tmp_path, custom_root=custom_root
+    )
+    roots = load_claim_publication_composition(
+        Path(default_claim_publication_roots(home=home).invocation_store_root)
+    ).receipt.roots
     # Signal the actual attempted flock, so a slow import cannot masquerade as exclusion.
     read_fd, write_fd = os.pipe()
     instrument = f"""import fcntl, os
@@ -2920,7 +2961,6 @@ fcntl.flock = observed_flock
 """
     child = None
     try:
-        roots = default_claim_publication_roots(home=home)
         with claim_role_exclusion(role, lock_root=Path(roots.claim_lock_root)):
             child = subprocess.Popen(
                 [sys.executable, "-I", "-c", instrument + _extract_remote_python("REMOTE_EXEC_PY")],
@@ -3287,6 +3327,7 @@ def test_codex_headless_remote_bootstrap_falls_back_to_head_for_missing_base_ref
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     _write_claim_epoch(cache, "cx-amber", "task-x")

@@ -134,7 +134,7 @@ def _claim(
         env["HAPAX_GATE0B_CLAIM_PUBLICATION_OFF"] = "1"
     else:
         env.update(_dispatch_env(task_id))
-        _install_gate0b_claim_publication_root(home)
+    _install_gate0b_claim_publication_root(home)
     return subprocess.run(
         ["bash", str(SCRIPT), task_id],
         env=env,
