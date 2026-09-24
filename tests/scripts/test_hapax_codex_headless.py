@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import select
 import shutil
 import subprocess
 import sys
@@ -23,7 +24,17 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 
 @pytest.fixture(autouse=True)
 def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_TASK", raising=False)
+    for name in (
+        "HAPAX_METHODOLOGY_DISPATCH_TASK",
+        "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH",
+        "HAPAX_SESSION_ID",
+        "HAPAX_AGENT_ROLE",
+        "CLAUDE_ROLE",
+        "CODEX_ROLE",
+        "HAPAX_CODEX_HEADLESS_WORKDIR",
+        "HAPAX_CODEX_WORKTREE_STRATEGY",
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "headless-pids"))
     monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
     monkeypatch.delenv("HAPAX_NATIVE_LIFECYCLE_RECEIPT", raising=False)
@@ -312,6 +323,16 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
         (root / "shared").mkdir(parents=True, exist_ok=True)
         (root / "shared/__init__.py").write_text("")
         (root / "shared/execution_observer.py").write_text(stale_module)
+
+    shutil.copytree(
+        REPO_ROOT / "shared",
+        workdir / "shared",
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "execution_observer.py"),
+    )
+    (workdir / ".venv").symlink_to(Path(sys.executable).parent.parent, target_is_directory=True)
+    (workdir / "config").symlink_to(REPO_ROOT / "config", target_is_directory=True)
+    (workdir / "docs").symlink_to(REPO_ROOT / "docs", target_is_directory=True)
 
     default_activation = cache / "source-activation/worktree"
     activation = tmp_path / "configured-activation" if activation_override else default_activation
@@ -2831,6 +2852,228 @@ exit 0
     assert used_codex_home.read_text(encoding="utf-8").strip() == ""
     assert used_codex_api_key.read_text(encoding="utf-8").strip() == ""
     assert used_openai_api_key.read_text(encoding="utf-8").strip() == ""
+
+
+def _remote_materialization_case(tmp_path: Path, *, workdir: Path = REPO_ROOT):
+    home = tmp_path / "home"
+    home.mkdir()
+    role, task, sid = "cx-remote-lock", "new-remote-task", "remote-lock-session"
+    proof, ran = tmp_path / "proof.json", tmp_path / "native-ran"
+    codex = tmp_path / "bin" / "codex"
+    codex.parent.mkdir()
+    codex.write_text(f"#!/bin/sh\nprintf ran > {ran}\n")
+    codex.chmod(0o755)
+    payload = {
+        "workdir": str(workdir),
+        "task_id": task,
+        "session": role,
+        "env": {
+            "HOME": str(home),
+            "HAPAX_SESSION_ID": sid,
+            "HAPAX_AGENT_ROLE": role,
+            "HAPAX_METHODOLOGY_DISPATCH_TASK": task,
+            "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH": f"123 {task}",
+        },
+        "proof_file": str(proof),
+        "argv": [str(codex)],
+        "codex_bin_path": str(codex),
+    }
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": str(codex.parent),
+        "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(workdir),
+        "HAPAX_REMOTE_PAYLOAD": base64.b64encode(json.dumps(payload).encode()).decode(),
+    }
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    # A different task in the same role must remain intact throughout exclusion.
+    files = {
+        cache / f"cc-claim-epoch-{role}": "122 old-task\n",
+        cache / f"cc-claim-epoch-{role}-{sid}": "122 old-task\n",
+        cache / f"cc-active-task-{role}": "old-task\n",
+        cache / f"cc-active-task-{role}-{sid}": "old-task\n",
+        cache / f"session-role-{sid}": "old-role\n",
+    }
+    for path, body in files.items():
+        path.write_text(body)
+    return env, home, files, proof, ran, role, task, sid
+
+
+def test_remote_materialization_waits_for_installed_role_exclusion(tmp_path: Path) -> None:
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+    from shared.sdlc_claim import claim_role_exclusion
+
+    env, home, files, proof, ran, role, task, sid = _remote_materialization_case(tmp_path)
+    # Signal the actual attempted flock, so a slow import cannot masquerade as exclusion.
+    read_fd, write_fd = os.pipe()
+    instrument = f"""import fcntl, os
+_real_flock = fcntl.flock
+_signaled = False
+def observed_flock(fd, operation):
+    global _signaled
+    if operation & fcntl.LOCK_EX and not _signaled:
+        os.write({write_fd}, b"attempt")
+        _signaled = True
+    return _real_flock(fd, operation)
+fcntl.flock = observed_flock
+"""
+    child = None
+    try:
+        roots = default_claim_publication_roots(home=home)
+        with claim_role_exclusion(role, lock_root=Path(roots.claim_lock_root)):
+            child = subprocess.Popen(
+                [sys.executable, "-I", "-c", instrument + _extract_remote_python("REMOTE_EXEC_PY")],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                pass_fds=(write_fd,),
+            )
+            os.close(write_fd)
+            write_fd = -1
+            assert select.select([read_fd], [], [], 5)[0], "no role-lock attempt observed"
+            assert os.read(read_fd, 7) == b"attempt", "materializer exited without role exclusion"
+            with pytest.raises(subprocess.TimeoutExpired):
+                child.communicate(timeout=0.2)
+            assert {path: path.read_text() for path in files} == files
+            assert not proof.exists()
+            assert not ran.exists()
+        _, stderr = child.communicate(timeout=10)
+        assert child.returncode == 0, stderr
+        for suffix in (role, f"{role}-{sid}"):
+            assert (home / f".cache/hapax/cc-active-task-{suffix}").read_text() == task + "\n"
+            assert (home / f".cache/hapax/cc-claim-epoch-{suffix}").read_text() == f"123 {task}\n"
+        assert (home / f".cache/hapax/session-role-{sid}").read_text() == role + "\n"
+        result = json.loads(proof.read_text())
+        assert result["claim_materialized"] is True
+        assert result["claim_epoch_verified"] is True
+        assert result["role"] == role and result["session_id"] == sid
+        assert result["task_id"] == task
+        assert ran.exists()
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.communicate(timeout=5)
+
+
+def test_remote_materialization_holds_exclusion_at_every_write(tmp_path: Path) -> None:
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+    from shared.sdlc_claim import _claim_publication_role_lock_digest
+
+    env, home, files, proof, ran, role, *_ = _remote_materialization_case(tmp_path)
+    root = Path(default_claim_publication_roots(home=home).claim_lock_root)
+    lock = root / f"{_claim_publication_role_lock_digest(role)}.lock"
+    # A second open-file description tests the real kernel lock at each write.
+    instrument = f"""import builtins, fcntl, os, sys
+_original_open = builtins.open
+_projections = {set(map(str, files))!r}
+def checked_open(path, mode="r", *args, **kwargs):
+    if str(path) in _projections and "w" in mode:
+        fd = os.open({str(lock)!r}, os.O_RDWR)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print("guarded-write " + os.path.basename(path), file=sys.stderr)
+            else:
+                raise RuntimeError("ownership write outside role exclusion")
+        finally:
+            os.close(fd)
+    return _original_open(path, mode, *args, **kwargs)
+builtins.open = checked_open
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", instrument + _extract_remote_python("REMOTE_EXEC_PY")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert set(result.stderr.splitlines()) == {f"guarded-write {path.name}" for path in files}
+    assert proof.exists() and ran.exists()
+
+
+def test_remote_materialization_uses_execution_host_binding(tmp_path: Path) -> None:
+    workdir = tmp_path / "worker-checkout-without-claim-helper"
+    workdir.mkdir()
+    env, _, _, proof, ran, *_ = _remote_materialization_case(tmp_path, workdir=workdir)
+    env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(REPO_ROOT)
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", _extract_remote_python("REMOTE_EXEC_PY")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(proof.read_text())["workdir"] == str(workdir)
+    assert ran.exists()
+
+
+def test_remote_materialization_requires_execution_host_runtime(tmp_path: Path) -> None:
+    empty_source = tmp_path / "missing-runtime"
+    empty_source.mkdir()
+    env, _, files, proof, ran, *_ = _remote_materialization_case(tmp_path, workdir=empty_source)
+    env["PATH"] = os.environ["PATH"]
+    command = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _extract_shell_function("remote_python_command")
+            + '\nremote_python_command "$1" "$2" claim-runtime',
+            "bash",
+            env["HAPAX_REMOTE_PAYLOAD"],
+            _extract_remote_python("REMOTE_EXEC_PY"),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = subprocess.run(
+        ["bash", "-c", command.stdout],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 78
+    assert "remote claim runtime unavailable" in result.stderr
+    assert {path: path.read_text() for path in files} == files
+    assert not proof.exists() and not ran.exists()
+
+
+@pytest.mark.parametrize("failure", ["missing-import", "unavailable-lock"])
+def test_remote_materialization_refuses_without_role_exclusion(
+    tmp_path: Path, failure: str
+) -> None:
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+
+    workdir = tmp_path / "empty-source" if failure == "missing-import" else REPO_ROOT
+    if failure == "missing-import":
+        workdir.mkdir()
+    env, home, files, proof, ran, *_ = _remote_materialization_case(tmp_path, workdir=workdir)
+    if failure == "unavailable-lock":
+        root = Path(default_claim_publication_roots(home=home).claim_lock_root)
+        root.parent.mkdir(parents=True)
+        root.write_text("not a lock directory\n")
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", _extract_remote_python("REMOTE_EXEC_PY")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 78, result.stderr
+    assert "failed to materialize remote claim cache" in result.stderr
+    assert {path: path.read_text() for path in files} == files
+    assert not proof.exists()
+    assert not ran.exists()
 
 
 def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(

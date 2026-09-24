@@ -235,7 +235,8 @@ symbol searches and claim/close/repair/dispatch path inventories:
 | Explicit emergency `cc-claim` | Same installed role namespace, then note lock through all note/epoch/activation/charter writes. It remains a non-admitted, non-journaled fallback. |
 | Charter-unit recording | Role then unit/parent note paths, recheck the parent receipt/lease and exact unit preimage, retain locks through the unit note, charter marker and ledger append. |
 | Charter mint's auxiliary marker | Reacquire role then note; revalidate the exact applied owner before writing. Contention reports the already-applied publication separately. An original-owner retry completes this projection. |
-| Local launchers / dispatch adapters | Call the publication path; they do not acquire or decide this shared lock themselves. Remote materialization is excluded below. |
+| Local launchers / dispatch adapters | Call the publication path; they do not acquire or decide this shared lock themselves. |
+| Codex remote `REMOTE_EXEC_PY` materializer | Takes the execution host's installed role lock before session-role, epoch and activation writes. Missing helper/import or unavailable lock refuses before those writes, proof or native exec. No note lock is taken; any future note lock must follow role exclusion. |
 
 `cc-close` takes task/note locks and then removes matching cache projections;
 it does not participate in role exclusion. Terminal disappearance during
@@ -243,12 +244,26 @@ supervisor cleanup therefore needs its own checked terminal case.
 Dispatch-residue archival, emergency stale-marker deletion, the explicit
 manual stale-release procedure, `codex-claim-audit`, supervisor legacy cleanup,
 and raw/manual/daemon task-note writes are also outside role exclusion.
-The `REMOTE_EXEC_PY` blocks in `scripts/hapax-claude-headless` and
-`scripts/hapax-codex-headless` directly write epoch/activation files on the
-execution host, without this lock. They are supported ownership writers
-outside the qualified population, not merely read-only adapters. Their exact
-source paths need same-task/peer reconciliation before any all-writer
-supervisor exclusion claim; this source increment does not repair them.
+The `REMOTE_EXEC_PY` block in `scripts/hapax-claude-headless` still writes
+epoch/activation files without this lock in this source checkout. That peer-owned
+writer needs separate qualification before any all-writer supervisor exclusion
+claim. Codex's materializer now participates locally on its execution host; this
+does not establish cross-host exclusion, admission, whole-attempt terminality or
+positive rebind. Its existing exact task/epoch and proof fields remain required.
+Remote execution resolves `HAPAX_SOURCE_ACTIVATE_WORKTREE`, then the explicitly
+bound `HAPAX_COUNCIL_DIR`, otherwise the host's activated source path. It pins
+that directory before executing its provisioned `.venv/bin/python` with isolated
+imports. The worker checkout is not the helper source. Missing runtime or helper
+is a refusal, never permission to publish without exclusion. The lock does not
+make the existing multi-file materializer crash-atomic.
+
+Recheck the real temporary-HOME subprocess cases (no remote/native capability):
+
+```bash
+uv run --no-sync python -m pytest tests/scripts/test_hapax_codex_headless.py \
+  -k remote_materialization_ -q
+```
+
 Metadata-only repair/stage/PR-link tools take projected-path locks and do not
 publish a new claim. See the full unconverted inventory in
 `tests/shared/test_projected_path_writer_lock_coverage.py`, including
