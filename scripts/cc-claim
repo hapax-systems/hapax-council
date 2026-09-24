@@ -1291,6 +1291,16 @@ if not canon_enforced:
                 "reconcile the CLI vault/cache bindings with the installed composition",
             )
         legacy_lock_root = Path(installed_roots.claim_lock_root)
+        if charter_keep:
+            # The charter-keep grant comes from the pre-lock shell scan; the parent lease can
+            # vanish before the locked observation. Only admitted publication re-verifies the
+            # parent charter and its lease, so emergency mode never records a unit.
+            raise ClaimPublicationError(
+                "claim_emergency_charter_unit_forbidden",
+                "claim charter units through admitted publication, which re-verifies the "
+                "parent charter and its lease",
+                f"{task_id} under {charter_keep}",
+            )
         with claim_role_exclusion(role, lock_root=legacy_lock_root):
             # The shell scan is advisory and ran before exclusion. A publisher
             # may have won since then, including one whose marker is now absent
@@ -1365,6 +1375,28 @@ if not canon_enforced:
                     "restore readable exact role projections before retrying emergency publication",
                 ) from exc
             with projected_path_lock(task_id, (path,)):
+                # An admitted publisher holds this note lock for its whole transaction, so a
+                # non-terminal journal seen here belongs to an interrupted attempt. The
+                # emergency writer never overruns it: governed recovery reconciles it first.
+                from shared.sdlc_claim import inspect_claim_publications
+
+                pending = [
+                    item.publication_id
+                    for item in inspect_claim_publications(
+                        cache_dir=Path(installed_roots.claim_cache_dir),
+                        transaction_root=Path(installed_roots.claim_transaction_root),
+                        receipt_root=Path(installed_roots.claim_receipt_root),
+                        task_id=task_id,
+                    )
+                    if item.disposition == "hold"
+                ]
+                if pending:
+                    raise ClaimPublicationError(
+                        "claim_emergency_pending_publication",
+                        f"run cc-claim --recover-claim-publications {task_id} to reconcile the "
+                        "admitted attempt; emergency publication never overruns it",
+                        ",".join(pending),
+                    )
                 # PREIMAGE CHECK, not just an existence check. `text` was derived from
                 # `note_before`, read ~800 lines above this lock, and every decision between them —
                 # claimability, status, dependency validity, the session-log insertion — was taken
