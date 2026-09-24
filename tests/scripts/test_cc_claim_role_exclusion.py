@@ -464,6 +464,116 @@ def test_emergency_refuses_a_charter_unit_even_after_the_charter_lease_vanishes(
     assert not any(b"unit-a" in content for content in cache_before.values())
 
 
+def test_emergency_without_any_installation_locks_the_default_role_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The emergency route took its role lock only under a loadable installed composition, so with
+    # nothing installed it refused (gate0b_install_receipt_missing): the fallback failed whenever
+    # the path it backs up failed. With nothing installed it now locks where the admitted route's
+    # first-use install would install and lock, so a concurrent admitted first use still excludes
+    # it, and it installs nothing itself.
+    home = tmp_path / "home"
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    helper = _helper("test_cc_claim")
+    helper._write_task(home, "active", "new-task")
+    helper.SCRIPT = _short_lock_timeout_cli(tmp_path)
+    roots = default_claim_publication_roots(home=home)
+    store = Path(roots.invocation_store_root)
+    before = _ownership_bytes(home)
+    old = SimpleNamespace(role="cx-test", task_id="different-old-task", note_path=home / "old.md")
+    with sdlc_claim._claim_publication_lock(old, lock_root=Path(roots.claim_lock_root)):
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            held = pool.submit(
+                helper._claim, home, "new-task", legacy=True, install_gate0b=False
+            ).result(timeout=15)
+        assert held.returncode != 0, (held.stdout, held.stderr)
+        assert "claim_publication_lock_unavailable" in held.stderr
+        assert _ownership_bytes(home) == before
+    claimed = helper._claim(home, "new-task", legacy=True, install_gate0b=False)
+    assert claimed.returncode == 0, claimed.stderr
+    assert "using legacy claim writer" in claimed.stderr
+    assert _ownership_bytes(home) != before
+    assert not any(
+        (store / name).exists() for name in ("activation-receipt.json", "composition-manifest.json")
+    )
+
+
+_DAMAGED_INSTALLATIONS = [
+    "corrupt_receipt",
+    "unsafe_receipt_mode",
+    "receipt_absent_manifest_present",
+    "manifest_absent",
+    "corrupt_manifest",
+    "binding_mismatch",
+    "store_is_a_file",
+    "unreadable_store",
+]
+
+
+def _damage_installation(home: Path, state: str) -> None:
+    from shared.gate0b_claim_publication_install import install_claim_publication_composition
+
+    roots = default_claim_publication_roots(home=home)
+    if state == "binding_mismatch":
+        roots = roots.model_copy(update={"claim_cache_dir": str(home / "other-claim-cache")})
+    install_claim_publication_composition(
+        roots=roots, installed_at="2026-09-24T00:00:00Z", install_task_ref="test-install"
+    )
+    store = Path(roots.invocation_store_root)
+    receipt, manifest = store / "activation-receipt.json", store / "composition-manifest.json"
+    if state == "corrupt_receipt":
+        receipt.write_bytes(b"{not json\n")
+    elif state == "unsafe_receipt_mode":
+        receipt.chmod(0o644)
+    elif state == "receipt_absent_manifest_present":
+        receipt.rename(store / "activation-receipt.aside")
+    elif state == "manifest_absent":
+        manifest.rename(store / "composition-manifest.aside")
+    elif state == "corrupt_manifest":
+        # The loader reports an unparseable manifest as gate0b_install_manifest_missing too, so
+        # the reason code alone cannot tell "nothing installed" from a damaged installation.
+        manifest.write_bytes(b"{not json\n")
+    elif state == "store_is_a_file":
+        # No install artifact "exists" beneath a regular file; only the reason code refuses.
+        store.rename(store.with_name(store.name + ".aside"))
+        store.write_text("not an invocation store\n")
+    elif state == "unreadable_store":
+        store.chmod(0o000)
+
+
+@pytest.mark.parametrize("state", _DAMAGED_INSTALLATIONS)
+def test_emergency_refuses_every_present_but_unloadable_installation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    # Only an entirely absent installation selects the default role namespace (the admitted
+    # route's own first-use predicate). A damaged, partial or mismatched installation may name a
+    # custom lock root that a live admitted writer holds, so the emergency writer refuses rather
+    # than lock elsewhere, and the admitted route holds exactly as before.
+    home = tmp_path / "home"
+    monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
+    helper = _helper("test_cc_claim")
+    _damage_installation(home, state)
+    helper._write_task(home, "active", "new-task")
+    before = _ownership_bytes(home)
+    store = Path(default_claim_publication_roots(home=home).invocation_store_root)
+    try:
+        emergency = helper._claim(home, "new-task", legacy=True, install_gate0b=False)
+
+        assert emergency.returncode == 3, (emergency.stdout, emergency.stderr)
+        assert "cc-claim: REFUSED" in emergency.stderr
+        assert "claimed task" not in emergency.stdout
+        assert _ownership_bytes(home) == before
+
+        admitted = helper._claim(home, "new-task", install_gate0b=False)
+
+        assert admitted.returncode == 8, (admitted.stdout, admitted.stderr)
+        assert "cc-claim: HOLD" in admitted.stderr
+        assert _ownership_bytes(home) == before
+    finally:
+        if state == "unreadable_store":
+            store.chmod(0o700)
+
+
 def test_charter_mint_sidecar_cannot_publish_after_exclusion_begins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -378,7 +378,12 @@ Expected stderr must include `HAPAX_GATE0B_CLAIM_PUBLICATION_OFF=1` and
 script version before mutating source.
 
 The emergency writer rechecks the full role projection namespace under the
-installed role lock, before changing the task note. Another task/session,
+installed role lock, before changing the task note. With nothing installed (no
+activation receipt and no install artifact at all, the admitted route's own
+first-use predicate) it takes the role lock at the default roots, where a
+first-use admitted install would lock, and installs nothing. A damaged, partial
+or mismatched installation refuses instead, because it may name a lock root a
+live admitted writer holds; repair the installation first. Another task/session,
 partial identity or admitted dispatch history returns `claim_emergency_role_occupied`.
 Unreadable or unsafe projections return `claim_emergency_role_unobservable`.
 Expiry and `--force` cannot bypass this final check or delete old projections.
@@ -391,6 +396,16 @@ lease; emergency mode cannot replace the charter's ownership.
 uv run --no-sync pytest -q tests/scripts/test_cc_claim_role_exclusion.py \
   -k 'emergency or open_failure or serializes_process'
 uv run --no-sync pytest -q tests/scripts/test_cc_claim_charter.py
+```
+
+Suites outside the claim files also drive the emergency route with nothing
+installed (launchers, gate, smoke). Hosted CI skipped them on #4726, so recheck
+them with every claim-machinery change:
+
+```bash
+uv run --no-sync pytest -q tests/hooks/test_cc_task_gate.py \
+  tests/scripts/test_codex_crashout_prevention.py \
+  tests/scripts/test_hapax_codex_launcher.py tests/scripts/test_hapax_fsm_smoke.py
 ```
 
 ## Verify Fallback

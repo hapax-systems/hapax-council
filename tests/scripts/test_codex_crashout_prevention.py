@@ -164,29 +164,78 @@ def test_claim_blocks_when_active_task_exists(tmp_path: Path) -> None:
     assert "already has active task" in r2.stderr
 
 
-def test_claim_force_overrides_multi_claim_block(tmp_path: Path) -> None:
-    # Under the publication killswitch, --force still releases the prior
-    # claim. Canon-on retirement is the admitted path (exit 2); this
-    # suite isolates multi-claim, so the killswitch is on.
+def _projection_bytes(home: Path) -> dict[str, bytes]:
+    cache = home / ".cache" / "hapax"
+    files = [*(_task_root(home) / "active").glob("*.md"), *cache.glob("cc-*")]
+    return {str(path.relative_to(home)): path.read_bytes() for path in files if path.is_file()}
+
+
+def _close(home: Path, task_id: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["HOME"] = str(home)
+    env["HAPAX_AGENT_ROLE"] = "cx-test"
+    env["HAPAX_SESSION_ID"] = _SESSION_ID
+    env["HAPAX_COORD_DIR"] = str(home / ".cache" / "hapax" / "coord")
+    # The close gates below govern release evidence, not claim ownership; the fixture has none.
+    for gate in (
+        "HAPAX_CC_HYGIENE_OFF",
+        "HAPAX_RAPID_CLOSE_OFF",
+        "HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF",
+        "HAPAX_PR_MERGE_GATE_OFF",
+        "HAPAX_ARTIFACT_DISPOSITION_GATE_OFF",
+        "HAPAX_REVIEW_TEAM_GATE_OFF",
+    ):
+        env[gate] = "1"
+    return subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts" / "cc-close"), task_id, "--status", "done"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def test_claim_force_is_retired_in_the_emergency_writer(tmp_path: Path) -> None:
+    # Contract change in #4726 (disclosed there): under the publication killswitch --force no
+    # longer releases the prior claim. The emergency writer refuses with the next action and
+    # preserves the prior owner's projections (runbook gate0b-claim-publication-fallback.md,
+    # "Emergency Fallback": expiry and --force cannot delete old projections).
     home = tmp_path / "home"
     _write_task(home, "task-a", status="offered")
     _write_task(home, "task-b", status="offered")
 
-    _claim(home, "task-a")
+    assert _claim(home, "task-a").returncode == 0
+    before = _projection_bytes(home)
     r2 = _claim(home, "task-b", force=True)
-    assert r2.returncode == 0, r2.stderr
+
+    assert r2.returncode == 2, (r2.stdout, r2.stderr)
+    assert "--force is retired in the emergency writer too" in r2.stderr
+    assert "cc-close" in r2.stderr and "governed release" in r2.stderr
+    assert _projection_bytes(home) == before
 
 
-def test_claim_allows_after_terminal_status(tmp_path: Path) -> None:
+def test_claim_after_terminal_status_needs_the_documented_close(tmp_path: Path) -> None:
+    # Contract change in #4726 (disclosed there): a terminal note alone does not free its role
+    # projections, and the emergency writer never deletes them. The documented next action,
+    # cc-close on the terminal task, clears them and the new claim then goes through.
     home = tmp_path / "home"
     _write_task(home, "task-done", status="offered")
     _write_task(home, "task-new", status="offered")
 
-    _claim(home, "task-done")
+    assert _claim(home, "task-done").returncode == 0
     note = _task_root(home) / "active" / "task-done.md"
     text = note.read_text(encoding="utf-8")
     note.write_text(text.replace("status: claimed", "status: done"), encoding="utf-8")
+    before = _projection_bytes(home)
 
+    refused = _claim(home, "task-new")
+
+    assert refused.returncode == 3, (refused.stdout, refused.stderr)
+    assert "claim_emergency_role_occupied" in refused.stderr
+    assert _projection_bytes(home) == before
+
+    closed = _close(home, "task-done")
+    assert closed.returncode == 0, (closed.stdout, closed.stderr)
     r2 = _claim(home, "task-new")
     assert r2.returncode == 0, r2.stderr
 
