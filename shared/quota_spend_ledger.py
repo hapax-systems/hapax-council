@@ -187,9 +187,13 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
 # request id maps to exactly one structured ModelId — a receipt never borrows another's.
 GLMCP_ADMISSION_MODELS = frozenset({"glm-5.3", "glm-5.2"})
 GLMCP_MODEL_IDS = {"glm-5.3": "z_ai-glm-5.3", "glm-5.2": "z_ai-glm-5.2"}
-# Z.ai PAYG list prices for these models, USD per 1M tokens (docs.z.ai/guides/overview/pricing,
-# read 2026-09-24). Reasoning tokens are billed inside completion_tokens (observed on the
-# 2026-09-24 identity probe), so the output price covers them.
+# Z.ai PAYG list prices, USD per 1M tokens, from https://docs.z.ai/guides/overview/pricing
+# (retrieved 2026-09-24): GLM-5.3 and GLM-5.2 each $1.4 input, $0.26 cached input, $4.4 output.
+# The page prices only input, cached input and output tokens, no separate reasoning rate.
+# Reasoning is counted inside completion_tokens: the 2026-09-24T19:20:12Z PAYG probe of glm-5.3
+# reported completion_tokens 57 with completion_tokens_details.reasoning_tokens 51 (vault
+# 30-areas/hapax/frame/coordinator-succession-20260924/glm-payg/probe-20260924T192011Z.json),
+# so pricing completion_tokens at the output rate covers reasoning.
 GLMCP_PAYG_PRICE_BASIS_REF = "docs.z.ai-guides-overview-pricing-20260924"
 GLMCP_PAYG_PRICES_USD_PER_MTOK = {
     model: {
@@ -313,6 +317,9 @@ class SpendReconciliationState(StrEnum):
     PENDING = "pending"
     RECONCILED = "reconciled"
     FROZEN_REFUSED = "frozen_refused"
+    # Resolved without a per-call figure: a provider balance observed after the spend settled
+    # already reflects it (settle_spend_covered_by_provider_balance). No actual is claimed.
+    SETTLED_BY_PROVIDER_BALANCE = "settled_by_provider_balance"
 
 
 class SupportArtifactAuthority(StrEnum):
@@ -512,11 +519,13 @@ class TransitionBudget(StrictModel):
     def provider_balance_covers(self, receipt: SpendReceipt) -> bool:
         """Whether this budget's observed provider balance already reflects ``receipt``.
 
-        Never for the budget's own spend, and never for spend after the settlement cut-off.
+        Only the same provider's spend; never the budget's own spend; never spend after the
+        settlement cut-off.
         """
 
         return (
             self.provider_balance_covers_spend_before is not None
+            and receipt.provider in self.providers_allowed
             and receipt.budget_id != self.budget_id
             and receipt.created_at < self.provider_balance_covers_spend_before
         )
@@ -602,6 +611,11 @@ class SpendReceipt(StrictModel):
                 raise ValueError(f"{self.spend_id} frozen/refused spend cannot claim actual cost")
             if self.reconciled_at is None or not self.reconciliation_reason:
                 raise ValueError(f"{self.spend_id} frozen/refused spend requires review evidence")
+        elif self.reconciliation_state is SpendReconciliationState.SETTLED_BY_PROVIDER_BALANCE:
+            if self.actual_cost_usd is not None:
+                raise ValueError(f"{self.spend_id} balance-settled spend cannot claim actual cost")
+            if self.reconciled_at is None or not self.reconciliation_reason:
+                raise ValueError(f"{self.spend_id} balance-settled spend requires its evidence")
         _reject_private_or_identity_refs(
             _refs(
                 self.spend_id,
@@ -1143,27 +1157,17 @@ def evaluate_paid_route_eligibility(
         for budget in matching
         if budget.lifecycle_state is BudgetLifecycleState.ACTIVE and budget.is_unexpired_at(when)
     )
-    unresolved = tuple(
-        receipt
-        for budget in matching
-        for receipt in ledger._budget_receipts(budget)
-        if receipt.is_unreconciled_overdue(when) or receipt.is_frozen_refused()
+    # Every unresolved receipt on a matching budget blocks. Resolution is an act recorded on
+    # the receipt (a reviewed governance record, or settle_spend_covered_by_provider_balance),
+    # never a judgement made here at decision time.
+    overdue = tuple(
+        budget for budget in matching if ledger.budget_has_overdue_reconciliation(budget, when)
     )
-    # An unresolved receipt blocks unless an open budget's observed provider balance already
-    # reflects it (TransitionBudget.provider_balance_covers); without such evidence, all block.
-    residual = tuple(
-        receipt
-        for receipt in unresolved
-        if not any(budget.provider_balance_covers(receipt) for budget in unexpired)
-    )
-    overdue_ids = {r.budget_id for r in residual if r.is_unreconciled_overdue(when)}
-    overdue = tuple(budget for budget in matching if budget.budget_id in overdue_ids)
     if overdue:
         blocking.append(
             "unreconciled spend receipts overdue for " + ", ".join(b.budget_id for b in overdue)
         )
-    frozen_ids = {r.budget_id for r in residual if r.is_frozen_refused()}
-    frozen = tuple(budget for budget in matching if budget.budget_id in frozen_ids)
+    frozen = tuple(budget for budget in matching if ledger.budget_has_frozen_refused_spend(budget))
     if frozen:
         blocking.append(
             "frozen/refused spend receipts for " + ", ".join(b.budget_id for b in frozen)
@@ -1204,16 +1208,6 @@ def evaluate_paid_route_eligibility(
             evidence_refs=tuple(b.budget_id for b in unexpired),
         )
 
-    clear = [
-        (budget, remaining)
-        for budget, remaining in cap_eligible
-        if all(budget.provider_balance_covers(receipt) for receipt in unresolved)
-    ]
-    if not clear and not blocking:
-        blocking.append(
-            "unresolved spend receipts not covered by the chosen budget's provider balance: "
-            + ", ".join(sorted({r.budget_id or "unbudgeted" for r in unresolved}))
-        )
     if blocking:
         return PaidRouteEligibility(
             eligible=False,
@@ -1222,7 +1216,7 @@ def evaluate_paid_route_eligibility(
             evidence_refs=tuple(b.budget_id for b, _ in cap_eligible),
         )
 
-    budget, cap_remaining = clear[0]
+    budget, cap_remaining = cap_eligible[0]
     evidence_refs.append(budget.budget_id)
     return PaidRouteEligibility(
         eligible=True,
@@ -1231,6 +1225,55 @@ def evaluate_paid_route_eligibility(
         cap_remaining_usd=cap_remaining,
         evidence_refs=tuple(evidence_refs),
     )
+
+
+def settle_spend_covered_by_provider_balance(ledger: QuotaSpendLedger) -> QuotaSpendLedger:
+    """Resolve unresolved spend that a later provider balance observation already reflects.
+
+    The act the telemetry writer performs every tick (no operator): a pending or frozen
+    receipt that some budget's provider balance covers (same provider, another budget, created
+    before the settlement cut-off; TransitionBudget.provider_balance_covers) becomes
+    SETTLED_BY_PROVIDER_BALANCE. Whatever it cost is already out of the observed balance that
+    budget's cap was set from. No actual is claimed, the estimate stays held, and the reason
+    names the evidence. Spend no balance covers stays unresolved and keeps blocking.
+    """
+
+    payload = ledger.model_dump(mode="json")
+    settled_any = False
+    for index, receipt in enumerate(ledger.spend_receipts):
+        if receipt.reconciliation_state not in {
+            SpendReconciliationState.PENDING,
+            SpendReconciliationState.FROZEN_REFUSED,
+        }:
+            continue
+        covering = next(
+            (b for b in ledger.transition_budgets if b.provider_balance_covers(receipt)), None
+        )
+        if covering is None:
+            continue
+        settled = dict(payload["spend_receipts"][index])
+        settled.pop("actual_cost_usd", None)
+        if settled.get("estimated_cost_usd") is None:
+            settled["estimated_cost_usd"] = str(receipt.cost_against_cap())
+        settled["reconciliation_state"] = SpendReconciliationState.SETTLED_BY_PROVIDER_BALANCE.value
+        settled["reconciled_at"] = _payload_datetime(covering.provider_balance_observed_at)
+        settled["reconciliation_reason"] = (
+            f"settled against provider balance USD {covering.provider_balance_usd} observed "
+            f"{_payload_datetime(covering.provider_balance_observed_at)} (budget "
+            f"{covering.budget_id}, evidence {covering.provider_balance_evidence_ref}), which "
+            f"covers spend before {_payload_datetime(covering.provider_balance_covers_spend_before)}"
+            f"; per-call cost unknown, estimate held; was {receipt.reconciliation_state.value}: "
+            f"{receipt.reconciliation_reason or 'pending'}"
+        )
+        payload["spend_receipts"][index] = settled
+        settled_any = True
+    return QuotaSpendLedger.model_validate(payload) if settled_any else ledger
+
+
+def _payload_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def build_dashboard(

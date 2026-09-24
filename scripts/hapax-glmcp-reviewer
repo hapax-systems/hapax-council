@@ -1424,11 +1424,28 @@ def _mark_payg_spend_receipt_succeeded(
     reconciled_at = datetime.now(UTC).replace(microsecond=0)
     receipt_payload = reservation.spend_receipt.model_dump(mode="json")
     estimated_cost = Decimal(str(receipt_payload["estimated_cost_usd"]))
-    actual_cost, basis = _observed_actual_cost_usd(
-        estimated_cost=estimated_cost,
-        config=config,
-        observation=observation,
-    )
+    try:
+        actual_cost, basis = _observed_actual_cost_usd(
+            estimated_cost=estimated_cost,
+            config=config,
+            observation=observation,
+        )
+    except QuotaSpendLedgerError as exc:
+        # A usage report the price function cannot accept (e.g. cached above prompt tokens)
+        # prices nothing: freeze at the reservation or the dearest-rate ceiling.
+        return _mark_payg_spend_receipt_frozen(
+            reservation=reservation,
+            ledger_path=ledger_path,
+            config=config,
+            primary_error=primary_error,
+            observation=observation,
+            count_usd=(
+                _unidentified_spend_ceiling_usd(observation)
+                if observation is not None
+                else estimated_cost
+            ),
+            reason=f"reviewer froze: provider usage report inconsistent ({exc})",
+        )
     if actual_cost > estimated_cost:
         # The reservation was meant to bound this call; the bound failed. Count the higher
         # figure and stop paid spend until someone looks.

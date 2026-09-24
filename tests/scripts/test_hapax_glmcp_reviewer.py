@@ -1352,6 +1352,33 @@ def test_call_glm_payg_actual_above_reservation_freezes_spend_at_the_actual(
     assert "spend frozen" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("reply_content", ["```yaml\nverdict: accept\n```", ""])
+def test_call_glm_payg_inconsistent_usage_freezes_instead_of_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reply_content: str,
+) -> None:
+    """Review r2 item 4: a provider usage report the price function rejects (cached above
+    prompt) raised outside the handled errors, crashing the reviewer with its reservation left
+    pending. The spend is frozen at the reservation or the dearest-rate ceiling instead."""
+    module = _load_module()
+    ledger_path, _receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
+    body = _payg_reply("glm-5.3", content=reply_content)
+    body["usage"]["prompt_tokens_details"]["cached_tokens"] = 5_000  # more than prompt_tokens
+    if not reply_content:
+        body["choices"][0]["message"]["reasoning_content"] = "thinking..."
+    monkeypatch.setattr(module, "open_no_redirect", _walled_then(body, seen_urls))
+    prompt = "x" * 2_000
+
+    try:
+        module.call_glm(prompt, _payg_config(module), "test-secret-token")
+    except module.ApiError:
+        assert not reply_content  # only the empty reply is refused; nothing else escapes
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.reconciliation_state is module.SpendReconciliationState.FROZEN_REFUSED
+    assert "inconsistent" in receipt.reconciliation_reason
+
+
 def test_call_glm_payg_billed_empty_reply_is_reconciled_not_left_pending(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

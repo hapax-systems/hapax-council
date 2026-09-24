@@ -5618,12 +5618,19 @@ def test_glmcp_payg_spend_receipt_for_reviewer_default_glm_5_3_is_counted(
 
 
 def _folded_glmcp_payg_spend(tmp_path: Path) -> tuple[list[dict[str, Any]], str]:
-    """Relay-folded GLMCP spend receipts (base fixture receipts excluded) and writer stderr."""
-    base_ids = {
-        receipt["spend_id"]
-        for receipt in json.loads(FIXTURES.read_text(encoding="utf-8"))["spend_receipts"]
-    }
-    result, out = _run_writer(tmp_path, now=PAYG_NOW)
+    """Relay-folded GLMCP spend receipts (base fixture receipts excluded) and writer stderr.
+
+    The base is the fixture without provider balance evidence, so the fold itself is observed:
+    the fixture's real 2026-09-24 balance would otherwise settle these July receipts.
+    """
+    base_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    for budget in base_payload["transition_budgets"]:
+        for field in [key for key in budget if key.startswith("provider_balance_")]:
+            del budget[field]
+    base = tmp_path / "base-without-balance-evidence.json"
+    base.write_text(json.dumps(base_payload), encoding="utf-8")
+    base_ids = {receipt["spend_id"] for receipt in base_payload["spend_receipts"]}
+    result, out = _run_writer(tmp_path, "--base", str(base), now=PAYG_NOW)
     assert result.returncode == 0, result.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
     receipts = [
@@ -5730,25 +5737,184 @@ def test_glmcp_payg_spend_receipt_reservation_above_task_cap_is_frozen_and_count
     assert receipt["estimated_cost_usd"] == "2.000001"
 
 
-@pytest.mark.parametrize("estimated", ["0", "1e-3", "-0.05"])
-def test_glmcp_payg_spend_receipt_without_a_countable_reservation_is_ignored(
+UNTRUSTED_RECEIPT_CASES = {
+    "no countable reservation": {"estimated_cost_usd": "0"},
+    "malformed reservation": {"estimated_cost_usd": "1e-3"},
+    "unknown budget": {"budget_id": "tb-20990101-unknown-budget"},
+    "authority mismatch": {"authority_case": "CASE-SOMETHING-ELSE"},
+    "unsupported tool": {"supported_tool": "some-other-caller"},
+    "schema mismatch": {"schema": "hapax.glmcp_payg_spend.v0"},
+    "unknown status": {"status": "spend_weird"},
+}
+
+
+def _untrusted_receipt_text(**overrides: str) -> str:
+    fields = {
+        "schema": "hapax.glmcp_payg_spend.v1",
+        "status": "spend_estimated",
+        "spend_id": "spend-20260706T140430Z-glmcp-payg-review-untrusted",
+        "task_id": "cc-task-glmcp-review-seat-glm52-model-contract-20260706",
+        "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+        "route_id": "glmcp.review.direct",
+        "capacity_pool": "api_paid_spend",
+        "budget_id": "tb-20260706-zai-glmcp-payg-review",
+        "provider": "z_ai",
+        "model_or_engine": "glm-5.2",
+        "model_id": "z_ai-glm-5.2",
+        "effort": "none",
+        "quantization": "not_applicable",
+        "auth_surface": "api_key",
+        "quality_floor": "frontier_review_required",
+        "quality_preservation_reason": "receipt-bounded GLMCP review fallback",
+        "spend_reason": "quota_exhaustion",
+        "estimated_cost_usd": "0.05",
+        "created_at": "2026-07-06T14:04:30Z",
+        "reconcile_by": "2026-07-07T14:04:30Z",
+        "reconciliation_state": "pending",
+        "support_artifact_authority": "none",
+        "supported_tool": "hapax-glmcp-reviewer",
+        "endpoint": "https://api.z.ai/api/paas/v4",
+        "billing_mode": "api_credit_payg",
+        "payg_fallback": "true",
+        "primary_error_class": "quota_exhausted",
+        "secret_source": "pass:glmcp/api-key",
+        "secret_value_persisted": "false",
+        "prompt_or_output_persisted": "false",
+        **overrides,
+    }
+    return "".join(f"{key}: {value}\n" for key, value in fields.items())
+
+
+@pytest.mark.parametrize(
+    ("case", "text"),
+    [
+        *[
+            (case, _untrusted_receipt_text(**overrides))
+            for case, overrides in UNTRUSTED_RECEIPT_CASES.items()
+        ],
+        ("unknown field", _untrusted_receipt_text(injected_field="x")),
+        ("not a receipt at all", "\x00\x01 not yaml at all"),
+    ],
+)
+def test_glmcp_payg_untrusted_spend_receipt_is_frozen_and_counted_never_dropped(
     tmp_path: Path,
-    estimated: str,
+    case: str,
+    text: str,
 ) -> None:
-    """No positive decimal to hold against the caps: nothing can be counted, so it is refused
-    loudly (the reviewer only ever writes a positive priced reservation)."""
+    """Review r2 item 1: a file where a spend receipt belongs may represent a billed call,
+    whatever is wrong with it. It folds as a normalized frozen placeholder: attributed to a
+    GLMCP budget, holding at least its reservation (or the budget's per-task cap when none is
+    countable), bound to the file's hash, and refusing paid spend until a reviewed record
+    resolves it."""
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-payg-spend-20260706t140430z-untrusted.yaml").write_text(text, "utf-8")
+
+    [receipt], stderr = _folded_glmcp_payg_spend(tmp_path)
+
+    assert receipt["reconciliation_state"] == "frozen_refused", case
+    assert receipt.get("actual_cost_usd") is None
+    assert Decimal(receipt["estimated_cost_usd"]) >= Decimal("0.05"), case
+    assert "untrusted" in receipt["reconciliation_reason"], case
+    assert any("sha256:" in ref for ref in receipt["artifact_refs"]), case
+    assert receipt["budget_id"].startswith("tb-") and "zai-glmcp" in receipt["budget_id"]
+    assert "freezing GLMCP PAYG spend receipt" in stderr
+
+
+def test_glmcp_payg_failed_spend_receipt_is_folded_at_zero_not_dropped(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
     _glmcp_payg_spend(
         relay,
-        name="glmcp-payg-spend-20260706t140430z-cost.yaml",
-        estimated_cost_usd=estimated,
+        name="glmcp-payg-spend-20260706t140430z-failed.yaml",
+        status="spend_failed",
+        reconciliation_state="reconciled",
+        extra_fields=(
+            "actual_cost_usd: 0.00\ncap_remaining_usd: 2.00\n"
+            "reconciled_at: 2026-07-06T14:04:31Z\n"
+            "reconciliation_reason: PAYG API call failed before model output"
+        ),
     )
 
-    receipts, stderr = _folded_glmcp_payg_spend(tmp_path)
+    [receipt], _stderr = _folded_glmcp_payg_spend(tmp_path)
 
-    assert receipts == []
-    assert "estimated_cost_usd missing or not a positive decimal" in stderr
+    assert receipt["reconciliation_state"] == "reconciled"
+    assert receipt["actual_cost_usd"] == "0.00"
+
+
+def test_glmcp_payg_unverified_identity_never_trusts_the_reported_actual(tmp_path: Path) -> None:
+    """Review r2 item 3: identity first. A receipt whose identity is unverified is held at its
+    reservation and the dearest-rate ceiling of its reported usage; its actual, priced for an
+    unknown model, neither sets nor lowers the held figure."""
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_payg_spend(
+        relay,
+        name="glmcp-payg-spend-20260706t140430z-identity-actual.yaml",
+        model_or_engine="glm-5.3",
+        model_id="z_ai-glm-5.2",
+        status="spend_reconciled",
+        reconciliation_state="reconciled",
+        extra_fields=(
+            "actual_cost_usd: 0.09\ncap_remaining_usd: 1.91\n"
+            "reconciled_at: 2026-07-06T14:04:40Z\n"
+            "reconciliation_reason: actual from usage\n"
+            "usage_prompt_tokens: 20000\nusage_completion_tokens: 1000"
+        ),
+    )
+
+    [receipt], _stderr = _folded_glmcp_payg_spend(tmp_path)
+
+    # max(reservation 0.05, (20000 x 1.40 + 1000 x 4.40) / 1M = 0.0324); the 0.09 is not used
+    assert receipt["reconciliation_state"] == "frozen_refused"
+    assert receipt["estimated_cost_usd"] == "0.05"
+    assert "unverified actual not counted" in receipt["reconciliation_reason"]
+
+
+def test_glmcp_payg_diverged_model_id_map_freezes_instead_of_crashing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review r2 item 4: an admitted model missing from the ModelId map is an unverifiable
+    identity, not a KeyError that takes the writer down."""
+    namespace = runpy.run_path(str(SCRIPT))
+    scan = namespace["active_glmcp_payg_spend_receipts"]
+    monkeypatch.setitem(scan.__globals__, "GLMCP_MODEL_IDS", {"glm-5.2": "z_ai-glm-5.2"})
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_payg_spend(
+        relay,
+        name="glmcp-payg-spend-20260706t140430z-diverged.yaml",
+        model_or_engine="glm-5.3",
+        model_id="z_ai-glm-5.3",
+    )
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import load_quota_spend_ledger
+
+    result = scan(
+        relay,
+        base=load_quota_spend_ledger(FIXTURES),
+        now=datetime(2026, 7, 6, 14, 5, tzinfo=UTC),
+    )
+
+    [receipt] = result.receipts
+    assert receipt.reconciliation_state.value == "frozen_refused"
+
+
+def test_glmcp_payg_duplicate_relay_spend_id_counts_both(tmp_path: Path) -> None:
+    """Two different files naming one spend_id are two possible charges; neither is dropped."""
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    _glmcp_payg_spend(relay, name="glmcp-payg-spend-20260706t140430z-dup-a.yaml")
+    _glmcp_payg_spend(
+        relay, name="glmcp-payg-spend-20260706t140430z-dup-b.yaml", estimated_cost_usd="0.07"
+    )
+
+    receipts, _stderr = _folded_glmcp_payg_spend(tmp_path)
+
+    assert len(receipts) == 2
+    assert len({r["spend_id"] for r in receipts}) == 2
+    assert sorted(r["reconciliation_state"] for r in receipts) == ["frozen_refused", "pending"]
 
 
 BURN_BUDGET_ID = "tb-20260924-zai-glm-payg-balance-burn"
@@ -5758,9 +5924,10 @@ RAW_SPEND_ID = "spend-20260920T163624Z-glmcp-payg-review-05c44ca781-7c7117a67a75
 @pytest.mark.parametrize(
     ("model_id", "created_at", "expect_state", "expect_eligible"),
     [
-        # the real 09-18 raw shape: glm-5.3 stamped with glm-5.2's id -> frozen, counted
-        ("z_ai-glm-5.2", "2026-09-18T22:35:22Z", "frozen_refused", True),
-        ("z_ai-glm-5.3", "2026-09-18T22:35:22Z", "pending", True),
+        # the real 09-18 raw shape (glm-5.3 stamped with glm-5.2's id): folded frozen, then
+        # settled by the writer against the budget's later provider balance evidence
+        ("z_ai-glm-5.2", "2026-09-18T22:35:22Z", "settled_by_provider_balance", True),
+        ("z_ai-glm-5.3", "2026-09-18T22:35:22Z", "settled_by_provider_balance", True),
         # after the settlement cut-off the balance cannot have reflected them
         ("z_ai-glm-5.2", "2026-09-23T10:00:00Z", "frozen_refused", False),
         ("z_ai-glm-5.3", "2026-09-23T10:00:00Z", "pending", False),
@@ -5834,6 +6001,7 @@ def test_glmcp_payg_unresolved_raw_on_expired_budget_blocks_unless_the_balance_c
     assert folded.reconciliation_state.value == expect_state
     assert folded.cost_against_cap() == Decimal("0.05")
     if expect_eligible:
+        assert "operator-console-cash-balance-2026-09-24" in (folded.reconciliation_reason or "")
         assert decision.eligible, decision.blocking_reasons
         assert decision.budget_id == BURN_BUDGET_ID
     else:
@@ -5841,6 +6009,109 @@ def test_glmcp_payg_unresolved_raw_on_expired_budget_blocks_unless_the_balance_c
         assert any(
             "overdue" in reason or "frozen" in reason for reason in decision.blocking_reasons
         )
+
+
+def test_glmcp_payg_frozen_own_spend_resolves_only_by_a_reviewed_governance_record(
+    tmp_path: Path,
+) -> None:
+    """Review r2 item 5, the wedge: frozen spend on the live budget itself stops paid GLMCP
+    spend. No balance can settle a budget's own spend. The resolution act is a reviewed
+    governance SpendReceipt with the same spend_id in the checked-in fixtures, which a lane
+    lands through PR review and release. It needs no operator, and it cites the frozen
+    receipt's own provider-reported usage. Frozen -> resolved -> eligible."""
+    sys.path.insert(0, str(REPO_ROOT))
+    from shared.quota_spend_ledger import (
+        PaidRouteRequest,
+        evaluate_paid_route_eligibility,
+        load_quota_spend_ledger,
+    )
+
+    spend_id = "spend-20260924T200000Z-glmcp-payg-review-own-frozen"
+    relay = tmp_path / "relay-receipts"
+    relay.mkdir()
+    (relay / "glmcp-payg-spend-20260924t200000z-own-frozen.yaml").write_text(
+        _untrusted_receipt_text(
+            status="spend_frozen",
+            spend_id=spend_id,
+            task_id="some-review-task",
+            budget_id=BURN_BUDGET_ID,
+            model_or_engine="glm-5.3",
+            model_id="z_ai-glm-5.3",
+            estimated_cost_usd="0.141320",
+            created_at="2026-09-24T20:00:00Z",
+            reconcile_by="2026-09-25T20:00:00Z",
+            reconciliation_state="frozen_refused",
+            reconciled_at="2026-09-24T20:00:05Z",
+            reconciliation_reason="reviewer froze: provider-reported actual exceeds the reservation",
+            usage_prompt_tokens="100000",
+            usage_completion_tokens="300",
+        ),
+        encoding="utf-8",
+    )
+    request = PaidRouteRequest.model_validate(
+        {
+            "route_id": "glmcp.review.direct",
+            "task_id": "another-review-task",
+            "provider": "z_ai",
+            "profile": "glmcp-review-direct",
+            "task_class": "independent-review",
+            "quality_floor": "frontier_review_required",
+            "estimated_cost_usd": "0.05",
+            "capacity_pool": "api_paid_spend",
+        }
+    )
+    now = "2026-09-24T21:00:00Z"
+    when = datetime.fromisoformat(now.replace("Z", "+00:00"))
+
+    result, out = _run_writer(tmp_path, now=now)
+    assert result.returncode == 0, result.stderr
+    wedged = load_quota_spend_ledger(out)
+    assert not evaluate_paid_route_eligibility(wedged, request, now=when).eligible
+
+    base = tmp_path / "quota-spend-ledger-fixtures.json"
+    base_payload = json.loads(FIXTURES.read_text(encoding="utf-8"))
+    base_payload["spend_receipts"].append(
+        {
+            "spend_receipt_schema": 1,
+            "spend_id": spend_id,
+            "task_id": "some-review-task",
+            "authority_case": "CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+            "route_id": "glmcp.review.direct",
+            "capacity_pool": "api_paid_spend",
+            "budget_id": BURN_BUDGET_ID,
+            "provider": "z_ai",
+            "model_or_engine": "glm-5.3",
+            "model_id": "z_ai-glm-5.3",
+            "effort": "none",
+            "quantization": "not_applicable",
+            "auth_surface": "api_key",
+            "quality_floor": "frontier_review_required",
+            "quality_preservation_reason": "receipt-bounded GLMCP review fallback",
+            "spend_reason": "quota_exhaustion",
+            "estimated_cost_usd": "0.141320",
+            "actual_cost_usd": "0.141320",
+            "cap_remaining_usd": "76.398401",
+            "created_at": "2026-09-24T20:00:00Z",
+            "reconcile_by": "2026-09-25T20:00:00Z",
+            "reconciliation_state": "reconciled",
+            "reconciled_at": "2026-09-24T20:30:00Z",
+            "reconciliation_reason": (
+                "governance resolution: provider-reported usage 100000 prompt + 300 completion "
+                "tokens on glm-5.3 at list price"
+            ),
+            "artifact_refs": ["relay-receipt:glmcp-payg-spend-20260924t200000z-own-frozen.yaml"],
+            "support_artifact_authority": "none",
+        }
+    )
+    base.write_text(json.dumps(base_payload), encoding="utf-8")
+
+    result, out = _run_writer(tmp_path, "--base", str(base), now=now)
+    assert result.returncode == 0, result.stderr
+    resolved = load_quota_spend_ledger(out)
+    [receipt] = [r for r in resolved.spend_receipts if r.spend_id == spend_id]
+    assert receipt.reconciliation_state.value == "reconciled"
+    decision = evaluate_paid_route_eligibility(resolved, request, now=when)
+    assert decision.eligible, decision.blocking_reasons
 
 
 def test_glmcp_payg_spend_receipt_legacy_null_optionals_are_counted(

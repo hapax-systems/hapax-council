@@ -48,6 +48,7 @@ from shared.quota_spend_ledger import (
     has_successful_task_scoped_glmcp_payg_review_spend,
     load_quota_spend_ledger,
     load_quota_spend_ledger_resolved,
+    settle_spend_covered_by_provider_balance,
     subscription_quota_state_for_route,
     successful_task_scoped_glmcp_payg_review_spend_receipts,
 )
@@ -1066,9 +1067,13 @@ def _ledger_with_blocked_earlier_glmcp_budget(
     blocker_created_at: str = "2026-05-11T07:59:00Z",
     blocker_on_new_budget: bool = False,
     provider_balance: bool = True,
+    blocker_provider: str | None = None,
 ) -> QuotaSpendLedger:
     """An expired earlier GLMCP budget holding one unresolved receipt, and a new budget."""
     payload = _active_budget_payload()
+    for budget in payload["transition_budgets"]:  # only the budget under test carries evidence
+        for field in PROVIDER_BALANCE_FIELDS:
+            budget.pop(field, None)
     new_budget_id = _add_glmcp_payg_budget(payload)
     if provider_balance:
         payload["transition_budgets"][-1].update(PROVIDER_BALANCE_FIELDS)
@@ -1090,6 +1095,8 @@ def _ledger_with_blocked_earlier_glmcp_budget(
     receipt = payload["spend_receipts"][-1]
     receipt["created_at"] = blocker_created_at
     receipt["reconcile_by"] = "2026-05-17T07:30:00Z"  # after creation, before NOW: overdue
+    if blocker_provider is not None:
+        receipt["provider"] = blocker_provider
     if blocker == "frozen":
         receipt["reconciliation_state"] = "frozen_refused"
         receipt["reconciled_at"] = "2026-05-12T08:00:00Z"
@@ -1111,17 +1118,27 @@ def _glmcp_review_request() -> PaidRouteRequest:
 
 
 @pytest.mark.parametrize("blocker", ["frozen", "overdue_pending"])
-def test_provider_balance_observed_after_settlement_covers_earlier_unresolved_spend(
+def test_unresolved_spend_blocks_until_settled_against_a_later_provider_balance(
     blocker: str,
 ) -> None:
-    """A balance the provider reported after an unresolved receipt settled already reflects it,
-    so it cannot overspend the balance; the new budget, capped at that balance, may admit."""
+    """Review r2 item 5: the gate never looks past an unresolved receipt. Resolution is an
+    explicit act recorded on the receipt: a provider balance reported after the spend settled
+    already reflects it, so the receipt is settled against that evidence (no actual claimed,
+    the estimate still held), and only then does the new budget admit."""
     ledger = _ledger_with_blocked_earlier_glmcp_budget(blocker=blocker)
 
-    decision = evaluate_paid_route_eligibility(ledger, _glmcp_review_request(), now=NOW)
+    before = evaluate_paid_route_eligibility(ledger, _glmcp_review_request(), now=NOW)
+    settled_ledger = settle_spend_covered_by_provider_balance(ledger)
+    after = evaluate_paid_route_eligibility(settled_ledger, _glmcp_review_request(), now=NOW)
 
-    assert decision.eligible, decision.blocking_reasons
-    assert decision.budget_id == "tb-20260517-zai-glmcp-payg-review"
+    assert not before.eligible
+    [settled] = [r for r in settled_ledger.spend_receipts if r.budget_id == EARLIER_GLMCP_BUDGET_ID]
+    assert settled.reconciliation_state is SpendReconciliationState.SETTLED_BY_PROVIDER_BALANCE
+    assert settled.actual_cost_usd is None
+    assert settled.cost_against_cap() == Decimal("0.05")
+    assert "operator-console-balance-2026-05-17" in (settled.reconciliation_reason or "")
+    assert after.eligible, after.blocking_reasons
+    assert after.budget_id == "tb-20260517-zai-glmcp-payg-review"
 
 
 @pytest.mark.parametrize(
@@ -1130,17 +1147,43 @@ def test_provider_balance_observed_after_settlement_covers_earlier_unresolved_sp
         ("no provider balance evidence", {"provider_balance": False}),
         ("spend after the settlement cut-off", {"blocker_created_at": "2026-05-16T07:59:00Z"}),
         ("the budget's own spend", {"blocker_on_new_budget": True}),
+        ("another provider's spend", {"blocker_provider": "opaque-provider-a"}),
     ],
 )
-def test_provider_balance_never_covers_unsettled_or_own_unresolved_spend(
+def test_provider_balance_never_settles_unsettled_own_or_foreign_spend(
     case: str, kwargs: dict[str, Any]
 ) -> None:
-    ledger = _ledger_with_blocked_earlier_glmcp_budget(blocker="frozen", **kwargs)
+    ledger = settle_spend_covered_by_provider_balance(
+        _ledger_with_blocked_earlier_glmcp_budget(blocker="frozen", **kwargs)
+    )
 
-    decision = evaluate_paid_route_eligibility(ledger, _glmcp_review_request(), now=NOW)
+    assert not any(
+        r.reconciliation_state is SpendReconciliationState.SETTLED_BY_PROVIDER_BALANCE
+        for r in ledger.spend_receipts
+    ), case
+    if kwargs.get("blocker_provider") is None:
+        decision = evaluate_paid_route_eligibility(ledger, _glmcp_review_request(), now=NOW)
+        assert not decision.eligible, case
+        assert any("frozen/refused" in reason for reason in decision.blocking_reasons), case
 
-    assert not decision.eligible, case
-    assert any("frozen/refused" in reason for reason in decision.blocking_reasons), case
+
+def test_settled_by_provider_balance_claims_no_actual_and_names_its_evidence() -> None:
+    payload = _active_budget_payload()
+    budget_id = _add_glmcp_payg_budget(payload)
+    _add_glmcp_payg_spend_receipt(payload, budget_id)
+    receipt = payload["spend_receipts"][-1]
+    receipt.update(
+        reconciliation_state="settled_by_provider_balance",
+        reconciled_at="2026-05-17T07:00:00Z",
+    )
+
+    with pytest.raises(ValidationError):  # no reason naming the evidence
+        QuotaSpendLedger.model_validate(payload)
+    receipt["reconciliation_reason"] = "settled against provider balance evidence"
+    receipt["actual_cost_usd"] = "0.05"
+    receipt["cap_remaining_usd"] = "1.95"
+    with pytest.raises(ValidationError):  # an actual would be a claim nobody can back
+        QuotaSpendLedger.model_validate(payload)
 
 
 @pytest.mark.parametrize(
