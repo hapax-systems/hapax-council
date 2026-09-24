@@ -388,7 +388,7 @@ MUTANTS = [
     ),
     (
         "derived-supersedes-wall",
-        "test_transcript_spend_never_supersedes_a_wall",
+        "test_derived_evidence_never_lifts_a_wall_even_if_it_claims_a_serve",
         READER,
         '        row.label == "observed"\n        and served_by_the_subscription(row)',
         '        row.label in {"observed", "derived"}\n        and served_by_the_subscription(row)',
@@ -940,23 +940,30 @@ def run_mutant(work: Path, logs: Path, mutant: tuple[str, str, str, str, str]) -
             raise RuntimeError(f"mutant did not apply: {name}")
         clear_caches(work)
         # A private basetemp per overlay: concurrent runs must not prune each other's tmp dirs.
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                node(test),
-                "-q",
-                "-p",
-                "no:cacheprovider",
-                "--basetemp",
-                str(work / ".pytest-tmp"),
-            ],
-            cwd=work,
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    node(test),
+                    "-q",
+                    "-p",
+                    "no:cacheprovider",
+                    "--basetemp",
+                    str(work / ".pytest-tmp"),
+                ],
+                cwd=work,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # A hung mutant is a surviving mutant, recorded like any other result.
+            partial = (exc.stdout or b"") + (exc.stderr or b"")
+            text = partial.decode(errors="replace") if isinstance(partial, bytes) else partial
+            (logs / f"{name}.log").write_text(text + "\n[timed out after 300 s]\n")
+            return {"mutant": name, "test": test, "killed": False, "exit_code": "timeout"}
         output = completed.stdout + completed.stderr
         (logs / f"{name}.log").write_text(output)
         killed = completed.returncode == 1 and "AssertionError" in output

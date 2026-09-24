@@ -973,6 +973,31 @@ def test_kimi_non_responses_are_not_served_turns(tmp_path, line):
     assert "kimi.usage.last_response" not in by_id(read_kimi_403_signal(sessions))
 
 
+def test_derived_evidence_never_lifts_a_wall_even_if_it_claims_a_serve():
+    # Defence in depth under the witness rule: the label is checked on its own, so a derived
+    # row that somehow carried the witness still lifts nothing.
+    from shared.quota_headroom import evidence
+
+    wall = evidence(
+        "claude.subscription.wall",
+        at=datetime(2026, 9, 24, 18, tzinfo=UTC),
+        label="wall-signal",
+        unit="refusal",
+        source="fixture",
+        reason_code="fixture_wall",
+    )
+    derived = evidence(
+        "claude.spend.5h",
+        at=datetime(2026, 9, 24, 18, 10, tzinfo=UTC),
+        quantity=5,
+        unit="tokens",
+        label="derived",
+        source="fixture",
+        details={"subscription_served": 1},
+    )
+    assert wall_is_live(wall, [wall, derived], now=A1_NOW)
+
+
 def test_a_reading_without_a_subscription_witness_never_lifts_a_wall(tmp_path):
     # Rows that do not say the subscription served them (other families' usage, derived
     # spend) never lift a wall: parity with the Claude refusal/overage rule.
