@@ -148,13 +148,26 @@ Publication errors report the original role, session, epoch, intent and binding
 hash, plus read-only journal observations. An observation can be terminal
 applied, terminal aborted, held or unknown; preserve held/unknown evidence and
 reconcile it before choosing another session. Both ordinary and explicit
-`cc-claim --recover-claim-publications <task-id>` return
-`claim_publication_recovery_authority_unverified` for otherwise valid pending
-journals. Caller role/session coordinates are identifiers, not independently
+`cc-claim --recover-claim-publications <task-id>` reconcile an otherwise valid
+pending journal by observation only, under its role and note locks, and write no
+projection:
+
+- every live projection at its preimage and no receipt: `aborted`
+  (`claim_publication_reconciled_before_projection`);
+- every live projection at its postimage and the exact receipt present:
+  `applied` (`claim_publication_reconciled_postimage`), kept only if the full
+  applied readback then passes;
+- any mixed vector: held with `claim_publication_recovery_authority_unverified`.
+
+An applied journal whose projections drifted is `superseded`
+(`claim_publication_superseded_by_later_applied`) only when the latest later
+applied publication for the same task passes its full readback; otherwise it
+holds with `claim_publication_postimage_drift`.
+Caller role/session coordinates are identifiers, not independently
 verified authority. Matching the recorded owner (including a forged retry) does
 not permit replay. The former owner-mismatch response that disclosed journal
 owner coordinates has been removed. The compatibility API still requires well-formed coordinates, but
-applied/aborted results are observations and incomplete publications stay held.
+applied/aborted results are observations and mixed publications stay held.
 This is an intentional availability limitation until a governed producer can
 supply independently verified recovery authority at use. Preserve all journals,
 receipts and partial projections; do not reconstruct markers or choose a fresh
