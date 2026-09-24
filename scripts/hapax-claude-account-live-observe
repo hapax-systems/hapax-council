@@ -430,6 +430,126 @@ def provider_redirect_env(env: Mapping[str, str] | None = None) -> list[str]:
     )
 
 
+# The CLI's documented host-routing contract excludes settings-file provider/env
+# overrides while retaining hooks, MCP, plugins and session continuity. Keep the
+# lock in both the process env (before settings load) and the highest-precedence
+# CLI settings (during settings reload). Managed policy is never overridden.
+INTERACTIVE_SUBSCRIPTION_SETTINGS = json.dumps(
+    {
+        "apiKeyHelper": "",
+        "forceLoginMethod": "claudeai",
+        "env": {"CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": "1"},
+    },
+    separators=(",", ":"),
+)
+INTERACTIVE_ENV_NAMES = frozenset(
+    {
+        "HOME",
+        "PATH",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "TERM",
+        "COLORTERM",
+        "TMUX",
+        "TMUX_PANE",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "SSH_AUTH_SOCK",
+        "CLAUDE_ROLE",
+        "CLAUDE_CONFIG_DIR",
+    }
+)
+# Earliest CLI whose host-routing effect this producer has actually exercised.
+# A silently ignored env flag on an older CLI is not an authentication boundary.
+INTERACTIVE_MINIMUM_CLI = (2, 1, 281)
+
+
+def interactive_subscription(argv: list[str], *, execute: bool) -> int:
+    """Bind the admitted child, not just its probe, to saved subscription OAuth.
+
+    This does not observe quota or mint evidence. The dispatcher owns admission.
+    No token is written to argv, spawn scripts, status output or another store.
+    """
+
+    def hold(reason: str) -> int:
+        print(
+            f"interactive subscription launch held: {reason}. Next action: restore "
+            "a current Pro/Max saved login on unmanaged Linux and a Claude CLI that "
+            "supports host-managed provider routing; reconcile any gateway or managed "
+            "configuration through its owner, then retry governed dispatch. No API fallback.",
+            file=sys.stderr,
+        )
+        return 4
+
+    if not argv or any(
+        arg == "--" or arg.split("=", 1)[0] in {"--settings", "--setting-sources"}
+        for arg in argv[1:]
+    ):
+        return hold("caller settings overrides cannot be bound to the measured route")
+    token = _subscription_probe_token(datetime.now(UTC)) if _unmanaged_linux_probe() else None
+    if token is None:
+        return hold("subscription authentication or host policy is unproven")
+    # Like the probe, exclude provider, proxy and runtime-injection controls.
+    # Retain coordination, terminal, locale and desktop bindings for full tools.
+    child_env = {
+        name: value
+        for name, value in os.environ.items()
+        if name in INTERACTIVE_ENV_NAMES or name.startswith(("HAPAX_", "XDG_", "LC_"))
+    }
+    child_env.update(
+        CLAUDE_CODE_OAUTH_TOKEN=token,
+        CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST="1",
+    )
+    settings = ["--settings", INTERACTIVE_SUBSCRIPTION_SETTINGS]
+    try:
+        version_result = subprocess.run(
+            [argv[0], "--version"], env=child_env, capture_output=True, text=True, timeout=15
+        )
+        version = re.fullmatch(
+            r"(\d+)\.(\d+)\.(\d+) \(Claude Code\)", version_result.stdout.strip()
+        )
+        if (
+            version_result.returncode != 0
+            or version is None
+            or tuple(map(int, version.groups())) < INTERACTIVE_MINIMUM_CLI
+        ):
+            return hold(
+                "Claude CLI 2.1.281 or later is required for the measured host-routing contract"
+            )
+        # Check the installed interpreter's selection with the exact child env
+        # and settings. Old/unsupported CLIs and saved gateway sessions hold.
+        # Auth status may contain account PII; parse in memory, never echo it.
+        result = subprocess.run(
+            [argv[0], *settings, "auth", "status", "--json"],
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        status = json.loads(result.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return hold("the CLI authentication check failed")
+    if (
+        result.returncode != 0
+        or not isinstance(status, dict)
+        or status.get("loggedIn") is not True
+        or status.get("authMethod") != "oauth_token"
+        or status.get("apiProvider") != "firstParty"
+        or status.get("apiKeySource") is not None
+        or not _unmanaged_linux_probe()
+    ):
+        return hold("the actual CLI did not select the bound first-party OAuth route")
+    if execute:
+        try:
+            os.execvpe(argv[0], [*argv, *settings], child_env)
+        except OSError:
+            return hold("the bound CLI could not start")
+    return 0
+
+
 def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
     """Actively observe account-live by making one bounded real request.
 
@@ -446,7 +566,9 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         print(
             "probe refused: environment would redirect the Claude CLI off the operator "
             f"subscription ({', '.join(redirected)} set). A receipt minted here would "
-            "assert auth_surface=subscription for an endpoint that is not the subscription.",
+            "assert auth_surface=subscription for an endpoint that is not the subscription. "
+            "Next action: unset the named redirect variables in the observer environment "
+            "and retry the governed subscription observation.",
             file=sys.stderr,
         )
         return None
@@ -878,4 +1000,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] in {
+        "--check-interactive-subscription",
+        "--exec-interactive-subscription",
+    }:
+        raise SystemExit(
+            interactive_subscription(
+                sys.argv[2:], execute=sys.argv[1] == "--exec-interactive-subscription"
+            )
+        )
     raise SystemExit(main())

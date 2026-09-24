@@ -259,3 +259,39 @@ def test_unbound_os_policy_holds_before_request(
     observed = _fake_claude(tmp_path, monkeypatch)
     assert obs.probe(NOW) is None
     assert not observed.exists()
+
+
+def test_wsl_policy_holds_before_request(tmp_path, monkeypatch, subscription_probe_home):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(obs.os, "uname", lambda: SimpleNamespace(release="6.6-microsoft-WSL2"))
+    observed = _fake_claude(tmp_path, monkeypatch)
+    assert obs.probe(NOW) is None
+    assert not observed.exists()
+
+
+def test_unreadable_policy_holds_before_request(tmp_path, monkeypatch, subscription_probe_home):
+    original = Path.stat
+
+    def stat(path, *args, **kwargs):
+        if path == obs.PROBE_MANAGED_DIR:
+            raise PermissionError("synthetic policy denial")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    observed = _fake_claude(tmp_path, monkeypatch)
+    assert obs.probe(NOW) is None
+    assert not observed.exists()
+
+
+def test_redirect_refusal_names_recovery_without_values(
+    tmp_path, monkeypatch, subscription_probe_home, capsys
+):
+    monkeypatch.setenv("ANTHROPIC_UNBOUND_ROUTE", "synthetic-sensitive-value")
+    observed = _fake_claude(tmp_path, monkeypatch)
+    assert obs.probe(NOW) is None
+    assert not observed.exists()
+    error = capsys.readouterr().err
+    assert "ANTHROPIC_UNBOUND_ROUTE" in error
+    assert "Next action:" in error and "unset" in error and "retry" in error
+    assert "synthetic-sensitive-value" not in error

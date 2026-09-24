@@ -52,6 +52,44 @@ Recheck settings loaded inside the actual child process, invalid credentials,
 managed configuration holds, cleanup and sanitized failures with
 `tests/scripts/test_claude_probe_subscription_boundary.py`.
 
+Governed interactive dispatch also passes `--subscription-only` to `hapax-claude`.
+The launcher checks before claiming/spawning and repeats the binding inside the
+actual tmux runner (or immediately before a direct terminal exec). A tmux server's
+ambient environment cannot substitute its own provider or saved-login directory.
+Only the home/configuration paths are recorded in the runner; the saved access
+token is read and validated again in memory at execution.
+
+The child retains its normal home, hooks, MCP configuration, plugins and history.
+Provider, proxy and runtime-injection variables inherited from the caller are
+excluded. The documented `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` control prevents
+settings files from restoring provider/authentication overrides. A command-line
+settings layer retains that control, disables `apiKeyHelper`, and selects the
+subscription login method. Caller `--settings`/`--setting-sources` overrides hold.
+Managed configurations remain unsupported and held, not overridden. This relies
+on the vendor's [host routing contract](https://code.claude.com/docs/en/env-vars)
+and [settings precedence](https://code.claude.com/docs/en/settings), checked
+2026-09-24 against installed CLI 2.1.281. Earlier or unparseable versions hold;
+2.1.281 is the earliest version this producer has exercised, not a claim about
+when the vendor introduced the feature.
+
+Before exec, the CLI must report `loggedIn: true`, `authMethod: oauth_token`,
+`apiProvider: firstParty`, and no API-key source for the child's environment and
+settings. A saved gateway selection, unsupported CLI, missing/expired login,
+unreadable or changed policy, or failed authentication check holds the launch.
+The check output may contain account data, so it is parsed in memory and never
+printed. It is a credential-selection check, not a live quota observation; it
+does not refresh the receipt, prove a serve or authorize API fallback. The
+environment token stays fixed for the session; expiry requires restoring the
+saved login and a governed restart, never automatic credential substitution.
+
+Recheck the real dispatch/launcher/runner path with
+`tests/scripts/test_claude_interactive_launch_auth.py`. For a separate installed
+CLI check, set `HAPAX_CLAUDE_CONTRACT_BINARY` to its absolute path and run that
+file's `test_installed_cli_keeps_routing_bound_after_loading_settings`. It uses
+synthetic credentials, a temporary home and `--init-only` in an unshared network
+namespace. Its actual Setup-hook observation establishes settings application
+and preserved useful configuration, not live headroom or a production lane.
+
 Recheck the probe-to-writer path with
 `tests/scripts/test_claude_interactive_admission_auth_review.py::test_real_probe_result_reaches_interactive_mint`;
 only its provider subprocess is simulated, while the probe, selector, writer and
@@ -126,6 +164,7 @@ uv run pytest tests/scripts/test_hapax_claude_interactive_admission.py \
   tests/scripts/test_claude_interactive_admission_review.py \
   tests/scripts/test_claude_interactive_admission_auth_review.py \
   tests/scripts/test_claude_probe_subscription_boundary.py \
+  tests/scripts/test_claude_interactive_launch_auth.py \
   tests/shared/test_capability_availability_guarantor.py -q
 ```
 
