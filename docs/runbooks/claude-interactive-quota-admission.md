@@ -11,6 +11,10 @@ not itself observe live headroom or authorize launching work. After release,
 the coordinator must obtain a genuine account-live subscription observation,
 record its actual observation time, and use the installed
 `hapax-claude-subscription-quota-admission --route-id claude.interactive.full`.
+The scheduled account-live observer now includes this route and requires an
+Opus-family serve, matching the declared interactive model family. A Haiku or
+Sonnet serve cannot witness interactive admission. Use `--no-probe` for passive
+observation when a live probe is not authorized.
 That admission script's `--help` lists the permitted
 observation kinds and sanitized evidence-reference format. Preserve the default
 900-second lifetime unless a governed observation specifies another allowed
@@ -21,6 +25,10 @@ governed path and re-evaluate the intended task with the existing dispatcher.
 Read back the interactive snapshot's route, provider, evidence, expiry and
 quota state, plus the resulting route decision and availability receipt.
 Fresh platform capability/resource evidence remains separately necessary.
+Telemetry must be regenerated after activation: older composite references
+without an explicit `route_id` are untrusted at ledger read. The receipt's
+filename is not route identity; the writer carries the validated route field
+into the evidence reference and the ledger checks it against the snapshot.
 
 Expected boundaries:
 
@@ -65,6 +73,8 @@ route_id = "claude.interactive.full"
 now = datetime.now(UTC)
 resolved = load_quota_spend_ledger_resolved(live_path=_quota_spend_live_path_from_env())
 state, refs = subscription_quota_state_for_route(resolved.ledger, route_id, now=now)
+snapshots = [snapshot.model_dump(mode="json") for snapshot in resolved.ledger.quota_snapshots
+             if snapshot.route_id == route_id]
 registry = load_platform_capability_registry(now=now)
 availability = evaluate_registry_availability(
     registry, route_ids=[route_id], now=now,
@@ -72,6 +82,7 @@ availability = evaluate_registry_availability(
 )
 print(json.dumps({"ledger_source": resolved.source, "ledger_path": str(resolved.path),
                   "ledger_error": resolved.live_error, "quota_state": state.value,
+                  "quota_snapshots": snapshots,
                   "quota_evidence": refs, "availability": availability.to_dict()}, indent=2))
 PY
 ```

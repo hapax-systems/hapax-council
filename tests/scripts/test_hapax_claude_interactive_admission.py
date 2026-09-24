@@ -197,7 +197,9 @@ def test_interactive_ledger_requires_bounded_producer_evidence(defect: str) -> N
         _claude_ledger,
     )
 
-    payload = _claude_ledger(CLAUDE_ADMISSION_EVIDENCE_REF, route_id=ROUTE).model_dump(mode="json")
+    payload = _claude_ledger(
+        CLAUDE_ADMISSION_EVIDENCE_REF.replace("claude.headless.full", ROUTE), route_id=ROUTE
+    ).model_dump(mode="json")
     snapshot = next(s for s in payload["quota_snapshots"] if s["route_id"] == ROUTE)
     if defect == "provider":
         snapshot["provider"] = "anthropic-api"

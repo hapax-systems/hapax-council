@@ -115,6 +115,7 @@ CLAUDE_ADMISSION_COMPOSITE_REF_RE = re.compile(
     r"(?P<label>[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml):"
     rf"witness:(?P<witness>{CLAUDE_ADMISSION_WITNESS_PATTERN}):"
     rf"observation:(?P<observation>{CLAUDE_ADMISSION_OBSERVATION_PATTERN}):"
+    r"route_id:(?P<route_id>claude\.(?:headless\.full|review\.opus|interactive\.full)):"
     r"observed_at:(?P<observed_at>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z):"
     r"fresh_until:(?P<fresh_until>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
     rf"{re.escape(CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)}\Z"
@@ -1491,7 +1492,10 @@ def _subscription_quota_missing_required_admission_evidence(
     if normalized_route_id == "agy.review.direct":
         return not any(_is_agy_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
-        return not any(_is_claude_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+        return not any(
+            _is_claude_admission_evidence_ref(ref, route_id=normalized_route_id)
+            for ref in snapshot.evidence_refs
+        )
     if normalized_route_id == "kimi.interactive.lane":
         return not any(_is_kimi_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     return True
@@ -1575,8 +1579,9 @@ def _is_kimi_admission_evidence_ref(ref: str) -> bool:
     )
 
 
-def _is_claude_admission_evidence_ref(ref: str) -> bool:
-    if CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref) is None:
+def _is_claude_admission_evidence_ref(ref: str, *, route_id: str | None = None) -> bool:
+    match = CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref)
+    if match is None or (route_id is not None and match.group("route_id") != route_id):
         return False
     return _has_safe_claude_admission_receipt_label(ref) and _has_safe_claude_admission_witness(ref)
 

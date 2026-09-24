@@ -1795,6 +1795,7 @@ def active_claude_admission_receipts(
                     "relay-receipt:"
                     f"{_receipt_label(path)}:witness:{receipt_evidence_ref}:"
                     f"observation:{observation}:"
+                    f"route_id:{route_id}:"
                     f"observed_at:{_iso_z_seconds(observed_at)}:"
                     f"fresh_until:{_iso_z_seconds(fresh_until)}:"
                     f"{CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX}"

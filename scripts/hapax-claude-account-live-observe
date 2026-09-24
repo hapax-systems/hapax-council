@@ -70,7 +70,7 @@ ADMISSION_WRITER = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admi
 #: The witness name the receipt validator's allowlist requires for this observation.
 WITNESS_PREFIX = "claude-subscription-headroom-observed"
 OBSERVATION = "subscription_quota_headroom_observed"
-DEFAULT_ROUTE_IDS = ("claude.review.opus", "claude.headless.full")
+DEFAULT_ROUTE_IDS = ("claude.review.opus", "claude.headless.full", "claude.interactive.full")
 
 DEFAULT_HEADLESS_GLOB = "~/.cache/hapax/claude-headless/*/output.jsonl"
 DEFAULT_TRANSCRIPT_GLOB = "~/.claude/projects/*/*.jsonl"
@@ -105,6 +105,7 @@ CLAUDE_MODEL_RE = re.compile(r"\Aclaude-[a-z0-9.-]+\Z")
 ROUTE_MODEL_PREFIXES: Final[dict[str, tuple[str, ...]]] = {
     "claude.review.opus": ("claude-opus",),
     "claude.headless.full": ("claude-",),
+    "claude.interactive.full": ("claude-opus",),
 }
 
 

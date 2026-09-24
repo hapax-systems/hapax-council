@@ -24,6 +24,7 @@ CLAUDE_ADMISSION_EVIDENCE_REF = (
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:"
     "witness:claude-subscription-headroom-observed-20260708t1400z:"
     "observation:subscription_quota_headroom_observed:"
+    "route_id:claude.headless.full:"
     "observed_at:2026-07-08T14:00:00Z:"
     "fresh_until:2026-07-08T14:15:00Z:"
     "account-live-quota:observed"
