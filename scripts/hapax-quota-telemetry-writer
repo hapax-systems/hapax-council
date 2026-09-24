@@ -2649,9 +2649,11 @@ def build_live_ledger(
     return QuotaSpendLedger.model_validate(payload)
 
 
-def write_ledger_atomic(ledger: QuotaSpendLedger, path: Path) -> None:
+def write_ledger_atomic(ledger: QuotaSpendLedger, path: Path, *, schema_version: int = 2) -> None:
+    """Replace ``path`` atomically; ``schema_version=1`` writes the strict-v1 projection."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(ledger.model_dump(mode="json"), indent=1, sort_keys=True) + "\n"
+    data = ledger.schema_v1_payload() if schema_version == 1 else ledger.model_dump(mode="json")
+    payload = json.dumps(data, indent=1, sort_keys=True) + "\n"
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -3607,9 +3609,27 @@ def quota_receipt_surface_expiries(
     }
 
 
+#: The live file stays at schema 1 until every reader takes schema 2. Measured 2026-09-24:
+#: reins reads it through the separately released `hapax-spine` 0.1.3, whose ledger model is
+#: `schema_version: Literal[1]` with `extra="forbid"`. Set 2 only after that reader accepts it.
+LIVE_SCHEMA_ENV = "HAPAX_QUOTA_LEDGER_LIVE_SCHEMA"
+
+
+def live_schema_version() -> int:
+    return 2 if os.environ.get(LIVE_SCHEMA_ENV, "1").strip() == "2" else 1
+
+
 def append_operator_report(argv: list[str]) -> int:
     """Append to the same locked ledger; no receipt or separate report store."""
     from shared.quota_headroom import operator_report
+
+    if live_schema_version() != 2:
+        print(
+            "operator report refused: the live ledger is schema 1 and reports need schema 2. "
+            f"Next action: set {LIVE_SCHEMA_ENV}=2 once every live-ledger reader accepts schema 2",
+            file=sys.stderr,
+        )
+        return 1
 
     parser = argparse.ArgumentParser(prog="hapax-quota-telemetry-writer operator-report")
     parser.add_argument("--family", required=True)
@@ -3716,6 +3736,13 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(os.environ.get("HAPAX_QUOTA_TRACE_HOME", str(Path.home()))),
         help="Root of local CLI traces",
     )
+    parser.add_argument(
+        "--live-schema-version",
+        type=int,
+        choices=(1, 2),
+        default=live_schema_version(),
+        help=f"Schema of the live file; defaults to ${LIVE_SCHEMA_ENV} or 1 (see its comment)",
+    )
     args = parser.parse_args(argv)
 
     now = _parse_utc(args.now) if args.now else datetime.now(UTC).replace(microsecond=0)
@@ -3763,39 +3790,47 @@ def main(argv: list[str] | None = None) -> int:
 
     from shared.quota_headroom import TraceReadError, collect_measurements, enrich_ledger
 
+    # Measurements only add evidence. When they cannot be read, the admission ledger is still
+    # written, unenriched: a measurement failure narrows evidence, it never stalls admission.
+    measurements = None
     try:
         measurements = collect_measurements(args.trace_home, args.relay_receipt_dir, now=now)
-    except (TraceReadError, ValueError):
+    except (TraceReadError, ValueError, OSError):
         print(
-            "hapax-quota-telemetry-writer: local measurement source corrupt or unreadable; ledger preserved",
+            "hapax-quota-telemetry-writer: local measurements unavailable; admission ledger "
+            "written without them. Next action: run with --check to see the failing source",
             file=sys.stderr,
         )
-        return 1
     from shared.platform_capability_registry import load_platform_capability_registry
 
+    registry = None
     try:
         registry = PlatformCapabilityRegistry.model_validate(
             json.loads(PLATFORM_CAPABILITY_REGISTRY.read_text(encoding="utf-8"))
         )
     except (OSError, ValueError):
         print(
-            "hapax-quota-telemetry-writer: static capability registry unavailable; ledger preserved",
+            "hapax-quota-telemetry-writer: static capability registry unavailable; admission "
+            "ledger written without measurements. Next action: validate "
+            "config/platform-capability-registry.json",
             file=sys.stderr,
         )
+    if registry is not None:
+        try:
+            registry = load_platform_capability_registry(
+                PLATFORM_CAPABILITY_REGISTRY,
+                receipt_dir=args.platform_capability_receipt_dir,
+                now=now,
+            )
+        except (OSError, ValueError):
+            # Keep declarations while the existing admission scanners fail closed
+            # on damaged runtime evidence. Never elevate a stage from a bad receipt.
+            print(
+                "hapax-quota-telemetry-writer: capability evidence unavailable; stages use declarations only",
+                file=sys.stderr,
+            )
+    if args.check and (measurements is None or registry is None):
         return 1
-    try:
-        registry = load_platform_capability_registry(
-            PLATFORM_CAPABILITY_REGISTRY,
-            receipt_dir=args.platform_capability_receipt_dir,
-            now=now,
-        )
-    except (OSError, ValueError):
-        # Keep declarations while the existing admission scanners fail closed
-        # on damaged runtime evidence. Never elevate a stage from a bad receipt.
-        print(
-            "hapax-quota-telemetry-writer: capability evidence unavailable; stages use declarations only",
-            file=sys.stderr,
-        )
     if args.check:
         configured = os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV)
         live_path = args.out or (
@@ -3919,10 +3954,22 @@ def main(argv: list[str] | None = None) -> int:
                 local_resource_evidence=resource_evidence,
             )
             if out_path.exists():
-                previous = load_quota_spend_ledger(out_path)
-                ledger = ledger.model_copy(update={"operator_reports": previous.operator_reports})
-            ledger = enrich_ledger(ledger, measurements, registry=registry, now=current_now)
-            write_ledger_atomic(ledger, out_path)
+                try:
+                    previous = load_quota_spend_ledger(out_path)
+                except (QuotaSpendLedgerError, OSError, ValueError):
+                    # A damaged previous file must not block every later tick.
+                    print(
+                        "hapax-quota-telemetry-writer: previous live ledger unreadable; "
+                        "operator reports not carried forward",
+                        file=sys.stderr,
+                    )
+                else:
+                    ledger = ledger.model_copy(
+                        update={"operator_reports": previous.operator_reports}
+                    )
+            if measurements is not None and registry is not None:
+                ledger = enrich_ledger(ledger, measurements, registry=registry, now=current_now)
+            write_ledger_atomic(ledger, out_path, schema_version=args.live_schema_version)
         return (
             ledger,
             walls,

@@ -89,9 +89,10 @@ DEFAULT_MAX_AGE_SECONDS = 1800
 #: Receipt lifetime. Deliberately short: an observation of "served at T" cannot vouch
 #: for a quota wall that appears at T+1h.
 DEFAULT_STALE_AFTER_SECONDS = 3600
-#: The ledger keeps a window reading fresh for one hour. Probing once the newest reading is
-#: older than 40 minutes lands the next reading before that lapses, on a 10-minute timer,
-#: and never probes for a quantity that is already fresh (H1 #15: read before probing).
+#: The ledger keeps a window reading fresh for one hour (``MEASUREMENT_TTL``). Probing once the
+#: newest reading is older than 40 minutes lands the next reading before that lapses, on a
+#: 10-minute timer, and never probes for a quantity that is already fresh (H1 #15: read before
+#: probing). The 20-minute gap is deliberate lead time, not a mismatch to align away.
 DEFAULT_QUANTITY_MAX_AGE_SECONDS = 2400
 DEFAULT_RECEIPT_DIR = Path(
     os.environ.get("HAPAX_RELAY_RECEIPT_DIR", str(Path.home() / ".cache/hapax/relay/receipts"))
@@ -441,9 +442,12 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         return Observation("probe_failed", now, "active-probe", f"{type(exc).__name__}: {exc}")
     blob = (proc.stdout or "").strip()
     record, rate_limits, unparsed = _probe_records(blob)
-    if any(info.get("status") == "rejected" for info in rate_limits):
-        # The subscription refused this request. A result served after the refusal came from
-        # somewhere other than the subscription window, so it can never witness headroom.
+    if any(
+        info.get("status") == "rejected" or info.get("isUsingOverage") is True
+        for info in rate_limits
+    ):
+        # The subscription refused this request, or served it from overage. Either way the
+        # window is spent: a result served after that never witnesses subscription headroom.
         return Observation("wall", now, "active-probe", "provider-rate-limit-rejected")
     if record is None:
         # A non-JSON failure still carries the provider's refusal wording — this is exactly
@@ -697,8 +701,11 @@ def mint(
             argv += ["--receipt-dir", str(receipt_dir)]
         if route_evidence.scrubbed_env:
             argv.append("--probe-environment-scrubbed")
-        # Keep the number the probe saw; the receipt used to reduce it to quota_available.
+        # Keep the number the probe saw; the receipt used to reduce it to quota_available. A
+        # window already reset at the observation is dropped, never allowed to cost the receipt.
         for name, (used_percent, resets_at) in sorted(route_evidence.windows.items()):
+            if resets_at <= observed_at:
+                continue
             flag = name.replace("_", "-")
             argv += [
                 f"--{flag}-used-percent",
@@ -740,10 +747,14 @@ def newest_window_reading(
     pattern = Path(os.path.expanduser(headless_glob))
     if pattern.parts[-2:] == ("*", "output.jsonl"):
         rows += read_claude_stream_windows(pattern.parent.parent, now=now)
+    # A reading whose window has since reset describes a closed window: it is not current.
     times = [
         row.observed_at
         for row in rows
-        if row.capacity_id == "claude.subscription.weekly" and row.observed_at is not None
+        if row.capacity_id == "claude.subscription.weekly"
+        and row.observed_at is not None
+        and row.resets_at is not None
+        and row.resets_at > now
     ]
     return max(times, default=None)
 
@@ -850,9 +861,12 @@ def main(argv: list[str] | None = None) -> int:
         if probed is not None:
             probe_report["outcome"] = probed.kind
             if probed.kind == "served":
-                # A probe that saw the windows also witnesses every route it can vouch for, so
-                # the minted receipt keeps the numbers; a passive serve carries none.
-                targets = route_ids if probed.windows else tuple(routes_missing_passive_evidence)
+                # A probe that saw a live weekly window also witnesses every route it can vouch
+                # for, so the minted receipt keeps the pacing number; a passive serve carries
+                # none. Without one it only fills the routes that lacked evidence.
+                weekly = probed.windows.get("seven_day")
+                widen = weekly is not None and weekly[1] > probed.at
+                targets = route_ids if widen else tuple(routes_missing_passive_evidence)
                 witnessed = evidence_by_route([probed], tuple(targets))
                 for route_id, route_evidence in witnessed.items():
                     if route_evidence is not None:
@@ -862,8 +876,13 @@ def main(argv: list[str] | None = None) -> int:
                 ]
                 found.append(probed)
                 verdict, evidence, _ = _verdict(found)
-            else:
+            elif probed.kind == "wall":
+                # A measured refusal is the live state, whatever the passive evidence said.
+                verdict, evidence = "walled", probed
+            elif routes_missing_passive_evidence:
                 verdict, evidence = probed.kind, probed
+            # Otherwise the probe ran only for the quantity and could not run: the passive
+            # admission stands, and the failed refresh stays visible in probe.outcome.
         else:
             probe_report["outcome"] = "no_evidence"
             probe_report["witnessed_routes"] = []

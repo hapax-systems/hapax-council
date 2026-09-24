@@ -539,9 +539,9 @@ def test_refreshed_codex_receipts_rebuild_the_published_ledger(
     writes: list[str] = []
     real_write = main_globals["write_ledger_atomic"]
 
-    def counting_write(ledger, path):
+    def counting_write(ledger, path, **kwargs):
         writes.append(ledger.captured_at.isoformat())
-        real_write(ledger, path)
+        real_write(ledger, path, **kwargs)
 
     def healing_refresh(*, timeout, receipt_dir):
         _codex_platform_receipt(platform_receipts)
@@ -608,9 +608,9 @@ def test_unchanged_codex_receipts_write_the_ledger_once(
     writes: list[str] = []
     real_write = main_globals["write_ledger_atomic"]
 
-    def counting_write(ledger, path):
+    def counting_write(ledger, path, **kwargs):
         writes.append(ledger.captured_at.isoformat())
-        real_write(ledger, path)
+        real_write(ledger, path, **kwargs)
 
     monkeypatch.setitem(
         main_globals,
@@ -3723,10 +3723,11 @@ def test_registry_pools_loaded_flag_witnesses_the_fail_closed_state(
         ]
     )
 
-    # Schema v2 requires registry declarations to identify capacity families.
-    assert rc == 1
-    assert not out.exists()
-    assert "static capability registry unavailable" in capsys.readouterr().err
+    assert rc == 0
+    captured = capsys.readouterr()
+    summary = json.loads(captured.out)
+    assert summary["registry_pools_loaded"] is False
+    assert "static capability registry unavailable" in captured.err
 
 
 POOL_SOURCE_COMBOS = [
@@ -6585,6 +6586,83 @@ def test_claude_probe_windows_keep_the_admission_receipt_admitted(tmp_path: Path
     assert json.loads(result.stdout)["claude_admissions"] == 1
 
 
+V1_SNAPSHOT_FIELDS = {
+    "quota_snapshot_schema",
+    "snapshot_id",
+    "captured_at",
+    "fresh_until",
+    "route_id",
+    "provider",
+    "capacity_pool",
+    "subscription_quota_state",
+    "evidence_refs",
+    "operator_visible_reason",
+}
+
+
+def test_live_ledger_stays_schema_1_until_its_readers_take_2(tmp_path: Path) -> None:
+    """reins reads the live file through hapax-spine 0.1.3: Literal[1], extra=forbid."""
+    result, out = _run_writer(tmp_path)
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 1
+    assert "freeze" not in payload and "operator_reports" not in payload
+    assert all(set(row) == V1_SNAPSHOT_FIELDS for row in payload["quota_snapshots"])
+
+    result, out = _run_writer(tmp_path, extra_env={"HAPAX_QUOTA_LEDGER_LIVE_SCHEMA": "2"})
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 2 and "freeze" in payload
+
+
+def test_a_damaged_previous_live_ledger_never_blocks_the_tick(tmp_path: Path) -> None:
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    out.parent.mkdir(parents=True)
+    out.write_text('{"truncated": ', encoding="utf-8")
+    result, out = _run_writer(tmp_path, extra_env={"HAPAX_QUOTA_LEDGER_LIVE_SCHEMA": "2"})
+    assert result.returncode == 0, result.stderr
+    assert json.loads(out.read_text(encoding="utf-8"))["schema_version"] == 2
+
+
+def test_unreadable_measurements_still_write_the_admission_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shared.quota_headroom as quota_headroom
+
+    def unreadable(*args, **kwargs):
+        raise quota_headroom.TraceReadError("corrupt_or_unreadable_source:local-trace:x:0")
+
+    monkeypatch.setattr(quota_headroom, "collect_measurements", unreadable)
+    platform_receipts = tmp_path / "platform-receipts"
+    platform_receipts.mkdir()
+    _codex_platform_receipt(platform_receipts)
+    monkeypatch.setenv("HAPAX_PLATFORM_CAPABILITY_RECEIPT_DIR", str(platform_receipts))
+    monkeypatch.setenv("HAPAX_DISPATCH_HOST", "")
+    monkeypatch.setenv("HAPAX_DEFAULT_DISPATCH_HOST", "")
+    (tmp_path / "relay").mkdir()
+    out = tmp_path / "out" / "quota-spend-ledger-live.json"
+    namespace = runpy.run_path(str(SCRIPT))
+    rc = namespace["main"](
+        [
+            "--skip-receipts",
+            "--now",
+            NOW,
+            "--out",
+            str(out),
+            "--relay-receipt-dir",
+            str(tmp_path / "relay"),
+            "--platform-capability-receipt-dir",
+            str(platform_receipts),
+            "--nvidia-smi",
+            str(_fake_nvidia_smi(tmp_path, "echo '1000, 32000'")),
+            "--trace-home",
+            str(tmp_path / "trace-home"),
+        ]
+    )
+    assert rc == 0
+    assert json.loads(out.read_text(encoding="utf-8"))["quota_snapshots"]
+
+
 def test_claude_admission_writer_can_target_review_route(tmp_path: Path) -> None:
     relay = tmp_path / "relay-receipts"
     relay.mkdir()
@@ -7178,10 +7256,21 @@ def test_ignored_agy_admission_warning_omits_secretish_receipt_dir(tmp_path: Pat
 
     result, out = _run_writer(tmp_path, "--relay-receipt-dir", str(secretish_dir))
 
-    assert result.returncode == 1
-    assert not out.exists()
-    assert "local measurement source corrupt or unreadable" in result.stderr
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    agy_snapshot = next(
+        snapshot
+        for snapshot in payload["quota_snapshots"]
+        if snapshot["route_id"] == "agy.review.direct"
+    )
+    assert agy_snapshot["subscription_quota_state"] == "unknown"
+    assert (
+        "ignoring agy admission receipt: reason=unreadable-receipt-unicodedecodeerror; recheck:"
+    ) in result.stderr
     assert secretish_dir.name not in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["agy_admissions"] == 0
+    assert summary["agy_ignored_admissions"] == 1
 
 
 def test_agy_admission_rejects_missing_smoke_validation(tmp_path: Path) -> None:
@@ -8236,10 +8325,18 @@ def test_unreadable_glmcp_admission_receipt_keeps_glmcp_unknown(tmp_path: Path) 
 
     result, out = _run_writer(tmp_path)
 
-    assert result.returncode == 1
-    assert not out.exists()
-    assert "local measurement source corrupt or unreadable" in result.stderr
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "unreadable receipt UnicodeDecodeError" in result.stderr
+    assert "unreadable receipt IsADirectoryError" in result.stderr
     assert unsafe_dir_name not in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
 
 
 def test_ignored_glmcp_admission_warning_omits_secretish_receipt_dir(tmp_path: Path) -> None:
@@ -8249,10 +8346,18 @@ def test_ignored_glmcp_admission_warning_omits_secretish_receipt_dir(tmp_path: P
 
     result, out = _run_writer(tmp_path, "--relay-receipt-dir", str(secretish_dir))
 
-    assert result.returncode == 1
-    assert not out.exists()
-    assert "local measurement source corrupt or unreadable" in result.stderr
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    states = {
+        snapshot["route_id"]: snapshot["subscription_quota_state"]
+        for snapshot in payload["quota_snapshots"]
+    }
+    assert states["glmcp.review.direct"] == "unknown"
+    assert "unreadable receipt UnicodeDecodeError" in result.stderr
     assert secretish_dir.name not in result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["glmcp_admissions"] == 0
+    assert summary["glmcp_ignored_admissions"] == 1
 
 
 def test_resource_probe_failure_fails_closed_to_unknown(tmp_path: Path) -> None:

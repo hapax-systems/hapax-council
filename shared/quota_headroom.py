@@ -19,6 +19,7 @@ from typing import Any
 import yaml
 
 from shared.quota_spend_ledger import PAID_CAPACITY_POOLS, QuotaMeasurement, QuotaSpendLedger
+from shared.quota_wall import CLAUDE_HEADLESS_ROLES
 
 MEASUREMENT_TTL = timedelta(hours=1)
 # These are known capacities without a registry declaration, not invented routes.
@@ -36,7 +37,8 @@ CLAUDE_WINDOW_HORIZON = timedelta(days=8)
 # Burn pairs: closer than the minimum the rate is noise; beyond the maximum it is history.
 BURN_MIN_SPAN = timedelta(minutes=20)
 BURN_MAX_SPAN = timedelta(hours=6)
-CLAUDE_MODEL = re.compile(r"\Aclaude-[a-z0-9.-]+\Z")
+# An optional bracketed alias suffix, as in the 1M-context `claude-opus-5[1m]`.
+CLAUDE_MODEL = re.compile(r"\Aclaude-[a-z0-9.-]+(?:\[[a-z0-9]+\])?\Z")
 KIMI_RESPONSE = re.compile(
     rf"({ISO_TIME.pattern})\s+[A-Z]+\s+llm response\s.*?\boutputTokens=(\d+)\b"
 )
@@ -76,7 +78,14 @@ def json_lines(path: Path, *, contains: bytes | None = None):
             for line in stream:
                 if not line.strip() or (contains is not None and contains not in line):
                     continue
-                value = json.loads(line)
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    # A live writer's unfinished last line has no newline yet; any other
+                    # malformed line is corruption.
+                    if not line.endswith(b"\n"):
+                        return
+                    raise
                 if not isinstance(value, dict):
                     raise ValueError("object required")
                 yield value
@@ -151,14 +160,20 @@ def burn_rows(readings: list[QuotaMeasurement]) -> list[QuotaMeasurement]:
                     "from_percent": oldest.quantity,
                     "to_percent": newest.quantity,
                     "hours": round(hours, 4),
+                    "from_source": oldest.source,
                 },
             )
         )
     return rows
 
 
-def read_codex_token_count(sessions_root: Path) -> list[QuotaMeasurement]:
-    """Select by event time across all rollouts; mtime never supplies freshness."""
+def read_codex_token_count(
+    sessions_root: Path, *, now: datetime | None = None
+) -> list[QuotaMeasurement]:
+    """Select by event time across all rollouts; mtime never supplies freshness.
+
+    An event dated after ``now`` (clock skew) is ignored rather than shadowing current limits.
+    """
     samples = []
     window_samples = []
     local_usage_times = []
@@ -170,7 +185,7 @@ def read_codex_token_count(sessions_root: Path) -> list[QuotaMeasurement]:
             if not isinstance(payload, dict) or payload.get("type") != "token_count":
                 continue
             at = instant(event.get("timestamp"))
-            if at is None:
+            if at is None or (now is not None and at > now):
                 continue
             info = payload.get("info") or {}
             total = number((info.get("total_token_usage") or {}).get("total_tokens"))
@@ -192,7 +207,7 @@ def read_codex_token_count(sessions_root: Path) -> list[QuotaMeasurement]:
             samples.append((at, str(path), number((limits.get("credits") or {}).get("balance"))))
             # Primary-window readings as bare numbers, for the burn between two of them.
             window_samples.append(
-                (at, used, primary.get("resets_at"), number(primary.get("window_minutes")))
+                (at, used, primary.get("resets_at"), number(primary.get("window_minutes")), path)
             )
             if latest is None or at >= latest[0]:
                 latest = (at, str(path), limits)
@@ -261,8 +276,8 @@ def read_codex_token_count(sessions_root: Path) -> list[QuotaMeasurement]:
                     details={"previous_balance": old, "balance": new},
                 )
             )
-    newest_at, _, newest_reset, minutes = max(window_samples, key=lambda row: row[0])
-    in_window = [row for row in window_samples if row[2:] == (newest_reset, minutes)]
+    newest_at, _, newest_reset, minutes, _ = max(window_samples, key=lambda row: row[0])
+    in_window = [row for row in window_samples if row[2:4] == (newest_reset, minutes)]
     rows.extend(
         burn_rows(
             [
@@ -273,9 +288,9 @@ def read_codex_token_count(sessions_root: Path) -> list[QuotaMeasurement]:
                     quantity=used,
                     unit="percent_used",
                     label="observed",
-                    source=source_ref(path, "codex_rollout_token_count"),
+                    source=source_ref(sample_path, "codex_rollout_token_count"),
                 )
-                for sample_at, used, reset, _ in in_window
+                for sample_at, used, reset, _, sample_path in in_window
                 if newest_at - BURN_MAX_SPAN <= sample_at
             ]
         )
@@ -293,9 +308,18 @@ def receipt_fields(path: Path) -> dict[str, Any]:
         raise TraceReadError(f"corrupt_or_unreadable_source:{source_ref(path, 'receipt')}") from exc
 
 
+def claude_wall_receipt(path: Path, data: dict[str, Any]) -> bool:
+    """Claude's by its route or provider; a lane receipt without either, by its role."""
+    route, provider = str(data.get("route_id") or ""), str(data.get("provider") or "")
+    if route or provider:
+        return route.startswith("claude.") or provider.startswith("anthropic-claude")
+    return path.name.startswith("claude") or data.get("role") in CLAUDE_HEADLESS_ROLES
+
+
 def read_receipt_measurements(receipts: Path, family: str) -> list[QuotaMeasurement]:
     patterns = {
-        "claude": ("claude*quota-wall.yaml",),
+        # Headless lanes name their wall receipt by role (`beta-quota-wall.yaml`).
+        "claude": ("*quota-wall*.yaml",),
         "glm": ("*glm*quota-wall*.yaml", "*glmcp-quota-admission*.yaml"),
         "agy": ("*agy-quota-admission*.yaml", "*agy*quota-wall*.yaml"),
     }
@@ -303,6 +327,8 @@ def read_receipt_measurements(receipts: Path, family: str) -> list[QuotaMeasurem
     latest_admission = None
     for path in sorted({p for pattern in patterns[family] for p in receipts.glob(pattern)}):
         data = receipt_fields(path)
+        if family == "claude" and not claude_wall_receipt(path, data):
+            continue
         at = instant(data.get("observed_at") or data.get("detected_at"))
         if at is None:
             continue
@@ -385,7 +411,9 @@ def claude_rate_limit_windows(info: Any) -> dict[str, tuple[float, datetime]]:
     return windows
 
 
-def claude_window_rows(windows, *, at: datetime, source: str) -> list[QuotaMeasurement]:
+def claude_window_rows(
+    windows, *, at: datetime, source: str, details: dict[str, Any] | None = None
+) -> list[QuotaMeasurement]:
     # A reading taken at or after its own reset describes a window that has closed.
     return [
         evidence(
@@ -397,6 +425,7 @@ def claude_window_rows(windows, *, at: datetime, source: str) -> list[QuotaMeasu
             window=CLAUDE_WINDOWS[name][1],
             label="observed",
             source=source,
+            details=details or {},
         )
         for name, (used, reset) in windows.items()
         if at < reset
@@ -414,12 +443,13 @@ def recently_changed(path: Path, *, now: datetime) -> bool:
 def read_claude_stream_windows(stream_root: Path, *, now: datetime) -> list[QuotaMeasurement]:
     """Windows and refusals from ``rate_limit_event`` records in Claude CLI stream-json output.
 
-    The event carries no clock. It is dated by the newest dated record written before it in
-    the same file, so the date is never later than the end of the response it came with and
-    is never borrowed from a later record or the file mtime. An event with
-    nothing dated before it is not evidence. Only a session whose init names an Anthropic model
-    without an API key witnesses the subscription: gateways speak the same wire format. A line
-    that does not parse is not evidence (a live stream can end mid-line).
+    The event carries no clock, so each kind is dated on its safe side. A reading takes the
+    newest dated record written before it (early: it can only look older). A refusal takes the
+    first dated record written after it, or the file mtime, clamped to ``now`` (late: it can only
+    look newer, so an older reading never lifts it); its early bound is kept as ``earliest_at``.
+    A reading with nothing dated before it is not evidence. Only a session whose init names an
+    Anthropic model without an API key witnesses the subscription: gateways speak the same wire
+    format. A line that does not parse is not evidence (a live stream can end mid-line).
     """
     rows = []
     for path in sorted(stream_root.glob("*/output.jsonl")):
@@ -427,6 +457,8 @@ def read_claude_stream_windows(stream_root: Path, *, now: datetime) -> list[Quot
             continue
         subscription_sessions = set()
         dated = None
+        pending = []  # refusals waiting for the next dated record
+        source = source_ref(path, "claude_stream_rate_limit_event")
         try:
             with path.open("rb") as stream:
                 for line in stream:
@@ -437,8 +469,11 @@ def read_claude_stream_windows(stream_root: Path, *, now: datetime) -> list[Quot
                     if not isinstance(record, dict):
                         continue
                     at = instant(record.get("timestamp")) if "timestamp" in record else None
-                    if at is not None and (dated is None or at > dated):
-                        dated = at
+                    if at is not None:
+                        rows.extend(stream_wall(*wall, at=at, now=now) for wall in pending)
+                        pending = []
+                        if dated is None or at > dated:
+                            dated = at
                     session = record.get("session_id")
                     if record.get("type") == "system" and record.get("subtype") == "init":
                         if (
@@ -447,40 +482,59 @@ def read_claude_stream_windows(stream_root: Path, *, now: datetime) -> list[Quot
                         ):
                             subscription_sessions.add(session)
                         continue
-                    if (
-                        record.get("type") != "rate_limit_event"
-                        or session not in subscription_sessions
-                        or dated is None
-                        or dated > now
+                    if record.get("type") != "rate_limit_event" or session not in (
+                        subscription_sessions
                     ):
                         continue
                     info = record.get("rate_limit_info")
-                    source = source_ref(path, "claude_stream_rate_limit_event")
-                    rows.extend(
-                        claude_window_rows(claude_rate_limit_windows(info), at=dated, source=source)
-                    )
-                    if isinstance(info, dict) and info.get("status") == "rejected":
-                        limit = info.get("rateLimitType")
-                        rows.append(
-                            evidence(
-                                "claude.subscription.rate_limit_rejected",
+                    if not isinstance(info, dict) or (dated is not None and dated > now):
+                        continue
+                    if info.get("status") == "rejected":
+                        pending.append((info, dated, source))
+                    if dated is not None:
+                        rows.extend(
+                            claude_window_rows(
+                                claude_rate_limit_windows(info),
                                 at=dated,
-                                label="wall-signal",
-                                unit="refusal",
-                                reset=instant(info.get("resetsAt")),
-                                window=CLAUDE_WINDOWS.get(limit, (None, None))[1],
                                 source=source,
-                                reason_code="provider_rate_limit_rejected",
-                                details={
-                                    "rate_limit_type": limit if isinstance(limit, str) else None
-                                },
+                                details=request_details(info),
                             )
                         )
+            if pending:
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, UTC)
+                rows.extend(stream_wall(*wall, at=mtime, now=now) for wall in pending)
         except OSError as exc:
             raise TraceReadError(
                 f"corrupt_or_unreadable_source:{source_ref(path, 'claude_stream')}"
             ) from exc
     return rows
+
+
+def request_details(info: dict) -> dict[str, Any]:
+    """Whether the subscription itself served the request the reading came with."""
+    return {
+        "status": info.get("status") if isinstance(info.get("status"), str) else None,
+        "using_overage": int(info.get("isUsingOverage") is True),
+    }
+
+
+def stream_wall(info: dict, earliest, source: str, *, at: datetime, now: datetime):
+    """A refusal dated late: the later bound clamped to ``now``, the early bound kept beside it."""
+    limit = info.get("rateLimitType")
+    return evidence(
+        "claude.subscription.rate_limit_rejected",
+        at=min(max(at, earliest) if earliest else at, now),
+        label="wall-signal",
+        unit="refusal",
+        reset=instant(info.get("resetsAt")),
+        window=CLAUDE_WINDOWS.get(limit, (None, None))[1],
+        source=source,
+        reason_code="provider_rate_limit_rejected",
+        details={
+            "rate_limit_type": limit if isinstance(limit, str) else None,
+            "earliest_at": earliest.isoformat() if earliest else None,
+        },
+    )
 
 
 def read_claude_probe_receipts(receipts: Path, *, now: datetime) -> list[QuotaMeasurement]:
@@ -547,6 +601,9 @@ def read_claude_wall_and_spend(
         "cache_read_input_tokens",
     )
     for path in sorted(transcript_roots.glob("**/*.jsonl")):
+        # Every spend window ends at most a week back; an older file holds nothing in one.
+        if not recently_changed(path, now=now):
+            continue
         for event in json_lines(path):
             at = instant(event.get("timestamp"))
             msg = event.get("message") or {}
@@ -584,7 +641,14 @@ def read_claude_wall_and_spend(
     harness = [row for row in walls if row.capacity_id.endswith("harness_wall")]
     walls = [row for row in walls if not row.capacity_id.endswith("harness_wall")]
     if harness:
-        walls.append(max(harness, key=lambda row: row.observed_at))
+        # The newest notice, and the newest notice for each reset still ahead: a later notice
+        # with a nearer reset must not hide an earlier wall that binds longer.
+        newest = max(harness, key=lambda row: row.observed_at)
+        live = {}
+        for row in sorted(harness, key=lambda row: row.observed_at):
+            if row.resets_at is not None and row.resets_at > now:
+                live[row.resets_at] = row
+        walls.extend([newest, *(row for row in live.values() if row is not newest)])
     rows.extend(walls)
     windows = {
         "5h": (now - timedelta(hours=5), now),
@@ -845,32 +909,53 @@ def read_other_family(home: Path, family: str) -> list[QuotaMeasurement]:
 def collect_measurements(
     home: Path, receipts: Path, *, now: datetime
 ) -> dict[str, list[QuotaMeasurement]]:
-    result = {
-        "codex": read_codex_token_count(home / ".codex/sessions"),
-        "claude": read_claude_wall_and_spend(
+    """One reading per family. A family whose source is unreadable becomes ``unobserved`` with a
+    typed reason; it never stops the other families or the admission ledger around them."""
+    readers = {
+        "codex": lambda: read_codex_token_count(home / ".codex/sessions", now=now),
+        "claude": lambda: read_claude_wall_and_spend(
             receipts,
             home / ".claude/projects",
             now=now,
             stream_root=home / ".cache/hapax/claude-headless",
         ),
-        "kimi": read_kimi_403_signal(home / ".kimi-code/sessions"),
+        "kimi": lambda: read_kimi_403_signal(home / ".kimi-code/sessions"),
     }
     for family in ("glm", "agy"):
-        rows = read_receipt_measurements(receipts, family)
-        result[family] = rows or [
-            measurement(f"{family}.subscription", reason="no_quantity_bearing_receipt")
-        ]
+        readers[family] = lambda family=family: (
+            read_receipt_measurements(receipts, family)
+            or [measurement(f"{family}.subscription", reason="no_quantity_bearing_receipt")]
+        )
     for family in (*UNDECLARED_FAMILIES, "vibe"):
-        result[family] = read_other_family(home, family)
+        readers[family] = lambda family=family: read_other_family(home, family)
+    result = {}
+    for family, read in readers.items():
+        try:
+            result[family] = read()
+        except TraceReadError as exc:
+            result[family] = [
+                measurement(
+                    f"{family}.capacity",
+                    reason="corrupt_or_unreadable_source",
+                    details={"source": str(exc).partition(":")[2]},
+                )
+            ]
     return result
+
+
+def served_by_the_subscription(row: QuotaMeasurement) -> bool:
+    """False for a reading that came with a refused request or one served from overage."""
+    return row.details.get("status") != "rejected" and not row.details.get("using_overage")
 
 
 def wall_is_live(wall: QuotaMeasurement, rows, *, now: datetime) -> bool:
     """A wall binds until its reset or a newer provider observation of the same family.
 
     A wall's next act asks for a post-wall provider observation; this is that check. Only
-    ``observed`` rows count (transcript-derived spend can come from another provider speaking
-    the same wire format), and a wall scoped to one window needs a reading of that window.
+    ``observed`` rows from a request the subscription served count (transcript-derived spend can
+    come from another provider speaking the same wire format; a refusal or an overage serve says
+    the window is spent). A served request of any window means no window was binding, so a wall
+    that names no window lifts on it; a wall scoped to one window needs a reading of that window.
     """
     if wall.label != "wall-signal" or wall.observed_at is None:
         return False
@@ -879,6 +964,7 @@ def wall_is_live(wall: QuotaMeasurement, rows, *, now: datetime) -> bool:
     family = wall.capacity_id.split(".", 1)[0]
     return not any(
         row.label == "observed"
+        and served_by_the_subscription(row)
         and row.capacity_id.split(".", 1)[0] == family
         and row.observed_at is not None
         and wall.observed_at < row.observed_at <= now

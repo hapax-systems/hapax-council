@@ -364,7 +364,29 @@ def test_vibe_api_binding_and_undeclared_routes(tmp_path):
     )
 
 
-def test_operator_report_preserves_ambiguous_reset_and_append(tmp_path, capsys):
+def test_operator_report_is_refused_while_the_live_ledger_is_schema_1(tmp_path, monkeypatch):
+    monkeypatch.delenv("HAPAX_QUOTA_LEDGER_LIVE_SCHEMA", raising=False)
+    namespace = runpy.run_path(str(SCRIPT))
+    out = tmp_path / "ledger.json"
+    namespace["write_ledger_atomic"](enriched(tmp_path), out, schema_version=1)
+    before = out.read_bytes()
+    argv = [
+        "operator-report",
+        "--family",
+        "kimi",
+        "--reset",
+        "x",
+        "--quote",
+        "q",
+        "--out",
+        str(out),
+    ]
+    assert namespace["main"](argv) == 1
+    assert out.read_bytes() == before
+
+
+def test_operator_report_preserves_ambiguous_reset_and_append(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("HAPAX_QUOTA_LEDGER_LIVE_SCHEMA", "2")
     report = operator_report(
         family="glm",
         reset="2026-09-19 22:36",
@@ -1039,3 +1061,210 @@ def test_codex_burn_from_two_token_counts_in_one_window(tmp_path):
     row = by_id(rows).get("codex.subscription.weekly.burn")
     assert row is not None
     assert (row.label, row.unit, row.quantity) == ("derived", "percent_used_per_hour", 2.0)
+
+
+# PR #4728 review round 1 (Muse, Gemini, Mistral, CodeRabbit): each reproduced here first.
+
+REJECTED_7D = {"status": "rejected", "resetsAt": RESET_7D, "rateLimitType": "seven_day"}
+
+
+def test_stream_wall_is_dated_no_earlier_than_the_next_record(tmp_path):
+    # The event sits between 18:00 and 18:20; a reading at 18:10 must not lift it.
+    claude_stream(
+        tmp_path,
+        stream_init(),
+        stream_dated("2026-09-24T18:00:00Z"),
+        rate_limit_event(REJECTED_7D),
+        stream_dated("2026-09-24T18:20:00Z"),
+        lane="w",
+    )
+    probe_receipt(tmp_path, at="2026-09-24T18:10:00Z")
+    rows = claude_rows(tmp_path)
+    assert "claude.subscription.rate_limit_rejected" in by_id(rows)
+    wall = by_id(rows)["claude.subscription.rate_limit_rejected"]
+    assert wall.observed_at == datetime(2026, 9, 24, 18, 20, tzinfo=UTC)
+    assert wall.details["earliest_at"] == "2026-09-24T18:00:00+00:00"
+    assert wall_is_live(wall, rows, now=A1_NOW)
+
+
+@pytest.mark.parametrize(
+    "mtime,expected",
+    [
+        (datetime(2026, 9, 24, 18, 25, tzinfo=UTC), datetime(2026, 9, 24, 18, 25, tzinfo=UTC)),
+        (A1_NOW + timedelta(hours=1), A1_NOW),
+    ],
+)
+def test_a_last_stream_wall_is_dated_by_the_file_mtime_clamped_to_now(tmp_path, mtime, expected):
+    stream = claude_stream(
+        tmp_path,
+        stream_init(),
+        stream_dated("2026-09-24T18:00:00Z"),
+        rate_limit_event(REJECTED_7D),
+        lane="w",
+    )
+    os.utime(stream, (mtime.timestamp(), mtime.timestamp()))
+    probe_receipt(tmp_path, at="2026-09-24T18:10:00Z")
+    rows = claude_rows(tmp_path)
+    assert "claude.subscription.rate_limit_rejected" in by_id(rows)
+    wall = by_id(rows)["claude.subscription.rate_limit_rejected"]
+    assert wall.observed_at == expected
+    assert wall_is_live(wall, rows, now=A1_NOW)
+    assert freeze_predicate(rows, now=A1_NOW)["active"]
+
+
+def test_every_live_harness_wall_is_kept(tmp_path):
+    notice = {"isApiErrorMessage": True}
+    jsonl(
+        tmp_path / "transcripts/a.jsonl",
+        notice
+        | {
+            "timestamp": "2026-09-24T17:00:00Z",
+            "message": {"content": "You've hit your weekly limit; resets 2026-09-25T22:00:00Z"},
+        },
+        notice
+        | {
+            "timestamp": "2026-09-24T18:00:00Z",
+            "message": {"content": "Claude usage limit reached; resets 2026-09-24T19:00:00Z"},
+        },
+    )
+    rows = claude_rows(tmp_path)
+    resets = sorted(r.resets_at for r in rows if r.capacity_id.endswith("harness_wall"))
+    assert resets == [
+        datetime(2026, 9, 24, 19, tzinfo=UTC),
+        datetime(2026, 9, 25, 22, tzinfo=UTC),
+    ]
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        # The subscription refused the request; its windows describe a refusal.
+        {
+            "status": "rejected",
+            "rateLimitType": "five_hour",
+            "resetsAt": RESET_5H,
+            "unifiedWindows": {
+                "five_hour": {"utilization": 0.3, "resetsAt": RESET_5H},
+                "seven_day": {"utilization": 0.5, "resetsAt": RESET_7D},
+            },
+        },
+        # Served from overage, not from the subscription window.
+        unified_info() | {"isUsingOverage": True},
+    ],
+)
+def test_a_reading_the_subscription_did_not_serve_never_lifts_a_wall(tmp_path, info):
+    write(
+        tmp_path / "receipts/claude-weekly-quota-wall.yaml",
+        "status: quota_blocked\nobserved_at: 2026-09-24T18:00:00Z\n"
+        "resets_at: 2026-09-25T22:00:00Z\n",
+    )
+    claude_stream(
+        tmp_path, stream_init(), stream_dated("2026-09-24T18:10:00Z"), rate_limit_event(info)
+    )
+    rows = claude_rows(tmp_path)
+    assert wall_is_live(by_id(rows)["claude.subscription.wall"], rows, now=A1_NOW)
+
+
+def test_a_served_reading_of_any_window_lifts_a_windowless_wall(tmp_path):
+    # A request the subscription served, whichever window it reports, means no window was binding.
+    write(
+        tmp_path / "receipts/claude-weekly-quota-wall.yaml",
+        "status: quota_blocked\nobserved_at: 2026-09-24T18:00:00Z\n",
+    )
+    five_only = {
+        "status": "allowed_warning",
+        "resetsAt": RESET_5H,
+        "rateLimitType": "five_hour",
+        "utilization": 0.9,
+    }
+    claude_stream(
+        tmp_path, stream_init(), stream_dated("2026-09-24T18:10:00Z"), rate_limit_event(five_only)
+    )
+    rows = claude_rows(tmp_path)
+    assert not wall_is_live(by_id(rows)["claude.subscription.wall"], rows, now=A1_NOW)
+
+
+def test_codex_reader_ignores_token_counts_dated_after_now(tmp_path):
+    jsonl(
+        tmp_path / "rollout-a.jsonl",
+        token_event(at="2026-09-19T07:50:00Z", used=40),
+        token_event(at="2026-09-19T09:00:00Z", used=99),
+    )
+    assert read_codex_token_count(tmp_path, now=NOW)[0].quantity == 40
+
+
+def test_claude_lane_wall_receipts_named_by_role_are_read(tmp_path):
+    lane = "status: quota_blocked\ndetected_at: 2026-09-19T07:40:00Z\nresets_at: unknown\n"
+    write(tmp_path / "beta-quota-wall.yaml", "role: beta\n" + lane)
+    write(
+        tmp_path / "alpha-quota-wall.yaml", "role: alpha\nroute_id: claude.headless.full\n" + lane
+    )
+    write(tmp_path / "cx-red-quota-wall.yaml", "role: cx-red\n" + lane)
+    write(
+        tmp_path / "glm-coding-plan-weekly-limit-quota-wall.yaml",
+        "provider: zai-glm-coding-plan\nstatus: quota_blocked\nobserved_at: 2026-09-19T07:40:00Z\n",
+    )
+    rows = read_claude_wall_and_spend(tmp_path, tmp_path / "transcripts", now=NOW)
+    walls = [row for row in rows if row.label == "wall-signal"]
+    assert len(walls) == 2
+
+
+def test_claude_one_million_context_alias_is_a_subscription_session(tmp_path):
+    claude_stream(
+        tmp_path,
+        stream_init(model="claude-opus-5[1m]"),
+        stream_dated("2026-09-24T18:20:00Z"),
+        rate_limit_event(unified_info()),
+    )
+    assert claude_rows(tmp_path)[0].label == "observed"
+
+
+def test_one_corrupt_family_source_never_stops_the_others(tmp_path):
+    jsonl(tmp_path / ".codex/sessions/rollout-a.jsonl", token_event())
+    log = tmp_path / ".kimi-code/sessions/a/b/logs/kimi-code.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(b"\xff\xfe 403 weekly usage limit\n")
+    try:
+        readings = collect_measurements(tmp_path, tmp_path / "receipts", now=NOW)
+    except TraceReadError:
+        readings = None
+    assert readings is not None, "one family's unreadable source stopped every family"
+    assert readings["codex"][0].label == "observed"
+    assert readings["kimi"][0].label == "unobserved"
+    assert readings["kimi"][0].reason_code == "corrupt_or_unreadable_source"
+
+
+def test_a_partial_last_line_of_a_live_trace_is_not_corruption(tmp_path):
+    path = jsonl(tmp_path / "rollout-a.jsonl", token_event())
+    with path.open("a") as stream:
+        stream.write('{"timestamp": "2026-09-19T07:55:00Z", "payload": {"type": "token_count"')
+    try:
+        rows = read_codex_token_count(tmp_path)
+    except TraceReadError:
+        rows = None
+    assert rows is not None, "a live writer's unfinished last line was read as corruption"
+    assert rows[0].quantity == 100
+    # Once the malformed line is followed by another, it is corruption again.
+    with path.open("a") as stream:
+        stream.write("\n" + json.dumps(token_event()) + "\n")
+    with pytest.raises(TraceReadError):
+        read_codex_token_count(tmp_path)
+
+
+def test_a_transcript_untouched_longer_than_any_window_is_not_scanned(tmp_path):
+    path = jsonl(tmp_path / "transcripts/a.jsonl", claude_message(at="2026-09-24T18:00:00Z"))
+    old = (A1_NOW - timedelta(days=9)).timestamp()
+    os.utime(path, (old, old))
+    assert by_id(claude_rows(tmp_path))["claude.spend.5h"].label == "unobserved"
+    os.utime(path, (A1_NOW.timestamp(), A1_NOW.timestamp()))
+    assert by_id(claude_rows(tmp_path))["claude.spend.5h"].label == "derived"
+
+
+def test_codex_burn_names_both_readings_sources(tmp_path):
+    jsonl(tmp_path / "rollout-a.jsonl", token_event(at="2026-09-19T05:50:00Z", used=10))
+    jsonl(tmp_path / "rollout-b.jsonl", token_event(at="2026-09-19T07:50:00Z", used=14))
+    rows = read_codex_token_count(tmp_path)
+    assert "codex.subscription.weekly.burn" in by_id(rows)
+    row = by_id(rows)["codex.subscription.weekly.burn"]
+    assert row.details["from_source"] != row.source
+    assert row.source == by_id(rows)["codex.subscription.weekly"].source

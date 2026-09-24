@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """Run the M1 acceptance mutants in a disposable source overlay, never the live tree.
 
-Usage: uv run --no-sync python scripts/check-quota-headroom-mutations.py
+Usage: uv run --no-sync python scripts/check-quota-headroom-mutations.py [--jobs N] [NAME ...]
 Every mutant must produce an assertion failure (pytest exit 1), not a collection
-error, timeout, or syntax error. Full pytest output and the matrix stay in /tmp.
+error, timeout, or syntax error. Each worker owns one overlay. Full pytest output and
+the matrix stay in the temporary directory printed at the end.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,8 +111,8 @@ MUTANTS = [
         "admission-is-fraction",
         "test_claude_admission_yaml_is_not_weekly_headroom",
         READER,
-        '"claude": ("claude*quota-wall.yaml",)',
-        '"claude": ("claude*quota-wall.yaml", "claude*quota-admission*.yaml")',
+        '"claude": ("*quota-wall*.yaml",)',
+        '"claude": ("*quota-wall*.yaml", "claude*quota-admission*.yaml")',
     ),
     (
         "discard-wall-reset",
@@ -299,8 +303,8 @@ MUTANTS = [
         "claude-future-reading",
         "test_claude_reading_dated_after_now_is_ignored",
         READER,
-        "or dated > now",
-        "or dated > now + timedelta(days=1)",
+        "(dated is not None and dated > now)",
+        "(dated is not None and dated > now + timedelta(days=1))",
     ),
     (
         "claude-horizon-ignored",
@@ -313,8 +317,8 @@ MUTANTS = [
         "claude-session-unbound",
         "test_claude_stream_outside_a_subscription_session_is_not_the_subscription",
         READER,
-        "or session not in subscription_sessions",
-        "or False",
+        "or session not in (\n                        subscription_sessions\n                    ):",
+        "or False:",
     ),
     (
         "claude-api-key-session",
@@ -371,22 +375,23 @@ MUTANTS = [
         "claude-rejected-not-wall",
         "test_claude_rejected_window_is_a_wall_with_its_reset",
         READER,
-        'if isinstance(info, dict) and info.get("status") == "rejected":',
-        'if isinstance(info, dict) and info.get("status") == "rejected_never":',
+        'if info.get("status") == "rejected":\n                        pending.append',
+        'if info.get("status") == "rejected_never":\n                        pending.append',
     ),
     (
         "claude-overage-is-wall",
         "test_claude_overage_refusal_alone_is_not_a_wall",
         READER,
-        'if isinstance(info, dict) and info.get("status") == "rejected":',
-        'if isinstance(info, dict) and "rejected" in (info.get("status"), info.get("overageStatus")):',
+        'if info.get("status") == "rejected":\n                        pending.append',
+        'if "rejected" in (info.get("status"), info.get("overageStatus")):\n'
+        "                        pending.append",
     ),
     (
         "derived-supersedes-wall",
         "test_transcript_spend_never_supersedes_a_wall",
         READER,
-        '        row.label == "observed"\n        and row.capacity_id',
-        '        row.label in {"observed", "derived"}\n        and row.capacity_id',
+        '        row.label == "observed"\n        and served_by_the_subscription(row)',
+        '        row.label in {"observed", "derived"}\n        and served_by_the_subscription(row)',
     ),
     (
         "wall-never-superseded",
@@ -499,7 +504,7 @@ MUTANTS = [
         "burn-codex-unwired",
         "test_codex_burn_from_two_token_counts_in_one_window",
         READER,
-        "in_window = [row for row in window_samples if row[2:] == (newest_reset, minutes)]",
+        "in_window = [row for row in window_samples if row[2:4] == (newest_reset, minutes)]",
         "in_window = []",
     ),
     # --- the account-live probe keeps the windows
@@ -521,16 +526,16 @@ MUTANTS = [
         "probe-rejected-served",
         at(PROBE_TEST, "test_probe_rejected_window_is_a_wall_even_when_the_result_was_served"),
         OBSERVER,
-        'if any(info.get("status") == "rejected" for info in rate_limits):',
-        "if False:",
+        'info.get("status") == "rejected" or info.get("isUsingOverage") is True',
+        'info.get("isUsingOverage") is True',
     ),
     (
         "probe-overage-wall",
         at(PROBE_TEST, "test_probe_overage_refusal_alone_is_not_a_wall"),
         OBSERVER,
-        'if any(info.get("status") == "rejected" for info in rate_limits):',
-        'if any("rejected" in (info.get("status"), info.get("overageStatus")) '
-        "for info in rate_limits):",
+        'info.get("status") == "rejected" or info.get("isUsingOverage") is True',
+        'info.get("status") == "rejected" or info.get("isUsingOverage") is True '
+        'or info.get("overageStatus") == "rejected"',
     ),
     (
         "probe-stream-text-scan",
@@ -579,7 +584,7 @@ MUTANTS = [
         "probe-numbers-unminted",
         at(PROBE_TEST, "test_a_stale_or_missing_quantity_is_probed_and_the_receipt_keeps_it"),
         OBSERVER,
-        "targets = route_ids if probed.windows else tuple(routes_missing_passive_evidence)",
+        "targets = route_ids if widen else tuple(routes_missing_passive_evidence)",
         "targets = tuple(routes_missing_passive_evidence)",
     ),
     (
@@ -647,82 +652,306 @@ MUTANTS = [
         '        "seven_day_used_percent",\n',
         "",
     ),
+    # --- PR #4728 review round 1: each repair pinned by the test that reproduced it
+    (
+        "wall-dated-early",
+        "test_stream_wall_is_dated_no_earlier_than_the_next_record",
+        READER,
+        "at=min(max(at, earliest) if earliest else at, now),",
+        "at=min(earliest or at, now),",
+    ),
+    (
+        "wall-date-unclamped",
+        "test_a_last_stream_wall_is_dated_by_the_file_mtime_clamped_to_now",
+        READER,
+        "at=min(max(at, earliest) if earliest else at, now),",
+        "at=max(at, earliest) if earliest else at,",
+    ),
+    (
+        "harness-newest-only",
+        "test_every_live_harness_wall_is_kept",
+        READER,
+        "walls.extend([newest, *(row for row in live.values() if row is not newest)])",
+        "walls.append(newest)",
+    ),
+    (
+        "refused-reading-lifts",
+        "test_a_reading_the_subscription_did_not_serve_never_lifts_a_wall",
+        READER,
+        'return row.details.get("status") != "rejected" and not row.details.get("using_overage")',
+        'return not row.details.get("using_overage")',
+    ),
+    (
+        "overage-reading-lifts",
+        "test_a_reading_the_subscription_did_not_serve_never_lifts_a_wall",
+        READER,
+        'return row.details.get("status") != "rejected" and not row.details.get("using_overage")',
+        'return row.details.get("status") != "rejected"',
+    ),
+    (
+        "served-reading-never-lifts",
+        "test_a_served_reading_of_any_window_lifts_a_windowless_wall",
+        READER,
+        'return row.details.get("status") != "rejected" and not row.details.get("using_overage")',
+        'return row.details.get("status") == "never"',
+    ),
+    (
+        "codex-future-row",
+        "test_codex_reader_ignores_token_counts_dated_after_now",
+        READER,
+        "if at is None or (now is not None and at > now):",
+        "if at is None:",
+    ),
+    (
+        "lane-wall-unread",
+        "test_claude_lane_wall_receipts_named_by_role_are_read",
+        READER,
+        '"claude": ("*quota-wall*.yaml",),',
+        '"claude": ("claude*quota-wall.yaml",),',
+    ),
+    (
+        "lane-wall-any-family",
+        "test_claude_lane_wall_receipts_named_by_role_are_read",
+        READER,
+        'if family == "claude" and not claude_wall_receipt(path, data):',
+        "if False:",
+    ),
+    (
+        "one-million-alias-dropped",
+        "test_claude_one_million_context_alias_is_a_subscription_session",
+        READER,
+        r'r"\Aclaude-[a-z0-9.-]+(?:\[[a-z0-9]+\])?\Z"',
+        r'r"\Aclaude-[a-z0-9.-]+\Z"',
+    ),
+    (
+        "family-failure-spreads",
+        "test_one_corrupt_family_source_never_stops_the_others",
+        READER,
+        "        except TraceReadError as exc:\n            result[family] = [",
+        "        except KeyError as exc:\n            result[family] = [",
+    ),
+    (
+        "partial-line-is-corruption",
+        "test_a_partial_last_line_of_a_live_trace_is_not_corruption",
+        READER,
+        'if not line.endswith(b"\\n"):\n                        return',
+        "if False:\n                        return",
+    ),
+    (
+        "burn-provenance-lost",
+        "test_codex_burn_names_both_readings_sources",
+        READER,
+        '"from_source": oldest.source,',
+        '"from_source": newest.source,',
+    ),
+    (
+        "transcripts-unfiltered",
+        "test_a_transcript_untouched_longer_than_any_window_is_not_scanned",
+        READER,
+        "        if not recently_changed(path, now=now):\n            continue\n"
+        "        for event in json_lines(path):",
+        "        for event in json_lines(path):",
+    ),
+    (
+        "probe-wall-unlabelled",
+        at(PROBE_TEST, "test_a_quantity_probe_that_hits_a_wall_holds_the_route"),
+        OBSERVER,
+        'verdict, evidence = "walled", probed',
+        "verdict, evidence = probed.kind, probed",
+    ),
+    (
+        "failed-probe-drops-admission",
+        at(PROBE_TEST, "test_a_failed_quantity_probe_keeps_the_passive_admission"),
+        OBSERVER,
+        "            elif routes_missing_passive_evidence:\n",
+        "            else:\n",
+    ),
+    (
+        "widen-without-weekly",
+        at(PROBE_TEST, "test_a_probe_without_a_live_weekly_window_witnesses_only_missing_routes"),
+        OBSERVER,
+        "widen = weekly is not None and weekly[1] > probed.at",
+        "widen = bool(probed.windows)",
+    ),
+    (
+        "expired-reading-fresh",
+        at(PROBE_TEST, "test_a_reading_whose_window_has_reset_is_stale"),
+        OBSERVER,
+        "        and row.resets_at > now\n",
+        "        and row.resets_at > now - timedelta(days=30)\n",
+    ),
+    (
+        "expired-window-minted",
+        at(PROBE_TEST, "test_an_expired_probe_window_never_costs_the_receipt"),
+        OBSERVER,
+        "            if resets_at <= observed_at:\n                continue\n",
+        "",
+    ),
+    (
+        "probe-overage-served",
+        at(PROBE_TEST, "test_a_probe_served_from_overage_is_a_wall"),
+        OBSERVER,
+        'info.get("status") == "rejected" or info.get("isUsingOverage") is True',
+        'info.get("status") == "rejected"',
+    ),
+    (
+        "live-v2-by-default",
+        at(WRITER_TEST, "test_live_ledger_stays_schema_1_until_its_readers_take_2"),
+        WRITER,
+        'return 2 if os.environ.get(LIVE_SCHEMA_ENV, "1").strip() == "2" else 1',
+        "return 2",
+    ),
+    (
+        "live-v1-unprojected",
+        at(WRITER_TEST, "test_live_ledger_stays_schema_1_until_its_readers_take_2"),
+        WRITER,
+        'data = ledger.schema_v1_payload() if schema_version == 1 else ledger.model_dump(mode="json")',
+        'data = ledger.model_dump(mode="json")',
+    ),
+    (
+        "report-under-v1",
+        "test_operator_report_is_refused_while_the_live_ledger_is_schema_1",
+        WRITER,
+        "    if live_schema_version() != 2:\n",
+        "    if False:\n",
+    ),
+    (
+        "measurement-failure-aborts",
+        at(WRITER_TEST, "test_unreadable_measurements_still_write_the_admission_ledger"),
+        WRITER,
+        '            "written without them. Next action: run with --check to see the failing source",\n'
+        "            file=sys.stderr,\n        )\n",
+        '            "written without them. Next action: run with --check to see the failing source",\n'
+        "            file=sys.stderr,\n        )\n        return 1\n",
+    ),
+    (
+        "damaged-previous-blocks",
+        at(WRITER_TEST, "test_a_damaged_previous_live_ledger_never_blocks_the_tick"),
+        WRITER,
+        "except (QuotaSpendLedgerError, OSError, ValueError):\n"
+        "                    # A damaged previous file must not block every later tick.",
+        "except KeyError:\n                    # A damaged previous file must not block every later tick.",
+    ),
 ]
 
 
-def main() -> int:
-    work = Path(tempfile.mkdtemp(prefix="quota-headroom-mutations-"))
-    # Symlink untouched dependencies, copy only the mutated files and their tests.
-    copies = {READER, MODEL, WRITER, OBSERVER, ADMISSION, TEST, PROBE_TEST, WRITER_TEST}
-    directories = {"shared", "scripts", "tests", "tests/shared", "tests/scripts"}
+# Symlink untouched dependencies, copy only the mutated files and their tests.
+COPIES = {READER, MODEL, WRITER, OBSERVER, ADMISSION, TEST, PROBE_TEST, WRITER_TEST}
+DIRECTORIES = {"shared", "scripts", "tests", "tests/shared", "tests/scripts"}
 
-    def overlay(relative: Path) -> None:
-        for source in (ROOT / relative).iterdir():
-            name = relative / source.name
-            if source.name in {".git", "__pycache__", ".pytest_cache"}:
-                continue
-            target = work / name
-            if str(name) in directories:
-                target.mkdir()
-                overlay(name)
-            elif str(name) in copies:
-                shutil.copyfile(source, target)
-            else:
-                target.symlink_to(source)
 
-    def clear_caches() -> None:
-        # Only the overlay's own directories: a recursive glob follows the overlay's
-        # symlinks into the live tree.
-        for relative in ("", *directories):
-            cache = work / relative / "__pycache__"
-            if cache.is_dir() and not cache.is_symlink():
-                shutil.rmtree(cache)
+def build_overlay(work: Path, relative: Path = Path()) -> Path:
+    for source in (ROOT / relative).iterdir():
+        name = relative / source.name
+        if source.name in {".git", "__pycache__", ".pytest_cache"}:
+            continue
+        target = work / name
+        if str(name) in DIRECTORIES:
+            target.mkdir(parents=True)
+            build_overlay(work, name)
+        elif str(name) in COPIES:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.symlink_to(source)
+    return work
 
-    def node(test: str) -> str:
-        return test if "::" in test else f"{TEST}::{test}"
 
-    overlay(Path())
-    results = []
-    for name, test, relative, old, new in MUTANTS:
-        path = work / relative
-        original = (ROOT / relative).read_text()
-        if original.count(old) != 1 or old == new:
-            raise ValueError(f"mutant anchor is not unique or does not change code: {name}")
-        mutated = original.replace(old, new, 1)
-        path.write_text(mutated)
+def clear_caches(work: Path) -> None:
+    # Only the overlay's own directories: a recursive glob follows the overlay's
+    # symlinks into the live tree.
+    for relative in ("", *DIRECTORIES):
+        cache = work / relative / "__pycache__"
+        if cache.is_dir() and not cache.is_symlink():
+            shutil.rmtree(cache)
+
+
+def node(test: str) -> str:
+    return test if "::" in test else f"{TEST}::{test}"
+
+
+def run_mutant(work: Path, logs: Path, mutant: tuple[str, str, str, str, str]) -> dict:
+    name, test, relative, old, new = mutant
+    path = work / relative
+    original = (ROOT / relative).read_text()
+    mutated = original.replace(old, new, 1)
+    path.write_text(mutated)
+    try:
         if path.read_text() != mutated:
             raise RuntimeError(f"mutant did not apply: {name}")
-        clear_caches()
+        clear_caches(work)
+        # A private basetemp per overlay: concurrent runs must not prune each other's tmp dirs.
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                node(test),
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                "--basetemp",
+                str(work / ".pytest-tmp"),
+            ],
+            cwd=work,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        output = completed.stdout + completed.stderr
+        (logs / f"{name}.log").write_text(output)
+        killed = completed.returncode == 1 and "AssertionError" in output
+        return {"mutant": name, "test": test, "killed": killed, "exit_code": completed.returncode}
+    finally:
+        path.write_text(original)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--jobs", type=int, default=4, help="parallel overlays")
+    parser.add_argument("names", nargs="*", help="run only these mutants (default: all)")
+    args = parser.parse_args(argv)
+    selected = [m for m in MUTANTS if not args.names or m[0] in args.names]
+    unknown = set(args.names) - {m[0] for m in MUTANTS}
+    if unknown or len({m[0] for m in MUTANTS}) != len(MUTANTS):
+        raise ValueError(f"unknown or duplicate mutant names: {sorted(unknown)}")
+    # Every anchor is checked before anything runs, so a stale anchor cannot end a run midway.
+    for name, _test, relative, old, new in selected:
+        if (ROOT / relative).read_text().count(old) != 1 or old == new:
+            raise ValueError(f"mutant anchor is not unique or does not change code: {name}")
+    logs = Path(tempfile.mkdtemp(prefix="quota-headroom-mutations-"))
+    jobs = max(1, min(args.jobs, len(selected) or 1))
+    overlays: queue.Queue[Path] = queue.Queue()
+    for index in range(jobs):
+        overlays.put(build_overlay(logs / f"overlay-{index}"))
+
+    def task(mutant):
+        work = overlays.get()
         try:
-            completed = subprocess.run(
-                [sys.executable, "-m", "pytest", node(test), "-q", "-p", "no:cacheprovider"],
-                cwd=work,
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-            output = completed.stdout + completed.stderr
-            (work / f"{name}.log").write_text(output)
-            killed = completed.returncode == 1 and "AssertionError" in output
-            results.append(
-                {"mutant": name, "test": test, "killed": killed, "exit_code": completed.returncode}
-            )
-            print(json.dumps(results[-1]), flush=True)
+            return run_mutant(work, logs, mutant)
         finally:
-            path.write_text(original)
+            overlays.put(work)
+
+    results = []
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        for result in pool.map(task, selected):
+            results.append(result)
+            print(json.dumps(result), flush=True)
     # Every named test must pass unmutated, or a kill proves nothing.
-    clear_caches()
+    work = overlays.get()
+    clear_caches(work)
     baseline = subprocess.run(
-        [sys.executable, "-m", "pytest", *sorted({node(t) for _, t, *_ in MUTANTS}), "-q"],
+        [sys.executable, "-m", "pytest", *sorted({node(t) for _, t, *_ in selected}), "-q"],
         cwd=work,
         capture_output=True,
         text=True,
         timeout=900,
     )
-    (work / "baseline.log").write_text(baseline.stdout + baseline.stderr)
+    (logs / "baseline.log").write_text(baseline.stdout + baseline.stderr)
     print(json.dumps({"baseline_exit_code": baseline.returncode}), flush=True)
-    (work / "results.json").write_text(json.dumps(results, indent=2) + "\n")
-    print(f"Evidence: {work / 'results.json'}", flush=True)
+    (logs / "results.json").write_text(json.dumps(results, indent=2) + "\n")
+    print(f"Evidence: {logs / 'results.json'}", flush=True)
     return 0 if all(row["killed"] for row in results) and baseline.returncode == 0 else 1
 
 

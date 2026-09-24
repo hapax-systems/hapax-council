@@ -328,14 +328,14 @@ def passive_serve(tmp_path: Path, at: datetime) -> None:
     path.write_text(json.dumps(record) + "\n")
 
 
-def window_receipt(tmp_path: Path, at: datetime) -> None:
+def window_receipt(tmp_path: Path, at: datetime, reset: str = "2026-09-25T22:00:00Z") -> None:
     result = run_writer(
         tmp_path / "receipts",
         "--probe-environment-scrubbed",
         "--seven-day-used-percent",
         "9",
         "--seven-day-resets-at",
-        "2026-09-25T22:00:00Z",
+        reset,
         now=iso(at),
     )
     assert result.returncode == 0, result.stderr
@@ -437,3 +437,90 @@ def test_no_probe_means_no_quantity_probe(monkeypatch, tmp_path: Path, capsys) -
     passive_serve(tmp_path, NOW - timedelta(minutes=1))
     rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, "--no-probe")
     assert calls == [] and payload["quantity"]["stale"] is True
+
+
+# PR #4728 review round 1: each reproduced here first.
+
+
+def minted(tmp_path: Path) -> list[str]:
+    return sorted(p.name for p in (tmp_path / "receipts").glob("*admission*.yaml"))
+
+
+def test_a_quantity_probe_that_hits_a_wall_holds_the_route(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    wall = obs.Observation("wall", NOW, "active-probe", "provider-quota-refusal")
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=wall)
+    assert calls == [NOW]
+    assert (payload["verdict"], rc) == ("walled", 3)
+    assert minted(tmp_path) == []
+
+
+def test_a_failed_quantity_probe_keeps_the_passive_admission(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    broken = obs.Observation("probe_failed", NOW, "active-probe", "TimeoutExpired")
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=broken)
+    assert calls == [NOW]
+    assert (payload["verdict"], rc) == ("served", 0)
+    assert payload["probe"]["outcome"] == "probe_failed"
+    assert len(minted(tmp_path)) == 2
+
+
+@pytest.mark.parametrize(
+    "windows",
+    [
+        {"five_hour": (8.0, datetime(2026, 9, 24, 21, 30, tzinfo=UTC))},
+        {"seven_day": (9.0, NOW - timedelta(minutes=1))},
+    ],
+)
+def test_a_probe_without_a_live_weekly_window_witnesses_only_missing_routes(
+    monkeypatch, tmp_path: Path, capsys, windows
+) -> None:
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    by_route: dict[str, object] = {}
+
+    def fake_mint(evidence, **kwargs):
+        by_route.update(kwargs["evidence_by_route"])
+        return [{"route_id": route_id, "returncode": 0} for route_id in kwargs["route_ids"]]
+
+    monkeypatch.setattr(obs, "mint", fake_mint)
+    probed = obs.Observation("served", NOW, "active-probe", model="claude-opus-5", windows=windows)
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys, probe_result=probed)
+    assert calls == [NOW] and by_route
+    assert all(evidence.source == "session-transcript" for evidence in by_route.values())
+
+
+def test_a_reading_whose_window_has_reset_is_stale(monkeypatch, tmp_path: Path, capsys) -> None:
+    window_receipt(tmp_path, NOW - timedelta(minutes=10), reset=iso(NOW - timedelta(minutes=5)))
+    passive_serve(tmp_path, NOW - timedelta(minutes=1))
+    rc, payload, calls = run_main(monkeypatch, tmp_path, capsys)
+    assert payload["quantity"]["stale"] is True and calls == [NOW]
+
+
+def test_an_expired_probe_window_never_costs_the_receipt(tmp_path: Path) -> None:
+    probed = obs.Observation(
+        "served",
+        NOW,
+        "active-probe",
+        model="claude-opus-5",
+        scrubbed_env=obs.PROBE_ENV_SCRUBBED,
+        windows={
+            "seven_day": (9.0, NOW - timedelta(seconds=1)),
+            "five_hour": (8.0, datetime(2026, 9, 24, 21, 30, tzinfo=UTC)),
+        },
+    )
+    receipts = mint(probed, tmp_path)
+    assert receipts[0]["returncode"] == 0, receipts
+    text = next(tmp_path.glob("*.yaml")).read_text(encoding="utf-8")
+    assert "seven_day" not in text and "five_hour_used_percent: 8.0" in text
+
+
+def test_a_probe_served_from_overage_is_a_wall(monkeypatch: pytest.MonkeyPatch) -> None:
+    overage = info() | {"isUsingOverage": True}
+    event = probe_stream(
+        monkeypatch, {"type": "rate_limit_event", "rate_limit_info": overage}, served_result()
+    )
+    assert event is not None and event.kind == "wall"
