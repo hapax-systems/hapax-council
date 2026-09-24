@@ -219,7 +219,12 @@ Remote appendix dispatch uses this order:
    `codex`, and saved-login `codex exec` actuation;
 5. after the local `cc-claim` boundary accepts the dispatch, carry the matching
    local `cc-claim-epoch-<cx-session>` line plus matching `cc-active-task` as the
-   remote claim proof, then rerun the remote saved-login preflight;
+   remote claim proof, then rerun the remote saved-login preflight. The sidecars
+   alone are not proof: the dispatch host first resolves the **applied** admitted
+   claim publication for that role and task through the installed composition and
+   requires its epoch to equal the carried line; the receipt hash and publication
+   session travel in the payload and land in the remote proof as
+   `claim_receipt_hash` and `claim_publication_session_id`;
 6. execute `codex exec` on the remote host using that host's saved ChatGPT auth.
    The launcher never ships, injects, persists, or reuses a published bearer
    token, and remote exec strips inherited Codex auth env before starting.
@@ -283,6 +288,17 @@ for f in ~/.cache/hapax/cc-active-task-"$role"*; do
   head -n1 ~/.cache/hapax/cc-claim-epoch-"$key"
 done
 ```
+
+`refusing remote dispatch: no applied admitted claim publication binds …` (exit 78)
+means the dispatch host could not prove an applied owner. The line before it names
+the reason: `claim_dispatch_binding_missing` (marker-only sidecars with no
+publication), `claim_remote_projection_epoch_mismatch` (the launcher session's
+sidecars name another epoch than the applied publication), a held or drifted
+publication's own reason code, or `claim_runtime_unavailable` (the source
+activation's `.venv` or `shared` cannot load). Nothing ran remotely. Claim the task
+with the installed `cc-claim`, or recover its publication per
+[the claim-publication runbook](gate0b-claim-publication-fallback.md), then retry;
+do not hand-write sidecars to get past it.
 
 Default worktrees are constructive: if `$HOME/projects/hapax-council--<cx-session>`
 is missing on the dispatch host, the launcher may create it from the remote primary
