@@ -9,8 +9,8 @@ disabled and one turn. Two refusals, each reported as a route outage:
   failure (22 KB) are refused, so the seat never returns nothing silently.
 - Billing surface. The CLI can be bound to the metered API (`plan_type: api`) instead of the
   Team allowance. The quota reader in shared/quota_headroom.py sees that binding, and while it
-  holds the seat is refused rather than switching billing implicitly (next action: operator
-  runs `vibe --setup` with the Team account).
+  holds the seat is refused rather than switching billing implicitly (next action for the
+  coordinator: rebind Vibe to the Team account).
 """
 
 from __future__ import annotations
@@ -31,6 +31,14 @@ from shared.review_seat_wrapper import SEAT_PREAMBLE, refuse  # noqa: E402
 WRAPPER = "hapax-vibe-reviewer"
 MAX_PROMPT_BYTES = 22_000
 MAX_PRICE_DOLLARS = "1.00"
+#: The reading that admits the seat. shared/quota_headroom.py `read_other_family(home, "vibe")`
+#: projects ~/.vibe/whoami_cache.json to `"api" if "api" in plans else "unknown"`: it keeps only
+#: whether any cached binding is the metered API, so "unknown" is its reading of a whoami cache
+#: whose bindings are all non-API. The Team binding was observed as `plan_type chat`
+#: (frame/CAPABILITY-ROUTING-TABLE.md, vibe row: after the operator's `vibe --setup` browser
+#: sign-in, "the new key's whoami reads plan_type chat instead of api"), which that reader
+#: reports as "unknown". "api" (metered) and "unobserved" (no cache, or a reader error) refuse.
+TEAM_BINDING_READING = "unknown"
 
 
 def vibe_bin() -> str | None:
@@ -82,11 +90,11 @@ def main() -> int:
             "(0 B at 45-87 KB on 2026-09-24); the constitution substitutes another family",
         )
     plan = plan_type()
-    if plan != "unknown":
+    if plan != TEAM_BINDING_READING:
         return refuse(
             WRAPPER,
-            f"vibe binding is plan_type={plan}, not the Team allowance; refusing to spend on the "
-            "API meter. Next action: operator runs `vibe --setup` with the Team account",
+            f"vibe binding reads plan_type={plan}, not the Team allowance; refusing to spend on the "
+            "API meter. Next action (coordinator): rebind Vibe to the Team account",
         )
     binary = vibe_bin()
     if not binary:

@@ -6,6 +6,7 @@ review-constitution-walled-family-substitution-20260924, option (a) granted 2026
 from __future__ import annotations
 
 import http.server
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -113,17 +114,42 @@ class TestMuseReviewer:
         _assert_route_outage(result)
 
 
-def _vibe_home(tmp_path: Path, plan: str | None) -> Path:
+def _vibe_home(tmp_path: Path, plan: str | tuple[str, ...] | None) -> Path:
     home = tmp_path / "home"
     (home / ".vibe").mkdir(parents=True)
     if plan is not None:
-        (home / ".vibe" / "whoami_cache.json").write_text(
-            json.dumps({"account-hash": {"payload": {"plan_type": plan}}}), encoding="utf-8"
-        )
+        plans = (plan,) if isinstance(plan, str) else plan
+        cache = {f"account-{i}": {"payload": {"plan_type": p}} for i, p in enumerate(plans)}
+        (home / ".vibe" / "whoami_cache.json").write_text(json.dumps(cache), encoding="utf-8")
     return home
 
 
+# The Team binding as observed: `vibe --setup` with the Team sign-in made whoami read
+# `plan_type chat` (frame/CAPABILITY-ROUTING-TABLE.md, vibe row).
+OBSERVED_TEAM_PLAN = "chat"
+
+
 class TestVibeReviewer:
+    def test_observed_team_binding_is_the_reading_the_wrapper_admits(self, tmp_path: Path) -> None:
+        # Pins the dependency on #4728's reader: it projects any non-API binding to "unknown",
+        # which is the one reading the wrapper admits. If the reader changes, this fails first.
+        from shared import quota_headroom
+
+        spec = importlib.util.spec_from_loader(
+            "hapax_vibe_reviewer",
+            importlib.machinery.SourceFileLoader(
+                "hapax_vibe_reviewer", str(SCRIPTS / "hapax-vibe-reviewer")
+            ),
+        )
+        assert spec is not None and spec.loader is not None
+        wrapper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(wrapper)
+        home = _vibe_home(tmp_path, OBSERVED_TEAM_PLAN)
+        row = quota_headroom.read_other_family(home, "vibe")[0]
+        assert row.details["plan_type"] == wrapper.TEAM_BINDING_READING == "unknown"
+        mixed = _vibe_home(tmp_path / "mixed", (OBSERVED_TEAM_PLAN, "api"))
+        assert quota_headroom.read_other_family(mixed, "vibe")[0].details["plan_type"] == "api"
+
     def test_team_binding_runs_one_turn_with_no_tools(self, tmp_path: Path) -> None:
         fake, record = _fake_cli(tmp_path, "vibe")
         home = _vibe_home(tmp_path, "chat")
@@ -137,9 +163,9 @@ class TestVibeReviewer:
         assert argv[argv.index("--max-turns") + 1] == "1"
         assert "REVIEW" in argv[argv.index("-p") + 1]
 
-    @pytest.mark.parametrize("plan", ["api", None])
-    def test_metered_or_unobserved_binding_is_refused(
-        self, tmp_path: Path, plan: str | None
+    @pytest.mark.parametrize("plan", ["api", None, (OBSERVED_TEAM_PLAN, "api")])
+    def test_metered_mixed_or_unobserved_binding_is_refused(
+        self, tmp_path: Path, plan: str | tuple[str, ...] | None
     ) -> None:
         fake, record = _fake_cli(tmp_path, "vibe")
         home = _vibe_home(tmp_path, plan)
@@ -147,7 +173,9 @@ class TestVibeReviewer:
             "hapax-vibe-reviewer", "REVIEW", {"HAPAX_VIBE_BIN": str(fake), "HOME": str(home)}
         )
         _assert_route_outage(result)
-        assert "vibe --setup" in result.stderr
+        # A mechanical next action for the coordinator, never a question parked on the operator.
+        assert "Next action (coordinator): rebind Vibe to the Team account" in result.stderr
+        assert "operator" not in result.stderr
         assert not record.exists()
 
     def test_prompt_above_the_measured_ceiling_is_a_route_outage(self, tmp_path: Path) -> None:
