@@ -91,7 +91,16 @@ def _shell_agy(tmp_path: Path, body: str = "") -> Path:
     return fake
 
 
+def _require_containment_runtime() -> None:
+    wrapper = runpy.run_path(str(WRAPPER))
+    bindings = [wrapper["BWRAP_BIN"], *wrapper["REVIEW_RUNTIME_FILES"]]
+    missing = [name for name in bindings if not Path(name).is_file()]
+    if missing:
+        pytest.skip(f"qualified execution-host bindings unavailable: {missing}")
+
+
 def _run_contained(fake: Path, *args: str):
+    _require_containment_runtime()
     return subprocess.run(
         [str(WRAPPER), "--agy-bin", str(fake), *args],
         input="Synthetic containment test.",
@@ -130,9 +139,11 @@ search ""
 
 @pytest.mark.parametrize("failure", ["missing_bwrap", "missing_dependency", "namespace_setup"])
 def test_containment_failure_never_runs_uncontained(tmp_path: Path, failure: str) -> None:
+    if failure == "namespace_setup":
+        _require_containment_runtime()
     fake = _shell_agy(tmp_path, "printf 'NATIVE_WAS_RUN\\n' >&2")
     overrides = {
-        "missing_bwrap": "g['BWRAP_BIN'] = '/missing-test-bwrap'",
+        "missing_bwrap": ("g['BWRAP_BIN'] = '/missing-test-bwrap'; g['REVIEW_RUNTIME_FILES'] = ()"),
         "missing_dependency": "g['REVIEW_RUNTIME_FILES'] = ('/missing-test-runtime-file',)",
         "namespace_setup": (
             "original = g['_contained_command']; "
@@ -180,6 +191,7 @@ fi
 
 @pytest.mark.parametrize("size", [40, 2_500_000])
 def test_contained_dossier_seed_and_readonly_binary(tmp_path: Path, size: int) -> None:
+    _require_containment_runtime()
     _seed_operator_token(Path(os.environ["HOME"]))
     fake = _shell_agy(
         tmp_path,
@@ -207,6 +219,7 @@ if {{ printf 'unsafe' > /usr/bin/agy; }} 2>/dev/null; then exit 12; fi
 
 @pytest.mark.parametrize("mode", ["success", "timeout", "tool", "cancel"])
 def test_contained_owned_descendants_removed(tmp_path: Path, mode: str, monkeypatch) -> None:
+    _require_containment_runtime()
     # The namespace-local child PID is only a readiness record. Never use it
     # as a host PID; fixture rescue retains the actual parent Popen handle.
     workspace = tmp_path / "workspace"

@@ -528,6 +528,12 @@ the guard. Malformed YAML is refused; the wrapper does not delegate an unexamine
 document to the caller's prose-repair path. Native errors retain nonzero
 status and screened stderr; partial model responses are not forwarded.
 
+Containment integration tests skip with the missing bindings listed on hosts
+without the qualified runtime files (including generic Ubuntu CI). Such a skip
+is unobserved containment, not a pass. Missing-Bubblewrap and missing-dependency
+refusal tests still run there. On the qualified host, a namespace setup failure
+fails the integration tests rather than skipping them.
+
 Before accepting a result, the wrapper also checks every native `step_update`.
 Only known `user_input`, `agent_response` and `checkpoint` steps are accepted.
 Tool/subagent steps, invocation metadata (even null), unknown fields/categories,
