@@ -28,7 +28,11 @@ from shared.quota_spend_ledger import (
 )
 from tests.scripts.test_claude_account_live_observe_per_route import _served, obs
 from tests.scripts.test_hapax_claude_interactive_admission import NOW, ROUTE, _availability
-from tests.scripts.test_hapax_quota_telemetry_writer import _claude_admission, _run_writer
+from tests.scripts.test_hapax_quota_telemetry_writer import (
+    CLAUDE_ADMISSION_SCRIPT,
+    _claude_admission,
+    _run_writer,
+)
 from tests.shared.test_dispatcher_policy import _capability, _quota, _request, _task_fields
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -207,23 +211,63 @@ def test_produced_registry_cannot_override_dispatch_quota(tmp_path, monkeypatch,
         ) in decision.reason_codes
 
 
-def test_unbound_legacy_composite_cannot_admit_interactive(tmp_path):
-    relay = tmp_path / "relay-receipts"
-    relay.mkdir()
-    _claude_admission(relay, route_id=ROUTE, observed_at="2026-06-09T23:55:00Z")
+@pytest.mark.parametrize("route_id", ["claude.headless.full", "claude.review.opus", ROUTE])
+def test_legacy_composite_holds_until_telemetry_regenerates_route_binding(tmp_path, route_id):
+    produced = subprocess.run(
+        [
+            sys.executable,
+            str(CLAUDE_ADMISSION_SCRIPT),
+            "--receipt-dir",
+            str(tmp_path / "relay-receipts"),
+            "--route-id",
+            route_id,
+            "--now",
+            "2026-06-09T23:55:00Z",
+            "--evidence-ref",
+            "claude-subscription-headroom-observed-20260609t2355z",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert produced.returncode == 0, produced.stderr
+    receipt = Path(json.loads(produced.stdout)["path"])
+    receipt_bytes = receipt.read_bytes()
     result, path = _run_writer(tmp_path)
     assert result.returncode == 0, result.stderr
     payload = json.loads(path.read_text())
-    snapshot = next(s for s in payload["quota_snapshots"] if s["route_id"] == ROUTE)
-    snapshot["evidence_refs"] = [
-        ref.replace(f"route_id:{ROUTE}:", "") for ref in snapshot["evidence_refs"]
-    ]
+    snapshot = next(s for s in payload["quota_snapshots"] if s["route_id"] == route_id)
+    fresh_until = snapshot["fresh_until"]
+    assert any(f":route_id:{route_id}:" in ref for ref in snapshot["evidence_refs"])
     state, _ = subscription_quota_state_for_route(
-        QuotaSpendLedger.model_validate(payload),
-        ROUTE,
-        now=NOW,
+        QuotaSpendLedger.model_validate(payload), route_id, now=NOW
+    )
+    assert state is SubscriptionQuotaState.FRESH
+
+    # Simulate the on-disk ledger from before route binding was introduced.
+    snapshot["evidence_refs"] = [
+        ref.replace(f"route_id:{route_id}:", "") for ref in snapshot["evidence_refs"]
+    ]
+    path.write_text(json.dumps(payload))
+    state, _ = subscription_quota_state_for_route(
+        QuotaSpendLedger.model_validate_json(path.read_text()), route_id, now=NOW
     )
     assert state is SubscriptionQuotaState.UNKNOWN
+
+    # Regeneration uses the same receipt, without renewing the observation.
+    regenerated_at = NOW + timedelta(minutes=1)
+    result, path = _run_writer(tmp_path, now=regenerated_at.isoformat())
+    assert result.returncode == 0, result.stderr
+    assert receipt.read_bytes() == receipt_bytes
+    ledger = QuotaSpendLedger.model_validate_json(path.read_text())
+    snapshot = next(s for s in ledger.quota_snapshots if s.route_id == route_id)
+    assert snapshot.fresh_until == datetime.fromisoformat(fresh_until.replace("Z", "+00:00"))
+    state, refs = subscription_quota_state_for_route(ledger, route_id, now=regenerated_at)
+    assert state is SubscriptionQuotaState.FRESH
+    assert any(f":route_id:{route_id}:" in ref for ref in refs)
+    state, _ = subscription_quota_state_for_route(ledger, route_id, now=snapshot.fresh_until)
+    assert state is SubscriptionQuotaState.STALE
 
 
 @pytest.mark.parametrize("condition", ["missing", "fresh", "expired"])

@@ -29,6 +29,11 @@ Telemetry must be regenerated after activation: older composite references
 without an explicit `route_id` are untrusted at ledger read. The receipt's
 filename is not route identity; the writer carries the validated route field
 into the evidence reference and the ledger checks it against the snapshot.
+This deliberate hold also applies to `claude.headless.full` and
+`claude.review.opus`. Regenerate telemetry before checking admission for any
+of the three routes. The writer can rebuild route-bound evidence from a still-valid
+receipt without renewing its observation or expiry; an expired receipt requires
+a new genuine account-live observation.
 
 Expected boundaries:
 
@@ -49,6 +54,7 @@ Run the regression from the source checkout using its declared test environment:
 
 ```bash
 uv run pytest tests/scripts/test_hapax_claude_interactive_admission.py \
+  tests/scripts/test_claude_interactive_admission_review.py \
   tests/shared/test_capability_availability_guarantor.py -q
 ```
 
