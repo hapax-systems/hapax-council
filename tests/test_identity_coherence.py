@@ -225,11 +225,25 @@ class TestInSessionReassert:
 
 class TestStaleClaimSweeper:
     @staticmethod
-    def _dirs(tmp_path: Path) -> tuple[Path, Path]:
+    def _dirs(tmp_path: Path, mod, monkeypatch) -> tuple[Path, Path]:
         claims = tmp_path / "claims"
         active = tmp_path / "active"
         claims.mkdir()
         active.mkdir()
+        for state in ("closed", "refused"):
+            (tmp_path / state).mkdir()
+        from shared.gate0b_claim_publication_install import ClaimPublicationCompositionRoots
+
+        roots = ClaimPublicationCompositionRoots(
+            invocation_store_root=str(tmp_path / "invocations"),
+            claim_cache_dir=str(claims),
+            claim_vault_root=str(tmp_path),
+            claim_transaction_root=str(tmp_path / "transactions"),
+            claim_receipt_root=str(tmp_path / "receipts"),
+            claim_lock_root=str(tmp_path / "role-locks"),
+        )
+        monkeypatch.setattr(mod, "_claim_sweep_roots", lambda: roots)
+        monkeypatch.setenv("HAPAX_COORD_DIR", str(tmp_path / "coord"))
         return claims, active
 
     @staticmethod
@@ -239,65 +253,66 @@ class TestStaleClaimSweeper:
 
     _UUID = "12345678-1234-1234-1234-123456789abc"
 
-    def test_reaps_lease_expired_claim(self, tmp_path: Path) -> None:
+    def test_holds_lease_expired_claim_without_death_evidence(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
         mod = _load_dispatch()
-        claims, active = self._dirs(tmp_path)
-        # The task is still in active/, but the claim file is 14 days stale: a
-        # dead/abandoned lane (the real council-eqi-phase0-run test-probe case).
-        (active / "council-eqi-phase0-run.md").write_text("---\nstatus: in_progress\n---\n")
+        claims, active = self._dirs(tmp_path, mod, monkeypatch)
+        # Age alone cannot establish whole-attempt death.
+        (active / "council-eqi-phase0-run.md").write_text(
+            "---\ntask_id: council-eqi-phase0-run\nstatus: in_progress\n---\n"
+        )
         cf = claims / "cc-active-task-test-probe"
         cf.write_text("council-eqi-phase0-run\n")
         self._age(cf, 14 * 86400)
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert not cf.exists()
-        assert any(
-            name == "cc-active-task-test-probe" and reason == "lease-expired"
-            for name, _task, reason in reaped
-        )
-
-    def test_keeps_fresh_live_claim(self, tmp_path: Path) -> None:
-        mod = _load_dispatch()
-        claims, active = self._dirs(tmp_path)
-        (active / "t.md").write_text("---\nstatus: in_progress\n---\n")
-        cf = claims / f"cc-active-task-zeta-{self._UUID}"
-        cf.write_text("t\n")
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
+        reaped = mod.sweep_stale_claims(claims, active, now=time.time()).reaped
         assert cf.exists()
         assert reaped == []
 
-    def test_reaps_claim_for_terminal_or_missing_task(self, tmp_path: Path) -> None:
+    def test_keeps_fresh_live_claim(self, tmp_path: Path, monkeypatch) -> None:
         mod = _load_dispatch()
-        claims, active = self._dirs(tmp_path)
-        # No note in active/ → task closed/withdrawn/missing → the slot is dead.
-        cf = claims / f"cc-active-task-eta-{self._UUID}"
+        claims, active = self._dirs(tmp_path, mod, monkeypatch)
+        (active / "t.md").write_text("---\ntask_id: t\nstatus: in_progress\n---\n")
+        cf = claims / f"cc-active-task-zeta-{self._UUID}"
+        cf.write_text("t\n")
+        reaped = mod.sweep_stale_claims(claims, active, now=time.time()).reaped
+        assert cf.exists()
+        assert reaped == []
+
+    def test_holds_missing_task_without_terminal_record(self, tmp_path: Path, monkeypatch) -> None:
+        mod = _load_dispatch()
+        claims, active = self._dirs(tmp_path, mod, monkeypatch)
+        # No note is an unknown observation, not a terminal record.
+        cf = claims / "cc-active-task-eta"
         cf.write_text("vanished-task\n")
         self._age(cf, 3600)  # past the settle grace, but well within the lease TTL
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
-        assert not cf.exists()
-        assert any(reason == "terminal-or-missing" for _n, _t, reason in reaped)
+        reaped = mod.sweep_stale_claims(claims, active, now=time.time()).reaped
+        assert cf.exists()
+        assert reaped == []
 
-    def test_live_session_protects_its_roles_stale_legacy_file(self, tmp_path: Path) -> None:
-        # The gate refreshes only the session-keyed file, so a live role's LEGACY
-        # file ages out — it must not be reaped while a fresh sibling proves life.
+    def test_live_session_protects_its_roles_stale_legacy_file(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Neither an old legacy marker nor a fresh sibling proves attempt death.
         mod = _load_dispatch()
-        claims, active = self._dirs(tmp_path)
-        (active / "t.md").write_text("---\nstatus: in_progress\n---\n")
+        claims, active = self._dirs(tmp_path, mod, monkeypatch)
+        (active / "t.md").write_text("---\ntask_id: t\nstatus: in_progress\n---\n")
         legacy = claims / "cc-active-task-delta"
         legacy.write_text("t\n")
         self._age(legacy, 14 * 86400)
         sk = claims / f"cc-active-task-delta-{self._UUID}"
-        sk.write_text("t\n")  # fresh → role delta is demonstrably live
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
+        sk.write_text("t\n")  # fresh is not a qualified liveness observation
+        reaped = mod.sweep_stale_claims(claims, active, now=time.time()).reaped
         assert legacy.exists(), "a live role's stale legacy claim must not be reaped"
         assert reaped == []
 
-    def test_does_not_reap_recently_touched_missing_task(self, tmp_path: Path) -> None:
+    def test_does_not_reap_recently_touched_missing_task(self, tmp_path: Path, monkeypatch) -> None:
         # A just-written claim for a momentarily-absent note (mid cc-close race) is
         # left to settle, not reaped.
         mod = _load_dispatch()
-        claims, active = self._dirs(tmp_path)
+        claims, active = self._dirs(tmp_path, mod, monkeypatch)
         cf = claims / f"cc-active-task-theta-{self._UUID}"
         cf.write_text("in-flight-task\n")  # fresh mtime, note absent
-        reaped = mod.sweep_stale_claims(claims, active, now=time.time())
+        reaped = mod.sweep_stale_claims(claims, active, now=time.time()).reaped
         assert cf.exists()
         assert reaped == []
