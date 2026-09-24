@@ -427,12 +427,16 @@ def test_capture_precedes_kill_session(tmp_path: Path) -> None:
     assert max(captures) < min(kills), f"kill-session ran before capture-pane: {calls}"
 
 
-def test_pane_becoming_live_during_capture_is_preserved(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["claude", "codex"])
+def test_pane_becoming_live_during_capture_is_preserved(tmp_path: Path, kind: str) -> None:
     b = _base(
         tmp_path,
         FAKE_TMUX_SESSION_EXISTS="1",
         FAKE_TMUX_PANE_DEAD="1",
         FAKE_TMUX_REVIVE_DURING_CAPTURE="1",
+        HAPAX_SUPERVISOR_CLAUDE_LANES="delta" if kind == "claude" else "",
+        HAPAX_SUPERVISOR_CODEX_LANES="delta" if kind == "codex" else "",
+        FAKE_TMUX_SESSION_NAME=f"hapax-{kind}-delta",
     )
     result = _run(b["env"])
     assert result.returncode == 0, result.stderr
@@ -441,6 +445,7 @@ def test_pane_becoming_live_during_capture_is_preserved(tmp_path: Path) -> None:
     assert Path(str(b["tmux_calls"]) + ".revived").is_file()
     assert not any(c.startswith("kill-session") for c in calls), calls
     assert not list(b["calls"].iterdir()), "launched over the newly live pane"
+    assert not (Path(b["env"]["HAPAX_SUPERVISOR_STATE_DIR"]) / "delta.last-restart").exists()
     assert "respawn_hold:pane_changed_during_capture" in result.stdout
     assert "next: inspect tmux list-panes -a" in result.stdout
     assert list(b["pane_logs"].glob("*.log")), "capture evidence must survive the hold"

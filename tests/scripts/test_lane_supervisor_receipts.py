@@ -118,3 +118,18 @@ def test_symlinked_receipt_input_holds_without_redirecting_evidence(tmp_path, si
     assert_no_recovery(env, calls, before, result)
     assert "claim_orphan_unresolved:observation_failed:ValueError" in result.stdout
     assert not list((tmp_path / "lanebus/delta").glob("*claim-holder*.json"))
+
+
+@pytest.mark.parametrize("task", ["missing", None, "../outside"])
+def test_runbook_partial_task_is_typed_hold(tmp_path, task):
+    env, _ = setup_lane(tmp_path)
+    marker = Path(env["HOME"]) / ".cache/hapax/cc-active-task-delta"
+    receipt = dict(lane="delta", claim_path=str(marker))
+    if task != "missing":
+        receipt["task_id"] = task
+    path = tmp_path / "partial-receipt.json"
+    path.write_text(json.dumps(receipt))
+    result = recheck(env, path)
+    assert result.returncode != 0
+    assert "receipt_task_unresolved:" in result.stderr
+    assert "Traceback" not in result.stderr

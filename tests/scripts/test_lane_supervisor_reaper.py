@@ -125,6 +125,7 @@ def _write_claim(
     claim_dir = Path(env["HOME"]) / ".cache" / "hapax"
     claim_dir.mkdir(parents=True, exist_ok=True)
     (claim_dir / f"cc-active-task-{lane}").write_text(f"{task_id}\n", encoding="utf-8")
+    (claim_dir / f"cc-claim-epoch-{lane}").write_text(f"17 {task_id}\n")
     if status is not None:
         active = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"]) / "active"
         active.mkdir(parents=True, exist_ok=True)
@@ -144,6 +145,7 @@ def _bind_launcher(env, runtime_dir, lane, proc, task):
     (cache / f"session-role-{sid}").write_text(f"{lane}\n")
     claim = cache / f"cc-active-task-{lane}-{sid}"
     claim.write_text(f"{task}\n")
+    (cache / f"cc-claim-epoch-{lane}-{sid}").write_text(f"17 {task}\n")
     (runtime_dir / f"{lane}-{sid}.launcher.pid").write_text(f"{proc.pid}\n")
     (runtime_dir / f"{lane}.current-task").write_text(f"{task}\n")
     return claim
@@ -206,12 +208,15 @@ def _cleanup(proc: subprocess.Popen[bytes]) -> None:
 
 
 @pytest.mark.parametrize("location", ["active", "closed"])
-def test_supervisor_reaps_launcher_when_task_terminal(tmp_path: Path, location: str) -> None:
+@pytest.mark.parametrize("status", ["done", "completed", "closed", "withdrawn"])
+def test_supervisor_reaps_launcher_when_task_terminal(
+    tmp_path: Path, location: str, status: str
+) -> None:
     """A verified terminal task permits cleanup within one sweep."""
     env, calls, runtime_dir = _base(tmp_path)
     _make_worktree(env, "delta")
     _mark_claude_alive(runtime_dir, "delta")
-    _write_claim(env, "delta", "done-task", status="done")
+    _write_claim(env, "delta", "done-task", status=status)
     if location == "closed":
         vault = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"])
         (vault / "closed").mkdir()
@@ -736,3 +741,201 @@ def test_supervisor_reaper_never_uses_process_group_kill() -> None:
 def test_supervisor_shell_syntax() -> None:
     result = subprocess.run(["bash", "-n", str(SUPERVISOR)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("epoch_state", ["new_task", "empty", "missing", "malformed", "zero"])
+@pytest.mark.parametrize("ceiling", ["0", "21600"])
+def test_reaper_holds_claim_publication_window(tmp_path, epoch_state, ceiling):
+    """New epoch precedes the session claim overwrite; old terminal bytes cannot reap."""
+    env, calls, runtime = _base(tmp_path, HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S=ceiling)
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime, "delta")
+    _write_claim(env, "delta", "old-task", status="done")
+    proc = _spawn_launcher(env, runtime, "delta")
+    cache = Path(env["HOME"]) / ".cache/hapax"
+    epoch = next(cache.glob("cc-claim-epoch-delta-*"))
+    note = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"]) / "active/new-task.md"
+    if epoch_state == "new_task":
+        note.write_text("---\ntask_id: new-task\nstatus: in_progress\nassigned_to: delta\n---\n")
+    values = {
+        "new_task": "18 new-task\n",
+        "empty": "",
+        "malformed": "invalid",
+        "zero": "0 old-task\n",
+    }
+    if epoch_state == "missing":
+        epoch.unlink()
+    else:
+        epoch.write_text(values[epoch_state])
+    before = {p: p.read_bytes() for p in cache.iterdir()}
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _alive(proc), result.stdout
+        assert "reap_hold:" in result.stdout
+        assert {p: p.read_bytes() for p in cache.iterdir()} == before
+        assert not list(calls.iterdir())
+        assert not (Path(env["HAPAX_SUPERVISOR_STATE_DIR"]) / "launchers_reaped_total").exists()
+    finally:
+        _cleanup(proc)
+
+
+def test_reaper_status_vocabulary():
+    import ast
+    import re
+
+    from shared.sdlc_lifecycle import TASK_TERMINAL_STATUSES
+
+    matched = re.search(r"^terminal = (.+)$", SUPERVISOR.read_text(), re.MULTILINE)
+    statuses = ast.literal_eval(matched.group(1))
+    legacy = {"cancelled", "canceled", "abandoned"}
+    assert statuses - legacy <= TASK_TERMINAL_STATUSES
+    assert {"done", "completed", "closed", "withdrawn", "superseded"} <= statuses
+    assert "deferred" not in statuses
+
+
+@pytest.mark.parametrize("epoch_key", ["session", "role"])
+def test_new_epoch_for_old_terminal_claim_holds(tmp_path, epoch_key):
+    env, calls, runtime = _base(tmp_path, HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0")
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime, "delta")
+    _write_claim(env, "delta", "done-task", status="done")
+    proc = _spawn_launcher(env, runtime, "delta")
+    cache = Path(env["HOME"]) / ".cache/hapax"
+    epoch = (
+        cache / "cc-claim-epoch-delta"
+        if epoch_key == "role"
+        else next(cache.glob("cc-claim-epoch-delta-*"))
+    )
+    epoch.write_text("18 new-task\n")
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _alive(proc), result.stdout
+        assert "reap_hold:" in result.stdout
+        assert not list(calls.iterdir())
+    finally:
+        _cleanup(proc)
+
+
+@pytest.mark.parametrize("changed", ["epoch", "note", "new_claim", "new_note"])
+def test_reaper_rejects_input_changed_during_observation(tmp_path, changed):
+    """Run the actual embedded observer; publish new bytes during its final read."""
+    import sys
+
+    env, _, runtime = _base(tmp_path)
+    _write_claim(env, "delta", "done-task", status="done")
+    proc = _spawn_launcher(env, runtime, "delta")
+    cache = Path(env["HOME"]) / ".cache/hapax"
+    note = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"]) / "active/done-task.md"
+    target = next(cache.glob("cc-claim-epoch-delta-*")) if changed == "epoch" else note
+    new_bytes = (
+        b"18 done-task\n"
+        if changed == "epoch"
+        else note.read_bytes().replace(b"status: done", b"status: in_progress")
+    )
+    trigger = target
+    trigger_read = 3 if changed == "note" else 2
+    reason = "reap_input_changed"
+    if changed in {"new_claim", "new_note"}:
+        trigger = runtime / "delta.current-task"
+        trigger_read = 1
+        if changed == "new_claim":
+            target = cache / f"cc-active-task-delta-{uuid.uuid4()}"
+            new_bytes = b"new-task\n"
+            reason = "claim_inventory_changed"
+        else:
+            target = note.with_name("new-task.md")
+            new_bytes = b"---\ntask_id: new-task\nstatus: in_progress\nassigned_to: delta\n---\n"
+            reason = "task_note_inventory_changed"
+    observer = SUPERVISOR.read_text().split("<<'PYCLAIM'\n", 1)[1].split("\nPYCLAIM", 1)[0]
+    # Publish during final validation, or insert a new key after the initial
+    # inventory was read, before the observer can authorize any signal.
+    instrument = f"""from pathlib import Path
+original = Path.read_bytes
+reads = 0
+def publish(self):
+    global reads
+    if str(self) == {str(trigger)!r}:
+        reads += 1
+        if reads == {trigger_read}:
+            Path({str(target)!r}).write_bytes({new_bytes!r})
+    return original(self)
+Path.read_bytes = publish
+"""
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-",
+                str(REPO_ROOT),
+                env["HAPAX_SUPERVISOR_VAULT_ROOT"],
+                "delta",
+                str(runtime),
+                env["HAPAX_SUPERVISOR_STATE_DIR"],
+                env["HAPAX_SUPERVISOR_LANEBUS_DIR"],
+                "reap",
+                str(proc.pid),
+            ],
+            input=instrument + observer,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert target.read_bytes() == new_bytes
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert reason in result.stdout
+    finally:
+        _cleanup(proc)
+
+
+@pytest.mark.parametrize("location", ["active", "closed"])
+def test_runbook_displays_launcher_note_and_epoch(tmp_path, location):
+    import sys
+
+    env, _, runtime = _base(tmp_path)
+    _write_claim(env, "delta", "done-task", status="completed")
+    vault = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"])
+    if location == "closed":
+        (vault / "closed").mkdir()
+        (vault / "active/done-task.md").rename(vault / "closed/done-task.md")
+    proc = _spawn_launcher(env, runtime, "delta")
+    command = (REPO_ROOT / "docs/runbooks/lane-death-forensics.md").read_text()
+    command = command.split("python3 - \"$lane\" <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    try:
+        result = subprocess.run(
+            [sys.executable, "-", "delta"],
+            input=command,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "status completed" in result.stdout
+        assert "assigned_to delta" in result.stdout
+        assert "task_id done-task" in result.stdout
+        assert str(vault / location / "done-task.md") in result.stdout
+        assert "cc-claim-epoch-delta-" in result.stdout
+        assert "17 done-task" in result.stdout
+    finally:
+        _cleanup(proc)
+
+
+def test_new_owned_note_before_epoch_publication_holds_reap(tmp_path):
+    env, calls, runtime = _base(tmp_path, HAPAX_SUPERVISOR_LAUNCHER_MAX_LIFETIME_S="0")
+    _make_worktree(env, "delta")
+    _mark_claude_alive(runtime, "delta")
+    _write_claim(env, "delta", "done-task", status="done")
+    proc = _spawn_launcher(env, runtime, "delta")
+    note = Path(env["HAPAX_SUPERVISOR_VAULT_ROOT"]) / "active/new-task.md"
+    note.write_text("---\ntask_id: new-task\nstatus: in_progress\nassigned_to: delta\n---\n")
+    try:
+        result = _run(env)
+        assert result.returncode == 0, result.stderr
+        assert _alive(proc), result.stdout
+        assert "reap_hold:nonterminal_owned_note" in result.stdout
+        assert not list(calls.iterdir())
+    finally:
+        _cleanup(proc)

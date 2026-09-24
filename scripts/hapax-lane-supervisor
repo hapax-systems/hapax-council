@@ -668,7 +668,35 @@ from shared.session_identity import is_claim_keyable_session_id, session_role_ma
 
 cache = Path.home() / ".cache/hapax"
 prefix = f"cc-active-task-{lane}"
-terminal = {"done", "closed", "cancelled", "canceled", "superseded", "abandoned"}
+# Preserve the reaper's established cleanup vocabulary; canonical lifecycle
+# membership is verified in test_reaper_status_vocabulary; keep this stdlib-only
+# observer usable in the service interpreter without adding a YAML dependency.
+terminal = {"done", "completed", "closed", "withdrawn", "superseded", "cancelled", "canceled", "abandoned"}
+reap_inputs = {}
+
+
+def read_input(path):
+    if mode != "reap":
+        return path.read_text()
+    if path.is_symlink():
+        raise ValueError("symlinked_reap_input")
+    before = path.stat()
+    content = path.read_bytes()
+    after = path.stat()
+    stamp = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    observed = (stamp(after), content)
+    if stamp(before) != stamp(after) or (path in reap_inputs and reap_inputs[path] != observed):
+        raise ValueError("reap_input_changed")
+    reap_inputs[path] = observed
+    return content.decode()
+
+
+def check_epoch(path, task):
+    epoch = cache / path.name.replace("cc-active-task-", "cc-claim-epoch-", 1)
+    parts = read_input(epoch).split()
+    if len(parts) != 2 or not parts[0].isdecimal() or int(parts[0]) <= 0 or parts[1] != task:
+        raise ValueError("claim_epoch_unresolved")
+
 
 
 def digest(path):
@@ -695,17 +723,17 @@ def launcher_binding():
     started = int(boot) + int(stat[19]) / os.sysconf("SC_CLK_TCK")
     bindings = []
     for path in Path(runtime).glob(f"{lane}-*.launcher.pid"):
-        if path.read_text().strip() != reap_pid:
+        if read_input(path).strip() != reap_pid:
             continue
         sid = path.name[len(lane) + 1:-len(".launcher.pid")]
         if not is_claim_keyable_session_id(sid) or path.stat().st_mtime < started:
             raise ValueError("stale_or_invalid_session_pid")
-        if session_role_marker_path(sid, cache_dir=cache).read_text().strip() != lane:
+        if read_input(session_role_marker_path(sid, cache_dir=cache)).strip() != lane:
             raise ValueError("launcher_session_role_mismatch")
         bindings.append(sid)
     if len(bindings) != 1:
         raise ValueError("launcher_session_not_unique")
-    task = (Path(runtime) / f"{lane}.current-task").read_text().strip()
+    task = read_input(Path(runtime) / f"{lane}.current-task").strip()
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", task):
         raise ValueError("launcher_task_unresolved")
     return bindings[0], task
@@ -858,20 +886,31 @@ def record_claim_observation(path, sid, task, observed, why, note):
 
 try:
     claims = []
-    for path in sorted(cache.glob(prefix + "-*")):
+    claim_paths = sorted(cache.glob(prefix + "-*"))
+    for path in claim_paths:
         sid = path.name[len(prefix) + 1:]
         if not is_claim_keyable_session_id(sid):
             claims.append((path, ""))
             continue
         claims.append((path, sid))
-    covered = {path.read_text().strip() for path, _ in claims}
+    covered = {read_input(path).strip() for path, _ in claims}
     legacy = cache / prefix
-    if legacy.exists() and legacy.read_text().strip() not in covered:
+    if legacy.exists() and read_input(legacy).strip() not in covered:
         claims.append((legacy, ""))
     held = False
     terminal_claims = set()
+    # cc-claim publishes the task note before its epochs/claim files. Observe
+    # owned active notes as part of the same snapshot, including this first
+    # publication window where every old sidecar can still agree.
+    active_notes = sorted((Path(vault) / "active").glob("*.md")) if mode == "reap" else []
+    for active_note in active_notes:
+        content = read_input(active_note)
+        front = content.split("---", 2)[1] if content.startswith("---\n") else ""
+        if field(front, "assigned_to") == lane and field(front, "status") not in terminal:
+            print(f"{lane}: reap_hold:nonterminal_owned_note:{active_note}; preserve launcher and inspect claim publication", flush=True)
+            held = True
     for path, sid in claims:
-        task = path.read_text().strip()
+        task = read_input(path).strip()
         if not task:
             held = True
             print(f"{lane}: claim_orphan_unresolved:empty_claim; preserve claim and inspect publication at {path}", flush=True)
@@ -885,9 +924,13 @@ try:
         note = Path(vault) / "active" / f"{task}.md"
         if not note.is_file():
             note = Path(vault) / "closed" / f"{task}.md"
-        text = note.read_text() if note.is_file() else ""
+        text = read_input(note) if note.is_file() else ""
         frontmatter = text.split("---", 2)[1] if text.startswith("---\n") else ""
         if field(frontmatter, "status") in terminal and (mode != "reap" or field(frontmatter, "assigned_to") == lane):
+            if mode == "reap":
+                if field(frontmatter, "task_id") != task:
+                    raise ValueError("terminal_note_task_mismatch")
+                check_epoch(path, task)
             terminal_claims.add((sid, task))
             continue
         # A role can prefix another role's marker key. Exclude a sibling only
@@ -927,13 +970,30 @@ try:
             # killing the current one, even when the new claim is absent.
             if (sid, task) not in terminal_claims:
                 raise ValueError("terminal_claim_mismatch")
-            if (cache / f"{prefix}-{sid}").read_text().strip() != task:
+            if read_input(cache / f"{prefix}-{sid}").strip() != task:
                 raise ValueError("launcher_claim_changed")
+            # Legacy projection is commonly covered by the session claim, but
+            # its epoch may publish first. It must agree too when present.
+            if legacy.exists():
+                legacy_task = read_input(legacy).strip()
+                if legacy_task != task:
+                    raise ValueError("role_claim_changed")
+                check_epoch(legacy, task)
+            if sorted(cache.glob(prefix + "-*")) != claim_paths:
+                raise ValueError("claim_inventory_changed")
+            if sorted((Path(vault) / "active").glob("*.md")) != active_notes:
+                raise ValueError("task_note_inventory_changed")
+            for path in tuple(reap_inputs):
+                read_input(path)
+            if launcher_binding() != (sid, task):
+                raise ValueError("launcher_binding_changed")
         except (OSError, ValueError, IndexError, StopIteration) as exc:
             print(f"{lane}: reap_hold:launcher_binding_unresolved:{type(exc).__name__}:{exc}; preserve launcher and inspect session PID/current-task/claim bindings", flush=True)
             held = True
     sys.exit(1 if held else 0)
 except (OSError, ValueError) as exc:
+    if mode == "reap":
+        print(f"{lane}: reap_hold:publication_unresolved:{type(exc).__name__}:{exc}; preserve launcher and recheck claim/note/epoch publication", flush=True)
     print(f"{lane}: claim_orphan_unresolved:observation_failed:{type(exc).__name__}; inspect claim inputs and receipt destination", flush=True)
     sys.exit(1)
 PYCLAIM
@@ -1065,6 +1125,10 @@ guard() {
       fi
       ;;
     codex)
+      if tmux_session_alive "hapax-codex-$lane"; then
+        log "$lane: respawn_hold:occupancy_changed — recheck next tick"
+        return 0
+      fi
       log "$lane ($kind): DEAD — respawning tmux lane (idle-await; lane reads its own claim)"
       codex_force=0
       codex_args=("$CODEX_BIN" --session "$lane" --slot "$CODEX_SLOT" --no-claim --terminal tmux)
@@ -1347,17 +1411,17 @@ launcher_etimes() {
 # into idle-await.
 reap_launcher() {
   local lane="$1" pid="$2" reason="$3"
+  local current_pid
+  current_pid="$(launcher_pid "$lane")" || current_pid=""
+  if [ "$current_pid" != "$pid" ]; then
+    log "$lane: reap_hold:launcher_changed — preserve processes; inspect launcher pidfile and recheck next tick"
+    return 1
+  fi
   # Reuse the claim observation boundary after admission/age inspection. Every
   # active or unresolved lease holds, even beneath a newer terminal role claim.
   # A missing note/claim is uncertainty, not proof that the launcher is idle.
   if ! claim_holder_guard "$lane" reap "$pid"; then
     log "$lane: reap_hold:active_or_unresolved_claim — preserve launcher; inspect claim-holder evidence and task state"
-    return 1
-  fi
-  local current_pid
-  current_pid="$(launcher_pid "$lane")" || current_pid=""
-  if [ "$current_pid" != "$pid" ]; then
-    log "$lane: reap_hold:launcher_changed — preserve processes; inspect launcher pidfile and recheck next tick"
     return 1
   fi
   if [ "$DRY_RUN" = "1" ]; then

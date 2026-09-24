@@ -50,13 +50,14 @@ def main() -> None:
     add(
         "unrelated_terminal_authorizes_reap",
         "            sid, task = launcher_binding()",
-        """            sid, task = next(iter(terminal_claims))""",
+        """            sid, task = next(iter(terminal_claims))
+            launcher_binding = lambda: (sid, task)""",
         [REAPER + "test_terminal_cleanup_requires_current_launcher_binding"],
         6,
     )
     add(
         "ignore_session_pid",
-        "if path.read_text().strip() != reap_pid:",
+        "if read_input(path).strip() != reap_pid:",
         "if False:",
         [REAPER + "test_terminal_cleanup_requires_current_launcher_binding[wrong_pid]"],
         1,
@@ -70,7 +71,7 @@ def main() -> None:
     )
     add(
         "ignore_launcher_role",
-        "if session_role_marker_path(sid, cache_dir=cache).read_text().strip() != lane:",
+        "if read_input(session_role_marker_path(sid, cache_dir=cache)).strip() != lane:",
         "if False:",
         [REAPER + "test_terminal_cleanup_requires_current_launcher_binding[wrong_role]"],
         1,
@@ -84,7 +85,7 @@ def main() -> None:
     )
     add(
         "ignore_current_task",
-        'task = (Path(runtime) / f"{lane}.current-task").read_text().strip()',
+        'task = read_input(Path(runtime) / f"{lane}.current-task").strip()',
         'task = (cache / f"{prefix}-{bindings[0]}").read_text().strip()',
         [REAPER + "test_terminal_cleanup_requires_current_launcher_binding[wrong_task]"],
         1,
@@ -117,7 +118,7 @@ def main() -> None:
         'if ! kill -TERM "$pid" 2>/dev/null; then',
         "if ! false; then",
         [REAPER + "test_supervisor_reaps_launcher_when_task_terminal"],
-        2,
+        8,
     )
     results = []
     command = [sys.executable, "-m", "pytest", "-q", "--tb=short"]

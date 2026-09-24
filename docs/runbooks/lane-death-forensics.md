@@ -91,10 +91,13 @@ if claim.is_symlink() or epoch.is_symlink():
 vault = Path(os.environ.get('HAPAX_SUPERVISOR_VAULT_ROOT',
                            str(Path.home() / 'Documents/Personal/20-projects/hapax-cc-tasks')))
 inputs = {'claim_sha256': claim, 'epoch_sha256': epoch}
-if receipt['task_id']:
-    note = vault / 'active' / (receipt['task_id'] + '.md')
+task = receipt.get('task_id')
+if not isinstance(task, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', task):
+    sys.exit('receipt_task_unresolved: missing or invalid task; preserve receipt and inspect claim publication')
+if task:
+    note = vault / 'active' / (task + '.md')
     if not note.is_file():
-        note = vault / 'closed' / (receipt['task_id'] + '.md')
+        note = vault / 'closed' / (task + '.md')
     inputs['note_sha256'] = note
 for field, path in inputs.items():
     expected = receipt.get(field)
@@ -130,7 +133,13 @@ lifetime ceiling. Immediately before SIGTERM, the reaper requires an observed te
 task assigned to the lane, no active/unresolved lane claims, and an unchanged launcher
 PID binding. The terminal claim must match the launcher's unique session PID binding
 and current-task file. An empty claim is unresolved publication; another session's
-terminal task cannot authorize cleanup. A session PID file older than the process is
+terminal task cannot authorize cleanup. The claim's epoch must name the same task
+and contain a positive claim time. The note must identify that task and lane;
+claim, epoch, note and launcher inputs must remain unchanged across the observation.
+The covered role projection and its epoch are checked too, because they can publish
+before the session claim. An active note assigned to the lane that is not terminal
+also holds cleanup, covering note publication before any sidecar changes. Unknown
+or changing publication holds for another tick. A session PID file older than the process is
 stale evidence and holds. Missing claims or notes do not prove completion. For `reap_hold`, inspect
 the claim events and receipts above plus the launcher's task and PID binding, then
 recheck the next tick; preserve the lease until governed repair is authorized.
@@ -138,6 +147,7 @@ recheck the next tick; preserve the lease until governed repair is authorized.
 ```bash
 python3 - "$lane" <<'PY'
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -145,14 +155,32 @@ lane = sys.argv[1]
 runtime = Path(os.environ.get('HAPAX_SUPERVISOR_RUNTIME_DIR',
                              f'/run/user/{os.getuid()}/hapax-claude'))
 cache = Path.home() / '.cache/hapax'
-paths = [runtime / f'{lane}.launcher.pid', runtime / f'{lane}.current-task']
+vault = Path(os.environ.get('HAPAX_SUPERVISOR_VAULT_ROOT',
+                           str(Path.home() / 'Documents/Personal/20-projects/hapax-cc-tasks')))
+paths = [runtime / f'{lane}.launcher.pid', runtime / f'{lane}.current-task',
+         cache / f'cc-active-task-{lane}', cache / f'cc-claim-epoch-{lane}']
 for binding in sorted(runtime.glob(f'{lane}-*.launcher.pid')):
     sid = binding.name[len(lane) + 1:-len('.launcher.pid')]
-    paths += [binding, cache / f'session-role-{sid}', cache / f'cc-active-task-{lane}-{sid}']
+    paths += [binding, cache / f'session-role-{sid}', cache / f'cc-active-task-{lane}-{sid}',
+              cache / f'cc-claim-epoch-{lane}-{sid}']
 for path in paths:
     print(path, repr(path.read_text()) if path.is_file() else 'MISSING')
     if path.is_file():
         print('mtime_ns', path.stat().st_mtime_ns)
+    if path.name.startswith('cc-active-task-') and path.is_file():
+        task = path.read_text().strip()
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', task):
+            print('reap_hold: invalid/empty task; preserve launcher and inspect publication')
+            continue
+        note = vault / 'active' / (task + '.md')
+        if not note.is_file():
+            note = vault / 'closed' / (task + '.md')
+        text = note.read_text() if note.is_file() else ''
+        front = text.split('---', 2)[1] if text.startswith('---\n') else ''
+        print('note', note)
+        for key in ('task_id', 'status', 'assigned_to'):
+            match = re.search(rf'^{key}:[ \t]*(.*)$', front, re.MULTILINE)
+            print(key, match.group(1) if match else 'UNRESOLVED — preserve launcher; inspect note')
 pidfile = runtime / f'{lane}.launcher.pid'
 pid = pidfile.read_text().strip() if pidfile.is_file() else ''
 if pid.isdecimal() and int(pid) > 0:
