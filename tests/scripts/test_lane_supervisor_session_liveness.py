@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -36,6 +38,9 @@ def setup_lane(tmp_path, *, pane=False, claim=True):
         HAPAX_SUPERVISOR_LANEBUS_DIR=str(tmp_path / "lanebus"),
     )
     _make_worktree(env, "delta")
+    # A native executable fixture, distinct from the helper's /usr/bin/sleep
+    # inode. This exercises executable identity without launching a model.
+    shutil.copy2(shutil.which("sleep"), tmp_path / "bin/claude")
     _write_executable(
         tmp_path / "bin/tmux",
         '#!/bin/bash\ncase "$1" in\n'
@@ -168,7 +173,9 @@ def test_unresolved_holder_is_typed_hold(tmp_path, binding):
 
 def test_live_claim_holder_and_pane_no_orphan(tmp_path):
     env, calls = setup_lane(tmp_path, pane=True)
-    proc = subprocess.Popen(["sleep", "60"], env={**env, "HAPAX_SESSION_ID": SID})
+    proc = subprocess.Popen(
+        [str(tmp_path / "bin/claude"), "60"], env={**env, "HAPAX_SESSION_ID": SID}
+    )
     try:
         session_claim(env, proc.pid)
         before = claims_snapshot(env)
@@ -199,9 +206,13 @@ def test_dead_holder_without_other_writer_waits_for_governed_rebind(tmp_path):
     assert "governed_rebind_required" in result.stdout
 
 
-def test_reused_session_pid_is_unknown_not_dead(tmp_path):
+@pytest.mark.parametrize("mismatch", ["session", "home"])
+def test_reused_session_pid_is_unknown_not_dead(tmp_path, mismatch):
     env, calls = setup_lane(tmp_path, pane=True)
-    proc = subprocess.Popen(["sleep", "60"], env=env)
+    child_env = dict(env)
+    if mismatch == "home":
+        child_env.update(HAPAX_SESSION_ID=SID, HOME=str(tmp_path / "other-home"))
+    proc = subprocess.Popen([str(tmp_path / "bin/claude"), "60"], env=child_env)
     try:
         session_claim(env, proc.pid)
         before = claims_snapshot(env)
@@ -224,7 +235,8 @@ def test_receipt_failure_holds_claim(tmp_path):
     assert "claim_orphan_unresolved:observation_failed:" in result.stdout
 
 
-def test_real_pane_claim_holder_resolves_from_process_identity(tmp_path):
+@pytest.mark.parametrize("writer", ["live", "dead", "unbound", "binding_unresolved", "upgraded"])
+def test_real_pane_distinguishes_writer_from_surviving_helper(tmp_path, writer):
     from tests.scripts.test_lane_supervisor_pane_death_forensics import (
         ProbeServer,
         _require_real_tmux,
@@ -233,7 +245,21 @@ def test_real_pane_claim_holder_resolves_from_process_identity(tmp_path):
 
     _require_real_tmux()
     env, calls = setup_lane(tmp_path)
-    session_claim(env)
+    session_claim(env, dead_pid() if writer == "upgraded" else None)
+    binary = tmp_path / "bin/claude"
+    if writer == "dead":
+        child = subprocess.Popen([str(binary), "60"], env={**env, "HAPAX_SESSION_ID": SID})
+        try:
+            session_claim(env, child.pid)
+        finally:
+            child.terminate()
+            child.wait(timeout=5)
+        # The claim's actual writer exited; the pane below keeps a helper with
+        # the same inherited identity alive. It must not certify that writer.
+    command = shlex.join([str(binary) if writer in {"live", "upgraded"} else "sleep", "60"])
+    if writer == "binding_unresolved":
+        binary.unlink()
+        _write_executable(binary, "#!/bin/sh\nexec sleep 60\n")
     probe = ProbeServer(tmp_path)
     try:
         probe(
@@ -245,7 +271,7 @@ def test_real_pane_claim_holder_resolves_from_process_identity(tmp_path):
             f"HOME={env['HOME']}",
             "-e",
             f"HAPAX_SESSION_ID={SID}",
-            "sleep 60",
+            command,
             check=True,
         )
 
@@ -260,18 +286,57 @@ def test_real_pane_claim_holder_resolves_from_process_identity(tmp_path):
                 return (
                     f"HAPAX_SESSION_ID={SID}".encode() in raw
                     and f"HOME={env['HOME']}".encode() in raw
+                    and (Path("/proc") / pid / "exe").samefile(
+                        binary if writer in {"live", "upgraded"} else shutil.which("sleep")
+                    )
                 )
             except OSError:
                 return False
 
         assert _wait_for(identity_ready)
+        if writer == "upgraded":
+            replacement = binary.with_suffix(".new")
+            shutil.copy2(shutil.which("sleep"), replacement)
+            replacement.replace(binary)
         env["PATH"] = f"{probe.bin_dir}:{env['PATH']}"
         before = claims_snapshot(env)
         result = run(env)
         assert_no_recovery(env, calls, before, result)
-        assert f"claim_holder_live:session-task:{SID}:pane_session_process" in result.stdout
+        if writer == "live":
+            assert f"claim_holder_live:session-task:{SID}:pane_session_process" in result.stdout
+        else:
+            assert f"claim_holder_live:session-task:{SID}" not in result.stdout
+            receipt = json.loads(
+                (
+                    Path(env["HAPAX_SUPERVISOR_STATE_DIR"]) / f"delta-{SID}.claim-holder.json"
+                ).read_text()
+            )
+            assert receipt["state"] == "unknown"
+            assert "claim_orphan_unresolved:" in result.stdout
+            assert f"claim_orphaned:session-task:{SID}" not in result.stdout
     finally:
         probe.kill()
+
+
+@pytest.mark.parametrize("binding", ["writer", "launcher"])
+def test_bound_helper_is_not_a_live_claim_writer(tmp_path, binding):
+    env, calls = setup_lane(tmp_path)
+    helper = subprocess.Popen(["sleep", "60"], env={**env, "HAPAX_SESSION_ID": SID})
+    try:
+        session_claim(env, helper.pid if binding == "writer" else dead_pid())
+        if binding == "launcher":
+            (Path(env["HAPAX_SUPERVISOR_RUNTIME_DIR"]) / f"delta-{SID}.launcher.pid").write_text(
+                str(helper.pid)
+            )
+        before = claims_snapshot(env)
+        result = run(env)
+        assert_no_recovery(env, calls, before, result)
+        assert f"claim_holder_live:session-task:{SID}" not in result.stdout
+        assert f"claim_orphaned:session-task:{SID}" not in result.stdout
+        assert f"claim_orphan_unresolved:session-task:{SID}" in result.stdout
+    finally:
+        helper.terminate()
+        helper.wait(timeout=5)
 
 
 def test_claim_arriving_at_respawn_boundary_holds(tmp_path):

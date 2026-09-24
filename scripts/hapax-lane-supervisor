@@ -478,7 +478,7 @@ capture_dead_pane() {
   # what makes the respawn possible; doing it before the read would restore exactly the
   # blindness this exists to remove. Exact name: see the liveness section.
   if tmux_has_live_pane "$session"; then
-    log "$lane: respawn_hold:pane_changed_during_capture — preserving session"
+    log "$lane: respawn_hold:pane_changed_during_capture — preserving session; next: inspect tmux list-panes -a and the claim-holder receipt, then recheck the next supervisor tick"
     return 0
   fi
   tmux kill-session -t "=$session" 2>/dev/null || true
@@ -655,6 +655,7 @@ claim_holder_guard() {
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -678,6 +679,35 @@ def field(text, name):
     return match.group(1).strip().strip("\"'") if match else ""
 
 
+def writer_process_state(proc, sid):
+    # Session variables are inherited by helpers. Identify the native writer
+    # executable as well; argv, comm and the session environment alone cannot
+    # distinguish Claude from a surviving shell/sleep/tool. The launcher also
+    # resolves `claude` on PATH. An unavailable, upgraded or interpreted binding
+    # is unresolved, never evidence authorizing recovery.
+    try:
+        before = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+        if before[0] in {"Z", "X"}:
+            return "dead", "pid_exited"
+        env = dict(part.split("=", 1) for part in (proc / "environ").read_text().split("\0") if "=" in part)
+        if env.get("HOME") != str(Path.home()) or env.get("HAPAX_SESSION_ID") != sid:
+            return "unknown", "pid_identity_mismatch"
+        binding = shutil.which("claude")
+        if not binding:
+            return "unknown", "writer_binding_unresolved"
+        with Path(binding).open("rb") as executable:
+            if executable.read(4) != b"\x7fELF":
+                return "unknown", "writer_binding_unresolved"
+        if not (proc / "exe").samefile(binding):
+            return "unknown", "writer_executable_mismatch"
+        after = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+        if after[0] in {"Z", "X"} or before[19] != after[19]:
+            return "unknown", "writer_changed_during_inspection"
+        return "live", "session_process"
+    except (OSError, ValueError, IndexError):
+        return "unknown", "writer_inspection_unresolved"
+
+
 def pid_state(path, sid, launcher=False):
     try:
         raw = path.read_text().strip()
@@ -690,15 +720,10 @@ def pid_state(path, sid, launcher=False):
             return "dead", "pid_gone"
         if stat[0] in {"Z", "X"}:
             return "dead", "pid_exited"
-        env = dict(part.split("=", 1) for part in (proc / "environ").read_text().split("\0") if "=" in part)
-        if env.get("HOME") != str(Path.home()):
-            return "unknown", "pid_identity_mismatch"
-        if env.get("HAPAX_SESSION_ID") == sid:
-            return "live", "session_process"
-        # bash exports minted variables to its children, not its own /proc env.
-        # A live wrapper is conservatively occupied even when that env cannot
-        # prove its session. Do not call it a dead writer or transfer its claim.
-        return "unknown", "launcher_identity_unobserved" if launcher else "pid_identity_mismatch"
+        if launcher:
+            # A wrapper can outlive its writer, even with the right session env.
+            return "unknown", "launcher_identity_unobserved"
+        return writer_process_state(proc, sid)
     except (OSError, ValueError, IndexError):
         return "unknown", "pid_unreadable"
 
@@ -744,13 +769,13 @@ def pane_holder_state(sid):
             descendants = expanded
         unreadable = False
         for pid in descendants:
-            try:
-                raw = (Path("/proc") / pid / "environ").read_bytes().split(b"\0")
-                if f"HAPAX_SESSION_ID={sid}".encode() in raw and f"HOME={Path.home()}".encode() in raw:
-                    return "live"
-            except FileNotFoundError:
-                continue  # this descendant has exited since the process snapshot
-            except OSError:
+            observed, why = writer_process_state(Path("/proc") / pid, sid)
+            if observed == "live":
+                return "live"
+            # A same-session helper is not the writer, but it may also be an
+            # older writer executable after an upgrade. Preserve that uncertainty
+            # even when a stale headless PID says dead.
+            if observed == "unknown" and why != "pid_identity_mismatch":
                 unreadable = True
         return "unknown" if unreadable else "absent"
     except (OSError, subprocess.SubprocessError):

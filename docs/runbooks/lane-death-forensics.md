@@ -47,8 +47,26 @@ cleared so the lane can relaunch after occupancy and claim rechecks — the evid
 An active claim holds automatic recovery even when its session is dead and another pane
 keeps the role alive. The supervisor reports `claim_holder_live`, `claim_orphaned`, or
 `claim_orphan_unresolved`; non-live observations retain claim, epoch and task-note hashes
-in the lane bus. Preserve the claim and use governed stale-lease/rebind repair after
-resolving session ownership. Do not copy claim sidecars or launch a second writer over a
+in the lane bus when those inputs exist (otherwise the hash is null). Inspect them with:
+
+```bash
+journalctl --user -u hapax-lane-supervisor --since -1h | rg 'claim_holder_live|claim_orphaned|claim_orphan_unresolved|pane_changed_during_capture'
+lane=gamma  # replace with the lane named in the supervisor event
+ls -t "$HOME/Documents/Personal/30-areas/hapax/lanebus/$lane/"*claim-holder*.json | head
+# Read the exact receipt path returned above:
+python3 -m json.tool '<receipt-path>'
+```
+
+Receipts use `HAPAX_SUPERVISOR_LANEBUS_DIR` if configured. A live holder requires
+the session and HOME to match and the process executable to match the native `claude`
+resolved on the supervisor's PATH. A surviving helper or launcher is insufficient;
+an unresolved executable binding holds for inspection. For a pane-change hold, use
+the `tmux list-panes` command above and recheck the next supervisor tick before repair.
+
+Preserve the claim while resolving session ownership. If an admitted rebind is unavailable,
+request the exact-path approval required by
+[Manual Stale-Lease Release](gate0b-claim-publication-fallback.md#manual-stale-lease-release)
+and follow that procedure only after approval. Do not copy claim sidecars or launch a second writer over a
 live pane or live claim. Missing or conflicting identity evidence remains an unresolved
 hold; output silence alone never authorizes recovery.
 
