@@ -598,6 +598,7 @@ if canon_enforced:
                 receipt_root=receipt_root,
                 lock_root=lock_root,
                 task_id=task_id,
+                expected_owner=(role, session_id),
             )
         except ClaimPublicationError as exc:
             print(
@@ -1261,6 +1262,7 @@ try:
         task_id,
         state="active",
         require_no_other_state=True,
+        index_build_attempts=3,
     )
     if snapshot.path != path.resolve() or snapshot.content != note_before:
         raise TaskStoreError(
@@ -1440,11 +1442,42 @@ try:
         )
     receipt = publish_gate0b_claim(intent, root=install.root, now=now)
 except (ClaimPublicationError, ExecutionAdmissionError, TaskStoreError, ValueError) as exc:
+    # A HOLD after admission can be a pending publication. Report the bounded
+    # read-only journal observation so callers preserve this attempt's identity
+    # instead of interpreting every nonzero return as a fresh-claim refusal.
+    try:
+        publication_observations = [
+            {
+                "publication_id": item.publication_id,
+                "disposition": item.disposition,
+                "journal_state": item.journal_state,
+                "reason_code": item.reason_code,
+                "binding_receipt_hash": item.binding_receipt_hash,
+            }
+            for item in inspect_claim_publications(
+                cache_dir=cache_dir,
+                transaction_root=transaction_root,
+                receipt_root=receipt_root,
+                task_id=task_id,
+            )
+        ]
+    except ClaimPublicationError as inspection_error:
+        publication_observations = [
+            {"disposition": "unknown", "reason_code": inspection_error.reason_code}
+        ]
+    publication_repair = (
+        "provision or repair the Gate-0B claim-publication composition receipt "
+        "through the governed install step"
+        if str(getattr(exc, "reason_code", "")).startswith("gate0b_install_")
+        else "inspect the original publication; reconcile pending or unknown "
+        "state with the original role/session before retrying"
+    )
     print(
-        f"cc-claim: HOLD — {exc}; Next action: provision or repair the Gate-0B "
-        "claim-publication composition receipt for this HOME through the governed "
-        "install step, then rerun cc-claim; do not use HAPAX_GATE0B_CLAIM_PUBLICATION_OFF "
-        f"unless the operator authorizes emergency fallback; prepared_intent={intent.intent_ref}",
+        f"cc-claim: HOLD — {exc}; prepared_intent={intent.intent_ref}; "
+        f"role={role}; session={session_id}; claim_epoch={claim_epoch}; "
+        f"binding_receipt_hash={intent.binding.receipt_hash}; "
+        f"publication_observations={json.dumps(publication_observations, sort_keys=True)}. "
+        f"Next action: {publication_repair}. A HOLD is not proof of no effect.",
         file=sys.stderr,
     )
     sys.exit(8)

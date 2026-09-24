@@ -8,6 +8,7 @@ import os
 import queue
 import stat
 import subprocess
+import threading
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -2982,6 +2983,187 @@ def test_admitted_manifest_state_refuses_invalid_state(tmp_path: Path) -> None:
         )
 
     assert raised.value.reason_code == "claim_publication_state_invalid"
+
+
+@pytest.mark.parametrize("continuous", [False, True])
+def test_pre_projection_frontier_refusal_cannot_be_recovered_into_a_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, continuous: bool
+) -> None:
+    import shared.sdlc_task_store as task_store
+
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    original_preflight = sdlc_claim._locked_preflight
+    original_entry = task_store._index_entry
+    preflights = 0
+    changed = False
+
+    def count_preflight(*args, **kwargs):
+        nonlocal preflights
+        preflights += 1
+        return original_preflight(*args, **kwargs)
+
+    def concurrent_write(*args, **kwargs):
+        nonlocal changed
+        entry = original_entry(*args, **kwargs)
+        if preflights == 2 and (continuous or not changed):
+            changed = True
+            writer = threading.Thread(
+                target=(fixture.vault / "active" / "unrelated.md").write_bytes,
+                args=(fixture.intent.note_before.replace(b"task-alpha", b"unrelated"),),
+            )
+            writer.start()
+            writer.join(timeout=5)
+            assert not writer.is_alive()
+        return entry
+
+    monkeypatch.setattr(sdlc_claim, "_locked_preflight", count_preflight)
+    monkeypatch.setattr(task_store, "_index_entry", concurrent_write)
+    if not continuous:
+        receipt = sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+        )
+        assert changed
+        assert receipt.publication_id == admitted_claim_publication_id(
+            fixture.intent, active.consumption
+        )
+        assert fixture.intent.note_path.read_bytes() == fixture.intent.note_after
+        assert len(list(fixture.cache.glob("cc-active-task-*"))) == 2
+        return
+    with pytest.raises(ClaimPublicationError) as raised:
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+        )
+    assert raised.value.reason_code == "claim_publication_task_resolution_refused"
+    assert raised.value.detail == "task_store_frontier_changed_during_index_build"
+    assert fixture.intent.note_path.read_bytes() == fixture.intent.note_before
+    assert not list(fixture.cache.glob("cc-active-task-*"))
+
+    # The next invocation's automatic recovery must not turn a terminal refusal
+    # into the original session's delayed claim.
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert [result.state for result in results] == ["aborted"]
+    assert fixture.intent.note_path.read_bytes() == fixture.intent.note_before
+    assert not list(fixture.cache.glob("cc-active-task-*"))
+
+
+@pytest.mark.parametrize("state", ["active", "closed"])
+def test_recovery_checks_complete_task_identity_before_any_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def fail_before_projection(phase: str, index: int | None) -> None:
+        if phase == "before_projection" and index == 0:
+            raise RuntimeError("crash before the first write")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            failure_hook=fail_before_projection,
+        )
+    (fixture.vault / state / "unrelated-filename.md").write_bytes(fixture.intent.note_before)
+    before = _tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert [result.state for result in results] == ["hold"]
+    assert (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)) == before
+
+
+def test_automatic_recovery_preserves_pending_claim_for_its_original_session(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def fail_before_projection(phase: str, index: int | None) -> None:
+        if phase == "before_projection" and index == 0:
+            raise RuntimeError("interrupted publication")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            failure_hook=fail_before_projection,
+        )
+    before = _tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+        expected_owner=(fixture.intent.role, "fresh-session"),
+    )
+    assert [result.reason_code for result in results] == [
+        "claim_publication_recovery_owner_mismatch"
+    ]
+    assert (_tree_snapshot(fixture.vault), _tree_snapshot(fixture.cache)) == before
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
+    )
+    assert [result.state for result in results] == ["applied"]
+    assert fixture.intent.note_path.read_bytes() == fixture.intent.note_after
+
+
+def test_cc_claim_fresh_session_does_not_apply_original_pending_publication(
+    tmp_path: Path,
+) -> None:
+    from tests.scripts.test_cc_claim import _claim
+
+    fixture = _home_fixture(tmp_path)
+    fixture = replace(fixture, transactions=fixture.transactions / "gate0b-claim-publish-v1")
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def fail_before_projection(phase: str, index: int | None) -> None:
+        if phase == "before_projection" and index == 0:
+            raise RuntimeError("interrupted publication")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            failure_hook=fail_before_projection,
+        )
+    result = _claim(
+        tmp_path / "home",
+        fixture.intent.task_id,
+        dispatch=False,
+        install_gate0b=True,
+        session_id="fresh-session",
+        extra_env={"HAPAX_AGENT_ROLE": "cx-red", "HAPAX_AGENT_NAME": "cx-red"},
+    )
+    assert result.returncode == 8, result.stderr
+    assert "claim_publication_recovery_owner_mismatch" in result.stderr
+    assert fixture.intent.note_path.read_bytes() == fixture.intent.note_before
+    assert not list(fixture.cache.glob("cc-active-task-*"))
+    assert not list(fixture.cache.glob("cc-claim-dispatch-*"))
 
 
 def test_private_admitted_transaction_marks_recovery_after_untyped_exception(

@@ -298,6 +298,56 @@ def test_stale_index_hold_has_complete_changed_path_evidence(tmp_path: Path) -> 
     assert "active/cc-task-b.md" in caught.value.evidence_refs[0]
 
 
+@pytest.mark.parametrize("duplicate_state", [None, "active", "closed"])
+def test_bounded_index_retry_rechecks_every_identity_and_reuses_unchanged_parses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, duplicate_state: str | None
+) -> None:
+    target = _note(tmp_path / "active" / "target.md", "target")
+    other = _note(tmp_path / "active" / "other.md", "other")
+    original = task_store._index_entry
+    parsed = []
+
+    def racing_entry(path, **kwargs):
+        parsed.append(path)
+        entry = original(path, **kwargs)
+        if len(parsed) == 2:
+            if duplicate_state is None:
+                other.write_text(other.read_text() + "concurrent progress\n")
+            else:
+                _note(tmp_path / duplicate_state / "unrelated-name.md", "target")
+        return entry
+
+    monkeypatch.setattr(task_store, "_index_entry", racing_entry)
+    index = build_task_identity_index(tmp_path, max_attempts=3)
+    assert parsed.count(target) == 1
+    assert len(parsed) == 3
+    if duplicate_state:
+        with pytest.raises(TaskStoreError, match="ambiguous|cross_state_duplicate"):
+            resolve_task_note(tmp_path, "target", identity_index=index)
+    else:
+        assert resolve_task_note(tmp_path, "target", identity_index=index).path == target
+
+
+def test_bounded_index_retry_exhaustion_never_returns_stale_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = _note(tmp_path / "active" / "target.md", "target")
+    original = task_store._index_entry
+    calls = 0
+
+    def racing_entry(path, **kwargs):
+        nonlocal calls
+        calls += 1
+        entry = original(path, **kwargs)
+        target.write_text(target.read_text() + "changed\n")
+        return entry
+
+    monkeypatch.setattr(task_store, "_index_entry", racing_entry)
+    with pytest.raises(TaskStoreError, match="task_store_frontier_changed_during_index_build"):
+        build_task_identity_index(tmp_path, max_attempts=3)
+    assert calls == 3
+
+
 def test_identity_index_root_mismatch_refuses(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"

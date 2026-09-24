@@ -711,6 +711,9 @@ def test_default_claim_holds_corrupt_install_receipt_without_overwrite(
     assert result.returncode == 8
     assert "gate0b_install_receipt_malformed" in result.stderr
     assert "Next action: provision or repair the Gate-0B" in result.stderr
+    assert f"session={_SESSION_ID}; claim_epoch=" in result.stderr
+    assert "prepared_intent=" in result.stderr
+    assert "publication_observations=[]" in result.stderr
     assert receipt.read_text(encoding="ascii") == "{}\n"
     assert "status: offered" in note.read_text(encoding="utf-8")
 

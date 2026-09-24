@@ -3433,6 +3433,7 @@ def _locked_preflight(
             intent.task_id,
             state="active",
             require_no_other_state=True,
+            index_build_attempts=3,
         )
     except TaskStoreError as exc:
         raise ClaimPublicationError(
@@ -3467,6 +3468,7 @@ def _require_exact_task_postimage(intent: ClaimPublicationIntent) -> None:
             intent.task_id,
             state="active",
             require_no_other_state=True,
+            index_build_attempts=3,
         )
     except TaskStoreError as exc:
         raise ClaimPublicationError(
@@ -3882,7 +3884,10 @@ def _apply_admitted_claim_publication_transaction(
                 consumption,
                 projections,
                 publication_id,
-                state="recovery_required",
+                # No projection has started at this boundary. A rejected
+                # preflight is terminal, not an instruction for a later
+                # invocation to publish this session's claim.
+                state="aborted" if phase == "pre_projection_preflight" else "recovery_required",
                 reason_code=exc.reason_code,
             )
             raise
@@ -4745,6 +4750,7 @@ def _recover_one(
     *,
     lock_root: Path,
     receipt_root: Path | None,
+    expected_owner: tuple[str, str] | None = None,
 ) -> ClaimPublicationRecoveryResult:
     """Complete one interrupted admitted publication without spending a new claim."""
 
@@ -4794,6 +4800,16 @@ def _recover_one(
                 "historical_claim_publication_recovery_forbidden",
                 "preserve historical non-authorizing bytes and republish through the current executor",
                 publication_id,
+            )
+        if (
+            state != "aborted"
+            and expected_owner is not None
+            and (intent.role, intent.session_id) != expected_owner
+        ):
+            raise ClaimPublicationError(
+                "claim_publication_recovery_owner_mismatch",
+                "reconcile the pending publication using its original role and session",
+                f"{publication_id}:role={intent.role};session={intent.session_id}",
             )
         if state == "applied":
             require_applied_admitted_claim_publication(
@@ -4851,6 +4867,33 @@ def _recover_one(
             _finalize_applied_scratches(target_projections, target_scratches)
 
         try:
+            # Recovery can start with either the exact preimage or postimage,
+            # but must resolve the full namespace before writing any sidecar
+            # or task note. The post-write check alone is too late.
+            try:
+                task = resolve_task_note(
+                    intent.note_path.parent.parent,
+                    intent.task_id,
+                    state="active",
+                    require_no_other_state=True,
+                    index_build_attempts=3,
+                )
+            except TaskStoreError as exc:
+                raise ClaimPublicationError(
+                    "claim_publication_recovery_task_resolution_refused",
+                    "restore exactly one active task note and no closed duplicate before recovery",
+                    exc.reason_code,
+                ) from exc
+            if (
+                task.path != intent.note_path
+                or task.content not in (intent.note_before, intent.note_after)
+                or task.mode != intent.note_mode
+            ):
+                raise ClaimPublicationError(
+                    "claim_publication_recovery_task_image_changed",
+                    "preserve the journal and reconcile the exact task preimage or postimage",
+                    intent.task_id,
+                )
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
             apply_missing_postimages(pre_receipt_projections, pre_receipt_scratches)
@@ -6129,6 +6172,7 @@ def recover_claim_publications(
     receipt_root: Path | None = None,
     lock_root: Path | None = None,
     task_id: str | None = None,
+    expected_owner: tuple[str, str] | None = None,
 ) -> tuple[ClaimPublicationRecoveryResult, ...]:
     """Recover interrupted admitted claim-publication journals under role locks."""
 
@@ -6156,6 +6200,7 @@ def recover_claim_publications(
                     manifest_path,
                     lock_root=trusted_locks,
                     receipt_root=trusted_receipts,
+                    expected_owner=expected_owner,
                 )
             )
         except ClaimPublicationError as exc:
