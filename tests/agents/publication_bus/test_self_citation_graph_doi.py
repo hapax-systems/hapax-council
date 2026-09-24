@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
 
 from agents.publication_bus.self_citation_graph_doi import (
     _extract_topology_nodes,
@@ -14,6 +17,17 @@ from agents.publication_bus.self_citation_graph_doi import (
     material_change_detected,
     render_dry_run_report,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolated_publication_io(tmp_path, monkeypatch):
+    monkeypatch.setenv("HAPAX_PUBLICATION_LOG_PATH", str(tmp_path / "witness.jsonl"))
+    monkeypatch.setenv("HAPAX_REFUSALS_LOG_PATH", str(tmp_path / "refusals.jsonl"))
+
+    def refuse_network(*args, **kwargs):
+        raise AssertionError("real HTTP is forbidden in graph commit tests")
+
+    monkeypatch.setattr("requests.sessions.Session.request", refuse_network)
 
 
 def _seed_snapshot(path: Path, nodes: list[tuple[str, int]]) -> None:
@@ -236,7 +250,15 @@ def test_main_commit_no_change_skips(tmp_path: Path, capsys, monkeypatch):
 
     fp = graph_topology_fingerprint(mirror / "2026-04-26.json")
     assert fp is not None
-    (graph / "last-fingerprint.txt").write_text(fp + "\n", encoding="utf-8")
+    from agents.publication_bus.graph_publisher import persist_graph_state
+
+    persist_graph_state(
+        graph_dir=graph,
+        concept_doi="10.x/concept",
+        version_doi="10.x/v1",
+        fingerprint=fp,
+        deposit_id=100,
+    )
 
     rc = main(
         [
@@ -281,3 +303,216 @@ def test_main_commit_with_token_calls_publisher(tmp_path: Path, capsys, monkeypa
     assert "version-DOI=10.5281/zenodo.100" in captured.out
     # State persisted
     assert (graph / "concept-doi.txt").read_text().strip() == "10.5281/zenodo.99"
+
+
+@pytest.fixture
+def commit_case(tmp_path, monkeypatch):
+    from agents.publication_bus import graph_publisher
+
+    monkeypatch.setenv("HAPAX_ZENODO_TOKEN", "synthetic-test-token")
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    snapshot = mirror / "2026-04-26.json"
+    _seed_snapshot(snapshot, [("10.x/y", 1)])
+    graph = tmp_path / "graph"
+    http = Mock()
+    http.RequestException = RuntimeError
+
+    def response(body, status=201):
+        result = Mock(status_code=status, text="synthetic response")
+        result.json.return_value = body
+        return result
+
+    http.post.side_effect = [
+        response({"id": 100, "doi": "10.x/v1"}),
+        response({"id": 100, "doi": "10.x/v1", "conceptdoi": "10.x/concept"}),
+        response({"id": 101, "doi": "10.x/v2"}),
+        response({"id": 101, "doi": "10.x/v2"}),
+    ]
+    http.put.return_value = response({})
+    monkeypatch.setattr(graph_publisher, "requests", http)
+    argv = ["--mirror-dir", str(mirror), "--graph-dir", str(graph), "--commit"]
+    return argv, graph, snapshot, http
+
+
+def test_commit_refused_before_http_or_state(commit_case, monkeypatch, capsys):
+    from agents.publication_bus.graph_publisher import GraphPublisher
+    from agents.publication_bus.publisher_kit.allowlist import AllowlistGate
+
+    argv, graph, _, http = commit_case
+    monkeypatch.setattr(GraphPublisher, "allowlist", AllowlistGate(GraphPublisher.surface_name))
+    counter = GraphPublisher._get_counter().labels(
+        surface=GraphPublisher.surface_name, result="refused"
+    )
+    before = counter._value.get()
+    assert main(argv) == 1
+    assert "allowlist deny" in capsys.readouterr().err
+    assert counter._value.get() == before + 1
+    http.post.assert_not_called()
+    http.put.assert_not_called()
+    assert not graph.exists()
+
+
+def test_commit_first_version_then_version_and_duplicate(commit_case, capsys):
+    argv, graph, snapshot, http = commit_case
+    assert main(argv) == 0
+    assert "deposit_id=100" in capsys.readouterr().out
+    first_fp = graph_topology_fingerprint(snapshot)
+    _seed_snapshot(snapshot, [("10.x/y", 2)])
+    assert main(argv) == 0
+    assert "deposit_id=101" in capsys.readouterr().out
+    history = [
+        json.loads(row) for row in (graph / "version-doi-history.jsonl").read_text().splitlines()
+    ]
+    assert history == [
+        {
+            "concept_doi": "10.x/concept",
+            "version_doi": "10.x/v1",
+            "deposit_id": 100,
+            "fingerprint": first_fp,
+        },
+        {
+            "concept_doi": "10.x/concept",
+            "version_doi": "10.x/v2",
+            "deposit_id": 101,
+            "fingerprint": graph_topology_fingerprint(snapshot),
+        },
+    ]
+    assert (graph / "concept-doi.txt").read_text().strip() == "10.x/concept"
+    assert (graph / "last-deposit-id.txt").read_text().strip() == "101"
+    assert (graph / "last-fingerprint.txt").read_text().strip() == history[-1]["fingerprint"]
+    urls = [call.args[0] for call in http.post.call_args_list]
+    assert urls == [
+        "https://zenodo.org/api/deposit/depositions",
+        "https://zenodo.org/api/deposit/depositions/100/actions/publish",
+        "https://zenodo.org/api/deposit/depositions/100/actions/newversion",
+        "https://zenodo.org/api/deposit/depositions/101/actions/publish",
+    ]
+    http.put.assert_called_once()
+    assert http.put.call_args.args[0].endswith("/101")
+    assert history[-1]["fingerprint"] in http.put.call_args.kwargs["json"]["metadata"]["notes"]
+    before = {path.name: path.read_bytes() for path in graph.iterdir()}
+    assert main(argv) == 0
+    assert "no material change" in capsys.readouterr().out
+    assert len(http.post.call_args_list) == 4
+    assert {path.name: path.read_bytes() for path in graph.iterdir()} == before
+
+
+@pytest.mark.parametrize("token", [None, "", "   "])
+def test_commit_missing_token_has_no_transport_or_state(commit_case, monkeypatch, capsys, token):
+    argv, graph, _, http = commit_case
+    if token is None:
+        monkeypatch.delenv("HAPAX_ZENODO_TOKEN")
+    else:
+        monkeypatch.setenv("HAPAX_ZENODO_TOKEN", token)
+    assert main(argv) == 0
+    assert "HAPAX_ZENODO_TOKEN" in capsys.readouterr().err
+    http.post.assert_not_called()
+    assert not graph.exists()
+
+
+@pytest.mark.parametrize("failure_leg", [0, 1])
+def test_commit_http_failure_does_not_persist_or_retry(commit_case, capsys, failure_leg):
+    argv, graph, _, http = commit_case
+    responses = list(http.post.side_effect)
+    responses[failure_leg].status_code = 503
+    http.post.side_effect = responses
+    assert main(argv) == 1
+    assert "HTTP 503" in capsys.readouterr().err
+    assert http.post.call_count == failure_leg + 1
+    assert not graph.exists()
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "version-doi-history.jsonl",
+        "concept-doi.txt",
+        "last-deposit-id.txt",
+        "last-fingerprint.txt",
+    ],
+)
+@pytest.mark.parametrize("existing_version", [False, True])
+def test_commit_save_failure_reports_remote_identity(
+    commit_case, monkeypatch, capsys, filename, existing_version
+):
+    argv, graph, snapshot, http = commit_case
+    if existing_version:
+        assert main(argv) == 0
+        _seed_snapshot(snapshot, [("10.x/y", 2)])
+    capsys.readouterr()
+    real_open = Path.open
+    failures = []
+
+    def fail_write(path, mode="r", *args, **kwargs):
+        if path == graph / filename and ("w" in mode or "a" in mode):
+            failures.append(str(path))
+            raise OSError("synthetic state write failure")
+        return real_open(path, mode, *args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(Path, "open", fail_write)
+        assert main(argv) == 1
+    output = capsys.readouterr()
+    assert failures
+    assert "state persistence failed" in output.err
+    assert "reconcile" in output.err
+    assert f"deposit_id={101 if existing_version else 100}" in output.err
+    assert f"10.x/v{2 if existing_version else 1}" in output.err
+    assert "10.x/concept" in output.err
+    assert "minted" not in output.out
+    assert http.post.call_count == (4 if existing_version else 2)
+    # Once any state was written, a subsequent invocation must refuse the
+    # inconsistent checkpoint. Failure before the first write remains an
+    # explicit recovery limitation; this test does not claim crash idempotency.
+    if filename != "version-doi-history.jsonl":
+        calls = http.post.call_count
+        assert main(argv) == 1
+        assert "reconcile" in capsys.readouterr().err
+        assert http.post.call_count == calls
+
+
+def test_commit_incomplete_matching_fingerprint_is_not_no_change(commit_case, capsys):
+    argv, graph, snapshot, http = commit_case
+    graph.mkdir()
+    (graph / "last-fingerprint.txt").write_text(graph_topology_fingerprint(snapshot) + "\n")
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    http.post.assert_not_called()
+
+
+@pytest.mark.parametrize("history", ["", "{", "[]\n", "{}\n"])
+def test_commit_corrupt_history_does_not_skip_or_remint(commit_case, capsys, history):
+    argv, graph, _, http = commit_case
+    assert main(argv) == 0
+    capsys.readouterr()
+    (graph / "version-doi-history.jsonl").write_text(history)
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    assert http.post.call_count == 2
+
+
+def test_commit_torn_history_append_retained_and_blocks_retry(commit_case, monkeypatch, capsys):
+    argv, graph, snapshot, http = commit_case
+    assert main(argv) == 0
+    capsys.readouterr()
+    _seed_snapshot(snapshot, [("10.x/y", 2)])
+    history = graph / "version-doi-history.jsonl"
+    original = history.read_bytes()
+    real_open = Path.open
+
+    def torn_append(path, mode="r", *args, **kwargs):
+        if path == history and mode == "a":
+            with real_open(path, mode, *args, **kwargs) as stream:
+                stream.write('{"concept_doi":')
+            raise OSError("synthetic partial history write")
+        return real_open(path, mode, *args, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(Path, "open", torn_append)
+        assert main(argv) == 1
+    assert "deposit_id=101" in capsys.readouterr().err
+    assert history.read_bytes() == original + b'{"concept_doi":'
+    assert main(argv) == 1
+    assert "reconcile" in capsys.readouterr().err
+    assert http.post.call_count == 4

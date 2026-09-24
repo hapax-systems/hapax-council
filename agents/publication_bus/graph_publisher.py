@@ -292,16 +292,12 @@ def persist_graph_state(
 ) -> None:
     """Persist the freshly-minted DOI state.
 
-    Writes ``concept-doi.txt`` (idempotent — first version sets it,
-    subsequent calls overwrite with the same value), overwrites
-    ``last-fingerprint.txt`` and ``last-deposit-id.txt``, and appends
-    a JSONL entry to ``version-doi-history.jsonl``.
+    Append the remote identity before updating the three checkpoint files,
+    with the fingerprint last. A partial checkpoint is rejected on the next
+    admitted invocation. This is not an atomic transaction: a crash or failure
+    before the history append still requires remote reconciliation.
     """
     graph_dir.mkdir(parents=True, exist_ok=True)
-    (graph_dir / "concept-doi.txt").write_text(concept_doi + "\n", encoding="utf-8")
-    (graph_dir / "last-fingerprint.txt").write_text(fingerprint + "\n", encoding="utf-8")
-    (graph_dir / "last-deposit-id.txt").write_text(str(deposit_id) + "\n", encoding="utf-8")
-
     history_entry = {
         "concept_doi": concept_doi,
         "version_doi": version_doi,
@@ -311,6 +307,51 @@ def persist_graph_state(
     history_path = graph_dir / "version-doi-history.jsonl"
     with history_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(history_entry) + "\n")
+    (graph_dir / "concept-doi.txt").write_text(concept_doi + "\n", encoding="utf-8")
+    (graph_dir / "last-deposit-id.txt").write_text(str(deposit_id) + "\n", encoding="utf-8")
+    (graph_dir / "last-fingerprint.txt").write_text(fingerprint + "\n", encoding="utf-8")
+
+
+def _persisted_fingerprint(graph_dir: Path) -> str | None:
+    """Read a consistent existing checkpoint; absence alone permits first mint.
+
+    Keep the existing four-file state contract. Incomplete, unreadable or
+    inconsistent state requires reconciliation, never a first-mint fallback
+    or a successful no-change result based on the fingerprint file alone.
+    """
+    paths = [
+        graph_dir / name
+        for name in (
+            "concept-doi.txt",
+            "last-deposit-id.txt",
+            "last-fingerprint.txt",
+            "version-doi-history.jsonl",
+        )
+    ]
+    try:
+        if not any(path.exists() for path in paths):
+            return None
+        concept, deposit, fingerprint = [
+            path.read_text(encoding="utf-8").strip() for path in paths[:3]
+        ]
+        last = json.loads(paths[3].read_text(encoding="utf-8").splitlines()[-1])
+        if (
+            not concept
+            or not fingerprint
+            or int(deposit) <= 0
+            or not isinstance(last, dict)
+            or last.get("concept_doi") != concept
+            or last.get("deposit_id") != int(deposit)
+            or last.get("fingerprint") != fingerprint
+            or not isinstance(last.get("version_doi"), str)
+            or not last["version_doi"]
+        ):
+            raise ValueError("checkpoint does not match latest history entry")
+    except (OSError, ValueError, IndexError) as exc:
+        raise GraphPublisherError(
+            "graph state incomplete or inconsistent; reconcile remote DOI and local state before retry"
+        ) from exc
+    return fingerprint
 
 
 class GraphPublisher(Publisher):
@@ -318,10 +359,10 @@ class GraphPublisher(Publisher):
 
     ``payload.metadata`` MUST contain ``snapshot_path`` and
     ``fingerprint``; may include ``deposit_metadata`` (Zenodo metadata
-    block override) for tests. Dispatches to :func:`mint_or_version`
-    (which selects first-version vs new-version based on graph_dir
-    state) and returns a :class:`PublisherResult` carrying the minted
-    DOIs in ``detail``.
+    block override). Checks the existing checkpoint, skips unchanged graphs,
+    then mints and persists within admission. The result's ``detail`` carries
+    the remote DOIs and deposit ID, including when persistence fails after
+    emission. No automatic retry is performed on an ambiguous outcome.
 
     ``requires_legal_name=True``: Zenodo creators array uses the formal
     legal name; the legal-name guard is skipped on this surface.
@@ -354,7 +395,12 @@ class GraphPublisher(Publisher):
         deposit_metadata = dict(payload.metadata.get("deposit_metadata", {}) or {})
 
         try:
-            concept_doi, version_doi, _deposit_id = mint_or_version(
+            previous_fingerprint = _persisted_fingerprint(self.graph_dir)
+            if previous_fingerprint == str(fingerprint):
+                return PublisherResult(
+                    ok=True, detail="(no material change since last deposit; skipping mint)"
+                )
+            concept_doi, version_doi, deposit_id = mint_or_version(
                 zenodo_token=self.zenodo_token,
                 graph_dir=self.graph_dir,
                 snapshot_path=Path(str(snapshot_path_raw)),
@@ -364,9 +410,30 @@ class GraphPublisher(Publisher):
         except GraphPublisherError as exc:
             return PublisherResult(error=True, detail=f"{exc}")
 
+        remote_identity = (
+            f"concept-DOI={concept_doi} version-DOI={version_doi} (deposit_id={deposit_id})"
+        )
+        try:
+            persist_graph_state(
+                graph_dir=self.graph_dir,
+                concept_doi=concept_doi,
+                version_doi=version_doi,
+                fingerprint=str(fingerprint),
+                deposit_id=deposit_id,
+            )
+        except OSError:
+            log.exception("graph publisher: state persistence failed after %s", remote_identity)
+            return PublisherResult(
+                error=True,
+                detail=(
+                    f"state persistence failed after remote mint: {remote_identity}; "
+                    "reconcile remote DOI and local state before retry"
+                ),
+            )
+
         return PublisherResult(
             ok=True,
-            detail=f"version-DOI {version_doi} (concept {concept_doi})",
+            detail=f"minted {remote_identity}",
         )
 
 
