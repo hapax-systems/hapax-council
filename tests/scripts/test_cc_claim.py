@@ -165,6 +165,7 @@ def _claim(
     session_id: str | None = _SESSION_ID,
     extra_env: dict[str, str] | None = None,
     extra_args: list[str] | None = None,
+    soft_nofile: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     for leaked in _AMBIENT_IDENTITY_ENV:
@@ -185,6 +186,9 @@ def _claim(
     if extra_env:
         env.update(extra_env)
     argv = ["bash", str(SCRIPT)]
+    if soft_nofile is not None:
+        # Launch the way a lane with an inherited low soft descriptor limit does.
+        argv = ["bash", "-c", f'ulimit -Sn {soft_nofile} && exec bash "$0" "$@"', str(SCRIPT)]
     if extra_args:
         argv.extend(extra_args)
     if task_id:
@@ -1107,6 +1111,36 @@ def test_recover_reports_applied_journal_superseded_by_later_owner_not_drift(
         f"claim_publication_superseded_by_later_applied ({successor})"
     ) in result.stdout
     assert f"cc-claim: recovery {successor}:applied" in result.stdout
+
+
+def test_claim_survives_a_low_inherited_descriptor_limit(tmp_path: Path) -> None:
+    # 2026-09-24 (U3 and the bootstrap lane): lanes resumed with soft nofile 1024 failed every
+    # claim with claim_publication_inspection_failed (OSError), because journal inspection
+    # holds descriptors for the whole transaction root. Scaled down here: a handful of
+    # journals and a proportionally low inherited limit.
+    home = tmp_path / "home"
+    for index in range(6):
+        filler = f"filler-{index}"
+        _write_task(home, "active", filler)
+        result = _claim(
+            home,
+            filler,
+            dispatch=False,
+            install_gate0b=index == 0,
+            session_id=f"2e2e2e2e-0000-4000-8000-00000000000{index}",
+            extra_env={
+                "HAPAX_AGENT_ROLE": f"cx-fill{index}",
+                "HAPAX_AGENT_NAME": f"cx-fill{index}",
+            },
+        )
+        assert result.returncode == 0, result.stderr
+    note = _write_task(home, "active", "low-limit-claim")
+
+    result = _claim(home, "low-limit-claim", dispatch=False, install_gate0b=False, soft_nofile=64)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "claim_publication_inspection_failed" not in result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
 
 
 def test_body_bullets_are_not_claim_dependencies(tmp_path: Path) -> None:
