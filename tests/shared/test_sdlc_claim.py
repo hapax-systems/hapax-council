@@ -5273,3 +5273,107 @@ def test_recovery_cannot_reconcile_while_a_publisher_holds_the_role_lock(
     finally:
         release.set()
         publisher.join(timeout=10)
+
+
+# --- Same-owner note continuation (claim-applied-journal-current-note-drift-20260924) -------
+# An applied publication stays the owner's while its owner legitimately edits its own task note
+# (session log, PR link, owned status moves). The six lease sidecars stay byte-exact and the note
+# keeps the admitted task id, assignee, claimed_at and AuthorityCase; anything else is drift.
+
+
+def _applied_publication(tmp_path: Path) -> tuple[ClaimFixture, object]:
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+    sdlc_claim._apply_admitted_claim_publication_transaction(
+        fixture.intent,
+        active.consumption,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        now=active.checked_at,
+    )
+    assert fixture.intent.note_path.read_bytes() == fixture.intent.note_after
+    return fixture, active
+
+
+_CONTINUATIONS = {
+    "session_log_line": lambda note: note + b"- 2026-07-12T00:00:00Z cx-red progress\n",
+    "status_in_progress": lambda note: note.replace(b"status: claimed", b"status: in_progress"),
+    "pr_link_and_pr_open": lambda note: note.replace(
+        b"status: claimed", b"status: pr_open"
+    ).replace(b"updated_at: 2026-07-11T12:00:00Z", b"updated_at: 2026-07-12T00:00:00Z\npr: 4734"),
+}
+
+_NOT_CONTINUATIONS = {
+    "reassigned": lambda note: note.replace(b"assigned_to: cx-red", b"assigned_to: cx-blue"),
+    "reoffered": lambda note: note.replace(b"status: claimed", b"status: offered").replace(
+        b"assigned_to: cx-red", b"assigned_to: unassigned"
+    ),
+    "reclaimed_at": lambda note: note.replace(
+        b"claimed_at: 2026-07-11T12:00:00Z", b"claimed_at: 2026-07-12T09:00:00Z"
+    ),
+    "authority_changed": lambda note: note.replace(
+        b"authority_case: CASE-CLAIM-001", b"authority_case: CASE-OTHER-002"
+    ),
+    "blocked": lambda note: note.replace(b"status: claimed", b"status: blocked"),
+}
+
+
+@pytest.mark.parametrize("change", sorted(_CONTINUATIONS))
+def test_recovery_keeps_an_applied_claim_whose_owner_continued_its_note(
+    tmp_path: Path, change: str
+) -> None:
+    fixture, _active = _applied_publication(tmp_path)
+    note = fixture.intent.note_path
+    note.write_bytes(_CONTINUATIONS[change](note.read_bytes()))
+    before = _tree_snapshot(tmp_path)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert [(item.state, item.reason_code) for item in results] == [
+        ("applied", "claim_publication_note_continued")
+    ]
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("change", sorted(_NOT_CONTINUATIONS))
+def test_recovery_holds_an_applied_claim_whose_note_left_its_owner(
+    tmp_path: Path, change: str
+) -> None:
+    fixture, _active = _applied_publication(tmp_path)
+    note = fixture.intent.note_path
+    note.write_bytes(_NOT_CONTINUATIONS[change](note.read_bytes()))
+    before = _tree_snapshot(tmp_path)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert [(item.state, item.reason_code) for item in results] == [
+        ("hold", "claim_publication_postimage_drift")
+    ]
+    assert _tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("damage", ["sidecar", "note_mode"])
+def test_a_continued_note_never_excuses_other_drift(tmp_path: Path, damage: str) -> None:
+    fixture, _active = _applied_publication(tmp_path)
+    note = fixture.intent.note_path
+    note.write_bytes(_CONTINUATIONS["session_log_line"](note.read_bytes()))
+    if damage == "sidecar":
+        epoch = fixture.cache / "cc-claim-epoch-cx-red"
+        epoch.write_text("1720700001 task-alpha\n")
+    else:
+        note.chmod(0o600)
+    before = _tree_snapshot(tmp_path)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert [item.state for item in results] == ["hold"]
+    assert _tree_snapshot(tmp_path) == before

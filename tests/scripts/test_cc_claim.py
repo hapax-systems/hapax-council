@@ -1042,7 +1042,14 @@ def _journal_for_role(home: Path, role: str) -> str:
 
 
 @pytest.mark.parametrize(
-    "damage", ["none", "note_moved_on", "successor_receipt_missing", "successor_marker_missing"]
+    "damage",
+    [
+        "none",
+        "successor_note_continued",
+        "note_reassigned_by_hand",
+        "successor_receipt_missing",
+        "successor_marker_missing",
+    ],
 )
 def test_recover_reports_applied_journal_superseded_by_later_owner_not_drift(
     tmp_path: Path, damage: str
@@ -1087,8 +1094,16 @@ def test_recover_reports_applied_journal_superseded_by_later_owner_not_drift(
     )
     assert second.returncode == 0, second.stderr
     cache = home / ".cache" / "hapax"
-    if damage == "note_moved_on":
+    if damage == "successor_note_continued":
+        # The successor's own later edit (claim-applied-journal-current-note-drift): still its.
         note.write_text(note.read_text(encoding="utf-8") + "- later edit\n", encoding="utf-8")
+    elif damage == "note_reassigned_by_hand":
+        note.write_text(
+            note.read_text(encoding="utf-8").replace(
+                "assigned_to: cx-next", "assigned_to: cx-other"
+            ),
+            encoding="utf-8",
+        )
     elif damage == "successor_receipt_missing":
         # PR4726 round 2 (Muse new-1): an `applied` flag alone must not launder drift.
         receipts = [
@@ -1112,10 +1127,10 @@ def test_recover_reports_applied_journal_superseded_by_later_owner_not_drift(
     )
 
     superseded = _journal_for_role(home, "cx-test")
-    if damage != "none":
-        # Unsafe counterparts: unless a later publication verifies as applied (receipt,
-        # sidecars and a note postimage equal to the current note), supersession is not
-        # proven and the drift must still hold.
+    if damage not in {"none", "successor_note_continued"}:
+        # Unsafe counterparts: unless the latest later publication verifies as applied
+        # (receipt, exact sidecars, and a note that is its postimage or its owner's own
+        # continuation of it), supersession is not proven and the drift must still hold.
         assert result.returncode == 8
         assert f"{superseded}:hold:claim_publication_postimage_drift" in result.stdout
         return

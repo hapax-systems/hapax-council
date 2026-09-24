@@ -56,6 +56,7 @@ from shared.execution_admission import (
 from shared.frontmatter import parse_frontmatter_with_diagnostics
 from shared.sdlc_lifecycle import (
     TASK_CLAIMABLE_STATUSES,
+    TASK_MUTABLE_STATUSES,
     TASK_RESUMABLE_STATUSES,
     TASK_TERMINAL_STATUSES,
 )
@@ -4488,6 +4489,55 @@ def _require_captured_postimages(
         )
 
 
+_CLAIM_CONTINUATION_KEYS = ("task_id", "assigned_to", "claimed_at", "authority_case")
+
+
+def _require_task_note_continuation(
+    current_task: TaskNoteSnapshot,
+    intent: ClaimPublicationIntent,
+) -> None:
+    """Accept the admitted note postimage or its owner's later edits of it, nothing else.
+
+    The owner may append to the session log, link a PR and move through its owned lifecycle
+    statuses. The note must keep its path and mode and the postimage's task id, assignee,
+    claimed_at and AuthorityCase: a re-offer, reassignment, re-claim or authority change is
+    drift, never a continuation.
+    """
+
+    if current_task.path != intent.note_path or current_task.mode != intent.note_mode:
+        raise ClaimPublicationError(
+            "claim_publication_postimage_drift",
+            "hold the claim and restore its exact receipt-bound postimages",
+            f"{intent.note_path}: path or mode changed",
+        )
+    if current_task.content == intent.note_after:
+        return
+    admitted = parse_frontmatter_with_diagnostics(intent.note_after.decode("utf-8")).frontmatter
+    current = current_task.frontmatter
+    if not isinstance(admitted, Mapping):
+        admitted = {}
+
+    def scalar(record: Mapping[str, object], key: str) -> str:
+        value = record.get(key)
+        return "" if value is None else str(value).strip()
+
+    unchanged = all(
+        scalar(current, key) == scalar(admitted, key) and scalar(admitted, key)
+        for key in _CLAIM_CONTINUATION_KEYS
+    )
+    if (
+        not unchanged
+        or scalar(admitted, "task_id") != intent.task_id
+        or scalar(admitted, "assigned_to") != intent.role
+        or scalar(current, "status") not in TASK_MUTABLE_STATUSES
+    ):
+        raise ClaimPublicationError(
+            "claim_publication_postimage_drift",
+            "hold the claim and restore its exact receipt-bound postimages",
+            f"{intent.note_path}: the note is not its owner's continuation of the admitted postimage",
+        )
+
+
 def _require_captured_task_postimage(
     current_task: TaskNoteSnapshot,
     intent: ClaimPublicationIntent,
@@ -4567,8 +4617,14 @@ def require_applied_admitted_claim_publication(
     receipt_root: Path | None = None,
     lock_root: Path | None = None,
     _already_locked: bool = False,
+    note_continuation: bool = False,
 ) -> ClaimPublicationReceipt:
-    """Require the exact applied admitted publication without rereading proof sources."""
+    """Require the exact applied admitted publication without rereading proof sources.
+
+    With ``note_continuation`` the six lease projections must still be byte-exact but the task
+    note may be its owner's continuation of the admitted postimage (see
+    ``_require_task_note_continuation``).
+    """
 
     del lock_root, _already_locked
     root = _manifest_root(transaction_root, intent.cache_dir)
@@ -4608,8 +4664,12 @@ def require_applied_admitted_claim_publication(
                     "recover and require the exact admitted claim publication receipt",
                     f"{publication_id}:{state}",
                 )
-            _require_captured_postimages(snapshot, loaded_projections[:7])
-            _require_captured_task_postimage(current_task, loaded_intent)
+            if note_continuation:
+                _require_captured_postimages(snapshot, loaded_projections[1:7])
+                _require_task_note_continuation(current_task, loaded_intent)
+            else:
+                _require_captured_postimages(snapshot, loaded_projections[:7])
+                _require_captured_task_postimage(current_task, loaded_intent)
             receipt = _as_admitted_receipt(
                 journal.manifest_path,
                 _normalized(receipt_path),
@@ -4912,15 +4972,16 @@ def _superseding_applied_publication(
         return None
     # Only the latest publication can own the task now; an older one never stands in for it.
     _epoch, successor_id, successor, successor_consumption = max(candidates, key=lambda c: c[:2])
-    if successor.note_after != current_content or successor.note_mode != current_mode:
-        return None
     try:
+        # The successor still owns the note if it is its postimage or the successor's own
+        # continuation of it (claim-applied-journal-current-note-drift-20260924).
         require_applied_admitted_claim_publication(
             successor,
             successor_consumption,
             transaction_root=root,
             receipt_root=receipt_root,
             _already_locked=True,
+            note_continuation=True,
         )
     except ClaimPublicationError:
         return None
@@ -4997,6 +5058,25 @@ def _recover_one(
             except ClaimPublicationError as exc:
                 if exc.reason_code != "claim_publication_postimage_drift":
                     raise
+                try:
+                    # The owner's own later edits of its note are not drift.
+                    require_applied_admitted_claim_publication(
+                        intent,
+                        consumption,
+                        transaction_root=manifest_path.parent.parent,
+                        receipt_root=receipt_directory,
+                        _already_locked=True,
+                        note_continuation=True,
+                    )
+                except ClaimPublicationError:
+                    pass
+                else:
+                    return ClaimPublicationRecoveryResult(
+                        publication_id,
+                        "applied",
+                        "claim_publication_note_continued",
+                        detail="the owner continued its task note; every lease sidecar is exact",
+                    )
                 successor = _superseding_applied_publication(
                     manifest_path, intent, receipt_root=receipt_directory
                 )
