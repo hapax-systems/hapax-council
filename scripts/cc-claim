@@ -35,6 +35,10 @@ fi
 force=false
 recover_claim_publications_only=false
 rehydrate_activation_cache_only=false
+release_mode=""
+release_witness=""
+release_successor=""
+release_authority_ref=""
 # Default mode publishes through the admitted Gate-0B claim-publication path.
 # The legacy note/cache writer is available only as an explicit slice-1 fallback.
 canon_enforced="1"
@@ -44,6 +48,11 @@ usage: cc-claim [--force] <task_id> [--dispatch-* VALUE ...]
        cc-claim [--force] [--dispatch-* VALUE ...] -- <task_id>
        cc-claim --recover-claim-publications [<task_id>]
        cc-claim --rehydrate-activation-cache <task_id>
+       cc-claim --release <task_id> --witness KIND [--to ROLE] [--authority-ref NOTE]
+       cc-claim --rebind <task_id> --witness KIND [--authority-ref NOTE]
+
+--release frees another holder's lease on one witness (self_yield, terminal_task,
+provider_wall, operator_release); --rebind releases it to this role, then claims.
 
 Omit dispatch flags in default mode for a manual self-witnessed binding.
 Every --dispatch-* option requires one VALUE from the dispatcher receipt.
@@ -75,6 +84,11 @@ while [[ $# -gt 0 ]]; do
     --force) force=true; shift ;;
     --recover-claim-publications) recover_claim_publications_only=true; shift ;;
     --rehydrate-activation-cache) rehydrate_activation_cache_only=true; shift ;;
+    --release) release_mode="release"; shift ;;
+    --rebind) release_mode="rebind"; shift ;;
+    --witness) require_option_value "$1" "${2:-}"; release_witness="$2"; shift 2 ;;
+    --to) require_option_value "$1" "${2:-}"; release_successor="$2"; shift 2 ;;
+    --authority-ref) require_option_value "$1" "${2:-}"; release_authority_ref="$2"; shift 2 ;;
     --dispatch-message-id) require_option_value "$1" "${2:-}"; dispatch_message_id="$2"; shift 2 ;;
     --dispatch-binding-hash) require_option_value "$1" "${2:-}"; dispatch_binding_hash="$2"; shift 2 ;;
     --dispatch-platform) require_option_value "$1" "${2:-}"; dispatch_platform="$2"; shift 2 ;;
@@ -89,6 +103,19 @@ while [[ $# -gt 0 ]]; do
 done
 if [[ "$rehydrate_activation_cache_only" == "true" && ( -z "$task_id" || "$recover_claim_publications_only" == "true" || "$force" == "true" ) ]]; then
   echo "cc-claim: activation_cache_usage_invalid: supply one task id without --force or --recover-claim-publications. Next action: rerun cc-claim --rehydrate-activation-cache <task_id>." >&2
+  exit 1
+fi
+if [[ -n "$release_mode" ]]; then
+  if [[ -z "$task_id" || -z "$release_witness" || "$recover_claim_publications_only" == "true" || "$rehydrate_activation_cache_only" == "true" || "$force" == "true" ]]; then
+    echo "cc-claim: release_usage_invalid: --$release_mode needs one task id and --witness KIND, without --force, --recover-claim-publications or --rehydrate-activation-cache. Next action: rerun cc-claim --$release_mode <task_id> --witness <self_yield|terminal_task|provider_wall|operator_release>." >&2
+    exit 1
+  fi
+  if [[ "$release_mode" == "rebind" && -n "$release_successor" ]]; then
+    echo "cc-claim: release_usage_invalid: --rebind always hands the task to this role; --to belongs to --release. Next action: drop --to, or use --release <task_id> --to <role>." >&2
+    exit 1
+  fi
+elif [[ -n "$release_witness" || -n "$release_successor" || -n "$release_authority_ref" ]]; then
+  echo "cc-claim: release_usage_invalid: --witness, --to and --authority-ref belong to --release or --rebind. Next action: add --release or --rebind, or drop those options." >&2
   exit 1
 fi
 if [[ -z "$task_id" && "$recover_claim_publications_only" != "true" ]]; then
@@ -211,6 +238,78 @@ if [[ -n "$session_id" ]]; then
   session_claim_file="$HOME/.cache/hapax/cc-active-task-$role-$session_id"
 else
   session_claim_file=""
+fi
+
+if [[ -n "$release_mode" ]]; then
+  if [[ "$canon_enforced" != "1" ]]; then
+    echo "cc-claim: release_requires_admitted_path: a governed release reads the admitted claim state. Next action: unset HAPAX_GATE0B_CLAIM_PUBLICATION_OFF, then rerun cc-claim --$release_mode." >&2
+    exit 2
+  fi
+  successor="$release_successor"
+  [[ "$release_mode" == "rebind" ]] && successor="$role"
+  "$python_runner" -I - "$SCRIPT_DIR/.." "$task_id" "$release_witness" "$role" "$session_id" \
+    "$successor" "$release_authority_ref" <<'PYEOF'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1]).resolve()
+task_id, witness, role, session_id, successor, authority_ref = sys.argv[2:8]
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+from shared.execution_admission import ExecutionAdmissionError  # noqa: E402
+from shared.gate0b_claim_publication_install import (  # noqa: E402
+    default_claim_publication_roots, load_claim_publication_composition,
+)
+from shared.sdlc_claim import ClaimPublicationError, release_claim_lease  # noqa: E402
+from shared.task_note_lock import TaskNoteLockError  # noqa: E402
+
+verifier = None
+if witness == "provider_wall":
+    try:
+        from shared.claim_release_witness import verify_provider_wall as verifier  # noqa: E402
+    except ImportError:
+        verifier = None
+try:
+    roots = load_claim_publication_composition(
+        Path(default_claim_publication_roots(home=Path.home()).invocation_store_root)
+    ).receipt.roots
+    result = release_claim_lease(
+        vault_root=Path(roots.claim_vault_root),
+        cache_dir=Path(roots.claim_cache_dir),
+        transaction_root=Path(roots.claim_transaction_root),
+        receipt_root=Path(roots.claim_receipt_root),
+        lock_root=Path(roots.claim_lock_root),
+        task_id=task_id,
+        witness_kind=witness,
+        releaser_role=role,
+        releaser_session_id=session_id,
+        successor_role=successor or None,
+        authority_ref=Path(authority_ref) if authority_ref else None,
+        provider_wall_verifier=verifier,
+    )
+except (ClaimPublicationError, ExecutionAdmissionError, TaskNoteLockError, ValueError) as exc:
+    detail = f" ({exc.detail})" if getattr(exc, "detail", None) else ""
+    print(
+        f"cc-claim: HOLD — {getattr(exc, 'reason_code', 'claim_release_refused')}{detail}. "
+        f"Next action: {getattr(exc, 'repair_action', 'restore the installed composition')}. "
+        "Nothing was released.",
+        file=sys.stderr,
+    )
+    sys.exit(8)
+print(
+    f"cc-claim: release {result.release_id} {result.state} for '{task_id}': "
+    f"{result.incumbent_role} (session {result.incumbent_session_id or 'unknown'}) released "
+    f"on witness {result.witness_kind}; {len(result.archived)} sidecar(s) archived to "
+    f"{result.archive_dir}; note status {result.note_status_after}"
+    + (f", assigned to {result.assigned_to_after}" if result.assigned_to_after else "")
+)
+PYEOF
+  release_rc=$?
+  if [[ "$release_rc" -ne 0 || "$release_mode" == "release" ]]; then
+    exit "$release_rc"
+  fi
+  # --rebind: the release is done; claim through the ordinary admitted publication.
 fi
 
 if [[ "$recover_claim_publications_only" == "true" ]]; then
