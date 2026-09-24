@@ -4165,6 +4165,19 @@ from shared.quota_spend_ledger import SpendReceipt as _QuotaSpendLedgerSpendRece
 
 _QuotaSpendLedgerSpendReceipt._serialize_without_empty_task_hash
 
+# GLMCP PAYG list-price helpers: called by the extensionless scripts/hapax-glmcp-reviewer
+# (reservation before the paid call, usage-based reconciliation after it), which vulture
+# does not scan.
+from shared.quota_spend_ledger import (  # noqa: E402
+    glmcp_payg_reservation_usd as _glmcp_payg_reservation_usd,
+)
+from shared.quota_spend_ledger import (  # noqa: E402
+    glmcp_payg_usage_cost_usd as _glmcp_payg_usage_cost_usd,
+)
+
+_glmcp_payg_reservation_usd
+_glmcp_payg_usage_cost_usd
+
 # Platform session contract v1: exported adapter-conformance helpers are invoked
 # by fixture suites and future trainyard adapter runners. Pydantic field validators
 # are framework entrypoints, and the diff-only vulture gate does not count tests.
