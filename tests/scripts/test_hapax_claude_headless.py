@@ -208,6 +208,8 @@ def test_headless_rejects_invalid_explicit_claude_bin_override(tmp_path: Path) -
 
 def test_appendix_hop_passes_remote_args_without_shell_interpolation(tmp_path: Path) -> None:
     home = tmp_path / "home"
+    execution_home = tmp_path / "execution-home"
+    execution_home.mkdir()
     workdir = home / "projects" / "hapax-council--beta"
     workdir.mkdir(parents=True)
     _remote_contract_modules(workdir)
@@ -234,8 +236,8 @@ if [[ "$remote_cmd" == *"\\$'"* ]]; then
   echo 'fish: Expected a variable name after this $' >&2
   exit 127
 fi
-exec bash -c "$remote_cmd"
-""",
+exec env HOME="{execution_home}" bash -c "$remote_cmd"
+""".replace("{execution_home}", str(execution_home)),
     )
     _stub_bin(
         bin_dir,
@@ -806,8 +808,11 @@ def test_headless_preamble_carries_session_identity() -> None:
     assert "Session identity: role=$ROLE session_id=$SESSION_UUID" in text
 
 
-def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> None:
-    """E2E canary: fake ssh executes the remote command locally (same HOME),
+@pytest.mark.parametrize("existing_remote_claim", [False, True])
+def test_appendix_hop_threads_session_identity_end_to_end(
+    tmp_path: Path, existing_remote_claim: bool
+) -> None:
+    """E2E canary: fake ssh executes locally with a separate execution HOME,
     so the assertions cover the full chain — launcher mint -> payload env ->
     remote exec env -> exec-host marker/claim materialization -> proof."""
     home = tmp_path / "home"
@@ -818,6 +823,11 @@ def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> Non
     cache.mkdir(parents=True)
     claim_file = cache / "cc-active-task-beta"
     claim_file.write_text("task-x\n")
+    execution_home = tmp_path / "execution-home"
+    execution_cache = execution_home / ".cache/hapax"
+    execution_cache.mkdir(parents=True)
+    if existing_remote_claim:
+        (execution_cache / "cc-active-task-beta").write_text("task-x\n")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -830,7 +840,7 @@ def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> Non
         'remote_cmd="${@: -1}"\n'
         "exec env -u HAPAX_SESSION_ID -u HAPAX_AGENT_INTERFACE -u HAPAX_AGENT_NAME"
         " -u HAPAX_AGENT_ROLE -u CLAUDE_ROLE -u HAPAX_WORKTREE_ROLE"
-        ' -u HAPAX_METHODOLOGY_DISPATCH_TASK bash -c "$remote_cmd"\n',
+        f' -u HAPAX_METHODOLOGY_DISPATCH_TASK HOME="{execution_home}" bash -c "$remote_cmd"\n',
     )
     _stub_bin(
         bin_dir,
@@ -854,11 +864,25 @@ def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> Non
 
     assert result.returncode == 0, result.stderr
 
+    proofs = sorted((cache / "orchestration" / "dispatch-host-proofs").glob("*.json"))
+    assert proofs, "remote exec must write a dispatch proof"
+    proof = json.loads(proofs[-1].read_text(encoding="utf-8"))
+    if existing_remote_claim:
+        assert not claude_env.exists()
+        assert {path.name: path.read_bytes() for path in execution_cache.iterdir()} == {
+            "cc-active-task-beta": b"task-x\n"
+        }
+        assert proof["claim_materialized"] is False and proof["claim_epoch"] is None
+        assert proof["dispatch_state"] == "hold"
+        assert proof["claim_materialization_reason"] == "remote_claim_binding_unresolved"
+        return
+
     # One session id, minted by the launcher, recorded in the role marker.
     markers = sorted(cache.glob("session-role-*"))
     assert len(markers) == 1, f"expected exactly one session marker, got {markers}"
     sid = markers[0].name.removeprefix("session-role-")
     assert markers[0].read_text().strip() == "beta"
+    assert (execution_cache / markers[0].name).read_text() == "beta\n"
 
     # The exec-side claude carries the SAME identity the launcher minted.
     claude_vars = dict(
@@ -869,20 +893,15 @@ def test_appendix_hop_threads_session_identity_end_to_end(tmp_path: Path) -> Non
     assert claude_vars.get("CLAUDE_ROLE") == "beta"
     assert claude_vars.get("HAPAX_METHODOLOGY_DISPATCH_TASK") == "task-x"
 
-    # The session-keyed claim materialized on the exec host (cc-claim was
-    # skipped — the pre-seeded legacy claim matched — so only the remote
-    # materialization path can have written it), single-line format.
-    keyed = cache / f"cc-active-task-beta-{sid}"
+    # Only remote materialization can populate the initially empty exec cache.
+    keyed = execution_cache / f"cc-active-task-beta-{sid}"
     assert keyed.read_text(encoding="utf-8") == "task-x\n"
-    epoch_sidecar = cache / f"cc-claim-epoch-beta-{sid}"
+    epoch_sidecar = execution_cache / f"cc-claim-epoch-beta-{sid}"
     epoch, _, sidecar_task = epoch_sidecar.read_text(encoding="utf-8").strip().partition(" ")
     assert epoch.isdigit()
     assert sidecar_task == "task-x"
 
     # The dispatch proof witnesses the session, not just the pid.
-    proofs = sorted((cache / "orchestration" / "dispatch-host-proofs").glob("*.json"))
-    assert proofs, "remote exec must write a dispatch proof"
-    proof = json.loads(proofs[-1].read_text(encoding="utf-8"))
     assert proof["session_id"] == sid
     assert proof["role"] == "beta"
     assert proof["task_id"] == "task-x"
@@ -1691,6 +1710,71 @@ _REMOTE_SIDECARS = [
     for prefix in ("cc-active-task-", "cc-claim-epoch-")
     for key in ("beta", "beta-9381e195-f8e6-43ce-83bf-ea7e5b846723")
 ]
+
+
+@pytest.mark.parametrize("present_mask", range(1, 15))
+@pytest.mark.parametrize("matching_marker", [False, True])
+def test_remote_materialization_partial_matching_binding_holds(
+    tmp_path: Path, present_mask: int, matching_marker: bool
+) -> None:
+    """Matching fragments never prove ownership, even with a session marker."""
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    for index, name in enumerate(_REMOTE_SIDECARS):
+        if present_mask & (1 << index):
+            (cache / name).write_text("123 task-x\n" if "epoch" in name else "task-x\n")
+    if matching_marker:
+        (cache / "session-role-9381e195-f8e6-43ce-83bf-ea7e5b846723").write_text("beta\n")
+    before = {
+        path.name: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+        for path in cache.iterdir()
+    }
+    result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 75, result.stderr
+    assert not executed.exists()
+    assert {
+        path.name: (path.read_bytes(), path.stat().st_ino, path.stat().st_mtime_ns)
+        for path in cache.iterdir()
+    } == before
+    assert json.loads((home / "lock-observation.json").read_text())["writes"] == []
+    data = json.loads(proof.read_text())
+    assert data["dispatch_state"] == "hold" and data["claim_materialized"] is False
+    assert data["claim_epoch"] is None
+    assert data["claim_materialization_reason"] == "remote_claim_binding_unresolved"
+
+
+@pytest.mark.parametrize("legacy_epoch", [False, True])
+def test_remote_materialization_live_legacy_holder_cannot_be_adopted(
+    tmp_path: Path, legacy_epoch: bool
+) -> None:
+    home, _, proof, executed, command, env = _remote_materialization(tmp_path)
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    (cache / "cc-active-task-beta").write_text("task-x\n")
+    if legacy_epoch:
+        (cache / "cc-claim-epoch-beta").write_text("123 task-x\n")
+    before = {path.name: path.read_bytes() for path in cache.iterdir()}
+    # A real isolated process represents the legacy owner; no native model runs.
+    holder_env = env | {"HAPAX_AGENT_ROLE": "beta"}
+    for key in ("HAPAX_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID"):
+        holder_env.pop(key, None)
+    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], env=holder_env)
+    try:
+        assert holder.poll() is None
+        result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=10)
+        assert holder.poll() is None
+        assert result.returncode == 75, result.stderr
+        assert not executed.exists()
+        assert {path.name: path.read_bytes() for path in cache.iterdir()} == before
+        assert json.loads((home / "lock-observation.json").read_text())["writes"] == []
+        data = json.loads(proof.read_text())
+        assert data["dispatch_state"] == "hold" and data["claim_materialized"] is False
+        assert data["claim_epoch"] is None
+        assert data["claim_materialization_reason"] == "remote_claim_binding_unresolved"
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)
 
 
 @pytest.mark.parametrize("name", _REMOTE_SIDECARS)

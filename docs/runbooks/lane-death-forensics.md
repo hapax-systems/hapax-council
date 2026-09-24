@@ -242,7 +242,14 @@ host composition roots from `default_claim_publication_roots(home=Path.home())`,
 keyed by the exact `HAPAX_AGENT_ROLE`. It holds that role lock across the marker,
 role/session epochs and role/session claim writes. The lock does not cover a
 different host, confer rebind authority or establish writer liveness. Existing
-conflicting, incomplete or noncanonical claims/epochs hold. Sidecar reads open
+conflicting, incomplete or noncanonical claims/epochs hold. Materialization
+requires either no existing role/session claim or epoch, or all four exactly
+matching files with the same task and epoch. A matching role-only claim
+does not identify this session as its owner, even if its task matches or this
+session has a matching role marker. Any nonempty partial claim/epoch binding
+holds with `remote_claim_binding_unresolved` before creating new sidecars or
+executing. Preserve those files and use the governed ownership repair path;
+do not complete a partial binding by retrying the remote wrapper. Sidecar reads open
 without following symlinks and reject nonregular or multiply linked files;
 FIFOs hold without waiting for a writer. Every sidecar is created exclusively,
 or checked for exact matching bytes through that safe read. No sidecar is

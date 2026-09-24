@@ -807,12 +807,14 @@ else:
                     claims+=list(cache_path.glob("cc-active-task-"+role+"-*"))
                     epochs=[cache_path / ("cc-claim-epoch-"+role)]
                     epochs+=list(cache_path.glob("cc-claim-epoch-"+role+"-*"))
+                    observed_sidecars=set()
                     for candidate in claims:
                         content=read_sidecar(candidate)
                         if content is None:
                             continue
                         if candidate.name not in ("cc-active-task-"+key for key in keys) or content != task+"\n":
                             raise ValueError("claim binding unresolved")
+                        observed_sidecars.add(candidate.name)
                     epoch_values=set()
                     for candidate in epochs:
                         content=read_sidecar(candidate)
@@ -824,8 +826,15 @@ else:
                                 content!=str(int(fields[0]))+" "+task+"\n"):
                             raise ValueError("epoch binding unresolved")
                         epoch_values.add(int(fields[0]))
+                        observed_sidecars.add(candidate.name)
                     if len(epoch_values)>1:
                         raise ValueError("epoch binding unresolved")
+                    # A matching role claim can belong to a legacy live writer.
+                    # Only an empty claim namespace or a complete exact binding
+                    # is materializable; never fill gaps in ownership evidence.
+                    expected_sidecars={prefix+key for prefix in ("cc-active-task-","cc-claim-epoch-") for key in keys}
+                    if observed_sidecars and observed_sidecars!=expected_sidecars:
+                        raise ValueError("claim binding incomplete")
                 except ValueError:
                     materialization_reason="remote_claim_binding_unresolved"
                     raise
