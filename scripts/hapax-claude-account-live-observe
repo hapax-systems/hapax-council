@@ -24,19 +24,18 @@ no measurement — the review floor drops without anything saying so.
 
 WHAT IS ACTUALLY OBSERVABLE
 
-A Claude invocation that returns token usage IS the subscription serving a request. That
-is a direct observation of account-live quota, and the estate already produces these
-constantly:
+Token usage and a Claude model name prove a serve, but not its authentication or
+billing surface. The existing passive sources contain no request-bound subscription
+auth evidence, so they can only withhold admission on a wall:
 
   - ``~/.cache/hapax/claude-headless/*/output.jsonl``  headless lane results
     (``is_error`` / ``api_error_status`` / ``usage``)
   - ``~/.claude/projects/*/*.jsonl``                   session transcripts
     (``assistant`` records with ``message.usage``)
 
-The comparable case is codex, whose quota state is read straight off its CLI
-("You've hit your usage limit ... try again at 10:29 PM") and whose ``reviewer_command``
-is literally ``codex exec``. Nobody attests codex. Claude is no less observable; it just
-had no observer.
+Positive observation uses the existing bounded active probe with its controlled
+subscription environment. With --no-probe, unbound passive serves leave the route held.
+Current login state cannot retroactively authenticate a historical request.
 
 WHAT THIS IS NOT
 
@@ -226,15 +225,12 @@ def _wall_text(record: dict) -> str:
 
 
 def _classify(record: Mapping[str, object], at: datetime, source: str) -> Observation | None:
-    """One record -> wall / served / nothing. Wall is checked FIRST and needs no model."""
+    """Passive records can withhold admission, but cannot establish subscription auth."""
     if any(marker.search(_wall_text(record)) for marker in WALL_MARKERS):
         return Observation("wall", at, source, "provider-quota-refusal")
-    if record.get("is_error") or _served_tokens(record.get("usage")) <= 0:
-        return None
-    model = _anthropic_model(record)
-    if model is None:
-        return None  # served, but not by Anthropic — witnesses nothing about this subscription
-    return Observation("served", at, source, model=model)
+    # Neither source binds a serve to its auth surface. API/PAYG and subscription
+    # responses share this metadata; even an Opus serve must therefore hold.
+    return None
 
 
 def _scan_headless(path: Path, floor: datetime) -> list[Observation]:
@@ -277,13 +273,8 @@ def _scan_headless(path: Path, floor: datetime) -> list[Observation]:
                 obs = _classify(record, mtime, "headless-result")
                 if obs is None:
                     continue
-                if obs.kind == "served":
-                    # mtime is a FILE fact, not a record fact. Dating a serve with it
-                    # fabricates freshness: a 30-day-old success in a file appended to a
-                    # minute ago would read as a serve a minute ago. Undated serves are
-                    # therefore not evidence at all. Dating a WALL with mtime is merely
-                    # conservative (it can only withhold availability), so walls are kept.
-                    continue
+                # Only walls reach here; mtime can conservatively withhold
+                # availability, but must never grant freshness to an undated serve.
                 undated_last = obs
     except OSError:
         return []
@@ -496,16 +487,7 @@ def observe_all(
     headless_glob: str,
     transcript_glob: str,
 ) -> tuple[str, Observation | None, list[Observation]]:
-    """``observe`` plus every observation inside the window, so routes can pick their own.
-
-    The account-level verdict (served / walled / no_evidence) is a property of the NEWEST
-    observation. Which observation may vouch for a given ROUTE is not: measured 2026-09-02,
-    every 10-minute cycle for ~24h logged ``claude.review.opus: skipped model-family-mismatch,
-    observed_model: claude-fable-5-1`` — the newest serve was a Fable run, so the opus review
-    route was never minted although opus serves sat minutes older inside the same window.
-    A new model family arriving had silently starved a route. The per-route choice lives in
-    ``evidence_by_route``; this function only stops discarding the evidence it needs.
-    """
+    """Return passive wall observations; unbound serves cannot establish account liveness."""
     floor = now - timedelta(seconds=max_age_seconds)
     found: list[Observation] = []
     for path in _recent_files(headless_glob, floor):
@@ -682,9 +664,8 @@ def main(argv: list[str] | None = None) -> int:
         "--probe",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="When any requested route lacks passive in-family evidence, make ONE bounded real "
-        "request to observe account-live directly (~$0.02). --no-probe restricts to passive "
-        "observation.",
+        help="Make ONE bounded real subscription request for account-live evidence. "
+        "--no-probe reads passive walls only; unbound passive serves cannot admit a route.",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -703,11 +684,9 @@ def main(argv: list[str] | None = None) -> int:
         transcript_glob=args.transcript_glob,
     )
 
-    # Probe for ROUTE evidence, not merely for account-level evidence. A Fable serve witnesses
-    # headless.full but says nothing about review.opus; treating that as "the account was served"
-    # and suppressing the probe starves the review route indefinitely. Preserve every passive
-    # route witness already found and let one probe fill only the missing families.
-    # NOT used to override a wall: a detected wall is the live state and must stand.
+    # Passive sources currently supply walls only. One controlled probe supplies
+    # positive route evidence, still constrained by the observed model family.
+    # A detected wall must stand; neither passive serves nor the probe clear it.
     by_route = (
         evidence_by_route(found, route_ids) if verdict == "served" else dict.fromkeys(route_ids)
     )
@@ -793,9 +772,10 @@ def main(argv: list[str] | None = None) -> int:
         rc = 7
     else:
         payload["hint"] = (
-            f"no served Claude response within {args.max_age_seconds}s; nothing exercised "
-            "the subscription, so account-live cannot be observed (this is not evidence of "
-            "exhaustion — it is absence of evidence, and the route stays held)"
+            f"no subscription-bound Claude response within {args.max_age_seconds}s; "
+            "passive serves lack request-bound subscription-auth evidence. Obtain an "
+            "authorized subscription observation through the governed producer; the route "
+            "stays held (this is not evidence of exhaustion)."
         )
         rc = 4
 

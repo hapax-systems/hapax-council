@@ -94,9 +94,14 @@ def test_interactive_cheap_serve_does_not_suppress_opus_probe(tmp_path, monkeypa
     assert result["receipts"][0]["returncode"] == 0
 
 
-def test_default_observer_produces_interactive_receipt(tmp_path, capsys):
+def test_default_observer_produces_interactive_receipt_from_probe(tmp_path, monkeypatch, capsys):
     transcript = tmp_path / "session.jsonl"
     transcript.write_text(_served(NOW - timedelta(minutes=1), "claude-opus-4-8") + "\n")
+    monkeypatch.setattr(
+        obs,
+        "probe",
+        lambda now: obs.Observation("served", now, "synthetic-probe", model="claude-opus-5"),
+    )
     receipts = tmp_path / "receipts"
     assert (
         obs.main(
@@ -109,7 +114,7 @@ def test_default_observer_produces_interactive_receipt(tmp_path, capsys):
                 NOW.isoformat(),
                 "--receipt-dir",
                 str(receipts),
-                "--no-probe",
+                "--probe",
                 "--json",
             ]
         )
@@ -376,7 +381,6 @@ def test_expired_receipt_holds_registry_and_dispatch_with_later_snapshot(tmp_pat
         "exhausted",
         "ledger_stale",
         "ledger_unknown",
-        "no_capability",
         "fresh",
     ],
 )

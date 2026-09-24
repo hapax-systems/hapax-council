@@ -2247,6 +2247,7 @@ def _apply_receipt_to_route_payload(
     if not quota_admission_fresh and route_payload.get("route_id") in {
         CLAUDE_HEADLESS_ROUTE_ID,
         CLAUDE_INTERACTIVE_ROUTE_ID,
+        CLAUDE_REVIEW_ROUTE_ID,
     }:
         quota_admission_refs_to_inject = tuple(
             ref

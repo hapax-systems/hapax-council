@@ -13,8 +13,13 @@ record its actual observation time, and use the installed
 `hapax-claude-subscription-quota-admission --route-id claude.interactive.full`.
 The scheduled account-live observer now includes this route and requires an
 Opus-family serve, matching the declared interactive model family. A Haiku or
-Sonnet serve cannot witness interactive admission. Use `--no-probe` for passive
-observation when a live probe is not authorized.
+Sonnet serve cannot witness interactive admission. Passive transcripts and headless
+logs do not bind requests to subscription authentication; their model names and
+token usage cannot establish headroom. They can only report quota walls. Use
+`--no-probe` when a live probe is not authorized; it leaves admission held even
+when an unbound passive Opus serve exists. The existing active subscription probe
+remains the positive observation path. Current login state cannot authenticate
+an earlier passive request.
 That admission script's `--help` lists the permitted
 observation kinds and sanitized evidence-reference format. Preserve the default
 900-second lifetime unless a governed observation specifies another allowed
@@ -51,6 +56,13 @@ Expected boundaries:
   interactive route too, using the existing wall precedence and recovery rules.
 - No billing mode, model, quality floor or interactive-only task rule changes.
 
+Direct and dimensional interactive quota holds name the observation, receipt,
+telemetry and retry steps. A missing registry capability instead requires
+restoring `claude.interactive.full` in `config/platform-capability-registry.json`
+and regenerating platform capability evidence before retrying; quota evidence
+cannot replace that missing capability. Expired headless, review and interactive
+receipts all leave the availability account-attestation predicate false.
+
 The deterministic end-to-end regression is
 `tests/scripts/test_hapax_claude_interactive_admission.py`. Its observations and
 platform receipts are synthetic and isolated under temporary directories. A
@@ -61,6 +73,7 @@ Run the regression from the source checkout using its declared test environment:
 ```bash
 uv run pytest tests/scripts/test_hapax_claude_interactive_admission.py \
   tests/scripts/test_claude_interactive_admission_review.py \
+  tests/scripts/test_claude_interactive_admission_auth_review.py \
   tests/shared/test_capability_availability_guarantor.py -q
 ```
 

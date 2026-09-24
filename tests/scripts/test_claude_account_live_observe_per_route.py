@@ -65,19 +65,19 @@ def _wall(ts: datetime) -> str:
     )
 
 
-def _observe_all(tmp_path: Path, *, transcript: list[str] = (), headless: list[str] = ()):
-    hdir = tmp_path / "headless" / "lane"
-    tdir = tmp_path / "projects" / "proj"
-    hdir.mkdir(parents=True, exist_ok=True)
-    tdir.mkdir(parents=True, exist_ok=True)
-    (hdir / "output.jsonl").write_text("\n".join(headless) + "\n" if headless else "")
-    (tdir / "session.jsonl").write_text("\n".join(transcript) + "\n" if transcript else "")
-    return obs.observe_all(
-        now=NOW,
-        max_age_seconds=1800,
-        headless_glob=str(tmp_path / "headless" / "*" / "output.jsonl"),
-        transcript_glob=str(tmp_path / "projects" / "*" / "*.jsonl"),
-    )
+def _synthetic_observations(*, transcript=(), headless=()):
+    """Selector fixtures only; real passive records cannot supply these served observations."""
+    found = []
+    for text in [*transcript, *headless]:
+        record = json.loads(text)
+        at = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
+        if record.get("is_error"):
+            found.append(obs.Observation("wall", at, "synthetic"))
+        else:
+            found.append(
+                obs.Observation("served", at, "synthetic", model=record["message"]["model"])
+            )
+    return obs._verdict(found)
 
 
 def _plan(tmp_path: Path, evidence, found) -> dict[str, dict]:
@@ -94,7 +94,7 @@ def _plan(tmp_path: Path, evidence, found) -> dict[str, dict]:
 
 
 class TestEachRouteUsesItsOwnFamily:
-    def test_main_probes_for_missing_review_family_without_replacing_passive_headless_evidence(
+    def test_unbound_passive_serve_does_not_suppress_subscription_probe(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
     ) -> None:
         """Measured defect: a continuous Fable serve must not suppress the Opus probe."""
@@ -149,25 +149,24 @@ class TestEachRouteUsesItsOwnFamily:
         assert rc == 0
         assert probe_calls == [NOW], "passive Fable evidence must not suppress the Opus probe"
         assert mint_route_evidence["claude.review.opus"].source == "active-probe"
-        assert mint_route_evidence["claude.headless.full"].source == "session-transcript"
-        assert mint_route_evidence["claude.headless.full"].at == passive_at
+        assert mint_route_evidence["claude.headless.full"].source == "active-probe"
+        assert mint_route_evidence["claude.headless.full"].at == NOW
         payload = json.loads(capsys.readouterr().out)
-        assert payload["probe"]["requested_for_routes"] == ["claude.review.opus"]
+        assert payload["probe"]["requested_for_routes"] == list(ROUTES)
         assert payload["probe"]["reason"] == (
             "requested route lacked in-model-family served evidence inside the window"
         )
-        assert payload["probe"]["witnessed_routes"] == ["claude.review.opus"]
+        assert payload["probe"]["witnessed_routes"] == list(ROUTES)
         assert payload["observed_model_by_route"] == {
             "claude.review.opus": "claude-opus-5",
-            "claude.headless.full": "claude-fable-5-1",
+            "claude.headless.full": "claude-opus-5",
         }
 
     def test_fable_serve_newer_than_opus_serve_still_mints_the_opus_review_route(
         self, tmp_path: Path
     ) -> None:
         """The measured starvation, reproduced: the newest serve is Fable, an opus serve is older."""
-        verdict, newest, found = _observe_all(
-            tmp_path,
+        verdict, newest, found = _synthetic_observations(
             transcript=[
                 _served(NOW - timedelta(minutes=9), "claude-opus-5"),
                 _served(NOW - timedelta(minutes=1), "claude-fable-5-1"),
@@ -190,8 +189,8 @@ class TestEachRouteUsesItsOwnFamily:
     def test_only_a_cheap_model_served_leaves_the_review_route_unvouched(
         self, tmp_path: Path
     ) -> None:
-        verdict, newest, found = _observe_all(
-            tmp_path, transcript=[_served(NOW - timedelta(minutes=2), "claude-haiku-4-5")]
+        verdict, newest, found = _synthetic_observations(
+            transcript=[_served(NOW - timedelta(minutes=2), "claude-haiku-4-5")]
         )
         assert verdict == "served"
         by_route = _plan(tmp_path, newest, found)
@@ -199,8 +198,7 @@ class TestEachRouteUsesItsOwnFamily:
         assert "would_run" in by_route["claude.headless.full"]
 
     def test_a_wall_newer_than_every_serve_holds_the_whole_account(self, tmp_path: Path) -> None:
-        verdict, newest, _found = _observe_all(
-            tmp_path,
+        verdict, newest, _found = _synthetic_observations(
             transcript=[_served(NOW - timedelta(minutes=5), "claude-opus-5")],
             headless=[_wall(NOW - timedelta(minutes=1))],
         )
@@ -212,8 +210,7 @@ class TestEachRouteUsesItsOwnFamily:
         """opus serve t0, wall t1, fable serve t2: the account is served (t2 is newest) but the
         t0 opus serve predates the wall and must not vouch for the opus review route. A Fable
         response cannot witness Opus availability after an Opus refusal (review finding, #4615)."""
-        verdict, newest, found = _observe_all(
-            tmp_path,
+        verdict, newest, found = _synthetic_observations(
             transcript=[
                 _served(NOW - timedelta(minutes=9), "claude-opus-5"),
                 _served(NOW - timedelta(minutes=1), "claude-fable-5-1"),
@@ -233,8 +230,7 @@ class TestEachRouteUsesItsOwnFamily:
         self, tmp_path: Path
     ) -> None:
         """Control for the test above: the same wall, but the opus serve postdates it."""
-        verdict, newest, found = _observe_all(
-            tmp_path,
+        verdict, newest, found = _synthetic_observations(
             transcript=[
                 _served(NOW - timedelta(minutes=3), "claude-opus-5"),
                 _served(NOW - timedelta(minutes=1), "claude-fable-5-1"),
@@ -247,7 +243,7 @@ class TestEachRouteUsesItsOwnFamily:
         assert by_route["claude.review.opus"].at == NOW - timedelta(minutes=3)
         assert "would_run" in _plan(tmp_path, newest, found)["claude.review.opus"]
 
-    def test_main_entry_point_mints_per_route_from_mixed_family_observations(
+    def test_main_unbound_mixed_family_serves_cannot_clear_wall(
         self, tmp_path: Path, capsys
     ) -> None:
         """Review finding: every regression test composed observe_all/evidence_by_route/mint by
@@ -288,14 +284,10 @@ class TestEachRouteUsesItsOwnFamily:
                 "--json",
             ]
         )
-        assert rc == 0
+        assert rc == 3
         payload = json.loads(capsys.readouterr().out)
-        assert payload["verdict"] == "served"
-        assert payload["observed_model_by_route"]["claude.headless.full"] == "claude-fable-5-1"
-        assert payload["observed_model_by_route"]["claude.review.opus"] is None
-        by_route = {r["route_id"]: r for r in payload["receipts"]}
-        assert "would_run" in by_route["claude.headless.full"]
-        assert "would_run" not in by_route["claude.review.opus"], by_route["claude.review.opus"]
+        assert payload["verdict"] == "walled"
+        assert not payload.get("receipts")
 
     def test_evidence_by_route_picks_the_freshest_in_family_not_the_first(
         self, tmp_path: Path
@@ -328,16 +320,14 @@ class TestEachRouteUsesItsOwnFamily:
         assert by_route["claude.review.opus"].get("skipped") == "model-family-mismatch"
         assert "would_run" in by_route["claude.headless.full"]
 
-    def test_observe_is_unchanged_for_its_existing_callers(self, tmp_path: Path) -> None:
-        verdict, newest, found = _observe_all(
-            tmp_path, transcript=[_served(NOW - timedelta(minutes=1), "claude-fable-5-1")]
-        )
-        hdir, tdir = tmp_path / "headless", tmp_path / "projects"
-        verdict2, newest2 = obs.observe(
+    def test_observe_and_observe_all_agree_on_unbound_passive_input(self, tmp_path: Path) -> None:
+        transcript = tmp_path / "session.jsonl"
+        transcript.write_text(_served(NOW - timedelta(minutes=1), "claude-opus-5") + "\n")
+        kwargs = dict(
             now=NOW,
             max_age_seconds=1800,
-            headless_glob=str(hdir / "*" / "output.jsonl"),
-            transcript_glob=str(tdir / "*" / "*.jsonl"),
+            headless_glob=str(tmp_path / "absent"),
+            transcript_glob=str(transcript),
         )
-        assert (verdict, newest.at, newest.model) == (verdict2, newest2.at, newest2.model)
-        assert len(found) == 1
+        assert obs.observe(**kwargs) == ("no_evidence", None)
+        assert obs.observe_all(**kwargs) == ("no_evidence", None, [])
