@@ -282,6 +282,16 @@ def test_nonzero_exit_preserved_without_forwarding_model_output(tmp_path: Path) 
     assert result.returncode == 7 and result.stdout == "" and "agy failed" in result.stderr
 
 
+def test_malformed_output_on_native_failure_preserves_status_and_diagnostic(tmp_path: Path) -> None:
+    _seed_operator_token(Path(os.environ["HOME"]))
+    result = _run(
+        _fake_agy(tmp_path, "print('not JSON')\nprint('agy failed', file=sys.stderr)\nsys.exit(7)")
+    )
+    assert result.returncode == 7
+    assert result.stdout == ""
+    assert result.stderr == "agy failed\n"
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -556,3 +566,92 @@ def test_native_response_retains_actual_caller_parse_contract(
             "checklist": {},
             "parse_path": "fence",
         }
+
+
+@pytest.mark.parametrize("location", ["detail", "key"])
+@pytest.mark.parametrize("encoding", ["unicode", "hex", "long_unicode", "continuation"])
+def test_semantic_yaml_token_never_reaches_actual_caller(
+    tmp_path: Path, location: str, encoding: str
+) -> None:
+    _seed_operator_token(Path(os.environ["HOME"]))
+    spec = importlib.util.spec_from_file_location(
+        "_agy_semantic_contract", REPO_ROOT / "scripts/cc-pr-review-dispatch.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    secret = FAKE_ACCESS_TOKEN
+    if encoding == "continuation":
+        encoded = secret[:12] + "\\\n    " + secret[12:]
+    else:
+        code = {"unicode": "u%04x", "hex": "x%02x", "long_unicode": "U%08x"}[encoding]
+        encoded = "".join("\\" + code % ord(char) for char in secret)
+    scalar = '"' + encoded + '"'
+    finding = "detail: " + scalar if location == "detail" else scalar + ": safe"
+    if location == "key" and encoding == "continuation":
+        finding = "? " + scalar + "\n    : safe"
+    response = REVIEW.replace("findings: []", "findings:\n  - " + finding)
+    # Establish that the real consumer reconstructs the token from this payload;
+    # do not mock the parser or claim rejection solely from a raw substring test.
+    parsed = module.extract_review(response)
+    assert parsed is not None
+    assert secret in str(parsed["findings"])
+    result = _run(_fake_agy(tmp_path, f"emit({response!r})"))
+    forwarded = module.extract_review(result.stdout)
+    assert forwarded is None or secret not in str(forwarded)
+    assert result.returncode == 65
+    assert result.stdout == ""
+    assert "echoed the seeded operator login token" in result.stderr
+    assert secret not in result.stderr
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_nested_json_diagnostic_token_discards_both_streams(
+    tmp_path: Path, stream: str, exit_code: int
+) -> None:
+    _seed_operator_token(Path(os.environ["HOME"]))
+    encoded = "".join(f"\\u{ord(char):04x}" for char in FAKE_REFRESH_TOKEN)
+    diagnostic = "native error: " + json.dumps({"detail": encoded})
+    result = _run(
+        _fake_agy(
+            tmp_path,
+            f"emit()\nprint({diagnostic!r}, file=sys.{stream})\nsys.exit({exit_code})",
+        )
+    )
+    assert result.returncode == 65
+    assert result.stdout == ""
+    assert "echoed the seeded operator login token" in result.stderr
+    assert "native error" not in result.stderr
+
+
+def test_semantic_binary_token_is_not_forwarded(tmp_path: Path) -> None:
+    import base64
+
+    _seed_operator_token(Path(os.environ["HOME"]))
+    encoded = base64.b64encode(FAKE_ACCESS_TOKEN.encode()).decode()
+    response = REVIEW.replace("findings: []", f"findings: [{{detail: !!binary {encoded}}}]")
+    result = _run(_fake_agy(tmp_path, f"emit({response!r})"))
+    assert result.returncode == 65
+    assert result.stdout == ""
+    assert "echoed the seeded operator login token" in result.stderr
+
+
+def test_malformed_yaml_cannot_bypass_semantic_screen(tmp_path: Path) -> None:
+    _seed_operator_token(Path(os.environ["HOME"]))
+    response = REVIEW.replace("findings: []", "findings: [unterminated")
+    result = _run(_fake_agy(tmp_path, f"emit({response!r})"))
+    assert result.returncode == 65
+    assert result.stdout == ""
+    assert "malformed or unsuccessful stream result" in result.stderr
+
+
+def test_clean_yaml_aliases_and_escapes_preserve_response(tmp_path: Path) -> None:
+    _seed_operator_token(Path(os.environ["HOME"]))
+    response = REVIEW.replace(
+        "findings: []",
+        'findings: [&finding {detail: "ordinary \\u0074ext", related: *finding}]',
+    )
+    result = _run(_fake_agy(tmp_path, f"emit({response!r})"))
+    assert result.returncode == 0
+    assert result.stdout == response

@@ -510,11 +510,16 @@ workspace monthly audit follows named aliases and deduplicates resolved targets.
 
 Run `uv run --no-sync pytest tests/scripts/test_hapax_agy_reviewer.py -q` from
 the candidate source. The doubles exercise short and 2.5 MB Unicode dossiers,
-OAuth isolation and raw/JSON-escaped echo suppression on both streams before
-parsing (including native failures), native final-result
+OAuth isolation and raw/nested-JSON-escaped echo suppression on both streams before
+parsing (including native failures), semantic YAML token checks, native final-result
 unwrapping, malformed output, timeout, caller cancellation and process ownership.
 The caller retains YAML schema/checklist validation after the wrapper extracts
-one successful native result's fenced response. Native errors retain nonzero
+one successful native result's fenced response. Before forwarding that response,
+the wrapper uses the runtime's declared PyYAML dependency and the caller's
+SafeLoader to check all string keys/values and binary scalars for seeded secrets.
+YAML escapes and line continuations therefore cannot reconstruct a token after
+the guard. Malformed YAML is refused; the wrapper does not delegate an unexamined
+document to the caller's prose-repair path. Native errors retain nonzero
 status and stderr; partial model responses are not forwarded.
 
 The wrapper forks a small lifetime supervisor before launching Agy. Agy leads a
@@ -665,3 +670,68 @@ credential-safe capture. Do not dump native logs, token files or `/proc/*/cmdlin
 The source timeout tests do not substitute for a separately authorized installed
 timeout observation. Preserve this record as pending if release, admission or
 observation coverage is missing.
+
+The independent runtime observer can verify a returned dossier without printing
+its findings or signing material. Set `AGY_RECHECK_DOSSIER` to the exact
+`dossier_path` returned by the caller, then run:
+
+```bash
+: "${AGY_RECHECK_DOSSIER:?set the caller-returned dossier path}"
+export AGY_RECHECK_DOSSIER
+uv --directory "$agy_recheck_root" run python - <<'PY_SIGNATURE'
+import hashlib, json, os, subprocess
+from pathlib import Path
+import yaml
+from shared.public_gate_receipts import _mapping_has_trusted_authority_signature
+evidence = Path(os.environ["AGY_RECHECK_DIR"])
+path = Path(os.environ["AGY_RECHECK_DOSSIER"])
+raw = path.read_bytes()
+dossier = yaml.safe_load(raw)
+key = subprocess.run([str(Path.home() / ".local/bin/hapax-secret"),
+                      "hapax-public-gate-authority-hmac-key"],
+                     capture_output=True, text=True, timeout=20)
+if key.returncode or not key.stdout.strip():
+    raise SystemExit("Signing binding unavailable; restore the declared FileStore credential.")
+verified = _mapping_has_trusted_authority_signature(dossier, key.stdout.strip())
+expected = json.loads((evidence / "head-before.json").read_text())["headRefOid"]
+row = {"dossier_path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
+       "hmac_verified": verified, "head_matches": dossier.get("head_sha") == expected,
+       "pr_matches": dossier.get("pr") == int(os.environ["AGY_RECHECK_PR"]),
+       "team_verdict": dossier.get("review_team_verdict"),
+       "gemini": [{"verdict": seat.get("verdict"), "parse_path": seat.get("parse_path")}
+                  for seat in dossier.get("reviewers", []) if seat.get("family") == "gemini"],
+       "route_debt": dossier.get("post_route_receipt_rereview_required")}
+with (evidence / "signature-readback.json").open("x") as out:
+    json.dump(row, out, indent=2)
+print(json.dumps(row, indent=2))
+raise SystemExit(0 if verified and row["head_matches"] and row["pr_matches"] else 1)
+PY_SIGNATURE
+```
+
+This checks signature and identity, not acceptance. A signed blocked verdict is
+still blocked. Check the Gemini fence result and disposition route debt separately.
+The following executable readback reports the existing process sampler's search
+and cleanup observations, and fails closed on the complete no-search predicate:
+
+```bash
+python3 - <<'PY_SEARCH_READBACK'
+import json, os
+from pathlib import Path
+evidence = Path(os.environ["AGY_RECHECK_DIR"])
+sample = json.loads((evidence / "owned-groups.json").read_text())
+row = {"find_observed": bool(sample["observed_find"]),
+       "leader_observed": bool(sample["leader_ancestries"]),
+       "remaining_group_members": len(sample["group_members_after"]),
+       "complete_no_search": "unobserved: /proc sampling can miss short-lived tools",
+       "next_action": "runtime owner must supply an authorized complete execution/tool-event trace"}
+with (evidence / "search-readback.json").open("x") as out:
+    json.dump(row, out, indent=2)
+print(json.dumps(row, indent=2))
+raise SystemExit(1)
+PY_SEARCH_READBACK
+```
+
+No complete execution/tool-event trace collector is supplied by this source
+repair. That negative observation remains a runtime qualification blocker, even
+when the sampler saw no `find`. Do not turn this command's deliberate nonzero exit
+into a passing no-search claim or substitute source doubles for the missing trace.

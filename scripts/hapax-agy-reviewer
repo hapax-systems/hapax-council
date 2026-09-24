@@ -16,6 +16,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import yaml
+
 DEFAULT_MODEL = "gemini-3.1-pro-high"
 DEFAULT_PRINT_TIMEOUT = "20m0s"
 DEFAULT_AGY_BIN = "/usr/bin/agy"
@@ -264,19 +266,55 @@ def _run_owned(
 def _reject_token_echo(raw: str, guarded: tuple[str, ...]) -> None:
     """Screen literal and JSON-escaped text, including unstructured diagnostics.
 
-    Decode valid escape runs without requiring a valid JSON document: stderr
+    Decode nested escape runs without requiring a valid JSON document: stderr
     may have log prefixes, and malformed stdout must not bypass this check.
     Only the comparison view is decoded; forwarded clean bytes stay intact.
     """
     if not guarded:
         return
-    decoded = re.sub(
-        r'(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))+',
-        lambda match: json.loads('"' + match.group() + '"'),
-        raw,
-    )
-    if any(secret in raw or secret in decoded for secret in guarded):
-        raise PermissionError("seeded token echo")
+    while True:
+        if any(secret in raw for secret in guarded):
+            raise PermissionError("seeded token echo")
+        decoded = re.sub(
+            r'(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))+',
+            lambda match: json.loads('"' + match.group() + '"'),
+            raw,
+        )
+        if decoded == raw:
+            return
+        # Every decoded escape shortens the comparison view. Check each layer
+        # so JSON-wrapped diagnostics cannot hide another escaped token.
+        raw = decoded
+
+
+def _reject_semantic_token_echo(response: str, guarded: tuple[str, ...]) -> None:
+    """Screen the YAML meaning the caller will consume, including mapping keys.
+
+    JSON unwrapping alone cannot account for YAML escapes, line continuations,
+    or binary scalars. Use the caller's SafeLoader, never a custom YAML decoder.
+    Reject malformed YAML here: an unexamined/repaired result cannot be forwarded.
+    Schema/checklist validation remains the caller's responsibility.
+    """
+    try:
+        stack = [yaml.safe_load(response.removeprefix("```yaml\n").rstrip()[:-3])]
+    except yaml.YAMLError as exc:
+        raise ValueError("unparseable review YAML") from exc
+    seen: set[int] = set()
+    while stack:
+        node = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))  # SafeLoader aliases can share nodes or form cycles.
+        if isinstance(node, str):
+            _reject_token_echo(node, guarded)
+        elif isinstance(node, bytes):
+            if any(secret.encode("utf-8") in node for secret in guarded):
+                raise PermissionError("seeded token echo")
+        elif isinstance(node, dict):
+            stack.extend(node.keys())
+            stack.extend(node.values())
+        elif isinstance(node, (list, tuple, set)):
+            stack.extend(node)
 
 
 def _stream_response(raw: str) -> str:
@@ -435,6 +473,7 @@ def _review(args: argparse.Namespace, dossier: str, lifetime: int) -> int:
             _reject_token_echo(result.stdout, guarded)
             _reject_token_echo(result.stderr, guarded)
             response = _stream_response(result.stdout)
+            _reject_semantic_token_echo(response, guarded)
         except PermissionError:
             print(
                 "hapax-agy-reviewer: agy output echoed the seeded operator login "
