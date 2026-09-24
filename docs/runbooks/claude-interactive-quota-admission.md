@@ -20,6 +20,10 @@ token usage cannot establish headroom. They can only report quota walls. Use
 when an unbound passive Opus serve exists. The existing active subscription probe
 remains the positive observation path. Current login state cannot authenticate
 an earlier passive request.
+Recheck the probe-to-writer path with
+`tests/scripts/test_claude_interactive_admission_auth_review.py::test_real_probe_result_reaches_interactive_mint`;
+only its provider subprocess is simulated, while the probe, selector, writer and
+receipt readback execute normally.
 That admission script's `--help` lists the permitted
 observation kinds and sanitized evidence-reference format. Preserve the default
 900-second lifetime unless a governed observation specifies another allowed
@@ -44,6 +48,7 @@ Expected boundaries:
 
 - Only the route named by the positive receipt becomes quota-fresh. Headless
   and review receipts do not admit the interactive route, or vice versa.
+  Recheck: `tests/scripts/test_claude_interactive_admission_review.py::test_ledger_binds_produced_evidence_to_its_route`.
 - Missing, expired, future-dated, wrong-provider or lane-presence evidence
   keeps admission closed. At ledger read, a fresh Claude snapshot requires
   trusted producer/provider provenance and at least one matching route receipt
@@ -52,8 +57,15 @@ Expected boundaries:
   and a fresh sibling-route receipt cannot witness this route. Malformed or
   reversed receipt windows are untrusted. A second current matching receipt may
   admit the route while an earlier matching receipt has expired.
+  Recheck missing/unsafe observations with
+  `tests/scripts/test_hapax_claude_interactive_admission.py::test_interactive_unsafe_observation_keeps_admission_closed`;
+  window, sibling and second-current-receipt cases with
+  `tests/scripts/test_claude_interactive_admission_review.py::test_ledger_read_checks_receipt_window_independently_of_snapshot`;
+  direct malformed/reversed/equal-window rejection with
+  `tests/scripts/test_claude_interactive_admission_auth_review.py::test_admission_reference_rejects_invalid_windows`.
 - Unexpired quota walls on the shared Claude subscription pool inhibit the
   interactive route too, using the existing wall precedence and recovery rules.
+  Recheck: `tests/scripts/test_hapax_claude_interactive_admission.py::test_interactive_admission_respects_shared_pool_wall`.
 - No billing mode, model, quality floor or interactive-only task rule changes.
 
 Direct and dimensional interactive quota holds name the observation, receipt,
@@ -61,7 +73,14 @@ telemetry and retry steps. A missing registry capability instead requires
 restoring `claude.interactive.full` in `config/platform-capability-registry.json`
 and regenerating platform capability evidence before retrying; quota evidence
 cannot replace that missing capability. Expired headless, review and interactive
-receipts all leave the availability account-attestation predicate false.
+receipts all leave the availability account-attestation predicate false, including
+when a retained platform receipt copied their earlier positive evidence. The
+projection removes that positive attestation when current ledger admission fails,
+while retaining unrelated evidence. Recheck:
+`tests/scripts/test_claude_interactive_admission_auth_review.py::test_retained_platform_receipt_drops_expired_account_attestation`.
+Hold recovery is covered by the same file's
+`test_interactive_hold_recovers_the_actual_missing_boundary` and
+`test_dispatch_cli_degraded_registry_names_quota_recovery`.
 
 The deterministic end-to-end regression is
 `tests/scripts/test_hapax_claude_interactive_admission.py`. Its observations and

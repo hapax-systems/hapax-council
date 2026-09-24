@@ -321,16 +321,15 @@ def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
     return out
 
 
-#: Bounded active probe, used when any requested route lacks recent in-family passive evidence,
-#: so either a quiet estate or a busy session in another family cannot silently drop the review
-#: floor. Measured 2026-08-19: ~$0.02 once the prompt cache is warm. A FRESH PROCESS taking the
-#: same path a reviewer would is better evidence than this process's own liveness and is not
-#: presence.
+#: Bounded active probe, used when no recent passive wall holds the account. Passive
+#: serves lack subscription-auth binding and cannot suppress this positive producer.
+#: A fresh process with the controlled subscription environment measures a response;
+#: this process's own liveness is not evidence.
 #: The probe must request a model whose family can witness EVERY route it intends to mint.
 #: An earlier revision probed with Haiku, which cannot witness claude.review.opus — the one
 #: route the review floor depends on — so the probe could only ever have covered the route
 #: that mattered least. An Opus serve satisfies both `claude-opus*` and `claude-*`, so one
-#: probe covers both routes; probing per family would double the spend for nothing.
+#: probe covers headless, review and interactive routes.
 PROBE_MODEL = "claude-opus-5"
 
 PROBE_ARGV = (

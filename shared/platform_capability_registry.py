@@ -2243,26 +2243,24 @@ def _apply_receipt_to_route_payload(
     route_specific_blocker = ROUTE_SPECIFIC_QUOTA_ADMISSION_BLOCKERS.get(
         route_payload.get("route_id")
     )
-    quota_admission_refs_to_inject = quota_admission_refs
+    quota_evidence = freshness["evidence"]["quota"]
+    quota_refs = list(
+        dict.fromkeys([*quota_evidence.get("evidence_refs", []), *quota_admission_refs])
+    )
     if not quota_admission_fresh and route_payload.get("route_id") in {
         CLAUDE_HEADLESS_ROUTE_ID,
         CLAUDE_INTERACTIVE_ROUTE_ID,
         CLAUDE_REVIEW_ROUTE_ID,
     }:
-        quota_admission_refs_to_inject = tuple(
+        # The retained platform receipt and prior registry projection may already
+        # carry account attestations copied while quota was fresh. Filter the
+        # complete surface at use, preserving unrelated provenance and blockers.
+        quota_refs = [
             ref
-            for ref in quota_admission_refs
+            for ref in quota_refs
             if not _ref_has_token_suffix(ref, CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)
-        )
-    if quota_admission_refs_to_inject:
-        freshness["evidence"]["quota"]["evidence_refs"] = list(
-            dict.fromkeys(
-                [
-                    *freshness["evidence"]["quota"].get("evidence_refs", []),
-                    *quota_admission_refs_to_inject,
-                ]
-            )
-        )
+        ]
+    quota_evidence["evidence_refs"] = quota_refs
     if route_specific_blocker and not quota_admission_fresh:
         top_blockers.append(route_specific_blocker)
         quota_evidence = freshness["evidence"]["quota"]
