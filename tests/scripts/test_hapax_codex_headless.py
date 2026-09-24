@@ -518,7 +518,10 @@ if [[ "$remote_cmd" == *"\\$'"* ]]; then
   echo 'fish: Expected a variable name after this $' >&2
   exit 127
 fi
-exec bash -c "$remote_cmd"
+# ssh forwards none of the dispatch environment: the claim binding must travel in the payload.
+exec env -u HAPAX_METHODOLOGY_DISPATCH_TASK -u HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH \\
+  -u HAPAX_METHODOLOGY_DISPATCH_CLAIM_RECEIPT -u HAPAX_METHODOLOGY_DISPATCH_CLAIM_SESSION \\
+  bash -c "$remote_cmd"
 """,
     )
     _write_executable(
