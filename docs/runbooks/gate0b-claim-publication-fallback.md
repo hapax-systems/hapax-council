@@ -111,8 +111,11 @@ stale-claim cleanup.
 
 ## Claim publication interruption and retry
 
-Claim admission resolves the complete active and closed task namespace. Index
-construction can make up to three attempts, reusing only unchanged stat-bound
+Claim admission resolves the complete active and closed task namespace. The
+locked claim preflight, exact postimage check, interrupted-publication recovery,
+and emergency claim preparation explicitly request three index-build attempts.
+Other callers, including this dispatch sweep, use the one-attempt default.
+Construction reuses only unchanged stat-bound
 parses between attempts. Removal between directory listing and stat, in either
 inventory, consumes an attempt; unsafe directories refuse immediately.
 Every attempt checks the full frontier; continuing
@@ -466,10 +469,34 @@ identity resolution yields one terminal record (`done`, `completed`, `closed`,
 `withdrawn`, `superseded`) or an explicitly `blocked` and unassigned record.
 It holds the installed role exclusion followed by the task/path lock across
 resolution, marker recheck and deletion. The five-minute settling delay remains.
+Only legacy names with no possible claim-keyable session suffix can identify a
+role from their filename. Every session-keyed name (UUID or otherwise), and
+ambiguous legacy names such as `cx-claim-rebind`, return
+`claim_sweep_role_ambiguous`. Neither current task assignment nor a sibling file
+disambiguates the writer's role. Those markers remain for governed cleanup with
+an exact binding; this sweep does not invent that binding or strip UUIDs.
 A changed/refreshed marker, duplicate identity, missing/malformed note, linked
 marker, or unavailable composition/lock is held. The whole namespace identity
 index is shared within one sweep and revalidated at use; concurrent changes
 narrow cleanup rather than allowing a convenient-path lookup.
+
+Before unlink, the dispatcher must append `claim_sweep.delete_decided` to the
+existing coordination event log. It records the task, note hash, marker hash and
+filesystem identity, installed composition roots, role, reason and observation
+time with outcome `pending`. A failed decision write holds the marker. After
+unlink, `claim_sweep.deleted` links the decision and records the observed outcome.
+A process exit between the two writes, or a failed outcome write, leaves the
+decision pending, never implicitly successful; reconcile it through the existing
+evidence path. Storage retains the existing SQLite WAL/NORMAL durability contract;
+this change adds no power-loss guarantee. These observations
+do not authorize replay or transfer. No alternate event store or audit fallback
+is introduced.
+
+The sweep returns actual deletions, a held count, and up to twenty typed holds
+with repair actions. The explicit CLI prints the result and exits 8 when any
+holds remain. Opportunistic dispatch reports those holds on stderr and still
+requires ordinary claim admission; a held sweep cannot clear ownership. Lock,
+composition, task-store and audit failures cannot masquerade as a clean scan.
 
 Six-hour age, expired sibling markers, absent progress or a missing task note
 cannot establish whole-attempt death. `lease_ttl` remains an accepted function
