@@ -5185,6 +5185,48 @@ def test_recovery_holds_one_journal_while_another_writer_holds_its_note_lock(
         writer.join(timeout=10)
 
 
+def test_recovery_holds_a_journal_whose_refusal_lacks_repair_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # PR4726 round 3 (Vibe): the per-journal handler read `repair_action` directly, so a
+    # refusal without it raised AttributeError and aborted the whole run.
+    from shared.task_note_lock import TaskNoteLockError
+
+    fixture = _fixture(tmp_path)
+    active = _active_admission_fixture(tmp_path, fixture)
+
+    def fail_before_projection(phase: str, index: int | None) -> None:
+        if phase == "before_projection" and index == 0:
+            raise RuntimeError("interrupted publication")
+
+    with pytest.raises(ClaimPublicationError):
+        sdlc_claim._apply_admitted_claim_publication_transaction(
+            fixture.intent,
+            active.consumption,
+            transaction_root=fixture.transactions,
+            lock_root=fixture.locks,
+            failure_hook=fail_before_projection,
+        )
+
+    def bare_refusal(*args, **kwargs):
+        error = TaskNoteLockError("task_note_lock_timeout", "unused")
+        del error.repair_action
+        del error.detail
+        raise error
+
+    monkeypatch.setattr(sdlc_claim, "_recover_one", bare_refusal)
+    results = recover_claim_publications(
+        cache_dir=fixture.cache,
+        transaction_root=fixture.transactions,
+        lock_root=fixture.locks,
+        task_id=fixture.intent.task_id,
+    )
+    assert [(item.state, item.reason_code) for item in results] == [
+        ("hold", "task_note_lock_timeout")
+    ]
+    assert results[0].repair_action
+
+
 def test_recovery_cannot_reconcile_while_a_publisher_holds_the_role_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
