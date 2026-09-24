@@ -585,6 +585,36 @@ def sdlc_slice_available(systemd_run: str | None = None) -> bool:
     return _slice_available_cached(systemd_run)
 
 
+class SdlcAttemptDomainError(RuntimeError):
+    """The CPU-fence provider cannot prove a claim-bound attempt has ended."""
+
+    reason_code = "claim_rebind_attempt_domain_unqualified"
+    repair_action = (
+        "qualify a claim-bound lifecycle producer that binds the exact session, epoch, "
+        "dispatch, host, boot and process birth, and proves descendant termination "
+        "and retirement of owned restart authority before requesting a transfer"
+    )
+
+    def __init__(self) -> None:
+        super().__init__(f"{self.reason_code}: {self.repair_action}")
+
+
+def require_sdlc_attempt_domain_support() -> None:
+    """Refuse the stronger contract that the existing CPU fence does not supply.
+
+    A successful scope launch, inherited slice attachment, waited wrapper, or
+    empty cgroup cannot establish that descendants did not escape or that an
+    external lifecycle owner cannot restart them. In particular, these user
+    scopes are not confinement. No current binding supplies that proof, so
+    this provider has no authorizing success path. Future support must bind
+    the actual admitted claim and revalidate its whole attempt at transfer.
+
+    This refusal does not probe, create, stop or alter a scope. Ordinary CPU
+    fencing keeps its existing availability behavior.
+    """
+    raise SdlcAttemptDomainError()
+
+
 def sdlc_slice_wrap(
     argv: Iterable[str],
     *,
@@ -592,12 +622,17 @@ def sdlc_slice_wrap(
     systemd_run: str | None = _DETECT,
     slice_available: bool | None = None,
     setenv: Mapping[str, str] | None = None,
+    require_attempt_domain: bool = False,
 ) -> list[str]:
     """Prefix ``argv`` with ``systemd-run --user --scope --slice=hapax-sdlc.slice``
     so the launched lane AND its git/pytest/cargo grandchildren inherit cpu.idle +
     the cpuset fence. No-op (run un-sliced) when already attached, when systemd-run
     is missing, or when the slice can't be created — dispatch must never hard-fail
-    on the fence. Pass the keyword args to inject for tests."""
+    on the fence. An explicit attempt-domain requirement refuses before those
+    availability fallbacks: this CPU fence is not a terminality witness.
+    Pass the keyword args to inject for tests."""
+    if require_attempt_domain:
+        require_sdlc_attempt_domain_support()
     argv = list(argv)
     if already_attached is None:
         already_attached = os.environ.get("HAPAX_SDLC_SLICE_ATTACHED") == "1"

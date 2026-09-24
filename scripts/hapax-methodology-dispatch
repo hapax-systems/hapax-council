@@ -79,6 +79,7 @@ from shared.sdlc_lifecycle import TASK_DISPATCHABLE_STATUSES
 from shared.sdlc_pressure_gate import (
     AdmissionDecision,
     admission_state,
+    require_sdlc_attempt_domain_support,
     sdlc_slice_wrap,
     wait_until_admitted,
 )
@@ -1453,12 +1454,20 @@ def slugify(value: str) -> str:
     return slug or "item"
 
 
-def _sliced_call(args: list[str], env: dict[str, str] | None = None) -> int:
+def _sliced_call(
+    args: list[str],
+    env: dict[str, str] | None = None,
+    *,
+    require_attempt_domain: bool = False,
+) -> int:
     """subprocess.call that drops the launched lane — and its git/pytest/cargo
     grandchildren — into hapax-sdlc.slice (L1 attachment point b) when the fence
     is available. cpu.idle + the cpuset inherit to every descendant. No-op + run
     un-sliced when systemd-run/the slice is unavailable, so dispatch never fails
-    on the fence."""
+    on the fence. An explicitly requested claim-rebinding domain is stronger
+    than that CPU fence and currently refuses before any launch."""
+    if require_attempt_domain:
+        require_sdlc_attempt_domain_support()
     base_env = dict(os.environ) if env is None else env
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return subprocess.call(list(args), env=base_env)  # don't probe/create scopes in tests
