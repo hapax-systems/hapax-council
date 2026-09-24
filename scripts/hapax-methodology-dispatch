@@ -734,6 +734,29 @@ def _claim_role(filename: str) -> str | None:
     return role
 
 
+def _claim_role_binding(claims_dir: Path, claim_key: str) -> tuple[str, str] | None:
+    """Resolve an ambiguous marker key through its own exact dispatch binding.
+
+    The claim publication that wrote ``cc-active-task-<key>`` wrote the same-key
+    ``cc-claim-dispatch-<key>.json``; its lane, alone or joined with its session id, must
+    reproduce ``key`` exactly. Returns ``(lane, task_id)``; anything else stays unresolved.
+    """
+    from shared.sdlc_task_store import (
+        TaskStoreError,
+        claim_dispatch_binding_path,
+        load_claim_dispatch_binding,
+    )
+
+    try:
+        binding = load_claim_dispatch_binding(claim_dispatch_binding_path(claims_dir, claim_key))
+    except (TaskStoreError, OSError, ValueError):
+        return None
+    lane = binding.lane
+    if not lane or claim_key not in {lane, f"{lane}-{binding.session_id}"}:
+        return None
+    return lane, binding.task_id
+
+
 @dataclass(frozen=True)
 class ClaimSweepHold:
     marker: str | None
@@ -904,13 +927,21 @@ def sweep_stale_claims(
     for path in files:
         try:
             role = _claim_role(path.name)
+            claim_key = path.name[len(_CLAIM_PREFIX) :]
+            bound = None
             if role is None:
-                result.hold(
-                    path.name,
-                    "claim_sweep_role_ambiguous",
-                    "preserve this marker for governed cleanup with an exact role/session binding",
-                )
-                continue
+                # PR4726 review (Muse, finding 7): holding every hyphenated or session-keyed
+                # name forever made the sweep a no-op for most lanes. The exact same-key
+                # dispatch binding is the governed binding this hold was waiting for.
+                bound = _claim_role_binding(claims_dir, claim_key)
+                if bound is None:
+                    result.hold(
+                        path.name,
+                        "claim_sweep_role_ambiguous",
+                        "preserve this marker for governed cleanup with an exact role/session binding",
+                    )
+                    continue
+                role = bound[0]
             with claim_role_exclusion(role, lock_root=Path(roots.claim_lock_root)):
                 try:
                     pending = _pending_claim_sweep_decisions(path)
@@ -951,6 +982,16 @@ def sweep_stale_claims(
                         path.name, "claim_sweep_marker_invalid", "reconcile the malformed marker"
                     )
                     continue
+                if bound is not None and _claim_role_binding(claims_dir, claim_key) != (
+                    role,
+                    task_id,
+                ):
+                    result.hold(
+                        path.name,
+                        "claim_sweep_role_binding_changed",
+                        "reobserve the marker and its exact dispatch binding before cleanup",
+                    )
+                    continue
                 if index is None:
                     index = build_task_identity_index(active_dir.parent)
                 matches = index.by_task_id.get(task_id, ())
@@ -963,9 +1004,17 @@ def sweep_stale_claims(
                     continue
                 entry = matches[0]
                 with projected_path_lock(task_id, (entry.path,)):
-                    note = resolve_task_note(
-                        active_dir.parent, task_id, state=entry.state, identity_index=index
-                    )
+                    try:
+                        # The cached index is revalidated against the whole live frontier
+                        # here, so drift is refused, never acted on (PR4726 review, Gemini,
+                        # finding 8). Drop it so the next marker rebuilds instead of every
+                        # later marker in this sweep holding on the same stale index.
+                        note = resolve_task_note(
+                            active_dir.parent, task_id, state=entry.state, identity_index=index
+                        )
+                    except TaskStoreError:
+                        index = None
+                        raise
                     reason = _claim_task_dead_reason(note.frontmatter)
                     if reason is None:
                         continue
