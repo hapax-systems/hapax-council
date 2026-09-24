@@ -754,6 +754,130 @@ def test_claim_sweep_ambiguous_names_hold_without_binding(tmp_path, monkeypatch,
     assert result.holds[0].reason_code == "claim_sweep_role_ambiguous"
 
 
+def _sweep_binding(claims: Path, key: str, *, lane: str, session_id: str, task_id: str) -> None:
+    from shared.sdlc_task_store import ClaimDispatchBinding, write_claim_dispatch_binding
+
+    write_claim_dispatch_binding(
+        claims,
+        key,
+        ClaimDispatchBinding.create(
+            task_id=task_id,
+            lane=lane,
+            session_id=session_id,
+            claim_epoch=1,
+            dispatch_message_id=f"dispatch-{task_id}",
+            platform="codex",
+            mode="headless",
+            profile="ultra",
+            authority_case="CASE-TEST-001",
+            binding_hash="a" * 64,
+        ),
+    )
+
+
+_SWEEP_UUID = "9b6ba5ca-513c-41aa-9900-d3026b42aad1"
+
+
+@pytest.mark.parametrize(
+    "name,lane",
+    [
+        (f"gamma-{_SWEEP_UUID}", "gamma"),
+        ("cx-claim-rebind", "cx-claim-rebind"),
+        (f"cx-claim-rebind-{_SWEEP_UUID}", "cx-claim-rebind"),
+    ],
+)
+def test_claim_sweep_resolves_marker_role_through_its_exact_dispatch_binding(
+    tmp_path, monkeypatch, name, lane
+):
+    # PR4726 review (Muse, finding 7): every hyphenated or session-keyed marker was held as
+    # role_ambiguous forever, so terminal markers accumulated and the sweep always exited 8.
+    module = _dispatcher_module()
+    claims, active = tmp_path / "claims", tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    claim = claims / f"cc-active-task-{name}"
+    claim.write_text("task-a\n")
+    os.utime(claim, (1000, 1000))
+    _sweep_binding(claims, name, lane=lane, session_id=_SWEEP_UUID, task_id="task-a")
+    _task(active.parent, "task-a", "", status="done", assigned_to=lane)
+    result = module.sweep_stale_claims(claims, active, now=30000)
+    assert result.reaped == [(claim.name, "task-a", "terminal")]
+    assert not result.holds
+    assert not claim.exists()
+
+
+@pytest.mark.parametrize(
+    "lane,session_id,task_id",
+    [
+        ("gamma", "0a0a0a0a-0000-4000-8000-000000000000", "task-a"),  # does not reproduce the key
+        ("gamma", _SWEEP_UUID, "other-task"),  # binds a different task
+    ],
+    ids=["key_mismatch", "task_mismatch"],
+)
+def test_claim_sweep_holds_marker_whose_binding_does_not_prove_it(
+    tmp_path, monkeypatch, lane, session_id, task_id
+):
+    module = _dispatcher_module()
+    claims, active = tmp_path / "claims", tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    name = f"gamma-{_SWEEP_UUID}"
+    claim = claims / f"cc-active-task-{name}"
+    claim.write_text("task-a\n")
+    os.utime(claim, (1000, 1000))
+    _sweep_binding(claims, name, lane=lane, session_id=session_id, task_id=task_id)
+    _task(active.parent, "task-a", "", status="done", assigned_to="gamma")
+    before = claim.read_bytes(), claim.stat()
+    result = module.sweep_stale_claims(claims, active, now=30000)
+    assert (claim.read_bytes(), claim.stat()) == before
+    assert not result.reaped
+    assert result.holds[0].reason_code in {
+        "claim_sweep_role_ambiguous",
+        "claim_sweep_role_binding_changed",
+    }
+
+
+def test_claim_sweep_never_acts_on_a_stale_cached_index_and_recovers(tmp_path, monkeypatch):
+    # PR4726 review (Gemini, finding 8): the index is cached across markers. Revalidation
+    # inside the task lock refuses drift; the stale index is then dropped so the next marker
+    # rebuilds rather than every later marker holding on it.
+    import shared.sdlc_task_store as task_store
+
+    module = _dispatcher_module()
+    claims, active = tmp_path / "claims", tmp_path / "tasks" / "active"
+    claims.mkdir()
+    _claim_sweep_composition(module, claims, active, monkeypatch)
+    for role, task in (("alpha", "task-a"), ("beta", "task-b"), ("gamma", "task-c")):
+        marker = claims / f"cc-active-task-{role}"
+        marker.write_text(f"{task}\n")
+        os.utime(marker, (1000, 1000))
+        _task(active.parent, task, "", status="done", assigned_to=role)
+    reopened = active / "task-b.md"
+    original_build = task_store.build_task_identity_index
+    builds = 0
+
+    def build_then_reopen(*args, **kwargs):
+        nonlocal builds
+        builds += 1
+        index = original_build(*args, **kwargs)
+        if builds == 1:
+            # The vault moves after the index is cached: task-b is reopened.
+            reopened.write_text(
+                reopened.read_text()
+                .replace("status: done", "status: claimed")
+                .replace("assigned_to: beta", "assigned_to: beta")
+            )
+        return index
+
+    monkeypatch.setattr(task_store, "build_task_identity_index", build_then_reopen)
+    result = module.sweep_stale_claims(claims, active, now=30000)
+    assert (claims / "cc-active-task-beta").exists(), "a reopened task's marker was deleted"
+    assert [hold.marker for hold in result.holds] == ["cc-active-task-alpha"]
+    assert result.holds[0].reason_code == "task_store_frontier_changed_since_index"
+    assert builds == 2
+    assert result.reaped == [("cc-active-task-gamma", "task-c", "terminal")]
+
+
 def test_claim_sweep_audit_unavailable_prevents_deletion(tmp_path, monkeypatch):
     module = _dispatcher_module()
     claims, active = tmp_path / "claims", tmp_path / "tasks" / "active"
