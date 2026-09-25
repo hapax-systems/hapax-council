@@ -29,6 +29,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,7 @@ from shared.entitlement_census import (  # noqa: E402
     default_http_get,
     default_resolve_secret,
     load_census_config,
+    load_registry,
     render_view,
     run_census,
     write_outputs,
@@ -63,6 +65,15 @@ INTAKE = REPO_ROOT / "scripts" / "hapax-capability-surface-delta-intake"
 EXIT_HOST_UNREACHABLE = 3
 EXIT_REFUSED = 2
 EXIT_INTAKE_FAILED = 1
+
+#: One budget for every network step: host reads, secret resolution, readbacks, serving GETs, the
+#: scout read and GPU probes. Each step is capped by what is left, and one in-flight step can
+#: overshoot by at most about 20 s, so the network phase ends by about 260 s. With the intake's 120 s
+#: the run ends by about 390 s, under the determine row's 480 s timeout.
+NETWORK_BUDGET_S = 240.0
+HOST_READ_TIMEOUT_S = 30.0
+SCOUT_TIMEOUT_S = 20.0
+INTAKE_TIMEOUT_S = 120
 
 
 def _now(value: str | None) -> datetime:
@@ -88,9 +99,9 @@ def _read_home_file(rel: str) -> bytes | None:
         return None
 
 
-def _scout_report(config: CensusConfig) -> dict[str, Any] | None:
+def _scout_report(config: CensusConfig, timeout: float) -> dict[str, Any] | None:
     binding_ref = config.metal.scout_report
-    if binding_ref is None:
+    if binding_ref is None or timeout < 1:
         return None
     host = next((h for h in config.hosts if h.host_id == binding_ref.host_id), None)
     if host is None:
@@ -112,7 +123,7 @@ def _scout_report(config: CensusConfig) -> dict[str, Any] | None:
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout,
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -136,7 +147,7 @@ def _intake(deltas_path: Path, run_deltas: list[Any]) -> dict[str, Any]:
         [sys.executable, str(INTAKE), "--fixtures", str(deltas_path), "--apply", "--json"],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=INTAKE_TIMEOUT_S,
         check=False,
     )
     try:
@@ -190,10 +201,16 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         config = load_census_config(args.config)
+        registry = load_registry(args.registry)
     except CensusConfigError as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_REFUSED
     now = _now(args.now)
+    deadline = time.monotonic() + NETWORK_BUDGET_S
+
+    def left(cap: float) -> float:
+        return max(0.0, min(cap, deadline - time.monotonic()))
+
     login_files = sorted({f for d in config.entitlements for f in d.login_files})
     harness_bins = sorted({b for d in config.entitlements for b in d.harness_bins})
     holdings = []
@@ -208,8 +225,25 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
             continue
+        budget = left(HOST_READ_TIMEOUT_S)
+        if budget < 1:
+            holdings.append(
+                HostHoldings(
+                    host_id=binding.host_id,
+                    reachable=False,
+                    observed_at=None,
+                    error="run_deadline_reached",
+                )
+            )
+            continue
         holdings.append(
-            collect_holdings(binding, login_files=login_files, harness_bins=harness_bins, now=now)
+            collect_holdings(
+                binding,
+                login_files=login_files,
+                harness_bins=harness_bins,
+                now=now,
+                timeout=budget,
+            )
         )
 
     ledger_path = args.ledger or Path(
@@ -219,14 +253,16 @@ def main(argv: list[str] | None = None) -> int:
         config,
         now=now,
         holdings=holdings,
-        registry=_read_json(args.registry) or {},
+        registry=registry,
         ledger=_read_json(ledger_path),
         prior_view=_read_json(args.output_root / "view.json"),
         resolve_secret=default_resolve_secret,
         http_get=default_http_get,
         read_home_file=_read_home_file,
-        scout_report=None if args.no_remote else _scout_report(config),
+        scout_report=None if args.no_remote else _scout_report(config, left(SCOUT_TIMEOUT_S)),
         gpu_probe=None if args.no_remote else _gpu_probe,
+        deadline=deadline,
+        clock=time.monotonic,
     )
 
     projection: Path | None = None

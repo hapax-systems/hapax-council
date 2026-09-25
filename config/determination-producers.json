@@ -53,8 +53,8 @@
       "host_scope": "filestore_host_with_declared_remote_bindings",
       "success_exit_codes": [0],
       "declined_exit_codes": [3],
-      "notes": "The single entitlement view (row entitlement-census-producer-20260924): held x holds-now x declared on every declared host, spend-free allow-listed readbacks only (never a completion, never a Claude probe), deltas through the existing capability-surface intake, quantities in the quota ledger's measurement shape, projection to ~/.cache/hapax/entitlement-census/view.json and the vault. 3 = a declared host was unreachable: its rows read unobserved, which is healthy bad news. 2 = the declaration is invalid or a rendered artifact carried secret material (nothing written): a failure that must page. Worst-case runtime is bounded by 10 s per readback, 5 s per serving endpoint and 60 s per host read.",
-      "timeout_seconds": 420
+      "notes": "The single entitlement view (row entitlement-census-producer-20260924): held x holds-now x declared on every declared host, spend-free allow-listed readbacks only (never a completion, never a Claude probe), deltas through the existing capability-surface intake, quantities in the quota ledger's measurement shape, projection to ~/.cache/hapax/entitlement-census/view.json and the vault. 3 = a declared host was unreachable: its rows read unobserved, which is healthy bad news. 2 = the declaration is invalid or a rendered artifact carried secret material (nothing written): a failure that must page. Runtime: one 240 s network budget covers host reads, secret resolution, readbacks, serving GETs, the scout read and GPU probes. Each step is capped by what is left, and one in-flight step can overshoot by at most about 20 s. The intake adds at most 120 s. Worst case is about 390 s; a normal run takes about 40 s (measured 2026-09-25). An unreadable platform registry exits 2 and writes nothing.",
+      "timeout_seconds": 480
     }
   ]
 }

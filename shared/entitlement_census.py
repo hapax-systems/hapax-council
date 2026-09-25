@@ -22,7 +22,10 @@ Safety properties, each pinned by ``tests/shared/test_entitlement_census_produce
 * No readback spends. ``READBACKS`` below is the whole allow-list (usage, plan, balance and model-list
   GETs); configuration can only name its ids. The transport has no method or body parameter.
   Claude is never probed: its windows come from the ledger's passive readers.
-* A rejected key (401/403) is ``dead``, never ``held``.
+* A rejected key (401) is ``dead``, never ``held``. A 403 or a redirect proves nothing about the key,
+  so it is unobserved: never dead, never live.
+* No request follows a redirect, so a credential header never reaches another host.
+* One run deadline bounds the whole network phase; past it, nothing more is probed.
 * Every declaration carries a cost class; an unknown one is ``unobserved``, never a default.
 * A vanished entitlement stays in the view as ``absent`` with its ``last_seen``; an unreachable host
   leaves its rows ``unobserved``, not absent.
@@ -38,6 +41,7 @@ import math
 import re
 import shlex
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
@@ -110,7 +114,7 @@ class EntitlementKind(StrEnum):
 class EntitlementState(StrEnum):
     LIVE = "live"  # the entitlement's own surface answered 200 in this run
     HELD = "held"  # present (name, login file, binary, fresh cache, live record); not read back
-    DEAD = "dead"  # its readback rejected the credential (401/403)
+    DEAD = "dead"  # its readback rejected the credential (401)
     STALE = "stale"  # the only evidence is a cache or record past its bound
     UNOBSERVED = "unobserved"  # no observation was possible this run
     ABSENT = "absent"  # seen before, not seen now on any reachable host; retained, never deleted
@@ -336,6 +340,12 @@ class HardwareFact(_Strict):
     recorded_at: datetime
     expires_at: datetime
 
+    @model_validator(mode="after")
+    def _dated(self) -> HardwareFact:
+        _aware(self.recorded_at, "recorded_at")
+        _aware(self.expires_at, "expires_at")
+        return self
+
 
 class TrialRecord(_Strict):
     model: str = Field(min_length=1)
@@ -343,6 +353,12 @@ class TrialRecord(_Strict):
     evidence: str = Field(min_length=1)
     recorded_at: datetime
     expires_at: datetime
+
+    @model_validator(mode="after")
+    def _dated(self) -> TrialRecord:
+        _aware(self.recorded_at, "recorded_at")
+        _aware(self.expires_at, "expires_at")
+        return self
 
 
 class ScoutBinding(_Strict):
@@ -425,6 +441,28 @@ def load_census_config(path: Path = ENTITLEMENT_CENSUS_CONFIG) -> CensusConfig:
             f"entitlement census declaration {path} is invalid: {exc}; next action: repair it and "
             "rerun `scripts/hapax-entitlement-census --dry-run`"
         ) from exc
+
+
+def load_registry(path: Path) -> dict[str, Any]:
+    """The declared side, read strictly. An unreadable registry fails the run.
+
+    Reading it as empty would make every held entitlement look undeclared and mint intake rows for
+    all of them. Only a file that literally holds ``{}`` is an empty registry."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise CensusConfigError(
+            f"platform registry {path} is unreadable ({type(exc).__name__}); nothing was written. "
+            "Next action: restore the registry file, then rerun the producer"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise CensusConfigError(
+            f"platform registry {path} is not a JSON object; nothing was written"
+        )
+    for key in ("routes", "omitted_capability_shapes"):
+        if key in payload and not isinstance(payload[key], list):
+            raise CensusConfigError(f"platform registry {path}: {key!r} must be a list")
+    return payload
 
 
 # --- small helpers --------------------------------------------------------------------------------
@@ -539,13 +577,24 @@ class HttpResponse(NamedTuple):
     error: str | None
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """urllib's default handler copies every header, Authorization included, onto the redirected
+    request, even across hosts. Refusing makes the 3xx surface as an HTTPError: unobserved."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, ARG002
+        return None
+
+
+_OPENER = urllib.request.build_opener(_RefuseRedirects)
+
+
 def default_http_get(url: str, headers: Mapping[str, str], timeout: float) -> HttpResponse:
-    """GET, and only GET: there is no method or body parameter to misuse."""
+    """GET, and only GET: there is no method or body parameter to misuse, and no redirect."""
     request = urllib.request.Request(
         url, headers={"User-Agent": USER_AGENT, **dict(headers)}, method="GET"
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _OPENER.open(request, timeout=timeout) as response:
             return HttpResponse(
                 status=int(response.status), body=response.read(MAX_BODY_BYTES), error=None
             )
@@ -555,11 +604,18 @@ def default_http_get(url: str, headers: Mapping[str, str], timeout: float) -> Ht
         return HttpResponse(status=None, body=b"", error=type(exc).__name__)
 
 
+SECRET_TIMEOUT_S = 10.0
+
+
 def default_resolve_secret(name: str) -> str | None:
     """Resolve one credential through the estate's FileStore interface; the value stays in memory."""
     try:
         result = subprocess.run(
-            ["hapax-secret", name], capture_output=True, text=True, timeout=30, check=False
+            ["hapax-secret", name],
+            capture_output=True,
+            text=True,
+            timeout=SECRET_TIMEOUT_S,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -1138,6 +1194,17 @@ def _outcome(
     )
 
 
+def _past_deadline(readback_id: str, now: datetime) -> ReadbackResult:
+    """The run's network budget is spent: nothing more is probed, and the row says so."""
+    return ReadbackResult(
+        readback_id=readback_id,
+        outcome="unobserved",
+        http_status=None,
+        observed_at=now,
+        reason="run_deadline_reached",
+    )
+
+
 def run_readback(
     ref: ReadbackRef,
     *,
@@ -1145,6 +1212,7 @@ def run_readback(
     resolve_secret: Callable[[str], str | None],
     http_get: Callable[[str, dict[str, str], float], HttpResponse],
     secrets: SecretRegister,
+    timeout: float = READBACK_TIMEOUT_S,
 ) -> ReadbackResult:
     spec = READBACKS[ref.readback_id]
     assert ref.secret is not None
@@ -1160,7 +1228,7 @@ def run_readback(
     secrets.remember(value)
     header, template = _AUTH_HEADERS[spec.auth]
     headers = {header: template.format(value), **dict(spec.extra_headers)}
-    response = http_get(spec.url, headers, READBACK_TIMEOUT_S)
+    response = http_get(spec.url, headers, timeout)
     return _outcome(ref.readback_id, response, spec.extractor, now=now)
 
 
@@ -1658,9 +1726,14 @@ def _serving_row(
     http_get: Callable[[str, dict[str, str], float], HttpResponse],
     registry: Mapping[str, Any],
     prior: _Prior | None,
+    remaining: float | None = None,
 ) -> CensusRow:
-    response = http_get(endpoint.base_url + endpoint.models_path, {}, SERVING_TIMEOUT_S)
-    result = _outcome(f"serving:{endpoint.endpoint_id}", response, "model_list", now=now)
+    if remaining is not None and remaining <= 0:
+        result = _past_deadline(f"serving:{endpoint.endpoint_id}", now)
+    else:
+        timeout = SERVING_TIMEOUT_S if remaining is None else min(SERVING_TIMEOUT_S, remaining)
+        response = http_get(endpoint.base_url + endpoint.models_path, {}, timeout)
+        result = _outcome(f"serving:{endpoint.endpoint_id}", response, "model_list", now=now)
     row_id = f"serving.{endpoint.endpoint_id}"
     reasons: list[str] = []
     if result.outcome == "live":
@@ -1985,9 +2058,24 @@ def run_census(
     read_home_file: Callable[[str], bytes | None],
     scout_report: Mapping[str, Any] | None = None,
     gpu_probe: Callable[[str], tuple[bool, list[str]]] | None = None,
+    deadline: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> CensusRun:
+    """``deadline`` is a ``clock()`` instant bounding every network step (secret resolution,
+    readbacks, serving GETs, the GPU probe). Past it, the remaining probes are not made and their
+    rows read ``unobserved: run_deadline_reached``: the run narrows, it never waits longer."""
     secrets = SecretRegister()
     priors = _prior_rows(prior_view)
+
+    def remaining() -> float | None:
+        return None if deadline is None else deadline - clock()
+
+    def guarded_probe(host: str) -> tuple[bool, list[str]]:
+        left = remaining()
+        if gpu_probe is None or (left is not None and left <= 0):
+            return False, []
+        return gpu_probe(host)
+
     held_names = (
         set().union(*(h.credential_names() for h in holdings if h.reachable)) if holdings else set()
     )
@@ -2009,8 +2097,17 @@ def run_census(
                     reason="credential_not_held_on_a_reachable_host",
                 )
                 continue
+            left = remaining()
+            if left is not None and left <= 0:
+                readbacks[key] = _past_deadline(ref.readback_id, now)
+                continue
             readbacks[key] = run_readback(
-                ref, now=now, resolve_secret=resolve_secret, http_get=http_get, secrets=secrets
+                ref,
+                now=now,
+                resolve_secret=resolve_secret,
+                http_get=http_get,
+                secrets=secrets,
+                timeout=READBACK_TIMEOUT_S if left is None else min(READBACK_TIMEOUT_S, left),
             )
 
     caches = {
@@ -2039,6 +2136,7 @@ def run_census(
             http_get=http_get,
             registry=registry,
             prior=priors.get(f"serving.{ep.endpoint_id}"),
+            remaining=remaining(),
         )
         for ep in config.serving_endpoints
     ]
@@ -2058,7 +2156,11 @@ def run_census(
         holdings=list(holdings),
         unclassified=unclassified,
         potential=_potential(
-            config, now=now, serving=serving, scout_report=scout_report, gpu_probe=gpu_probe
+            config,
+            now=now,
+            serving=serving,
+            scout_report=scout_report,
+            gpu_probe=guarded_probe if gpu_probe is not None else None,
         ),
         descriptors=descriptors,
         deltas=deltas,
@@ -2300,4 +2402,7 @@ _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
     ServingEndpoint._bare_origin,
     EntitlementDecl._probe_rules,
     CensusConfig._unique,
+    HardwareFact._dated,
+    TrialRecord._dated,
+    _RefuseRedirects.redirect_request,
 )

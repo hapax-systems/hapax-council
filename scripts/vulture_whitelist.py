@@ -5201,6 +5201,9 @@ from shared.entitlement_census import (
     load_census_config as _census_load_census_config,
 )
 from shared.entitlement_census import (
+    load_registry as _census_load_registry,
+)
+from shared.entitlement_census import (
     run_census as _census_run_census,
 )
 
@@ -5209,5 +5212,6 @@ _ = (
     _census_default_http_get,
     _census_default_resolve_secret,
     _census_load_census_config,
+    _census_load_registry,
     _census_run_census,
 )

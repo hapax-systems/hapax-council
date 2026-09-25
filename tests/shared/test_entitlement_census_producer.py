@@ -18,11 +18,13 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+import shared.entitlement_census as census
 from shared.capability_surface_delta import DeltaKind
 from shared.entitlement_census import (
     ENTITLEMENT_CENSUS_CONFIG,
     READBACKS,
     CensusConfig,
+    CensusConfigError,
     CostClass,
     EntitlementState,
     EvidenceClass,
@@ -34,6 +36,7 @@ from shared.entitlement_census import (
     default_http_get,
     holdings_command,
     load_census_config,
+    load_registry,
     parse_holdings,
     render_markdown,
     render_view,
@@ -157,6 +160,7 @@ def _run(
     scout_report: dict[str, Any] | None = None,
     gpu_probe=None,
     now: datetime = NOW,
+    **timing: Any,
 ):
     files = home_files or {}
     return run_census(
@@ -171,6 +175,7 @@ def _run(
         read_home_file=files.get,
         scout_report=scout_report,
         gpu_probe=gpu_probe,
+        **timing,
     )
 
 
@@ -312,11 +317,11 @@ def test_transport_sends_get_with_no_body(monkeypatch: pytest.MonkeyPatch) -> No
         def __exit__(self, *_a: object) -> None:
             return None
 
-    def fake_urlopen(request: urllib.request.Request, timeout: float = 0):
+    def fake_open(request: urllib.request.Request, timeout: float = 0):
         seen.append(request)
         return _Resp()
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(census._OPENER, "open", fake_open)
     response = default_http_get("https://api.example/v1/usage", {"Authorization": "Bearer x"}, 5)
     assert response.status == 200
     assert seen[0].get_method() == "GET"
@@ -370,11 +375,11 @@ def test_forbidden_is_never_dead_and_never_live() -> None:
 def test_transport_sends_an_explicit_user_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: list[urllib.request.Request] = []
 
-    def fake_urlopen(request: urllib.request.Request, timeout: float = 0):
+    def fake_open(request: urllib.request.Request, timeout: float = 0):
         seen.append(request)
         raise urllib.error.URLError("offline")
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(census._OPENER, "open", fake_open)
     default_http_get("https://api.example/v1/usage", {}, 5)
     agent = seen[0].get_header("User-agent") or ""
     assert agent.startswith("hapax-entitlement-census/")
@@ -1003,3 +1008,135 @@ def test_egpu_is_unavailable_until_a_readback_shows_it_enumerated(probe, expecte
     view = render_view(run, now=NOW)
     assert view["potential"]["hardware"][0]["availability"] == expected
     assert view["rows"] == []  # potential, never supply, even once enumerated
+
+
+# --- review round 1 (CodeRabbit on #4743): redirects, registry, timezones, run deadline ---------------
+
+
+def test_a_redirect_never_carries_the_credential_to_another_host() -> None:
+    """urllib's default redirect handler copies Authorization onto the redirected request, even
+    across hosts. Two real loopback servers: the first redirects, the second must see nothing."""
+    import http.server
+    import threading
+
+    received: list[str | None] = []
+
+    class Sink(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            received.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *_args: object) -> None:
+            return None
+
+    sink = http.server.HTTPServer(("127.0.0.1", 0), Sink)
+
+    class Redirector(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{sink.server_port}/steal")
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            return None
+
+    redirector = http.server.HTTPServer(("127.0.0.1", 0), Redirector)
+    threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in (sink, redirector)]
+    for thread in threads:
+        thread.start()
+    try:
+        response = default_http_get(
+            f"http://127.0.0.1:{redirector.server_port}/v1/usage",
+            {"Authorization": f"Bearer {SECRET}"},
+            5,
+        )
+    finally:
+        for server in (sink, redirector):
+            server.shutdown()
+            server.server_close()
+    assert received == []
+    assert response.status == 302
+
+
+def test_redirect_status_is_unobserved_never_live() -> None:
+    row = _anthropic_api_row(302)
+    assert row.readbacks[0]["outcome"] == "unobserved"
+    assert row.state is not EntitlementState.LIVE
+
+
+def test_registry_that_cannot_be_read_fails_the_run(tmp_path: Path) -> None:
+    missing = tmp_path / "absent.json"
+    malformed = tmp_path / "malformed.json"
+    malformed.write_text("{not json", encoding="utf-8")
+    not_object = tmp_path / "list.json"
+    not_object.write_text("[]", encoding="utf-8")
+    bad_routes = tmp_path / "bad-routes.json"
+    bad_routes.write_text('{"routes": {}}', encoding="utf-8")
+    for path in (missing, malformed, not_object, bad_routes):
+        with pytest.raises(CensusConfigError):
+            load_registry(path)
+    empty = tmp_path / "empty.json"
+    empty.write_text("{}", encoding="utf-8")
+    assert load_registry(empty) == {}
+
+
+@pytest.mark.parametrize("section", ["hardware", "trial_records"])
+def test_potential_face_dates_must_carry_a_timezone(section: str) -> None:
+    item: dict[str, Any] = (
+        {"host_id": "h", "device": "d", "memory_gb": 1, "availability": "available", "source": "s"}
+        if section == "hardware"
+        else {"model": "m", "stage": "deployed", "evidence": "e"}
+    )
+    item.update(recorded_at="2026-09-25T00:00:00", expires_at="2026-10-25T00:00:00Z")
+    with pytest.raises(ValidationError):
+        _config([], metal={section: [item]})
+
+
+def test_past_the_run_deadline_nothing_more_is_probed() -> None:
+    config = _config(
+        [
+            _decl(
+                credential_names=["kimi-api-key"],
+                readbacks=[{"readback_id": "kimi_usages", "secret": "kimi-api-key"}],
+            )
+        ],
+        serving_endpoints=[
+            {
+                "endpoint_id": "appendix-5000",
+                "host_id": "appendix",
+                "base_url": "http://127.0.0.1:5000",
+                "models_path": "/v1/models",
+            }
+        ],
+        metal={
+            "hardware": [
+                {
+                    "host_id": "beelink1",
+                    "device": "RTX 5060 Ti 16 GB eGPU",
+                    "memory_gb": 16,
+                    "availability": "unavailable",
+                    "enumerate_gpu": "5060 Ti",
+                    "source": "s",
+                    "recorded_at": "2026-09-25T00:03:00Z",
+                    "expires_at": "2026-10-25T00:03:00Z",
+                }
+            ]
+        },
+    )
+    http, secrets, probed = FakeHttp(), FakeSecrets(), []
+    run = _run(
+        config,
+        holdings=[_holdings(filestore=("kimi-api-key",))],
+        http=http,
+        secrets=secrets,
+        gpu_probe=lambda host: probed.append(host) or (True, []),
+        deadline=100.0,
+        clock=lambda: 200.0,
+    )
+    assert http.calls == [] and secrets.asked == [] and probed == []
+    assert _row(run, "kimi").readbacks[0]["outcome"] == "unobserved"
+    assert any("deadline" in reason for reason in _row(run, "kimi").reasons)
+    assert _row(run, "serving.appendix-5000").state is EntitlementState.UNOBSERVED
+    assert any("deadline" in r for r in _row(run, "serving.appendix-5000").reasons)
