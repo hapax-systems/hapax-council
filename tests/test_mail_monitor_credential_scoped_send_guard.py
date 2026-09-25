@@ -84,13 +84,11 @@ MAIL_CHAIN_ANCHORS: Final[frozenset[str]] = frozenset({"messages", "drafts"})
 #: Direct REST, bypassing any client library.
 REST_SEND_FRAGMENT: Final[str] = "/messages/send"
 
-QUARANTINED_SEND_VECTORS: Final[frozenset[str]] = frozenset(
-    {
-        # Dormant, manual --send only, never scheduled. Disposition is an open
-        # precondition in kimi/auditor's 2026-08-18 mail-subsystem audit.
-        "scripts/send-stakeholder-revenue-brief.py",
-    }
-)
+# Empty on purpose. The one entry this held, scripts/send-stakeholder-revenue-brief.py,
+# had its send vector removed rather than kept quarantined: the operator's own mailbox
+# is not a sending route for outbound correspondence. A new entry needs a recorded
+# operator decision.
+QUARANTINED_SEND_VECTORS: Final[frozenset[str]] = frozenset()
 
 SKIP_DIR_PARTS: Final[frozenset[str]] = frozenset(
     {".venv", "node_modules", "__pycache__", ".git", "site-packages", "build", "dist"}
@@ -367,11 +365,22 @@ class TestCredentialScopedSendGuard:
         ]
         assert stale == [], "QUARANTINED_SEND_VECTORS is stale — remove:\n  " + "\n  ".join(stale)
 
-    def test_the_known_vector_is_still_detected(self) -> None:
-        findings = scan()
-        assert "scripts/send-stakeholder-revenue-brief.py" in findings
-        names = {n for n, _ in findings["scripts/send-stakeholder-revenue-brief.py"]}
-        assert "gmail-api-messages-send" in names
+    def test_the_retired_vector_shape_is_still_detected(self, tmp_path: Path) -> None:
+        """The detector self-test, on a fixture with the retired script's exact shape."""
+        (tmp_path / "brief.py").write_text(
+            "def _build():\n"
+            "    from agents.mail_monitor.oauth import build_gmail_service, load_credentials\n"
+            "    return build_gmail_service(creds=load_credentials())\n"
+            "def _send(service, raw):\n"
+            "    return service.users().messages().send(userId='me', body={'raw': raw}).execute()\n"
+        )
+        findings = scan(repo_root=tmp_path)
+        assert "brief.py" in findings
+        assert "gmail-api-messages-send" in {n for n, _ in findings["brief.py"]}
+
+    def test_the_stakeholder_brief_script_no_longer_sends(self) -> None:
+        """The operator's mailbox is retired as a sending route; its send vector must not return."""
+        assert "scripts/send-stakeholder-revenue-brief.py" not in scan()
 
     # -- the evasions the line-based version missed (PR #4580 review) --
 
