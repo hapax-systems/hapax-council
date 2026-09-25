@@ -49,8 +49,10 @@
 #   systemd/logrotate.d/*          → logrotate configs; require sudo install
 #   systemd/system/**              → other system-scoped configs; require sudo install
 #   config/root-required/apcupsd-power-alerts.files and every path it owns
-#                                  → install podium apcupsd config/hooks/helper
-#                                    into /etc/apcupsd from the merge SHA
+#                                  → validate and stage exact-SHA APC desired
+#                                    evidence; production application remains
+#                                    unavailable until a separately authorized
+#                                    root broker exists
 #   scripts/hapax-recovery-plane-install, scripts/hapax-p0-incident-intake,
 #   scripts/hapax-coord-deploy, shared/{__init__,jsonl_append,p0_incident_intake}.py
 #                                  → refresh the stable D2 recovery bundle under

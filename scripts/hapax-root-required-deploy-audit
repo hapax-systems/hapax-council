@@ -1009,18 +1009,18 @@ audit_systemd_state() {
     fi
     if ! "$SYSTEMCTL" is-active --quiet apcupsd.service; then
         echo "root-required activation drift: apcupsd.service is not active" >&2
-        echo "  next action: run sudo systemctl restart apcupsd.service and inspect journalctl -u apcupsd.service" >&2
+        echo "  next action: inspect journalctl -u apcupsd.service, then $APC_REPAIR_ACTION" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-enabled --quiet apcupsd.service; then
         echo "root-required activation drift: apcupsd.service is not enabled" >&2
-        echo "  next action: run sudo systemctl enable --now apcupsd.service" >&2
+        echo "  next action: $APC_REPAIR_ACTION" >&2
         failed=1
     fi
     loaded_upower_action="$("$BUSCTL" call org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower GetCriticalAction 2>/dev/null || true)"
     if [ "$loaded_upower_action" != 's "Ignore"' ]; then
         echo "root-required activation drift: UPower loaded critical action is ${loaded_upower_action:-unavailable}, expected Ignore" >&2
-        echo "  next action: run sudo systemctl restart upower.service and scripts/install-apcupsd-power-alerts --verify-live" >&2
+        echo "  next action: $APC_REPAIR_ACTION, then run scripts/install-apcupsd-power-alerts --verify-live" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-enabled --quiet earlyoom.service; then
@@ -1109,7 +1109,7 @@ audit_apcupsd_loaded_policy() {
         ')"
         if [ -z "$expected" ] || [ "$actual" != "$expected" ]; then
             echo "root-required activation drift: apcupsd loaded $status_key=${actual:-unavailable}, expected $expected from $config_key" >&2
-            echo "  next action: run sudo systemctl restart apcupsd.service and scripts/install-apcupsd-power-alerts --verify-live" >&2
+            echo "  next action: $APC_REPAIR_ACTION, then run scripts/install-apcupsd-power-alerts --verify-live" >&2
             failed=1
         fi
     done
