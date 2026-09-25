@@ -1489,6 +1489,35 @@ def test_underuse_is_surfaced_first_ranked_by_monthly_cost() -> None:
     assert md.index("## Underuse") < md.index("## Cognition")
 
 
+def test_paid_capacity_nobody_can_judge_is_named_not_counted() -> None:
+    """A paid entitlement with no usage evidence is a surfacing failure too: name it, with its cost."""
+    config = _config(
+        [
+            _decl(
+                "mimo",
+                provider="mimo",
+                cost_class="subscription",
+                monthly_cost_usd=200.0,
+                credential_names=["mimo-api-key"],
+            ),
+            _decl(
+                "cohere",
+                provider="cohere",
+                cost_class="unobserved",
+                credential_names=["cohere-api-key"],
+            ),
+        ]
+    )
+    run = _run(config, holdings=[_holdings(filestore=("mimo-api-key", "cohere-api-key"))])
+    view = render_view(run, now=NOW)
+    assert [(u["entitlement_id"], u["monthly_cost_usd"]) for u in view["paid_unjudged"]] == [
+        ("mimo", 200.0)
+    ]
+    assert view["underuse"] == []
+    underuse_section = render_markdown(view).split("## Underuse", 1)[1].split("## Hosts", 1)[0]
+    assert "mimo" in underuse_section and "cohere" not in underuse_section
+
+
 def test_provider_call_ledger_reads_counts_only(tmp_path: Path) -> None:
     from shared.durable_jsonl_sink import DurableJsonlSink
 

@@ -2794,6 +2794,22 @@ def _underuse(rows: Sequence[CensusRow]) -> list[dict[str, Any]]:
     return sorted(flagged, key=lambda u: (-(u["monthly_cost_usd"] or 0.0), u["entitlement_id"]))
 
 
+def _paid_unjudged(rows: Sequence[CensusRow]) -> list[dict[str, Any]]:
+    """Paid capacity with no usage evidence: named, never folded into a count."""
+    named = [
+        {
+            "entitlement_id": r.entitlement_id,
+            "monthly_cost_usd": r.utilization["monthly_cost_usd"],
+            "reason": r.utilization.get("reason"),
+        }
+        for r in rows
+        if r.utilization is not None
+        and r.utilization.get("underuse") is None
+        and r.utilization.get("monthly_cost_usd")
+    ]
+    return sorted(named, key=lambda u: (-u["monthly_cost_usd"], u["entitlement_id"]))
+
+
 def render_view(run: CensusRun, *, now: datetime) -> dict[str, Any]:
     states: dict[str, int] = {}
     stages: dict[str, int] = {}
@@ -2831,6 +2847,7 @@ def render_view(run: CensusRun, *, now: datetime) -> dict[str, Any]:
         ],
         "rows": [_row_view(row) for row in run.rows],
         "underuse": _underuse(run.rows),
+        "paid_unjudged": _paid_unjudged(run.rows),
         "utilization_unjudged": sum(
             1
             for r in run.rows
@@ -2898,6 +2915,20 @@ def render_markdown(view: Mapping[str, Any]) -> str:
             or ["| none flagged | | | | | |"]
         ),
         "",
+        *(
+            [
+                "Paid, but utilization cannot be judged from the evidence:",
+                "",
+                *(
+                    f"- {u['entitlement_id']} (${_cell(u['monthly_cost_usd'])}/month): "
+                    f"{_cell(u['reason'])}"
+                    for u in view.get("paid_unjudged") or []
+                ),
+                "",
+            ]
+            if view.get("paid_unjudged")
+            else []
+        ),
         "## Hosts",
         "",
         "| host | reachable | observed | credential names | pass names | env names | error |",
