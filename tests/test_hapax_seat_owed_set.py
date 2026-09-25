@@ -865,6 +865,23 @@ def test_process_role_phrase_outside_the_incumbent_row_is_ignored(tmp_path: Path
     assert other.stdout.strip() == ""
 
 
+def test_absent_binary_still_emits_the_orientation_line(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "hapax-seat-session-start")],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    text = proc.stdout
+    assert "COORDINATOR-SEAT.md" in text
+    assert "OWED BY THE SEAT (unavailable: binary not installed" in text
+    assert text.strip()
+
+
 def test_quiet_prints_only_the_total_line(tmp_path: Path) -> None:
     _write_row(
         tmp_path,
