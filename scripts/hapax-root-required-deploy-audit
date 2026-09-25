@@ -18,6 +18,7 @@ OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-en
 OOM_TRIGGER_DEST="${HAPAX_OOM_TRIGGER_DEST:-/usr/local/bin/hapax-oom-score-trigger}"
 OOM_SUDOERS_DEST="${HAPAX_OOM_SUDOERS_DEST:-/etc/sudoers.d/hapax-oom-score-enforce}"
 OOM_SUDOERS_REFERENCE_DEST="${HAPAX_OOM_SUDOERS_REFERENCE_DEST:-/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers}"
+OOM_PROFILE_TABLE_DEST="${HAPAX_OOM_PROFILE_TABLE_DEST:-/usr/local/share/hapax/root-required/oom-host-profiles.tsv}"
 OOM_SUDOERS_OWNER_UID="${HAPAX_OOM_SUDOERS_OWNER_UID:-0}"
 OOM_SUDOERS_OWNER_GID="${HAPAX_OOM_SUDOERS_OWNER_GID:-0}"
 if [ "$OOM_SUDOERS_REFERENCE_DEST" = "/usr/local/share/hapax/root-required/hapax-oom-score-enforce.sudoers" ]; then
@@ -47,6 +48,7 @@ SUDO="${HAPAX_ROOT_AUDIT_SUDO:-/usr/bin/sudo}"
 VISUDO="${HAPAX_ROOT_AUDIT_VISUDO:-/usr/bin/visudo}"
 ROOT_ARTIFACT_TEST_UID="${HAPAX_ROOT_AUDIT_TEST_ROOT_UID:-$(/usr/bin/id -u)}"
 ROOT_ARTIFACT_TEST_GID="${HAPAX_ROOT_AUDIT_TEST_ROOT_GID:-$(/usr/bin/id -g)}"
+readonly OOM_REPAIR_ACTION="preserve the exact desired package and dispatch separately runtime-authorized root-broker work; production OOM repair is unavailable in this source revision"
 
 acquire_inherited_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
@@ -300,6 +302,15 @@ PY
 
 oom_package_files=(
     config/root-required/oom-containment.files
+    config/root-required/oom-host-profiles.tsv
+    config/root-required/oom-host-policy/appendix/app.slice.conf
+    config/root-required/oom-host-policy/appendix/user-1000.slice.conf
+    config/root-required/oom-host-policy/appendix/user@1000.service.conf
+    config/root-required/oom-host-policy/appendix/zram-generator.conf
+    config/root-required/oom-host-policy/podium/app.slice.conf
+    config/root-required/oom-host-policy/podium/user-1000.slice.conf
+    config/root-required/oom-host-policy/podium/user@1000.service.conf
+    config/root-required/oom-host-policy/podium/zram-generator.conf
     scripts/install-p0-oom-containment
     config/root-required/hapax-oom-score-enforce.sudoers
     scripts/hapax-oom-score-enforce
@@ -362,19 +373,29 @@ source_for_rel() {
     printf '%s/%s\n' "$INSTALLED_SOURCE_ROOT" "$rel"
 }
 
+print_package_repair_action() {
+    local label="$1"
+    if [ "$label" = "oom-containment" ]; then
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
+    else
+        echo "  next action: rerun the newest governed $label installer package" >&2
+    fi
+}
+
 audit_package_receipt() {
     local label="$1" receipt sha rel failed=0
     shift
     receipt="$INSTALLED_RECEIPT_ROOT/$label.sha"
     if [ ! -f "$receipt" ]; then
         echo "root-required installed receipt missing: $receipt" >&2
-        echo "  next action: rerun the newest governed $label installer package" >&2
+        print_package_repair_action "$label"
         return 1
     fi
     sha="$(tr -d '[:space:]' < "$receipt")"
     if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$sha^{commit}" 2>/dev/null; then
         echo "root-required installed receipt is invalid or unavailable: $receipt sha=$sha" >&2
-        echo "  next action: fetch the installed commit into $ROOT_REQUIRED_GIT_REPO and rerun the newest governed $label installer package" >&2
+        echo "  note: the installed commit must exist in $ROOT_REQUIRED_GIT_REPO" >&2
+        print_package_repair_action "$label"
         return 1
     fi
     for rel in "$@"; do
@@ -385,7 +406,7 @@ audit_package_receipt() {
                         continue
                     fi
                     echo "root-required installed manifest is not bound to legacy $label receipt $sha: $INSTALLED_SOURCE_ROOT/$rel" >&2
-                    echo "  next action: rerun the newest governed $label installer package" >&2
+                    print_package_repair_action "$label"
                     failed=1
                     continue
                 fi
@@ -395,7 +416,7 @@ audit_package_receipt() {
             || [ -L "$INSTALLED_SOURCE_ROOT/$rel" ] \
             || ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$sha:$rel") "$INSTALLED_SOURCE_ROOT/$rel"; then
             echo "root-required installed source is not bound to $label receipt $sha: $INSTALLED_SOURCE_ROOT/$rel" >&2
-            echo "  next action: rerun the newest governed $label installer package from an exact staged RUNBOOK" >&2
+            print_package_repair_action "$label"
             failed=1
         fi
     done
@@ -408,7 +429,11 @@ audit_desired_receipt() {
     installed="$INSTALLED_RECEIPT_ROOT/$label.sha"
     if [ ! -f "$desired" ]; then
         echo "root-required desired receipt missing: $desired" >&2
-        echo "  next action: rerun hapax-post-merge-deploy for current main or the newest governed $label installer" >&2
+        if [ "$label" = "oom-containment" ]; then
+            echo "  next action: $OOM_REPAIR_ACTION" >&2
+        else
+            echo "  next action: rerun hapax-post-merge-deploy for current main or the newest governed $label installer" >&2
+        fi
         return 1
     fi
     desired_sha="$(tr -d '[:space:]' < "$desired")"
@@ -423,7 +448,11 @@ audit_desired_receipt() {
     fi
     if [ "$installed_sha" != "$desired_sha" ]; then
         echo "root-required desired package is not installed: $label desired=$desired_sha installed=${installed_sha:-missing}" >&2
-        echo "  next action: regenerate the exact package from $desired_sha and run its governed installer, even if the cached RUNBOOK was lost" >&2
+        if [ "$label" = "oom-containment" ]; then
+            echo "  next action: $OOM_REPAIR_ACTION" >&2
+        else
+            echo "  next action: regenerate the exact package from $desired_sha and run its governed installer, even if the cached RUNBOOK was lost" >&2
+        fi
         return 1
     fi
 }
@@ -433,7 +462,14 @@ compare_root_file() {
     source="$(source_for_rel "$rel")"
     if [ ! -f "$source" ] || [ -L "$source" ]; then
         echo "root-required source missing or not a regular stable copy: $source" >&2
-        echo "  next action: rerun the owning root installer to refresh the receipt-bound snapshot at $INSTALLED_SOURCE_ROOT" >&2
+        case "$rel" in
+            config/apcupsd/*|config/upower/*|systemd/logrotate.d/hapax-ups-power-events)
+                echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
+                ;;
+            *)
+                echo "  next action: $OOM_REPAIR_ACTION" >&2
+                ;;
+        esac
         return 1
     fi
     if [ ! -f "$dest" ] || [ -L "$dest" ]; then
@@ -443,7 +479,7 @@ compare_root_file() {
                 echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
                 ;;
             *)
-                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "  next action: $OOM_REPAIR_ACTION" >&2
                 ;;
         esac
         return 1
@@ -457,7 +493,7 @@ compare_root_file() {
                 echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
                 ;;
             *)
-                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "  next action: $OOM_REPAIR_ACTION" >&2
                 ;;
         esac
         return 1
@@ -473,7 +509,7 @@ compare_root_file() {
                 echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
                 ;;
             *)
-                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "  next action: $OOM_REPAIR_ACTION" >&2
                 ;;
         esac
         return 1
@@ -498,13 +534,13 @@ audit_root_artifact_trust() {
     actual="$(stat -c '%u:%g' "$path" 2>/dev/null || true)"
     if [ "$actual" != "$expected_uid:$expected_gid" ]; then
         echo "root-required root-artifact ownership drift: $path owner=${actual:-unavailable} expected=$expected_uid:$expected_gid" >&2
-        echo "  next action: rerun the owning installer as the target account after sudo -v" >&2
+        echo "  next action: preserve evidence and use the package-specific governed repair path; OOM repair requires separately runtime-authorized root-broker work" >&2
         return 1
     fi
     parent="$(dirname "$path")"
     if [ ! -d "$parent" ] || [ -L "$parent" ]; then
         echo "root-required root-artifact parent is missing, symlinked, or not a directory: $parent" >&2
-        echo "  next action: repair the root-owned destination directory and rerun the owning installer" >&2
+        echo "  next action: preserve evidence and use the package-specific governed repair path; OOM repair requires separately runtime-authorized root-broker work" >&2
         return 1
     fi
     parent_actual="$(stat -c '%u:%g' "$parent" 2>/dev/null || true)"
@@ -513,7 +549,7 @@ audit_root_artifact_trust() {
         || ! [[ "$parent_mode" =~ ^[0-7]+$ ]] \
         || (( (8#$parent_mode & 8#022) != 0 )); then
         echo "root-required root-artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable} expected=$expected_uid:$expected_gid and no group/other write bits" >&2
-        echo "  next action: repair the root-owned destination directory and rerun the owning installer" >&2
+        echo "  next action: preserve evidence and use the package-specific governed repair path; OOM repair requires separately runtime-authorized root-broker work" >&2
         return 1
     fi
 }
@@ -522,13 +558,13 @@ audit_sudoers_trust() {
     local path="$1" expected_mode="$2" label="$3" actual failed=0
     if [ ! -f "$path" ] || [ -L "$path" ]; then
         echo "root-required $label missing or not a regular stable copy: $path" >&2
-        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
     if [ "$actual" != "$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode" ]; then
         echo "root-required $label ownership/mode drift: $path owner/mode=${actual:-unavailable} expected=$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode" >&2
-        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         failed=1
     fi
     if [ "$path" = "$OOM_SUDOERS_REFERENCE_DEST" ] \
@@ -537,7 +573,7 @@ audit_sudoers_trust() {
             actual="$(stat -c '%u:%g:%a:%F' "$path" 2>/dev/null || true)"
             if [ -L "$path" ] || [ "$actual" != "0:0:755:directory" ]; then
                 echo "root-required sudoers reference directory trust drift: $path owner/mode/type=${actual:-unavailable} expected=0:0:755:directory" >&2
-                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "  next action: $OOM_REPAIR_ACTION" >&2
                 failed=1
             fi
         done
@@ -568,7 +604,7 @@ verify_executable() {
                 echo "  next action: run scripts/install-apcupsd-power-alerts --install --verify-live" >&2
                 ;;
             *)
-                echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "  next action: $OOM_REPAIR_ACTION" >&2
                 ;;
         esac
         return 1
@@ -606,20 +642,20 @@ audit_effective_service_unit() {
     if [ -z "$expected_exec" ] || [ "$actual_fragment" != "$expected_fragment" ] \
         || [ -n "$actual_dropins" ]; then
         echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
-        echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     case "$actual_exec" in
         *"argv[]=$expected_exec ;"*) ;;
         *)
             echo "root-required effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec" >&2
-            echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "  next action: $OOM_REPAIR_ACTION" >&2
             return 1
             ;;
     esac
     if [ "$actual_failure" != "$expected_failure" ] || [ "$actual_user" != "$expected_user" ]; then
         echo "root-required effective $unit failure/identity drift: OnFailure=${actual_failure:-none} User=${actual_user:-default} expected OnFailure=${expected_failure:-none} User=${expected_user:-default}" >&2
-        echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         return 1
     fi
 }
@@ -649,21 +685,21 @@ audit_effective_failure_intake_unit() {
         || [ -z "$expected_interval" ] || [ -z "$expected_burst" ] \
         || [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
         echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
-        echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     case "$actual_exec" in
         *"argv[]=$expected_exec ;"*) ;;
         *)
             echo "root-required effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec" >&2
-            echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "  next action: $OOM_REPAIR_ACTION" >&2
             return 1
             ;;
     esac
     if [ "$actual_user" != "$expected_user" ] || [ "$actual_environment" != "$expected_environment" ] \
         || [ "$actual_interval" != "$expected_interval" ] || [ "$actual_burst" != "$expected_burst" ]; then
         echo "root-required effective $unit identity/limit drift: User=${actual_user:-default} Environment=${actual_environment:-none} StartLimitIntervalUSec=${actual_interval:-none} StartLimitBurst=${actual_burst:-none} expected User=$expected_user Environment=$expected_environment StartLimitIntervalUSec=$expected_interval StartLimitBurst=$expected_burst" >&2
-        echo "  next action: remove unauthorized template or instance overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         return 1
     fi
 }
@@ -682,19 +718,19 @@ audit_effective_timer_unit() {
     if [ -z "$expected_target" ] || [ -z "$expected_boot" ] || [ -z "$expected_active" ] \
         || [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
         echo "root-required effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins" >&2
-        echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     if [ "$actual_target" != "$expected_target" ]; then
         echo "root-required effective $unit target drift: actual=${actual_target:-unavailable} expected=$expected_target" >&2
-        echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     case "$actual_timers" in
         *"OnBootUSec=$expected_boot"*"OnUnitActiveUSec=$expected_active"*|*"OnUnitActiveUSec=$expected_active"*"OnBootUSec=$expected_boot"*) ;;
         *)
             echo "root-required effective $unit cadence drift: actual=${actual_timers:-unavailable} expected OnBootUSec=$expected_boot and OnUnitActiveUSec=$expected_active" >&2
-            echo "  next action: remove unauthorized overrides, reload the manager, and run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "  next action: $OOM_REPAIR_ACTION" >&2
             return 1
             ;;
     esac
@@ -730,12 +766,12 @@ audit_systemd_state() {
     local expected_audit_environment loaded_audit_environment
     if ! "$SYSTEMCTL" is-enabled --quiet hapax-oom-score-enforce.timer; then
         echo "root-required activation drift: hapax-oom-score-enforce.timer is not enabled" >&2
-        echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-active --quiet hapax-oom-score-enforce.timer; then
         echo "root-required activation drift: hapax-oom-score-enforce.timer is not active" >&2
-        echo "  next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         failed=1
     fi
     expected_enforcer_timeout="$(awk -F= '$1 == "TimeoutStartSec" {print $2; exit}' "$INSTALLED_SOURCE_ROOT/systemd/units/hapax-oom-score-enforce.service" 2>/dev/null || true)"
@@ -744,7 +780,7 @@ audit_systemd_state() {
     fi
     if [ -z "$expected_enforcer_timeout" ] || [ "$loaded_enforcer_timeout" != "$expected_enforcer_timeout" ]; then
         echo "root-required activation drift: hapax-oom-score-enforce.service loaded TimeoutStartUSec=${loaded_enforcer_timeout:-unavailable}, expected ${expected_enforcer_timeout:-source value missing}" >&2
-        echo "  next action: run sudo systemctl daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-active --quiet apcupsd.service; then
@@ -765,12 +801,12 @@ audit_systemd_state() {
     fi
     if ! "$SYSTEMCTL" is-enabled --quiet earlyoom.service; then
         echo "root-required activation drift: earlyoom.service is not enabled" >&2
-        echo "  next action: run sudo systemctl enable --now earlyoom.service" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         failed=1
     fi
     if ! "$SYSTEMCTL" is-active --quiet earlyoom.service; then
         echo "root-required activation drift: earlyoom.service is not active" >&2
-        echo "  next action: run sudo systemctl enable --now earlyoom.service and inspect journalctl -u earlyoom.service" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         failed=1
     fi
     for timer in hapax-oom-policy-audit.timer hapax-root-required-deploy-audit.timer; do
@@ -796,7 +832,7 @@ audit_systemd_state() {
         fi
         if [ -z "$expected_audit_timeout" ] || [ "$loaded_audit_timeout" != "$expected_audit_timeout" ]; then
             echo "root-required activation drift: $unit loaded TimeoutStartUSec=${loaded_audit_timeout:-unavailable}, expected ${expected_audit_timeout:-source value missing}" >&2
-            echo "  next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "  next action: $OOM_REPAIR_ACTION" >&2
             failed=1
         fi
         expected_audit_environment="$(awk '$0 ~ /^Environment=/ {sub(/^[^=]*=/, ""); print; exit}' "$INSTALLED_SOURCE_ROOT/$rel" 2>/dev/null || true)"
@@ -807,13 +843,13 @@ audit_systemd_state() {
             *" $expected_audit_environment "*)
                 [ -n "$expected_audit_environment" ] || {
                     echo "root-required activation drift: $unit source Environment is missing" >&2
-                    echo "  next action: restore the receipt-bound unit and run scripts/install-p0-oom-containment --install --verify-live" >&2
+                    echo "  next action: $OOM_REPAIR_ACTION" >&2
                     failed=1
                 }
                 ;;
             *)
                 echo "root-required activation drift: $unit loaded Environment=${loaded_audit_environment:-unavailable}, expected to contain ${expected_audit_environment:-source value missing}" >&2
-                echo "  next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "  next action: $OOM_REPAIR_ACTION" >&2
                 failed=1
                 ;;
         esac
@@ -861,6 +897,7 @@ audit_root_installs() {
         "scripts/hapax-oom-score-enforce|$OOM_ENFORCER_DEST"
         "scripts/hapax-oom-score-trigger|$OOM_TRIGGER_DEST"
         "config/root-required/hapax-oom-score-enforce.sudoers|$OOM_SUDOERS_DEST"
+        "config/root-required/oom-host-profiles.tsv|$OOM_PROFILE_TABLE_DEST"
         "scripts/hapax-root-failure-intake|$ROOT_FAILURE_INTAKE_DEST"
         "scripts/hapax-oom-policy-audit|$OOM_POLICY_AUDIT_DEST"
         "scripts/hapax-root-required-deploy-audit|$ROOT_REQUIRED_AUDIT_DEST"
@@ -918,7 +955,7 @@ audit_root_installs() {
         dest="$SYSTEMD_USER_DIR/$(basename "$rel")"
         if [ -e "$dest" ] || [ -L "$dest" ]; then
             echo "root-required install drift: stale user-scope copy of system unit remains: $dest" >&2
-            echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "  next action: $OOM_REPAIR_ACTION" >&2
             failed=1
         fi
     done
@@ -929,7 +966,7 @@ audit_root_installs() {
         "$OOM_SUDOERS_REFERENCE_DEST" 444 || failed=1
     if ! "$SUDO" -n "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null; then
         echo "root-required install drift: sudoers policy does not parse: $OOM_SUDOERS_DEST" >&2
-        echo "  next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "  next action: $OOM_REPAIR_ACTION" >&2
         failed=1
     fi
     audit_systemd_state || failed=1
@@ -949,6 +986,7 @@ if [ "${#runbooks[@]}" -eq 0 ]; then
         exit "$rc"
     fi
     echo "root-required post-merge deploy deferrals: none"
+    echo "NON-AUTHORITATIVE: this drift scan and same-UID receipts do not attest OOM runtime completion"
     exit 0
 fi
 
@@ -957,7 +995,9 @@ for runbook in "${runbooks[@]}"; do
     dir="$(dirname "$runbook")"
     command="$(awk '/^  .*--install --verify-live$/ {sub(/^  /, ""); print; exit}' "$runbook")"
     echo "  $dir" >&2
-    if [ -n "$command" ]; then
+    if [ "$(basename "$dir")" = "oom-containment" ]; then
+        echo "    next action: $OOM_REPAIR_ACTION" >&2
+    elif [ -n "$command" ]; then
         echo "    next action: $command" >&2
     else
         echo "    next action: inspect $runbook and run the root-required installer" >&2
