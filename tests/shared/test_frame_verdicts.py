@@ -2780,3 +2780,295 @@ def test_unavailable_frame_evidence_binds_resolved_root(
             assert error.remedy == _expected_producer_remedy(root.resolve())
         reasons.append(error.reason)
     assert reasons[0] != reasons[1]
+
+
+# ------------------------------------------------------------------------------------------
+# Controls for the denotation guard's stated limits.
+#
+# Authored 2026-09-09 as proposals, without being run; the rows below still carry that
+# "PROPOSED" label. Executed 2026-09-25: all pass, and disabling the guard's denotation refusal
+# in `ref_within_member` turns the refusing rows red. The two rows that once pinned a known
+# limitation were inverted before execution, because the limitation is now repaired; no
+# `_known_limitation` row remains. The reviewer's mixed-scope reproduction at 5535429ad follows
+# them.
+# ------------------------------------------------------------------------------------------
+
+
+def _denotation_member(tmp_path: Path):
+    """A member whose SELECTED surface is exactly one regular file, `member/selected.txt`."""
+
+    root = tmp_path / "repo"
+    (root / "member").mkdir(parents=True)
+    selected = root / "member" / "selected.txt"
+    selected.write_text("selected", encoding="utf-8")
+    return root, selected, fv.DecayedMember("m", "scope_exited", (root,), ("member/*.txt",), ())
+
+
+def test_a_mixed_denotation_is_not_refused(tmp_path: Path) -> None:
+    """PROPOSED. Any entry off the selected surface makes the ref a real partial scope.
+
+    `member/*` selects the member's file AND a sibling the member does not select, so the ref is
+    not a directory spelling of a selected file and must not be refused on that ground.
+    """
+
+    root, _selected, member = _denotation_member(tmp_path)
+    (root / "member" / "other.log").write_text("not selected", encoding="utf-8")
+    # No refusal: the call returns a verdict rather than raising.
+    fv.ref_within_member(root / "member", True, member, scope_pattern="*", directory_spelled=True)
+
+
+def test_an_empty_denotation_is_not_refused(tmp_path: Path) -> None:
+    """PROPOSED. A pattern selecting nothing denotes no file, so there is nothing to refuse.
+
+    This is the prospective/absent case: inventing a file-as-directory claim about a file that is
+    not there would refuse a ref the operator may legitimately be declaring ahead of creation.
+    """
+
+    root, _selected, member = _denotation_member(tmp_path)
+    fv.ref_within_member(
+        root / "member", True, member, scope_pattern="absent.*", directory_spelled=True
+    )
+
+
+def test_an_unobservable_denotation_is_not_refused(tmp_path: Path, monkeypatch) -> None:
+    """PROPOSED. A traversal failure establishes nothing, and is not a licence to refuse.
+
+    `_observed_glob` reports the failures its expansion hit; when it reports any, the denotation
+    is unknown. Unknown containment is not demonstrated containment — and it is equally not
+    demonstrated INcontainment, so the guard must neither refuse nor raise.
+
+    **Boundary targeted: the DENOTATION expansion only.** Replacing `_observed_glob` wholesale
+    also faults selected-surface construction, which runs first, so the row could pass on a
+    refusal raised at that earlier boundary instead — green, and about something else. The fault
+    is conditioned on the denotation selector and delegates every other call to the real
+    function; the trailing assertion fails the row if the fault never reached the boundary named.
+    """
+
+    root, _selected, member = _denotation_member(tmp_path)
+    real_observed_glob = fv._observed_glob
+    faulted: list[str] = []
+
+    def selective(base, pattern):
+        if pattern.startswith("selected.tx["):
+            faulted.append(pattern)
+            return [], [OSError("scan failed")]
+        return real_observed_glob(base, pattern)
+
+    monkeypatch.setattr(fv, "_observed_glob", selective)
+    fv.ref_within_member(
+        root / "member", True, member, scope_pattern="selected.tx[t]", directory_spelled=True
+    )
+    assert faulted, "the fault never reached the denotation boundary this row targets"
+
+
+def test_a_directory_spelled_denotation_is_refused(tmp_path: Path) -> None:
+    """PROPOSED, and the positive twin the three rows above must not have disabled."""
+
+    root, _selected, member = _denotation_member(tmp_path)
+    with pytest.raises(fv.NonCanonicalScopeRef, match="directory-spelled scope resolves"):
+        fv.ref_within_member(
+            root / "member", True, member, scope_pattern="selected.tx[t]", directory_spelled=True
+        )
+
+
+def test_a_sibling_selector_remains_a_useful_partial_scope(tmp_path: Path) -> None:
+    """PROPOSED. The case the whole `dirlike` guard exists to preserve.
+
+    A pattern whose expansion lies outside the member's selected surface is a legitimate partial
+    scope and must keep its ordinary verdict, not be refused as an inconsistent spelling.
+    """
+
+    root, _selected, member = _denotation_member(tmp_path)
+    (root / "elsewhere").mkdir()
+    (root / "elsewhere" / "hostname.conf").write_text("x", encoding="utf-8")
+    fv.ref_within_member(
+        root / "elsewhere", True, member, scope_pattern="hostname*", directory_spelled=True
+    )
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink"])
+def test_an_alias_reached_denotation_is_refused(tmp_path: Path, kind: str) -> None:
+    """PROPOSED. INVERTED from a known-limitation row, because the limitation is now repaired.
+
+    An alias is the same regular file under another name, so a glob selecting it denotes the
+    member's selected file just as the file's own name does. This previously admitted: membership
+    was decided lexically only, and the expansion yields a path that is not the surface entry.
+
+    Membership is now decided lexically first and then by `_identity_reaches_surface`, the same
+    predicate the literal spelling already used — which is why the literal alias cases refused
+    while the globbed ones did not.
+    """
+
+    root, selected, member = _denotation_member(tmp_path)
+    link_dir = root / "via-link"
+    link_dir.mkdir()
+    alias = link_dir / "alias.txt"
+    if kind == "symlink":
+        alias.symlink_to(selected)
+    else:
+        alias.hardlink_to(selected)
+    assert alias.samefile(selected)
+    with pytest.raises(fv.NonCanonicalScopeRef, match="directory-spelled scope resolves"):
+        fv.ref_within_member(
+            link_dir, True, member, scope_pattern="alias.tx[t]", directory_spelled=True
+        )
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink"])
+def test_an_alias_without_a_directory_suffix_remains_a_valid_partial_scope(
+    tmp_path: Path, kind: str
+) -> None:
+    """PROPOSED, and the twin the inversion above must not have taken with it.
+
+    Naming the alias itself is a legitimate partial scope; only the container reading is refused.
+    """
+
+    root, selected, member = _denotation_member(tmp_path)
+    link_dir = root / "via-link"
+    link_dir.mkdir()
+    alias = link_dir / "alias.txt"
+    if kind == "symlink":
+        alias.symlink_to(selected)
+    else:
+        alias.hardlink_to(selected)
+    fv.ref_within_member(
+        link_dir, True, member, scope_pattern="alias.tx[t]", directory_spelled=False
+    )
+
+
+def test_an_unreadable_identity_leaves_the_specific_diagnosis_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PROPOSED. The denotation guard must not answer a question it lacks the context to diagnose.
+
+    The identity predicate runs "after every other refusal has had its say" by its own contract,
+    and this guard runs BEFORE the canonical-resolution and file-type diagnoses. When the identity
+    comparison cannot be read, letting its generic refusal escape from here replaces a refusal
+    naming the scope glob, the component and the intended target with one naming none of them —
+    the same undecidable verdict carrying strictly less to act on.
+
+    So the row asserts the SPECIFIC diagnosis still arrives, not merely that something was raised:
+    a bare `pytest.raises(UndecidableScopeContainment)` would have passed against the regression
+    this repair fixes.
+    """
+
+    target, alias = tmp_path / "gawk", tmp_path / "awk"
+    target.touch()
+    alias.symlink_to(target.name)
+    member = fv.DecayedMember("m", "scope_exited", (tmp_path,), ("gawk",), ())
+    original_stat = os.stat
+
+    def denied(path, *args, **kwargs):
+        if str(path) == str(alias):
+            raise OSError(errno.ELOOP, "fixture stat denied", str(path))
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", denied)
+    with pytest.raises(fv.UndecidableScopeContainment) as caught:
+        fv.ref_within_member(tmp_path, True, member, scope_pattern="a*", directory_spelled=True)
+    assert "scope glob expansion" in str(caught.value)
+    assert str(alias) in caught.value.remedy
+
+
+def test_the_qualified_namespace_is_never_probed_on_the_filesystem(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """PROPOSED. The invariant that keeps the local repair from being ported by accident.
+
+    A remote member's surface cannot be enumerated by this process, so the qualified contract
+    answers by DECLARATION while the filesystem contract answers by EXPANSION. Resolving a remote
+    ref through `_observed_glob` would read a remote namespace as the local one, and an unrelated
+    local file could then decide a remote verdict.
+
+    Asserted at the FUNCTION BOUNDARY rather than by comparing verdicts across a tree that is
+    created and deleted: a ref like `podium:store` is never mapped to `tmp_path/store` without a
+    chdir or a root mapping, so "the answer did not change" could hold simply because nothing ever
+    looked — vacuously true, and true of a broken implementation too. Counting probes says what
+    the comparison could not.
+
+    The second half is the instrument-liveness probe: the SAME counter must record calls on the
+    filesystem path, so a zero on the qualified path means "did not probe" rather than "counter
+    never worked". Without it this row would pass with `_observed_glob` misspelled.
+    """
+
+    probes: list[str] = []
+    real_observed_glob = fv._observed_glob
+
+    def counting(base, pattern):
+        probes.append(f"{base}:{pattern}")
+        return real_observed_glob(base, pattern)
+
+    monkeypatch.setattr(fv, "_observed_glob", counting)
+
+    remote = fv.DecayedMember(
+        "remote",
+        "scope_exited",
+        (),
+        ("member/*.txt",),
+        (),
+        qualified_roots=(fv._qualified_location("podium:store")[0],),
+        reader="ssh.glob",
+    )
+    fv.qualified_ref_within_member(
+        fv._qualified_location("podium:store")[0],
+        True,
+        remote,
+        scope_pattern="membe[r]/selected.txt",
+    )
+    assert probes == [], ("the qualified namespace was probed on the local filesystem", probes)
+
+    root, _selected, local = _denotation_member(tmp_path)
+    # An ABSENT selector: it reaches the expansion and returns without refusing. Using the
+    # refusing spelling here would raise before the assertion below and leave the liveness of the
+    # counter unproven — which is the one thing this half exists to establish.
+    fv.ref_within_member(
+        root / "member", True, local, scope_pattern="absent.*", directory_spelled=True
+    )
+    assert probes, "the probe counter never fired on the filesystem path; the zero above is vacuous"
+
+
+# Review finding at 5535429ad (critical, `frame_verdicts.py:3823`): a member selecting one
+# regular file refused `<file>/` beside an outside ref, but `<fil[e]>/` and `<fil[e]>/*` returned a
+# partial verdict (eligible) in both reference orders. Red on 5535429ad for the four wildcard
+# cases; the literal and control rows were already green.
+
+
+def _single_file_member(tmp_path: Path):
+    root = tmp_path / "etc"
+    root.mkdir()
+    (root / "hostname").write_text("host\n", encoding="utf-8")
+    member = fv.DecayedMember("m", "scope_exited", (root,), ("hostname",), ())
+    return root, tmp_path / "outside.txt", fv.FrameVerdicts("fixture", tmp_path, NOW, (member,), ())
+
+
+@pytest.mark.parametrize("spelling", ["hostname/", "hostnam[e]/", "hostnam[e]/*"])
+@pytest.mark.parametrize("outside_first", [False, True], ids=["file-first", "outside-first"])
+def test_selected_file_spelled_as_directory_is_refused_beside_an_outside_ref(
+    tmp_path: Path, spelling: str, outside_first: bool
+) -> None:
+    root, outside, verdicts = _single_file_member(tmp_path)
+    refs = [f"{root}/{spelling}", str(outside)]
+    if outside_first:
+        refs.reverse()
+    # Every spelling that denotes the selected file gets the literal spelling's diagnosis, never
+    # a partial verdict that the dispatcher would admit because the other ref is outside.
+    with pytest.raises(fv.NonCanonicalScopeRef, match="resolves to declared member file"):
+        fv.scope_within_decayed(refs, verdicts, council_root=tmp_path, vault_root=tmp_path)
+
+
+@pytest.mark.parametrize("spelling", ["hostname", "hostnam[e]"])
+def test_selected_file_spelled_as_a_file_stays_inside(tmp_path: Path, spelling: str) -> None:
+    root, _outside, verdicts = _single_file_member(tmp_path)
+    result = fv.scope_within_decayed(
+        [f"{root}/{spelling}"], verdicts, council_root=tmp_path, vault_root=tmp_path
+    )
+    assert result.all_inside
+
+
+def test_sibling_wildcard_beside_an_outside_ref_stays_a_partial_scope(tmp_path: Path) -> None:
+    root, outside, verdicts = _single_file_member(tmp_path)
+    (root / "hostname.conf").write_text("x", encoding="utf-8")
+    result = fv.scope_within_decayed(
+        [f"{root}/hostname.*", str(outside)], verdicts, council_root=tmp_path, vault_root=tmp_path
+    )
+    assert not result.all_inside

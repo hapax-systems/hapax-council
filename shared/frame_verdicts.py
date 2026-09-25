@@ -1593,7 +1593,11 @@ def _filesystem_scope_parts(ref: str) -> tuple[list[str], str | None, bool]:
     )
     if wildcard_at is None:
         return segments, None, text.endswith("/")
-    return segments[:wildcard_at], "/".join(segments[wildcard_at:]), True
+    # **The trailing slash is REPORTED, not asserted.** A hard `True` here is what every caller
+    # computes anyway (`dirlike or scope_pattern is not None`), so nothing downstream changes —
+    # but it also erased the only fact separating `…/x[y]/` from `…/x[y]`, which this split makes
+    # otherwise identical because empty segments are filtered.
+    return segments[:wildcard_at], "/".join(segments[wildcard_at:]), text.endswith("/")
 
 
 def _unresolved_scope_component(
@@ -3746,6 +3750,107 @@ def _same_existing_file(candidate: Path, declared: Path) -> bool | None:
     return left == right
 
 
+def _entries_select_surface(entries: list[Path], surface: frozenset[Path]) -> bool | None:
+    """Whether EVERY expanded entry is a selected member file, by name or by identity.
+
+    `None` means the question could not be answered here, and it is NOT an answer of False.
+
+    No cache: each comparison is made against the filesystem as it is at the moment of the
+    question. A remembered identity is a claim about a tree that may have changed, and the one
+    thing this predicate must not do is answer from a stale fact.
+
+    **The identity refusal is not raised from this position.** `_identity_reaches_surface` runs
+    "after every other refusal has had its say" by its own contract, and this predicate runs
+    BEFORE the canonical-resolution and file-type diagnoses. Letting its generic
+    "file identity cannot be read" escape from here replaced refusals that name the scope glob,
+    the offending component and the intended target with one that names none of them — the same
+    undecidable verdict carrying strictly less for the operator to act on. So an unreadable
+    comparison is converted to `None`: this guard establishes nothing and refuses nothing, and
+    the site that owns the context still raises its own refusal.
+    """
+
+    for entry in entries:
+        if entry in surface:
+            continue
+        try:
+            reaches = _identity_reaches_surface((entry,), surface)
+        except UndecidableScopeContainment:
+            return None
+        if not reaches:
+            return False
+    return True
+
+
+def _denoted_selected_files(
+    base: Path,
+    scope_pattern: str | None,
+    surface: frozenset[Path],
+    *,
+    directory_spelled: bool,
+) -> tuple[Path, ...] | None:
+    """The SELECTED files a globbed spelling denotes when it is read as a container.
+
+    `()` denotes nothing to refuse here; `None` means the expansion could not be observed, so
+    nothing is established and the caller must not refuse on it.
+
+    **Denotation, not spelling.** A pattern cannot be compared with a name, so it is expanded
+    through `_observed_glob` — the producer's own traversal, which reports the failures it hits —
+    and the question becomes which files the ref actually picks out.
+
+    **EVERY prefix, not a fixed depth.** The subject can sit at any component: `membe[r]/x.txt/`
+    denotes the same regular file as `x.tx[t]/`, one level further in. So each prefix is expanded
+    in turn, and the first that lands entirely on the selected surface is the subject. A PROPER
+    prefix means the remaining components are being applied beneath a regular file; the full
+    pattern means the ref names the selection itself, which is a container reading only when a
+    directory suffix was spelled.
+
+    Boundaries, none of which refuse:
+
+    * **No character test.** A literal name expands to itself, so one rule covers every spelling.
+    * **Empty expansion** — a prospective or absent denotation; refusing would invent a claim
+      about a file that is not there.
+    * **Off-surface expansion** — a real partial scope. `…/hostname*` selects siblings, not the
+      member's file, and the deeper prefixes are searched rather than the ref refused.
+    * **Unobservable expansion** — returns `None`, refuses nothing and raises nothing. Unknown
+      containment is not demonstrated containment, and not a licence to refuse.
+
+    **Identity, not just name.** A symlink or hard link is the same regular file under another
+    name, so membership is decided lexically first and then by the established identity
+    predicate. A readable off-surface entry answers False and simply moves the search deeper, so
+    a legitimate partial scope is unaffected.
+
+    An identity that cannot be READ yields `None` rather than a refusal from here. It remains
+    undecidable containment — it is simply not this guard's to diagnose, because the canonical
+    and file-type refusals downstream name the scope glob, the component and the intended target,
+    and this position knows none of them.
+    """
+    if scope_pattern is None or not surface:
+        return ()
+    segments = [segment for segment in scope_pattern.split("/") if segment]
+    for depth in range(1, len(segments) + 1):
+        try:
+            entries, failures = _observed_glob(base, "/".join(segments[:depth]))
+        except (OSError, RuntimeError):
+            return None
+        if failures:
+            return None
+        if not entries:
+            continue
+        selects = _entries_select_surface(entries, surface)
+        if selects is None:
+            # Identity unreadable: establish nothing here so the canonical-resolution and
+            # file-type diagnoses downstream keep their own, more specific refusals.
+            return None
+        if not selects:
+            continue
+        if depth < len(segments) or directory_spelled:
+            return tuple(entries)
+        # The full pattern with no directory suffix names the selection itself: a valid partial
+        # scope, and searching deeper is meaningless because there is no deeper.
+        return ()
+    return ()
+
+
 def _identity_reaches_surface(candidates: tuple[Path, ...], surface: frozenset[Path]) -> bool:
     """Whether any concrete candidate is the same file as any selected member target.
 
@@ -3789,6 +3894,10 @@ def ref_within_member(
     member: DecayedMember,
     *,
     scope_pattern: str | None = None,
+    #: Whether the ref was SPELLED with a trailing slash — the only directory reading a wildcard
+    #: ref does not otherwise carry. Defaulted so every existing caller is unchanged; supplied
+    #: from `_scope_readings`, the last place the raw text still exists.
+    directory_spelled: bool = False,
 ) -> bool:
     _member_file_patterns(member.patterns)  # Validate even when the candidate is outside.
     # **A regular file spelled as a directory is refused however the member reached it.** The
@@ -3824,6 +3933,14 @@ def ref_within_member(
         surface = _member_selected_surface(member)
         if path in surface or _identity_reaches_surface((path,), surface):
             _refuse_directory_spelled_file(path)
+        # The literal spelling is answered above by NAME. A globbed spelling names the same file
+        # and cannot be, so it is answered by what it DENOTES; see `_denoted_selected_files` for
+        # the four cases that deliberately refuse nothing.
+        denoted = _denoted_selected_files(
+            path, scope_pattern, surface, directory_spelled=directory_spelled
+        )
+        if denoted:
+            _refuse_directory_spelled_file(denoted[0])
     broad = dirlike or scope_pattern is not None
     selected_files = _selected_member_files(member)
     file_path = _resolve_member_path(path) if member.files else path
@@ -4836,6 +4953,7 @@ def _candidate_within_member(
     dirlike: bool,
     member: DecayedMember,
     scope_pattern: str | None,
+    directory_spelled: bool = False,
 ) -> bool:
     """Containment for one candidate spelling, against a member declared in the same namespace.
 
@@ -4852,7 +4970,13 @@ def _candidate_within_member(
         return qualified_ref_within_member(candidate, dirlike, member, scope_pattern=scope_pattern)
     if not member.roots and not member.files:
         return False
-    return ref_within_member(candidate, dirlike, member, scope_pattern=scope_pattern)
+    return ref_within_member(
+        candidate,
+        dirlike,
+        member,
+        scope_pattern=scope_pattern,
+        directory_spelled=directory_spelled,
+    )
 
 
 def _scope_readings(
@@ -4897,7 +5021,10 @@ def _scope_readings(
     other way" fallback: nothing is admitted on the strength of a failed parse.
     """
 
-    readings: list[tuple[tuple[Path | QualifiedLocation, ...], bool, str | None]] = []
+    #: Fourth element: the raw trailing-slash spelling. Carried here because this is the last
+    #: point at which `…/x[y]/` and `…/x[y]` are still distinguishable. Local to this function
+    #: and its two consumers.
+    readings: list[tuple[tuple[Path | QualifiedLocation, ...], bool, str | None, bool]] = []
     deferred: Exception | None = None
     if _has_qualifier(text):
         try:
@@ -4907,10 +5034,13 @@ def _scope_readings(
         except (NonCanonicalScopeRef, UndecidableScopeContainment) as exc:
             deferred = exc
         else:
-            readings.append(((qualified_ref,), qualified_dirlike, qualified_pattern))
+            # False: `_qualified_location` still forces its own `dirlike` to True on a wildcard,
+            # so the scheme-qualified branch keeps the same information loss and is explicitly
+            # NOT repaired here — it needs its own controls rather than a half extension.
+            readings.append(((qualified_ref,), qualified_dirlike, qualified_pattern, False))
     try:
         path, dirlike = resolve_scope_ref(text, council_root=council_root, vault_root=vault_root)
-        _, scope_pattern, _ = _filesystem_scope_parts(text)
+        _, scope_pattern, directory_spelled = _filesystem_scope_parts(text)
         candidates: tuple[Path | QualifiedLocation, ...] = (
             path,
             *_repo_relative_candidates(text, verdicts, council_root=council_root),
@@ -4918,7 +5048,7 @@ def _scope_readings(
     except (NonCanonicalScopeRef, UndecidableScopeContainment) as exc:
         deferred = deferred or exc
     else:
-        readings.append((candidates, dirlike, scope_pattern))
+        readings.append((candidates, dirlike, scope_pattern, directory_spelled))
     return readings, deferred
 
 
@@ -4999,15 +5129,17 @@ def scope_within_decayed(
             hit = next(
                 (
                     member
-                    for candidates, dirlike, scope_pattern in readings
+                    for candidates, dirlike, scope_pattern, directory_spelled in readings
                     for member in verdicts.decayed
                     for candidate in candidates
-                    if _candidate_within_member(candidate, dirlike, member, scope_pattern)
+                    if _candidate_within_member(
+                        candidate, dirlike, member, scope_pattern, directory_spelled
+                    )
                 ),
                 None,
             )
             if hit is None:
-                for candidates, dirlike, scope_pattern in readings:
+                for candidates, dirlike, scope_pattern, _spelled in readings:
                     if (
                         _scope_admission_established(
                             candidates, dirlike, scope_pattern, verdicts.decayed
