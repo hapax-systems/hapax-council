@@ -1,0 +1,16 @@
+# Versioned ownership manifest for the root-required witness rota package (operator act O3).
+# The installer also pins a root-owned copy of the owner's agy; that binary is not a repository
+# file, so its sha256 and version are recorded in agy.pin instead of here.
+config/root-required/witness-rota.files
+scripts/install-witness-rota
+scripts/hapax-agy-reviewer
+scripts/hapax-signing-holder
+scripts/hapax-witness-rota
+shared/public_gate_receipts.py
+shared/signing_holder.py
+shared/witness_receipt.py
+shared/witness_rota.py
+systemd/system/hapax-signing-holder.socket
+systemd/system/hapax-signing-holder@.service
+systemd/system/hapax-witness-rota@.service
+systemd/system/hapax-witness-rota.timer
