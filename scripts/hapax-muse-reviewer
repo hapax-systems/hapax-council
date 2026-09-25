@@ -5,6 +5,12 @@ Runs `muse exec` on the dispatcher's prompt in an empty temporary workspace, wit
 shell and writes disabled and no session log. Measured reliable up to 96 KB prompts
 (2026-09-24 review panels); a larger prompt is refused as a route outage rather than
 risking a partial review.
+
+Muse runs inside the declared capability envelope (``shared.capability_envelope``): the release
+binary, a fresh home holding only ``~/.config/muse/auth.json`` (bound read-only), the prompt file,
+an empty workspace and a cleared environment. Measured 2026-09-25 on this wrapper's argv, an
+inherited HOME put the estate's ``~/.config/muse/AGENTS.md`` into every review. A host without a
+usable envelope is a route outage, never an unenveloped run.
 """
 
 from __future__ import annotations
@@ -20,6 +26,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from shared.capability_envelope import (  # noqa: E402
+    CredentialBind,
+    DeclaredFile,
+    EnvelopeCarrierError,
+    EnvelopeDeclaration,
+    EnvelopeRefusal,
+    execute,
+    render,
+)
 from shared.review_seat_wrapper import SEAT_PREAMBLE, refuse  # noqa: E402
 
 WRAPPER = "hapax-muse-reviewer"
@@ -49,6 +64,53 @@ def command(binary: str, prompt_file: Path, workspace: Path) -> list[str]:
     ]
 
 
+def release_binary(launcher: Path) -> Path:
+    """The binary the muse launcher would exec, so the envelope never runs the self-updater.
+
+    The launcher keeps ``.muse-version`` and ``muse-bin-<version>`` beside itself. Anything else
+    (a relocated install, a test double) runs as given.
+    """
+
+    directory = launcher.resolve().parent
+    try:
+        version = (directory / ".muse-version").read_text(encoding="utf-8").strip()
+    except OSError:
+        return launcher
+    candidate = directory / f"muse-bin-{version}"
+    return candidate if version and candidate.is_file() else launcher
+
+
+def runtime_dirs(binary: Path) -> tuple[Path, ...]:
+    """Host paths muse needs inside the envelope, bound read-only: the release binary.
+    HAPAX_MUSE_RUNTIME_DIRS (colon-separated) replaces the default, for a relocated install."""
+
+    declared = os.environ.get("HAPAX_MUSE_RUNTIME_DIRS", "")
+    candidates = [Path(p) for p in declared.split(":") if p] if declared else [binary]
+    return tuple(p for p in candidates if p.exists())
+
+
+def run_enveloped(
+    binary: Path, text: str, auth: Path, scratch: Path
+) -> subprocess.CompletedProcess:
+    """Render and run muse inside the declared envelope. Raises EnvelopeRefusal."""
+
+    workspace = scratch / "workspace"
+    workspace.mkdir()
+    prompt_file = scratch / "review-prompt.md"
+    prompt_file.write_text(text, encoding="utf-8")
+    declaration = EnvelopeDeclaration(
+        harness="muse",
+        argv=tuple(command(str(binary), Path("/home/job/review-prompt.md"), Path("/work"))),
+        binaries=runtime_dirs(binary),
+        workdir=workspace,
+        home_files=(DeclaredFile(source=prompt_file, target="review-prompt.md"),),
+        credentials=(CredentialBind(source=auth, target=".config/muse/auth.json"),),
+        env={"MUSE_NO_AUTO_UPDATE": "1"},
+    )
+    rendered = render(declaration, run_root=scratch / "run")
+    return execute(rendered, timeout=1800)
+
+
 def main() -> int:
     prompt = sys.stdin.read()
     if not prompt.strip():
@@ -64,20 +126,23 @@ def main() -> int:
     binary = muse_bin()
     if not binary:
         return refuse(WRAPPER, "muse binary not found; install muse or set HAPAX_MUSE_BIN")
+    auth = Path.home() / ".config" / "muse" / "auth.json"
+    if not auth.is_file():
+        return refuse(
+            WRAPPER,
+            "no ~/.config/muse/auth.json: the envelope carries muse's credential only as that "
+            "file, bound read-only; next action (coordinator): sign muse in on this host",
+        )
     with tempfile.TemporaryDirectory(prefix="hapax-muse-review-") as tmp:
-        workspace = Path(tmp) / "workspace"
-        workspace.mkdir()
-        prompt_file = Path(tmp) / "review-prompt.md"
-        prompt_file.write_text(text, encoding="utf-8")
         try:
-            result = subprocess.run(
-                command(binary, prompt_file, workspace),
-                cwd=workspace,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except OSError as exc:
+            result = run_enveloped(release_binary(Path(binary)), text, auth, Path(tmp))
+        except EnvelopeRefusal as exc:
+            return refuse(WRAPPER, f"envelope refused: {exc}")
+        except EnvelopeCarrierError as exc:
+            # The seat runs only inside the declared envelope; the constitution substitutes
+            # another family rather than running muse unenveloped.
+            return refuse(WRAPPER, f"{exc} (coordinator)")
+        except (OSError, subprocess.TimeoutExpired) as exc:
             return refuse(WRAPPER, f"failed to launch muse ({type(exc).__name__})")
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
