@@ -2,8 +2,9 @@
 
 This register preserves the adversarial evidence gathered while evaluating the
 discarded caller-authenticated root-install protocol from PR #4551. It is not a
-design for that protocol. The source-only OOM policy change deliberately has no
-production mutation or authoritative live-verification path.
+design for that protocol. The source-only OOM and APC package changes
+deliberately have no production mutation or authoritative live-verification
+path.
 
 Any future root broker must start from an independently trusted launcher and a
 host-root-held trust anchor. Same-UID files, processes, environment variables,
@@ -22,6 +23,7 @@ replacement. Source conformance is not evidence that cutover occurred.
 | Replay without freshness | A previously valid installation or canary receipt can be copied back after source or live state changes. | Include monotonic generation and freshness in signed request and result records; reject consumed and superseded generations. |
 | Caller-selected finalizer | A sealed same-UID executable containing only successful exit can replace the intended final verifier. | Never execute caller-selected completion code; the broker owns its verifier and pins its executable descriptors before request parsing. |
 | Caller-selected production mode | An environment variable or argument can exempt the caller from the production refusal it is meant to enforce. | Refuse production as the first entrypoint action unless invocation arrived through an independently authenticated broker channel. |
+| Caller-owned privileged orchestrator | A same-UID process can rewrite a staged Bash installer while it is being interpreted, or replace a validated payload before a later `sudo install` reopens it. Fixed destination paths and exact-Git checks do not bind the bytes that cross the privilege boundary. | A caller-owned interpreter must never orchestrate production root mutation. The independent broker consumes immutable authenticated data through pinned descriptors and owns every privileged command. |
 | Namespace-local PID 1 | In a nested PID and mount namespace with fresh procfs, `/proc/self/mountinfo` and `/proc/1/mountinfo` describe the same attacker-created namespace. | Obtain trusted host namespace and root descriptors from the launcher; do not use namespace-local PID 1 as a host anchor. |
 | Effective-capability-only check | A process with `CapEff=0` and nonzero permitted, inheritable, or ambient sets can regain privilege. | Clear all capability sets, establish `NoNewPrivs`, and reject set-ID and file-capability executables before parsing untrusted input. |
 | Set-ID or file-capability re-entry | A selected helper can restore privilege at `execve` even after the checking process appears unprivileged. | Broker pins approved executables by descriptor and rejects set-ID bits, `security.capability`, unsafe ownership, modes, and aliases. |

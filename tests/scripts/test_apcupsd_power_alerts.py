@@ -1126,6 +1126,39 @@ def test_apcupsd_real_install_rejects_home_spoofing(
     assert "HOME does not match NSS home" in result.stderr
 
 
+def test_production_apcupsd_install_is_retired_before_lock_or_live_mutation() -> None:
+    source = INSTALLER.read_text(encoding="utf-8")
+    configure = '[ "$INSTALL" -eq 0 ] || configure_root_required_state_domain'
+    refusal = '[ "$INSTALL" -eq 0 ] || refuse_unbrokered_production_install'
+    reexec = '[ "$INSTALL" -eq 0 ] || reexec_with_safe_root_required_lock'
+
+    assert refusal in source
+    assert source.index(configure) < source.index(refusal) < source.index(reexec)
+    function = source[
+        source.index("refuse_unbrokered_production_install()") : source.index(
+            "acquire_root_required_lock()"
+        )
+    ]
+    assert "HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT" in function
+    assert 'return "$ROOT_REQUIRED_RC"' in function
+    assert "$APC_REPAIR_ACTION" in function
+    assert "separately runtime-authorized root-broker" in source
+
+
+def test_apcupsd_repair_guidance_never_advertises_retired_bare_install() -> None:
+    surfaces = (
+        INSTALLER,
+        REPO_ROOT / "scripts/hapax-post-merge-deploy",
+        REPO_ROOT / "scripts/hapax-root-required-deploy-audit",
+        HELPER,
+        REPO_ROOT / "systemd/README.md",
+    )
+    for surface in surfaces:
+        content = surface.read_text(encoding="utf-8")
+        assert "install-apcupsd-power-alerts --install" not in content, surface
+        assert "--install --verify-live" not in content, surface
+
+
 def test_apcupsd_isolated_test_mode_rejects_state_path_escape(tmp_path: Path) -> None:
     escaped_lock = tmp_path.parent / f"{tmp_path.name}-escaped-apcupsd.lock"
     env = {
