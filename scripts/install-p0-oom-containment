@@ -7,6 +7,7 @@ elif [[ "$-" != *p* ]]; then
     printf '%s\n' "OOM containment installer requires Bash privileged mode; next action: execute the installer directly or let hapax-post-merge-deploy invoke its sealed copy" >&2
     [[ -n "" ]]
 else
+# Keep the body in this branch: moving it into an if condition suppresses errexit.
 set -euo pipefail
 ORIGINAL_ARGS=("$@")
 readonly -a AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES=(
