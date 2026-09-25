@@ -89,6 +89,10 @@ APPENDIX_OPTIONAL_USER_UNITS = frozenset(
         "hapax-imagination.service",
     }
 )
+HOST_PROFILE_BY_HOSTNAME = {
+    "hapax-appendix": "appendix",
+    "hapax-podium": "podium",
+}
 GOVERNED_MEMORY_ASSIGNMENT = re.compile(
     r"^[ \t]*(?:MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[ \t]*=",
     re.MULTILINE,
@@ -252,11 +256,20 @@ def derive_host_policy(
                 f"invalid MemTotal GiB interval in {table_context} at line {line_number}: "
                 f"{min_gib}..{max_gib}"
             )
-        if not row_hostname:
-            raise HostPolicyError(f"empty hostname in {table_context} at line {line_number}")
         if profile not in {"appendix", "podium"}:
             raise HostPolicyError(
                 f"invalid profile name in {table_context} at line {line_number}: {profile}"
+            )
+        expected_profile = HOST_PROFILE_BY_HOSTNAME.get(row_hostname)
+        if expected_profile is None:
+            raise HostPolicyError(
+                f"invalid hostname in {table_context} at line {line_number}: "
+                f"{row_hostname or 'empty'}"
+            )
+        if profile != expected_profile:
+            raise HostPolicyError(
+                f"hostname/profile mismatch in {table_context} at line {line_number}: "
+                f"{row_hostname} requires profile {expected_profile}, got {profile or 'empty'}"
             )
         row_context = f"{table_context} line {line_number}"
         app_high_bytes = _memory_bytes(app_high, field="app_memory_high", table_context=row_context)
