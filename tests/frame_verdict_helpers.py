@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NoReturn
 
 import pytest
 
@@ -26,6 +27,43 @@ def alias_member_tree(root: Path) -> Path:
     (root / "tools/unselected").write_bytes(b"unrelated bytes\n")
     (root / "bin/tools").symlink_to("../tools", target_is_directory=True)
     return root
+
+
+def oracle_unexecuted(reason: str) -> NoReturn:
+    """An oracle that cannot run: a FAILURE when HAPAX_FRAME_ORACLE_REQUIRED=1, else a skip.
+
+    Read at the moment of use, so a required run can never finish on an unexecuted oracle.
+    """
+    if os.environ.get("HAPAX_FRAME_ORACLE_REQUIRED") == "1":
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
+def isolated_producer_argv() -> list[str]:
+    """The read-only, network-less bwrap prefix for executing the installed producer.
+
+    Every prerequisite (the producer file, bwrap, a working isolation probe) goes through
+    `oracle_unexecuted`, so the required/optional rule applies before any comparison runs.
+    """
+    if not PRODUCER_BUILTIN_PATH.is_file():
+        oracle_unexecuted(f"FRAME_PRODUCER_ABSENT:{PRODUCER_BUILTIN_PATH}; parity not executed")
+    bwrap = shutil.which("bwrap")
+    if bwrap is None:
+        oracle_unexecuted("bwrap unavailable; isolated producer parity not executed")
+    isolation = [
+        bwrap,
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev",
+        "/dev",
+        "--unshare-net",
+        "--die-with-parent",
+    ]
+    probe = subprocess.run([*isolation, "/usr/bin/true"], capture_output=True, text=True)
+    if probe.returncode:
+        oracle_unexecuted(f"isolated producer parity not executed: {probe.stderr.strip()}")
+    return isolation
 
 
 def latest_epoch_dir(procedure_root: Path) -> Path | None:

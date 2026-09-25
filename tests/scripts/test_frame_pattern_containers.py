@@ -2,7 +2,6 @@
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 
@@ -10,7 +9,7 @@ import pytest
 import yaml
 
 from shared import frame_verdicts as fv
-from tests.frame_verdict_helpers import PRODUCER_BUILTIN_PATH
+from tests.frame_verdict_helpers import isolated_producer_argv
 from tests.scripts.test_hapax_methodology_dispatch import (
     _dispatch_receipt_only_scope,
     _frame_procedure_root,
@@ -233,25 +232,9 @@ def test_main_scalar_star_producer_parity(tmp_path, monkeypatch, capsys):
         "the producer's one-character iteration but is not the required declaration refusal."
     )
     # Execute only the installed reader on synthetic files with a read-only host
-    # and no network. Absence of this environment is explicitly an unexecuted oracle.
-    if not PRODUCER_BUILTIN_PATH.is_file():
-        pytest.skip(f"FRAME_PRODUCER_ABSENT:{PRODUCER_BUILTIN_PATH}; parity not executed")
-    bwrap = shutil.which("bwrap")
-    if bwrap is None:
-        pytest.skip("bwrap unavailable; isolated producer parity not executed")
-    isolation = [
-        bwrap,
-        "--ro-bind",
-        "/",
-        "/",
-        "--dev",
-        "/dev",
-        "--unshare-net",
-        "--die-with-parent",
-    ]
-    probe = subprocess.run([*isolation, "/usr/bin/true"], capture_output=True, text=True)
-    if probe.returncode:
-        pytest.skip(f"isolated producer parity not executed: {probe.stderr.strip()}")
+    # and no network. Absence of this environment is explicitly an unexecuted oracle: a failure
+    # under HAPAX_FRAME_ORACLE_REQUIRED=1, a skip otherwise.
+    isolation = isolated_producer_argv()
     code = """
 import sys
 from pathlib import Path
@@ -275,3 +258,72 @@ print('installed fs.content_query selects candidate for both star spellings')
     assert result.stdout.strip() == (
         "installed fs.content_query selects candidate for both star spellings"
     )
+
+
+# Review finding at 5535429ad (major): the parity wrapper above skipped on an absent producer,
+# absent bwrap or a failed isolation probe BEFORE producer_glob_bytes could apply
+# HAPAX_FRAME_ORACLE_REQUIRED, so required verification could finish without executing the
+# comparison. Each prerequisite now goes through the helper's own required/optional rule.
+
+
+@pytest.mark.parametrize("prerequisite", ["producer", "bwrap", "probe"])
+@pytest.mark.parametrize("required", [None, "0", "1"])
+def test_isolated_producer_prerequisites_fail_when_the_oracle_is_required(
+    tmp_path, monkeypatch, prerequisite: str, required: str | None
+) -> None:
+    import tests.frame_verdict_helpers as helpers
+
+    present = tmp_path / "frame/procedure/builtin.py"
+    present.parent.mkdir(parents=True)
+    present.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        helpers,
+        "PRODUCER_BUILTIN_PATH",
+        tmp_path / "absent/builtin.py" if prerequisite == "producer" else present,
+    )
+    if prerequisite == "bwrap":
+        monkeypatch.setattr(helpers.shutil, "which", lambda name: None)
+    else:
+        monkeypatch.setattr(helpers.shutil, "which", lambda name: f"/usr/bin/{name}")
+    if prerequisite == "probe":
+        monkeypatch.setattr(
+            helpers.subprocess,
+            "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args, 1, "", "no userns"),
+        )
+    if required is None:
+        monkeypatch.delenv("HAPAX_FRAME_ORACLE_REQUIRED", raising=False)
+    else:
+        monkeypatch.setenv("HAPAX_FRAME_ORACLE_REQUIRED", required)
+    # Capture the outcome instead of using pytest.raises: an escaping Skipped would turn this
+    # test itself into a skip, which is exactly the silent pass the finding describes.
+    expected = pytest.fail.Exception if required == "1" else pytest.skip.Exception
+    try:
+        helpers.isolated_producer_argv()
+    except (pytest.fail.Exception, pytest.skip.Exception) as outcome:
+        caught: BaseException = outcome
+    else:
+        raise AssertionError("an absent prerequisite returned an isolation argv")
+    assert type(caught) is expected, (required, prerequisite, type(caught).__name__)
+    assert "not executed" in str(caught) or "FRAME_PRODUCER_ABSENT" in str(caught)
+
+
+def test_isolated_producer_prerequisites_return_the_isolation_argv_when_present(
+    tmp_path, monkeypatch
+) -> None:
+    import tests.frame_verdict_helpers as helpers
+
+    present = tmp_path / "frame/procedure/builtin.py"
+    present.parent.mkdir(parents=True)
+    present.write_text("", encoding="utf-8")
+    monkeypatch.setattr(helpers, "PRODUCER_BUILTIN_PATH", present)
+    monkeypatch.setattr(helpers.shutil, "which", lambda name: "/usr/bin/bwrap")
+    monkeypatch.setattr(
+        helpers.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    monkeypatch.setenv("HAPAX_FRAME_ORACLE_REQUIRED", "1")
+    argv = helpers.isolated_producer_argv()
+    assert argv[0] == "/usr/bin/bwrap"
+    assert "--unshare-net" in argv and "--ro-bind" in argv
