@@ -55,13 +55,25 @@ ACTOR = re.compile(
     r"(?:(?:MINTED|minted|filed|created|drafted)(?: offered)? by\s+)?"
     r"([A-Za-z0-9/._-]+)(.{0,40})"
 )
-# v3 leaves this set hardcoded. Reading §0 here would change who counts as the seat.
-SEAT_ROLES = {"dev1", "claude/dev1", "glmcp/dev1"}
 NULLS = ("", "null", "none", "~")
 OPEN_STATUS = {"offered", "blocked", "claimed", "in_progress", "pr_open"}
 
 
-def actor_is_seat(log_line: str) -> bool:
+def roles_from_seat_text(text: str) -> set[str]:
+    """Seat actors named by the §0 incumbent row. No role is added by hand."""
+    roles: set[str] = set()
+    named = re.search(r"process role is `([^`]+)`", text)
+    if named:
+        roles.add(named.group(1).strip())
+    row = re.search(r"^\| incumbent \| ([a-z]*/[a-z0-9-]*)", text, re.M)
+    if row:
+        full = row.group(1)
+        roles.add(full)
+        roles.add(full.split("/", 1)[1])
+    return roles
+
+
+def actor_is_seat(log_line: str, roles: set[str]) -> bool:
     """Author is the token after the stamp, not a search for the word seat.
 
     v1 treated "dev3: … at the seat's request" as seat-authored.
@@ -70,7 +82,7 @@ def actor_is_seat(log_line: str) -> bool:
     if not match:
         return False
     actor, rest = match.group(1).rstrip(":"), match.group(2)
-    return actor in SEAT_ROLES or bool(re.match(r"\s*\((coordinator|the coordinator)", rest))
+    return actor in roles or bool(re.match(r"\s*\((coordinator|the coordinator)", rest))
 
 
 def git(vault: Path, *args: str, stdin: bytes | None = None) -> bytes:
@@ -265,6 +277,7 @@ def project(
     ages: dict[str, float | None] = {}
     rels = [rel for rel in list_md(vault, commit, TASKS) if "/" not in rel[len(TASKS) + 1 :]]
     texts = read_many(vault, commit, rels)
+    roles = roles_from_seat_text(read_many(vault, commit, [SEAT_FILE]).get(SEAT_FILE, ""))
     for rel in rels:
         text = texts.get(rel, "")
         fm = front(text)
@@ -302,7 +315,7 @@ def project(
             classes.add("S3")
         if "S5" not in off and status == "offered" and not impl and not blocked and unassigned:
             # No session log means the author is unknown, so the row stays in.
-            if not (first and actor_is_seat(first)):
+            if not (first and actor_is_seat(first, roles)):
                 classes.add("S5")
         if classes:
             members[task_id] = classes
@@ -548,6 +561,14 @@ def incumbent_identity(vault: Path) -> tuple[str, str]:
     return process, inbox
 
 
+def _unavailable_line(vault: Path) -> str:
+    shown = _display_path(cache_dir(vault) / "seat-owed-set.txt")
+    return (
+        "OWED BY THE SEAT (unavailable: no precomputed set; "
+        f"next: hapax-seat-owed-set --text-block; full list: {shown})"
+    )
+
+
 def _hook_json(text: str) -> str:
     return json.dumps(
         {
@@ -558,11 +579,6 @@ def _hook_json(text: str) -> str:
         },
         ensure_ascii=True,
     )
-
-
-def _unavailable_line(vault: Path) -> str:
-    shown = _display_path(cache_dir(vault) / "seat-owed-set.txt")
-    return f"OWED BY THE SEAT (unavailable: no precomputed set; full list: {shown})"
 
 
 def session_start_payload(vault: Path) -> str:
@@ -629,7 +645,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # a hook failure must still print one line
             payload = _hook_json(
                 "OWED BY THE SEAT (unavailable: "
-                f"{exc.__class__.__name__}; full list: "
+                f"{exc.__class__.__name__}; next: hapax-seat-owed-set --text-block; full list: "
                 f"{_display_path(cache_dir(vault) / 'seat-owed-set.txt')})"
             )
         sys.stdout.write(payload)

@@ -151,6 +151,75 @@ def test_prose_await_the_coordinator_is_s1(tmp_path: Path) -> None:
     assert found["await-row"] == ["S1"]
 
 
+def test_s2_authorized_unassigned_is_owed_without_a_vault(tmp_path: Path) -> None:
+    _write_row(
+        tmp_path,
+        "s2-row",
+        _offered("s2-row", impl="true", created="2026-09-24T20:17:27Z"),
+        "## Session log\n- 2026-09-24T20:17:27Z dev3: drafted for a lane\n",
+    )
+    found = _members(_run(tmp_path, "--commit", "WORKTREE", "--at", AT_2217, "--json"))
+    assert found["s2-row"] == ["S2"]
+    _write_row(
+        tmp_path,
+        "s2-row",
+        _offered("s2-row", impl="false", created="2026-09-24T20:17:27Z"),
+        "## Session log\n- 2026-09-24T20:17:27Z dev3: drafted for a lane\n",
+    )
+    found = _members(_run(tmp_path, "--commit", "WORKTREE", "--at", AT_2217, "--json"))
+    assert "S2" not in found["s2-row"]
+    assert "S5" in found["s2-row"]
+
+
+def test_s3_closure_marker_on_a_claimed_row_without_a_vault(tmp_path: Path) -> None:
+    _write_row(
+        tmp_path,
+        "s3-row",
+        "\n".join(
+            [
+                "task_id: s3-row",
+                "status: claimed",
+                "blocked_reason: null",
+                "assigned_to: dev3",
+                "implementation_authorized: false",
+                "created_at: 2026-09-24T19:00:00Z",
+            ]
+        ),
+        "closure requested\n",
+    )
+    found = _members(_run(tmp_path, "--commit", "WORKTREE", "--at", AT_2217, "--json"))
+    assert found["s3-row"] == ["S3"]
+    _write_row(
+        tmp_path,
+        "s3-row",
+        "\n".join(
+            [
+                "task_id: s3-row",
+                "status: claimed",
+                "blocked_reason: null",
+                "assigned_to: dev3",
+                "implementation_authorized: false",
+                "created_at: 2026-09-24T19:00:00Z",
+            ]
+        ),
+        "work continues\n",
+    )
+    found = _members(_run(tmp_path, "--commit", "WORKTREE", "--at", AT_2217, "--json"))
+    assert "s3-row" not in found
+
+
+def test_dev1_seat_log_author_is_a_seat_action(tmp_path: Path) -> None:
+    _seat(tmp_path, "| incumbent | claude/dev1 — The process role is `dev1-seat`. |")
+    _write_row(
+        tmp_path,
+        "seat-authored",
+        _offered("seat-authored", created="2026-09-24T20:17:27Z"),
+        "## Session log\n- 2026-09-24T20:17:27Z dev1-seat: drafted the row\n",
+    )
+    found = _members(_run(tmp_path, "--commit", "WORKTREE", "--at", AT_2217, "--json"))
+    assert "seat-authored" not in found
+
+
 def test_logless_offered_row_is_in_the_set(tmp_path: Path) -> None:
     _write_row(
         tmp_path,
@@ -267,6 +336,7 @@ def test_missing_cache_emits_unavailable_inside_two_seconds(tmp_path: Path) -> N
     assert elapsed < 2
     text = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
     assert text.startswith("OWED BY THE SEAT (unavailable:")
+    assert "hapax-seat-owed-set --text-block" in text
     assert "seat-owed-set.txt" in text
     assert "\n" not in text
 
