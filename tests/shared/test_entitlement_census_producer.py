@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -327,8 +328,10 @@ def test_no_readback_probes_the_claude_subscription() -> None:
     claude = [e for e in shipped.entitlements if e.entitlement_id == "anthropic-claude-max"]
     assert claude and not claude[0].readbacks
     for spec in READBACKS.values():
-        if "anthropic.com" in spec.url:
-            assert spec.url.endswith("/v1/models"), spec.url
+        parts = urllib.parse.urlsplit(spec.url)
+        host = parts.hostname or ""
+        if host == "anthropic.com" or host.endswith(".anthropic.com"):
+            assert parts.path == "/v1/models", spec.url
 
 
 # --- unsafe case 3: HTTP 401 rendered as held -> state dead ------------------------------------------
@@ -771,6 +774,31 @@ def test_misclassified_shape_emits_resource_pool_change() -> None:
     )
     kinds = {(d.surface_id, d.delta_kind) for d in run.deltas}
     assert ("local_compute.fugu_surface", DeltaKind.RESOURCE_POOL_CHANGED) in kinds
+
+
+def test_reclassified_shape_clears_the_misclassification_without_a_new_capability() -> None:
+    """The registry owner replaces the misfiled shape with a model_provider one. Binding both ids
+    ahead of that edit means the delta clears by itself, and nothing reads as undeclared."""
+    config = _config(
+        [
+            _decl(
+                "fugu",
+                provider="sakana",
+                credential_names=["sakana-fugu-apikey"],
+                registry_shape_ids=["local_compute.fugu_surface", "model_provider.fugu"],
+                expected_shape_class="model_provider",
+            )
+        ]
+    )
+    after = {
+        "routes": [],
+        "omitted_capability_shapes": [
+            {"shape_id": "model_provider.fugu", "shape_class": "model_provider"}
+        ],
+    }
+    run = _run(config, holdings=[_holdings(filestore=("sakana-fugu-apikey",))], registry=after)
+    assert run.deltas == []
+    assert _row(run, "fugu").declared_shapes == ("model_provider.fugu",)
 
 
 def test_delta_ids_are_stable_across_runs_so_intake_never_remints() -> None:

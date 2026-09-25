@@ -2291,3 +2291,13 @@ def write_outputs(
     for path, text in rendered.items():
         _atomic_write(path, text)
     return {path.name: path for path in rendered}
+
+
+_PYDANTIC_DYNAMIC_ENTRYPOINTS = (
+    ReadbackRef._allow_listed,
+    DeclaredReference._dated,
+    HostBinding._target,
+    ServingEndpoint._bare_origin,
+    EntitlementDecl._probe_rules,
+    CensusConfig._unique,
+)

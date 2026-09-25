@@ -125,7 +125,7 @@
       "credential_names": ["sakana-fugu-apikey", "sakana-api-key"],
       "harness_bins": ["codex-fugu", "claude-fugu"],
       "readbacks": [{"readback_id": "sakana_usage", "secret": "sakana-fugu-apikey"}],
-      "registry_shape_ids": ["local_compute.ornith_fugu_sakana_surface"],
+      "registry_shape_ids": ["local_compute.ornith_fugu_sakana_surface", "model_provider.sakana_fugu_subscription"],
       "expected_shape_class": "model_provider",
       "notes": "Registry files this remote subscription as local_compute (E0 O3)."
     },
@@ -147,6 +147,7 @@
     },
     {
       "entitlement_id": "xai-supergrok-heavy",
+      "registry_shape_ids": ["model_provider.xai_supergrok_heavy"],
       "provider": "xai",
       "kind": "cognition",
       "cost_class": "subscription",
@@ -177,6 +178,7 @@
     },
     {
       "entitlement_id": "meta-muse",
+      "registry_shape_ids": ["model_provider.meta_muse"],
       "provider": "meta",
       "kind": "cognition",
       "cost_class": "subscription",
@@ -185,6 +187,7 @@
     },
     {
       "entitlement_id": "xiaomi-mimo-pro-gui",
+      "registry_shape_ids": ["model_provider.xiaomi_mimo"],
       "provider": "xiaomi",
       "kind": "cognition",
       "cost_class": "subscription",
@@ -194,6 +197,7 @@
     },
     {
       "entitlement_id": "xiaomi-mimo-token-plan",
+      "registry_shape_ids": ["model_provider.xiaomi_mimo"],
       "provider": "xiaomi",
       "kind": "cognition",
       "cost_class": "unobserved",
@@ -202,6 +206,7 @@
     },
     {
       "entitlement_id": "qwen-cloud-coding-plan-pro",
+      "registry_shape_ids": ["model_provider.qwen_cloud_coding_plan"],
       "provider": "alibaba",
       "kind": "cognition",
       "cost_class": "subscription",
@@ -214,6 +219,7 @@
     },
     {
       "entitlement_id": "verboo-code-ultra",
+      "registry_shape_ids": ["model_provider.verboo_code_ultra"],
       "provider": "verboo",
       "kind": "cognition",
       "cost_class": "subscription",
@@ -225,6 +231,7 @@
     },
     {
       "entitlement_id": "featherless-request-pricing",
+      "registry_shape_ids": ["model_provider.featherless_request_pricing"],
       "provider": "featherless",
       "kind": "cognition",
       "cost_class": "prepaid",
@@ -236,6 +243,7 @@
     },
     {
       "entitlement_id": "perplexity-max-gui",
+      "registry_shape_ids": ["model_provider.perplexity"],
       "provider": "perplexity",
       "kind": "grounding",
       "cost_class": "subscription",
@@ -245,6 +253,7 @@
     },
     {
       "entitlement_id": "perplexity-api-credits",
+      "registry_shape_ids": ["model_provider.perplexity"],
       "provider": "perplexity",
       "kind": "grounding",
       "cost_class": "prepaid",
@@ -272,6 +281,7 @@
     },
     {
       "entitlement_id": "huggingface-pro",
+      "registry_shape_ids": ["model_provider.huggingface_pro"],
       "provider": "huggingface",
       "kind": "cognition",
       "cost_class": "subscription",
@@ -301,6 +311,7 @@
     },
     {
       "entitlement_id": "cohere",
+      "registry_shape_ids": ["model_provider.cohere"],
       "provider": "cohere",
       "kind": "cognition",
       "cost_class": "unobserved",

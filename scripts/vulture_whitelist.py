@@ -5184,3 +5184,30 @@ _ = (
     _charter_write_obligation_report,
     _charter_obligation_breaches,
 )
+
+# Entitlement census producer: these are called only from the extensionless
+# ``scripts/hapax-entitlement-census`` (a determination-producers.json row), which
+# the project vulture pass does not scan.
+from shared.entitlement_census import (
+    collect_holdings as _census_collect_holdings,
+)
+from shared.entitlement_census import (
+    default_http_get as _census_default_http_get,
+)
+from shared.entitlement_census import (
+    default_resolve_secret as _census_default_resolve_secret,
+)
+from shared.entitlement_census import (
+    load_census_config as _census_load_census_config,
+)
+from shared.entitlement_census import (
+    run_census as _census_run_census,
+)
+
+_ = (
+    _census_collect_holdings,
+    _census_default_http_get,
+    _census_default_resolve_secret,
+    _census_load_census_config,
+    _census_run_census,
+)
