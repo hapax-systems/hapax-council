@@ -68,9 +68,11 @@ for name in os.listdir("/proc"):
                 target = os.readlink(f"{fd_dir}/{fd}")
             except OSError:
                 continue
+            owner = os.path.realpath(os.path.dirname(target))
             if target == lock or (
                 os.path.basename(target) == "index.lock"
-                and repo in os.path.realpath(os.path.dirname(target) or target)
+                and os.path.basename(owner) == ".git"
+                and os.path.dirname(owner) == repo
             ):
                 held = True
                 break
@@ -164,6 +166,9 @@ main() {
       local moved
       moved="$(vault_snapshot_apply_reap "$lock" "$EVIDENCE_DIR" "$decision")"
       log "reaped index.lock -> ${moved}"
+    else
+      log "kept index.lock (${decision}). Next action: leave the lock in place until it is older than ${INTERVAL_SEC}s and no git on either host holds it, then rerun the unit. The snapshot is refused so the failure page fires."
+      exit 1
     fi
   fi
 

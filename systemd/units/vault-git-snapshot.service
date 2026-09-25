@@ -7,6 +7,5 @@ OnFailure=notify-failure@%n.service
 Type=oneshot
 ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/vault-git-snapshot
 Environment=HOME=%h
-Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
 # A latched oneshot would stay active and hide the next failure.
 RemainAfterExit=no

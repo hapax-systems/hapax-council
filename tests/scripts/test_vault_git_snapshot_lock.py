@@ -262,6 +262,95 @@ def test_ssh_probe_returns_the_remote_holder_count(tmp_path: Path) -> None:
     assert result.stdout.strip() == "4"
 
 
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True)
+
+
+def _successful_snapshot_env(tmp_path: Path) -> dict[str, str]:
+    src = tmp_path / "src"
+    src.mkdir()
+    subprocess.run(["git", "init", "-b", "master", str(src)], check=True, capture_output=True)
+    _git(src, "config", "user.email", "t@example.com")
+    _git(src, "config", "user.name", "t")
+    (src / "f").write_text("a\n")
+    _git(src, "add", "f")
+    _git(src, "commit", "-m", "init")
+    bare = tmp_path / "mirror.git"
+    subprocess.run(
+        ["git", "init", "--bare", "-b", "master", str(bare)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "--git-dir", str(bare), "fetch", str(src), "master:master"],
+        check=True,
+        capture_output=True,
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    ssh = bin_dir / "ssh"
+    ssh.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        "  *python3*) printf '0\\n' ;;\n"
+        "  *status*) printf '2\\n' ;;\n"
+        "  *) exit 0 ;;\n"
+        "esac\n"
+    )
+    ssh.chmod(0o755)
+    git_wrap = bin_dir / "git"
+    git_wrap.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "-C" ] && [ "$3" = "fetch" ]; then\n'
+        f'  exec /usr/bin/git -C "$2" fetch --quiet {src} master:master\n'
+        "fi\n"
+        'exec /usr/bin/git "$@"\n'
+    )
+    git_wrap.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    env["HOME"] = str(tmp_path)
+    env["VAULT_SNAPSHOT_LOCAL_REPO"] = str(src)
+    env["VAULT_SNAPSHOT_BARE"] = str(bare)
+    env["VAULT_SNAPSHOT_HOST"] = "podium.example"
+    env["VAULT_SNAPSHOT_PATH"] = "Documents/Personal"
+    env["VAULT_SNAPSHOT_BRANCH"] = "master"
+    env["VAULT_SNAPSHOT_INTERVAL_SEC"] = "1200"
+    env["VAULT_SNAPSHOT_LOCK_EVIDENCE"] = str(tmp_path / "evidence")
+    return env
+
+
+def _run_sourced_main(env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", 'set -euo pipefail; source "$1"; main', "bash", str(SCRIPT)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+
+def test_kept_lock_exits_nonzero_and_does_not_snapshot(tmp_path: Path) -> None:
+    env = _successful_snapshot_env(tmp_path)
+    src = Path(env["VAULT_SNAPSHOT_LOCAL_REPO"])
+    lock = src / ".git" / "index.lock"
+    lock.write_bytes(b"held")
+    result = _run_sourced_main(env)
+    assert result.returncode != 0
+    assert "keep young" in result.stdout
+    assert "Next action:" in result.stdout
+    assert "snapshotting vault" not in result.stdout
+    assert lock.read_bytes() == b"held"
+
+
+def test_snapshot_commits_and_fetches_when_the_vault_is_unlocked(tmp_path: Path) -> None:
+    env = _successful_snapshot_env(tmp_path)
+    result = _run_sourced_main(env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "committed 2 paths" in result.stdout
+    assert "mirror verified" in result.stdout
+
+
 def test_main_keeps_a_fresh_lock(tmp_path: Path) -> None:
     result = _run_main(tmp_path, lock_age_s=10, ssh_count="0")
     lock = tmp_path / "repo" / ".git" / "index.lock"
