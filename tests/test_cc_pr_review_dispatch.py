@@ -1305,6 +1305,55 @@ checklist: {}
             is None
         )
 
+    # M109-dispatch: gemini on #4731 @ d365d1101 answered with two byte-identical yaml
+    # fences and nothing else; the whole-reply single-fence rule recorded invalid-output
+    # and the PR could not reach quorum. Captured bytes, sha256 2b89fc93...09aa.
+    _GEMINI_DUPLICATE_FENCES = (
+        REPO_ROOT / "tests" / "fixtures" / "review-reply-gemini-4731-d365d1101-duplicate-fences.txt"
+    )
+    _ACCEPT_FENCE = "```yaml\nverdict: accept\nfindings: []\nchecklist: {}\n```"
+
+    def test_extract_review_rejects_duplicate_fences_that_differ(self) -> None:
+        other = self._ACCEPT_FENCE.replace("findings: []", "findings: []\n")
+        differing = "```yaml\nverdict: accept-with-findings\nfindings: []\nchecklist: {}\n```"
+        assert dispatch.extract_review(f"{self._ACCEPT_FENCE}\n{differing}") is None
+        assert dispatch.extract_review(f"{differing}\n{other}") is None
+
+    def test_extract_review_rejects_identical_fence_then_malformed_fence(self) -> None:
+        malformed = "```yaml\nverdict: block\nfindings:\n  - [\n```"
+        assert dispatch.extract_review(f"{self._ACCEPT_FENCE}\n{malformed}") is None
+        assert dispatch.extract_review(f"{malformed}\n{self._ACCEPT_FENCE}") is None
+
+    def test_extract_review_rejects_identical_fences_with_prose_or_other_fences(self) -> None:
+        fence = self._ACCEPT_FENCE
+        assert dispatch.extract_review(f"{fence}\nAgain, for clarity:\n{fence}") is None
+        assert dispatch.extract_review(f"{fence}\n```text\nnote\n```\n{fence}") is None
+        assert dispatch.extract_review(f"Review:\n{fence}\n{fence}") is None
+        # Trailing prose plus a non-yaml fence still spans the whole-reply pattern.
+        assert dispatch.extract_review(f"{fence}\n{fence}\nNote:\n```text\nx\n```") is None
+
+    def test_extract_review_accepts_identical_duplicate_fences_and_flags_them(self) -> None:
+        reply = self._GEMINI_DUPLICATE_FENCES.read_text(encoding="utf-8")
+        assert (
+            sha256(reply.encode("utf-8")).hexdigest()
+            == (
+                "2b89fc937cbcde104988a7d83fdcc3b827b788fe4cacdef8c413e6f4f11809aa"  # pragma: allowlist secret
+            )
+        )
+
+        parsed = dispatch.extract_review(reply)
+
+        assert parsed is not None
+        assert parsed["verdict"] == "accept-with-findings"
+        assert parsed["parse_path"] == "fence-duplicates"
+        assert parsed["duplicate_verdict_blocks"] == 1
+        assert [finding["line"] for finding in parsed["findings"]] == [845]
+        single = dispatch.extract_review(reply[: reply.index("```\n```yaml") + 3])
+        assert single is not None
+        assert {
+            k: v for k, v in parsed.items() if k not in {"parse_path", "duplicate_verdict_blocks"}
+        } == {k: v for k, v in single.items() if k != "parse_path"}
+
     def test_raw_yaml_reply_records_parse_path_and_excerpt(self, tmp_path: Path) -> None:
         reviewers = RecordingReviewers(
             replies={"codex": "verdict: accept\nfindings: []\nchecklist: {}\n"}
@@ -1338,6 +1387,60 @@ checklist: {}
         )
         by_family = {r["family"]: r for r in dossier["reviewers"]}
         assert by_family["codex"]["verdict"] == "invalid-output"
+
+    # M99: claude-1's #4737 reply was a narrated tool transcript cut at 4000 chars, so it
+    # could not be classified from bytes. An invalid-output reply is now kept whole
+    # (redacted, capped) with its true length and a hash.
+    _TRANSCRIPT_REPLY = (
+        "I'll examine the deploy script first.\n\n**Tool: Bash**\n```bash\nsed -n '1,9p' x\n```\n"
+        + "simulated tool output line\n" * 380
+        + "api_key=sk-livesecretvalue123 appears in the transcript\n"
+    )
+
+    def test_invalid_output_reply_is_captured_whole_and_redacted(self, tmp_path: Path) -> None:
+        reviewers = RecordingReviewers(replies={"codex": self._TRANSCRIPT_REPLY})
+        _result, _, _, note = _review(tmp_path, reviewers=reviewers)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        codex = {r["family"]: r for r in dossier["reviewers"]}["codex"]
+
+        assert codex["verdict"] == "invalid-output"
+        excerpt = codex["raw_reply_excerpt"]
+        assert len(self._TRANSCRIPT_REPLY) > dispatch.MAX_REVIEW_REPLY_EXCERPT_CHARS
+        assert "sk-livesecretvalue123" not in excerpt
+        assert "<redacted>" in excerpt
+        assert excerpt.endswith("appears in the transcript")
+        assert "context truncated" not in excerpt
+        assert codex["raw_reply_chars"] == len(self._TRANSCRIPT_REPLY)
+        # named for what it hashes: the stored excerpt, not the (secret-bearing) raw reply
+        assert codex["raw_reply_excerpt_sha256"] == sha256(excerpt.encode("utf-8")).hexdigest()
+        assert "raw_reply_sha256" not in codex
+
+    def test_oversized_invalid_output_capture_is_capped_and_says_so(self, tmp_path: Path) -> None:
+        reply = "x " * (dispatch.MAX_INVALID_REPLY_CAPTURE_CHARS)
+        reviewers = RecordingReviewers(replies={"codex": reply})
+        _result, _, _, note = _review(tmp_path, reviewers=reviewers)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+        codex = {r["family"]: r for r in dossier["reviewers"]}["codex"]
+
+        assert codex["verdict"] == "invalid-output"
+        assert "context truncated" in codex["raw_reply_excerpt"]
+        assert len(codex["raw_reply_excerpt"]) < dispatch.MAX_INVALID_REPLY_CAPTURE_CHARS + 100
+        assert codex["raw_reply_chars"] == len(reply)
+
+    def test_every_seat_records_its_elapsed_seconds(self, tmp_path: Path) -> None:
+        reviewers = RecordingReviewers(replies={"codex": "not yaml at all"})
+        _result, _, _, note = _review(tmp_path, reviewers=reviewers)
+        dossier = yaml.safe_load(
+            (note.parent / "task-a.review-dossier.yaml").read_text(encoding="utf-8")
+        )
+
+        for review in dossier["reviewers"]:
+            assert isinstance(review["elapsed_seconds"], float)
+            assert review["elapsed_seconds"] >= 0.0
 
     def test_malformed_raw_yaml_reply_records_invalid_output(self, tmp_path: Path) -> None:
         reviewers = RecordingReviewers(
@@ -5333,6 +5436,49 @@ payg_fallback: false
             "argv": ["--timeout-seconds", "24"],
             "timeout_env": "24",
         }
+
+    @pytest.mark.parametrize(("outer", "inner"), [(1200, "1140s"), (30, "24s")])
+    def test_default_runner_pins_agy_print_timeout_below_outer_timeout(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, outer: int, inner: str
+    ) -> None:
+        """M109-dispatch: agy's own --print-timeout defaulted to 20m0s, equal to the outer
+        1200 s kill, so the outer kill won and agy never reported its own timeout."""
+
+        fake = tmp_path / "hapax-agy-reviewer"
+        marker = tmp_path / "agy-wrapper-env.json"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "Path(os.environ['HAPAX_FAKE_AGY_MARKER']).write_text(\n"
+            "    json.dumps({\n"
+            "        'argv': sys.argv[1:],\n"
+            "        'timeout_env': os.environ.get('HAPAX_AGY_REVIEW_PRINT_TIMEOUT'),\n"
+            "    }),\n"
+            "    encoding='utf-8',\n"
+            ")\n"
+            "print('```yaml')\n"
+            "print('verdict: accept')\n"
+            "print('findings: []')\n"
+            "print('checklist: {}')\n"
+            "print('```')\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        monkeypatch.setenv("HAPAX_AGY_REVIEW_PRINT_TIMEOUT", "99m")
+        monkeypatch.setenv("HAPAX_FAKE_AGY_MARKER", str(marker))
+        family_cfg = {
+            "family": "gemini",
+            "reviewer_command": [str(fake), "--print-timeout", "99m"],
+            "timeout_seconds": outer,
+        }
+        seat = dispatch.review_team.Seat(id="gemini-1", family="gemini")
+
+        result = dispatch.default_reviewer_runner(seat, family_cfg, "prompt")
+
+        assert "verdict: accept" in result.stdout
+        captured = json.loads(marker.read_text(encoding="utf-8"))
+        assert captured == {"argv": ["--print-timeout", inner], "timeout_env": inner}
 
     def test_default_runner_rejects_malformed_review_task_hash(self) -> None:
         family_cfg = {

@@ -106,6 +106,9 @@ TASK_HASH_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 MAX_DIFF_CHARS = 80_000
 MAX_TASK_NOTE_CHARS = 60_000
 MAX_REVIEW_REPLY_EXCERPT_CHARS = 4_000
+#: An invalid-output reply is kept (redacted) up to this size so it can be classified
+#: from bytes (M99: claude-1's #4737 reply was cut at 4000 chars).
+MAX_INVALID_REPLY_CAPTURE_CHARS = 64_000
 MAX_REVIEW_RUNNER_STDERR_CHARS = 1_000
 CLAUDE_REVIEWER_TIMEOUT_MARGIN_SECONDS = 60.0
 #: Home whose CLI traces (codex rollouts, claude transcripts, kimi sessions) the quota readers of
@@ -566,6 +569,9 @@ def _task_scoped_paid_review_route_blocked_families(
 
 
 YAML_FENCE_FULL_RE = re.compile(r"\A```ya?ml\s*\n(.*?)```\s*\Z", re.DOTALL)
+_YAML_FENCE = r"```ya?ml[ \t]*\n(?:(?!```).)*?\n?```"
+YAML_FENCE_SEQUENCE_RE = re.compile(rf"{_YAML_FENCE}(?:\s*{_YAML_FENCE})+", re.DOTALL)
+YAML_FENCE_BODY_RE = re.compile(r"```ya?ml[ \t]*\n((?:(?!```).)*?)```", re.DOTALL)
 PARSEABLE_VERDICTS = {"accept", "accept-with-findings", "block"}
 #: Seat verdicts that are outages, never votes: the provider/route availability signals plus
 #: unparseable output. A family whose seats all return one of these is latched OUT.
@@ -2279,10 +2285,36 @@ def extract_review(reply: str) -> dict[str, Any] | None:
     reply = reply or ""
     full_fence = YAML_FENCE_FULL_RE.fullmatch(reply.strip())
     if full_fence is not None:
-        return _parse_review_yaml(full_fence.group(1), parse_path="fence")
+        # A reply of several fences also spans this pattern and then fails to parse as
+        # one block; only then is it judged as identical duplicates.
+        single = _parse_review_yaml(full_fence.group(1), parse_path="fence")
+        return single if single is not None else _identical_duplicate_fences_review(reply)
     if "```" in reply:
         return None
     return _parse_review_yaml(reply, parse_path="raw")
+
+
+def _identical_duplicate_fences_review(reply: str) -> dict[str, Any] | None:
+    """Accept a reply of 2+ yaml fences, and nothing else, that are one identical review.
+
+    Gemini repeated its whole verdict block (#4731 @ d365d1101, M109-dispatch). Every
+    block must parse, and all must parse to the same review: a differing or malformed
+    block could be a hidden ``block``, so either one stays invalid-output. Prose or a
+    non-yaml fence anywhere still fails, as #4102 intends.
+    """
+
+    blocks = YAML_FENCE_SEQUENCE_RE.fullmatch(reply.strip())
+    if blocks is None:
+        return None
+    bodies = YAML_FENCE_BODY_RE.findall(reply.strip())
+    if len(bodies) < 2:
+        return None
+    parsed = [_parse_review_yaml(body, parse_path="fence-duplicates") for body in bodies]
+    first = parsed[0]
+    if first is None or any(item != first for item in parsed[1:]):
+        return None
+    first["duplicate_verdict_blocks"] = len(parsed) - 1
+    return first
 
 
 class ReviewerProcessError(RuntimeError):
@@ -2445,6 +2477,37 @@ def _with_controlled_claude_reviewer_timeout(
     return controlled, timeout_value
 
 
+def _with_controlled_agy_reviewer_timeout(
+    cmd: list[str],
+    *,
+    outer_timeout: int,
+) -> tuple[list[str], str | None]:
+    """Pin agy's own --print-timeout below the outer kill (M109-dispatch).
+
+    The wrapper defaulted to 20m0s, equal to the registry's 1200 s outer timeout, so
+    the outer kill won the race and agy never reported its own timeout. This is the
+    claude wrapper's margin, rendered as a Go duration for the agy CLI.
+    """
+
+    if not cmd or Path(cmd[0]).name != "hapax-agy-reviewer":
+        return cmd, None
+    inner = f"{_inner_claude_reviewer_timeout_seconds(outer_timeout):g}s"
+    controlled: list[str] = []
+    skip_next = False
+    for part in cmd:
+        if skip_next:
+            skip_next = False
+            continue
+        if part == "--print-timeout":
+            skip_next = True
+            continue
+        if part.startswith("--print-timeout="):
+            continue
+        controlled.append(part)
+    controlled.extend(["--print-timeout", inner])
+    return controlled, inner
+
+
 def default_reviewer_runner(
     seat: review_team.Seat, family_cfg: dict[str, Any], prompt: str
 ) -> ReviewerRunnerResult:
@@ -2456,6 +2519,10 @@ def default_reviewer_runner(
         cmd,
         outer_timeout=timeout,
     )
+    cmd, controlled_agy_timeout = _with_controlled_agy_reviewer_timeout(
+        cmd,
+        outer_timeout=timeout,
+    )
     env = {
         **os.environ,
         "HAPAX_REVIEW_SEAT_ID": seat.id,
@@ -2463,6 +2530,8 @@ def default_reviewer_runner(
     }
     if controlled_claude_timeout is not None:
         env["HAPAX_CLAUDE_REVIEWER_TIMEOUT_SECONDS"] = controlled_claude_timeout
+    if controlled_agy_timeout is not None:
+        env["HAPAX_AGY_REVIEW_PRINT_TIMEOUT"] = controlled_agy_timeout
     for env_name in (
         public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV,
         "HAPAX_GLMCP_REVIEW_TASK_ID",
@@ -2559,6 +2628,13 @@ def dispatch_reviews(
     family_cfgs = {entry["family"]: entry for entry in review_team.review_family_entries(registry)}
 
     def run_one(index: int) -> dict[str, Any]:
+        started = time.monotonic()
+        review = _run_one_seat(index)
+        # Measured per seat, so reviewer timeouts are set from data (M109-dispatch).
+        review["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        return review
+
+    def _run_one_seat(index: int) -> dict[str, Any]:
         seat = constitution.seats[index]
         process_failed = False
         process_output = ""
@@ -2693,9 +2769,19 @@ def dispatch_reviews(
             else:
                 LOG.warning("reviewer %s output unparseable -> verdict invalid-output", seat.id)
                 verdict = "invalid-output"
+            capture: dict[str, Any] = {}
+            excerpt_limit = MAX_REVIEW_REPLY_EXCERPT_CHARS
+            if verdict == "invalid-output" and reply:
+                excerpt_limit = MAX_INVALID_REPLY_CAPTURE_CHARS
+                capture = {"raw_reply_chars": len(reply)}
             reply_excerpt = sanitize_reviewer_diagnostic(
-                reply or process_output or "", limit=MAX_REVIEW_REPLY_EXCERPT_CHARS
+                reply or process_output or "", limit=excerpt_limit
             )
+            if capture:
+                # the hash is of the stored (sanitized, bounded) excerpt, never the raw reply
+                capture["raw_reply_excerpt_sha256"] = hashlib.sha256(
+                    reply_excerpt.encode("utf-8")
+                ).hexdigest()
             outcome = {
                 "id": seat.id,
                 "family": seat.family,
@@ -2703,6 +2789,7 @@ def dispatch_reviews(
                 "findings": [],
                 "checklist": {},
                 "raw_reply_excerpt": reply_excerpt,
+                **capture,
                 **reviewer_diagnostic_fields(runner_stderr_excerpt),
             }
             if outage_cause:
