@@ -21,16 +21,17 @@ Adapter: `shared/local_judge.py` (`LocalJudge.verify(...)`, shadow-defaulted).
 - **Host:** appendix (hapax-appendix, 192.168.68.50) — the SDLC rig.
 - **GPU:** GPU1 (RTX 5060 Ti, 16 GB, sm_120 Blackwell). **GPU0 (3090) grounding is
   never touched** — the container is pinned to the 5060 Ti by UUID.
-- **Serving:** `ghcr.io/ggml-org/llama.cpp:server-cuda` (natively Blackwell-capable:
+- **Serving:** `ghcr.io/ggml-org/llama.cpp@sha256:841b199aed2649a748875b043b32fed2e8c2d4d87e1d563556817fb7fa44b72b` (natively Blackwell-capable:
   `ARCHS=...,1200`, `BLACKWELL_NATIVE_FP4=1`) on `:5001`, OpenAI-compatible `/v1`.
 - **Gateway:** podium LiteLLM (`:4000`) exposes it as the `local-judge` route, reached
   cross-rig at `http://192.168.68.50:5001/v1`.
 
 ## Deploy (appendix)
 
-Model (already present): `~/models/compassverifier-7b/CompassVerifier-7B.Q5_K_M.gguf`
-(5.4 GB; GGUF Q5_K_M). Pull from `opencompass/CompassVerifier-7B` and quantize, or
-fetch a community GGUF, if absent.
+Model source (already present):
+`~/models/compassverifier-7b/CompassVerifier-7B.Q5_K_M.gguf` (5.4 GB; GGUF
+Q5_K_M). The authorized canary copies it once into a root-owned SHA-addressed
+directory on the existing `/store-fast` NVMe and serves only that protected copy.
 
 Every command below mutates the appendix runtime and requires a task note whose
 frontmatter explicitly grants `runtime_mutation_authorized: true`. A source-only
@@ -42,9 +43,18 @@ must pass before the authenticated package command is requested.
 This canary temporarily stops the managed judge if it is active, starts an
 immutable-ID-tracked disposable container on port 15001, and restores the prior
 unit state before package installation. It never removes a container by name.
+Its fixed 24-request, 8-worker workload is deliberately synthetic: the deploy
+gate favors deterministic candidate-bound evidence over representative traffic,
+while the separate VerifierBench workflow below remains the quality benchmark.
 
 ```bash
 set -euo pipefail
+PATH=/usr/bin:/bin
+export PATH
+builtin unalias -a 2>/dev/null || true
+builtin unset -f docker nvidia-smi sudo systemctl curl jq awk sed grep stat \
+  id wc hostname date mktemp mv rm chmod sleep seq realpath 2>/dev/null || true
+builtin unset DOCKER_HOST DOCKER_CONTEXT
 runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
 authority_check="$HOME/.local/bin/hapax-post-merge-deploy"
 test -f "$authority_check"
@@ -59,6 +69,18 @@ test "${repo%/*}" = "$release_root"
 [[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]
 test "$(/usr/bin/stat -c %u -- "$repo")" = "$(/usr/bin/id -u)"
 candidate_sha="${repo##*/}"
+candidate_git() {
+  /usr/bin/env -i \
+    HOME=/nonexistent \
+    PATH=/usr/bin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_OPTIONAL_LOCKS=0 \
+    /usr/bin/git -C "$repo" "$@"
+}
 state="$HOME/.local/state/hapax/root-required"
 desired_receipt="$state/desired-receipts/oom-containment.sha"
 test -f "$desired_receipt"
@@ -70,24 +92,32 @@ receipt_mode="$(/usr/bin/stat -c %a -- "$desired_receipt")"
 test "$(/usr/bin/wc -c < "$desired_receipt")" = 41
 IFS= read -r desired_sha < "$desired_receipt"
 test "$desired_sha" = "$candidate_sha"
-source_unit_text="$(
-  /usr/bin/env -i \
-    HOME=/nonexistent \
-    PATH=/usr/bin:/bin \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    GIT_CONFIG_GLOBAL=/dev/null \
-    GIT_CONFIG_NOSYSTEM=1 \
-    GIT_NO_REPLACE_OBJECTS=1 \
-    GIT_OPTIONAL_LOCKS=0 \
-    /usr/bin/git -C "$repo" show "$candidate_sha:systemd/units/hapax-local-judge.service"
-)"
-test "$(printf '%s\n' "$source_unit_text" | grep -c '^Environment=JUDGE_GPU_UUID=')" -eq 1
+source_unit_text="$(candidate_git show "$candidate_sha:systemd/units/hapax-local-judge.service")"
+for key in JUDGE_GPU_UUID JUDGE_MODEL JUDGE_MODEL_SHA256 JUDGE_MODEL_SIZE_BYTES JUDGE_MODEL_HOST_DIR JUDGE_IMAGE; do
+  test "$(printf '%s\n' "$source_unit_text" | grep -c "^Environment=$key=")" -eq 1
+done
 judge_gpu_uuid="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_GPU_UUID=//p')"
-test -n "$judge_gpu_uuid"
+judge_model="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_MODEL=//p')"
+expected_model_sha256="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_MODEL_SHA256=//p')"
+expected_model_size_bytes="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_MODEL_SIZE_BYTES=//p')"
+model_host_dir="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_MODEL_HOST_DIR=//p')"
+image="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_IMAGE=//p')"
+[[ "$judge_model" =~ ^/models/[A-Za-z0-9._-]+\.gguf$ ]]
+[[ "$expected_model_sha256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$expected_model_size_bytes" =~ ^[0-9]{1,20}$ ]]
+test "$model_host_dir" = "/store-fast/hapax-models/sha256/$expected_model_sha256"
+[[ "$image" =~ ^ghcr\.io/ggml-org/llama\.cpp@sha256:[0-9a-f]{64}$ ]]
 nvidia-smi --query-gpu=uuid --format=csv,noheader | grep -Fqx "$judge_gpu_uuid"
+workload_oid="$(candidate_git rev-parse --verify "$candidate_sha:scripts/hapax-post-merge-deploy")"
+[[ "$workload_oid" =~ ^[0-9a-f]{40}$ ]]
+workload_source="$(candidate_git cat-file blob "$workload_oid")"
+test "$(printf '%s\n' "$workload_source" | candidate_git hash-object --stdin)" = "$workload_oid"
+candidate_workload() {
+  /usr/bin/bash -s -- "$@" <<<"$workload_source"
+}
+model_source_path="$HOME/models/compassverifier-7b/${judge_model##*/}"
+model_host_path="$model_host_dir/${judge_model##*/}"
 
-image=ghcr.io/ggml-org/llama.cpp:server-cuda
 unit=hapax-local-judge.service
 canary_name="hapax-local-judge-cap-canary-$$"
 canary_id=""
@@ -105,6 +135,43 @@ image_id="$(docker image inspect --format '{{.Id}}' "$image")"
 host="$(hostname)"
 test "$host" = hapax-appendix
 
+if [ ! -e "$model_host_path" ] && [ ! -L "$model_host_path" ]; then
+  test -f "$model_source_path"
+  test ! -L "$model_source_path"
+  test "$(stat -c %u -- "$model_source_path")" = "$(id -u)"
+  test "$(stat -c %h -- "$model_source_path")" = 1
+  test "$(stat -c %s -- "$model_source_path")" = "$expected_model_size_bytes"
+  source_mode="$(stat -c %a -- "$model_source_path")"
+  (( (8#$source_mode & 022) == 0 ))
+  sudo /usr/bin/install -d -o root -g root -m 0755 \
+    /store-fast/hapax-models /store-fast/hapax-models/sha256 "$model_host_dir"
+  model_stage="$model_host_dir/.${judge_model##*/}.partial.$$"
+  if ! /usr/bin/dd if="$model_source_path" bs=4M iflag=fullblock,nofollow status=none | \
+      sudo /usr/bin/dd of="$model_stage" bs=4M oflag=excl,nofollow status=none; then
+    sudo /usr/bin/rm -f -- "$model_stage"
+    echo "protected model staging failed; rerun after checking source stability" >&2
+    exit 1
+  fi
+  sudo /usr/bin/chmod 0444 "$model_stage"
+  stage_evidence="$(candidate_workload --measure-protected-local-judge-model "$model_stage")"
+  stage_sha256="$(printf '%s\n' "$stage_evidence" | sed -n 's/^model_sha256=//p')"
+  stage_size_bytes="$(printf '%s\n' "$stage_evidence" | sed -n 's/^model_size_bytes=//p')"
+  if [ "$stage_sha256" != "$expected_model_sha256" ] \
+      || [ "$stage_size_bytes" != "$expected_model_size_bytes" ]; then
+    sudo /usr/bin/rm -f -- "$model_stage"
+    echo "protected model staging did not match the candidate digest and size" >&2
+    exit 1
+  fi
+  sudo /usr/bin/mv -T -- "$model_stage" "$model_host_path"
+fi
+model_evidence="$(candidate_workload --measure-protected-local-judge-model "$model_host_path")"
+model_sha256="$(printf '%s\n' "$model_evidence" | sed -n 's/^model_sha256=//p')"
+model_size_bytes="$(printf '%s\n' "$model_evidence" | sed -n 's/^model_size_bytes=//p')"
+model_identity="$(printf '%s\n' "$model_evidence" | sed -n 's/^model_identity=//p')"
+test "$model_sha256" = "$expected_model_sha256"
+test "$model_size_bytes" = "$expected_model_size_bytes"
+[[ "$model_identity" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]]
+
 was_active="$(systemctl --user show "$unit" -p ActiveState --value)"
 case "$was_active" in
   active|inactive|failed) ;;
@@ -112,6 +179,7 @@ case "$was_active" in
 esac
 cleanup_done=0
 cleanup_status=0
+cleanup_signal_rc=0
 cleanup_canary() {
   if [ "$cleanup_done" -eq 1 ]; then
     return "$cleanup_status"
@@ -183,12 +251,28 @@ cleanup_canary() {
   fi
   return "$cleanup_status"
 }
+record_cleanup_signal() {
+  cleanup_signal_rc="$1"
+}
 on_exit() {
-  local rc=$?
-  trap - EXIT INT TERM
-  if ! cleanup_canary; then
-    rc=1
+  local rc=$? attempts=0
+  trap - EXIT
+  trap 'record_cleanup_signal 130' INT
+  trap 'record_cleanup_signal 143' TERM
+  while ! cleanup_canary; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 3 ]; then
+      rc=1
+      break
+    fi
+    if ! sleep 1; then
+      : # A trapped signal is recorded and cleanup still retries.
+    fi
+  done
+  if [ "$cleanup_done" -eq 1 ] && [ "$cleanup_signal_rc" -ne 0 ]; then
+    rc="$cleanup_signal_rc"
   fi
+  trap - INT TERM
   exit "$rc"
 }
 trap on_exit EXIT
@@ -204,10 +288,10 @@ test -z "$managed_ids"
 docker run --cidfile "$canary_cidfile" -d --rm --name "$canary_name" \
   --memory 4G --memory-swap 6G \
   --gpus "device=$judge_gpu_uuid" \
-  -v "$HOME/models/compassverifier-7b:/models:ro" \
+  -v "$model_host_dir:/models:ro" \
   -p 127.0.0.1:15001:5001 \
   "$image_id" \
-  -m /models/CompassVerifier-7B.Q5_K_M.gguf -a compassverifier-7b \
+  -m "$judge_model" -a compassverifier-7b \
   -c 65536 -np 8 -cb -ngl 99 --host 0.0.0.0 --port 5001 >/dev/null
 test -f "$canary_cidfile"
 test ! -L "$canary_cidfile"
@@ -246,12 +330,8 @@ test -r "$memory_peak_path"
 test -r "$swap_peak_path"
 before_state="$(docker inspect --format '{{.State.Status}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$canary_id")"
 before_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
-(
-  cd "$repo/scripts/cost-offload"
-  uv run --with pandas --with pyarrow --with requests \
-    python run_verifierbench.py --endpoint "$endpoint" \
-    --n 24 --workers 8 --out "$results"
-)
+candidate_workload \
+  --run-local-judge-cap-workload "$endpoint" "$results"
 jq -e -s 'length == 24 and all(.[]; type == "object" and has("error") and has("pred") and .error == null and (.pred == "A" or .pred == "B" or .pred == "C"))' \
   "$results" >/dev/null
 after_state="$(docker inspect --format '{{.State.Status}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$canary_id")"
@@ -280,7 +360,13 @@ printf '%s\n' \
   "candidate_sha=$candidate_sha" \
   "host=$host" \
   "gpu_uuid=$judge_gpu_uuid" \
+  "image_ref=$image" \
   "image_id=$image_id" \
+  "model_sha256=$model_sha256" \
+  "model_size_bytes=$model_size_bytes" \
+  "model_host_dir=$model_host_dir" \
+  "model_identity=$model_identity" \
+  "workload_oid=$workload_oid" \
   'memory_bytes=4294967296' \
   'memory_swap_bytes=6442450944' \
   'requests=24' \
@@ -417,7 +503,7 @@ docker run --rm --name hapax-local-judge-adhoc \
   --memory 4G --memory-swap 6G \
   --gpus device=<5060Ti-UUID> \
   -v ~/models/compassverifier-7b:/models:ro -p 15001:5001 \
-  ghcr.io/ggml-org/llama.cpp:server-cuda \
+  ghcr.io/ggml-org/llama.cpp@sha256:841b199aed2649a748875b043b32fed2e8c2d4d87e1d563556817fb7fa44b72b \
   -m /models/CompassVerifier-7B.Q5_K_M.gguf -a compassverifier-7b \
   -c 65536 -np 8 -cb -ngl 99 --host 0.0.0.0 --port 5001
 ```
