@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from shared.memory_pressure import (
     BYTES_PER_GIB,
     MemoryPressureClass,
@@ -174,6 +176,33 @@ def test_critical_floor_rejects_historical_negative_delegated_score() -> None:
 
     assert signal.state == ResourceState.YELLOW
     assert signal.raw["reasons"] == ["oom_score_adjust_drift"]
+
+
+@pytest.mark.parametrize(
+    "service_name",
+    [
+        "hapax-daimonion",
+        "studio-compositor",
+        "pipewire",
+        "wireplumber",
+        "pipewire-pulse",
+        "hapax-imagination",
+    ],
+)
+def test_declared_delegated_oom_policy_is_checked_for_every_protected_profile(
+    service_name: str,
+) -> None:
+    profile = DEFAULT_SERVICE_PROFILES[service_name]
+    properties = SystemdMemoryProperties(
+        service_name=f"{service_name}.service",
+        memory_max_bytes=12 * BYTES_PER_GIB,
+        oom_score_adjust=-500,
+    )
+
+    signal = classify_critical_floor_risk(service_name, properties, profile=profile)
+
+    assert signal.state == ResourceState.YELLOW
+    assert "oom_score_adjust_drift" in signal.raw["reasons"]
 
 
 def test_parsers_preserve_raw_memory_evidence() -> None:

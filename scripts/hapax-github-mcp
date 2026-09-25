@@ -11,9 +11,16 @@ export PATH
 
 readonly GITHUB_MCP_IMAGE_DIGEST="sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc59f256d50647f95788c"
 readonly GITHUB_MCP_IMAGE="ghcr.io/github/github-mcp-server@$GITHUB_MCP_IMAGE_DIGEST"
+readonly GITHUB_MCP_APP_LABEL="org.hapax.github-mcp.app"
+readonly GITHUB_MCP_APP_ID="stdio-v1"
+readonly GITHUB_MCP_UID_LABEL="org.hapax.github-mcp.uid"
 readonly GITHUB_MCP_LAUNCH_LABEL="org.hapax.github-mcp.launch"
+readonly GITHUB_MCP_LEASE_PID_LABEL="org.hapax.github-mcp.lease-pid"
+readonly GITHUB_MCP_LEASE_START_LABEL="org.hapax.github-mcp.lease-start"
+readonly GITHUB_MCP_LEASE_BOOT_LABEL="org.hapax.github-mcp.lease-boot"
 readonly GITHUB_MCP_SERVER_PATH="/server/github-mcp-server"
 readonly MAX_SECRET_BYTES=8192
+readonly MAX_APP_CONTAINERS=8
 
 if ! PASSWD_ENTRY="$(/usr/bin/getent passwd "$EUID")"; then
   echo "hapax-github-mcp: cannot resolve account home for uid $EUID; next action: restore the local passwd/NSS entry and rerun" >&2
@@ -177,23 +184,30 @@ local_docker() {
       /usr/bin/docker \
       --host=unix:///var/run/docker.sock \
       --config=/nonexistent/hapax-github-mcp-docker \
-      "$@" 2>&1 | /usr/bin/head -c 1025
+      "$@" 2>&1 | /usr/bin/head -c 4097
     statuses=("${PIPESTATUS[@]}")
     [ "${statuses[0]}" -eq 0 ] && [ "${statuses[1]}" -eq 0 ]
   )
 }
 
 launch_local_docker() {
-  /usr/bin/env -i \
-    HOME=/nonexistent \
-    PATH=/usr/bin:/bin \
-    LANG=C \
-    LC_ALL=C \
-    GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN" \
-    /usr/bin/docker \
+  local github_token="$GITHUB_PERSONAL_ACCESS_TOKEN"
+  (
+    local name
+    while IFS= read -r name; do
+      unset -v "$name"
+    done < <(compgen -e)
+    HOME=/nonexistent
+    PATH=/usr/bin:/bin
+    LANG=C
+    LC_ALL=C
+    GITHUB_PERSONAL_ACCESS_TOKEN="$github_token"
+    export HOME PATH LANG LC_ALL GITHUB_PERSONAL_ACCESS_TOKEN
+    exec /usr/bin/docker \
     --host=unix:///var/run/docker.sock \
     --config=/nonexistent/hapax-github-mcp-docker \
     "$@"
+  )
 }
 
 IMAGE_RECORD="$(
@@ -278,37 +292,257 @@ query_exact_container_id() {
   EXACT_ID_MATCH="$output"
 }
 
-LAUNCH_IDENTITY_ERROR=""
-validate_launch_container_identity() {
+MCP_SIGNATURE_ERROR=""
+MCP_SIGNATURE_LAUNCH_ID=""
+MCP_SIGNATURE_LEASE_PID=""
+MCP_SIGNATURE_LEASE_START=""
+MCP_SIGNATURE_LEASE_BOOT=""
+MCP_SIGNATURE_STATE=""
+tmpfs_options_match() {
+  local value="$1" option
+  local seen_rw=0 seen_noexec=0 seen_nosuid=0 seen_size=0
+  local -a options=()
+  IFS=',' read -r -a options <<< "$value"
+  [ "${#options[@]}" -eq 4 ] || return 1
+  for option in "${options[@]}"; do
+    case "$option" in
+      rw) [ "$seen_rw" -eq 0 ] || return 1; seen_rw=1 ;;
+      noexec) [ "$seen_noexec" -eq 0 ] || return 1; seen_noexec=1 ;;
+      nosuid) [ "$seen_nosuid" -eq 0 ] || return 1; seen_nosuid=1 ;;
+      size=16m) [ "$seen_size" -eq 0 ] || return 1; seen_size=1 ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$seen_rw" -eq 1 ] && [ "$seen_noexec" -eq 1 ] \
+    && [ "$seen_nosuid" -eq 1 ] && [ "$seen_size" -eq 1 ]
+}
+
+validate_mcp_container_signature() {
   local container_id="$1" output
-  local actual_id actual_name actual_launch actual_image actual_config_image actual_path extra
-  LAUNCH_IDENTITY_ERROR=""
+  local actual_id actual_name actual_app actual_uid actual_launch actual_lease_pid
+  local actual_lease_start actual_lease_boot actual_image actual_config_image actual_path
+  local actual_args actual_memory actual_memory_swap actual_oom_kill_disable
+  local actual_readonly actual_cap_drop actual_security_opt actual_auto_remove
+  local actual_log_driver actual_tmpfs actual_state actual_stop_timeout extra tmpfs_ok=0
+  local args_pattern='^\["stdio","--log-file","/tmp/github-mcp.log","--(tools|toolsets)=[A-Za-z0-9_,.-]{1,1024}"\]$'
+  MCP_SIGNATURE_ERROR=""
+  MCP_SIGNATURE_LAUNCH_ID=""
+  MCP_SIGNATURE_LEASE_PID=""
+  MCP_SIGNATURE_LEASE_START=""
+  MCP_SIGNATURE_LEASE_BOOT=""
+  MCP_SIGNATURE_STATE=""
   if ! output="$(
     local_docker inspect --format \
-      '{{.Id}}{{printf "\t"}}{{.Name}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.launch"}}{{printf "\t"}}{{.Image}}{{printf "\t"}}{{.Config.Image}}{{printf "\t"}}{{.Path}}' \
+      '{{.Id}}{{printf "\t"}}{{.Name}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.app"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.uid"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.launch"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.lease-pid"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.lease-start"}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.lease-boot"}}{{printf "\t"}}{{.Image}}{{printf "\t"}}{{.Config.Image}}{{printf "\t"}}{{.Path}}{{printf "\t"}}{{json .Args}}{{printf "\t"}}{{.HostConfig.Memory}}{{printf "\t"}}{{.HostConfig.MemorySwap}}{{printf "\t"}}{{json .HostConfig.OomKillDisable}}{{printf "\t"}}{{.HostConfig.ReadonlyRootfs}}{{printf "\t"}}{{json .HostConfig.CapDrop}}{{printf "\t"}}{{json .HostConfig.SecurityOpt}}{{printf "\t"}}{{.HostConfig.AutoRemove}}{{printf "\t"}}{{.HostConfig.LogConfig.Type}}{{printf "\t"}}{{index .HostConfig.Tmpfs "/tmp"}}{{printf "\t"}}{{.State.Status}}{{printf "\t"}}{{.Config.StopTimeout}}' \
       "$container_id"
   )"; then
-    LAUNCH_IDENTITY_ERROR="$(bounded_reason "$output")"
+    MCP_SIGNATURE_ERROR="$(bounded_reason "$output")"
     return 1
   fi
   if [[ "$output" == *$'\n'* ]]; then
-    LAUNCH_IDENTITY_ERROR="unexpected multiline inspect record"
+    MCP_SIGNATURE_ERROR="unexpected multiline inspect record"
     return 1
   fi
   IFS=$'\t' read -r \
-    actual_id actual_name actual_launch actual_image actual_config_image actual_path extra \
+    actual_id actual_name actual_app actual_uid actual_launch actual_lease_pid \
+    actual_lease_start actual_lease_boot actual_image actual_config_image actual_path \
+    actual_args actual_memory actual_memory_swap actual_oom_kill_disable \
+    actual_readonly actual_cap_drop actual_security_opt actual_auto_remove \
+    actual_log_driver actual_tmpfs actual_state actual_stop_timeout extra \
     <<< "$output"
+  if tmpfs_options_match "$actual_tmpfs"; then
+    tmpfs_ok=1
+  fi
   if [ -n "$extra" ] \
     || [ "$actual_id" != "$container_id" ] \
-    || [ "$actual_name" != "/$CONTAINER_NAME" ] \
-    || [ "$actual_launch" != "$LAUNCH_ID" ] \
+    || [ "$actual_app" != "$GITHUB_MCP_APP_ID" ] \
+    || [ "$actual_uid" != "$EUID" ] \
+    || ! [[ "$actual_launch" =~ ^${EUID}-[A-Za-z0-9]{10}$ ]] \
+    || [ "$actual_name" != "/hapax-github-mcp-$actual_launch" ] \
+    || ! [[ "$actual_lease_pid" =~ ^[1-9][0-9]*$ ]] \
+    || ! [[ "$actual_lease_start" =~ ^[1-9][0-9]*$ ]] \
+    || ! [[ "$actual_lease_boot" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
     || [ "$actual_image" != "$GITHUB_MCP_LOCAL_IMAGE_ID" ] \
     || [ "$actual_config_image" != "$GITHUB_MCP_IMAGE" ] \
-    || [ "$actual_path" != "$GITHUB_MCP_SERVER_PATH" ]; then
-    LAUNCH_IDENTITY_ERROR="immutable launch signature mismatch"
+    || [ "$actual_path" != "$GITHUB_MCP_SERVER_PATH" ] \
+    || ! [[ "$actual_args" =~ $args_pattern ]] \
+    || [ "$actual_memory" != "536870912" ] \
+    || [ "$actual_memory_swap" != "805306368" ] \
+    || { [ "$actual_oom_kill_disable" != "null" ] && [ "$actual_oom_kill_disable" != "false" ]; } \
+    || [ "$actual_readonly" != "true" ] \
+    || [ "$actual_cap_drop" != '["ALL"]' ] \
+    || { [ "$actual_security_opt" != '["no-new-privileges"]' ] \
+         && [ "$actual_security_opt" != '["no-new-privileges:true"]' ]; } \
+    || [ "$actual_auto_remove" != "true" ] \
+    || [ "$actual_log_driver" != "none" ] \
+    || [ "$tmpfs_ok" -ne 1 ] \
+    || ! [[ "$actual_state" =~ ^(created|running|restarting|exited|dead)$ ]] \
+    || [ "$actual_stop_timeout" != "1" ]; then
+    MCP_SIGNATURE_ERROR="immutable launch signature mismatch"
+    return 1
+  fi
+  MCP_SIGNATURE_LAUNCH_ID="$actual_launch"
+  MCP_SIGNATURE_LEASE_PID="$actual_lease_pid"
+  MCP_SIGNATURE_LEASE_START="$actual_lease_start"
+  MCP_SIGNATURE_LEASE_BOOT="$actual_lease_boot"
+  MCP_SIGNATURE_STATE="$actual_state"
+}
+
+LAUNCH_IDENTITY_ERROR=""
+validate_launch_container_identity() {
+  local container_id="$1"
+  LAUNCH_IDENTITY_ERROR=""
+  if ! validate_mcp_container_signature "$container_id"; then
+    LAUNCH_IDENTITY_ERROR="$MCP_SIGNATURE_ERROR"
+    return 1
+  fi
+  if [ "$MCP_SIGNATURE_LAUNCH_ID" != "$LAUNCH_ID" ] \
+    || [ "$MCP_SIGNATURE_LEASE_PID" != "$LEASE_PID" ] \
+    || [ "$MCP_SIGNATURE_LEASE_START" != "$LEASE_START_TICKS" ] \
+    || [ "$MCP_SIGNATURE_LEASE_BOOT" != "$LEASE_BOOT_ID" ]; then
+    LAUNCH_IDENTITY_ERROR="current launch lease signature mismatch"
     return 1
   fi
 }
+
+APP_CONTAINER_IDS=()
+APP_INVENTORY_ERROR=""
+query_app_container_ids() {
+  local output line selector
+  local -A seen=()
+  APP_CONTAINER_IDS=()
+  APP_INVENTORY_ERROR=""
+  for selector in \
+    "label=$GITHUB_MCP_APP_LABEL=$GITHUB_MCP_APP_ID" \
+    "name=^/hapax-github-mcp-"; do
+    if ! output="$(local_docker ps -aq --no-trunc --filter "$selector")"; then
+      APP_INVENTORY_ERROR="$(bounded_reason "$output")"
+      return 1
+    fi
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      if ! [[ "$line" =~ ^[0-9a-f]{64}$ ]]; then
+        APP_INVENTORY_ERROR="malformed GitHub MCP container inventory"
+        return 1
+      fi
+      [ -n "${seen[$line]+present}" ] && continue
+      seen["$line"]=1
+      APP_CONTAINER_IDS+=("$line")
+      if [ "${#APP_CONTAINER_IDS[@]}" -gt "$MAX_APP_CONTAINERS" ]; then
+        APP_INVENTORY_ERROR="GitHub MCP container inventory exceeds $MAX_APP_CONTAINERS"
+        return 1
+      fi
+    done <<< "$output"
+  done
+}
+
+lease_liveness() {
+  local lease_pid="$1" lease_start="$2" lease_boot="$3"
+  if [ "$lease_boot" != "$LEASE_BOOT_ID" ]; then
+    return 1
+  fi
+  /usr/bin/python3 - "$lease_pid" "$lease_start" "$EUID" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+pid, expected_start, expected_uid = sys.argv[1:]
+root = Path("/proc") / pid
+try:
+    status = (root / "status").read_text(encoding="utf-8").splitlines()
+    stat_line = (root / "stat").read_text(encoding="utf-8").strip()
+except FileNotFoundError:
+    raise SystemExit(1)
+except (OSError, UnicodeError):
+    raise SystemExit(2)
+
+uid_line = next((line for line in status if line.startswith("Uid:\t")), "")
+uid_fields = uid_line.split()
+try:
+    tail = stat_line.rsplit(") ", 1)[1].split()
+    actual_start = tail[19]
+except (IndexError, ValueError):
+    raise SystemExit(2)
+if len(uid_fields) != 5 or not all(field.isdecimal() for field in uid_fields[1:]):
+    raise SystemExit(2)
+if uid_fields[1] != expected_uid or actual_start != expected_start:
+    raise SystemExit(1)
+raise SystemExit(0)
+PY
+}
+
+reconcile_prior_mcp_containers() {
+  local container_id liveness_rc remove_output
+  if ! query_app_container_ids; then
+    echo "hapax-github-mcp: cannot enumerate stable-label prior launches: $APP_INVENTORY_ERROR; refusing token release" >&2
+    return 1
+  fi
+  for container_id in "${APP_CONTAINER_IDS[@]}"; do
+    if ! validate_mcp_container_signature "$container_id"; then
+      echo "hapax-github-mcp: prior stable-label container $container_id has an unproven signature: $MCP_SIGNATURE_ERROR; refusing token release" >&2
+      return 1
+    fi
+    liveness_rc=0
+    lease_liveness \
+      "$MCP_SIGNATURE_LEASE_PID" \
+      "$MCP_SIGNATURE_LEASE_START" \
+      "$MCP_SIGNATURE_LEASE_BOOT" || liveness_rc=$?
+    if [ "$liveness_rc" -eq 0 ]; then
+      continue
+    fi
+    if [ "$liveness_rc" -ne 1 ]; then
+      echo "hapax-github-mcp: cannot prove liveness for prior immutable ID $container_id; refusing token release" >&2
+      return 1
+    fi
+    if ! remove_output="$(local_docker rm -f "$container_id")"; then
+      echo "hapax-github-mcp: failed to remove dead-lease immutable ID $container_id: $(bounded_reason "$remove_output"); refusing token release" >&2
+      return 1
+    fi
+    if ! query_exact_container_id "$container_id"; then
+      echo "hapax-github-mcp: cannot recheck dead-lease cleanup for immutable ID $container_id: $EXACT_ID_ERROR; refusing token release" >&2
+      return 1
+    fi
+    if [ -n "$EXACT_ID_MATCH" ]; then
+      echo "hapax-github-mcp: dead-lease immutable ID $container_id remains after cleanup; refusing token release" >&2
+      return 1
+    fi
+  done
+}
+
+LEASE_PID="$BASHPID"
+if ! [[ "$LEASE_PID" =~ ^[1-9][0-9]*$ ]]; then
+  echo "hapax-github-mcp: cannot derive a valid wrapper lease PID" >&2
+  exit 2
+fi
+if ! LEASE_START_TICKS="$(
+  /usr/bin/python3 - "$LEASE_PID" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+line = (Path("/proc") / sys.argv[1] / "stat").read_text(encoding="utf-8").strip()
+tail = line.rsplit(") ", 1)[1].split()
+value = tail[19]
+if not value.isdecimal() or int(value) <= 0:
+    raise SystemExit(1)
+print(value)
+PY
+)" || ! [[ "$LEASE_START_TICKS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "hapax-github-mcp: cannot derive wrapper process-start lease identity" >&2
+  exit 2
+fi
+if ! LEASE_BOOT_ID="$(/usr/bin/cat -- /proc/sys/kernel/random/boot_id)" \
+  || ! [[ "$LEASE_BOOT_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+  echo "hapax-github-mcp: cannot derive boot-scoped lease identity" >&2
+  exit 2
+fi
+readonly LEASE_PID LEASE_START_TICKS LEASE_BOOT_ID
+
+if ! reconcile_prior_mcp_containers; then
+  exit 2
+fi
 
 CID_DIR="$(/usr/bin/mktemp -d -p "$LOG_DIR" github-mcp.XXXXXXXXXX)"
 CID_FILE="$CID_DIR/container.cid"
@@ -330,8 +564,9 @@ LAUNCH_ATTEMPTED=0
 cleanup() {
   local rc=$?
   local cid="" cid_state="absent" candidate="" remove_error=""
-  local cleanup_failed=0
+  local cleanup_failed=0 name_query_ok=1
   trap - EXIT
+  trap '' INT TERM HUP
   set +e
 
   if [ "$LAUNCH_ATTEMPTED" -eq 1 ]; then
@@ -351,26 +586,38 @@ cleanup() {
     fi
 
     if ! query_exact_container_name; then
-      cleanup_failed=1
+      name_query_ok=0
       cleanup_failure "hapax-github-mcp: cannot prove exact-name cleanup state for $CONTAINER_NAME: $EXACT_NAME_ERROR; next action: restore the pinned local Docker socket and inspect the retained launch identity; retained scratch: $CID_FILE"
-    elif [ -n "$EXACT_NAME_ID" ]; then
-      candidate="$EXACT_NAME_ID"
     fi
 
     if [ "$cid_state" = "valid" ]; then
       if ! query_exact_container_id "$cid"; then
         cleanup_failed=1
         cleanup_failure "hapax-github-mcp: cannot prove cleanup state for immutable ID $cid: $EXACT_ID_ERROR; next action: restore the pinned local Docker socket and inspect that exact ID; retained scratch: $CID_FILE"
-      elif [ -n "$EXACT_ID_MATCH" ] && [ "$candidate" != "$cid" ]; then
+      elif [ -n "$EXACT_ID_MATCH" ] \
+        && [ "$name_query_ok" -eq 1 ] \
+        && [ -n "$EXACT_NAME_ID" ] \
+        && [ "$EXACT_NAME_ID" != "$cid" ]; then
         cleanup_failed=1
         cleanup_failure "hapax-github-mcp: cidfile and exact-name discovery disagree for immutable ID $cid; refusing name-based cleanup; retained scratch: $CID_FILE"
-      elif [ -z "$EXACT_ID_MATCH" ] && [ -n "$candidate" ] && [ "$candidate" = "$cid" ]; then
+      elif [ -z "$EXACT_ID_MATCH" ] \
+        && [ "$name_query_ok" -eq 1 ] \
+        && [ -n "$EXACT_NAME_ID" ]; then
         cleanup_failed=1
         cleanup_failure "hapax-github-mcp: exact-name discovery raced with immutable ID $cid; refusing ambiguous cleanup; retained scratch: $CID_FILE"
+      elif [ -n "$EXACT_ID_MATCH" ]; then
+        candidate="$cid"
       fi
+    elif [ "$cid_state" = "absent" ] \
+      && [ "$name_query_ok" -eq 1 ] \
+      && [ -n "$EXACT_NAME_ID" ]; then
+      candidate="$EXACT_NAME_ID"
+    fi
+    if [ "$name_query_ok" -eq 0 ] && [ -z "$candidate" ]; then
+      cleanup_failed=1
     fi
 
-    if [ -n "$candidate" ]; then
+    if [ "$cleanup_failed" -eq 0 ] && [ -n "$candidate" ]; then
       if ! validate_launch_container_identity "$candidate"; then
         cleanup_failed=1
         cleanup_failure "hapax-github-mcp: refused cleanup of unproven immutable ID $candidate: $LAUNCH_IDENTITY_ERROR; next action: inspect that exact ID without exposing its environment; retained scratch: $CID_FILE"
@@ -421,11 +668,17 @@ if [ -n "$EXACT_NAME_ID" ]; then
 fi
 
 LAUNCH_ATTEMPTED=1
-launch_local_docker run -i --rm \
+launch_rc=0
+if launch_local_docker run -i --rm \
   --pull=never \
   --cidfile "$CID_FILE" \
   --name "$CONTAINER_NAME" \
+  --label "$GITHUB_MCP_APP_LABEL=$GITHUB_MCP_APP_ID" \
+  --label "$GITHUB_MCP_UID_LABEL=$EUID" \
   --label "$GITHUB_MCP_LAUNCH_LABEL=$LAUNCH_ID" \
+  --label "$GITHUB_MCP_LEASE_PID_LABEL=$LEASE_PID" \
+  --label "$GITHUB_MCP_LEASE_START_LABEL=$LEASE_START_TICKS" \
+  --label "$GITHUB_MCP_LEASE_BOOT_LABEL=$LEASE_BOOT_ID" \
   --memory 512M \
   --memory-swap 768M \
   --log-driver none \
@@ -439,4 +692,9 @@ launch_local_docker run -i --rm \
   stdio \
   --log-file /tmp/github-mcp.log \
   "${FILTER_ARGS[@]}" \
-  2>>"$LOG_FILE"
+  2>>"$LOG_FILE"; then
+  launch_rc=0
+else
+  launch_rc=$?
+fi
+exit "$launch_rc"
