@@ -188,6 +188,12 @@ def _contracts_fingerprint(directory: Path | None) -> tuple:
     changes its mtime or ctime, so a registry is reused only while the
     bytes it was parsed from are still the bytes on disk. A stat failure
     other than a missing directory raises, and the caller refuses.
+
+    The file selection must be exactly the one ``ConsentRegistry.load``
+    parses (top-level ``*.yaml``, symlinks followed; ``revoked/`` and other
+    subdirectories are not read). A file the loader reads but this skips
+    could change under a warm grant unseen; the selection is pinned
+    against the loader's actual reads in the tests.
     """
     if directory is None:
         return ("unconfigured",)

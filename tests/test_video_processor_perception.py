@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from agents.video_processor import (
     _aggregate_perception_minutes,
@@ -217,7 +218,9 @@ class TestGuestPresenceNeverPersistsOnConsentFailure:
     _write_sidecar): ``people_count`` and ``max_people`` in the sidecar;
     ``category`` when it is "conversation" (only reachable with >1 person)
     in the sidecar, the state record, the change log and the notification;
-    ``people_count`` in the state record, the change log and the log line.
+    ``people_count`` in the state record, the change log and the log line;
+    ``value_score`` everywhere it persists, because the multi-person score
+    (0.8, or 0.9 with the scene-change bonus) itself infers a second person.
     """
 
     SEGMENT = "brio-operator_20260324-154619_0233.mkv"
@@ -295,6 +298,9 @@ class TestGuestPresenceNeverPersistsOnConsentFailure:
         assert "people_count" not in extra
         assert extra["category"] != "conversation"
         assert extra["guest_presence"] == "withheld"
+        assert "value_score" not in sidecar
+        assert info.value_score is None
+        assert "value_score" not in extra
 
     def test_registry_load_failure_withholds(self, tmp_path, monkeypatch):
         self._patch_registry(monkeypatch, load_exc=RuntimeError("contracts unreadable"))
@@ -361,6 +367,9 @@ class TestGuestPresenceNeverPersistsOnConsentFailure:
         assert "guest_presence" not in sidecar
         assert info.people_count == 2
         assert changes[-1][2]["people_count"] == 2
+        assert sidecar["value_score"] == 0.8
+        assert info.value_score == 0.8
+        assert changes[-1][2]["value_score"] == 0.8
         assert refusals == []
 
     def test_single_person_is_observed_without_consulting_consent(self, tmp_path, monkeypatch):
@@ -373,3 +382,65 @@ class TestGuestPresenceNeverPersistsOnConsentFailure:
         assert "guest_presence" not in sidecar
         assert info.people_count == 1
         assert refusals == []
+
+    def test_withheld_log_lines_carry_no_count_score_or_category(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+
+        self._patch_registry(monkeypatch, check=False)
+        cls = self._classification(people_count=2, max_people=2, category="conversation")
+        with caplog.at_level(logging.DEBUG, logger="agents.video_processor"):
+            self._run(tmp_path, monkeypatch, cls)
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert "Classified" in text
+        assert "conversation" not in text
+        assert "people=2" not in text
+        assert "0.80" not in text
+
+    def test_perception_classified_log_line_carries_no_guest_derived_fields(
+        self, monkeypatch, caplog
+    ):
+        # This line is written before any consent decision exists, so it
+        # must not carry the guest-derived count, score or category.
+        import logging
+
+        import agents.video_processor as vp
+
+        minutes = [
+            {"operator_present": True, "person_count_max": 2, "consent_phase": "consent_granted"}
+        ]
+        monkeypatch.setattr(vp, "_read_perception_minutes", lambda *_a: minutes)
+        with caplog.at_level(logging.DEBUG, logger="agents.video_processor"):
+            cls = vp._classify_segment_dispatch(Path(self.SEGMENT))
+        assert cls.category == "conversation"
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert "Perception-classified" in text
+        assert "conversation" not in text
+        assert "people=2" not in text
+        assert "score=" not in text
+
+    def test_run_notification_withholds_guest_category(self, tmp_path, monkeypatch):
+        import agents._notify as notify_mod
+        import agents.refusal_brief as refusal_pkg
+        import agents.video_processor as vp
+
+        self._patch_registry(monkeypatch, check=False)
+        role_dir = tmp_path / "brio-operator"
+        role_dir.mkdir()
+        segment = role_dir / self.SEGMENT
+        segment.write_bytes(b"")
+        cls = self._classification(people_count=2, max_people=2, category="conversation")
+        sent: list = []
+        monkeypatch.setattr(vp, "_find_unprocessed_segments", lambda _s: [segment])
+        monkeypatch.setattr(vp, "_classify_segment_dispatch", lambda _p: cls)
+        monkeypatch.setattr(vp, "_upload_to_gdrive", lambda *_a, **_k: True)
+        monkeypatch.setattr(vp, "_log_change", lambda *_a, **_k: None)
+        monkeypatch.setattr(vp, "_save_state", lambda _s: None)
+        monkeypatch.setattr(refusal_pkg, "append", lambda ev, **_: True)
+        monkeypatch.setattr(notify_mod, "send_notification", lambda *a, **_k: sent.append(a))
+        vp._process_new_segments(vp.VideoProcessorState())
+        assert len(sent) == 1
+        message = sent[0][1]
+        assert "conversation" not in message
+        assert "withheld: 1" in message

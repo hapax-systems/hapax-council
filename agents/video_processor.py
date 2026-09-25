@@ -127,8 +127,9 @@ class ProcessedSegmentInfo(BaseModel):
     role: str = ""
     processed_at: float = 0.0
     category: str = "empty_room"
-    value_score: float = 0.0
-    # None when guest presence was withheld (see _guest_presence_decision).
+    # value_score and people_count are None when guest presence was
+    # withheld (see _guest_presence_decision).
+    value_score: float | None = 0.0
     people_count: int | None = 0
     guest_presence: str = ""  # "withheld" when guest-derived fields were not persisted
     motion_score: float = 0.0
@@ -637,16 +638,15 @@ def _classify_segment_dispatch(segment_path: Path) -> SegmentClassification:
         if minutes:
             agg = _aggregate_perception_minutes(minutes)
             classification = _classify_from_perception(agg)
+            # No consent decision exists yet, so this line carries no
+            # guest-derived field (count, score, category); the decided
+            # values are logged by _process_segment.
             log.info(
-                "Perception-classified %s: %s (score=%.2f, present=%.0f%%, "
-                "activity=%s, flow=%.2f, people=%d)",
+                "Perception-classified %s (present=%.0f%%, activity=%s, flow=%.2f)",
                 segment_path.name,
-                classification.category,
-                classification.value_score,
                 agg["operator_present_ratio"] * 100,
                 agg["activity_mode"],
                 agg["flow_score_mean"],
-                agg["person_count_max"],
             )
             return classification
     # Fallback: original haar cascade pipeline
@@ -808,9 +808,10 @@ def _write_sidecar(
 
     Sidecar contains classification metadata for the retention script
     and for any future reprocessing. When guest presence is withheld the
-    counts are omitted (not rewritten to an operator-only claim), a
-    guest-derived category is replaced, and ``guest_presence: withheld``
-    plus its sanitized cause mark the redaction.
+    counts and the value score are omitted (not rewritten to an
+    operator-only claim), a guest-derived category is replaced, and
+    ``guest_presence: withheld`` plus its sanitized cause mark the
+    redaction.
     """
     persist, cause = guest_decision or _guest_presence_decision(classification)
     sidecar_path = segment_path.with_suffix(segment_path.suffix + suffix)
@@ -827,6 +828,7 @@ def _write_sidecar(
         "disposition": disposition,
     }
     if not persist:
+        del data["value_score"]
         del data["people_count"]
         del data["max_people"]
         if data["category"] in _GUEST_DERIVED_CATEGORIES:
@@ -922,13 +924,17 @@ def _process_segment(
     # One guest-presence decision per segment governs every persisted
     # record below: sidecar, state record, change log and log line. It
     # does not change disposition or upload (retention policy, out of scope).
+    # The score is withheld with the counts: the multi-person score (0.8,
+    # or 0.9 with the scene-change bonus) itself infers a second person.
     guest_decision = _guest_presence_decision(classification)
     guest_persist, guest_cause = guest_decision
+    recorded_score: float | None = score
     recorded_people: int | None = classification.people_count
     recorded_category = category
     guest_presence = ""
     if not guest_persist:
         _audit_guest_withheld(filename, guest_cause)
+        recorded_score = None
         recorded_people = None
         guest_presence = GUEST_PRESENCE_WITHHELD
         if category in _GUEST_DERIVED_CATEGORIES:
@@ -966,7 +972,7 @@ def _process_segment(
         role=role,
         processed_at=time.time(),
         category=recorded_category,
-        value_score=score,
+        value_score=recorded_score,
         people_count=recorded_people,
         guest_presence=guest_presence,
         motion_score=classification.motion_score,
@@ -977,10 +983,10 @@ def _process_segment(
     )
 
     log.info(
-        "Classified %s: %s (score=%.2f, people=%s, motion=%.4f, disp=%s)",
+        "Classified %s: %s (score=%s, people=%s, motion=%.4f, disp=%s)",
         filename,
         recorded_category,
-        score,
+        GUEST_PRESENCE_WITHHELD if recorded_score is None else f"{recorded_score:.2f}",
         GUEST_PRESENCE_WITHHELD if recorded_people is None else recorded_people,
         classification.motion_score,
         disposition,
@@ -988,7 +994,7 @@ def _process_segment(
 
     change: dict = {
         "category": recorded_category,
-        "value_score": score,
+        "value_score": recorded_score,
         "people_count": recorded_people,
         "motion_score": round(classification.motion_score, 4),
         "scene_change": classification.scene_change,
@@ -996,6 +1002,7 @@ def _process_segment(
         "uploaded": uploaded,
     }
     if guest_presence:
+        del change["value_score"]
         del change["people_count"]
         change["guest_presence"] = guest_presence
     _log_change("segment_classified", f"{role}/{filename}", change)

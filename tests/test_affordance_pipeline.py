@@ -1116,6 +1116,41 @@ class TestConsentFailureNeverBecomesPermission:
         with patch("shared.governance.consent.load_contracts", return_value=registry):
             assert AffordancePipeline()._consent_allows(self._candidate()) is False
 
+    def test_fingerprint_covers_exactly_the_files_the_loader_reads(self, tmp_path, monkeypatch):
+        # The warm registry is only as fresh as its fingerprint, so the
+        # fingerprint must select the same files the strict loader parses:
+        # a file the loader reads but the fingerprint skips could change
+        # under a warm grant unseen.
+        import pathlib
+
+        import shared.governance.consent as consent_mod
+        from shared.affordance_pipeline import _contracts_fingerprint
+
+        directory = self._contracts_dir(tmp_path, monkeypatch)
+        outside = tmp_path / "outside-target.yaml"
+        outside.write_text("")
+        for name in (".hidden.yaml", "other.yml", "UPPER.YAML", "notes.txt", "empty.yaml"):
+            (directory / name).write_text("")
+        (directory / "linked.yaml").symlink_to(outside)
+        (directory / "revoked").mkdir()
+        (directory / "revoked" / "old.yaml").write_text("")
+
+        read: set[str] = set()
+        real_read_text = pathlib.Path.read_text
+
+        def _spy(path, *a, **k):
+            if directory in path.parents:
+                read.add(path.relative_to(directory).as_posix())
+            return real_read_text(path, *a, **k)
+
+        monkeypatch.setattr(pathlib.Path, "read_text", _spy)
+        consent_mod.load_contracts(strict=True)
+        monkeypatch.setattr(pathlib.Path, "read_text", real_read_text)
+
+        fingerprinted = {entry[0] for entry in _contracts_fingerprint(directory)[3]}
+        assert "contract-synthetic-a.yaml" in read
+        assert fingerprinted == read
+
     def test_registry_changed_during_load_is_refused(self, tmp_path, monkeypatch):
         # One coherent snapshot per decision: if the contracts change while
         # they are being loaded, the loaded registry is not the state the
