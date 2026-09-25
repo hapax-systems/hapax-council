@@ -7,7 +7,9 @@ cc-task note in the Obsidian governance vault.
 
 Keep this dependency-light: hooks run under the system Python before repo
 PYTHONPATH or the project venv is guaranteed, so importing shared.frontmatter
-would make a safety gate depend on optional runtime packaging.
+would make a safety gate depend on optional runtime packaging. PyYAML is the
+only permitted third-party import: it ships with the estate system Python, and
+the wrapper in cc-task-gate.impl.sh fails open (INV-5) if it is ever absent.
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 NOT_CANDIDATE = 10
 BLOCKED = 12
@@ -54,13 +58,58 @@ def _parse_inline_list(value: str) -> list[str]:
 def _split_frontmatter(content: str) -> tuple[dict[str, Any], set[str], str, list[str]]:
     errors: list[str] = []
     if not content.startswith("---\n"):
-        return {}, set(), "", ["note must start with YAML frontmatter"]
+        return (
+            {},
+            set(),
+            "",
+            [
+                "note must start with YAML frontmatter. Next action: begin the note with "
+                "a `---` fence line, then the YAML frontmatter, then a closing `---` "
+                "fence before the body."
+            ],
+        )
     end = content.find("\n---", 4)
     if end < 0:
-        return {}, set(), "", ["note frontmatter must close with ---"]
+        return (
+            {},
+            set(),
+            "",
+            [
+                "note frontmatter must close with ---. Next action: add the closing `---` "
+                "fence line between the YAML frontmatter and the body, then retry the Write."
+            ],
+        )
 
     frontmatter = content[4:end]
     body = content[end + 4 :]
+    # M67: the fence must enclose YAML that actually parses. The hand-rolled scan
+    # below stays (it is depth-aware and dependency-light), but a block a real YAML
+    # consumer cannot load is refused here instead of poisoning every reader.
+    try:
+        parsed = yaml.safe_load(frontmatter)
+    except yaml.YAMLError as exc:
+        return (
+            {},
+            set(),
+            "",
+            [
+                f"note frontmatter must parse as YAML ({exc}). Next action: fix the YAML "
+                "between the `---` fences — quote values containing colons, close every "
+                "quote, indent with spaces — then retry the Write."
+            ],
+        )
+    if not isinstance(parsed, dict):
+        return (
+            {},
+            set(),
+            "",
+            [
+                "note frontmatter must be a YAML mapping of `key: value` pairs. Next "
+                "action: rewrite the frontmatter as a mapping between the `---` fences, "
+                "then retry the Write."
+            ],
+        )
+
     fields: dict[str, Any] = {}
     present: set[str] = set()
     lines = frontmatter.splitlines()
@@ -141,6 +190,34 @@ def _require_present(fields_present: set[str], key: str, errors: list[str]) -> N
         errors.append(f"missing `{key}`")
 
 
+# M66: parent refs are consumed as filenames (Path.stat()); the 20260914 mint
+# carried narrative prose in `parent_request` and raised OSError 36 every ~2 min.
+# New mints carry vault-relative note paths only — absolute/tilde paths, bare
+# identifiers and prose are all refused.
+_VAULT_REL_PATH_RE = re.compile(r"[A-Za-z0-9_./-]+")
+
+
+def _vault_relative_path_error(key: str, value: str) -> str | None:
+    if (
+        value
+        and value == value.strip()
+        and not any(ch.isspace() for ch in value)
+        and not value.startswith(("/", "~"))
+        and "://" not in value
+        and _VAULT_REL_PATH_RE.fullmatch(value)
+        and value.endswith(".md")
+        and all(part not in ("", ".", "..") for part in value.split("/"))
+    ):
+        return None
+    return (
+        f"`{key}` must be a vault-relative path to a markdown note (e.g. "
+        f"`20-projects/hapax-requests/active/REQ-….md`); got {value[:80]!r}. "
+        "Narrative prose is refused here — it belongs in the note body. Next "
+        f"action: move the narrative into the body and set `{key}` to a "
+        "vault-relative path (or null), then retry the Write."
+    )
+
+
 def _validate_request(path: Path, fields: dict[str, Any], present: set[str]) -> list[str]:
     errors: list[str] = []
     if _as_scalar(fields, "type") != "hapax-request":
@@ -203,6 +280,12 @@ def _validate_task(path: Path, fields: dict[str, Any], present: set[str], body: 
             errors.append(f"`{key}` must contain at least one item")
     for key in ("branch", "pr", "claimed_at", "completed_at"):
         _require_present(present, key, errors)
+
+    for key in ("parent_request", "parent_spec"):
+        if key in present and not _is_nullish(fields.get(key)):
+            path_error = _vault_relative_path_error(key, _as_scalar(fields, key))
+            if path_error:
+                errors.append(path_error)
 
     task_id = _as_scalar(fields, "task_id")
     if task_id and not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$", task_id):
