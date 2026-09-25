@@ -448,11 +448,28 @@ rc=0
 collect_pending_runbooks() {
     local sha_dir package_dir marker unsafe=0
     [ -d "$ROOT_DEFER_DIR" ] || return 0
+    if [ -L "$ROOT_DEFER_DIR" ]; then
+        echo "unsafe root-required pending directory: $ROOT_DEFER_DIR; expected a non-symlink directory" >&2
+        echo "  next action: restore the caller-owned pending root as a real directory, then rerun hapax-post-merge-deploy for the desired receipt SHA" >&2
+        return 1
+    fi
 
     shopt -s nullglob dotglob
     for sha_dir in "$ROOT_DEFER_DIR"/*; do
+        if [ -L "$sha_dir" ]; then
+            echo "unsafe root-required pending directory: $sha_dir; expected a non-symlink SHA directory" >&2
+            echo "  next action: remove the symlink and regenerate the pending package with hapax-post-merge-deploy" >&2
+            unsafe=1
+            continue
+        fi
         [ -d "$sha_dir" ] || continue
         for package_dir in "$sha_dir"/*; do
+            if [ -L "$package_dir" ]; then
+                echo "unsafe root-required pending directory: $package_dir; expected a non-symlink package directory" >&2
+                echo "  next action: remove the symlink and regenerate the pending package with hapax-post-merge-deploy" >&2
+                unsafe=1
+                continue
+            fi
             [ -d "$package_dir" ] || continue
             marker="$package_dir/RUNBOOK.txt"
             if [ ! -e "$marker" ] && [ ! -L "$marker" ]; then
@@ -798,7 +815,7 @@ audit_governed_unit_dropins() {
 }
 
 audit_package_receipt() {
-    local label="$1" receipt sha rel failed=0
+    local label="$1" receipt sha rel source object_type expected_oid actual_oid failed=0
     shift
     receipt="$INSTALLED_RECEIPT_ROOT/$label.sha"
     if [ ! -f "$receipt" ]; then
@@ -813,9 +830,11 @@ audit_package_receipt() {
         return 1
     fi
     for rel in "$@"; do
-        case "$rel" in
-            config/root-required/*.files)
-                if ! root_required_git cat-file -e "$sha:$rel" 2>/dev/null; then
+        source="$INSTALLED_SOURCE_ROOT/$rel"
+        if ! object_type="$(root_required_git cat-file -t "$sha:$rel" 2>/dev/null)" \
+            || [ "$object_type" != "blob" ]; then
+            case "$rel" in
+                config/root-required/*.files)
                     if [ ! -e "$INSTALLED_SOURCE_ROOT/$rel" ]; then
                         continue
                     fi
@@ -823,13 +842,18 @@ audit_package_receipt() {
                     echo "  next action: rerun the newest governed $label installer package" >&2
                     failed=1
                     continue
-                fi
-                ;;
-        esac
-        if [ ! -f "$INSTALLED_SOURCE_ROOT/$rel" ] \
-            || [ -L "$INSTALLED_SOURCE_ROOT/$rel" ] \
-            || ! cmp -s <(root_required_git show "$sha:$rel") "$INSTALLED_SOURCE_ROOT/$rel"; then
-            echo "root-required installed source is not bound to $label receipt $sha: $INSTALLED_SOURCE_ROOT/$rel" >&2
+                    ;;
+            esac
+            echo "root-required installed receipt does not contain required blob: label=$label sha=$sha rel=$rel" >&2
+            echo "  next action: rerun hapax-post-merge-deploy for the desired SHA and use only its live next-action command" >&2
+            failed=1
+            continue
+        fi
+        if [ ! -f "$source" ] || [ -L "$source" ] \
+            || ! expected_oid="$(root_required_git rev-parse --verify "$sha:$rel" 2>/dev/null)" \
+            || ! actual_oid="$(root_required_git hash-object --no-filters -- "$source" 2>/dev/null)" \
+            || [ "$actual_oid" != "$expected_oid" ]; then
+            echo "root-required installed source is not bound to $label receipt $sha: $source" >&2
             echo "  next action: rerun hapax-post-merge-deploy for the desired SHA and use only its live next-action command" >&2
             failed=1
         fi
