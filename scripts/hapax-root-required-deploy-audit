@@ -1140,6 +1140,74 @@ audit_governed_unit_dropins() {
     done <<< "$roots_output"
 }
 
+read_safe_sha_receipt() {
+    local receipt="$1" kind="$2"
+    /usr/bin/python3 -I - "$receipt" "$kind" <<'PY'
+from __future__ import annotations
+
+import os
+import re
+import stat
+import sys
+
+receipt, kind = sys.argv[1:]
+parent = os.path.dirname(receipt) or "."
+
+
+def refuse(message: str) -> None:
+    print(
+        f"root-required {kind} receipt safety drift: {receipt}: {message}; expected a "
+        "caller-owned, single-link, mode-0600 physical file beneath a caller-owned, "
+        "non-group-writable physical directory",
+        file=sys.stderr,
+    )
+    print(
+        "  next action: rerun hapax-post-merge-deploy for the desired SHA and use only "
+        "its authenticated live next-action command",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+try:
+    parent_inode = os.lstat(parent)
+    expected = os.lstat(receipt)
+    if (
+        not stat.S_ISDIR(parent_inode.st_mode)
+        or parent_inode.st_uid != os.geteuid()
+        or parent_inode.st_mode & 0o022
+    ):
+        refuse(
+            f"unsafe parent owner={parent_inode.st_uid} "
+            f"mode={stat.S_IMODE(parent_inode.st_mode):04o}"
+        )
+    if (
+        not stat.S_ISREG(expected.st_mode)
+        or expected.st_uid != os.geteuid()
+        or expected.st_nlink != 1
+        or stat.S_IMODE(expected.st_mode) != 0o600
+        or expected.st_size != 41
+    ):
+        refuse(
+            f"unsafe inode owner={expected.st_uid} links={expected.st_nlink} "
+            f"mode={stat.S_IMODE(expected.st_mode):04o} size={expected.st_size}"
+        )
+    fd = os.open(receipt, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(fd)
+        data = os.read(fd, 42)
+    finally:
+        os.close(fd)
+except OSError as exc:
+    refuse(f"cannot inspect or read the receipt: {exc}")
+if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
+    refuse("the receipt inode changed while opening")
+if re.fullmatch(rb"[0-9a-f]{40}\n", data) is None:
+    refuse("content is not exactly 40 lowercase hex characters and one newline")
+print(data[:-1].decode("ascii"))
+PY
+}
+
 audit_package_receipt() {
     local label="$1" receipt sha rel source object_type expected_oid actual_oid failed=0
     shift
@@ -1149,8 +1217,10 @@ audit_package_receipt() {
         echo "  next action: rerun the newest governed $label installer package" >&2
         return 1
     fi
-    sha="$(tr -d '[:space:]' < "$receipt")"
-    if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || ! root_required_git cat-file -e "$sha^{commit}" 2>/dev/null; then
+    if ! sha="$(read_safe_sha_receipt "$receipt" installed)"; then
+        return 1
+    fi
+    if ! root_required_git cat-file -e "$sha^{commit}" 2>/dev/null; then
         echo "root-required installed receipt is invalid or unavailable: $receipt sha=$sha" >&2
         echo "  next action: fetch the installed commit into $ROOT_REQUIRED_GIT_REPO and rerun the newest governed $label installer package" >&2
         return 1
@@ -1196,15 +1266,19 @@ audit_desired_receipt() {
         echo "  next action: rerun hapax-post-merge-deploy for current main or the newest governed $label installer" >&2
         return 1
     fi
-    desired_sha="$(tr -d '[:space:]' < "$desired")"
-    if ! [[ "$desired_sha" =~ ^[0-9a-f]{40}$ ]] || ! root_required_git cat-file -e "$desired_sha^{commit}" 2>/dev/null; then
+    if ! desired_sha="$(read_safe_sha_receipt "$desired" desired)"; then
+        return 1
+    fi
+    if ! root_required_git cat-file -e "$desired_sha^{commit}" 2>/dev/null; then
         echo "root-required desired receipt is invalid or unavailable: $desired sha=$desired_sha" >&2
         echo "  next action: fetch the desired commit into $ROOT_REQUIRED_GIT_REPO and rerun hapax-post-merge-deploy" >&2
         return 1
     fi
     installed_sha=""
     if [ -f "$installed" ]; then
-        installed_sha="$(tr -d '[:space:]' < "$installed")"
+        if ! installed_sha="$(read_safe_sha_receipt "$installed" installed)"; then
+            return 1
+        fi
     fi
     if [ "$installed_sha" != "$desired_sha" ]; then
         echo "root-required desired package is not installed: $label desired=$desired_sha installed=${installed_sha:-missing}" >&2
