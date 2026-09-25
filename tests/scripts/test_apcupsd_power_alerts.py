@@ -34,11 +34,11 @@ APCUPSD_PACKAGE_FILES = tuple(
 )
 
 
-def _copy_apcupsd_package(dest_root: Path) -> None:
+def _copy_apcupsd_package(dest_root: Path, *, source_root: Path = REPO_ROOT) -> None:
     for relative in APCUPSD_PACKAGE_FILES:
         dest = dest_root / relative
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(REPO_ROOT / relative, dest)
+        shutil.copy2(source_root / relative, dest)
 
 
 @pytest.fixture(autouse=True)
@@ -1152,7 +1152,7 @@ def test_authenticated_deferred_helper_runs_real_apcupsd_installer_with_safe_nes
     activation_alias.symlink_to(activation, target_is_directory=True)
     defer_root = tmp_path / "root-required"
     stage = defer_root / package_sha / "apcupsd-power-alerts"
-    _copy_apcupsd_package(stage)
+    _copy_apcupsd_package(stage, source_root=activation)
     (stage / ".hapax-root-required-package-sha").write_text(f"{package_sha}\n", encoding="utf-8")
     (stage / "RUNBOOK.txt").write_text("authenticated test deferral\n", encoding="utf-8")
     state_root = tmp_path / "root-state"
