@@ -4862,3 +4862,57 @@ def test_policy_rollback_help_documents_retirement() -> None:
     # The old help claimed legacy full-profile routes "may launch" — that is now
     # false (rollback HOLDs). Guard against the stale promise regressing.
     assert "may launch" not in help_text
+
+
+# M76: hapax-post-merge-deploy installs hapax-* launchers as release-pinned regular copies in
+# ~/.local/bin, so this script's __file__-relative imports found neither executor_contract.py
+# nor shared/ and the installed dispatch died with ModuleNotFoundError: executor_contract.
+
+
+def _installed_copy(tmp_path: Path, *, tamper: bool = False) -> Path:
+    bin_dir = tmp_path / "local-bin"
+    bin_dir.mkdir()
+    copy = bin_dir / "hapax-methodology-dispatch"
+    content = SCRIPT.read_bytes() + (b"\n# tampered\n" if tamper else b"")
+    copy.write_bytes(content)
+    copy.chmod(0o755)
+    return copy
+
+
+def _run_installed(copy: Path, activation_root: Path) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(activation_root)}
+    env.pop("PYTHONPATH", None)
+    return subprocess.run(
+        [sys.executable, str(copy), "--help"],
+        cwd=copy.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def test_installed_copy_imports_from_the_activated_release(tmp_path: Path) -> None:
+    result = _run_installed(_installed_copy(tmp_path), REPO_ROOT)
+
+    assert result.returncode == 0, result.stderr[-800:]
+    assert "ModuleNotFoundError" not in result.stderr
+
+
+def test_installed_copy_that_differs_from_the_release_refuses(tmp_path: Path) -> None:
+    result = _run_installed(_installed_copy(tmp_path, tamper=True), REPO_ROOT)
+
+    assert result.returncode != 0
+    assert "differs from the activated release" in result.stderr
+    assert "next action" in result.stderr
+
+
+def test_installed_copy_without_an_activated_release_refuses(tmp_path: Path) -> None:
+    missing = tmp_path / "no-activation"
+
+    result = _run_installed(_installed_copy(tmp_path), missing)
+
+    assert result.returncode != 0
+    assert "activated release" in result.stderr
+    assert "ModuleNotFoundError" not in result.stderr

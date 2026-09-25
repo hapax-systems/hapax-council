@@ -20,10 +20,45 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-REPO_ROOT_FOR_IMPORTS = Path(__file__).resolve().parents[1]
+
+def _source_root_for_imports() -> Path:
+    """The release tree this script's code belongs to (M76).
+
+    In a checkout or the activated release, that is the tree the script sits in.
+    hapax-post-merge-deploy also installs hapax-* launchers as release-pinned regular
+    copies in ~/.local/bin, where no sibling module or shared/ exists; a copy then
+    imports from the activated release, as hapax-codex-headless does, but only while
+    it is byte-identical to that release's own script, so stale code never mixes
+    with a newer release.
+    """
+
+    here = Path(__file__).resolve()
+    if (here.parent / "executor_contract.py").is_file() and (here.parents[1] / "shared").is_dir():
+        return here.parents[1]
+    activated = Path(
+        os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+        or Path.home() / ".cache" / "hapax" / "source-activation" / "worktree"
+    )
+    release_copy = activated / "scripts" / here.name
+    if not release_copy.is_file():
+        sys.exit(
+            f"hapax-methodology-dispatch: installed copy {here} has no activated release at "
+            f"{activated}; next action: run the governed hapax-source-activate, or set "
+            "HAPAX_SOURCE_ACTIVATE_WORKTREE to an activated release"
+        )
+    if release_copy.read_bytes() != here.read_bytes():
+        sys.exit(
+            f"hapax-methodology-dispatch: installed copy {here} differs from the activated "
+            f"release's {release_copy}; next action: reinstall the launcher from that release "
+            "(hapax-post-merge-deploy), then rerun"
+        )
+    return activated.resolve()
+
+
+REPO_ROOT_FOR_IMPORTS = _source_root_for_imports()
 if str(REPO_ROOT_FOR_IMPORTS) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT_FOR_IMPORTS))
-_SCRIPTS_DIR_FOR_IMPORTS = Path(__file__).resolve().parent
+_SCRIPTS_DIR_FOR_IMPORTS = REPO_ROOT_FOR_IMPORTS / "scripts"
 if str(_SCRIPTS_DIR_FOR_IMPORTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR_FOR_IMPORTS))
 
@@ -1713,7 +1748,7 @@ def launch_claude_interactive(
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_CLAUDE_LAUNCHER",
-            str(Path(__file__).resolve().parent / "hapax-claude"),
+            str(_SCRIPTS_DIR_FOR_IMPORTS / "hapax-claude"),
         )
     )
     if not launcher.is_file():
@@ -2034,7 +2069,7 @@ def launch_codex_headless(
     launcher = Path(
         os.environ.get(
             "HAPAX_METHODOLOGY_CODEX_HEADLESS",
-            str(Path(__file__).resolve().parent / "hapax-codex-headless"),
+            str(_SCRIPTS_DIR_FOR_IMPORTS / "hapax-codex-headless"),
         )
     )
     if not launcher.is_file():
@@ -2126,7 +2161,7 @@ def advance_task_stage(task_id: str, stage: str) -> int:
     """Perform the drain mutation: advance the orphan's stage via the canonical
     governed setter (scripts/cc-stage-advance). Returns its exit code (0 advanced /
     already-there; 2 refused; 3 not-found/IO). Forward-only — no --allow-backward."""
-    script = Path(__file__).resolve().parent / "cc-stage-advance"
+    script = _SCRIPTS_DIR_FOR_IMPORTS / "cc-stage-advance"
     return subprocess.call([sys.executable, str(script), task_id, stage])
 
 
