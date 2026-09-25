@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import os
+import select
 import shutil
 import subprocess
 import sys
@@ -23,7 +24,17 @@ SCRIPT = REPO_ROOT / "scripts" / "hapax-codex-headless"
 
 @pytest.fixture(autouse=True)
 def _isolate_headless_pid_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.delenv("HAPAX_METHODOLOGY_DISPATCH_TASK", raising=False)
+    for name in (
+        "HAPAX_METHODOLOGY_DISPATCH_TASK",
+        "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH",
+        "HAPAX_SESSION_ID",
+        "HAPAX_AGENT_ROLE",
+        "CLAUDE_ROLE",
+        "CODEX_ROLE",
+        "HAPAX_CODEX_HEADLESS_WORKDIR",
+        "HAPAX_CODEX_WORKTREE_STRATEGY",
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HAPAX_CODEX_HEADLESS_PID_DIR", str(tmp_path / "headless-pids"))
     monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
     monkeypatch.delenv("HAPAX_NATIVE_LIFECYCLE_RECEIPT", raising=False)
@@ -64,13 +75,14 @@ def _write_rejecting_codex(
     fallback_body: str = "exit 0\n",
     *,
     auth_message: str = "login required",
+    auth_rc: int = 77,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         f"""#!/usr/bin/env bash
 if [ "${{1:-}}" = "exec" ] && [[ "$*" == *HAPAX_CODEX_EXEC_AUTH_OK* ]]; then
   echo "{auth_message}" >&2
-  exit 77
+  exit {auth_rc}
 fi
 """
         + fallback_body,
@@ -294,6 +306,7 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
     tmp_path: Path, activation_override: bool, remote: bool, case: str
 ) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache/hapax"
     cache.mkdir(parents=True)
     (home / "projects/hapax-mcp").mkdir(parents=True)
@@ -312,6 +325,16 @@ def test_installed_headless_observer_uses_activation_and_requires_fresh_receipt(
         (root / "shared").mkdir(parents=True, exist_ok=True)
         (root / "shared/__init__.py").write_text("")
         (root / "shared/execution_observer.py").write_text(stale_module)
+
+    shutil.copytree(
+        REPO_ROOT / "shared",
+        workdir / "shared",
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "execution_observer.py"),
+    )
+    (workdir / ".venv").symlink_to(Path(sys.executable).parent.parent, target_is_directory=True)
+    (workdir / "config").symlink_to(REPO_ROOT / "config", target_is_directory=True)
+    (workdir / "docs").symlink_to(REPO_ROOT / "docs", target_is_directory=True)
 
     default_activation = cache / "source-activation/worktree"
     activation = tmp_path / "configured-activation" if activation_override else default_activation
@@ -467,6 +490,7 @@ def _init_primary_council_repo(path: Path) -> None:
 
 def test_codex_headless_runs_on_appendix_via_remote_payload(tmp_path: Path) -> None:
     home = tmp_path / "home"
+    remote_roots = _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
@@ -552,6 +576,7 @@ exit 0
     assert proof["claim_materialized"] is True
     assert proof["claim_epoch_verified"] is True
     sid = proof["session_id"]
+    cache = Path(remote_roots.claim_cache_dir)
     assert (cache / f"session-role-{sid}").read_text(encoding="utf-8") == "cx-amber\n"
     assert (cache / f"cc-active-task-cx-amber-{sid}").read_text(encoding="utf-8") == "task-x\n"
     legacy_epoch, _, legacy_task = (
@@ -571,6 +596,7 @@ exit 0
 
 def test_codex_headless_remote_uses_configured_codex_binary(tmp_path: Path) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
@@ -1282,7 +1308,25 @@ exit 0
     assert codex_called.exists()
 
 
-def test_codex_headless_refuses_rejected_local_bearer_before_claim(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("message", "rc", "reason", "rejected"),
+    [
+        ("login required", 77, "codex_saved_auth_login_required", True),
+        ("refresh_token_invalidated", 77, "codex_saved_auth_refresh_token_invalidated", True),
+        (
+            "responses_websocket: invalid peer certificate: UnknownIssuer",
+            124,
+            "codex_exec_preflight_timeout",
+            False,
+        ),
+        ("invalid peer certificate: UnknownIssuer", 1, "codex_exec_preflight_failed", False),
+        ("connection refused", 1, "codex_exec_preflight_failed", False),
+        ("unexpected executable failure", 1, "codex_exec_preflight_failed", False),
+    ],
+)
+def test_codex_headless_refuses_rejected_local_bearer_before_claim(
+    tmp_path: Path, message: str, rc: int, reason: str, rejected: bool
+) -> None:
     home = tmp_path / "home"
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
@@ -1298,6 +1342,8 @@ def test_codex_headless_refuses_rejected_local_bearer_before_claim(tmp_path: Pat
         f"""printf '%s\\n' "$*" > "{codex_args}"
 exit 0
 """,
+        auth_message=message,
+        auth_rc=rc,
     )
     _write_executable(
         workdir / "scripts" / "cc-claim",
@@ -1325,8 +1371,9 @@ exit 0
     )
 
     assert result.returncode == 78
-    assert "saved Codex auth was rejected by codex exec" in result.stderr
-    assert "codex_saved_auth_login_required" in result.stderr
+    assert ("saved Codex auth was rejected by codex exec" in result.stderr) == rejected
+    assert ("via codex login" in result.stderr) == rejected
+    assert reason in result.stderr
     assert not claim_log.exists()
     assert not codex_args.exists()
 
@@ -1395,6 +1442,7 @@ exit 0
 
 def test_codex_headless_creates_missing_remote_default_worktree(tmp_path: Path) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (cache / "cc-active-task-cx-amber").write_text("task-x\n", encoding="utf-8")
@@ -2035,6 +2083,7 @@ def test_codex_headless_remote_bootstrap_uses_existing_branch_when_present(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     _write_claim_epoch(cache, "cx-amber", "task-x")
@@ -2097,6 +2146,7 @@ def test_codex_headless_remote_exec_uses_preclaim_proven_token_handoff(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
@@ -2213,6 +2263,7 @@ def test_codex_headless_remote_preflight_does_not_materialize_token_handoff(
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     (home / "projects" / "hapax-mcp").mkdir(parents=True)
@@ -2833,6 +2884,484 @@ exit 0
     assert used_openai_api_key.read_text(encoding="utf-8").strip() == ""
 
 
+def _install_remote_composition(
+    home: Path, *, custom_root: bool = False, separate_claim_cache: bool = True
+):
+    from shared.gate0b_claim_publication_install import (
+        default_claim_publication_roots,
+        install_claim_publication_composition,
+    )
+
+    roots = default_claim_publication_roots(home=home)
+    if separate_claim_cache:
+        # SSH is executed locally by these fixtures, but the real execution host
+        # has a separate claim cache. Do not model remote startup as repair of a
+        # deliberately incomplete launcher-host mock claim.
+        roots = roots.model_copy(update={"claim_cache_dir": str(home / ".cache/remote-claims")})
+    if custom_root:
+        roots = roots.model_copy(update={"claim_lock_root": str(home / "installed-role-locks")})
+    install_claim_publication_composition(
+        roots=roots, installed_at="2026-09-24T00:00:00Z", install_task_ref="test-install"
+    )
+    return roots
+
+
+def _remote_materialization_case(
+    tmp_path: Path,
+    *,
+    workdir: Path = REPO_ROOT,
+    custom_root: bool = False,
+    install: bool = True,
+    existing: str = "absent",
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    if install:
+        _install_remote_composition(home, custom_root=custom_root, separate_claim_cache=False)
+    role, task, sid = "cx-remote-lock", "new-remote-task", "remote-lock-session"
+    proof, ran = tmp_path / "proof.json", tmp_path / "native-ran"
+    codex = tmp_path / "bin" / "codex"
+    codex.parent.mkdir()
+    codex.write_text(f"#!/bin/sh\nprintf ran > {ran}\n")
+    codex.chmod(0o755)
+    payload = {
+        "workdir": str(workdir),
+        "task_id": task,
+        "session": role,
+        "env": {
+            "HOME": str(home),
+            "HAPAX_SESSION_ID": sid,
+            "HAPAX_AGENT_ROLE": role,
+            "HAPAX_METHODOLOGY_DISPATCH_TASK": task,
+            "HAPAX_METHODOLOGY_DISPATCH_CLAIM_EPOCH": f"123 {task}",
+        },
+        "proof_file": str(proof),
+        "argv": [str(codex)],
+        "codex_bin_path": str(codex),
+    }
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PATH": str(codex.parent),
+        "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(workdir),
+        "HAPAX_REMOTE_PAYLOAD": base64.b64encode(json.dumps(payload).encode()).decode(),
+    }
+    cache = home / ".cache/hapax"
+    cache.mkdir(parents=True)
+    files = {
+        cache / f"session-role-{sid}": role + "\n",
+        cache / f"cc-claim-epoch-{role}": f"123 {task}\n",
+        cache / f"cc-claim-epoch-{role}-{sid}": f"123 {task}\n",
+        cache / f"cc-active-task-{role}": task + "\n",
+        cache / f"cc-active-task-{role}-{sid}": task + "\n",
+    }
+    if existing == "conflict":
+        files = {
+            path: body.replace(task, "old-task").replace("123 ", "122 ")
+            for path, body in files.items()
+        }
+    if existing != "absent":
+        for path, body in files.items():
+            path.write_text(body)
+    return env, home, files, proof, ran, role, task, sid
+
+
+@pytest.mark.parametrize("custom_root", [False, True])
+def test_remote_materialization_waits_for_installed_role_exclusion(
+    tmp_path: Path, custom_root: bool
+) -> None:
+    from shared.gate0b_claim_publication_install import (
+        default_claim_publication_roots,
+        load_claim_publication_composition,
+    )
+    from shared.sdlc_claim import claim_role_exclusion
+
+    env, home, files, proof, ran, role, task, sid = _remote_materialization_case(
+        tmp_path, custom_root=custom_root, existing="conflict"
+    )
+    roots = load_claim_publication_composition(
+        Path(default_claim_publication_roots(home=home).invocation_store_root)
+    ).receipt.roots
+    # Signal the actual attempted flock, so a slow import cannot masquerade as exclusion.
+    read_fd, write_fd = os.pipe()
+    instrument = f"""import fcntl, os
+_real_flock = fcntl.flock
+_signaled = False
+def observed_flock(fd, operation):
+    global _signaled
+    if operation & fcntl.LOCK_EX and not _signaled:
+        os.write({write_fd}, b"attempt")
+        _signaled = True
+    return _real_flock(fd, operation)
+fcntl.flock = observed_flock
+"""
+    child = None
+    try:
+        with claim_role_exclusion(role, lock_root=Path(roots.claim_lock_root)):
+            child = subprocess.Popen(
+                [sys.executable, "-I", "-c", instrument + _extract_remote_python("REMOTE_EXEC_PY")],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                pass_fds=(write_fd,),
+            )
+            os.close(write_fd)
+            write_fd = -1
+            assert select.select([read_fd], [], [], 5)[0], "no role-lock attempt observed"
+            assert os.read(read_fd, 7) == b"attempt", "materializer exited without role exclusion"
+            with pytest.raises(subprocess.TimeoutExpired):
+                child.communicate(timeout=0.2)
+            assert {path: path.read_text() for path in files} == files
+            assert not proof.exists()
+            assert not ran.exists()
+        _, stderr = child.communicate(timeout=10)
+        assert child.returncode == 78, stderr
+        assert "claim_remote_identity_conflict" in stderr
+        assert {path: path.read_text() for path in files} == files
+        assert not proof.exists() and not ran.exists()
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.communicate(timeout=5)
+
+
+def test_remote_materialization_holds_exclusion_at_every_write(tmp_path: Path) -> None:
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+    from shared.sdlc_claim import _claim_publication_role_lock_digest
+
+    env, home, files, proof, ran, role, *_ = _remote_materialization_case(tmp_path)
+    root = Path(default_claim_publication_roots(home=home).claim_lock_root)
+    lock = root / f"{_claim_publication_role_lock_digest(role)}.lock"
+    # A second open-file description tests the real kernel lock at each write.
+    instrument = f"""import fcntl, os, sys
+_original_open = os.open
+_projections = {set(map(str, files))!r}
+def checked_open(path, flags, *args, **kwargs):
+    if str(path) in _projections and flags & os.O_CREAT:
+        fd = _original_open({str(lock)!r}, os.O_RDWR)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print("guarded-write " + os.path.basename(path), file=sys.stderr)
+            else:
+                raise RuntimeError("ownership write outside role exclusion")
+        finally:
+            os.close(fd)
+    return _original_open(path, flags, *args, **kwargs)
+os.open = checked_open
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", instrument + _extract_remote_python("REMOTE_EXEC_PY")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert set(result.stderr.splitlines()) == {f"guarded-write {path.name}" for path in files}
+    assert proof.exists() and ran.exists()
+
+
+def test_remote_materialization_uses_execution_host_binding(tmp_path: Path) -> None:
+    workdir = tmp_path / "worker-checkout-without-claim-helper"
+    workdir.mkdir()
+    env, _, _, proof, ran, *_ = _remote_materialization_case(tmp_path, workdir=workdir)
+    env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(REPO_ROOT)
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", _extract_remote_python("REMOTE_EXEC_PY")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(proof.read_text())["workdir"] == str(workdir)
+    assert ran.exists()
+
+
+def _remote_identity_image(files):
+    # The assertion itself must not perturb the metadata oracle.
+    image = {}
+    for path in files:
+        if not path.exists() and not path.is_symlink():
+            image[path.name] = None
+            continue
+        metadata = path.lstat()
+        if path.is_symlink():
+            content = os.readlink(path)
+        elif path.is_file():
+            fd = os.open(path, os.O_RDONLY | os.O_NOATIME | os.O_NOFOLLOW)
+            try:
+                content = os.read(fd, 4096)
+            finally:
+                os.close(fd)
+        else:
+            content = None
+        image[path.name] = (
+            content,
+            metadata.st_mode,
+            metadata.st_ino,
+            metadata.st_nlink,
+            metadata.st_atime_ns,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+    return image
+
+
+def _run_remote_identity(env, instrument=""):
+    return subprocess.run(
+        [sys.executable, "-I", "-c", instrument + _extract_remote_python("REMOTE_EXEC_PY")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+def test_remote_materialization_exact_retry_preserves_identity(tmp_path: Path) -> None:
+    env, _, files, proof, ran, *_ = _remote_materialization_case(tmp_path, existing="matching")
+    before = _remote_identity_image(files)
+    result = _run_remote_identity(env)
+    assert result.returncode == 0, result.stderr
+    assert _remote_identity_image(files) == before
+    assert proof.exists() and ran.exists()
+    assert json.loads(proof.read_text())["claim_epoch_verified"] is True
+
+
+def test_remote_materialization_partial_write_stays_held_on_retry(tmp_path: Path) -> None:
+    env, _, files, proof, ran, *_ = _remote_materialization_case(tmp_path)
+    instrument = f"""import os
+_open = os.open
+def fail_third(path, flags, *args, **kwargs):
+    if str(path) == {str(list(files)[3])!r} and flags & os.O_CREAT:
+        raise OSError("injected interrupted projection")
+    return _open(path, flags, *args, **kwargs)
+os.open = fail_third
+"""
+    result = _run_remote_identity(env, instrument)
+    assert result.returncode == 78
+    assert sum(path.exists() for path in files) == 2
+    before = _remote_identity_image(files)
+    retry = _run_remote_identity(env)
+    assert retry.returncode == 78, retry.stderr
+    assert "claim_remote_identity_incomplete" in retry.stderr
+    assert _remote_identity_image(files) == before
+    assert not proof.exists() and not ran.exists()
+
+
+def test_remote_materialization_create_once_preserves_raced_file(tmp_path: Path) -> None:
+    env, _, files, proof, ran, *_ = _remote_materialization_case(tmp_path)
+    first = list(files)[0]
+    instrument = f"""import os
+_open = os.open
+_injected = False
+def raced_open(path, flags, *args, **kwargs):
+    global _injected
+    if str(path) == {str(first)!r} and flags & os.O_CREAT and not _injected:
+        _injected = True
+        fd = _open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.write(fd, b"raced-peer-identity\\n")
+        os.close(fd)
+    return _open(path, flags, *args, **kwargs)
+os.open = raced_open
+"""
+    result = _run_remote_identity(env, instrument)
+    assert result.returncode == 78, result.stderr
+    assert first.read_bytes() == b"raced-peer-identity\n"
+    assert sum(path.exists() for path in files) == 1
+    assert not proof.exists() and not ran.exists()
+
+
+def test_remote_materialization_racing_sessions_cannot_replace_winner(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    env, home, _, proof, ran, role, _, sid = _remote_materialization_case(tmp_path)
+    payload = json.loads(base64.b64decode(env["HAPAX_REMOTE_PAYLOAD"]))
+    other = json.loads(json.dumps(payload))
+    other["env"]["HAPAX_SESSION_ID"] = "other-remote-session"
+    other["proof_file"] = str(tmp_path / "other-proof.json")
+    other_env = {
+        **env,
+        "HAPAX_REMOTE_PAYLOAD": base64.b64encode(json.dumps(other).encode()).decode(),
+    }
+    barrier = Barrier(2)
+
+    def launch(environment):
+        barrier.wait(timeout=5)
+        return _run_remote_identity(environment)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(launch, env)
+        second = pool.submit(launch, other_env)
+        results = [first.result(), second.result()]
+    assert sorted(item.returncode for item in results) == [0, 78]
+    winner = sid if results[0].returncode == 0 else "other-remote-session"
+    loser = "other-remote-session" if winner == sid else sid
+    cache = home / ".cache/hapax"
+    assert (cache / f"session-role-{winner}").read_text() == role + "\n"
+    assert not (cache / f"session-role-{loser}").exists()
+    assert len(list(cache.glob(f"cc-active-task-{role}*"))) == 2
+    assert proof.exists() != Path(other["proof_file"]).exists()
+    assert ran.exists()
+
+
+@pytest.mark.parametrize("slot", range(5))
+@pytest.mark.parametrize(
+    "damage",
+    ["conflict", "missing", "malformed", "symlink", "dangling", "hardlink", "directory", "fifo"],
+)
+def test_remote_materialization_preserves_unsafe_identity(
+    tmp_path: Path, slot: int, damage: str
+) -> None:
+    env, _, files, proof, ran, *_ = _remote_materialization_case(tmp_path, existing="matching")
+    path = list(files)[slot]
+    path.unlink()
+    target = tmp_path / "target"
+    if damage == "conflict":
+        path.write_text("different-identity\n")
+    elif damage == "malformed":
+        path.write_bytes(b"\xff\x00")
+    elif damage in {"symlink", "dangling", "hardlink"}:
+        if damage != "dangling":
+            target.write_text(files[path])
+        if damage == "hardlink":
+            os.link(target, path)
+        else:
+            path.symlink_to(target)
+    elif damage == "directory":
+        path.mkdir()
+    elif damage == "fifo":
+        os.mkfifo(path)
+    before = _remote_identity_image([*files, target])
+    result = _run_remote_identity(env)
+    assert result.returncode == 78, result.stderr
+    assert "claim_remote_identity_" in result.stderr
+    assert "next action:" in result.stderr
+    assert _remote_identity_image([*files, target]) == before
+    assert not proof.exists() and not ran.exists()
+
+
+def test_remote_materialization_refuses_surviving_other_session(tmp_path: Path) -> None:
+    env, home, files, proof, ran, role, task, _ = _remote_materialization_case(tmp_path)
+    other = home / f".cache/hapax/cc-active-task-{role}-other-session"
+    other.write_text(task + "\n")
+    before = _remote_identity_image([*files, other])
+    result = _run_remote_identity(env)
+    assert result.returncode == 78, result.stderr
+    assert "claim_remote_identity_conflict" in result.stderr
+    assert _remote_identity_image([*files, other]) == before
+    assert not proof.exists() and not ran.exists()
+
+
+@pytest.mark.parametrize("damage", ["absent", "corrupt", "busy"])
+def test_remote_materialization_typed_diagnostics(tmp_path: Path, damage: str) -> None:
+    env, home, files, proof, ran, *_ = _remote_materialization_case(
+        tmp_path, install=damage != "absent", existing="matching"
+    )
+    if damage == "corrupt":
+        from shared.gate0b_claim_publication_install import default_claim_publication_roots
+
+        roots = default_claim_publication_roots(home=home)
+        (Path(roots.invocation_store_root) / "activation-receipt.json").write_text("{}\n")
+    instrument = ""
+    if damage == "busy":
+        instrument = f"""import sys
+sys.path.insert(0, {str(REPO_ROOT)!r})
+import shared.sdlc_claim as claim
+claim._CLAIM_PUBLICATION_LOCK_TIMEOUT_SECONDS = 0
+import fcntl
+def busy(*args):
+    raise BlockingIOError("sensitive-coordinates")
+fcntl.flock = busy
+"""
+    before = _remote_identity_image(files)
+    result = _run_remote_identity(env, instrument)
+    assert result.returncode == 78, result.stderr
+    expected = {
+        "absent": "claim_remote_composition_missing",
+        "corrupt": "claim_remote_composition_invalid",
+        "busy": "claim_publication_lock_unavailable",
+    }[damage]
+    assert expected in result.stderr
+    assert "next action:" in result.stderr
+    assert "sensitive-coordinates" not in result.stderr
+    assert str(home) not in result.stderr
+    assert _remote_identity_image(files) == before
+    assert not proof.exists() and not ran.exists()
+
+
+def test_remote_materialization_requires_execution_host_runtime(tmp_path: Path) -> None:
+    empty_source = tmp_path / "missing-runtime"
+    empty_source.mkdir()
+    env, _, files, proof, ran, *_ = _remote_materialization_case(
+        tmp_path, workdir=empty_source, existing="matching"
+    )
+    env["PATH"] = os.environ["PATH"]
+    command = subprocess.run(
+        [
+            "bash",
+            "-c",
+            _extract_shell_function("remote_python_command")
+            + '\nremote_python_command "$1" "$2" claim-runtime',
+            "bash",
+            env["HAPAX_REMOTE_PAYLOAD"],
+            _extract_remote_python("REMOTE_EXEC_PY"),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = subprocess.run(
+        ["bash", "-c", command.stdout],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 78
+    assert "remote claim runtime unavailable" in result.stderr
+    assert {path: path.read_text() for path in files} == files
+    assert not proof.exists() and not ran.exists()
+
+
+@pytest.mark.parametrize("failure", ["missing-import", "unavailable-lock"])
+def test_remote_materialization_refuses_without_role_exclusion(
+    tmp_path: Path, failure: str
+) -> None:
+    from shared.gate0b_claim_publication_install import default_claim_publication_roots
+
+    workdir = tmp_path / "empty-source" if failure == "missing-import" else REPO_ROOT
+    if failure == "missing-import":
+        workdir.mkdir()
+    env, home, files, proof, ran, *_ = _remote_materialization_case(
+        tmp_path, workdir=workdir, existing="matching"
+    )
+    if failure == "unavailable-lock":
+        root = Path(default_claim_publication_roots(home=home).claim_lock_root)
+        root.parent.mkdir(parents=True)
+        root.write_text("not a lock directory\n")
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", _extract_remote_python("REMOTE_EXEC_PY")],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 78, result.stderr
+    assert "failed to materialize remote claim cache" in result.stderr
+    assert {path: path.read_text() for path in files} == files
+    assert not proof.exists()
+    assert not ran.exists()
+
+
 def test_codex_headless_remote_exec_fails_if_claim_cache_materialization_fails(
     tmp_path: Path,
 ) -> None:
@@ -3044,6 +3573,7 @@ def test_codex_headless_remote_bootstrap_falls_back_to_head_for_missing_base_ref
     tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
+    _install_remote_composition(home)
     cache = home / ".cache" / "hapax"
     cache.mkdir(parents=True)
     _write_claim_epoch(cache, "cx-amber", "task-x")

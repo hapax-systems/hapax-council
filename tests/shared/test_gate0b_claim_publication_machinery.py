@@ -784,6 +784,7 @@ def test_recovery_path_noops_without_journals(tmp_path: Path) -> None:
     before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
 
     result = recover_claim_publications(
+        expected_owner=(fixture.intent.role, fixture.intent.session_id),
         cache_dir=fixture.cache,
         transaction_root=Path(fixture.roots.claim_transaction_root),
         receipt_root=Path(fixture.roots.claim_receipt_root),

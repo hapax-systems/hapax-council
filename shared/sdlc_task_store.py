@@ -1188,25 +1188,53 @@ def _make_identity_index(
     )
 
 
-def build_task_identity_index(vault_root: Path) -> TaskIdentityIndex:
-    """Build one immutable, non-authorizing parsed-identity index."""
+def build_task_identity_index(vault_root: Path, *, max_attempts: int = 1) -> TaskIdentityIndex:
+    """Build an immutable index, optionally retrying construction after drift.
 
+    Each attempt inventories every canonical state. Only unchanged stat-bound
+    parses can carry forward from a failed attempt; no failed frontier is ever
+    returned. Existing supplied indexes still refuse drift without refreshing.
+    """
+
+    if type(max_attempts) is not int or not 1 <= max_attempts <= 3:
+        raise ValueError("max_attempts must be an integer from 1 to 3")
     root = _normalized_path(vault_root)
-    frontier = _complete_frontier(root)
-    entries = tuple(
-        _index_entry(path, state=state, stat_vector=stat_vector)
-        for state in _TASK_STATES
-        for path, stat_vector in frontier[state]
-    )
-    post_frontier = _complete_frontier(root)
-    if post_frontier != frontier:
-        _raise_frontier_changed(
-            reason_code="task_store_frontier_changed_during_index_build",
-            vault_root=root,
-            before=frontier,
-            after=post_frontier,
-        )
-    return _make_identity_index(root, frontier, entries)
+    previous: dict[Path, TaskIdentityEntry] = {}
+    for attempt in range(max_attempts):
+        try:
+            frontier = _complete_frontier(root)
+            entries = tuple(
+                old
+                if (
+                    (old := previous.get(path)) is not None
+                    and old.state == state
+                    and old.stat_vector == stat_vector
+                )
+                else _index_entry(path, state=state, stat_vector=stat_vector)
+                for state in _TASK_STATES
+                for path, stat_vector in frontier[state]
+            )
+            previous = {entry.path: entry for entry in entries}
+            post_frontier = _complete_frontier(root)
+        except TaskStoreError as exc:
+            # A list-to-stat race invalidates this whole construction attempt.
+            # Reuse still requires an exact stat vector in the next inventory.
+            if (
+                exc.reason_code != "task_store_frontier_changed_during_resolution"
+                or attempt + 1 == max_attempts
+            ):
+                raise
+            continue
+        if post_frontier == frontier:
+            return _make_identity_index(root, frontier, entries)
+        if attempt + 1 == max_attempts:
+            _raise_frontier_changed(
+                reason_code="task_store_frontier_changed_during_index_build",
+                vault_root=root,
+                before=frontier,
+                after=post_frontier,
+            )
+    raise AssertionError("unreachable: bounded index construction did not return or refuse")
 
 
 def validate_task_identity_index(index: TaskIdentityIndex) -> None:
@@ -1737,6 +1765,7 @@ def resolve_task_note(
     state: TaskState = "active",
     require_no_other_state: bool = True,
     identity_index: TaskIdentityIndex | None = None,
+    index_build_attempts: int = 1,
 ) -> TaskNoteSnapshot:
     """Resolve one parsed identity across the complete task-state namespace."""
 
@@ -1761,7 +1790,7 @@ def resolve_task_note(
         )
 
     root = _normalized_path(vault_root)
-    index = identity_index or build_task_identity_index(root)
+    index = identity_index or build_task_identity_index(root, max_attempts=index_build_attempts)
     if index.vault_root != root:
         raise TaskStoreError(
             "task_identity_index_root_mismatch",

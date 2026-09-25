@@ -21,7 +21,7 @@ import stat
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -68,7 +68,7 @@ from shared.sdlc_task_store import (
     load_claim_dispatch_binding,
     resolve_task_note,
 )
-from shared.task_note_lock import held_by_current_thread, projected_path_lock
+from shared.task_note_lock import TaskNoteLockError, held_by_current_thread, projected_path_lock
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -1571,6 +1571,8 @@ class ClaimPublicationRecoveryResult:
     publication_id: str
     state: str
     reason_code: str | None = None
+    detail: str | None = field(default=None, kw_only=True)
+    repair_action: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -2432,13 +2434,22 @@ def _persist_admitted_receipt(
 
 
 @contextmanager
-def _claim_publication_lock(
-    intent: ClaimPublicationIntent,
+def claim_role_exclusion(
+    role: str,
     *,
-    lock_root: Path | None,
+    lock_root: Path,
 ) -> Iterator[None]:
-    # Direction, checked at the moment of use. This lock takes a projected-path lock INSIDE
-    # it, so a caller that already holds one and asks for this is hold-and-wait across two
+    """Exclude participating publishers for one exact role on this host.
+
+    The consumer must supply the installed composition's ``claim_lock_root``;
+    a private caller-selected root cannot exclude installed publishers. This
+    non-reentrant lock supplies exclusion, never liveness or action authority.
+    Hold it across the consumer's final ownership check and dependent action.
+    Acquire any task/note locks only inside it. Close/reoffer/manual writers
+    outside this protocol are not excluded (see the claim lifecycle runbook).
+    """
+    # Direction, checked at the moment of use. Publication callers take a projected-path
+    # lock INSIDE this role lock, so a caller that already holds one is hold-and-wait across two
     # lock domains: it would sit on the role lock while a publisher on the other side sits on
     # its note. Both waits are bounded, so the failure is mutual refusal rather than a wedge —
     # but "bounded" is not "safe", and a count of acquisition sites cannot see this shape at
@@ -2454,7 +2465,7 @@ def _claim_publication_lock(
         )
     root = _lock_root(lock_root)
     _ensure_claim_private_directory(root)
-    digest = _claim_publication_role_lock_digest(intent.role)
+    digest = _claim_publication_role_lock_digest(role)
     path = root / f"{digest}.lock"
     try:
         fd = os.open(
@@ -2496,18 +2507,7 @@ def _claim_publication_lock(
                         str(path),
                     ) from exc
                 time.sleep(_CLAIM_PUBLICATION_LOCK_RETRY_SECONDS)
-        # The role lock above serializes one role's publications against each other. It does
-        # NOT exclude a lifecycle transition over this task's note: it is keyed by the role,
-        # not by the note, and it lives under a different root. So the publication's
-        # _apply_projections calls — which take no lock of their own — could land between a
-        # transition's preimage pin and its atomic install. Take the projection lock too.
-        #
-        # Order is role-then-note, always. One direction only means no cycle — and the
-        # direction is enforced at the top of this function, not inferred from the number of
-        # places the role lock is taken: the guard refuses when the calling thread already holds
-        # any projected-path lock. tests/shared/test_task_note_lock.py drives both orders.
-        with projected_path_lock(intent.task_id, (intent.note_path,)):
-            yield
+        yield
     finally:
         if locked:
             try:
@@ -2516,6 +2516,123 @@ def _claim_publication_lock(
                 os.close(fd)
         else:
             os.close(fd)
+
+
+def materialize_remote_claim_identity(
+    *,
+    cache_dir: Path,
+    lock_root: Path,
+    role: str,
+    session_id: str,
+    task_id: str,
+    claim_epoch: str,
+) -> None:
+    """Project dispatch identity into an empty host cache, or preserve an exact retry.
+
+    The caller supplies validated installed roots and the already checked local
+    dispatch identity. This is neither admission nor ownership transfer. A partial
+    write (including a crash) stays held for governed reconciliation on retry.
+    Only participating role publishers are excluded; raw writers are unsupported.
+    """
+    from shared.session_identity import is_claim_keyable_session_id
+
+    repair = (
+        "preserve the execution-host claim files and obtain governed reconciliation before retrying"
+    )
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_-]+", role)
+        or not is_claim_keyable_session_id(session_id)
+        or (
+            task_id
+            and (
+                not re.fullmatch(r"[A-Za-z0-9_.-]+", task_id)
+                or not re.fullmatch(r"[0-9]+ " + re.escape(task_id), claim_epoch)
+            )
+        )
+    ):
+        raise ClaimPublicationError("claim_remote_identity_invalid", repair)
+    expected = {f"session-role-{session_id}": (role + "\n").encode()}
+    if task_id:
+        for key in (role, f"{role}-{session_id}"):
+            expected[f"cc-claim-epoch-{key}"] = (claim_epoch + "\n").encode()
+            expected[f"cc-active-task-{key}"] = (task_id + "\n").encode()
+    with claim_role_exclusion(role, lock_root=lock_root):
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            with ReadOnlyFsSnapshot(change_scope="observed_paths") as snapshot:
+                directory = snapshot.pin_absolute_dir(cache_dir, private_final=False)
+                if directory is None:
+                    raise ClaimPublicationError("claim_remote_identity_unsafe", repair)
+                names = snapshot.list_names(directory)
+                # A surviving different session is not an empty destination, even
+                # if the legacy role projections were lost. No liveness inference.
+                for name in names:
+                    if name not in expected and name.startswith(
+                        (
+                            f"cc-active-task-{role}-",
+                            f"cc-claim-epoch-{role}-",
+                        )
+                    ):
+                        raise ClaimPublicationError("claim_remote_identity_conflict", repair)
+                captured = {
+                    name: snapshot.observe_file_at(
+                        directory, name, private=False, max_bytes=4096
+                    ).captured
+                    for name in expected
+                }
+                present = [value for value in captured.values() if value is not None]
+                if present:
+                    if len(present) != len(expected):
+                        raise ClaimPublicationError("claim_remote_identity_incomplete", repair)
+                    if any(
+                        value is None or value.content != expected[name]
+                        for name, value in captured.items()
+                    ):
+                        raise ClaimPublicationError("claim_remote_identity_conflict", repair)
+                    snapshot.seal()
+                    return
+                snapshot.seal()
+            # Create once, never truncate or replace a peer or a partial projection.
+            for name, payload in expected.items():
+                fd = os.open(
+                    cache_dir / name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    0o600,
+                )
+                try:
+                    view = memoryview(payload)
+                    while view:
+                        written = os.write(fd, view)
+                        if written <= 0:
+                            raise OSError("remote identity write made no progress")
+                        view = view[written:]
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            _fsync_directory(cache_dir)
+        except (ReadOnlySnapshotError, OSError) as exc:
+            raise ClaimPublicationError("claim_remote_identity_unsafe", repair) from exc
+
+
+@contextmanager
+def _claim_publication_lock(
+    intent: ClaimPublicationIntent,
+    *,
+    lock_root: Path | None,
+) -> Iterator[None]:
+    with claim_role_exclusion(intent.role, lock_root=_lock_root(lock_root)):
+        # The role lock above serializes one role's publications against each other. It does
+        # NOT exclude a lifecycle transition over this task's note: it is keyed by the role,
+        # not by the note, and it lives under a different root. So the publication's
+        # _apply_projections calls — which take no lock of their own — could land between a
+        # transition's preimage pin and its atomic install. Take the projection lock too.
+        #
+        # Order is role-then-note, always. One direction only means no cycle — and the
+        # direction is enforced by claim_role_exclusion, not inferred from the number of
+        # places the role lock is taken: the guard refuses when the calling thread already holds
+        # any projected-path lock. tests/shared/test_task_note_lock.py drives both orders.
+        with projected_path_lock(intent.task_id, (intent.note_path,)):
+            yield
 
 
 def _static_manifest(
@@ -3433,11 +3550,12 @@ def _locked_preflight(
             intent.task_id,
             state="active",
             require_no_other_state=True,
+            index_build_attempts=3,
         )
     except TaskStoreError as exc:
         raise ClaimPublicationError(
             "claim_publication_task_resolution_refused",
-            "restore exactly one active task note and no closed duplicate",
+            exc.repair_action,
             exc.reason_code,
         ) from exc
     if (
@@ -3467,6 +3585,7 @@ def _require_exact_task_postimage(intent: ClaimPublicationIntent) -> None:
             intent.task_id,
             state="active",
             require_no_other_state=True,
+            index_build_attempts=3,
         )
     except TaskStoreError as exc:
         raise ClaimPublicationError(
@@ -3882,7 +4001,10 @@ def _apply_admitted_claim_publication_transaction(
                 consumption,
                 projections,
                 publication_id,
-                state="recovery_required",
+                # No projection has started at this boundary. A rejected
+                # preflight is terminal, not an instruction for a later
+                # invocation to publish this session's claim.
+                state="aborted" if phase == "pre_projection_preflight" else "recovery_required",
                 reason_code=exc.reason_code,
             )
             raise
@@ -4740,13 +4862,81 @@ def resolve_applied_claim_publication_for_task(
     )
 
 
+def _superseding_applied_publication(
+    manifest_path: Path,
+    intent: ClaimPublicationIntent,
+    *,
+    receipt_root: Path | None,
+) -> str | None:
+    """Name the latest applied publication that verifiably owns the task now.
+
+    An applied journal whose projections drifted is superseded, not damaged, when the latest
+    later admitted publication for the same task and note path passes the full applied
+    readback: its receipt, its live sidecars and a note postimage equal to the live note. A
+    manifest's ``applied`` flag alone proves nothing (PR4726 round 2, Muse new-1). Only the
+    latest candidate is tried (round 3, kept by choice): only it can own the live note, and a
+    damaged latest owner is reconciled, never bypassed through an older one, so it holds.
+    Equal epochs are never ordered, so a tie supersedes nothing. Read-only.
+    The caller holds this task's note lock, which every writer of the successor's projections
+    takes, so the readback is consistent; the successor's role lock is not taken because a
+    second role lock under a held note lock is a lock-order inversion.
+    """
+
+    current_content, current_mode = _file_state(intent.note_path)
+    if current_content is None:
+        return None
+    root = manifest_path.parent.parent
+    candidates: list[tuple[int, str, ClaimPublicationIntent, ClaimAdmissionConsumption]] = []
+    for entry in sorted(root.iterdir(), key=lambda path: path.name):
+        if (
+            entry == manifest_path.parent
+            or _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(entry.name) is None
+        ):
+            continue
+        try:
+            other, _projections, other_id, other_state, other_consumption = _load_any_manifest(
+                entry / "manifest.json"
+            )
+        except ClaimPublicationError:
+            continue
+        if (
+            other_state == "applied"
+            and isinstance(other_consumption, ClaimAdmissionConsumption)
+            and other_id == entry.name
+            and other.task_id == intent.task_id
+            and other.note_path == intent.note_path
+            and other.claim_epoch > intent.claim_epoch
+        ):
+            candidates.append((other.claim_epoch, other_id, other, other_consumption))
+    if not candidates:
+        return None
+    # Only the latest publication can own the task now; an older one never stands in for it.
+    _epoch, successor_id, successor, successor_consumption = max(candidates, key=lambda c: c[:2])
+    if successor.note_after != current_content or successor.note_mode != current_mode:
+        return None
+    try:
+        require_applied_admitted_claim_publication(
+            successor,
+            successor_consumption,
+            transaction_root=root,
+            receipt_root=receipt_root,
+            _already_locked=True,
+        )
+    except ClaimPublicationError:
+        return None
+    return successor_id
+
+
 def _recover_one(
     manifest_path: Path,
     *,
     lock_root: Path,
     receipt_root: Path | None,
+    expected_owner: tuple[str, str],
 ) -> ClaimPublicationRecoveryResult:
-    """Complete one interrupted admitted publication without spending a new claim."""
+    """Inspect a publication; pending replay lacks an independent authority witness."""
+
+    del expected_owner  # Caller coordinates are never an authority proof.
 
     manifest_path = _normalized(manifest_path)
     intent, projections, publication_id, state, consumption = _load_any_manifest(manifest_path)
@@ -4796,13 +4986,28 @@ def _recover_one(
                 publication_id,
             )
         if state == "applied":
-            require_applied_admitted_claim_publication(
-                intent,
-                consumption,
-                transaction_root=manifest_path.parent.parent,
-                receipt_root=receipt_directory,
-                _already_locked=True,
-            )
+            try:
+                require_applied_admitted_claim_publication(
+                    intent,
+                    consumption,
+                    transaction_root=manifest_path.parent.parent,
+                    receipt_root=receipt_directory,
+                    _already_locked=True,
+                )
+            except ClaimPublicationError as exc:
+                if exc.reason_code != "claim_publication_postimage_drift":
+                    raise
+                successor = _superseding_applied_publication(
+                    manifest_path, intent, receipt_root=receipt_directory
+                )
+                if successor is None:
+                    raise
+                return ClaimPublicationRecoveryResult(
+                    publication_id,
+                    "superseded",
+                    "claim_publication_superseded_by_later_applied",
+                    detail=successor,
+                )
             return ClaimPublicationRecoveryResult(publication_id, "applied", None)
         if state == "aborted":
             if receipt_path.exists() or receipt_path.is_symlink():
@@ -4819,42 +5024,116 @@ def _recover_one(
                 f"{publication_id}:{state}",
             )
 
-        live_projections = projections[:7]
-        receipt_before_activation_plan = _receipt_before_activation_projection_plan(
-            live_projections
-        )
-        pre_receipt_projections = _phase_projections(receipt_before_activation_plan.pre_receipt)
-        pre_receipt_scratches = _phase_scratches(
-            receipt_before_activation_plan.pre_receipt, publication_id
-        )
-        activation_projections = _phase_projections(receipt_before_activation_plan.activation)
-        activation_scratches = _phase_scratches(
-            receipt_before_activation_plan.activation, publication_id
-        )
-
-        def apply_missing_postimages(
-            target_projections: Sequence[FileProjection],
-            target_scratches: Sequence[_ProjectionScratch],
-        ) -> None:
-            for projection, scratch in zip(target_projections, target_scratches, strict=True):
-                current_content, current_mode = _file_state(projection.path)
-                if current_content == projection.after and current_mode == projection.after_mode:
-                    continue
-                if current_content == projection.before and current_mode == projection.before_mode:
-                    _apply_projections((projection,), (scratch,), None)
-                    continue
-                raise ClaimPublicationError(
-                    "claim_publication_recovery_projection_conflict",
-                    "preserve every live projection and inspect the conflicting path before retrying recovery",
-                    str(projection.path),
-                )
-            _finalize_applied_scratches(target_projections, target_scratches)
-
         try:
-            _assert_preimages(projections[7:])
-            consumption.require_source_proofs(intent)
-            apply_missing_postimages(pre_receipt_projections, pre_receipt_scratches)
-            _require_exact_task_postimage(intent)
+            # Recovery can start with either the exact preimage or postimage,
+            # but must resolve the full namespace before writing any sidecar
+            # or task note. The post-write check alone is too late.
+            try:
+                task = resolve_task_note(
+                    intent.note_path.parent.parent,
+                    intent.task_id,
+                    state="active",
+                    require_no_other_state=True,
+                    index_build_attempts=3,
+                )
+            except TaskStoreError as exc:
+                raise ClaimPublicationError(
+                    "claim_publication_recovery_task_resolution_refused",
+                    exc.repair_action,
+                    exc.reason_code,
+                ) from exc
+            if (
+                task.path != intent.note_path
+                or task.content not in (intent.note_before, intent.note_after)
+                or task.mode != intent.note_mode
+            ):
+                raise ClaimPublicationError(
+                    "claim_publication_recovery_task_image_changed",
+                    "preserve the journal and reconcile the exact task preimage or postimage",
+                    intent.task_id,
+                )
+            # Reconciliation by observation. The admitted transaction holds this
+            # role lock and the note lock from its existence check to its terminal
+            # state, so a non-terminal journal observed here has no live publisher.
+            # Recording what every projection already shows writes no projection
+            # and replays nothing; only the two whole-vector cases qualify.
+            live = [_file_state(projection.path) for projection in projections[:7]]
+            all_before = all(
+                observed == (projection.before, projection.before_mode)
+                for projection, observed in zip(projections[:7], live, strict=True)
+            )
+            all_after = all(
+                observed == (projection.after, projection.after_mode)
+                for projection, observed in zip(projections[:7], live, strict=True)
+            )
+            receipt_present = receipt_path.exists() or receipt_path.is_symlink()
+            if all_before and not receipt_present:
+                _assert_preimages(projections[7:])
+                _persist_admitted_manifest_state(
+                    manifest_path,
+                    intent,
+                    consumption,
+                    projections,
+                    publication_id,
+                    state="aborted",
+                    reason_code="claim_publication_reconciled_before_projection",
+                )
+                return ClaimPublicationRecoveryResult(
+                    publication_id,
+                    "aborted",
+                    "claim_publication_reconciled_before_projection",
+                    detail="no projection took effect; the task was never claimed by this attempt",
+                )
+            if all_after and receipt_present:
+                _assert_preimages(projections[7:])
+                consumption.require_source_proofs(intent)
+                expected_receipt = (
+                    _canonical(
+                        _admitted_receipt_record(intent, consumption, projections, publication_id)
+                    )
+                    + b"\n"
+                )
+                if _file_state(receipt_path) != (expected_receipt, 0o600):
+                    raise ClaimPublicationError(
+                        "claim_publication_receipt_postimage_contradiction",
+                        "preserve receipt and projections for contradiction review",
+                        publication_id,
+                    )
+                prior_state = state
+                _persist_admitted_manifest_state(
+                    manifest_path,
+                    intent,
+                    consumption,
+                    projections,
+                    publication_id,
+                    state="applied",
+                    reason_code="claim_publication_reconciled_postimage",
+                )
+                try:
+                    require_applied_admitted_claim_publication(
+                        intent,
+                        consumption,
+                        transaction_root=manifest_path.parent.parent,
+                        receipt_root=receipt_directory,
+                        _already_locked=True,
+                    )
+                except ClaimPublicationError:
+                    _persist_admitted_manifest_state(
+                        manifest_path,
+                        intent,
+                        consumption,
+                        projections,
+                        publication_id,
+                        state=prior_state,
+                        reason_code="claim_publication_reconciliation_readback_failed",
+                    )
+                    raise
+                return ClaimPublicationRecoveryResult(
+                    publication_id,
+                    "applied",
+                    "claim_publication_reconciled_postimage",
+                    detail="every projection and the receipt already matched the admitted postimage",
+                )
             _assert_preimages(projections[7:])
             consumption.require_source_proofs(intent)
         except LifecycleTransitionError as exc:
@@ -4864,53 +5143,15 @@ def _recover_one(
                 exc,
             ) from exc
 
-        _persist_admitted_manifest_state(
-            manifest_path,
-            intent,
-            consumption,
-            projections,
+        # Mixed projections: some took effect and some did not. A journal and a
+        # caller-supplied owner tuple identify an attempt but cannot authorize
+        # another process to finish or undo it. Preserve the journal and projections.
+        raise ClaimPublicationError(
+            "claim_publication_recovery_authority_unverified",
+            "preserve the pending journal and projections; obtain independently "
+            "verified recovery authority through a governed producer before replay",
             publication_id,
-            state="postimage_complete",
         )
-        _ensure_claim_private_directory(receipt_directory)
-        if receipt_path.exists() or receipt_path.is_symlink():
-            _as_admitted_receipt(
-                manifest_path,
-                receipt_path,
-                intent,
-                consumption,
-                projections,
-                publication_id,
-                recovered=True,
-            )
-        else:
-            _persist_admitted_receipt(
-                receipt_path,
-                intent,
-                consumption,
-                projections,
-                publication_id,
-            )
-        try:
-            apply_missing_postimages(activation_projections, activation_scratches)
-            _require_exact_task_postimage(intent)
-            _assert_preimages(projections[7:])
-            consumption.require_source_proofs(intent)
-        except LifecycleTransitionError as exc:
-            raise _translate_lifecycle_error(
-                "claim_publication_recovery_projection_failed",
-                "preserve the admitted journal and retry recovery after the activation path stabilizes",
-                exc,
-            ) from exc
-        _persist_admitted_manifest_state(
-            manifest_path,
-            intent,
-            consumption,
-            projections,
-            publication_id,
-            state="applied",
-        )
-        return ClaimPublicationRecoveryResult(publication_id, "applied", None)
 
 
 def _content_address_for_file(path: Path, content: bytes) -> ContentAddress:
@@ -6129,8 +6370,28 @@ def recover_claim_publications(
     receipt_root: Path | None = None,
     lock_root: Path | None = None,
     task_id: str | None = None,
+    expected_owner: tuple[str, str] | None = None,
 ) -> tuple[ClaimPublicationRecoveryResult, ...]:
-    """Recover interrupted admitted claim-publication journals under role locks."""
+    """Inspect admitted journals under role locks; hold every pending replay.
+
+    ``expected_owner`` remains a syntactically validated legacy API input only. It authenticates
+    no caller, so it may be omitted; a supplied tuple must still be well formed. Applied and
+    aborted journals are observed without replay; an interrupted journal is reconciled only
+    when every projection shows one whole vector (see ``_recover_one``).
+    """
+
+    if expected_owner is not None and (
+        not isinstance(expected_owner, tuple)
+        or len(expected_owner) != 2
+        or any(
+            not isinstance(item, str) or not item or item != item.strip() for item in expected_owner
+        )
+    ):
+        raise ClaimPublicationError(
+            "claim_publication_recovery_owner_required",
+            "supply well-formed role/session selection coordinates; pending replay "
+            "still requires independently verified recovery authority",
+        )
 
     trusted_cache = _normalized(cache_dir or (Path.home() / ".cache" / "hapax"))
     root = _manifest_root(transaction_root, trusted_cache)
@@ -6156,10 +6417,25 @@ def recover_claim_publications(
                     manifest_path,
                     lock_root=trusted_locks,
                     receipt_root=trusted_receipts,
+                    expected_owner=expected_owner,
                 )
             )
-        except ClaimPublicationError as exc:
-            results.append(ClaimPublicationRecoveryResult(entry.name, "hold", exc.reason_code))
+        except (ClaimPublicationError, TaskNoteLockError) as exc:
+            # Note-lock contention (another writer of this task) holds this one journal,
+            # exactly like role contention; it never aborts the rest of the run.
+            # A refusal missing its typed fields still holds only this journal; the handler
+            # itself must never raise (PR4726 round 3, Vibe).
+            results.append(
+                ClaimPublicationRecoveryResult(
+                    entry.name,
+                    "hold",
+                    getattr(exc, "reason_code", None) or "claim_publication_recovery_refused",
+                    detail=getattr(exc, "detail", None),
+                    repair_action=getattr(exc, "repair_action", None)
+                    or "preserve the journal and projections and retry recovery after the "
+                    "contending writer finishes",
+                )
+            )
     return tuple(results)
 
 
@@ -6328,6 +6604,7 @@ __all__ = [
     "claim_publication_id",
     "claim_publication_mutation_scope_address",
     "claim_publication_receipt_path",
+    "claim_role_exclusion",
     "load_admitted_claim_publication_receipt",
     "load_claim_publication_receipt",
     "publish_admitted_claim",

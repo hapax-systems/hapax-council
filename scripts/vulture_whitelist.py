@@ -4545,6 +4545,9 @@ ensure_canon_echo_repair
 persist_exact_envelope
 
 # shared/sdlc_claim.py
+# Invoked by scripts/hapax-codex-headless::REMOTE_EXEC_PY (embedded Python).
+# The shell subprocess consumer is outside Vulture's static Python call graph.
+materialize_remote_claim_identity
 # Gate-0A dormant seams. The engine itself refuses at Gate 0A, so its preflight,
 # postimage, source-proof and recovery paths have no caller until Gate 0B.
 _apply_admitted_claim_publication_transaction

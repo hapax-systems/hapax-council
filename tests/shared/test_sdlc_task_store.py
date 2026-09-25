@@ -298,6 +298,147 @@ def test_stale_index_hold_has_complete_changed_path_evidence(tmp_path: Path) -> 
     assert "active/cc-task-b.md" in caught.value.evidence_refs[0]
 
 
+@pytest.mark.parametrize("duplicate_state", [None, "active", "closed"])
+def test_bounded_index_retry_rechecks_every_identity_and_reuses_unchanged_parses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, duplicate_state: str | None
+) -> None:
+    target = _note(tmp_path / "active" / "target.md", "target")
+    other = _note(tmp_path / "active" / "other.md", "other")
+    original = task_store._index_entry
+    parsed = []
+
+    def racing_entry(path, **kwargs):
+        parsed.append(path)
+        entry = original(path, **kwargs)
+        if len(parsed) == 2:
+            if duplicate_state is None:
+                other.write_text(other.read_text() + "concurrent progress\n")
+            else:
+                _note(tmp_path / duplicate_state / "unrelated-name.md", "target")
+        return entry
+
+    monkeypatch.setattr(task_store, "_index_entry", racing_entry)
+    index = build_task_identity_index(tmp_path, max_attempts=3)
+    assert parsed.count(target) == 1
+    assert len(parsed) == 3
+    if duplicate_state:
+        with pytest.raises(TaskStoreError, match="ambiguous|cross_state_duplicate"):
+            resolve_task_note(tmp_path, "target", identity_index=index)
+    else:
+        assert resolve_task_note(tmp_path, "target", identity_index=index).path == target
+
+
+def test_bounded_index_retry_exhaustion_never_returns_stale_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = _note(tmp_path / "active" / "target.md", "target")
+    original = task_store._index_entry
+    calls = 0
+
+    def racing_entry(path, **kwargs):
+        nonlocal calls
+        calls += 1
+        entry = original(path, **kwargs)
+        target.write_text(target.read_text() + "changed\n")
+        return entry
+
+    monkeypatch.setattr(task_store, "_index_entry", racing_entry)
+    with pytest.raises(TaskStoreError, match="task_store_frontier_changed_during_index_build"):
+        build_task_identity_index(tmp_path, max_attempts=3)
+    assert calls == 3
+
+
+@pytest.mark.parametrize("inventory", [1, 2], ids=["initial", "validation"])
+@pytest.mark.parametrize("duplicate_state", [None, "active", "closed", "refused"])
+def test_bounded_index_retry_handles_list_to_stat_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inventory: int, duplicate_state: str | None
+) -> None:
+    target = _note(tmp_path / "active" / "target.md", "target")
+    transient = _note(tmp_path / "active" / "transient.md", "transient")
+    original = os.listdir
+    inventories = 0
+    removed = False
+
+    def racing_listdir(directory):
+        nonlocal inventories, removed
+        names = original(directory)
+        if isinstance(directory, int) and "target.md" in names:
+            inventories += 1
+            if inventories == inventory:
+                transient.unlink()
+                removed = True
+                if duplicate_state:
+                    _note(tmp_path / duplicate_state / "unrelated-name.md", "target")
+        return names
+
+    monkeypatch.setattr(os, "listdir", racing_listdir)
+    index = build_task_identity_index(tmp_path, max_attempts=3)
+    assert removed
+    assert all(entry.path != transient for entry in index.entries)
+    if duplicate_state:
+        with pytest.raises(TaskStoreError, match="ambiguous|cross_state_duplicate"):
+            resolve_task_note(tmp_path, "target", identity_index=index)
+    else:
+        assert resolve_task_note(tmp_path, "target", identity_index=index).path == target
+
+
+@pytest.mark.parametrize("max_attempts", [1, 3])
+def test_bounded_index_inventory_removal_exhausts_without_an_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, max_attempts: int
+) -> None:
+    _note(tmp_path / "active" / "target.md", "target")
+    transient = tmp_path / "active" / "transient.md"
+    active_inode = transient.parent.stat().st_ino
+    original = os.listdir
+    removals = 0
+
+    def racing_listdir(directory):
+        nonlocal removals
+        if isinstance(directory, int) and os.fstat(directory).st_ino == active_inode:
+            _note(transient, "transient")
+            names = original(directory)
+            transient.unlink()
+            removals += 1
+            return names
+        return original(directory)
+
+    monkeypatch.setattr(os, "listdir", racing_listdir)
+    with pytest.raises(TaskStoreError, match="task_store_frontier_changed_during_resolution"):
+        build_task_identity_index(tmp_path, max_attempts=max_attempts)
+    assert removals == max_attempts
+
+
+def test_bounded_index_retry_does_not_retry_unsafe_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _note(tmp_path / "active" / "target.md", "target")
+    (tmp_path / "closed").symlink_to(tmp_path / "active", target_is_directory=True)
+    original = os.listdir
+    inventories = 0
+
+    def count_listdir(directory):
+        nonlocal inventories
+        inventories += 1
+        return original(directory)
+
+    monkeypatch.setattr(os, "listdir", count_listdir)
+    with pytest.raises(TaskStoreError, match="task_note_directory_unsafe"):
+        build_task_identity_index(tmp_path, max_attempts=3)
+    assert inventories == 1
+
+
+@pytest.mark.parametrize("max_attempts", [0, 4, -1, True, False, 1.0, "3", None, float("nan")])
+def test_bounded_index_rejects_invalid_attempt_limit(
+    tmp_path: Path, monkeypatch, max_attempts
+) -> None:
+    def unexpected_inventory(*args, **kwargs):
+        pytest.fail("invalid attempt limit reached the task-store inventory")
+
+    monkeypatch.setattr("shared.sdlc_task_store._complete_frontier", unexpected_inventory)
+    with pytest.raises(ValueError, match="max_attempts must be an integer from 1 to 3"):
+        build_task_identity_index(tmp_path, max_attempts=max_attempts)
+
+
 def test_identity_index_root_mismatch_refuses(tmp_path: Path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"

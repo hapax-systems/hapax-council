@@ -10,11 +10,12 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,13 @@ from shared.coord_dispatch import (
     DispatchLaunchRequest,
     DispatchLaunchResult,
 )
-from shared.coord_event_log import CoordEventLog, coord_base_dir
+from shared.coord_event_log import (
+    CoordEvent,
+    CoordEventLog,
+    CoordEventLogError,
+    CoordWriter,
+    coord_base_dir,
+)
 from shared.dispatch_service_time import is_claude_operator_pool_role
 from shared.dispatcher_policy import (
     DispatchAction,
@@ -695,47 +702,175 @@ def lane_active_task_lease(lane: str) -> str | None:
     return None
 
 
-# --- Cross-role stale-claim sweeper (reform-identity-coherence, cluster 11) -----
-# codex-claim-audit reaps phantom cx-*/codex-* claims and cc-claim's lease-expiry
-# only frees a claim when the SAME role re-claims; nothing reaps a greek-slot /
-# test-probe / role-less claim left by a dead or wedged lane (the 12-day
-# council-eqi-phase0-run test-probe slot; the zeta dead-lane stale slot). This
-# sweep closes that gap: it scans EVERY cc-active-task-* file and frees the dead
-# ones independent of any role re-claiming.
+# --- Cross-role terminal/released claim cleanup -------------------------------
+# Age is only a settling delay, never evidence that an execution attempt died.
+# This consumer cannot qualify whole-attempt death or authorize a rebind.
 _CLAIM_PREFIX = "cc-active-task-"
-_UUID_SUFFIX_RE = re.compile(
-    r"-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
 _TERMINAL_CLAIM_STATUSES = {"done", "completed", "closed", "withdrawn", "superseded"}
 _UNASSIGNED_VALUES = {"", "null", "none", "~", "unassigned"}
-DEFAULT_CLAIM_LEASE_TTL = 21600  # matches cc-claim's HAPAX_CLAIM_LEASE_TTL_SECS default
+DEFAULT_CLAIM_LEASE_TTL = 21600  # retained for callers; expiry grants no cleanup authority
 
 
-def _claim_role(filename: str) -> str:
-    """The lane role from a cc-active-task-<role>[-<session_id>] filename."""
-    return _UUID_SUFFIX_RE.sub("", filename[len(_CLAIM_PREFIX) :])
+def _claim_role(filename: str) -> str | None:
+    """Resolve only an unambiguous legacy role; session suffixes are not UUID-only.
+
+    Every keyable suffix is also legal in a role name. Neither a task's current
+    assignment nor a sibling marker proves which writer owns this exact path.
+    Hold all ambiguous names until a governed exact binding is available.
+    """
+    from shared.session_identity import is_claim_keyable_session_id
+
+    if not filename.startswith(_CLAIM_PREFIX):
+        return None
+    role = filename[len(_CLAIM_PREFIX) :]
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", role):
+        return None
+    if any(
+        is_claim_keyable_session_id(role[index + 1 :])
+        for index, char in enumerate(role)
+        if char == "-"
+    ):
+        return None
+    return role
 
 
-def _claim_task_dead_reason(task_id: str, active_dir: Path) -> str | None:
-    """Reason the claim is dead, if the lane slot can be freed."""
-    if not task_id:
-        return "terminal-or-missing"
-    note = active_dir / f"{task_id}.md"
-    if not note.exists():
-        variants = sorted(active_dir.glob(f"{task_id}-*.md"))
-        if not variants:
-            return "terminal-or-missing"
-        note = variants[0]
+def _claim_role_binding(claims_dir: Path, claim_key: str) -> tuple[str, str] | None:
+    """Resolve an ambiguous marker key through its own exact dispatch binding.
+
+    The claim publication that wrote ``cc-active-task-<key>`` wrote the same-key
+    ``cc-claim-dispatch-<key>.json``; its lane, alone or joined with its session id, must
+    reproduce ``key`` exactly. Returns ``(lane, task_id)``; anything else stays unresolved.
+    """
+    from shared.sdlc_task_store import (
+        TaskStoreError,
+        claim_dispatch_binding_path,
+        load_claim_dispatch_binding,
+    )
+
     try:
-        text = note.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return None  # unreadable -> do not reap on this basis
-    fields, _body = parse_document_frontmatter(text)
-    status = str(fields.get("status", "")).strip().strip("\"'").lower()
-    assigned_to = str(fields.get("assigned_to", "")).strip().strip("\"'").lower()
+        binding = load_claim_dispatch_binding(claim_dispatch_binding_path(claims_dir, claim_key))
+    except (TaskStoreError, OSError, ValueError):
+        return None
+    lane = binding.lane
+    if not lane or claim_key not in {lane, f"{lane}-{binding.session_id}"}:
+        return None
+    return lane, binding.task_id
+
+
+@dataclass(frozen=True)
+class ClaimSweepHold:
+    marker: str | None
+    reason_code: str
+    repair_action: str
+
+
+@dataclass
+class ClaimSweepResult:
+    reaped: list[tuple[str, str, str]] = field(default_factory=list)
+    holds: list[ClaimSweepHold] = field(default_factory=list)
+    held_count: int = 0
+
+    def hold(self, marker: str | None, reason_code: str, repair_action: str) -> None:
+        self.held_count += 1
+        # A large cache must not turn one opportunistic scan into unbounded output.
+        if len(self.holds) < 20:
+            self.holds.append(ClaimSweepHold(marker, reason_code, repair_action))
+
+
+def _record_claim_sweep(
+    task_id: str, outcome: str, payload: dict[str, Any], *, fields: dict[str, Any]
+) -> str:
+    event = CoordEvent(
+        event_id=f"claim-sweep-{uuid4()}",
+        timestamp=datetime.now(UTC).isoformat(),
+        event_type=f"claim_sweep.{outcome}",
+        actor="hapax-methodology-dispatch",
+        subject=task_id,
+        authority_case=fields.get("authority_case"),
+        parent_spec=fields.get("parent_spec"),
+        payload=payload,
+    )
+    receipt = coord_event_log_from_env().append(
+        event, writer=CoordWriter.daemon("hapax-methodology-dispatch"), fail_open=False
+    )
+    if not receipt.appended:
+        raise CoordEventLogError(
+            "claim cleanup decision was not appended; next action: restore the "
+            "authoritative coordination event log before retrying cleanup"
+        )
+    return event.event_id
+
+
+def _claim_sweep_roots():
+    from shared.gate0b_claim_publication_install import (
+        default_claim_publication_roots,
+        load_claim_publication_composition,
+    )
+
+    locator = default_claim_publication_roots(home=Path.home()).invocation_store_root
+    return load_claim_publication_composition(Path(locator)).receipt.roots
+
+
+def _pending_claim_sweep_decisions(path: Path) -> list[str]:
+    """Read existing cleanup history inside role exclusion; never replay effects."""
+    pending: dict[str, CoordEvent] = {}
+    log = coord_event_log_from_env()
+    if not log.db_path.exists() and log.jsonl_path.exists():
+        raise CoordEventLogError(
+            "authoritative cleanup database is absent with surviving history; "
+            "next action: reconcile the preserved ledger before cleanup"
+        )
+    replay = log.replay(fail_open=False)
+    if replay.degraded or replay.errors:
+        raise CoordEventLogError("claim cleanup history is degraded")
+    for event in replay.events:
+        if event.actor != "hapax-methodology-dispatch":
+            continue
+        if event.event_type == "claim_sweep.delete_decided":
+            marker = event.payload.get("marker", {})
+            roots = event.payload.get("installed_roots", {})
+            if Path(str(marker.get("path", ""))).name == path.name and roots.get(
+                "claim_cache_dir"
+            ) == str(path.parent.resolve()):
+                pending[event.event_id] = event
+        elif event.event_type == "claim_sweep.deleted":
+            decision_id = event.payload.get("decision_event_id")
+            decision = pending.get(decision_id)
+            if decision is not None and (
+                event.subject == decision.subject
+                and event.payload.get("marker") == decision.payload.get("marker")
+                and event.payload.get("installed_roots") == decision.payload.get("installed_roots")
+                and event.payload.get("role") == decision.payload.get("role")
+                and event.payload.get("outcome") == "deleted"
+            ):
+                del pending[decision_id]
+    return list(pending)
+
+
+def _claim_marker_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    # Reading may change atime. Every replacement, refresh or permission/link
+    # change still invalidates the observation, including subsecond changes.
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _claim_task_dead_reason(fields: dict) -> str | None:
+    """Classify an exact, locked task record; never infer death from absence."""
+    status = str(fields.get("status", "")).strip().lower()
+    assigned_to = str(fields.get("assigned_to", "")).strip().lower()
     if status in _TERMINAL_CLAIM_STATUSES:
-        return "terminal-or-missing"
-    if status == "blocked" and assigned_to in _UNASSIGNED_VALUES:
+        return "terminal"
+    # Existing explicit released state. Offered/unassigned alone is not release.
+    if status == "blocked" and "assigned_to" in fields and assigned_to in _UNASSIGNED_VALUES:
         return "blocked-unassigned"
     return None
 
@@ -747,67 +882,249 @@ def sweep_stale_claims(
     lease_ttl: int = DEFAULT_CLAIM_LEASE_TTL,
     grace_secs: int = 300,
     now: float | None = None,
-) -> list[tuple[str, str, str]]:
-    """Reap cc-active-task-* claim files across ALL roles. A file is reaped when its
-    task is terminal/missing (and it has settled past ``grace_secs``, so a mid
-    cc-close transition is not raced) or its lease has expired AND its role has no
-    live sibling lease — a live role whose legacy file aged (the gate heartbeats
-    only the session-keyed file) is preserved. Returns (filename, task_id, reason)."""
+) -> ClaimSweepResult:
+    """Clean settled terminal/explicitly released projections under shared locks.
+
+    ``lease_ttl`` remains accepted for compatibility but cannot authorize deletion.
+    Missing/ambiguous notes, unknown liveness and unavailable composition hold.
+    The installed role lock, then task/path lock, covers the final exact identity
+    resolution and unlink. Nonparticipating raw writers are outside this contract.
+    """
+    from shared.execution_admission import ExecutionAdmissionError
+    from shared.sdlc_claim import ClaimPublicationError, claim_role_exclusion
+    from shared.sdlc_task_store import (
+        TaskStoreError,
+        build_task_identity_index,
+        resolve_task_note,
+    )
+    from shared.task_note_lock import TaskNoteLockError, projected_path_lock
+
     now = time.time() if now is None else now
+    result = ClaimSweepResult()
     try:
-        files = sorted(p for p in claims_dir.glob(f"{_CLAIM_PREFIX}*") if p.is_file())
-    except OSError:
-        return []
-    metas: list[tuple[Path, str, float, str]] = []
-    freshest_by_role: dict[str, float] = {}
-    for f in files:
+        files = sorted(path for path in claims_dir.iterdir() if path.name.startswith(_CLAIM_PREFIX))
+        if not files:
+            return result
+        roots = _claim_sweep_roots()
+        if (
+            claims_dir.resolve() != Path(roots.claim_cache_dir)
+            or active_dir.resolve() != Path(roots.claim_vault_root) / "active"
+        ):
+            result.hold(
+                None,
+                "claim_sweep_composition_roots_mismatch",
+                "restore the installed claim composition's exact cache and vault bindings",
+            )
+            return result
+    except (OSError, ValueError, ExecutionAdmissionError) as exc:
+        result.hold(
+            None,
+            getattr(exc, "reason_code", "claim_sweep_composition_unavailable"),
+            getattr(exc, "repair_action", "restore readable claim cache and installed composition"),
+        )
+        return result
+    index = None
+    for path in files:
         try:
-            mtime = f.stat().st_mtime
-            raw = f.read_text(encoding="utf-8", errors="ignore").strip()
-        except OSError:
-            continue
-        task_id = raw.splitlines()[0].strip() if raw else ""
-        role = _claim_role(f.name)
-        freshest_by_role[role] = max(freshest_by_role.get(role, 0.0), mtime)
-        metas.append((f, role, mtime, task_id))
-    reaped: list[tuple[str, str, str]] = []
-    for f, role, mtime, task_id in metas:
-        age = now - mtime
-        role_is_live = (now - freshest_by_role.get(role, 0.0)) <= lease_ttl
-        dead_reason = _claim_task_dead_reason(task_id, active_dir)
-        if dead_reason and age > grace_secs:
-            reason = dead_reason
-        elif age > lease_ttl and not role_is_live:
-            reason = "lease-expired"
-        else:
-            continue
-        try:
-            f.unlink()
-        except OSError:
-            continue
-        reaped.append((f.name, task_id, reason))
-    return reaped
+            role = _claim_role(path.name)
+            claim_key = path.name[len(_CLAIM_PREFIX) :]
+            bound = None
+            if role is None:
+                # PR4726 review (Muse, finding 7): holding every hyphenated or session-keyed
+                # name forever made the sweep a no-op for most lanes. The exact same-key
+                # dispatch binding is the governed binding this hold was waiting for.
+                bound = _claim_role_binding(claims_dir, claim_key)
+                if bound is None:
+                    result.hold(
+                        path.name,
+                        "claim_sweep_role_ambiguous",
+                        "preserve this marker for governed cleanup with an exact role/session binding",
+                    )
+                    continue
+                role = bound[0]
+            with claim_role_exclusion(role, lock_root=Path(roots.claim_lock_root)):
+                try:
+                    pending = _pending_claim_sweep_decisions(path)
+                except (OSError, ValueError, TypeError, AttributeError, CoordEventLogError):
+                    result.hold(
+                        path.name,
+                        "claim_sweep_audit_unavailable",
+                        "restore readable authoritative coordination cleanup history before retrying",
+                    )
+                    continue
+                if pending:
+                    result.hold(
+                        path.name,
+                        "claim_sweep_decision_pending",
+                        f"preserve pending decisions {', '.join(pending)} and the current marker; "
+                        "obtain governed outcome reconciliation before another cleanup decision",
+                    )
+                    continue
+                before = path.lstat()
+                if not stat.S_ISREG(before.st_mode):
+                    result.hold(
+                        path.name,
+                        "claim_sweep_marker_not_regular",
+                        "preserve this nonregular entry and reconcile its file type before cleanup",
+                    )
+                    continue
+                if before.st_nlink != 1:
+                    result.hold(
+                        path.name, "claim_sweep_marker_linked", "reconcile the linked marker"
+                    )
+                    continue
+                if now - before.st_mtime <= grace_secs:
+                    continue
+                raw = path.read_text(encoding="utf-8")
+                task_id = raw.strip()
+                if not task_id or raw != task_id + "\n":
+                    result.hold(
+                        path.name, "claim_sweep_marker_invalid", "reconcile the malformed marker"
+                    )
+                    continue
+                if index is None:
+                    index = build_task_identity_index(active_dir.parent)
+                matches = index.by_task_id.get(task_id, ())
+                if len(matches) != 1 or matches[0].state not in {"active", "closed"}:
+                    result.hold(
+                        path.name,
+                        "claim_sweep_task_identity_unresolved",
+                        "resolve exactly one active or closed task record before cleanup",
+                    )
+                    continue
+                entry = matches[0]
+                with projected_path_lock(task_id, (entry.path,)):
+                    try:
+                        # The cached index is revalidated against the whole live frontier
+                        # here, so drift is refused, never acted on (PR4726 review, Gemini,
+                        # finding 8). Drop it so the next marker rebuilds instead of every
+                        # later marker in this sweep holding on the same stale index.
+                        note = resolve_task_note(
+                            active_dir.parent, task_id, state=entry.state, identity_index=index
+                        )
+                    except TaskStoreError:
+                        index = None
+                        raise
+                    reason = _claim_task_dead_reason(note.frontmatter)
+                    if reason is None:
+                        continue
+                    # A replaced or refreshed marker belongs to a later observation.
+                    if (
+                        _claim_marker_identity(path.lstat()) != _claim_marker_identity(before)
+                        or path.read_text(encoding="utf-8") != raw
+                    ):
+                        result.hold(
+                            path.name,
+                            "claim_sweep_marker_changed",
+                            "preserve the changed marker and reobserve its ownership before cleanup",
+                        )
+                        continue
+                    # Recheck the exact binding immediately before the destructive step
+                    # (PR4726 round 2, Muse minor): a binding swapped at any earlier point
+                    # would leave the wrong owner's lock held at the unlink.
+                    if bound is not None and _claim_role_binding(claims_dir, claim_key) != (
+                        role,
+                        task_id,
+                    ):
+                        result.hold(
+                            path.name,
+                            "claim_sweep_role_binding_changed",
+                            "reobserve the marker and its exact dispatch binding before cleanup",
+                        )
+                        continue
+                    payload = {
+                        "role": role,
+                        "reason": reason,
+                        "marker": {
+                            "path": str(path),
+                            "inode": before.st_ino,
+                            "device": before.st_dev,
+                            "mtime_ns": before.st_mtime_ns,
+                            "ctime_ns": before.st_ctime_ns,
+                            "sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+                        },
+                        "task_note": {
+                            "path": str(note.path),
+                            "sha256": hashlib.sha256(note.content).hexdigest(),
+                        },
+                        "installed_roots": roots.model_dump(mode="json"),
+                        "observed_at": datetime.now(UTC).isoformat(),
+                        "outcome": "pending",
+                        "may_authorize": False,
+                    }
+                    try:
+                        decision_id = _record_claim_sweep(
+                            task_id, "delete_decided", payload, fields=note.frontmatter
+                        )
+                    except (OSError, ValueError, CoordEventLogError):
+                        result.hold(
+                            path.name,
+                            "claim_sweep_audit_unavailable",
+                            "restore the coordination event log before retrying cleanup",
+                        )
+                        continue
+                    try:
+                        path.unlink()
+                    except OSError:
+                        result.hold(
+                            path.name,
+                            "claim_sweep_unlink_failed",
+                            f"preserve pending decision {decision_id}; reconcile the failed unlink "
+                            "and current marker before a new cleanup decision",
+                        )
+                        continue
+                    result.reaped.append((path.name, task_id, reason))
+                    try:
+                        _record_claim_sweep(
+                            task_id,
+                            "deleted",
+                            {**payload, "decision_event_id": decision_id, "outcome": "deleted"},
+                            fields=note.frontmatter,
+                        )
+                    except (OSError, ValueError, CoordEventLogError):
+                        result.hold(
+                            path.name,
+                            "claim_sweep_outcome_unrecorded",
+                            f"preserve pending decision {decision_id}; reconcile its observed unlink",
+                        )
+        except (
+            OSError,
+            UnicodeError,
+            ClaimPublicationError,
+            TaskStoreError,
+            TaskNoteLockError,
+        ) as exc:
+            result.hold(
+                path.name,
+                getattr(exc, "reason_code", "claim_sweep_observation_failed"),
+                getattr(
+                    exc, "repair_action", "restore marker, task inventory and shared lock access"
+                ),
+            )
+    return result
 
 
-def run_claim_sweep(task_root: Path, *, notify: bool = True) -> list[tuple[str, str, str]]:
+def run_claim_sweep(task_root: Path, *, notify: bool = True) -> ClaimSweepResult:
     """Wire the sweep to the live claims dir + vault, reap, and (best-effort) ntfy."""
     claims_dir = Path(os.environ.get("HAPAX_CC_CLAIMS_DIR", str(Path.home() / ".cache" / "hapax")))
-    reaped = sweep_stale_claims(claims_dir, task_root / "active")
-    if reaped and notify:
+    result = sweep_stale_claims(claims_dir, task_root / "active")
+    if result.held_count:
+        print(json.dumps({"claim_sweep": asdict(result)}), file=sys.stderr)
+    if result.reaped and notify:
         try:
             from shared.notify import send_notification
 
             body = "\n".join(
-                f"- {name} → {reason} ({task or '∅'})" for name, task, reason in reaped
+                f"- {name} → {reason} ({task or '∅'})" for name, task, reason in result.reaped
             )
             send_notification(
-                f"Reaped {len(reaped)} stale cc-task claim(s)",
+                f"Reaped {len(result.reaped)} stale cc-task claim(s)",
                 body,
                 tags=["broom", "sdlc"],
             )
         except Exception:
             pass
-    return reaped
+    return result
 
 
 def check_worktree_claim_guard(worktree: Path) -> tuple[bool, str]:
@@ -2058,6 +2375,10 @@ def launch_codex_headless(
         args.append("--no-claim")
     args.extend([lane, prompt])
     env = os.environ.copy()
+    if status == "offered":
+        # A fresh claim must not reuse the coordinator's session. Continuations
+        # above keep their original claim identity; this is not a rebind path.
+        env.pop("HAPAX_SESSION_ID", None)
     env["HAPAX_METHODOLOGY_DISPATCH_TASK"] = task_id
     if lifecycle_receipt is not None:
         env["HAPAX_NATIVE_LIFECYCLE_RECEIPT"] = str(lifecycle_receipt)
@@ -2280,7 +2601,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sweep-stale-claims",
         action="store_true",
-        help="Reap lease-expired / terminal cc-task claim files across ALL lanes, then exit",
+        help="Clean settled terminal/released cc-task markers under installed exclusion, then exit",
     )
     parser.add_argument(
         "--print-prompt", action="store_true", help="Print the governed launch prompt"
@@ -2339,11 +2660,11 @@ def main(argv: list[str] | None = None) -> int:
                 str(Path.home() / "Documents" / "Personal" / "20-projects" / "hapax-cc-tasks"),
             )
         )
-        reaped = run_claim_sweep(sweep_root)
-        for name, task_id, reason in reaped:
+        result = run_claim_sweep(sweep_root)
+        for name, task_id, reason in result.reaped:
             print(f"reaped {name} ({reason}: {task_id or '∅'})")
-        print(f"cc-claim sweep: reaped {len(reaped)} stale claim(s)")
-        return 0
+        print(f"cc-claim sweep: reaped {len(result.reaped)} claim(s), held {result.held_count}")
+        return 8 if result.held_count else 0
 
     if not args.task or not args.lane:
         parser.error(
@@ -2357,15 +2678,18 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
 
-    # Opportunistic cross-role stale-claim sweep: every dispatch frees lease-expired
-    # / terminal claims fleet-wide so a dead or wedged lane never parks a slot
-    # indefinitely (reform-identity-coherence cluster 11). Best-effort — it must
-    # never block a dispatch; opt out with HAPAX_DISPATCH_CLAIM_SWEEP=0.
+    # Opportunistic terminal/released marker cleanup. Lease age and absent notes
+    # do not establish attempt death. Unqualified state holds; sweep refusal
+    # does not reject this dispatch. Existing opt-out: HAPAX_DISPATCH_CLAIM_SWEEP=0.
     if os.environ.get("HAPAX_DISPATCH_CLAIM_SWEEP", "1") != "0":
         try:
             run_claim_sweep(task_root, notify=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(
+                f"claim_sweep_unexpected_failure:{type(exc).__name__}; "
+                "repair sweep observation before cleanup; claim admission remains required",
+                file=sys.stderr,
+            )
 
     if args.platform in {"agy", "antigrav", "antigravity", "gemini-cli"}:
         if args.platform == "agy":

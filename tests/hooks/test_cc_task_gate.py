@@ -1349,7 +1349,8 @@ def _run_cc_claim(
 
 
 class TestCcClaimSessionKeyed:
-    """cc-claim writes a session-keyed lease + the legacy file (FM-2), TTL reaps."""
+    """cc-claim writes a session-keyed lease + the legacy file (FM-2); expiry never reaps
+    another session's lease in the emergency writer (#4726)."""
 
     # cc-claim now refuses low-entropy / pid-shaped claim keys
     # (shared/session_identity.py), so writer-side fixtures use a realistic id.
@@ -1383,8 +1384,13 @@ class TestCcClaimSessionKeyed:
         cache = tmp_path / ".cache" / "hapax"
         assert (cache / f"cc-active-task-roleless-{self._SID}").read_text().strip() == "task-rl"
 
-    def test_expired_lease_is_reaped_and_does_not_block(self, tmp_path: Path) -> None:
-        _write_claimable_task(tmp_path, "task-new")
+    def test_expired_lease_is_preserved_by_the_emergency_writer(self, tmp_path: Path) -> None:
+        # Contract change in #4726 (disclosed there): expiry no longer reaps a foreign session's
+        # lease in the emergency writer. Its in-lock recheck refuses and preserves the projection;
+        # the next action is a governed release (runbook gate0b-claim-publication-fallback.md,
+        # "Emergency Fallback": expiry and --force cannot delete old projections).
+        note = _write_claimable_task(tmp_path, "task-new")
+        note_before = note.read_bytes()
         cache = tmp_path / ".cache" / "hapax"
         cache.mkdir(parents=True, exist_ok=True)
         stale = cache / "cc-active-task-delta-deadsid"
@@ -1397,8 +1403,12 @@ class TestCcClaimSessionKeyed:
             role="delta",
             extra_env={"HAPAX_SESSION_ID": "sidNew", "HAPAX_CLAIM_LEASE_TTL_SECS": "21600"},
         )
-        assert r.returncode == 0, r.stderr
-        assert not stale.exists()  # dead session's lease auto-expired (reaped)
+        assert r.returncode == 3, (r.stdout, r.stderr)
+        assert "claim_emergency_role_occupied" in r.stderr
+        assert "governed release" in r.stderr
+        assert stale.read_text() == "task-old\n"
+        assert note.read_bytes() == note_before
+        assert not (cache / "cc-active-task-delta").exists()
 
 
 _SPAWNERS = [

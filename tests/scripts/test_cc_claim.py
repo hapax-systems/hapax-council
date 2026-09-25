@@ -2,7 +2,9 @@ import json
 import os
 import re
 import subprocess
+import sys
 import textwrap
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -163,6 +165,7 @@ def _claim(
     session_id: str | None = _SESSION_ID,
     extra_env: dict[str, str] | None = None,
     extra_args: list[str] | None = None,
+    soft_nofile: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     for leaked in _AMBIENT_IDENTITY_ENV:
@@ -177,12 +180,15 @@ def _claim(
     elif dispatch:
         env.update(_dispatch_env(task_id))
     if install_gate0b is None:
-        install_gate0b = not legacy and dispatch
+        install_gate0b = legacy or dispatch
     if install_gate0b:
         _install_gate0b_claim_publication_root(home)
     if extra_env:
         env.update(extra_env)
     argv = ["bash", str(SCRIPT)]
+    if soft_nofile is not None:
+        # Launch the way a lane with an inherited low soft descriptor limit does.
+        argv = ["bash", "-c", f'ulimit -Sn {soft_nofile} && exec bash "$0" "$@"', str(SCRIPT)]
     if extra_args:
         argv.extend(extra_args)
     if task_id:
@@ -313,6 +319,7 @@ def test_rehydrate_refusal_branches_leave_every_file_unchanged(
 
     home = tmp_path / "home"
     _write_task(home, "active", "unchanged-sentinel")
+    _install_gate0b_claim_publication_root(home)
     roots = default_claim_publication_roots(home=home)
     if task_id == "bounded":
         journals = Path(roots.claim_transaction_root)
@@ -710,9 +717,126 @@ def test_default_claim_holds_corrupt_install_receipt_without_overwrite(
 
     assert result.returncode == 8
     assert "gate0b_install_receipt_malformed" in result.stderr
-    assert "Next action: provision or repair the Gate-0B" in result.stderr
+    assert "Next action: restore a canonical Gate-0B install receipt" in result.stderr
+    assert "prepared_intent=" not in result.stderr
+    assert not list((home / ".cache/hapax").glob("cc-active-task-*"))
     assert receipt.read_text(encoding="ascii") == "{}\n"
     assert "status: offered" in note.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("outcome", ["pending", "aborted", "applied", "unknown"])
+def test_publication_failure_reports_durable_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    # Run the unchanged Bash CLI with an isolated interpreter shim. Inject a
+    # fault at the real transaction boundary; journal inspection stays real
+    # except for the case exercising an inspection failure itself.
+    import tests.scripts.test_cc_claim as cli_tests
+
+    repo = tmp_path / "repo"
+    script = repo / "scripts" / "cc-claim"
+    script.parent.mkdir(parents=True)
+    script.write_bytes(SCRIPT.read_bytes())
+    (repo / "hooks").symlink_to(REPO_ROOT / "hooks", target_is_directory=True)
+    runner = repo / ".venv" / "bin" / "python"
+    runner.parent.mkdir(parents=True)
+    runner.write_text(
+        f"#!{sys.executable}\n"
+        + textwrap.dedent(
+            f"""\
+            import os
+            import sys
+            if sys.argv[1:3] != ["-I", "-"]:
+                os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
+            code = sys.stdin.read()
+            sys.argv = sys.argv[2:]
+            sys.path.insert(0, {str(REPO_ROOT)!r})
+            if "receipt = publish_gate0b_claim(" in code:
+                import shared.sdlc_claim as claim
+                import shared.gate0b_claim_publication_effect as effect
+                outcome = {outcome!r}
+                original_publish = effect.publish_gate0b_claim
+                original_preflight = claim._locked_preflight
+                preflights = 0
+                def preflight(*args, **kwargs):
+                    global preflights
+                    preflights += 1
+                    if outcome == "aborted" and preflights == 2:
+                        raise claim.ClaimPublicationError("test_preflight_refusal", "test refusal")
+                    return original_preflight(*args, **kwargs)
+                claim._locked_preflight = preflight
+                def interruption(phase, index):
+                    if outcome in {{"pending", "unknown"}} and phase == "before_projection" and index == 0:
+                        raise RuntimeError("test interrupted publication")
+                def unavailable_inspection(**kwargs):
+                    raise claim.ClaimPublicationError("test_inspection_unavailable", "restore inspection")
+                def publish(*args, **kwargs):
+                    try:
+                        original_publish(*args, **kwargs, failure_hook=interruption)
+                    finally:
+                        if outcome == "unknown":
+                            globals()["inspect_claim_publications"] = unavailable_inspection
+                    raise claim.ClaimPublicationError("test_return_failure", "inspect committed receipt")
+                effect.publish_gate0b_claim = publish
+            exec(compile(code, "<cc-claim>", "exec"))
+            """
+        ),
+        encoding="utf-8",
+    )
+    runner.chmod(0o755)
+    monkeypatch.setattr(cli_tests, "SCRIPT", script)
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "publication-outcome")
+    result = _claim(home, "publication-outcome")
+    assert result.returncode == 8, result.stderr
+    assert f"session={_SESSION_ID}; claim_epoch=" in result.stderr
+    wire = result.stderr.split("publication_observations=", 1)[1].split(". Next action:", 1)[0]
+    observations = json.loads(wire)
+    assert len(observations) == 1
+    observed = observations[0]
+    if outcome == "unknown":
+        assert observed == {"disposition": "unknown", "reason_code": "test_inspection_unavailable"}
+    else:
+        assert (
+            observed["disposition"]
+            == {"pending": "hold", "aborted": "terminal_aborted", "applied": "terminal_applied"}[
+                outcome
+            ]
+        )
+        assert (
+            observed["journal_state"]
+            == {"pending": "recovery_required", "aborted": "aborted", "applied": "applied"}[outcome]
+        )
+        assert observed["publication_id"].startswith("claim-pub-")
+        assert len(observed["binding_receipt_hash"]) == 64
+        assert observed["inspection_ref"].endswith(observed["inspection_hash"])
+        assert len(observed["inspection_hash"]) == 64
+        assert observed["journal_reason_code"] == (
+            "test_preflight_refusal"
+            if outcome == "aborted"
+            else "claim_publication_projection_failed"
+            if outcome == "pending"
+            else None
+        )
+    cache = home / ".cache" / "hapax"
+    markers = list(cache.glob("cc-active-task-*"))
+    assert len(markers) == (2 if outcome == "applied" else 0)
+    assert f"status: {'claimed' if outcome == 'applied' else 'offered'}" in note.read_text()
+    manifests = list(
+        (home / ".local/share/hapax/claim-publications/gate0b-claim-publish-v1").glob(
+            "*/manifest.json"
+        )
+    )
+    assert len(manifests) == 1
+    assert (
+        json.loads(manifests[0].read_text())["state"]
+        == {
+            "pending": "recovery_required",
+            "aborted": "aborted",
+            "applied": "applied",
+            "unknown": "recovery_required",
+        }[outcome]
+    )
 
 
 def test_default_claim_is_idempotent_for_existing_applied_publication(
@@ -892,7 +1016,7 @@ def test_recover_claim_publications_subcommand_uses_live_gate0b_roots(
         home,
         task_id,
         dispatch=False,
-        install_gate0b=False,
+        install_gate0b=True,
         extra_args=["--recover-claim-publications"],
     )
 
@@ -900,6 +1024,310 @@ def test_recover_claim_publications_subcommand_uses_live_gate0b_roots(
     assert f"cc-claim: recovery claim-pub-{'a' * 64}:hold" in result.stdout
     assert "cc-claim --recover-claim-publications recover-live-root" in result.stderr
     assert not (home / ".cache" / "hapax" / "claim-publications").exists()
+
+
+_NEXT_SESSION_ID = "1f1f1f1f-2222-3333-4444-555566667777"
+_NEXT_ROLE_ENV = {"HAPAX_AGENT_ROLE": "cx-next", "HAPAX_AGENT_NAME": "cx-next"}
+
+
+def _journal_for_role(home: Path, role: str) -> str:
+    root = home / ".local/share/hapax/claim-publications/gate0b-claim-publish-v1"
+    found = [
+        manifest.parent.name
+        for manifest in root.glob("claim-pub-*/manifest.json")
+        if json.loads(manifest.read_text(encoding="ascii"))["intent"]["role"] == role
+    ]
+    assert len(found) == 1, found
+    return found[0]
+
+
+@pytest.mark.parametrize(
+    "damage", ["none", "note_moved_on", "successor_receipt_missing", "successor_marker_missing"]
+)
+def test_recover_reports_applied_journal_superseded_by_later_owner_not_drift(
+    tmp_path: Path, damage: str
+) -> None:
+    # PRIORITY specimen 2026-09-24T20:03Z (U3, claim-pub-07127dd1): an applied claim whose
+    # note was later re-offered and claimed by another role through a second applied
+    # publication. Recovery reported the first journal as postimage drift (a hold), which
+    # reads as a live blocker. Supersession is machine-checkable: a later applied journal
+    # for the same task whose note postimage is the current note.
+    home = tmp_path / "home"
+    task_id = "superseded-owner"
+    note = _write_task(home, "active", task_id)
+    first = _claim(home, task_id, dispatch=False)
+    assert first.returncode == 0, first.stderr
+    claimed = note.read_text(encoding="utf-8")
+    note.write_text(
+        claimed.replace("status: claimed", "status: offered").replace(
+            "assigned_to: cx-test", "assigned_to: unassigned"
+        ),
+        encoding="utf-8",
+    )
+    for marker in (home / ".cache/hapax").glob("cc-active-task-cx-test*"):
+        marker.unlink()
+    # cc-claim mints epochs in whole seconds; a same-second tie is (correctly) never ordered,
+    # so make the successor's epoch strictly later instead of depending on scheduling.
+    first_manifest = (
+        home
+        / ".local/share/hapax/claim-publications/gate0b-claim-publish-v1"
+        / _journal_for_role(home, "cx-test")
+        / "manifest.json"
+    )
+    first_epoch = json.loads(first_manifest.read_text(encoding="ascii"))["intent"]["claim_epoch"]
+    while int(time.time()) <= first_epoch:
+        time.sleep(0.05)
+    second = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        session_id=_NEXT_SESSION_ID,
+        extra_env=_NEXT_ROLE_ENV,
+    )
+    assert second.returncode == 0, second.stderr
+    cache = home / ".cache" / "hapax"
+    if damage == "note_moved_on":
+        note.write_text(note.read_text(encoding="utf-8") + "- later edit\n", encoding="utf-8")
+    elif damage == "successor_receipt_missing":
+        # PR4726 round 2 (Muse new-1): an `applied` flag alone must not launder drift.
+        receipts = [
+            path
+            for path in (cache / "claim-publication-receipts").glob("*.json")
+            if '"cx-next"' in path.read_text(encoding="utf-8")
+        ]
+        assert len(receipts) == 1
+        receipts[0].unlink()
+    elif damage == "successor_marker_missing":
+        (cache / f"cc-active-task-cx-next-{_NEXT_SESSION_ID}").unlink()
+
+    result = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        session_id=_NEXT_SESSION_ID,
+        extra_env=_NEXT_ROLE_ENV,
+        extra_args=["--recover-claim-publications"],
+    )
+
+    superseded = _journal_for_role(home, "cx-test")
+    if damage != "none":
+        # Unsafe counterparts: unless a later publication verifies as applied (receipt,
+        # sidecars and a note postimage equal to the current note), supersession is not
+        # proven and the drift must still hold.
+        assert result.returncode == 8
+        assert f"{superseded}:hold:claim_publication_postimage_drift" in result.stdout
+        return
+    successor = _journal_for_role(home, "cx-next")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        f"cc-claim: recovery {superseded}:superseded:"
+        f"claim_publication_superseded_by_later_applied ({successor})"
+    ) in result.stdout
+    assert f"cc-claim: recovery {successor}:applied" in result.stdout
+
+
+def _reoffer(note: Path, role: str) -> None:
+    note.write_text(
+        note.read_text(encoding="utf-8")
+        .replace("status: claimed", "status: offered")
+        .replace(f"assigned_to: {role}", "assigned_to: unassigned"),
+        encoding="utf-8",
+    )
+
+
+def _fixed_clock(tmp_path: Path, epoch: int) -> dict[str, str]:
+    real_date = subprocess.run(
+        ["bash", "-c", "command -v date"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    fake_bin = tmp_path / "fixed-clock"
+    fake_bin.mkdir()
+    (fake_bin / "date").write_text(
+        f'#!/bin/bash\nif [[ "$*" == "+%s" ]]; then echo {epoch}; exit 0; fi\n'
+        f'exec {real_date} "$@"\n',
+        encoding="utf-8",
+    )
+    (fake_bin / "date").chmod(0o755)
+    return {"PATH": f"{fake_bin}:{os.environ['PATH']}"}
+
+
+def test_a_damaged_latest_owner_is_not_bypassed_by_an_older_one(tmp_path: Path) -> None:
+    # PR4726 round 3 (Vibe; kept by choice): supersession verifies only the latest later
+    # publication. Only it can own the live note; a damaged latest owner is reconciled, never
+    # bypassed through an older applied journal, so the drift holds (fail closed).
+    home = tmp_path / "home"
+    task_id = "three-owners"
+    note = _write_task(home, "active", task_id)
+    third_session = "3c3c3c3c-4444-4555-8666-777788889999"
+    third_env = {"HAPAX_AGENT_ROLE": "cx-third", "HAPAX_AGENT_NAME": "cx-third"}
+    assert _claim(home, task_id, dispatch=False).returncode == 0
+    _reoffer(note, "cx-test")
+    epoch = json.loads(
+        next(
+            (home / ".local/share/hapax/claim-publications/gate0b-claim-publish-v1").glob(
+                "claim-pub-*/manifest.json"
+            )
+        ).read_text(encoding="ascii")
+    )["intent"]["claim_epoch"]
+    while int(time.time()) <= epoch + 1:
+        time.sleep(0.05)
+    second = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        session_id=_NEXT_SESSION_ID,
+        extra_env=_NEXT_ROLE_ENV,
+    )
+    assert second.returncode == 0, second.stderr
+    _reoffer(note, "cx-next")
+    while int(time.time()) <= epoch + 2:
+        time.sleep(0.05)
+    third = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        session_id=third_session,
+        extra_env=third_env,
+    )
+    assert third.returncode == 0, third.stderr
+    receipts = [
+        path
+        for path in (home / ".cache/hapax/claim-publication-receipts").glob("*.json")
+        if '"cx-third"' in path.read_text(encoding="utf-8")
+    ]
+    assert len(receipts) == 1
+    receipts[0].unlink()
+    note_before = note.read_bytes()
+
+    result = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        session_id=third_session,
+        extra_env=third_env,
+        extra_args=["--recover-claim-publications"],
+    )
+
+    assert result.returncode == 8
+    for role in ("cx-test", "cx-next"):
+        journal = _journal_for_role(home, role)
+        assert f"{journal}:hold:claim_publication_postimage_drift" in result.stdout
+    assert ":superseded:" not in result.stdout
+    assert note.read_bytes() == note_before
+
+
+def test_an_epoch_tie_grants_no_supersession_or_ownership(tmp_path: Path) -> None:
+    # PR4726 round 3 (qwen; Muse: cosmetic): two publications in the same clock second are
+    # never ordered, so neither supersedes the other and recovery changes no ownership.
+    home = tmp_path / "home"
+    task_id = "tied-owners"
+    note = _write_task(home, "active", task_id)
+    clock = _fixed_clock(tmp_path, int(time.time()))
+    assert _claim(home, task_id, dispatch=False, extra_env=clock).returncode == 0
+    _reoffer(note, "cx-test")
+    second = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        session_id=_NEXT_SESSION_ID,
+        extra_env={**_NEXT_ROLE_ENV, **clock},
+    )
+    assert second.returncode == 0, second.stderr
+    root = home / ".local/share/hapax/claim-publications/gate0b-claim-publish-v1"
+    epochs = {
+        json.loads(path.read_text(encoding="ascii"))["intent"]["claim_epoch"]
+        for path in root.glob("claim-pub-*/manifest.json")
+    }
+    assert len(epochs) == 1, epochs
+    note_before = note.read_bytes()
+
+    result = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        session_id=_NEXT_SESSION_ID,
+        extra_env=_NEXT_ROLE_ENV,
+        extra_args=["--recover-claim-publications"],
+    )
+
+    first = _journal_for_role(home, "cx-test")
+    assert f"{first}:hold:claim_publication_postimage_drift" in result.stdout
+    assert ":superseded:" not in result.stdout
+    assert note.read_bytes() == note_before
+    assert "assigned_to: cx-next" in note.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["admitted", "emergency"])
+def test_claim_never_publishes_epoch_zero_when_the_clock_is_unavailable(
+    tmp_path: Path, legacy: bool
+) -> None:
+    # PR4726 seat review (19:55Z): the embedded claim writer read an empty epoch argument as
+    # 0 and would publish it. An unavailable clock must fail closed before any write.
+    home = tmp_path / "home"
+    note = _write_task(home, "active", "epoch-zero")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    real_date = subprocess.run(
+        ["bash", "-c", "command -v date"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (fake_bin / "date").write_text(
+        f'#!/bin/bash\nif [[ "$*" == "+%s" ]]; then exit 0; fi\nexec {real_date} "$@"\n',
+        encoding="utf-8",
+    )
+    (fake_bin / "date").chmod(0o755)
+    before = note.read_bytes()
+
+    result = _claim(
+        home,
+        "epoch-zero",
+        legacy=legacy,
+        dispatch=False,
+        install_gate0b=True,
+        extra_env={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "claim epoch unavailable" in result.stderr
+    assert note.read_bytes() == before
+    cache = home / ".cache" / "hapax"
+    assert not list(cache.glob("cc-claim-epoch-*"))
+    assert not list(cache.glob("cc-active-task-*"))
+
+
+def test_claim_survives_a_low_inherited_descriptor_limit(tmp_path: Path) -> None:
+    # 2026-09-24 (U3 and the bootstrap lane): lanes resumed with soft nofile 1024 failed every
+    # claim with claim_publication_inspection_failed (OSError), because journal inspection
+    # holds descriptors for the whole transaction root. Scaled down here: a handful of
+    # journals and a proportionally low inherited limit.
+    home = tmp_path / "home"
+    for index in range(6):
+        filler = f"filler-{index}"
+        _write_task(home, "active", filler)
+        result = _claim(
+            home,
+            filler,
+            dispatch=False,
+            install_gate0b=index == 0,
+            session_id=f"2e2e2e2e-0000-4000-8000-00000000000{index}",
+            extra_env={
+                "HAPAX_AGENT_ROLE": f"cx-fill{index}",
+                "HAPAX_AGENT_NAME": f"cx-fill{index}",
+            },
+        )
+        assert result.returncode == 0, result.stderr
+    note = _write_task(home, "active", "low-limit-claim")
+
+    result = _claim(home, "low-limit-claim", dispatch=False, install_gate0b=False, soft_nofile=64)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "claim_publication_inspection_failed" not in result.stderr
+    assert "status: claimed" in note.read_text(encoding="utf-8")
 
 
 def test_body_bullets_are_not_claim_dependencies(tmp_path: Path) -> None:
@@ -1142,7 +1570,10 @@ def test_explicit_read_only_intake_without_parent_spec_allows_claim(
     assert "status: claimed" in note.read_text(encoding="utf-8")
 
 
-def test_hapax_cc_tasks_root_wins_over_the_home_default(tmp_path: Path) -> None:
+@pytest.mark.parametrize("binding_matches", [False, True])
+def test_hapax_cc_tasks_root_requires_installed_binding(
+    tmp_path: Path, binding_matches: bool
+) -> None:
     """The gate-path consumer must use the resolver, not a welded $HOME path."""
     home = tmp_path / "home"
     override = tmp_path / "elsewhere"
@@ -1152,14 +1583,27 @@ def test_hapax_cc_tasks_root_wins_over_the_home_default(tmp_path: Path) -> None:
     real = override / "active" / "override-root.md"
     real.write_text(decoy.read_text(encoding="utf-8"), encoding="utf-8")
 
+    roots = default_claim_publication_roots(home=home)
+    if binding_matches:
+        roots = roots.model_copy(update={"claim_vault_root": str(override)})
+    install_claim_publication_composition(
+        roots=roots, installed_at="2026-09-24T00:00:00Z", install_task_ref="test-install"
+    )
     result = _claim(
         home,
         "override-root",
         extra_env={"HAPAX_CC_TASKS_ROOT": str(override)},
+        install_gate0b=False,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "status: claimed" in real.read_text(encoding="utf-8")
+    if binding_matches:
+        assert result.returncode == 0, result.stderr
+        assert "status: claimed" in real.read_text(encoding="utf-8")
+    else:
+        assert result.returncode == 8
+        assert "claim_composition_projection_binding_mismatch" in result.stderr
+        assert "status: offered" in real.read_text()
+
     assert "status: offered" in decoy.read_text(encoding="utf-8")
 
 
