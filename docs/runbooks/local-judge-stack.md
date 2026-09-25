@@ -32,18 +32,148 @@ Model (already present): `~/models/compassverifier-7b/CompassVerifier-7B.Q5_K_M.
 (5.4 GB; GGUF Q5_K_M). Pull from `opencompass/CompassVerifier-7B` and quantize, or
 fetch a community GGUF, if absent.
 
-Every command in this section mutates the appendix runtime and requires separate
-runtime authority. A source-only task must stop after preparing the staged package.
+Every command below mutates the appendix runtime and requires a task note whose
+frontmatter explicitly grants `runtime_mutation_authorized: true`. A source-only
+task stops here. The disposable canary uses the exact proposed `4G/6G` limits and
+must pass before the authenticated package command is requested.
+
+### Required pre-deploy cap canary
+
+This canary temporarily stops the managed judge if it is active, starts an
+immutable-ID-tracked disposable container on port 15001, and restores the prior
+unit state before package installation. It never removes a container by name.
 
 ```bash
-# one-time: confirm the 5060 Ti UUID and update the unit's JUDGE_GPU_UUID if it differs
-nvidia-smi --query-gpu=index,name,uuid --format=csv
+set -euo pipefail
+runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
+case "$runtime_task" in
+  "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/"*.md) ;;
+  *) echo "runtime authority must be a canonical cc-task note" >&2; exit 2 ;;
+esac
+test -f "$runtime_task"
+test ! -L "$runtime_task"
+grep -Fqx 'runtime_mutation_authorized: true' "$runtime_task"
 
-docker pull ghcr.io/ggml-org/llama.cpp:server-cuda
+repo_alias="$HOME/.cache/hapax/source-activation/worktree"
+repo="$(/usr/bin/realpath -e -- "$repo_alias")"
+release_root="$HOME/.cache/hapax/source-activation/releases"
+test "${repo%/*}" = "$release_root"
+[[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]
+test "$(/usr/bin/stat -c %u -- "$repo")" = "$(/usr/bin/id -u)"
+source_unit="$repo/systemd/units/hapax-local-judge.service"
+test -f "$source_unit"
+test ! -L "$source_unit"
+test "$(grep -c '^Environment=JUDGE_GPU_UUID=' "$source_unit")" -eq 1
+judge_gpu_uuid="$(sed -n 's/^Environment=JUDGE_GPU_UUID=//p' "$source_unit")"
+test -n "$judge_gpu_uuid"
+nvidia-smi --query-gpu=uuid --format=csv,noheader | grep -Fqx "$judge_gpu_uuid"
 
+image=ghcr.io/ggml-org/llama.cpp:server-cuda
+unit=hapax-local-judge.service
+canary_name="hapax-local-judge-cap-canary-$$"
+canary_id=""
+endpoint=http://127.0.0.1:15001
+results="/store-fast/tmp/local-judge-cap-canary-$$.jsonl"
+test -d /store-fast/tmp
+test ! -e "$results"
+docker pull "$image"
+
+was_active="$(systemctl --user is-active "$unit" || true)"
+cleanup_canary() {
+  if [ -n "$canary_id" ]; then
+    docker stop "$canary_id" >/dev/null 2>&1 || true
+  fi
+  rm -f "$results"
+  if [ "$was_active" = active ]; then
+    systemctl --user start "$unit" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_canary EXIT
+if [ "$was_active" = active ]; then
+  systemctl --user stop "$unit"
+fi
+
+canary_id="$(docker run -d --rm --name "$canary_name" \
+  --memory 4G --memory-swap 6G \
+  --gpus "device=$judge_gpu_uuid" \
+  -v "$HOME/models/compassverifier-7b:/models:ro" \
+  -p 127.0.0.1:15001:5001 \
+  "$image" \
+  -m /models/CompassVerifier-7B.Q5_K_M.gguf -a compassverifier-7b \
+  -c 65536 -np 8 -cb -ngl 99 --host 0.0.0.0 --port 5001)"
+[[ "$canary_id" =~ ^[0-9a-f]{64}$ ]]
+test "$(docker inspect --format '{{.Name}}' "$canary_id")" = "/$canary_name"
+read -r memory memory_swap oom_kill_disable < <(
+  docker inspect --format \
+    '{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{json .HostConfig.OomKillDisable}}' \
+    "$canary_id"
+)
+test "$memory" = 4294967296
+test "$memory_swap" = 6442450944
+[[ "$oom_kill_disable" == null || "$oom_kill_disable" == false ]]
+
+ready=0
+for _ in $(seq 1 90); do
+  if curl -fsS "$endpoint/v1/models" | jq -e \
+    '.data | any(.id == "compassverifier-7b")' >/dev/null; then
+    ready=1
+    break
+  fi
+  sleep 2
+done
+test "$ready" -eq 1
+
+pid="$(docker inspect --format '{{.State.Pid}}' "$canary_id")"
+test "$pid" -gt 1
+cgroup="$(awk -F: '$1 == "0" {print $3; exit}' "/proc/$pid/cgroup")"
+events="/sys/fs/cgroup${cgroup}/memory.events"
+memory_peak_path="/sys/fs/cgroup${cgroup}/memory.peak"
+swap_peak_path="/sys/fs/cgroup${cgroup}/memory.swap.peak"
+test -r "$events"
+test -r "$memory_peak_path"
+test -r "$swap_peak_path"
+before_state="$(docker inspect --format '{{.State.Status}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$canary_id")"
+before_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
+(
+  cd "$repo/scripts/cost-offload"
+  uv run --with pandas --with pyarrow --with requests \
+    python run_verifierbench.py --endpoint "$endpoint" \
+    --n 24 --workers 8 --out "$results"
+)
+jq -e -s 'length == 24 and all(.[]; type == "object" and has("error") and has("pred") and .error == null and (.pred == "A" or .pred == "B" or .pred == "C"))' \
+  "$results" >/dev/null
+after_state="$(docker inspect --format '{{.State.Status}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$canary_id")"
+after_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
+memory_peak="$(cat "$memory_peak_path")"
+swap_peak="$(cat "$swap_peak_path")"
+test "$before_state" = "$after_state"
+test "$before_oom" = "$after_oom"
+test "$memory_peak" -le 3221225472  # retain at least 1 GiB RAM headroom
+test "$swap_peak" -le 1073741824    # retain at least 1 GiB swap headroom
+
+docker stop "$canary_id" >/dev/null
+canary_id=""
+rm -f "$results"
+if [ "$was_active" = active ]; then
+  systemctl --user start "$unit"
+fi
+trap - EXIT
+```
+
+### Authenticated package installation
+
+```bash
 # Re-emit the authenticated command after runtime authority is granted. Never
 # execute RUNBOOK.txt, copy the judge unit, or reproduce the authentication flow.
 set -euo pipefail
+runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
+case "$runtime_task" in
+  "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/"*.md) ;;
+  *) echo "runtime authority must be a canonical cc-task note" >&2; exit 2 ;;
+esac
+test -f "$runtime_task"
+test ! -L "$runtime_task"
+grep -Fqx 'runtime_mutation_authorized: true' "$runtime_task"
 state="$HOME/.local/state/hapax/root-required"
 receipt="$state/desired-receipts/oom-containment.sha"
 test -f "$receipt"
@@ -61,22 +191,71 @@ grep -Fqx 'DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT. It is caller-owne
 # Run hapax-post-merge-deploy for "$sha" and execute only its live terminal line
 # beginning "next action: run:". The pending RUNBOOK is metadata, not code.
 ~/.local/bin/hapax-post-merge-deploy "$sha"
+```
+
+Execute only the live terminal `next action: run:` line emitted by that command.
+After it returns successfully, verify the authenticated completion and installed
+receipt in a new shell:
+
+```bash
+set -euo pipefail
+runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
+case "$runtime_task" in
+  "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/"*.md) ;;
+  *) echo "runtime authority must be a canonical cc-task note" >&2; exit 2 ;;
+esac
+test -f "$runtime_task"
+test ! -L "$runtime_task"
+grep -Fqx 'runtime_mutation_authorized: true' "$runtime_task"
+state="$HOME/.local/state/hapax/root-required"
+receipt="$state/desired-receipts/oom-containment.sha"
+test -f "$receipt"
+test ! -L "$receipt"
+test "$(/usr/bin/wc -c < "$receipt")" = 41
+IFS= read -r sha < "$receipt"
+[[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+stage="$HOME/.cache/hapax/post-merge-root-required/$sha/oom-containment"
 /usr/bin/grep -Fqx \
   "hapax-root-required-deferred-install: completed authenticated package=oom-containment sha=$sha" \
   "$stage/AUTHENTICATED-INSTALL.log"
+/usr/bin/grep -Fqx "$sha" "$state/installed-receipts/oom-containment.sha"
+```
 
-# The package deliberately does not enable or restart the judge. Activation is
-# a separate, runtime-authorized step after the exact package verifies.
-systemctl --user enable --now hapax-local-judge
+### Separate activation and recheck
+
+The package deliberately does not enable or restart the judge. This separately
+authorized fence reloads the exact installed unit, then rechecks the effective
+limits and the recurring audit.
+
+```bash
+set -euo pipefail
+runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
+case "$runtime_task" in
+  "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/"*.md) ;;
+  *) echo "runtime authority must be a canonical cc-task note" >&2; exit 2 ;;
+esac
+test -f "$runtime_task"
+test ! -L "$runtime_task"
+grep -Fqx 'runtime_mutation_authorized: true' "$runtime_task"
+systemctl --user daemon-reload
+exec_start="$(systemctl --user show hapax-local-judge.service -p ExecStart --value)"
+[[ "$exec_start" == *" --memory 4G "* ]]
+[[ "$exec_start" == *" --memory-swap 6G "* ]]
+systemctl --user enable hapax-local-judge.service
+systemctl --user restart hapax-local-judge.service
 # verify model loaded on GPU1 and 3090 VRAM unchanged:
 curl -s http://localhost:5001/v1/models | grep compassverifier
 nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader
+/usr/local/sbin/hapax-oom-policy-audit
 ```
 
 The name `hapax-local-judge` is reserved for the systemd unit. It refuses to
 delete an unknown same-name container. `After=docker.service` is retained as an
-estate convention, but a user manager cannot enforce system-manager ordering;
-`Restart=always` with `RestartSec=5s` is the actual Docker-socket readiness path.
+estate metadata parity token. The recheck is
+`systemctl --user show hapax-local-judge.service -p After`; it does not create a
+cross-manager Docker job. `Restart=always` with
+`RestartSec=5s` is the actual Docker-socket readiness path. A same-name collision
+therefore causes an intentional, audit-visible restart loop until reconciled.
 
 The recurring OOM audit requires a present judge container to be `running`. If
 it reports that a non-running container holds the name, stop the unit, inspect
@@ -163,16 +342,30 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
 - **Candidate host-memory ceiling:** source and manual launches use `--memory 4G
   --memory-swap 6G`: a 4 GiB RAM cap and a 6 GiB combined memory-plus-swap cap,
   permitting at most 2 GiB of swap while leaving the OOM killer enabled. This is
-  not runtime-accepted merely because the source tests pass. Before activation or
-  runtime closure, deploy `hapax-local-judge.service` only through the manifest-owned
-  P0 OOM package; ordinary post-merge deployment stages it without copying or
-  restarting the user unit. Then run this 8-worker, 24-request canary and require
-  identical container health/restart/OOM state plus unchanged `oom` and
-  `oom_kill` counters:
+  intentionally looser than the canary's 1 GiB accepted swap peak, preserving
+  another 1 GiB inside the hard limit rather than treating the limit as a target.
+  The cap is not runtime-accepted merely because the source tests pass. The required
+  pre-deploy canary above gates installation of the candidate. After activation,
+  repeat the same 8-worker, 24-request load against the managed container before
+  runtime closure and require unchanged health/restart/OOM state, unchanged `oom`
+  counters, and the same peak-memory headroom:
 
   ```bash
   set -euo pipefail
-  repo="${HAPAX_COUNCIL_REPO:-$HOME/.cache/hapax/source-activation/worktree}"
+  runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
+  case "$runtime_task" in
+    "$HOME/Documents/Personal/20-projects/hapax-cc-tasks/"*.md) ;;
+    *) echo "runtime authority must be a canonical cc-task note" >&2; exit 2 ;;
+  esac
+  test -f "$runtime_task"
+  test ! -L "$runtime_task"
+  grep -Fqx 'runtime_mutation_authorized: true' "$runtime_task"
+  repo_alias="$HOME/.cache/hapax/source-activation/worktree"
+  repo="$(/usr/bin/realpath -e -- "$repo_alias")"
+  release_root="$HOME/.cache/hapax/source-activation/releases"
+  test "${repo%/*}" = "$release_root"
+  [[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]
+  test "$(/usr/bin/stat -c %u -- "$repo")" = "$(/usr/bin/id -u)"
   test -d "$repo/scripts/cost-offload"
   unit=hapax-local-judge.service
   test "$(systemctl --user show "$unit" -p NeedDaemonReload --value)" = no
@@ -191,10 +384,17 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   test "$pid" -gt 1
   cgroup="$(awk -F: '$1 == "0" {print $3; exit}' "/proc/$pid/cgroup")"
   events="/sys/fs/cgroup${cgroup}/memory.events"
+  memory_peak_path="/sys/fs/cgroup${cgroup}/memory.peak"
+  swap_peak_path="/sys/fs/cgroup${cgroup}/memory.swap.peak"
   test -r "$events"
+  test -r "$memory_peak_path"
+  test -r "$swap_peak_path"
   before_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
   before_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
-  results="${TMPDIR:-/tmp}/local-judge-eight-slot.jsonl"
+  results="/store-fast/tmp/local-judge-managed-recheck-$$.jsonl"
+  test -d /store-fast/tmp
+  test ! -e "$results"
+  trap 'rm -f "$results"' EXIT
   (
     cd "$repo/scripts/cost-offload"
     uv run --with pandas --with pyarrow --with requests \
@@ -205,8 +405,14 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
     "$results" >/dev/null
   after_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
   after_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
+  memory_peak="$(cat "$memory_peak_path")"
+  swap_peak="$(cat "$swap_peak_path")"
   test "$before_state" = "$after_state"
   test "$before_oom" = "$after_oom"
+  test "$memory_peak" -le 3221225472
+  test "$swap_peak" -le 1073741824
+  rm -f "$results"
+  trap - EXIT
   ```
 - **Throughput:** 8 continuous-batch slots × 8192 ctx; ~137 tok/s decode, ~800 tok/s
   prompt. 127/2817 (4.5%) VerifierBench items exceed an 8192-token slot and are

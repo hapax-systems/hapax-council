@@ -65,6 +65,62 @@ LOCAL_JUDGE_DOCKER_MEMORY="4G"
 LOCAL_JUDGE_DOCKER_MEMORY_SWAP="6G"
 GOVERNED_MEMORY_KEYS=(MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin)
 
+root_required_git() {
+    /usr/bin/env -i \
+        HOME=/nonexistent \
+        PATH=/usr/bin:/bin \
+        LANG=C.UTF-8 \
+        LC_ALL=C.UTF-8 \
+        GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_CONFIG_NOSYSTEM=1 \
+        GIT_NO_REPLACE_OBJECTS=1 \
+        GIT_OPTIONAL_LOCKS=0 \
+        /usr/bin/git -C "$ROOT_REQUIRED_GIT_REPO" "$@"
+}
+
+validate_root_required_git_repo() {
+    local account_home canonical_alias resolved owner_uid git_root git_root_resolved
+    if ! account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
+        || [[ "$account_home" != /* ]]; then
+        echo "root-required audit cannot derive the account home for canonical Git verification" >&2
+        echo "  next action: repair the local passwd entry, then rerun the installed root-required audit" >&2
+        return 1
+    fi
+    canonical_alias="$account_home/.cache/hapax/source-activation/worktree"
+    if [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" != "1" ]; then
+        if [ "${HAPAX_ROOT_REQUIRED_GIT_REPO+x}" = "x" ]; then
+            echo "root-required audit refuses an explicit production Git repository selector: $ROOT_REQUIRED_GIT_REPO" >&2
+            echo "  next action: remove HAPAX_ROOT_REQUIRED_GIT_REPO and rerun the installed audit against $canonical_alias" >&2
+            return 1
+        fi
+        if [ "$ROOT_REQUIRED_GIT_REPO" != "$canonical_alias" ]; then
+            echo "root-required audit canonical Git alias drift: actual=$ROOT_REQUIRED_GIT_REPO expected=$canonical_alias" >&2
+            echo "  next action: restore the account HOME and source-activation alias, then rerun the installed audit" >&2
+            return 1
+        fi
+    fi
+    if ! resolved="$(/usr/bin/realpath -e -- "$ROOT_REQUIRED_GIT_REPO")" \
+        || [ ! -d "$resolved" ]; then
+        echo "root-required audit Git repository is unavailable: $ROOT_REQUIRED_GIT_REPO" >&2
+        echo "  next action: reconcile source activation, then rerun the installed root-required audit" >&2
+        return 1
+    fi
+    owner_uid="$(/usr/bin/stat -c %u -- "$resolved" 2>/dev/null || true)"
+    if [ "$owner_uid" != "$(/usr/bin/id -u)" ]; then
+        echo "root-required audit Git repository owner drift: path=$resolved uid=${owner_uid:-unavailable}" >&2
+        echo "  next action: restore the account-owned source-activation release, then rerun the installed audit" >&2
+        return 1
+    fi
+    ROOT_REQUIRED_GIT_REPO="$resolved"
+    if ! git_root="$(root_required_git rev-parse --show-toplevel 2>/dev/null)" \
+        || ! git_root_resolved="$(/usr/bin/realpath -e -- "$git_root")" \
+        || [ "$git_root_resolved" != "$resolved" ]; then
+        echo "root-required audit Git target is not the selected worktree root: $resolved" >&2
+        echo "  next action: reconcile the canonical source-activation worktree, then rerun the installed audit" >&2
+        return 1
+    fi
+}
+
 oom_install_next_action() {
     echo "  next action: run scripts/install-p0-oom-containment --install --verify-live from the receipt-bound source" >&2
 }
@@ -389,9 +445,30 @@ reexec_with_safe_root_required_lock
 
 rc=0
 
-pending_runbooks() {
+collect_pending_runbooks() {
+    local sha_dir package_dir marker unsafe=0
     [ -d "$ROOT_DEFER_DIR" ] || return 0
-    find "$ROOT_DEFER_DIR" -mindepth 3 -maxdepth 3 -name RUNBOOK.txt -type f | sort
+
+    shopt -s nullglob dotglob
+    for sha_dir in "$ROOT_DEFER_DIR"/*; do
+        [ -d "$sha_dir" ] || continue
+        for package_dir in "$sha_dir"/*; do
+            [ -d "$package_dir" ] || continue
+            marker="$package_dir/RUNBOOK.txt"
+            if [ ! -e "$marker" ] && [ ! -L "$marker" ]; then
+                continue
+            fi
+            if [ -L "$marker" ] || [ ! -f "$marker" ]; then
+                echo "unsafe root-required pending marker: $marker; expected a non-symlink regular RUNBOOK.txt" >&2
+                echo "  next action: restore the caller-owned regular pending marker, then rerun hapax-post-merge-deploy for the desired receipt SHA" >&2
+                unsafe=1
+                continue
+            fi
+            runbooks+=("$marker")
+        done
+    done
+    shopt -u nullglob dotglob
+    [ "$unsafe" -eq 0 ]
 }
 
 source_for_rel() {
@@ -730,7 +807,7 @@ audit_package_receipt() {
         return 1
     fi
     sha="$(tr -d '[:space:]' < "$receipt")"
-    if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$sha^{commit}" 2>/dev/null; then
+    if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || ! root_required_git cat-file -e "$sha^{commit}" 2>/dev/null; then
         echo "root-required installed receipt is invalid or unavailable: $receipt sha=$sha" >&2
         echo "  next action: fetch the installed commit into $ROOT_REQUIRED_GIT_REPO and rerun the newest governed $label installer package" >&2
         return 1
@@ -738,7 +815,7 @@ audit_package_receipt() {
     for rel in "$@"; do
         case "$rel" in
             config/root-required/*.files)
-                if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$sha:$rel" 2>/dev/null; then
+                if ! root_required_git cat-file -e "$sha:$rel" 2>/dev/null; then
                     if [ ! -e "$INSTALLED_SOURCE_ROOT/$rel" ]; then
                         continue
                     fi
@@ -751,7 +828,7 @@ audit_package_receipt() {
         esac
         if [ ! -f "$INSTALLED_SOURCE_ROOT/$rel" ] \
             || [ -L "$INSTALLED_SOURCE_ROOT/$rel" ] \
-            || ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$sha:$rel") "$INSTALLED_SOURCE_ROOT/$rel"; then
+            || ! cmp -s <(root_required_git show "$sha:$rel") "$INSTALLED_SOURCE_ROOT/$rel"; then
             echo "root-required installed source is not bound to $label receipt $sha: $INSTALLED_SOURCE_ROOT/$rel" >&2
             echo "  next action: rerun hapax-post-merge-deploy for the desired SHA and use only its live next-action command" >&2
             failed=1
@@ -770,7 +847,7 @@ audit_desired_receipt() {
         return 1
     fi
     desired_sha="$(tr -d '[:space:]' < "$desired")"
-    if ! [[ "$desired_sha" =~ ^[0-9a-f]{40}$ ]] || ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$desired_sha^{commit}" 2>/dev/null; then
+    if ! [[ "$desired_sha" =~ ^[0-9a-f]{40}$ ]] || ! root_required_git cat-file -e "$desired_sha^{commit}" 2>/dev/null; then
         echo "root-required desired receipt is invalid or unavailable: $desired sha=$desired_sha" >&2
         echo "  next action: fetch the desired commit into $ROOT_REQUIRED_GIT_REPO and rerun hapax-post-merge-deploy" >&2
         return 1
@@ -1496,7 +1573,9 @@ refuse_production_test_overrides() {
 }
 
 refuse_production_test_overrides || exit 1
-mapfile -t runbooks < <(pending_runbooks)
+validate_root_required_git_repo || exit 1
+runbooks=()
+collect_pending_runbooks || exit 1
 if [ "${#runbooks[@]}" -eq 0 ]; then
     audit_desired_receipt "oom-containment" || rc=1
     audit_desired_receipt "apcupsd-power-alerts" || rc=1
