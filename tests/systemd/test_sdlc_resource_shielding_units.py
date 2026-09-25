@@ -406,6 +406,7 @@ def test_p0_oom_containment_has_dedicated_installer() -> None:
     assert "systemd/system/user@1000.service.d/oom.conf" in body
     assert "systemd/units/app.slice.d/oom-containment.conf" in body
     assert "systemd/units/session.slice.d/oom-containment.conf" in body
+    assert "systemd/units/hapax-local-judge.service" in body
     assert "config/earlyoom/default" in body
     assert "app_slice_value MemoryHigh" in body
     assert "apply_system_runtime_memory user-1000.slice" in body
@@ -421,6 +422,16 @@ def test_local_judge_container_has_a_finite_memory_cap() -> None:
     text = (UNITS_DIR / "hapax-local-judge.service").read_text()
     assert "--memory 4G --memory-swap 6G" in text
     assert "--oom-kill-disable" not in text
+    assert "ExecStartPre=-/usr/bin/docker rm" not in text
+
+
+def test_local_judge_runbook_uses_the_receipt_owned_installer() -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    assert "desired-receipts/oom-containment.sha" in text
+    assert "post-merge-root-required/$sha/oom-containment" in text
+    assert '"$stage/scripts/install-p0-oom-containment"' in text
+    assert 'HAPAX_ROOT_REQUIRED_PACKAGE_SHA="$sha"' in text
+    assert "cp systemd/units/hapax-local-judge.service" not in text
 
 
 def _local_judge_runtime_canary() -> str:
@@ -434,6 +445,8 @@ def _local_judge_runtime_canary() -> str:
 def test_local_judge_runtime_canary_fails_fast() -> None:
     canary = _local_judge_runtime_canary()
     assert canary.index("set -euo pipefail") < canary.index("container=hapax-local-judge")
+    assert 'repo="${HAPAX_COUNCIL_REPO:-$HOME/.cache/hapax/source-activation/worktree}"' in canary
+    assert 'cd "$repo/scripts/cost-offload"' in canary
     assert 'systemctl --user show "$unit" -p NeedDaemonReload --value' in canary
     assert 'systemctl --user show "$unit" -p FragmentPath --value' in canary
     assert 'systemctl --user show "$unit" -p DropInPaths --value' in canary
