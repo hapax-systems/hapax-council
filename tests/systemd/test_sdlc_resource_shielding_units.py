@@ -418,3 +418,15 @@ def test_local_judge_container_has_a_finite_memory_cap() -> None:
     text = (UNITS_DIR / "hapax-local-judge.service").read_text()
     assert "--memory 4G --memory-swap 6G" in text
     assert "--oom-kill-disable" not in text
+
+
+def test_local_judge_runtime_canary_fails_fast() -> None:
+    text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    marker = text.index("container=hapax-local-judge")
+    start = text.rfind("```bash", 0, marker)
+    end = text.index("```", marker)
+    canary = text[start:end]
+    assert canary.index("set -euo pipefail") < canary.index("container=hapax-local-judge")
+    assert "run_verifierbench.py" in canary
+    assert 'test "$before_state" = "$after_state"' in canary
+    assert 'test "$before_oom" = "$after_oom"' in canary

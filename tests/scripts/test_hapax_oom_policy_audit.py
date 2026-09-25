@@ -358,12 +358,14 @@ def _fake_docker(tmp_path: Path, *, state: str = "bounded") -> Path:
         elif state == "wrong-swap":
             mcp_swap = -1
         disappearance_state = tmp_path / "docker-disappearance-observed"
-        if state in {"disappear", "replace"}:
+        if state in {"disappear", "rename", "replace"}:
             if state == "replace":
                 second_enumeration = (
                     f"printf '%s\\t%s\\n' {REPLACEMENT_CONTAINER_ID} "
                     "hapax-github-mcp-hapax-123; exit 0"
                 )
+            elif state == "rename":
+                second_enumeration = f"printf '%s\\t%s\\n' {MCP_CONTAINER_ID} renamed-away; exit 0"
             else:
                 second_enumeration = "exit 0"
             ps_body = (
@@ -759,6 +761,33 @@ def test_host_policy_lines_derive_both_known_profiles(tmp_path: Path) -> None:
         ("hapax-podium", 125),
     ],
 )
+def test_host_policy_accepts_a_reviewed_physical_memory_interval_edge(
+    hostname: str, floor_gib: int
+) -> None:
+    result = subprocess.run(
+        [str(SCRIPT), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": str(floor_gib * 1024**2),
+            "HAPAX_OOM_AUDIT_HOSTNAME": hostname,
+        },
+    )
+    assert result.returncode == 0, result.stdout
+
+
+@pytest.mark.parametrize(
+    ("hostname", "floor_gib"),
+    [
+        ("hapax-appendix", 58),
+        ("hapax-appendix", 62),
+        ("hapax-podium", 122),
+        ("hapax-podium", 126),
+    ],
+)
 def test_host_policy_refuses_an_unreviewed_physical_memory_floor(
     hostname: str, floor_gib: int
 ) -> None:
@@ -775,9 +804,91 @@ def test_host_policy_refuses_an_unreviewed_physical_memory_floor(
         },
     )
     assert result.returncode == 1
-    assert "unlisted floor" in result.stdout
+    assert "unlisted MemTotal floor" in result.stdout
     assert "source-tree host profile table" in result.stdout
     assert str(REPO_ROOT / "config/root-required/oom-host-profiles.tsv") in result.stdout
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        "hapax-appendix\t61\t59\tappendix\t46G\t54G\t48G\t56G\t16384\n",
+        (
+            "hapax-appendix\t59\t61\tappendix\t46G\t54G\t48G\t56G\t16384\n"
+            "hapax-appendix\t60\t62\tappendix\t46G\t54G\t48G\t56G\t16384\n"
+        ),
+    ],
+)
+def test_host_policy_refuses_invalid_or_overlapping_memory_intervals(
+    tmp_path: Path, rows: str
+) -> None:
+    table = tmp_path / "oom-host-profiles.tsv"
+    table.write_text(rows, encoding="utf-8")
+    result = subprocess.run(
+        [str(SCRIPT), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_PROFILE_TABLE": str(table),
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": str(60 * 1024**2),
+            "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-appendix",
+        },
+    )
+    assert result.returncode == 1
+    assert "MemTotal GiB interval" in result.stdout
+    assert "test-override host profile table" in result.stdout
+
+
+def test_host_policy_requires_ceiling_below_the_interval_minimum(tmp_path: Path) -> None:
+    table = tmp_path / "oom-host-profiles.tsv"
+    table.write_text(
+        "hapax-appendix\t59\t61\tappendix\t46G\t54G\t58G\t60G\t16384\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [str(SCRIPT), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_PROFILE_TABLE": str(table),
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": str(61 * 1024**2),
+            "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-appendix",
+        },
+    )
+    assert result.returncode == 1
+    assert "below the reviewed 59 GiB interval floor" in result.stdout
+
+
+def test_host_policy_validates_unselected_rows_against_their_interval_minimum(
+    tmp_path: Path,
+) -> None:
+    table = tmp_path / "oom-host-profiles.tsv"
+    table.write_text(
+        "hapax-appendix\t59\t61\tappendix\t46G\t54G\t48G\t56G\t16384\n"
+        "hapax-podium\t123\t125\tpodium\t72G\t88G\t120G\t124G\t32768\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [str(SCRIPT), "--host-policy-lines"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_AUDIT_TEST_MODE": "1",
+            "HAPAX_OOM_AUDIT_PROFILE_TABLE": str(table),
+            "HAPAX_OOM_AUDIT_MEMTOTAL_KIB": str(60 * 1024**2),
+            "HAPAX_OOM_AUDIT_HOSTNAME": "hapax-appendix",
+        },
+    )
+    assert result.returncode == 1
+    assert "below the reviewed 123 GiB interval floor" in result.stdout
 
 
 def test_host_policy_refuses_cross_host_memory_profile() -> None:
@@ -937,6 +1048,16 @@ def test_audit_refuses_same_name_docker_replacement_after_original_id_disappears
     )
     assert check["status"] == "error"
     assert "same-name target remains" in check["detail"]
+
+
+def test_audit_refuses_same_id_docker_rename_after_inspect_failure(tmp_path: Path) -> None:
+    result = _run(tmp_path, docker_state="rename")
+
+    assert result.returncode == 1
+    checks = {check["name"]: check for check in json.loads(result.stdout)["checks"]}
+    check = checks["docker_hapax_github_mcp_hapax_123_inspect"]
+    assert check["status"] == "error"
+    assert "original identity or same-name target remains" in check["detail"]
 
 
 @pytest.mark.parametrize(
