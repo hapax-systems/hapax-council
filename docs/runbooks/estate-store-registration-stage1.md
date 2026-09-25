@@ -2,6 +2,18 @@
 
 Status: report-only. The accepted coordination baseline is installed/disabled;
 this document describes the producer interface, not a live runtime readback.
+Merging installs the six units and the launcher. The three timers carry
+`# Hapax-Parked: true`, so `hapax-post-merge-deploy` leaves them disabled.
+Recheck both halves:
+
+```bash
+# Source: every Stage 1 timer is parked (expect three paths).
+grep -l '^# Hapax-Parked: true' systemd/units/hapax-estate-*.timer
+# Runtime, after activation: units present, timers not enabled (expect "disabled" x3).
+systemctl --user list-unit-files 'hapax-estate-*'
+systemctl --user is-enabled hapax-estate-canary.timer \
+  hapax-estate-canary-peer-check.timer hapax-estate-drift-sweep.timer
+```
 
 `config/estate-store-registry.yaml` is the passive enumeration artifact. The
 reader in `shared.estate_store_registry` returns only entries declared for the
@@ -16,6 +28,19 @@ canary registrations, and detector state live under the same declared runtime
 store. Stage 1 writes reports and receipts only. Its report records
 `mutation_actions: []`; it has no rename, move, delete, quarantine, or restore
 operation.
+
+A sweep writes each Canary B flag before it persists detector state. If a sweep
+is interrupted between the two writes, the next sweep reuses the existing flag
+receipt when its schema, canary id, host, detector, path, action and timezone-
+bearing `flagged_at` all match (`_write_canary_flag` in
+`shared/estate_registration.py`). It refuses a receipt that does not match, and
+names the repair. An interruption therefore neither wedges the detector nor
+rewrites the receipt. Recheck:
+
+```bash
+uv run pytest -q tests/shared/test_estate_registration.py \
+  -k 'interrupted_state_write or invalid_existing_flag'
+```
 
 The existing `docker-volumes` scan root declares `kind: docker-volumes`, retaining
 `path: /var/lib/docker/volumes` and its depth-one filesystem observation. The
