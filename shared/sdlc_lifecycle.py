@@ -387,12 +387,24 @@ def _route_metadata_validation_blockers(frontmatter: Mapping[str, Any]) -> tuple
     return tuple(f"route_metadata:{reason}" for reason in assessment.validation_errors)
 
 
+def _accepted_before_close(
+    frontmatter: Mapping[str, Any], status: str, note_path: Path | None
+) -> bool:
+    if note_path is None or not status or status in TASK_TERMINAL_STATUSES:
+        return False
+    task_id = _frontmatter_non_null_scalar(frontmatter.get("task_id"))
+    if not task_id:
+        return False
+    return not _acceptance_receipt_validity_blockers(acceptance_receipt_path(note_path, task_id))
+
+
 def task_closure_validity(
     text: str,
     *,
     pr_state_lookup: PrStateLookup | None = None,
     require_route_metadata: bool = False,
     require_route_metadata_validity: bool = False,
+    note_path: Path | None = None,
 ) -> TaskClosureValidity:
     """Validate that a cc-task closure may satisfy downstream work.
 
@@ -400,6 +412,12 @@ def task_closure_validity(
     terminal status, no unchecked Acceptance criteria boxes, a merged declared
     PR when a PR can be checked, and valid route metadata when that surface is
     required by the caller.
+
+    Given ``note_path``, a still-active task whose valid acceptance receipt sits
+    beside it (the same receipt authority the close gate reads) satisfies the
+    status requirement: accepted work stops blocking its successor before it is
+    closed (M102). A terminal non-fulfilling status is never revived, and every
+    other requirement still applies.
     """
 
     frontmatter = frontmatter_from_text(text)
@@ -408,7 +426,9 @@ def task_closure_validity(
 
     if status == "blocked":
         blockers.extend(active_blocked_task_blockers(frontmatter))
-    elif status not in TASK_FULFILLING_CLOSED_STATUSES:
+    elif status not in TASK_FULFILLING_CLOSED_STATUSES and not _accepted_before_close(
+        frontmatter, status, note_path
+    ):
         blockers.append(f"status_not_fulfilling:{status or 'missing'}")
 
     ac_state = acceptance_criteria_state(text)
