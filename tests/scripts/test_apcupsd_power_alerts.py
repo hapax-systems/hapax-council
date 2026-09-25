@@ -93,6 +93,52 @@ def test_installer_privileged_shell_ignores_hostile_bash_env(tmp_path: Path) -> 
     assert not startup_marker.exists()
 
 
+def test_installer_root_python_ignores_hostile_working_directory(tmp_path: Path) -> None:
+    attacker_cwd = tmp_path / "attacker-cwd"
+    attacker_cwd.mkdir()
+    marker = tmp_path / "root-sitecustomize-ran"
+    (attacker_cwd / "sitecustomize.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "if os.environ.get('HAPAX_TEST_FAKE_ROOT') == '1':\n"
+        "    Path(os.environ['HAPAX_TEST_ROOT_IMPORT_MARKER']).write_text('ran\\n')\n",
+        encoding="utf-8",
+    )
+    fake_sudo = tmp_path / "sudo"
+    fake_sudo.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "-n" ]; then shift; fi\n'
+        'if [ "${1:-}" = "true" ]; then exec "$@"; fi\n'
+        "export HAPAX_TEST_FAKE_ROOT=1\n"
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    fake_sudo.chmod(0o755)
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_systemctl.chmod(0o755)
+
+    result = subprocess.run(
+        [str(INSTALLER), "--install"],
+        cwd=attacker_cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_APCUPSD_INSTALL_SUDO": str(fake_sudo),
+            "HAPAX_APCUPSD_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_TEST_ROOT_IMPORT_MARKER": str(marker),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not marker.exists()
+    source = INSTALLER.read_text(encoding="utf-8")
+    assert "run_root /usr/bin/python3 -I -" in source
+    assert "run_root /usr/bin/python3 - " not in source
+
+
 @pytest.fixture(autouse=True)
 def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL", "1")
