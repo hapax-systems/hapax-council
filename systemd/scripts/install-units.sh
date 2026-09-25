@@ -1412,16 +1412,112 @@ retire_historical_local_judge() {
     return 0
 }
 
+user_unit_artifacts_exist() {
+    local name="$1" dest="$DEST_DIR/$1" artifact
+    if [ -e "$dest" ] || [ -L "$dest" ] \
+        || [ -e "$DEST_DIR/${name}.d" ] || [ -L "$DEST_DIR/${name}.d" ]; then
+        return 0
+    fi
+    for artifact in "$DEST_DIR"/*.wants/"$name"; do
+        if [ -e "$artifact" ] || [ -L "$artifact" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+user_unit_preexists() {
+    local name="$1" load_state active_state
+    user_unit_artifacts_exist "$name" && return 0
+    if ! load_state="$(systemctl --user show "$name" -p LoadState --value)" \
+        || ! active_state="$(systemctl --user show "$name" -p ActiveState --value)"; then
+        echo "ERROR: failed to query user-manager state for $name" >&2
+        return 2
+    fi
+    if [ -z "$load_state" ] || [ -z "$active_state" ]; then
+        echo "ERROR: user manager returned incomplete state for $name" >&2
+        return 2
+    fi
+    if [ "$load_state" = "not-found" ] && [ "$active_state" = "inactive" ]; then
+        return 1
+    fi
+    return 0
+}
+
+stop_disable_user_unit_checked() {
+    local name="$1" reason="$2" active_state
+    if ! systemctl --user stop "$name"; then
+        echo "ERROR: failed to stop $reason $name" >&2
+        return 2
+    fi
+    if ! active_state="$(systemctl --user show "$name" -p ActiveState --value)"; then
+        echo "ERROR: failed to query ActiveState for $reason $name" >&2
+        return 2
+    fi
+    if [ "$active_state" != "inactive" ]; then
+        echo "ERROR: $reason $name remained ActiveState=${active_state:-missing} after stop" >&2
+        return 2
+    fi
+    if ! systemctl --user disable "$name"; then
+        echo "ERROR: failed to disable $reason $name after verified stop" >&2
+        return 2
+    fi
+    systemctl --user reset-failed "$name" >/dev/null 2>&1 || true
+}
+
+park_user_unit_checked() {
+    stop_disable_user_unit_checked "$1" "parked unit"
+}
+
+decommissioned_unit_converged() {
+    local name="$1" dest="$DEST_DIR/$1" artifact active_state unit_file_state
+    if [ ! -L "$dest" ] || [ "$(readlink "$dest")" != "/dev/null" ]; then
+        return 1
+    fi
+    if [ -e "$DEST_DIR/${name}.d" ] || [ -L "$DEST_DIR/${name}.d" ]; then
+        return 1
+    fi
+    for artifact in "$DEST_DIR"/*.wants/"$name"; do
+        if [ -e "$artifact" ] || [ -L "$artifact" ]; then
+            return 1
+        fi
+    done
+    if ! active_state="$(systemctl --user show "$name" -p ActiveState --value)" \
+        || ! unit_file_state="$(systemctl --user show "$name" -p UnitFileState --value)"; then
+        echo "ERROR: failed to query final decommissioned state for $name" >&2
+        return 2
+    fi
+    if [ "$active_state" = "inactive" ] && [ "$unit_file_state" = "masked" ]; then
+        return 0
+    fi
+    return 1
+}
+
 remove_decommissioned_unit() {
     local name="$1"
     if [ "$name" = "hapax-local-judge.service" ]; then
         retire_historical_local_judge
         return
     fi
-    local removed=0
+    local removed=0 preexisting_rc=0 converged_rc=0
     local dest="$DEST_DIR/$name"
+    decommissioned_unit_converged "$name" || converged_rc=$?
+    case "$converged_rc" in
+        0) return 1 ;;
+        1) ;;
+        *) return "$converged_rc" ;;
+    esac
+    user_unit_preexists "$name" || preexisting_rc=$?
+    case "$preexisting_rc" in
+        0)
+            stop_disable_user_unit_checked "$name" "decommissioned unit" || return $?
+            removed=1
+            ;;
+        1) ;;
+        *) return "$preexisting_rc" ;;
+    esac
     if [ -e "$dest" ] || [ -L "$dest" ]; then
-        rm -f "$dest"
+        rm -f -- "$dest"
         echo "removed decommissioned unit: $name"
         removed=1
     fi
@@ -1433,13 +1529,16 @@ remove_decommissioned_unit() {
         removed=1
     done
     local dropin_dir="$DEST_DIR/${name}.d"
-    if [ -d "$dropin_dir" ]; then
-        rm -rf "$dropin_dir"
+    if [ -e "$dropin_dir" ] || [ -L "$dropin_dir" ]; then
+        rm -rf -- "$dropin_dir"
         echo "removed decommissioned drop-in dir: ${name}.d"
         removed=1
     fi
-    systemctl --user disable --now "$name" >/dev/null 2>&1 || true
-    systemctl --user mask "$name" >/dev/null 2>&1 || true
+    if ! systemctl --user mask "$name"; then
+        echo "ERROR: failed to mask decommissioned unit $name" >&2
+        return 2
+    fi
+    removed=1
     [ "$removed" -eq 1 ]
 }
 
@@ -1474,27 +1573,6 @@ timer_enable_only() {
 
 parked_unit() {
     grep -Eiq '^[#;][[:space:]]*Hapax-Parked:[[:space:]]*(true|yes|1)[[:space:]]*$' "$1"
-}
-
-park_user_unit_checked() {
-    local name="$1" active_state
-    if ! systemctl --user stop "$name"; then
-        echo "ERROR: failed to stop parked unit $name" >&2
-        return 2
-    fi
-    if ! active_state="$(systemctl --user show "$name" -p ActiveState --value)"; then
-        echo "ERROR: failed to query ActiveState for parked unit $name" >&2
-        return 2
-    fi
-    if [ "$active_state" != "inactive" ]; then
-        echo "ERROR: parked unit $name remained ActiveState=${active_state:-missing} after stop" >&2
-        return 2
-    fi
-    if ! systemctl --user disable "$name"; then
-        echo "ERROR: failed to disable parked unit $name after verified stop" >&2
-        return 2
-    fi
-    systemctl --user reset-failed "$name" >/dev/null 2>&1 || true
 }
 
 dedicated_p0_oom_unit() {
@@ -1533,11 +1611,39 @@ for parked_file in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.path;
     [ -f "$parked_file" ] || continue
     parked_unit "$parked_file" || continue
     parked_name="$(basename "$parked_file")"
-    parked_dest="$DEST_DIR/$parked_name"
-    if [ -e "$parked_dest" ] || [ -L "$parked_dest" ]; then
-        park_user_unit_checked "$parked_name" || exit $?
-        echo "pre-parked before dependency sync: $parked_name"
-    fi
+    parked_preexisting_rc=0
+    user_unit_preexists "$parked_name" || parked_preexisting_rc=$?
+    case "$parked_preexisting_rc" in
+        0)
+            park_user_unit_checked "$parked_name" || exit $?
+            echo "pre-parked before dependency sync: $parked_name"
+            ;;
+        1) ;;
+        *) exit "$parked_preexisting_rc" ;;
+    esac
+done
+
+declare -A EARLY_SYSTEM_SCOPE_STOPPED=()
+for scope_file in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target \
+    "$REPO_DIR"/*.path "$REPO_DIR"/*.slice; do
+    [ -f "$scope_file" ] || continue
+    scope_name="$(basename "$scope_file")"
+    is_decommissioned_unit "$scope_name" && continue
+    dedicated_p0_oom_unit "$scope_name" && continue
+    classify_unit_install_scope "$scope_file" || exit 1
+    [ "$UNIT_INSTALL_SCOPE" = "system" ] || continue
+    scope_preexisting_rc=0
+    user_unit_preexists "$scope_name" || scope_preexisting_rc=$?
+    case "$scope_preexisting_rc" in
+        0)
+            stop_disable_user_unit_checked \
+                "$scope_name" "stale user-scope system unit" || exit $?
+            EARLY_SYSTEM_SCOPE_STOPPED["$scope_name"]=1
+            echo "stopped stale user-scope system unit before dependency sync: $scope_name"
+            ;;
+        1) ;;
+        *) exit "$scope_preexisting_rc" ;;
+    esac
 done
 
 # Retire stale units before dependency synchronization. Decommissioning must
@@ -1546,6 +1652,55 @@ done
 echo "Syncing venv with all extras..."
 (cd "$PROJECT_DIR" && uv sync --all-extras --quiet)
 echo "venv synced"
+
+system_manager_absent_for_user_unit() {
+    local name="$1" record line load_state="" fragment_path="" need_reload=""
+    local load_seen=0 fragment_seen=0 reload_seen=0 property_count=0 record_ok=1
+    if [ -e "/etc/systemd/system/$name" ] || [ -L "/etc/systemd/system/$name" ]; then
+        echo "ERROR: refusing user-scope link for $name while a system-scope fragment remains" >&2
+        return 2
+    fi
+    if ! record="$(
+        systemctl show "$name" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager
+    )"; then
+        echo "ERROR: failed to query system-manager absence for user unit $name" >&2
+        return 2
+    fi
+    while IFS= read -r line; do
+        case "$line" in
+            LoadState=*)
+                [ "$load_seen" -eq 0 ] || record_ok=0
+                load_seen=1
+                load_state="${line#LoadState=}"
+                ;;
+            FragmentPath=*)
+                [ "$fragment_seen" -eq 0 ] || record_ok=0
+                fragment_seen=1
+                fragment_path="${line#FragmentPath=}"
+                ;;
+            NeedDaemonReload=*)
+                [ "$reload_seen" -eq 0 ] || record_ok=0
+                reload_seen=1
+                need_reload="${line#NeedDaemonReload=}"
+                ;;
+            *) record_ok=0 ;;
+        esac
+        property_count=$((property_count + 1))
+    done <<< "$record"
+    if [ "$property_count" -ne 3 ] \
+        || [ "$load_seen" -ne 1 ] \
+        || [ "$fragment_seen" -ne 1 ] \
+        || [ "$reload_seen" -ne 1 ] \
+        || [ "$load_state" != "not-found" ] \
+        || [ -n "$fragment_path" ] \
+        || [ "$need_reload" != "no" ]; then
+        record_ok=0
+    fi
+    if [ "$record_ok" -ne 1 ]; then
+        echo "ERROR: refusing user-scope link for $name without an exact system-manager absence witness" >&2
+        return 2
+    fi
+}
 
 for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REPO_DIR"/*.path "$REPO_DIR"/*.slice; do
     [ -f "$unit" ] || continue
@@ -1563,9 +1718,17 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
         exit 1
     fi
     if [ "$UNIT_INSTALL_SCOPE" = "system" ]; then
-        systemctl --user disable --now "$name" >/dev/null 2>&1 || true
+        if [ -z "${EARLY_SYSTEM_SCOPE_STOPPED[$name]+stopped}" ]; then
+            scope_preexisting_rc=0
+            user_unit_preexists "$name" || scope_preexisting_rc=$?
+            case "$scope_preexisting_rc" in
+                0) stop_disable_user_unit_checked "$name" "stale user-scope system unit" || exit $? ;;
+                1) ;;
+                *) exit "$scope_preexisting_rc" ;;
+            esac
+        fi
         if [ -e "$dest" ] || [ -L "$dest" ]; then
-            rm -f "$dest"
+            rm -f -- "$dest"
             changed=$((changed + 1))
             echo "removed stale user-scope system unit: $name"
         fi
@@ -1584,7 +1747,9 @@ for unit in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.target "$REP
         echo "skipped system-scope unit: $name"
         continue
     fi
-    # Already a correct symlink — skip
+    system_manager_absent_for_user_unit "$name" || exit $?
+    # Already a correct symlink — skip only after proving that an identically
+    # named system-manager workload cannot still execute in parallel.
     if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$unit" ]; then
         continue
     fi

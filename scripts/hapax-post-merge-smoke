@@ -99,16 +99,22 @@ record_execution_failure() {
 run_bounded_user_service() {
     local unit_stem="$1" runtime_s="$2"
     shift 2
-    local env_name
+    local env_name env_value client_timeout_s
     local -a environment_args=()
     if [ ! -x "$SYSTEMD_RUN_BIN" ] || [ -L "$SYSTEMD_RUN_BIN" ]; then
         return 2
     fi
-    while IFS= read -r env_name; do
-        [[ "$env_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-        environment_args+=("--setenv=$env_name")
-    done < <(compgen -e)
-    "$SYSTEMD_RUN_BIN" \
+    for env_name in HOME PATH NTFY_TOPIC HAPAX_SMOKE_ISOLATED_TEST_ROOT \
+        HAPAX_SMOKE_SYSTEMD_RUN_BIN HAPAX_SMOKE_NTFY_PAYLOAD \
+        HAPAX_TEST_SMOKE_DESCENDANT_PID_FILE; do
+        [[ -v "$env_name" ]] || continue
+        env_value="${!env_name}"
+        [ "${#env_value}" -le 4096 ] || return 2
+        environment_args+=("--setenv=${env_name}=${env_value}")
+    done
+    client_timeout_s=$((runtime_s + 10))
+    /usr/bin/timeout --foreground --signal=TERM --kill-after=2s "${client_timeout_s}s" \
+        "$SYSTEMD_RUN_BIN" \
         --user \
         --wait \
         --pipe \
@@ -119,6 +125,9 @@ run_bounded_user_service() {
         --service-type=exec \
         --expand-environment=no \
         --property="RuntimeMaxSec=${runtime_s}s" \
+        --property=MemoryHigh=1536M \
+        --property=MemoryMax=2G \
+        --property=TasksMax=512 \
         --property=TimeoutStopSec=1s \
         --property=KillMode=control-group \
         --property=SendSIGKILL=yes \
@@ -255,6 +264,67 @@ if [ -n "$SINCE" ]; then
         fi
         exit 2
     fi
+fi
+
+# The helper deployed immediately before this contract did not re-exec after
+# atomically replacing itself. Its final smoke invocation therefore still ran
+# the old fail-open caller. When this exact target smoke is that invocation,
+# run the newly installed exact helper under the inherited deployment lock
+# before the old caller can publish a completion receipt. A failed bridge
+# terminates only the authenticated direct parent deploy process.
+bridge_legacy_deploy_caller() {
+    local parent_cmdline installed_helper target_helper_oid installed_helper_oid bridge_rc
+    local -a bridge_args
+    [ "${HAPAX_POST_MERGE_EXACT_SMOKE_CALLER:-0}" != "1" ] || return 1
+    [ "${HAPAX_POST_MERGE_ROLLOUT_BRIDGE_ACTIVE:-0}" != "1" ] || return 1
+    [[ "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" =~ ^[0-9]+$ ]] || return 1
+    [[ "${HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD:-}" =~ ^[0-9]+$ ]] || return 1
+    [ -e "/proc/self/fd/$HAPAX_ROOT_REQUIRED_LOCK_FD" ] || return 1
+    [ -e "/proc/self/fd/$HAPAX_ROOT_REQUIRED_LOCK_ANCHOR_FD" ] || return 1
+    if ! parent_cmdline="$(tr '\0' '\n' < "/proc/$PPID/cmdline" 2>/dev/null)" \
+        || ! grep -Eq '(^|/)hapax-post-merge-deploy$' <<< "$parent_cmdline"; then
+        return 1
+    fi
+    installed_helper="$HOME/.local/bin/hapax-post-merge-deploy"
+    if [ ! -x "$installed_helper" ] || [ -L "$installed_helper" ]; then
+        record_execution_failure \
+            "rollout-adoption" \
+            "legacy deploy caller did not publish a trusted replacement helper; next action: restore the exact target helper and rerun the governed deploy"
+        kill -TERM "$PPID" 2>/dev/null || true
+        exit 2
+    fi
+    if ! target_helper_oid="$(git rev-parse --verify "${SHA}:scripts/hapax-post-merge-deploy" 2>/dev/null)" \
+        || ! installed_helper_oid="$(git hash-object -- "$installed_helper" 2>/dev/null)" \
+        || [ "$installed_helper_oid" != "$target_helper_oid" ]; then
+        record_execution_failure \
+            "rollout-adoption" \
+            "installed deploy helper does not match the exact target object; next action: repair helper publication and rerun the governed deploy"
+        kill -TERM "$PPID" 2>/dev/null || true
+        exit 2
+    fi
+    bridge_args=("$SHA")
+    if [ -n "$SINCE" ]; then
+        bridge_args=(--since "$SINCE" "$SHA")
+    fi
+    bridge_rc=0
+    HAPAX_POST_MERGE_ROLLOUT_BRIDGE_ACTIVE=1 \
+        REPO="$REPO_ROOT" \
+        "$installed_helper" "${bridge_args[@]}" || bridge_rc=$?
+    if [ "$bridge_rc" -ne 0 ]; then
+        record_execution_failure \
+            "rollout-adoption" \
+            "exact replacement deploy failed with rc=$bridge_rc; the legacy caller was terminated before receipt publication"
+        kill -TERM "$PPID" 2>/dev/null || true
+        exit "$bridge_rc"
+    fi
+    return 0
+}
+
+if bridge_legacy_deploy_caller; then
+    exit 0
+fi
+
+if [ -n "$SINCE" ]; then
     DIFF_LABEL="${SINCE}..${SHA}"
     if ! CHANGED_FILES="$(git diff --name-only "$SINCE" "$SHA" -- 2>/dev/null)"; then
         record_execution_failure \
@@ -420,13 +490,14 @@ unit_parked_at_sha() {
 }
 
 bridge_inactive_expected_for_live_mode() {
-    local unit="$1"
+    local unit="$1" compositor_env imagination_state imagination_env
     [ "$unit" = "hapax-v4l2-bridge.service" ] || return 1
 
-    local compositor_env
-    compositor_env="$(
-        systemctl --user show studio-compositor.service -p Environment --value 2>/dev/null || true
-    )"
+    if ! compositor_env="$(
+        systemctl --user show studio-compositor.service -p Environment --value 2>/dev/null
+    )"; then
+        return 2
+    fi
     if grep -Eq '(^|[[:space:]])HAPAX_V4L2_BRIDGE_ENABLED=0([[:space:]]|$)' <<< "$compositor_env"; then
         return 0
     fi
@@ -434,14 +505,19 @@ bridge_inactive_expected_for_live_mode() {
         return 0
     fi
 
-    if systemctl --user is-active --quiet hapax-imagination.service 2>/dev/null; then
-        local imagination_env
-        imagination_env="$(
-            systemctl --user show hapax-imagination.service -p Environment --value 2>/dev/null || true
-        )"
-        if grep -Eq '(^|[[:space:]])HAPAX_IMAGINATION_V4L2_OUTPUT=1([[:space:]]|$)' <<< "$imagination_env"; then
-            return 0
-        fi
+    if ! imagination_state="$(
+        systemctl --user show hapax-imagination.service -p ActiveState --value 2>/dev/null
+    )" || [ -z "$imagination_state" ]; then
+        return 2
+    fi
+    [ "$imagination_state" = "active" ] || return 1
+    if ! imagination_env="$(
+        systemctl --user show hapax-imagination.service -p Environment --value 2>/dev/null
+    )"; then
+        return 2
+    fi
+    if grep -Eq '(^|[[:space:]])HAPAX_IMAGINATION_V4L2_OUTPUT=1([[:space:]]|$)' <<< "$imagination_env"; then
+        return 0
     fi
     return 1
 }
@@ -505,23 +581,75 @@ gate_services_restarted() {
             fi
             continue
         fi
-        if ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then
-            if bridge_inactive_expected_for_live_mode "$unit"; then
-                continue
-            fi
-            local unit_type result exec_status unit_file_state
-            unit_type="$(systemctl --user show "$unit" -p Type --value 2>/dev/null || true)"
-            result="$(systemctl --user show "$unit" -p Result --value 2>/dev/null || true)"
-            exec_status="$(systemctl --user show "$unit" -p ExecMainStatus --value 2>/dev/null || true)"
-            if [ "$unit_type" = "oneshot" ] && [ "$result" = "success" ] && [ "$exec_status" = "0" ]; then
-                continue
-            fi
-            unit_file_state="$(systemctl --user show "$unit" -p UnitFileState --value 2>/dev/null || true)"
-            if [ "$unit_file_state" = "disabled" ] && [ "$result" = "success" ]; then
-                continue
-            fi
-            record_failure "services-restarted" "$unit not active after deploy"
+        local active_state unit_type result exec_status unit_file_state
+        if ! active_state="$(systemctl --user show "$unit" -p ActiveState --value 2>/dev/null)"; then
+            record_execution_failure \
+                "services-restarted" \
+                "cannot query ActiveState for $unit; next action: repair the user manager and rerun this smoke"
+            continue
         fi
+        if [ -z "$active_state" ]; then
+            record_execution_failure \
+                "services-restarted" \
+                "user manager returned an empty ActiveState for $unit; next action: inspect systemctl --user show $unit and rerun this smoke"
+            continue
+        fi
+        [ "$active_state" != "active" ] || continue
+        local bridge_mode_rc=1
+        if [ "$active_state" = "inactive" ]; then
+            bridge_mode_rc=0
+            bridge_inactive_expected_for_live_mode "$unit" || bridge_mode_rc=$?
+        fi
+        case "$bridge_mode_rc" in
+            0) continue ;;
+            1) ;;
+            *)
+                record_execution_failure \
+                    "services-restarted" \
+                    "cannot query the live-mode exception state for $unit; next action: repair the user manager and rerun this smoke"
+                continue
+                ;;
+        esac
+        if ! unit_type="$(systemctl --user show "$unit" -p Type --value 2>/dev/null)" \
+            || ! result="$(systemctl --user show "$unit" -p Result --value 2>/dev/null)" \
+            || ! exec_status="$(systemctl --user show "$unit" -p ExecMainStatus --value 2>/dev/null)"; then
+            record_execution_failure \
+                "services-restarted" \
+                "cannot query completion properties for $unit; next action: repair the user manager and rerun this smoke"
+            continue
+        fi
+        if [ -z "$unit_type" ] || [ -z "$result" ] || [ -z "$exec_status" ]; then
+            record_execution_failure \
+                "services-restarted" \
+                "user manager returned incomplete completion properties for $unit; next action: inspect the loaded unit and rerun this smoke"
+            continue
+        fi
+        if [ "$active_state" = "inactive" ] \
+            && [ "$unit_type" = "oneshot" ] \
+            && [ "$result" = "success" ] \
+            && [ "$exec_status" = "0" ]; then
+            continue
+        fi
+        if ! unit_file_state="$(systemctl --user show "$unit" -p UnitFileState --value 2>/dev/null)"; then
+            record_execution_failure \
+                "services-restarted" \
+                "cannot query UnitFileState for $unit; next action: repair the user manager and rerun this smoke"
+            continue
+        fi
+        if [ -z "$unit_file_state" ]; then
+            record_execution_failure \
+                "services-restarted" \
+                "user manager returned an empty UnitFileState for $unit; next action: inspect the loaded unit and rerun this smoke"
+            continue
+        fi
+        if [ "$active_state" = "inactive" ] \
+            && [ "$unit_file_state" = "disabled" ] \
+            && [ "$result" = "success" ]; then
+            continue
+        fi
+        record_failure \
+            "services-restarted" \
+            "$unit not active after deploy (ActiveState=$active_state)"
     done
 }
 
@@ -593,10 +721,20 @@ gate_m8_midi_clock_peer() {
 
     # Only run the check if the M8 is actually present (operator-physical
     # device). On absence, skip — the smoke is informational, not gating.
+    local amidi_devices
     if ! command -v amidi >/dev/null 2>&1; then
+        record_execution_failure \
+            "m8-midi-clock-peer" \
+            "amidi is unavailable; next action: restore the ALSA MIDI probe and rerun this smoke"
         return
     fi
-    if ! amidi -l 2>/dev/null | grep -qiE 'M8|hw:.*M8'; then
+    if ! amidi_devices="$(amidi -l 2>/dev/null)"; then
+        record_execution_failure \
+            "m8-midi-clock-peer" \
+            "amidi device enumeration failed; next action: repair the ALSA MIDI probe and rerun this smoke"
+        return
+    fi
+    if ! grep -qiE 'M8|hw:.*M8' <<< "$amidi_devices"; then
         return  # M8 not connected; skip
     fi
     # Look for the daimonion's published tempo signal.

@@ -41,6 +41,9 @@ pipe_seen=0
 collect_seen=0
 service_type_seen=0
 expand_disabled_seen=0
+memory_high_seen=0
+memory_max_seen=0
+tasks_max_seen=0
 stop_timeout_seen=0
 kill_mode_seen=0
 sigkill_seen=0
@@ -54,6 +57,9 @@ while [ "$#" -gt 0 ]; do
         --service-type=exec) service_type_seen=1 ;;
         --expand-environment=no) expand_disabled_seen=1 ;;
         --property=RuntimeMaxSec=*) runtime_seen=1; runtime="${1#*=}"; runtime="${runtime%s}" ;;
+        --property=MemoryHigh=1536M) memory_high_seen=1 ;;
+        --property=MemoryMax=2G) memory_max_seen=1 ;;
+        --property=TasksMax=512) tasks_max_seen=1 ;;
         --property=TimeoutStopSec=1s) stop_timeout_seen=1 ;;
         --property=KillMode=control-group) kill_mode_seen=1 ;;
         --property=SendSIGKILL=yes) sigkill_seen=1 ;;
@@ -63,7 +69,7 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
-if [ "$runtime_seen$user_seen$wait_seen$pipe_seen$collect_seen$service_type_seen$expand_disabled_seen$stop_timeout_seen$kill_mode_seen$sigkill_seen$no_ask_seen" != 11111111111 ]; then
+if [ "$runtime_seen$user_seen$wait_seen$pipe_seen$collect_seen$service_type_seen$expand_disabled_seen$memory_high_seen$memory_max_seen$tasks_max_seen$stop_timeout_seen$kill_mode_seen$sigkill_seen$no_ask_seen" != 11111111111111 ]; then
     exit 92
 fi
 /usr/bin/setsid --wait "$@" &
@@ -97,6 +103,26 @@ def _install_units_source(*decommissioned_units: str) -> str:
     return f"DECOMMISSIONED_UNITS=(\n{entries})\n"
 
 
+def _manager_state_stub(active_state: str) -> str:
+    return f"""
+if [ "${{1:-}} ${{2:-}} ${{5:-}}" = "--user show ActiveState" ]; then
+  printf '{active_state}\\n'
+  exit 0
+fi
+if [ "${{1:-}}" = "--user" ] && [ "${{2:-}}" = "show" ]; then
+  case "${{5:-}}" in
+    Type) printf 'simple\\n' ;;
+    Result) printf 'failed\\n' ;;
+    ExecMainStatus) printf '1\\n' ;;
+    UnitFileState) printf 'enabled\\n' ;;
+    Environment) printf '\\n' ;;
+  esac
+  exit 0
+fi
+exit 3
+"""
+
+
 def _run(
     sha: str,
     *,
@@ -115,6 +141,15 @@ def _run(
     bin_dir = cwd / "_stubs"
     bin_dir.mkdir(parents=True, exist_ok=True)
     effective_stubs = {"systemd-run": _bounded_systemd_run_stub(), **(stubs or {})}
+    if effective_stubs.get("systemctl", "").strip() == "exit 3":
+        effective_stubs["systemctl"] = _manager_state_stub("inactive")
+    elif effective_stubs.get("systemctl", "").strip() == "exit 0":
+        effective_stubs["systemctl"] = _manager_state_stub("active")
+    elif "systemctl" in effective_stubs and "ActiveState" not in effective_stubs["systemctl"]:
+        effective_stubs["systemctl"] = (
+            'if [ "${1:-} ${2:-} ${5:-}" = "--user show ActiveState" ]; then '
+            "printf 'inactive\\n'; exit 0; fi\n" + effective_stubs["systemctl"]
+        )
     for name, body in effective_stubs.items():
         stub = bin_dir / name
         stub.write_text(f"#!/usr/bin/env bash\n{body}\n")
@@ -308,12 +343,7 @@ exit 91
         result = _run(
             sha,
             cwd=repo,
-            stubs={
-                "systemctl": (
-                    'if [ "${2:-}" = show ] && [ "${5:-}" = ActiveState ]; then '
-                    "echo inactive; exit 0; fi\nexit 3"
-                )
-            },
+            stubs={"systemctl": _manager_state_stub("inactive")},
         )
 
         assert result.returncode == 0
@@ -652,6 +682,45 @@ class TestServicesRestartedGate:
         assert "services-restarted" in result.stderr
         assert "foo.service not active" in result.stderr
 
+    def test_user_manager_transport_failure_blocks_smoke_receipt(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(repo, {"systemd/units/foo.service": "[Unit]\n"})
+
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": (
+                    'if [ "${1:-}" = --user ] && [ "${2:-}" = show ] '
+                    '&& [ "${5:-}" = ActiveState ]; then exit 1; fi\n'
+                    "exit 1"
+                )
+            },
+        )
+
+        assert result.returncode == 2
+        assert "cannot query ActiveState for foo.service" in result.stderr
+        assert "next action:" in result.stderr
+
+    def test_empty_user_manager_state_blocks_smoke_receipt(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(repo, {"systemd/units/foo.service": "[Unit]\n"})
+
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": (
+                    'if [ "${1:-}" = --user ] && [ "${2:-}" = show ] '
+                    '&& [ "${5:-}" = ActiveState ]; then exit 0; fi\n'
+                    "exit 1"
+                )
+            },
+        )
+
+        assert result.returncode == 2
+        assert "empty ActiveState for foo.service" in result.stderr
+
     def test_active_unit_passes_silently(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
         sha = _commit_files(repo, {"systemd/units/foo.service": "[Unit]\n"})
@@ -805,6 +874,7 @@ if [ "$2" = "show" ]; then
     Type) echo oneshot ;;
     Result) echo failed ;;
     ExecMainStatus) echo 1 ;;
+    UnitFileState) echo enabled ;;
   esac
   exit 0
 fi
@@ -843,6 +913,37 @@ exit 1
         )
         assert result.returncode == 0
         assert "services-restarted" not in result.stderr
+
+    def test_disabled_service_still_activating_does_not_use_inactive_exception(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"systemd/units/foo.service": "[Service]\nType=notify\n"},
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": """
+if [ "$2" = "show" ]; then
+  case "$5" in
+    ActiveState) echo activating ;;
+    Type) echo notify ;;
+    Result) echo success ;;
+    ExecMainStatus) echo 0 ;;
+    UnitFileState) echo disabled ;;
+  esac
+  exit 0
+fi
+exit 1
+""",
+            },
+        )
+
+        assert result.returncode == 0
+        assert "foo.service not active after deploy (ActiveState=activating)" in result.stderr
 
     def test_disabled_failed_service_records_failure(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
@@ -981,6 +1082,152 @@ exit 1
         assert "services-restarted" in result.stderr
         assert "hapax-v4l2-bridge.service not active" in result.stderr
 
+    def test_bridge_live_mode_exception_does_not_hide_failed_unit(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"systemd/units/hapax-v4l2-bridge.service": "[Service]\nType=simple\n"},
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": """
+if [ "$2" = "show" ]; then
+  case "$5" in
+    ActiveState) echo failed ;;
+    Environment) echo HAPAX_V4L2_BRIDGE_ENABLED=0 ;;
+    Type) echo simple ;;
+    Result) echo failed ;;
+    ExecMainStatus) echo 1 ;;
+    UnitFileState) echo enabled ;;
+  esac
+  exit 0
+fi
+exit 1
+""",
+            },
+        )
+
+        assert result.returncode == 0
+        assert "not active after deploy (ActiveState=failed)" in result.stderr
+
+    def test_bridge_unit_live_mode_transport_failure_blocks_smoke(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"systemd/units/hapax-v4l2-bridge.service": "[Service]\nType=simple\n"},
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": """
+if [ "$2" = "show" ] && [ "$3" = "hapax-v4l2-bridge.service" ] && [ "$5" = "ActiveState" ]; then
+  echo inactive
+  exit 0
+fi
+if [ "$2" = "show" ] && [ "$3" = "studio-compositor.service" ] && [ "$5" = "Environment" ]; then
+  exit 86
+fi
+exit 86
+""",
+            },
+        )
+
+        assert result.returncode == 2
+        assert "cannot query the live-mode exception state" in result.stderr
+
+    def test_bridge_unit_imagination_state_transport_failure_blocks_smoke(
+        self, tmp_path: Path
+    ) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"systemd/units/hapax-v4l2-bridge.service": "[Service]\nType=simple\n"},
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": """
+if [ "$2" = "show" ] && [ "$3" = "hapax-v4l2-bridge.service" ] && [ "$5" = "ActiveState" ]; then
+  echo inactive
+  exit 0
+fi
+if [ "$2" = "show" ] && [ "$3" = "studio-compositor.service" ] && [ "$5" = "Environment" ]; then
+  echo HAPAX_V4L2_BRIDGE_ENABLED=1
+  exit 0
+fi
+if [ "$2" = "show" ] && [ "$3" = "hapax-imagination.service" ] && [ "$5" = "ActiveState" ]; then
+  exit 87
+fi
+exit 87
+""",
+            },
+        )
+
+        assert result.returncode == 2
+        assert "cannot query the live-mode exception state" in result.stderr
+
+    def test_incomplete_completion_properties_block_smoke(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"systemd/units/foo.service": "[Service]\nType=simple\n"},
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": """
+if [ "$2" = "show" ]; then
+  case "$5" in
+    ActiveState) echo inactive ;;
+    Type) echo simple ;;
+    Result) printf '' ;;
+    ExecMainStatus) echo 0 ;;
+    UnitFileState) echo disabled ;;
+  esac
+  exit 0
+fi
+exit 1
+""",
+            },
+        )
+
+        assert result.returncode == 2
+        assert "incomplete completion properties" in result.stderr
+
+    def test_empty_unit_file_state_blocks_smoke(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"systemd/units/foo.service": "[Service]\nType=simple\n"},
+        )
+        result = _run(
+            sha,
+            cwd=repo,
+            stubs={
+                "systemctl": """
+if [ "$2" = "show" ]; then
+  case "$5" in
+    ActiveState) echo inactive ;;
+    Type) echo simple ;;
+    Result) echo failed ;;
+    ExecMainStatus) echo 1 ;;
+    UnitFileState) printf '' ;;
+  esac
+  exit 0
+fi
+exit 1
+""",
+            },
+        )
+
+        assert result.returncode == 2
+        assert "empty UnitFileState" in result.stderr
+
     def test_no_unit_diff_skips_gate(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
         sha = _commit_files(repo, {"agents/foo.py": "x = 1\n"})
@@ -1054,6 +1301,19 @@ class TestM8MidiClockPeerGate:
         )
         result = _run(sha, cwd=repo, stubs={"amidi": "exit 0"})
         assert "m8-midi-clock-peer" not in result.stderr
+
+    def test_amidi_enumeration_failure_blocks_smoke_receipt(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        sha = _commit_files(
+            repo,
+            {"agents/hapax_daimonion/backends/midi_clock.py": "x=1\n"},
+        )
+
+        result = _run(sha, cwd=repo, stubs={"amidi": "exit 74"})
+
+        assert result.returncode == 2
+        assert "amidi device enumeration failed" in result.stderr
+        assert "next action:" in result.stderr
 
 
 # ── Script integrity ───────────────────────────────────────────────

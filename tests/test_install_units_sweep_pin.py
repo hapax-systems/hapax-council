@@ -25,6 +25,7 @@ import json
 import os
 import pwd
 import re
+import shlex
 import signal
 import subprocess
 import textwrap
@@ -362,7 +363,10 @@ def _basic_installer_env(tmp_path: Path) -> dict[str, str]:
     systemctl.write_text(
         "#!/usr/bin/env bash\n"
         'case "$*" in\n'
+        '  "--user show "*" -p LoadState --value") printf \'not-found\\n\' ;;\n'
         '  "--user show "*" -p ActiveState --value") printf \'inactive\\n\' ;;\n'
+        '  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager") '
+        "printf 'LoadState=not-found\\nFragmentPath=\\nNeedDaemonReload=no\\n' ;;\n"
         "esac\n"
         "exit 0\n",
         encoding="utf-8",
@@ -981,7 +985,11 @@ class TestTimerEnablementSweep:
                 #!/usr/bin/env bash
                 printf '%s\n' "$*" >> "{calls}"
                 case "$*" in
+                  "--user show "*" -p LoadState --value") printf 'not-found\n' ;;
                   "--user show "*" -p ActiveState --value") printf 'inactive\n' ;;
+                  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+                    printf 'LoadState=not-found\nFragmentPath=\nNeedDaemonReload=no\n'
+                    ;;
                 esac
                 exit 0
                 """
@@ -1031,6 +1039,14 @@ class TestParkedUnits:
                 #!/usr/bin/env bash
                 read -r enabled active result < "{state}"
                 case "$*" in
+                  "--user show "*" -p LoadState --value")
+                    printf 'not-found\n'
+                    exit 0
+                    ;;
+                  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+                    printf 'LoadState=not-found\nFragmentPath=\nNeedDaemonReload=no\n'
+                    exit 0
+                    ;;
                   "--user stop hapax-live-cuepoints.service")
                     active=inactive
                     ;;
@@ -1114,6 +1130,11 @@ class TestParkedUnits:
                 printf '%s\n' "$*" >> "{calls}"
                 read -r active enabled < "{state}"
                 case "$*" in
+                  "--user show "*" -p LoadState --value") printf 'not-found\n'; exit 0 ;;
+                  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+                    printf 'LoadState=not-found\nFragmentPath=\nNeedDaemonReload=no\n'
+                    exit 0
+                    ;;
                   "--user stop hapax-feedback-loop-detector.service") active=inactive ;;
                   "--user show hapax-feedback-loop-detector.service -p ActiveState --value")
                     printf '%s\n' "$active"
@@ -1171,6 +1192,305 @@ class TestParkedUnits:
         assert ordered_calls.index(
             "--user stop hapax-feedback-loop-detector.service"
         ) < ordered_calls.index("--user disable hapax-feedback-loop-detector.service")
+
+    def test_fileless_loaded_parked_unit_is_neutralized_before_failing_uv_sync(
+        self, tmp_path: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        state = tmp_path / "parked-state.txt"
+        state.write_text("active enabled\n", encoding="utf-8")
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf '%s\n' "$*" >> "{calls}"
+                read -r active enabled < "{state}"
+                case "$*" in
+                  "--user show hapax-feedback-loop-detector.service -p LoadState --value")
+                    printf 'loaded\n'
+                    exit 0
+                    ;;
+                  "--user show hapax-feedback-loop-detector.service -p ActiveState --value")
+                    printf '%s\n' "$active"
+                    exit 0
+                    ;;
+                  "--user stop hapax-feedback-loop-detector.service") active=inactive ;;
+                  "--user disable hapax-feedback-loop-detector.service") enabled=disabled ;;
+                  "--user show "*" -p LoadState --value") printf 'not-found\n'; exit 0 ;;
+                  "--user show "*" -p ActiveState --value") printf 'inactive\n'; exit 0 ;;
+                  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+                    printf 'LoadState=not-found\nFragmentPath=\nNeedDaemonReload=no\n'
+                    exit 0
+                    ;;
+                esac
+                printf '%s %s\n' "$active" "$enabled" > "{state}"
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                [ "$(cat "{state}")" = "inactive disabled" ] || exit 93
+                exit 86
+                """
+            ),
+            encoding="utf-8",
+        )
+        uv.chmod(0o755)
+        home = tmp_path / "home"
+        env = {
+            **os.environ,
+            "ALLOW_NONSTANDARD_REPO": "1",
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HAPAX_INSTALL_UNITS_RETIRE_DOCKER": str(_empty_retirement_docker(tmp_path)),
+            "HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL": str(_retired_manager_systemctl(tmp_path)),
+            "SKIP_TIMER_ENABLE": "1",
+        }
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 86
+        assert state.read_text(encoding="utf-8").strip() == "inactive disabled"
+        installed = home / ".config/systemd/user/hapax-feedback-loop-detector.service"
+        assert not installed.exists()
+        assert "pre-parked before dependency sync: hapax-feedback-loop-detector.service" in (
+            result.stdout
+        )
+
+
+class TestGenericDecommission:
+    def test_already_masked_inactive_unit_is_not_recreated(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        user_dir = home / ".config/systemd/user"
+        user_dir.mkdir(parents=True)
+        mask = user_dir / "hapax-logos.service"
+        mask.symlink_to("/dev/null")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf '%s\n' "$*" >> "{calls}"
+                case "$*" in
+                  "--user show hapax-logos.service -p ActiveState --value")
+                    printf 'inactive\n'
+                    ;;
+                  "--user show hapax-logos.service -p UnitFileState --value")
+                    printf 'masked\n'
+                    ;;
+                  "--user show "*" -p LoadState --value") printf 'not-found\n' ;;
+                  "--user show "*" -p ActiveState --value") printf 'inactive\n' ;;
+                  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+                    printf 'LoadState=not-found\nFragmentPath=\nNeedDaemonReload=no\n'
+                    ;;
+                esac
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 86\n", encoding="utf-8")
+        uv.chmod(0o755)
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "ALLOW_NONSTANDARD_REPO": "1",
+                "HOME": str(home),
+                "PATH": f"{bin_dir}:{os.environ['PATH']}",
+                "HAPAX_INSTALL_UNITS_RETIRE_DOCKER": str(_empty_retirement_docker(tmp_path)),
+                "HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL": str(_retired_manager_systemctl(tmp_path)),
+                "SKIP_TIMER_ENABLE": "1",
+            },
+        )
+
+        assert result.returncode == 86
+        assert mask.is_symlink()
+        assert mask.readlink() == Path("/dev/null")
+        logo_calls = [
+            line
+            for line in calls.read_text(encoding="utf-8").splitlines()
+            if "hapax-logos.service" in line
+        ]
+        assert logo_calls == [
+            "--user show hapax-logos.service -p ActiveState --value",
+            "--user show hapax-logos.service -p UnitFileState --value",
+        ]
+
+    def test_stop_failure_preserves_decommissioned_fragments_before_uv(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        user_dir = home / ".config/systemd/user"
+        installed = user_dir / "hapax-logos.service"
+        installed.parent.mkdir(parents=True)
+        installed.write_text("[Service]\nExecStart=/usr/bin/false\n", encoding="utf-8")
+        dropin = user_dir / "hapax-logos.service.d/override.conf"
+        dropin.parent.mkdir()
+        dropin.write_text("[Service]\nRestart=always\n", encoding="utf-8")
+        wants = user_dir / "default.target.wants/hapax-logos.service"
+        wants.parent.mkdir()
+        wants.symlink_to(installed)
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf '%s\n' "$*" >> "{calls}"
+                case "$*" in
+                  "--user stop hapax-logos.service") exit 75 ;;
+                  "--user show "*" -p LoadState --value") printf 'not-found\n' ;;
+                  "--user show "*" -p ActiveState --value") printf 'inactive\n' ;;
+                  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+                    printf 'LoadState=not-found\nFragmentPath=\nNeedDaemonReload=no\n'
+                    ;;
+                esac
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv_called = tmp_path / "uv-called"
+        uv = bin_dir / "uv"
+        uv.write_text(
+            f"#!/usr/bin/env bash\n: > {shlex.quote(str(uv_called))}\nexit 0\n",
+            encoding="utf-8",
+        )
+        uv.chmod(0o755)
+        env = {
+            **os.environ,
+            "ALLOW_NONSTANDARD_REPO": "1",
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HAPAX_INSTALL_UNITS_RETIRE_DOCKER": str(_empty_retirement_docker(tmp_path)),
+            "HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL": str(_retired_manager_systemctl(tmp_path)),
+            "SKIP_TIMER_ENABLE": "1",
+        }
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 2
+        assert "failed to stop decommissioned unit hapax-logos.service" in result.stderr
+        assert installed.is_file()
+        assert dropin.is_file()
+        assert wants.is_symlink()
+        assert not uv_called.exists()
+        assert "--user mask hapax-logos.service" not in calls.read_text(encoding="utf-8")
+
+    def test_fileless_loaded_decommissioned_unit_is_retired_before_uv_failure(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        state = tmp_path / "logos-state.txt"
+        state.write_text("active enabled\n", encoding="utf-8")
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf '%s\n' "$*" >> "{calls}"
+                read -r active enabled < "{state}"
+                case "$*" in
+                  "--user show hapax-logos.service -p LoadState --value") printf 'loaded\n'; exit 0 ;;
+                  "--user show hapax-logos.service -p ActiveState --value")
+                    printf '%s\n' "$active"
+                    exit 0
+                    ;;
+                  "--user stop hapax-logos.service") active=inactive ;;
+                  "--user disable hapax-logos.service") enabled=disabled ;;
+                  "--user show "*" -p LoadState --value") printf 'not-found\n'; exit 0 ;;
+                  "--user show "*" -p ActiveState --value") printf 'inactive\n'; exit 0 ;;
+                  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+                    printf 'LoadState=not-found\nFragmentPath=\nNeedDaemonReload=no\n'
+                    exit 0
+                    ;;
+                esac
+                printf '%s %s\n' "$active" "$enabled" > "{state}"
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                [ "$(cat "{state}")" = "inactive disabled" ] || exit 93
+                exit 86
+                """
+            ),
+            encoding="utf-8",
+        )
+        uv.chmod(0o755)
+        env = {
+            **os.environ,
+            "ALLOW_NONSTANDARD_REPO": "1",
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HAPAX_INSTALL_UNITS_RETIRE_DOCKER": str(_empty_retirement_docker(tmp_path)),
+            "HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL": str(_retired_manager_systemctl(tmp_path)),
+            "SKIP_TIMER_ENABLE": "1",
+        }
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 86
+        assert state.read_text(encoding="utf-8").strip() == "inactive disabled"
+        ordered_calls = calls.read_text(encoding="utf-8").splitlines()
+        stop = "--user stop hapax-logos.service"
+        witness = "--user show hapax-logos.service -p ActiveState --value"
+        disable = "--user disable hapax-logos.service"
+        mask = "--user mask hapax-logos.service"
+        stop_index = ordered_calls.index(stop)
+        witness_index = ordered_calls.index(witness, stop_index + 1)
+        assert stop_index < witness_index
+        assert witness_index < ordered_calls.index(disable)
+        assert ordered_calls.index(disable) < ordered_calls.index(mask)
 
     def test_parked_cleanup_timer_is_never_reenabled_by_either_timer_path(self) -> None:
         body = INSTALL_SCRIPT.read_text(encoding="utf-8")
@@ -1257,7 +1577,13 @@ class TestServiceDropInInstall:
         calls = tmp_path / "systemctl-calls.txt"
         systemctl = bin_dir / "systemctl"
         systemctl.write_text(
-            f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 0\n",
+            f"#!/usr/bin/env bash\n"
+            f"printf '%s\\n' \"$*\" >> {calls!s}\n"
+            'case "$*" in\n'
+            '  "--user show "*" -p LoadState --value") printf \'not-found\\n\' ;;\n'
+            '  "--user show "*" -p ActiveState --value") printf \'inactive\\n\' ;;\n'
+            "esac\n"
+            "exit 0\n",
             encoding="utf-8",
         )
         systemctl.chmod(0o755)
@@ -1297,7 +1623,11 @@ class TestServiceDropInInstall:
                 #!/usr/bin/env bash
                 printf '%s\n' "$*" >> "{calls}"
                 case "$*" in
+                  "--user show "*" -p LoadState --value") printf 'not-found\n' ;;
                   "--user show "*" -p ActiveState --value") printf 'inactive\n' ;;
+                  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+                    printf 'LoadState=not-found\nFragmentPath=\nNeedDaemonReload=no\n'
+                    ;;
                 esac
                 exit 0
                 """
@@ -1361,7 +1691,11 @@ class TestServiceDropInInstall:
                 #!/usr/bin/env bash
                 printf '%s\n' "$*" >> "{calls}"
                 case "$*" in
+                  "--user show "*" -p LoadState --value") printf 'not-found\n' ;;
                   "--user show "*" -p ActiveState --value") printf 'inactive\n' ;;
+                  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+                    printf 'LoadState=not-found\nFragmentPath=\nNeedDaemonReload=no\n'
+                    ;;
                 esac
                 exit 0
                 """
@@ -1415,7 +1749,10 @@ class TestServiceDropInInstall:
             f"#!/usr/bin/env bash\n"
             f"printf '%s\\n' \"$*\" >> {calls!s}\n"
             'case "$*" in\n'
+            '  "--user show "*" -p LoadState --value") printf \'not-found\\n\' ;;\n'
             '  "--user show "*" -p ActiveState --value") printf \'inactive\\n\' ;;\n'
+            '  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager") '
+            "printf 'LoadState=not-found\\nFragmentPath=\\nNeedDaemonReload=no\\n' ;;\n"
             "esac\n"
             "exit 0\n",
             encoding="utf-8",
@@ -1446,9 +1783,149 @@ class TestServiceDropInInstall:
         assert (
             "removed stale user-scope system unit: hapax-oom-score-enforce.timer" in result.stdout
         )
-        assert "--user disable --now hapax-oom-score-enforce.timer" in calls.read_text(
-            encoding="utf-8"
+        call_lines = calls.read_text(encoding="utf-8").splitlines()
+        stop_call = "--user stop hapax-oom-score-enforce.timer"
+        state_call = "--user show hapax-oom-score-enforce.timer -p ActiveState --value"
+        disable_call = "--user disable hapax-oom-score-enforce.timer"
+        assert stop_call in call_lines
+        assert state_call in call_lines
+        assert disable_call in call_lines
+        assert (
+            call_lines.index(stop_call)
+            < call_lines.index(state_call)
+            < call_lines.index(disable_call)
         )
+
+    def test_system_scope_stop_failure_preserves_stale_user_artifacts_before_uv(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        user_dir = home / ".config/systemd/user"
+        stale = user_dir / "hapax-oom-score-enforce.timer"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("[Timer]\nOnUnitActiveSec=30s\n", encoding="utf-8")
+        stale_dropin = user_dir / "hapax-oom-score-enforce.timer.d/override.conf"
+        stale_dropin.parent.mkdir()
+        stale_dropin.write_text("[Timer]\nOnUnitActiveSec=5s\n", encoding="utf-8")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "$*" in\n'
+            '  "--user stop hapax-oom-score-enforce.timer") exit 74 ;;\n'
+            '  "--user show "*" -p LoadState --value") printf \'not-found\\n\' ;;\n'
+            '  "--user show "*" -p ActiveState --value") printf \'inactive\\n\' ;;\n'
+            '  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager") '
+            "printf 'LoadState=not-found\\nFragmentPath=\\nNeedDaemonReload=no\\n' ;;\n"
+            "esac\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv_called = tmp_path / "uv-called"
+        uv = bin_dir / "uv"
+        uv.write_text(
+            f"#!/usr/bin/env bash\n: > {shlex.quote(str(uv_called))}\nexit 0\n",
+            encoding="utf-8",
+        )
+        uv.chmod(0o755)
+        env = {
+            **os.environ,
+            "ALLOW_NONSTANDARD_REPO": "1",
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HAPAX_INSTALL_UNITS_RETIRE_DOCKER": str(_empty_retirement_docker(tmp_path)),
+            "HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL": str(_retired_manager_systemctl(tmp_path)),
+            "SKIP_TIMER_ENABLE": "1",
+        }
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 2
+        assert "failed to stop stale user-scope system unit" in result.stderr
+        assert stale.is_file()
+        assert stale_dropin.is_file()
+        assert not uv_called.exists()
+
+    @pytest.mark.parametrize("prelinked", (False, True))
+    def test_system_manager_conflict_blocks_user_scope_link(
+        self, tmp_path: Path, prelinked: bool
+    ) -> None:
+        project = tmp_path / "project"
+        script = project / "systemd/scripts/install-units.sh"
+        units = project / "systemd/units"
+        script.parent.mkdir(parents=True)
+        units.mkdir(parents=True)
+        script.write_text(INSTALL_SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        script.chmod(0o755)
+        name = "review-system-manager-conflict.service"
+        (units / name).write_text(
+            "[Service]\nExecStart=/usr/bin/true\n",
+            encoding="utf-8",
+        )
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                case "$*" in
+                  "--user show "*" -p LoadState --value") printf 'not-found\n' ;;
+                  "--user show "*" -p ActiveState --value") printf 'inactive\n' ;;
+                  "show {name} --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+                    printf 'LoadState=loaded\nFragmentPath=/etc/systemd/system/{name}\nNeedDaemonReload=no\n'
+                    ;;
+                  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+                    printf 'LoadState=not-found\nFragmentPath=\nNeedDaemonReload=no\n'
+                    ;;
+                esac
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
+        home = tmp_path / "home"
+        destination = home / ".config/systemd/user" / name
+        if prelinked:
+            destination.parent.mkdir(parents=True)
+            destination.symlink_to(units / name)
+        env = {
+            **os.environ,
+            "ALLOW_NONSTANDARD_REPO": "1",
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HAPAX_INSTALL_UNITS_RETIRE_DOCKER": str(_empty_retirement_docker(tmp_path)),
+            "HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL": str(_retired_manager_systemctl(tmp_path)),
+            "SKIP_TIMER_ENABLE": "1",
+        }
+
+        result = subprocess.run(
+            ["bash", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 2
+        assert "without an exact system-manager absence witness" in result.stderr
+        if prelinked:
+            assert destination.is_symlink()
+            assert destination.resolve() == (units / name).resolve()
+        else:
+            assert not destination.exists()
 
     def test_system_scope_base_prevents_generic_user_dropin_install(self, tmp_path: Path) -> None:
         project = tmp_path / "project"
@@ -1469,10 +1946,22 @@ class TestServiceDropInInstall:
 
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
-        for command in ("systemctl", "uv"):
-            executable = bin_dir / command
-            executable.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-            executable.chmod(0o755)
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "$*" in\n'
+            '  "--user show "*" -p LoadState --value") printf \'not-found\\n\' ;;\n'
+            '  "--user show "*" -p ActiveState --value") printf \'inactive\\n\' ;;\n'
+            '  "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager") '
+            "printf 'LoadState=not-found\\nFragmentPath=\\nNeedDaemonReload=no\\n' ;;\n"
+            "esac\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.chmod(0o755)
         home = tmp_path / "home"
         stale_dropin = home / ".config/systemd/user/root-owned.service.d/override.conf"
         stale_dropin.parent.mkdir(parents=True)
@@ -1751,8 +2240,14 @@ def _prepare_local_judge_retirement(
             #!/usr/bin/env bash
             printf 'systemctl %s\n' "$*" >> "{events}"
             case "$*" in
+              "--user show "*" -p LoadState --value")
+                printf 'not-found\n'
+                ;;
               "--user show "*" -p ActiveState --value")
                 printf 'inactive\n'
+                ;;
+              "show "*" --property=LoadState,FragmentPath,NeedDaemonReload --no-pager")
+                printf 'LoadState=not-found\nFragmentPath=\nNeedDaemonReload=no\n'
                 ;;
               "--user disable hapax-local-judge.service")
                 exit {disable_rc}
