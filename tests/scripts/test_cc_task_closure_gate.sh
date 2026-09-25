@@ -144,6 +144,44 @@ assert_eq "unchecked → exit 2" 2 "$(run_checker "$ACTIVE/unchecked-task.md")"
 assert_eq "no-AC-section → exit 0" 0 "$(run_checker "$ACTIVE/no-ac-section-task.md")"
 assert_eq "empty-AC-section → exit 0" 0 "$(run_checker "$ACTIVE/empty-ac-task.md")"
 
+# ── Absent vs present-but-unreadable: the checker must not read the second
+# as the first. Absence stays fail-OPEN (a missing note is no task, nothing to
+# gate); an existing note that cannot be read is not absence — the unread row
+# may carry unchecked ACs, so admitting it closes it unreviewed.
+# Mirrors the split in scripts/cc-close-acceptance-receipt-check.py on #4787.
+echo "=== Absent vs present-but-unreadable ==="
+assert_eq "missing note → exit 0 (absence is not the unreadable case)" 0 \
+  "$(run_checker "$ACTIVE/does-not-exist-task.md")"
+
+# A directory at the note path: present, and unreadable as a note, with no
+# permission dependence, so this case holds under any uid.
+mkdir -p "$ACTIVE/note-is-a-directory-task.md"
+assert_eq "note path is a directory → exit 2 (present, unreadable)" 2 \
+  "$(run_checker "$ACTIVE/note-is-a-directory-task.md")"
+
+# An existing note with its read bit removed. Meaningless as root (root reads
+# anyway), so it is skipped there rather than asserted.
+cat > "$ACTIVE/unreadable-task.md" <<'EOF'
+---
+type: cc-task
+task_id: unreadable-task
+title: "Existing note that cannot be read"
+status: claimed
+---
+
+## Acceptance criteria
+
+- [ ] never checked — the gate must not admit this row by failing open
+EOF
+if [[ "$(id -u)" == "0" ]]; then
+  echo "  SKIP: run as root — chmod 000 does not deny root, case not meaningful"
+else
+  chmod 000 "$ACTIVE/unreadable-task.md"
+  assert_eq "existing-but-unreadable note (chmod 000) → exit 2" 2 \
+    "$(run_checker "$ACTIVE/unreadable-task.md")"
+  chmod 644 "$ACTIVE/unreadable-task.md"
+fi
+
 echo "=== Env-var bypass test ==="
 assert_eq "HAPAX_CC_TASK_CLOSURE_GATE_OFF=1 unblocks" 0 \
   "$(HAPAX_CC_TASK_CLOSURE_GATE_OFF=1 python3 "$CHECKER" "$ACTIVE/unchecked-task.md" 2>/dev/null && echo 0 || echo $?)"

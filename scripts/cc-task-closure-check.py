@@ -25,9 +25,14 @@ shell disables the gate (incident response only). The gate honors the
 env var directly so both the Bash hook and the cc-close caller share
 one bypass mechanism.
 
-Failure mode: fail-OPEN on infrastructure errors (file unreadable,
-malformed). The cost asymmetry favors permissivity for tool-failure
-cases — a broken gate must not brick closures.
+Failure mode: fail-OPEN only when the NOTE is absent — a missing file is
+no task, so there is nothing to gate. An existing note that cannot be
+READ fails CLOSED: the unread row may carry unchecked acceptance
+criteria, and admitting it would close that row unreviewed. The cost
+asymmetry still favors permissivity for tool-failure cases — a broken
+gate must not brick closures — but present-but-unreadable is not
+absence. Malformed *content* is a separate case and keeps its own
+behavior (no AC section → closure permitted).
 """
 
 from __future__ import annotations
@@ -79,6 +84,25 @@ def unchecked_items(ac_section: str) -> list[str]:
     return list(state.unchecked_items)
 
 
+def _unreadable_note_refusal(path: Path, exc: OSError) -> str:
+    """The present-but-unreadable refusal: names the case and its next action."""
+    return "\n".join(
+        [
+            f"cc-task closure BLOCKED: the task note exists but is unreadable ({exc}):",
+            f"  {path}",
+            "",
+            "An existing-but-unreadable note is not an absent one: the row may hold",
+            "unchecked acceptance criteria, and admitting it would close the row",
+            "unreviewed. A missing note is still the missing case and stays permitted.",
+            "",
+            "Next action: restore read access, then rerun. On the NFS-backed vault",
+            "this is usually a transient mount fault — retry once the mount recovers.",
+            "If closures must proceed during an outage, the incident bypass is",
+            "HAPAX_CC_TASK_CLOSURE_GATE_OFF=1; record its use.",
+        ]
+    )
+
+
 def gate(path: Path) -> tuple[int, str]:
     """Return ``(exit_code, message)``.
 
@@ -89,13 +113,17 @@ def gate(path: Path) -> tuple[int, str]:
     if os.environ.get("HAPAX_CC_TASK_CLOSURE_GATE_OFF") == "1":
         return 0, "gate disabled by HAPAX_CC_TASK_CLOSURE_GATE_OFF=1"
 
-    if not path.is_file():
-        return 0, f"fail-OPEN: source path missing or not a file ({path})"
-
     try:
         text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # Absence stays the missing case: no note, no task, nothing to gate.
+        # Reading directly instead of pre-checking is_file() also closes the
+        # stat-then-read window where a vanished note crashed the gate.
+        return 0, f"fail-OPEN: source note missing — no such task ({path})"
     except OSError as exc:
-        return 0, f"fail-OPEN: source unreadable ({exc})"
+        # Present-but-unreadable is NOT absence. Mirrors the split in
+        # scripts/cc-close-acceptance-receipt-check.py (PR #4787).
+        return 2, _unreadable_note_refusal(path, exc)
 
     ac_state = acceptance_criteria_state(text)
     if not ac_state.section_present:
