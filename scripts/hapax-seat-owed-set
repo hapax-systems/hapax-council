@@ -12,6 +12,7 @@ A checkpoint is not an input. Nothing leaves the set because of its age.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -413,10 +414,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.session_start:
         if not sys.stdin.isatty():
-            try:
+            # A closed hook pipe must not skip the owed-set injection below.
+            with contextlib.suppress(OSError):
                 sys.stdin.read()
-            except OSError:
-                pass
         payload = session_start_payload(vault)
         sys.stdout.write(payload)
         if not sys.stdout.isatty():
