@@ -114,15 +114,26 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
 - **No-co-residency guarantee:** the container is pinned to the 5060 Ti UUID; the
   3090 grounding instance (TabbyAPI `:5000`) is independent. Confirm with `nvidia-smi`.
 - **Host-memory ceiling:** both systemd and manual launches use `--memory 4G
-  --memory-swap 6G` (4 GiB RAM plus 2 GiB swap). Before runtime closure after a
+  --memory-swap 6G`: a 4 GiB RAM cap and a 6 GiB combined memory-plus-swap cap,
+  permitting at most 2 GiB of swap. Before runtime closure after a
   limit change, deploy `hapax-local-judge.service` only through the manifest-owned
   P0 OOM package; ordinary post-merge deployment stages it without copying or
-  restarting the user unit. Then run this eight-worker canary and require
+  restarting the user unit. Then run this 8-worker, 24-request canary and require
   identical container health/restart/OOM state plus unchanged `oom` and
   `oom_kill` counters:
 
   ```bash
   set -euo pipefail
+  unit=hapax-local-judge.service
+  test "$(systemctl --user show "$unit" -p NeedDaemonReload --value)" = no
+  test "$(systemctl --user show "$unit" -p FragmentPath --value)" = \
+    "$HOME/.config/systemd/user/$unit"
+  test -z "$(systemctl --user show "$unit" -p DropInPaths --value)"
+  exec_start="$(systemctl --user show "$unit" -p ExecStart --value)"
+  [[ "$exec_start" == *"argv[]=/usr/bin/docker run "* ]]
+  [[ "$exec_start" == *" --name hapax-local-judge "* ]]
+  [[ "$exec_start" == *" --memory 4G "* ]]
+  [[ "$exec_start" == *" --memory-swap 6G "* ]]
   container=hapax-local-judge
   pid="$(docker inspect --format '{{.State.Pid}}' "$container")"
   test "$pid" -gt 1
