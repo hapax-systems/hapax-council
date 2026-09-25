@@ -166,7 +166,12 @@ def _isolate_installed_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         "HAPAX_OOM_GOVERNED_SYSTEM_UNIT_PATHS",
         ":".join(
             str(path)
-            for path in (system_control_dir, system_runtime_control_dir, system_transient_dir, system_dir)
+            for path in (
+                system_control_dir,
+                system_runtime_control_dir,
+                system_transient_dir,
+                system_dir,
+            )
         ),
     )
     monkeypatch.setenv(
@@ -807,17 +812,17 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {systemctl_calls!s}\n"
         f"{reload_failure_guard}"
-        "if [[ \"$*\" == *\"set-property --runtime \"* ]]; then\n"
-        "  args=(\"$@\")\n"
-        "  if [ \"${args[0]}\" = \"--user\" ]; then\n"
-        "    base=\"$HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR\"; unit=\"${args[3]}\"; first=4\n"
+        'if [[ "$*" == *"set-property --runtime "* ]]; then\n'
+        '  args=("$@")\n'
+        '  if [ "${args[0]}" = "--user" ]; then\n'
+        '    base="$HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR"; unit="${args[3]}"; first=4\n'
         "  else\n"
-        "    base=\"$HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR\"; unit=\"${args[2]}\"; first=3\n"
+        '    base="$HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR"; unit="${args[2]}"; first=3\n'
         "  fi\n"
-        "  mkdir -p \"$base/$unit.d\"\n"
+        '  mkdir -p "$base/$unit.d"\n'
         "  for ((i=first; i<${#args[@]}; i++)); do\n"
-        "    key=\"${args[i]%%=*}\"; value=\"${args[i]#*=}\"\n"
-        "    printf '%s\\n%s\\n%s=%s\\n' '# This is a drop-in unit file extension, created via \"systemctl set-property\"' '[Slice]' \"$key\" \"$value\" > \"$base/$unit.d/50-$key.conf\"\n"
+        '    key="${args[i]%%=*}"; value="${args[i]#*=}"\n'
+        '    printf \'%s\\n%s\\n%s=%s\\n\' \'# This is a drop-in unit file extension, created via "systemctl set-property"\' \'[Slice]\' "$key" "$value" > "$base/$unit.d/50-$key.conf"\n'
         "  done\n"
         "fi\n"
         f'if [[ "$*" == "--user enable --now hapax-oom-policy-audit.timer" ]]; then test -x {tmp_path / "sbin" / "hapax-oom-policy-audit"!s} && test -f {user_dir / "hapax-oom-policy-audit.timer"!s} || exit 42; fi\n'
@@ -845,9 +850,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
     fake_runuser.chmod(0o755)
 
     zram_size = 16 * 1024**3 if host_profile == "appendix" else 32 * 1024**3
-    Path(os.environ["HAPAX_OOM_ZRAM_DISKSIZE_PATH"]).write_text(
-        f"{zram_size}\n", encoding="utf-8"
-    )
+    Path(os.environ["HAPAX_OOM_ZRAM_DISKSIZE_PATH"]).write_text(f"{zram_size}\n", encoding="utf-8")
 
     if docker_mode != "success":
         fake_docker = Path(os.environ["HAPAX_OOM_DOCKER"])
@@ -860,9 +863,7 @@ def test_p0_oom_containment_install_and_verify_live_against_temp_destinations(
                 "exit 0\n"
             )
         elif docker_mode == "update-failure":
-            update_action = (
-                f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then exit 1; fi\nexit 0\n'
-            )
+            update_action = f'if [ "${{@: -1}}" = "{MCP_CONTAINER_ID}" ]; then exit 1; fi\nexit 0\n'
         else:
             update_action = "exit 0\n"
         mcp_inspect = (
@@ -960,16 +961,18 @@ esac
         "manager-only",
         "zram-main",
     }
-    if docker_mode in {
-        "update-failure",
-        "inspect-failure-present",
-        "post-update-mismatch",
-        "second-reload-failure",
-    } or override_failure:
+    if (
+        docker_mode
+        in {
+            "update-failure",
+            "inspect-failure-present",
+            "post-update-mismatch",
+            "second-reload-failure",
+        }
+        or override_failure
+    ):
         assert result.returncode == 1
-        assert not (
-            tmp_path / "root-state" / "installed-receipts" / "oom-containment.sha"
-        ).exists()
+        assert not (tmp_path / "root-state" / "installed-receipts" / "oom-containment.sha").exists()
         if override_mode == "zram-main":
             assert "higher-priority zram-generator" in result.stderr
         elif override_failure:
@@ -1041,16 +1044,17 @@ esac
     assert root_failure_dest.is_file()
     assert (tmp_path / "sbin" / "hapax-oom-policy-audit").is_file()
     assert (tmp_path / "sbin" / "hapax-root-required-deploy-audit").is_file()
-    assert Path(os.environ["HAPAX_OOM_PROFILE_TABLE_DEST"]).read_bytes() == (
-        REPO_ROOT / "config/root-required/oom-host-profiles.tsv"
-    ).read_bytes()
-    assert Path(os.environ["HAPAX_OOM_ZRAM_POLICY_DEST"]).read_bytes() == (
-        REPO_ROOT
-        / f"config/root-required/oom-host-policy/{host_profile}/zram-generator.conf"
-    ).read_bytes()
-    assert not (
-        system_dir / "user-1000.slice.d" / "zz-hapax-host-memory.conf"
-    ).exists()
+    assert (
+        Path(os.environ["HAPAX_OOM_PROFILE_TABLE_DEST"]).read_bytes()
+        == (REPO_ROOT / "config/root-required/oom-host-profiles.tsv").read_bytes()
+    )
+    assert (
+        Path(os.environ["HAPAX_OOM_ZRAM_POLICY_DEST"]).read_bytes()
+        == (
+            REPO_ROOT / f"config/root-required/oom-host-policy/{host_profile}/zram-generator.conf"
+        ).read_bytes()
+    )
+    assert not (system_dir / "user-1000.slice.d" / "zz-hapax-host-memory.conf").exists()
     assert not (user_dir / "app.slice.d" / "zz-hapax-host-memory.conf").exists()
     assert not Path(os.environ["HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST"]).exists()
     for unit in (
@@ -1102,10 +1106,7 @@ esac
         assert f"--user disable --now {unit}" in user_calls
     docker_calls = Path(os.environ["HAPAX_TEST_DOCKER_CALLS"]).read_text(encoding="utf-8")
     assert f"update --memory 4G --memory-swap 6G {JUDGE_CONTAINER_ID}" in docker_calls
-    assert (
-        f"update --memory 512M --memory-swap 768M {MCP_CONTAINER_ID}"
-        in docker_calls
-    )
+    assert f"update --memory 512M --memory-swap 768M {MCP_CONTAINER_ID}" in docker_calls
     assert "update --memory" in docker_calls
     assert "unrelated-container" not in "\n".join(
         line for line in docker_calls.splitlines() if line.startswith("update ")
