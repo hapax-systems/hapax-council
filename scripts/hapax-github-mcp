@@ -3,18 +3,26 @@
 
 set -euo pipefail
 
+LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/mcp-logs"
+LOG_FILE="$LOG_DIR/github-mcp.log"
+
+canonical_refusal() {
+  local message="$1"
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  printf '%s %s\n' "$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" >>"$LOG_FILE" 2>/dev/null || true
+  echo "$message" >&2
+  exit 2
+}
+
 CANONICAL_ALIAS="$HOME/.cache/hapax/source-activation/worktree/scripts/hapax-github-mcp"
 if ! CANONICAL_WRAPPER="$(/usr/bin/realpath -e -- "$CANONICAL_ALIAS")"; then
-  echo "hapax-github-mcp: canonical source-activation wrapper is unavailable: $CANONICAL_ALIAS" >&2
-  exit 2
+  canonical_refusal "hapax-github-mcp: canonical source-activation wrapper is unavailable: $CANONICAL_ALIAS; next action: reconcile source activation and retry the MCP request (diagnostic recorded in $LOG_FILE)"
 fi
 if [ ! -f "$CANONICAL_WRAPPER" ] || [ ! -x "$CANONICAL_WRAPPER" ]; then
-  echo "hapax-github-mcp: canonical source-activation wrapper is not an executable regular file: $CANONICAL_WRAPPER" >&2
-  exit 2
+  canonical_refusal "hapax-github-mcp: canonical source-activation wrapper is not an executable regular file: $CANONICAL_WRAPPER; next action: restore the release-pinned executable through source activation and retry (diagnostic recorded in $LOG_FILE)"
 fi
 if ! CURRENT_WRAPPER="$(/usr/bin/realpath -e -- "$0")"; then
-  echo "hapax-github-mcp: invoked wrapper path cannot be resolved: $0" >&2
-  exit 2
+  canonical_refusal "hapax-github-mcp: invoked wrapper path cannot be resolved: $0; next action: invoke the canonical source-activation wrapper directly and repair the broken launcher (diagnostic recorded in $LOG_FILE)"
 fi
 if [ "$CURRENT_WRAPPER" != "$CANONICAL_WRAPPER" ]; then
   exec "$CANONICAL_WRAPPER" "$@"
@@ -97,9 +105,7 @@ if [ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
   exit 2
 fi
 
-LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/mcp-logs"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/github-mcp.log"
 CONTAINER_NAME="hapax-github-mcp-$USER-$$"
 TOOLS="${HAPAX_GITHUB_MCP_TOOLS:-search_pull_requests,pull_request_read,merge_pull_request,add_issue_comment,create_pull_request}"
 FILTER_ARGS=()
