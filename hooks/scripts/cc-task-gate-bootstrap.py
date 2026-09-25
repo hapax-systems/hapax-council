@@ -24,6 +24,11 @@ NOT_CANDIDATE = 10
 BLOCKED = 12
 
 NULLISH = {"", "null", "none", "~", "[]"}
+# shared.route_metadata_schema.QualityFloor, copied because this hook must not import
+# shared/ (see the module docstring); a parity test pins the two together (M110).
+LEGAL_QUALITY_FLOORS = frozenset(
+    {"frontier_required", "frontier_review_required", "deterministic_ok"}
+)
 
 
 def _strip_scalar(value: str) -> str:
@@ -223,6 +228,15 @@ def _validate_task(path: Path, fields: dict[str, Any], present: set[str], body: 
             errors.append("`wsjf` must be non-negative")
     except ValueError:
         errors.append("`wsjf` must be numeric")
+
+    # M110: an illegal floor makes every dependent unclaimable, and a later close keeps it.
+    quality_floor = _as_scalar(fields, "quality_floor")
+    if quality_floor and quality_floor not in LEGAL_QUALITY_FLOORS:
+        errors.append(
+            "`quality_floor` must be one of "
+            + ", ".join(sorted(LEGAL_QUALITY_FLOORS))
+            + f" (got `{quality_floor}`)"
+        )
 
     route_schema = _as_scalar(fields, "route_metadata_schema")
     if route_schema and route_schema != "1":

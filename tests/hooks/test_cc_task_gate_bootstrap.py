@@ -7,6 +7,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 # Gate logic lives in the impl behind the shim (reform FM-6); exec it directly.
 HOOK = REPO_ROOT / "hooks" / "scripts" / "cc-task-gate.impl.sh"
@@ -233,6 +235,52 @@ def test_no_claim_blocks_invalid_task_bootstrap(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "invalid unclaimed governance bootstrap" in result.stderr
     assert "status" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "floor", ["standard", "verification_receipt", "production", "Deterministic_OK"]
+)
+def test_no_claim_blocks_task_bootstrap_with_an_illegal_quality_floor(
+    tmp_path: Path, floor: str
+) -> None:
+    """M110: a row minted with a floor outside QualityFloor silently blocks every dependent's
+    claim at cc-claim, and a later close does not cure it. Refuse it at birth."""
+    request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
+    request_root.mkdir(parents=True)
+    request_path = request_root / "REQ-20260517150000-perspective-merge-remediation.md"
+    request_path.write_text(_request_note("REQ-20260517150000"), encoding="utf-8")
+    task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+    task_root.mkdir(parents=True)
+    task_path = task_root / "perspective-pr-merge-to-main.md"
+    content = _task_note("perspective-pr-merge-to-main", request_path).replace(
+        "quality_floor: deterministic_ok\n", f"quality_floor: {floor}\n"
+    )
+    assert f"quality_floor: {floor}\n" in content
+
+    result = _run_hook(
+        tmp_path,
+        {"tool_name": "Write", "tool_input": {"file_path": str(task_path), "content": content}},
+    )
+
+    assert result.returncode == 2
+    assert "quality_floor" in result.stderr
+    assert "frontier_review_required" in result.stderr
+
+
+def test_bootstrap_legal_quality_floors_match_the_route_metadata_contract() -> None:
+    """The hook stays dependency-light (no shared import), so pin its copy to the source."""
+    import importlib.util
+
+    from shared.route_metadata_schema import QualityFloor
+
+    hook = Path(__file__).resolve().parents[2] / "hooks" / "scripts" / "cc-task-gate-bootstrap.py"
+    spec = importlib.util.spec_from_file_location("cc_task_gate_bootstrap", hook)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    contract = frozenset(member.value for member in QualityFloor)
+    assert contract == module.LEGAL_QUALITY_FLOORS
 
 
 def test_no_claim_blocks_existing_governance_note_edit(tmp_path: Path) -> None:
