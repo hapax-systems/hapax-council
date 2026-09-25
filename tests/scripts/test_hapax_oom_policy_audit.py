@@ -383,6 +383,7 @@ def _fake_docker(
     closing_labeled_inventory_override: str | None = None,
     final_inventory_override: str | None = None,
     final_labeled_inventory_override: str | None = None,
+    final_generation_override: str | None = None,
     inspect_override: str | None = None,
     failure_phase: str | None = None,
     failure_detail: str = "",
@@ -550,14 +551,16 @@ def _fake_docker(
         return "".join(f"{row}\n" for row in rows)
 
     generation_files: list[Path] = []
-    for suffix, raw_inventory, raw_labeled in (
-        ("initial", initial_inventory, initial_labeled_inventory),
-        ("closing", closing_inventory, closing_labeled_inventory),
-        ("final", final_inventory, final_labeled_inventory),
+    for suffix, raw_inventory, raw_labeled, generation_override in (
+        ("initial", initial_inventory, initial_labeled_inventory, None),
+        ("closing", closing_inventory, closing_labeled_inventory, None),
+        ("final", final_inventory, final_labeled_inventory, final_generation_override),
     ):
         generation_file = tmp_path / f"docker.inventory-labels.{suffix}"
         generation_file.write_text(
-            combine_inventory_and_labels(raw_inventory, raw_labeled),
+            generation_override
+            if generation_override is not None
+            else combine_inventory_and_labels(raw_inventory, raw_labeled),
             encoding="utf-8",
         )
         generation_files.append(generation_file)
@@ -846,6 +849,7 @@ def _run(
     docker_closing_labeled_inventory_override: str | None = None,
     docker_final_inventory_override: str | None = None,
     docker_final_labeled_inventory_override: str | None = None,
+    docker_final_generation_override: str | None = None,
     docker_inspect_override: str | None = None,
     docker_failure_phase: str | None = None,
     docker_failure_detail: str = "",
@@ -1014,6 +1018,7 @@ def _run(
                 closing_labeled_inventory_override=docker_closing_labeled_inventory_override,
                 final_inventory_override=docker_final_inventory_override,
                 final_labeled_inventory_override=docker_final_labeled_inventory_override,
+                final_generation_override=docker_final_generation_override,
                 inspect_override=docker_inspect_override,
                 failure_phase=docker_failure_phase,
                 failure_detail=docker_failure_detail,
@@ -2052,6 +2057,25 @@ def test_audit_fails_when_nonprefix_label_target_appears_only_in_final_generatio
     assert check["status"] == "error"
     assert check["actual"] == "changed"
     assert "inventory changed during bounded audit" in check["detail"]
+
+
+def test_audit_fails_when_app_label_value_changes_after_target_inspect(tmp_path: Path) -> None:
+    container_id = f"{1:064x}"
+    result = _run(
+        tmp_path,
+        docker_mcp_count=1,
+        docker_final_generation_override=(
+            f"{container_id}\thapax-github-mcp-1000-0000000001\twrong-app\n"
+        ),
+    )
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    check = next(
+        item for item in payload["checks"] if item["name"] == "docker_oom_inventory_stable"
+    )
+    assert check["status"] == "error"
+    assert check["actual"] == "changed"
 
 
 def test_docker_inventory_binds_identity_and_label_in_one_daemon_snapshot() -> None:
