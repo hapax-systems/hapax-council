@@ -469,7 +469,7 @@ audit_apcupsd_audit_log() {
     if [ "$APCUPSD_AUDIT_LOG" = "$APCUPSD_CANONICAL_AUDIT_LOG" ]; then
         parent_expected_mode=2775
     fi
-    /usr/bin/python3 - "$APCUPSD_AUDIT_LOG" \
+    /usr/bin/python3 -I -S - "$APCUPSD_AUDIT_LOG" \
         "$APCUPSD_AUDIT_LOG_OWNER_UID" "$APCUPSD_AUDIT_LOG_OWNER_GID" \
         "$parent_expected_mode" "$APC_REPAIR_ACTION" <<'PY'
 from __future__ import annotations
