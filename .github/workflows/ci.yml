@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every PR, whatever its base: a PR stacked on another branch got no tests and no
+  # gitleaks while this was `branches: [main]` (M90). Base-aware steps below diff
+  # against the PR's own base ref/sha, which is right for a stack.
   pull_request:
-    branches: [main]
   merge_group:
     types: [checks_requested]
 
