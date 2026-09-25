@@ -282,7 +282,25 @@ class TestServiceProfileCompleteness:
             if profile.oom_score_adj is not None
         }
 
-        assert modeled_scores["hapax-daimonion"] == 100
+        protected_scores = {
+            name: modeled_scores.get(name)
+            for name in {
+                "hapax-daimonion",
+                "studio-compositor",
+                "pipewire",
+                "wireplumber",
+                "pipewire-pulse",
+                "hapax-imagination",
+            }
+        }
+        assert protected_scores == {
+            "hapax-daimonion": 100,
+            "studio-compositor": 100,
+            "pipewire": 100,
+            "wireplumber": 100,
+            "pipewire-pulse": 100,
+            "hapax-imagination": 100,
+        }
         assert all(score >= 0 for score in modeled_scores.values())
 
 
