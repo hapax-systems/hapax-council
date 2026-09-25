@@ -202,6 +202,16 @@ MUST_INCLUDE_STATE_MAX_AGE_SECONDS = AUTOQUEUE_ADMISSION_TTL_SECONDS
 # Such a PR takes a one-shot full exam in a must-include seat, after the
 # queued/armed/dequeued seats and under the same cap and reserve.
 FRESH_EVIDENCE_TIMESTAMP_FIELDS = ("timestamp", "constituted_at")
+# Armed-note/unarmed-PR divergence reconciliation (defect
+# cc-pr-autoqueue-armed-note-reconciliation-gap-20260914, item 2): a PR whose
+# task note is release-armed but whose autoMergeRequest is absent (e.g. dropped
+# by a dequeue) is offered a full-exam re-arm seat after this many consecutive
+# divergent ticks, instead of waiting ~102 minutes for the fair rotation.
+ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES = 2
+# Retries are bounded per continuous divergence episode; exhaustion is reported,
+# never silently looped. The divergence clearing (armed, queued, note unarmed,
+# or PR gone from the listing) resets the episode.
+ARMED_NOTE_REARM_MAX_RETRIES = 3
 # Failure proofs intentionally refresh less often than success proofs: blocked
 # PRs can sit for days, and GitHub caps commit statuses per SHA+context. Still,
 # when the blocker text changes, the proof must eventually stop advertising
@@ -340,6 +350,9 @@ class Decision:
     auto_arm: bool = False
     auto_arm_verified_checks: tuple[str, ...] = ()
     expected_auto_merge_method: str | None = None
+    # Informational, never blocking: e.g. a stale release-arm stamp surfaced by
+    # the re-arm-follows-head evaluation (ledger 8.1).
+    notes: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -357,6 +370,8 @@ class Decision:
             out["task_paths"] = [str(task.path) for task in self.tasks]
         if self.reasons:
             out["reasons"] = list(self.reasons)
+        if self.notes:
+            out["notes"] = list(self.notes)
         if self.auto_arm:
             out["auto_arm"] = True
             out["auto_arm_verified_checks"] = list(self.auto_arm_verified_checks)
@@ -1603,6 +1618,7 @@ def _select_pr_window(
     persist: bool,
     must_include: frozenset[int] | set[int] = frozenset(),
     full_exam: frozenset[int] | set[int] = frozenset(),
+    ephemeral_full_exam: frozenset[int] | set[int] = frozenset(),
     fresh_evidence: Callable[[dict[str, Any], datetime], bool] | None = None,
 ) -> _WindowSelection:
     """Select without acknowledging work. Repeated failures share the fair rotation.
@@ -1692,8 +1708,14 @@ def _select_pr_window(
         ][: max(effective_limit - len(served), 0)]
         rotation_numbers = {row["number"] for row in rotation_rows}
         # Fresh rows never enter the persisted must-include set: their seat is
-        # re-derived each tick from evidence vs. the rotation stamp.
-        must_identities = tuple((row["number"], _listing_head_sha(row)) for row in core_rows)
+        # re-derived each tick from evidence vs. the rotation stamp. Ephemeral
+        # full-exam seats (armed-note re-arm retries) are likewise re-derived
+        # from the divergence counters and must not poison the persisted set.
+        must_identities = tuple(
+            (row["number"], _listing_head_sha(row))
+            for row in core_rows
+            if row["number"] not in ephemeral_full_exam
+        )
         return _WindowSelection(
             rotation_rows=rotation_rows,
             must_refresh=must_refresh,
@@ -1799,6 +1821,7 @@ def fetch_rotating_open_prs(
     must_include: frozenset[int] | set[int] = frozenset(),
     full_exam: frozenset[int] | set[int] = frozenset(),
     fresh_evidence: Callable[[dict[str, Any], datetime], bool] | None = None,
+    armed_note_reconciliation: _ArmedNoteReconciliation | None = None,
 ) -> tuple[list[PullRequest], ListingRoute, int, dict[int, dict[str, Any]], _WindowSelection]:
     """Prove the complete estate, then hydrate at most limit identities independently.
 
@@ -1826,6 +1849,14 @@ def fetch_rotating_open_prs(
         )
         reason = f"{transport}_listing_indeterminate_{fallback}_fallback"
         transport = fallback
+    ephemeral_full_exam: frozenset[int] = frozenset()
+    if armed_note_reconciliation is not None:
+        # Observe the armed-note/unarmed-PR divergence from the un-hydrated
+        # listing; candidates join this tick's full-exam seats (the idempotent
+        # re-arm runs through the normal decision path).
+        ephemeral_full_exam = armed_note_reconciliation.observe(rows)
+        if ephemeral_full_exam:
+            full_exam = set(full_exam) | ephemeral_full_exam
     selection = _select_pr_window(
         rows,
         repo=repo,
@@ -1834,6 +1865,7 @@ def fetch_rotating_open_prs(
         persist=persist,
         must_include=must_include,
         full_exam=full_exam,
+        ephemeral_full_exam=ephemeral_full_exam,
         fresh_evidence=fresh_evidence,
     )
     if selection.overflow:
@@ -1930,6 +1962,16 @@ def fetch_rotating_open_prs(
             )
             continue
         prs.append(hydrated)
+    if armed_note_reconciliation is not None:
+        # A retry counts only when the seat was served AND the exam hydrated; an
+        # overflowed or unhydrated candidate keeps its passes for the next tick.
+        hydrated_numbers = {pr.number for pr in prs}
+        armed_note_reconciliation.note_served(
+            {row["number"] for row in selection.full_exam_rows} & hydrated_numbers
+        )
+        # A full exam from any source is the estate's response to the
+        # divergence; only exam-free ticks move the retry hysteresis.
+        armed_note_reconciliation.note_examined(hydrated_numbers)
     return prs, route, len(rows), failures, selection
 
 
@@ -2414,7 +2456,13 @@ def fetch_merge_queue_pr_numbers(
         if isinstance(number, bool) or not isinstance(number, int):
             return indeterminate("invalid_entry:number_type")
         queued.add(number)
-    queued |= _merge_queue_ref_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
+    ref_hints = _merge_queue_ref_pr_numbers(repo=repo, repo_root=repo_root, runner=runner)
+    # Refs are hints, PR state is authority: a merged/closed PR whose queue ref
+    # was never garbage-collected must not read as queued (defect
+    # cc-pr-autoqueue-armed-note-reconciliation-gap-20260914, item 1).
+    queued |= _reconcile_ref_hint_pr_numbers(
+        ref_hints - queued, repo=repo, repo_root=repo_root, runner=runner
+    )
     return queued
 
 
@@ -2449,6 +2497,89 @@ def _merge_queue_ref_pr_numbers(
         if match := _MERGE_QUEUE_REF_PR_RE.search(ref.strip()):
             queued.add(int(match.group(1)))
     return queued
+
+
+def _reconcile_ref_hint_pr_numbers(
+    numbers: set[int],
+    *,
+    repo: str = DEFAULT_REPO,
+    repo_root: Path | None = None,
+    runner: Any = None,
+) -> set[int]:
+    """Keep ref-hinted PR numbers whose PR verifiably stays OPEN.
+
+    ``gh-readonly-queue/*`` refs are hints; PR state is authority (defect
+    cc-pr-autoqueue-armed-note-reconciliation-gap-20260914, item 1). A merged or
+    closed PR whose queue ref was never garbage-collected drops out of
+    ``queued_prs`` here, so its residue no longer reads as an ``already_queued``
+    membership. The lookup itself is fail-open: an indeterminate state read says
+    nothing about the PRs, so the hints are kept for the next tick to re-check
+    rather than ejecting genuinely queued entries on a transport window.
+    """
+    if not numbers:
+        return set()
+    runner = runner or subprocess.run
+    repo_root = repo_root or default_repo_root()
+    owner, name = repo.split("/", 1)
+    kept: set[int] = set()
+    ordered = sorted(numbers)
+    for offset in range(0, len(ordered), 100):
+        chunk = ordered[offset : offset + 100]
+        aliases = " ".join(
+            f"pr_{number}: pullRequest(number:{number}){{number state}}" for number in chunk
+        )
+        query = (
+            "query RefHintStates($owner:String!,$repo:String!){"
+            f"repository(owner:$owner,name:$repo){{{aliases}}}}}"
+        )
+        proc = run_graphql_rate_aware(
+            ["-f", f"query={query}", "-f", f"owner={owner}", "-f", f"repo={name}"],
+            repo_root=repo_root,
+            runner=runner,
+        )
+        if proc.returncode != 0:
+            LOG.warning(
+                "merge queue ref hint state lookup indeterminate (rc=%d); keeping %d hint(s)",
+                proc.returncode,
+                len(chunk),
+            )
+            kept |= set(chunk)
+            continue
+        try:
+            payload = json.loads(proc.stdout or "{}")
+        except json.JSONDecodeError:
+            LOG.warning("merge queue ref hint state lookup emitted non-JSON; keeping hints")
+            kept |= set(chunk)
+            continue
+        repository = (
+            payload.get("data", {}).get("repository") if isinstance(payload, dict) else None
+        )
+        if (
+            not isinstance(repository, dict)
+            or payload.get("errors")
+            or any(f"pr_{number}" not in repository for number in chunk)
+        ):
+            LOG.warning("merge queue ref hint state payload indeterminate; keeping hints")
+            kept |= set(chunk)
+            continue
+        dropped: list[int] = []
+        for number in chunk:
+            node = repository[f"pr_{number}"]
+            if node is None:
+                dropped.append(number)  # no such PR: ref residue
+            elif isinstance(node, dict) and node.get("state") == "OPEN":
+                kept.add(number)
+            elif isinstance(node, dict) and node.get("state") in {"CLOSED", "MERGED"}:
+                dropped.append(number)
+            else:
+                # An unrecognized node shape/state is indeterminate: keep the hint.
+                kept.add(number)
+        if dropped:
+            LOG.info(
+                "merge queue ref hints reconciled against PR state; dropped non-open: %s",
+                sorted(dropped),
+            )
+    return kept
 
 
 def _frontmatter(path: Path) -> tuple[dict[str, Any] | None, str | None]:
@@ -2574,9 +2705,33 @@ def _release_authorized_head_blockers(
         expected_head_sha=pr_head_sha,
         expected_label="current",
     )
-    if blocker:
+    if blocker and not blocker.startswith("release_authorized_head_mismatch:"):
         return (blocker,)
+    # A mismatch is a stale stamp, not a stop: ledger 8.1 re-arm-follows-head
+    # evaluates the arm against the current head and surfaces the staleness
+    # informationally via _release_authorized_head_stale_note.
     return ()
+
+
+def _release_authorized_head_stale_note(
+    frontmatter: dict[str, Any],
+    *,
+    pr_head_sha: str | None,
+) -> str | None:
+    """Informational staleness token for an armed note whose stamp names another head.
+
+    Ledger 8.1 (ratified 2026-09-14): a ``release_authorized_head_sha`` that is
+    not the current PR head is stale by definition; re-arm evaluation follows
+    the current head and the staleness is surfaced, never blocked on.
+    """
+    if not pr_head_sha:
+        return None
+    if not assess_release_auto_arm(frontmatter).armed:
+        return None
+    authorized_head_sha = _scalar(frontmatter.get("release_authorized_head_sha"))
+    if not authorized_head_sha or authorized_head_sha == pr_head_sha:
+        return None
+    return f"release_authorized_head_stale:authorized={authorized_head_sha}:current={pr_head_sha}"
 
 
 def _task_blockers(
@@ -2903,6 +3058,17 @@ def classify_pr(
     matches = _matching_tasks(pr, tasks)
     matched_tasks = tuple(matches)
     task: TaskNote | None = matches[0] if len(matches) == 1 else None
+    notes: list[str] = []
+    for matched_task in matches:
+        stale_stamp_note = _release_authorized_head_stale_note(
+            matched_task.frontmatter, pr_head_sha=pr.head_sha
+        )
+        if stale_stamp_note:
+            notes.append(
+                stale_stamp_note
+                if len(matches) == 1
+                else f"task_note:{matched_task.task_id}:{stale_stamp_note}"
+            )
     if not matches:
         if TASK_NOTE_PARSE_FAILURES:
             broken = ",".join(name for name, _ in TASK_NOTE_PARSE_FAILURES[:4])
@@ -3059,6 +3225,7 @@ def classify_pr(
             action=action,
             reasons=tuple(reasons),
             expected_auto_merge_method=expected_auto_merge_method,
+            notes=tuple(notes),
         )
     if queued:
         return Decision(
@@ -3070,6 +3237,7 @@ def classify_pr(
             auto_arm=auto_arm,
             auto_arm_verified_checks=auto_arm_verified_checks,
             expected_auto_merge_method=expected_auto_merge_method,
+            notes=tuple(notes),
         )
     if pr.auto_merge_enabled:
         return Decision(
@@ -3080,6 +3248,7 @@ def classify_pr(
             auto_arm=auto_arm,
             auto_arm_verified_checks=auto_arm_verified_checks,
             expected_auto_merge_method=expected_auto_merge_method,
+            notes=tuple(notes),
         )
     if pr.check_summary.has_pending:
         if include_pending_auto:
@@ -3091,6 +3260,7 @@ def classify_pr(
                 auto_arm=auto_arm,
                 auto_arm_verified_checks=auto_arm_verified_checks,
                 expected_auto_merge_method=expected_auto_merge_method,
+                notes=tuple(notes),
             )
         return Decision(
             pr=pr,
@@ -3099,6 +3269,7 @@ def classify_pr(
             action="blocked",
             reasons=("pending_checks:" + ",".join(pr.check_summary.pending),),
             expected_auto_merge_method=expected_auto_merge_method,
+            notes=tuple(notes),
         )
     return Decision(
         pr=pr,
@@ -3108,6 +3279,7 @@ def classify_pr(
         auto_arm=auto_arm,
         auto_arm_verified_checks=auto_arm_verified_checks,
         expected_auto_merge_method=expected_auto_merge_method,
+        notes=tuple(notes),
     )
 
 
@@ -3423,7 +3595,18 @@ def _release_head_boundary_blocker(
         expected_label="current",
     )
     if stamp_blocker:
-        return stamp_blocker
+        if not stamp_blocker.startswith("release_authorized_head_mismatch:"):
+            return stamp_blocker
+        # Ledger 8.1 re-arm-follows-head: a stamp naming another head is stale
+        # by definition. It does not stop the re-arm; evaluation continues
+        # against the current head below, and the staleness is surfaced as an
+        # informational release-authorization waiver.
+        if release_authorization_waivers is not None:
+            stale_note = _release_authorized_head_stale_note(
+                current_frontmatter, pr_head_sha=decision.pr.head_sha
+            )
+            if stale_note:
+                release_authorization_waivers.append(stale_note)
     evidence_ok, current_head_sha, current_verified_checks = fetch_pr_release_evidence(
         decision.pr.number,
         repo=repo,
@@ -3640,7 +3823,43 @@ def arm_release_for_task(
                 expected_head_sha=expected_head_sha,
             )
             if head_stamp_blocker:
-                return False, head_stamp_blocker
+                if not head_stamp_blocker.startswith("release_authorized_head_mismatch:"):
+                    return False, head_stamp_blocker
+                # Ledger 8.1 re-arm-follows-head: re-point the stale stamp at the
+                # current head (already evidence-revalidated above) instead of
+                # refusing the re-arm.
+                stale_note = _release_authorized_head_stale_note(
+                    current_frontmatter, pr_head_sha=expected_head_sha
+                )
+                restamped = apply_release_auto_arm(
+                    text,
+                    now_iso=now_iso,
+                    role=role,
+                    head_sha=expected_head_sha,
+                    head_ref=head_ref,
+                )
+                if restamped == text:
+                    return False, "note_unchanged"
+                try:
+                    task.path.write_text(restamped, encoding="utf-8")
+                except OSError as exc:
+                    return False, f"note_write_failed:{exc}"
+                post_arm_assessment = assess_release_auto_arm(
+                    frontmatter_from_text(restamped), verified_checks=verified_checks
+                )
+                _append_release_auto_arm_ledger(
+                    task,
+                    ledger_path=ledger_path,
+                    now_iso=now_iso,
+                    role=role,
+                    frontmatter=current_frontmatter,
+                    pr_head_sha=expected_head_sha,
+                    pr_head_ref=head_ref,
+                    verified_checks=verified_checks,
+                    pre_arm_assessment=pre_arm_assessment,
+                    post_arm_assessment=post_arm_assessment,
+                )
+                return True, f"release re-armed {task.task_id}:{stale_note}"
             return True, "note_unchanged"
         reasons = ",".join(pre_arm_assessment.blockers or ("not_eligible",))
         return False, f"release_auto_arm_ineligible:{reasons}"
@@ -4255,6 +4474,213 @@ def _must_include_report_summary(
     }
 
 
+def _armed_note_reconciliation_state_path(rotation_state_path: Path) -> Path:
+    return rotation_state_path.parent / (
+        rotation_state_path.name + ".armed-note-reconciliation.json"
+    )
+
+
+def _load_armed_note_reconciliation(
+    path: Path, *, repo: str, now: datetime
+) -> dict[int, dict[str, Any]]:
+    """Persisted divergence counters; fail-open like the must-include cache.
+
+    Auxiliary retry bookkeeping, not fairness authority: a corrupt file logs and
+    starts empty rather than wedging the reconciler, and entries live no longer
+    than the must-include window they shadow.
+    """
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        LOG.warning("armed-note reconciliation state unreadable, starting empty: %s", exc)
+        return {}
+    if not isinstance(state, dict) or state.get("schema_version") != 1:
+        LOG.warning("armed-note reconciliation state has an unexpected schema, starting empty")
+        return {}
+    entries: dict[int, dict[str, Any]] = {}
+    for number, entry in (state.get("repositories", {}).get(repo) or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            last_seen = datetime.fromisoformat(entry["last_seen_at"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if now - last_seen > timedelta(seconds=MUST_INCLUDE_STATE_MAX_AGE_SECONDS):
+            continue
+        try:
+            entries[int(number)] = {
+                "consecutive_passes": int(entry.get("consecutive_passes") or 0),
+                "retries": int(entry.get("retries") or 0),
+                "head_sha": entry.get("head_sha"),
+                "last_seen_at": entry["last_seen_at"],
+            }
+        except (TypeError, ValueError):
+            continue
+    return entries
+
+
+def _save_armed_note_reconciliation(
+    path: Path, repo: str, entries: dict[int, dict[str, Any]]
+) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            state: dict[str, Any] = {"schema_version": 1, "repositories": {repo: {}}}
+            try:
+                existing = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(existing, dict) and existing.get("schema_version") == 1:
+                    state = existing
+            except (OSError, ValueError):
+                pass
+            repositories = state.setdefault("repositories", {})
+            repositories[repo] = {str(number): entry for number, entry in entries.items()}
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(state, sort_keys=True) + "\n", encoding="utf-8")
+            temporary.replace(path)
+    except OSError as exc:
+        LOG.warning("armed-note reconciliation state write failed: %s", exc)
+
+
+class _ArmedNoteReconciliation:
+    """Bounded re-arm retry for armed-note/unarmed-PR divergence.
+
+    Defect cc-pr-autoqueue-armed-note-reconciliation-gap-20260914 item 2: a PR
+    whose task note is release-armed but whose autoMergeRequest is absent (e.g.
+    dropped by a dequeue) waited for the ~102-minute fair rotation after the R6
+    one-shot exam; a transient blocker on that exam stranded it until an
+    external actor intervened. The divergence is observed from the un-hydrated
+    listing every determinate tick; at ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES
+    consecutive divergent ticks with no full exam the PR takes a full-exam
+    re-arm seat (the arm mutation itself is the idempotent ``gh pr merge
+    --auto`` the normal decision path runs), up to ARMED_NOTE_REARM_MAX_RETRIES
+    per continuous divergence episode. A full exam from any source (rotation,
+    fresh evidence, R6, or a served retry) resets the pass count: the
+    hysteresis measures how long the divergence stood un-responded, and an exam
+    is the estate's response. Served retries are recorded in the report; an
+    unserved candidate (window cap) keeps accumulating passes instead of
+    burning a retry. Dry runs preview but never advance the persisted state.
+    """
+
+    def __init__(
+        self,
+        *,
+        tasks: list[TaskNote],
+        queued_prs: set[int] | frozenset[int],
+        state_path: Path,
+        repo: str,
+        now: datetime,
+        persist: bool,
+    ) -> None:
+        self._queued = set(queued_prs)
+        self._state_path = state_path
+        self._repo = repo
+        self._now = now
+        self._persist = persist
+        self._armed_by_pr: set[int] = set()
+        self._armed_by_branch: set[str] = set()
+        for task in tasks:
+            if not assess_release_auto_arm(task.frontmatter).armed:
+                continue
+            if task.pr is not None:
+                self._armed_by_pr.add(task.pr)
+            if task.branch:
+                self._armed_by_branch.add(task.branch)
+        self._entries = _load_armed_note_reconciliation(state_path, repo=repo, now=now)
+        self._candidates: set[int] = set()
+        self._served_retries: set[int] = set()
+        self._retried: list[dict[str, Any]] = []
+
+    def _note_armed(self, row: dict[str, Any]) -> bool:
+        number = row.get("number")
+        if number in self._armed_by_pr:
+            return True
+        return (_listing_head_ref(row) or "") in self._armed_by_branch
+
+    def observe(self, rows: list[dict[str, Any]]) -> frozenset[int]:
+        """Advance divergence counters one tick; return the PRs due a re-arm seat."""
+        entries: dict[int, dict[str, Any]] = {}
+        candidates: set[int] = set()
+        for row in rows:
+            number = row.get("number")
+            if not isinstance(number, int) or isinstance(number, bool):
+                continue
+            diverged = (
+                self._note_armed(row)
+                and not _row_auto_merge_armed(row)
+                and number not in self._queued
+            )
+            if not diverged:
+                continue  # a cleared divergence resets the episode
+            previous = self._entries.get(number) or {}
+            entry = {
+                "consecutive_passes": int(previous.get("consecutive_passes") or 0) + 1,
+                "retries": int(previous.get("retries") or 0),
+                "head_sha": _listing_head_sha(row),
+                "last_seen_at": self._now.isoformat(),
+            }
+            if (
+                entry["consecutive_passes"] >= ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES
+                and entry["retries"] < ARMED_NOTE_REARM_MAX_RETRIES
+            ):
+                candidates.add(number)
+            entries[number] = entry
+        self._entries = entries
+        self._candidates = candidates
+        return frozenset(candidates)
+
+    def note_served(self, served: set[int] | frozenset[int]) -> None:
+        """Record the retry for candidates the window actually served this tick."""
+        self._served_retries = set()
+        for number in sorted(self._candidates & set(served)):
+            entry = self._entries[number]
+            entry["consecutive_passes"] = 0
+            entry["retries"] += 1
+            self._served_retries.add(number)
+            self._retried.append({"pr": number, "retry": entry["retries"]})
+
+    def note_examined(self, examined: set[int] | frozenset[int]) -> None:
+        """Reset the pass count for diverged PRs fully examined this tick.
+
+        An exam is the estate's response to the divergence; only ticks with no
+        exam move the hysteresis. Served retries already reset in note_served.
+        """
+        for number in examined:
+            if number in self._served_retries:
+                continue
+            entry = self._entries.get(number)
+            if entry is not None:
+                entry["consecutive_passes"] = 0
+
+    def report(self) -> dict[str, Any]:
+        return {
+            "state_path": str(self._state_path),
+            "min_consecutive_passes": ARMED_NOTE_REARM_MIN_CONSECUTIVE_PASSES,
+            "max_retries": ARMED_NOTE_REARM_MAX_RETRIES,
+            "watched": [
+                {
+                    "pr": number,
+                    "consecutive_passes": entry["consecutive_passes"],
+                    "retries": entry["retries"],
+                }
+                for number, entry in sorted(self._entries.items())
+            ],
+            "retried": list(self._retried),
+            "exhausted": [
+                {"pr": number, "retries": entry["retries"]}
+                for number, entry in sorted(self._entries.items())
+                if entry["retries"] >= ARMED_NOTE_REARM_MAX_RETRIES
+            ],
+        }
+
+    def persist(self) -> None:
+        if not self._persist:
+            return
+        _save_armed_note_reconciliation(self._state_path, self._repo, self._entries)
+
+
 def _decision_is_non_ready(decision: Decision) -> bool:
     return decision.action in {"blocked", "hold", "dequeue", "disable_auto_merge"} and bool(
         decision.reasons
@@ -4608,6 +5034,19 @@ def run_reconciler(
     # selection) — the fair rotation alone would keep them waiting ~100+ min
     # for the re-arm decision after a dequeue.
     dequeued_followup = frozenset(must_include_state) - queued_prs
+    armed_note_reconciliation = None
+    if rotation_state_path is not None and not _must_include_guarantee_disabled():
+        # Bounded re-arm retry for armed-note/unarmed-PR divergence (defect
+        # item 2): needs the timer's persistent state, so the one-shot path
+        # (no rotation state) skips it.
+        armed_note_reconciliation = _ArmedNoteReconciliation(
+            tasks=tasks,
+            queued_prs=queued_prs,
+            state_path=_armed_note_reconciliation_state_path(rotation_state_path),
+            repo=repo,
+            now=now,
+            persist=apply,
+        )
     if expected_auto_merge_method_override is not None:
         expected_auto_merge_method = _normalize_merge_method(expected_auto_merge_method_override)
         if expected_auto_merge_method is None:
@@ -4643,6 +5082,7 @@ def run_reconciler(
                 must_include=queued_prs,
                 full_exam=dequeued_followup,
                 fresh_evidence=_fresh_evidence_probe(tasks, now=now),
+                armed_note_reconciliation=armed_note_reconciliation,
             )
         else:
             prs, listing_route = fetch_open_prs(
@@ -5115,6 +5555,8 @@ def run_reconciler(
                 number,
                 must_include_state[number].get("consecutive_failures", 0),
             )
+    if armed_note_reconciliation is not None:
+        armed_note_reconciliation.persist()
     report = {
         "repo": repo,
         "apply": apply,
@@ -5171,6 +5613,9 @@ def run_reconciler(
                 sorted(window.fresh_overflow) if window is not None else []
             ),
         },
+        "armed_note_reconciliation": (
+            armed_note_reconciliation.report() if armed_note_reconciliation is not None else None
+        ),
         "decisions": [decision.as_dict() for decision in decisions],
         "counts": {
             "queue": sum(1 for decision in decisions if decision.action == "queue"),
