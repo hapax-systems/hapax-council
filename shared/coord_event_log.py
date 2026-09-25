@@ -5,6 +5,22 @@ coordination ledger is one SQLite WAL database outside every worktree, with a
 JSONL mirror for grepability. Lanes are event actors, not ledger writers; only
 the daemon writes the canonical log. Daemon-down enforcement paths can write a
 spool file for later daemon ingestion.
+
+``coord_events.sequence`` is a total order from ONE writer on ONE host. It is
+NOT a cross-host fencing token: a replica's sequence rolls back whenever a
+mirror restores an older image, and a frozen writer pins it indefinitely (the
+appendix ledger sat at 3463 from 2026-07-31 while the mirror made any local
+append unwritable — row coord-ledger-appendix-mirror-destroys-local-appends-20260925,
+derogation D-1). Epoch designs must key on a witnessed external anchor, never
+on this column.
+
+Host topology: one host's daemon is the canonical writer; every other host's
+``ledger.db`` is a downstream replica that a feed mirror may restore from the
+source at any minute. Replica-side writers therefore never append the local
+ledger copy: they spool intents (``spool_fail_open`` / ``append`` with
+``fail_open=True``) and the spool is forwarded to the canonical host, whose
+daemon ingests it (``ingest_spool`` — idempotent on ``event_id UNIQUE``, so a
+forwarding redelivery is a counted duplicate, never a second row).
 """
 
 from __future__ import annotations
@@ -23,7 +39,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol, Self, TypeVar
 
-from shared.jsonl_append import append_jsonl
+from shared.jsonl_append import append_jsonl, lock_path_for
 
 #: Env var redirecting the canonical coord tree for test isolation / sandboxed
 #: tools. Production leaves it unset; the default is a user-writable cache path.
@@ -477,6 +493,15 @@ class CoordEventLog:
                     removed.append(spool_path.name)
                 except OSError as exc:
                     errors.append(f"{spool_path.name}: unlink_failed:{type(exc).__name__}:{exc}")
+                # The append_jsonl flock sidecar goes with the consumed intent;
+                # an orphaned `.lock` per consumed intent is residue (43
+                # observed in the live spool dir on 2026-09-25).
+                try:
+                    lock_path_for(spool_path).unlink(missing_ok=True)
+                except OSError as exc:
+                    errors.append(
+                        f"{spool_path.name}: lock_unlink_failed:{type(exc).__name__}:{exc}"
+                    )
 
         return SpoolIngestResult(
             ingested=ingested,
@@ -1030,6 +1055,32 @@ def _cli_append(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cli_ingest_spool(args: argparse.Namespace) -> int:
+    """Drain fail-open spool intents into the canonical log; print the counts.
+
+    The operator-run repair surface for spooled intents (e.g. a forwarded spool
+    from a replica host): idempotent on ``event_id UNIQUE``, consumed intents
+    removed, failed intents left in place. Exit 1 when any intent failed so a
+    partial drain is never read as complete.
+    """
+    log = _event_log_from_args(args)
+    result = log.ingest_spool()
+    print(
+        json.dumps(
+            {
+                "ingested": result.ingested,
+                "duplicates": result.duplicates,
+                "failed": result.failed,
+                "removed": list(result.removed),
+                "errors": list(result.errors),
+                "db_path": str(log.db_path),
+                "spool_dir": str(log.spool_dir),
+            }
+        )
+    )
+    return 1 if result.failed else 0
+
+
 def _build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="coord_event_log",
@@ -1053,6 +1104,12 @@ def _build_cli_parser() -> argparse.ArgumentParser:
     ap.add_argument("--db-path", default=None)
     ap.add_argument("--jsonl-path", default=None)
     ap.add_argument("--spool-dir", default=None)
+    isp = sub.add_parser(
+        "ingest-spool", help="drain fail-open spool intents into the canonical log"
+    )
+    isp.add_argument("--db-path", default=None)
+    isp.add_argument("--jsonl-path", default=None)
+    isp.add_argument("--spool-dir", default=None)
     return parser
 
 
@@ -1060,6 +1117,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _build_cli_parser().parse_args(argv)
     if args.command == "append":
         return _cli_append(args)
+    if args.command == "ingest-spool":
+        return _cli_ingest_spool(args)
     return 2
 
 
