@@ -610,6 +610,9 @@ def test_determine_row_holds_the_intake_until_the_registry_declarations_merge() 
     row = next(p for p in registry["producers"] if p["id"] == "entitlement-census")
     assert "--no-intake" in row["command"]
     assert row["cadence_seconds"] < row["evidence_ttl_seconds"]
+    # hapax-determine runs on every host; the census runs only where its bindings hold.
+    command = row["command"]
+    assert command[command.index("--run-on-host") + 1] == "hapax-appendix"
 
 
 def test_duplicate_free_config_validates_and_duplicate_ids_are_refused() -> None:

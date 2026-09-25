@@ -183,6 +183,24 @@ def test_spent_budget_reads_no_host_and_probes_nothing(
     assert {h["error"] for h in view["hosts"]} == {"run_deadline_reached"}
 
 
+def test_on_another_host_the_run_is_skipped_and_touches_nothing(
+    cli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """hapax-determine runs on every host (podium too, measured 2026-09-25T05:15Z). The census
+    bindings are written from the FileStore host's point of view, so on any other host the run
+    must be a witnessed no-op: exit 0, nothing read, nothing written."""
+    paths = _files(tmp_path)
+    monkeypatch.setattr(cli, "_hostname", lambda: "hapax-podium")
+    assert cli.main(_argv(paths, "--run-on-host", "hapax-appendix", "--json")) == 0
+    assert cli.calls["hosts"] == [] and cli.calls["http"] == [] and cli.calls["secrets"] == []
+    assert not paths["out"].exists()
+    assert json.loads(capsys.readouterr().out)["skipped"] is True
+
+    monkeypatch.setattr(cli, "_hostname", lambda: "hapax-appendix")
+    cli.main(_argv(paths, "--run-on-host", "hapax-appendix", "--no-intake"))
+    assert cli.calls["hosts"]
+
+
 def test_host_reads_are_capped_by_the_budget(cli, tmp_path: Path) -> None:
     paths = _files(tmp_path)
     cli.main(_argv(paths, "--no-intake"))

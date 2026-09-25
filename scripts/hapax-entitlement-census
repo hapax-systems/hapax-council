@@ -135,10 +135,14 @@ def _scout_report(config: CensusConfig, timeout: float) -> dict[str, Any] | None
     return data if isinstance(data, dict) else None
 
 
+def _hostname() -> str:
+    return os.uname().nodename
+
+
 def _gpu_probe(host_id: str) -> tuple[bool, list[str]]:
     from shared.estate_host_inventory import probe_host
 
-    facts = probe_host({"name": host_id, "os": "linux"}, self_name=os.uname().nodename)
+    facts = probe_host({"name": host_id, "os": "linux"}, self_name=_hostname())
     return facts.reachable, list(facts.gpus)
 
 
@@ -197,7 +201,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="Observe and render; write nothing")
     parser.add_argument("--now", default=None, help="Override the run time (ISO-8601)")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--run-on-host",
+        default=None,
+        help="Run only on this host name; elsewhere exit 0 'skipped' (hapax-determine runs on every "
+        "host, and the census bindings are written from the FileStore host's point of view)",
+    )
     args = parser.parse_args(argv)
+
+    if args.run_on_host and _hostname() != args.run_on_host:
+        skipped = {"ok": True, "skipped": True, "host": _hostname(), "runs_on": args.run_on_host}
+        print(
+            json.dumps(skipped) if args.json else f"skipped: this census runs on {args.run_on_host}"
+        )
+        return 0
 
     try:
         config = load_census_config(args.config)
