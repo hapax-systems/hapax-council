@@ -30,10 +30,13 @@ bind and passes, saying so.
 Bypass: ``HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1`` (incident response only),
 honored here so every caller shares one mechanism.
 
-Failure mode: fail-OPEN on infrastructure errors reading the NOTE (missing /
-unreadable file — a broken gate must not brick closures), but fail-CLOSED on
-receipt problems (an absent or invalid receipt is exactly what this gate
-exists to catch).
+Failure mode: fail-OPEN only when the NOTE is absent — a missing file means
+no such task, and a broken gate must not brick closures. A note that EXISTS
+but cannot be read fails CLOSED: present-but-unreadable must never read as
+absent (the rule the receipt, ``route_metadata``, and frontmatter paths
+already apply), and the refusal names the case so the operator can tell
+corruption from absence. Receipt problems fail CLOSED (an absent or invalid
+receipt is exactly what this gate exists to catch).
 """
 
 from __future__ import annotations
@@ -188,6 +191,25 @@ def _head_refusal(task_id: str, receipt: Path, blockers: tuple[str, ...]) -> str
     return "\n".join(lines)
 
 
+def _unreadable_note_refusal(path: Path, exc: OSError) -> str:
+    """The present-but-unreadable refusal: names the case and its next action."""
+    return "\n".join(
+        [
+            f"cc-close BLOCKED: the task note exists but is unreadable ({exc}):",
+            f"  {path}",
+            "",
+            "An existing-but-unreadable note is not an absent one: the row may declare",
+            "the review floor, and closing it unread would skip acceptance-receipt",
+            "enforcement entirely.",
+            "",
+            "Next action: restore read access, then rerun. On the NFS-backed vault",
+            "this is usually a transient mount fault — retry once the mount recovers.",
+            "If closures must proceed during an outage, the incident bypass is",
+            "HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1; record its use.",
+        ]
+    )
+
+
 def gate(
     path: Path,
     *,
@@ -200,13 +222,15 @@ def gate(
     if os.environ.get("HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF") == "1":
         return 0, "acceptance-receipt gate disabled by HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF=1"
 
-    if not path.is_file():
-        return 0, f"fail-OPEN: source path missing or not a file ({path})"
-
     try:
         text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # Absence stays the missing case: no note, no task, nothing to gate.
+        return 0, f"fail-OPEN: source note missing — no such task ({path})"
     except OSError as exc:
-        return 0, f"fail-OPEN: source unreadable ({exc})"
+        # Present-but-unreadable is NOT absence: the unread row may carry the
+        # review floor, so closing it unread would skip acceptance entirely.
+        return 2, _unreadable_note_refusal(path, exc)
 
     frontmatter = frontmatter_from_text(text)
     if not requires_acceptance_receipt(frontmatter):

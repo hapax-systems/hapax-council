@@ -5,6 +5,10 @@ as ``done`` unless a signed acceptance receipt — acceptor, verdict,
 timestamp, artifact — exists beside the note as ``<task_id>.acceptance.yaml``
 with verdict ``accepted``. Non-review-floor closures are untouched.
 
+A note that EXISTS but cannot be read is not an absent one: it may declare
+the review floor, so the gate fails CLOSED on an unreadable note and names
+the case. Only a genuinely missing note fails open (no note, no task).
+
 Covers both surfaces:
 - ``scripts/cc-close-acceptance-receipt-check.py`` gate() unit behavior
 - ``scripts/cc-close`` end-to-end (the demonstrated acceptance criterion)
@@ -18,6 +22,8 @@ import subprocess
 import textwrap
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CC_CLOSE = REPO_ROOT / "scripts" / "cc-close"
@@ -132,6 +138,59 @@ class TestCheckerGate:
 
         assert code == 0
         assert "fail-OPEN" in message
+
+    def test_missing_note_pass_names_the_missing_case(self, tmp_path: Path) -> None:
+        # Requirement 3: the pass must name which case occurred, so the operator
+        # can tell absence from corruption.
+        checker = _load_checker()
+
+        code, message = checker.gate(tmp_path / "absent.md")
+
+        assert code == 0
+        assert "missing" in message
+        assert "unreadable" not in message
+
+    def test_fails_closed_on_unreadable_note(self, tmp_path: Path, monkeypatch: object) -> None:
+        """A present-but-unreadable note must never read as absent.
+
+        The rest of the module already applies that rule — to the receipt, to
+        the flag value, to route_metadata, to the frontmatter document; the note
+        file was the one exception, and an unreadable review-floor row closed
+        unreviewed (cc-close-gate-unreadable-note-fail-open-20260914). Simulated
+        OSError witness: the transient-NFS shape.
+        """
+        checker = _load_checker()
+        note = _write_note(tmp_path, "task-r")
+        real_read_text = Path.read_text
+
+        def _deny_note(self: Path, *args: object, **kwargs: object) -> str:
+            if self == note:
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _deny_note)  # type: ignore[attr-defined]
+
+        code, message = checker.gate(note)
+
+        assert code == 2
+        assert "unreadable" in message
+        assert "missing" not in message
+        assert str(note) in message
+        # The refusal must carry its own next action (executive_function).
+        assert "HAPAX_ACCEPTANCE_RECEIPT_GATE_OFF" in message
+
+    def test_fails_closed_on_permission_denied_note(self, tmp_path: Path) -> None:
+        """The permissions witness: mode-000 is the shape an ACL/NFS denial takes."""
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root reads through permission bits — no denial to witness")
+        checker = _load_checker()
+        note = _write_note(tmp_path, "task-r")
+        note.chmod(0)
+
+        code, message = checker.gate(note)
+
+        assert code == 2
+        assert "unreadable" in message
 
 
 HEAD_A = "a" * 40
@@ -490,6 +549,27 @@ class TestCcCloseHeadBindingEndToEnd:
 
 
 class TestCcCloseEndToEnd:
+    def test_cc_close_blocks_on_unreadable_note(self, tmp_path: Path) -> None:
+        """End-to-end: cc-close must REFUSE done when the note cannot be read.
+
+        Pre-fix this closed unreviewed: the gate failed OPEN on the OSError and
+        the move's own read crash (exit 1, no next action) was the only thing
+        that stopped it. Post-fix the gate itself refuses with the named case.
+        """
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            pytest.skip("root reads through permission bits — no denial to witness")
+        home = tmp_path / "home"
+        vault = _vault(home)
+        note = _write_note(vault / "active", "task-r")
+        note.chmod(0)
+
+        result = _run_close(home, "task-r")
+
+        assert result.returncode == 2
+        assert "unreadable" in result.stderr
+        assert (vault / "active" / "task-r.md").exists()
+        assert not (vault / "closed" / "task-r.md").exists()
+
     def test_cc_close_blocks_review_floor_task_without_receipt(self, tmp_path: Path) -> None:
         home = tmp_path / "home"
         vault = _vault(home)
