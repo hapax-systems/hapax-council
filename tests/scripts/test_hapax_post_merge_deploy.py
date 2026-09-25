@@ -11,6 +11,7 @@ import re
 import shlex
 import signal
 import subprocess
+import sys
 import textwrap
 import time
 from pathlib import Path
