@@ -66,6 +66,17 @@ from typing import Final
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ADMISSION_WRITER = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admission"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.quota_headroom import (  # noqa: E402
+    TraceReadError,
+    claude_rate_limit_windows,
+    overage_state,
+    read_claude_probe_receipts,
+    read_claude_stream_windows,
+    request_details,
+)
 
 #: The witness name the receipt validator's allowlist requires for this observation.
 WITNESS_PREFIX = "claude-subscription-headroom-observed"
@@ -80,6 +91,14 @@ DEFAULT_MAX_AGE_SECONDS = 1800
 #: Receipt lifetime. Deliberately short: an observation of "served at T" cannot vouch
 #: for a quota wall that appears at T+1h.
 DEFAULT_STALE_AFTER_SECONDS = 3600
+#: The ledger keeps a window reading fresh for one hour (``MEASUREMENT_TTL``). Probing once the
+#: newest reading is older than 40 minutes lands the next reading before that lapses, on a
+#: 10-minute timer, and never probes for a quantity that is already fresh (H1 #15: read before
+#: probing). The 20-minute gap is deliberate lead time, not a mismatch to align away.
+DEFAULT_QUANTITY_MAX_AGE_SECONDS = 2400
+DEFAULT_RECEIPT_DIR = Path(
+    os.environ.get("HAPAX_RELAY_RECEIPT_DIR", str(Path.home() / ".cache/hapax/relay/receipts"))
+)
 
 #: Markers that mean the SUBSCRIPTION refused for quota reasons. Kept narrow and
 #: anchored to provider wording: a generic "error" must never read as a quota wall,
@@ -109,16 +128,38 @@ ROUTE_MODEL_PREFIXES: Final[dict[str, tuple[str, ...]]] = {
 
 
 class Observation:
-    __slots__ = ("kind", "at", "source", "detail", "model")
+    __slots__ = (
+        "kind",
+        "at",
+        "source",
+        "detail",
+        "model",
+        "scrubbed_env",
+        "windows",
+        "subscription_served",
+    )
 
     def __init__(
-        self, kind: str, at: datetime, source: str, detail: str = "", model: str | None = None
+        self,
+        kind: str,
+        at: datetime,
+        source: str,
+        detail: str = "",
+        model: str | None = None,
+        scrubbed_env: tuple[str, ...] = (),
+        windows: Mapping[str, tuple[float, datetime]] | None = None,
+        subscription_served: bool = False,
     ) -> None:
         self.kind = kind  # "served" | "wall"
         self.at = at
         self.source = source
         self.detail = detail
         self.model = model
+        self.scrubbed_env = scrubbed_env
+        # Subscription windows the provider reported on this request; only the probe has them.
+        self.windows = dict(windows or {})
+        # True only when every rate event said an allowed status and explicitly no overage.
+        self.subscription_served = subscription_served
 
 
 def _anthropic_model(record: Mapping[str, object]) -> str | None:
@@ -322,10 +363,11 @@ def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
     return out
 
 
-#: Bounded active probe, used ONLY when nothing exercised the subscription recently, so a
-#: quiet estate does not silently drop the review floor. Measured 2026-08-19: ~$0.02 once
-#: the prompt cache is warm. A FRESH PROCESS taking the same path a reviewer would — which
-#: is why it is better evidence than this process's own liveness, and why it is not presence.
+#: Bounded active probe, used when any requested route lacks recent in-family passive evidence,
+#: so either a quiet estate or a busy session in another family cannot silently drop the review
+#: floor. Measured 2026-08-19: ~$0.02 once the prompt cache is warm. A FRESH PROCESS taking the
+#: same path a reviewer would is better evidence than this process's own liveness and is not
+#: presence.
 #: The probe must request a model whose family can witness EVERY route it intends to mint.
 #: An earlier revision probed with Haiku, which cannot witness claude.review.opus — the one
 #: route the review floor depends on — so the probe could only ever have covered the route
@@ -333,6 +375,9 @@ def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
 #: probe covers both routes; probing per family would double the spend for nothing.
 PROBE_MODEL = "claude-opus-5"
 
+#: stream-json, because only the stream carries ``rate_limit_event`` with the subscription's
+#: five-hour and seven-day utilization; the single ``json`` reply drops it. Print mode refuses
+#: stream-json without --verbose.
 PROBE_ARGV = (
     "claude",
     "-p",
@@ -340,31 +385,36 @@ PROBE_ARGV = (
     "--model",
     PROBE_MODEL,
     "--output-format",
-    "json",
+    "stream-json",
+    "--verbose",
     "--strict-mcp-config",
     "--mcp-config",
     '{"mcpServers":{}}',
 )
 PROBE_TIMEOUT_SECONDS = 180
 
-#: Env vars that redirect the Claude CLI away from the operator's subscription. If ANY is
-#: set, the probe would measure somebody else's endpoint while the receipt asserts
-#: ``auth_surface: subscription``. NOT hypothetical: /run/user/1000/hapax-secrets.env carries
-#: ANTHROPIC_BASE_URL pointing at podium's LiteLLM proxy, and this unit originally loaded that
-#: file via EnvironmentFile=. The estate has already had one incident where inherited provider
-#: env silently redirected Claude to a third-party API.
-#:
-#: Scrubbing alone is NOT the fix. If the caller's environment says "talk to that endpoint",
-#: quietly ignoring it and measuring something else is a different lie. The probe REFUSES and
-#: names the variable, so the route holds rather than being vouched for on the wrong evidence.
+#: Known provider controls that the operator-subscription probe deliberately removes. Only names,
+#: never values, are persisted in a probe-backed admission receipt so the measurement discloses
+#: which ambient controls could not affect it.
+PROBE_ENV_SCRUBBED = (
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_MODEL",
+)
+
+#: Env vars that can redirect the Claude CLI away from the operator's subscription. Known exact
+#: controls above are scrubbed in the child process; any other redirect control still refuses the
+#: probe. This keeps the guard fail-closed as new provider controls appear.
 PROVIDER_REDIRECT_ENV_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_USE_")
 
 
-def provider_redirect_env() -> list[str]:
+def provider_redirect_env(env: Mapping[str, str] | None = None) -> list[str]:
     """Names of set env vars that would point the probe at a non-subscription endpoint."""
+    source = os.environ if env is None else env
     return sorted(
         name
-        for name, value in os.environ.items()
+        for name, value in source.items()
         if value and name.startswith(PROVIDER_REDIRECT_ENV_PREFIXES)
     )
 
@@ -372,11 +422,14 @@ def provider_redirect_env() -> list[str]:
 def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
     """Actively observe account-live by making one bounded real request.
 
-    Refuses outright when the environment would redirect the CLI off the subscription —
-    see :data:`PROVIDER_REDIRECT_ENV_PREFIXES`. Returning ``None`` means "no evidence",
-    which holds the route; it never mints.
+    Known provider controls are removed from the subprocess environment. Any redirecting
+    variable not in that explicit scrub list still refuses the probe. Returning ``None`` means
+    "no evidence", which holds the route; it never mints.
     """
-    redirected = provider_redirect_env()
+    probe_env = dict(os.environ)
+    for name in PROBE_ENV_SCRUBBED:
+        probe_env.pop(name, None)
+    redirected = provider_redirect_env(probe_env)
     if redirected:
         print(
             "probe refused: environment would redirect the Claude CLI off the operator "
@@ -392,6 +445,7 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
             text=True,
             timeout=PROBE_TIMEOUT_SECONDS,
             cwd=cwd,
+            env=probe_env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         # A probe that could not RUN is a broken instrument, not an absence of evidence.
@@ -401,16 +455,19 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         # determination spine enforces; it belongs here too.
         return Observation("probe_failed", now, "active-probe", f"{type(exc).__name__}: {exc}")
     blob = (proc.stdout or "").strip()
-    try:
-        record = json.loads(blob)
-    except ValueError:
+    record, rate_limits, unparsed = _probe_records(blob)
+    # As a refusal, only an explicit overage serve counts; an absent flag is not overage.
+    if any(info.get("status") == "rejected" or overage_state(info) is True for info in rate_limits):
+        # The subscription refused this request, or served it from overage. Either way the
+        # window is spent: a result served after that never witnesses subscription headroom.
+        return Observation("wall", now, "active-probe", "provider-rate-limit-rejected")
+    if record is None:
         # A non-JSON failure still carries the provider's refusal wording — this is exactly
-        # how codex reports its wall — so classify it rather than discarding it.
-        combined = f"{blob} {proc.stderr or ''}"
+        # how codex reports its wall — so classify it rather than discarding it. Only text
+        # that is not a stream record is read: every stream names "rate_limit_event".
+        combined = f"{unparsed} {proc.stderr or ''}"
         if any(marker.search(combined) for marker in WALL_MARKERS):
             return Observation("wall", now, "active-probe", "provider-quota-refusal")
-        return None
-    if not isinstance(record, dict):
         return None
     if any(marker.search(_wall_text(record)) for marker in WALL_MARKERS):
         return Observation("wall", now, "active-probe", "provider-quota-refusal")
@@ -421,8 +478,55 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         model = _anthropic_model(record)
         if model is None:
             return None
-        return Observation("served", now, "active-probe", model=model)
+        windows: dict[str, tuple[float, datetime]] = {}
+        for info in rate_limits:  # stream order; a later event is the newer reading
+            windows.update(claude_rate_limit_windows(info))
+        witnessed = bool(rate_limits) and all(
+            request_details(info)["subscription_served"] == 1 for info in rate_limits
+        )
+        return Observation(
+            "served",
+            now,
+            "active-probe",
+            model=model,
+            scrubbed_env=PROBE_ENV_SCRUBBED,
+            windows=windows,
+            subscription_served=witnessed,
+        )
     return None
+
+
+def _probe_records(blob: str) -> tuple[dict | None, list[dict], str]:
+    """The probe's ``result`` record, every ``rate_limit_info`` it streamed, and other text.
+
+    Reads stream-json lines and still accepts a single-object ``json`` reply, which carries
+    no window. A stream without a result record served nothing. The text is only the output
+    that is not a JSON record, for refusal wording printed outside the stream.
+    """
+    try:
+        whole = json.loads(blob)
+    except ValueError:
+        whole = None
+    if isinstance(whole, dict) and whole.get("type") != "rate_limit_event":
+        return whole, [], ""
+    result: dict | None = None
+    rate_limits: list[dict] = []
+    unparsed: list[str] = []
+    for line in blob.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            unparsed.append(line)
+            continue
+        if not isinstance(record, dict):
+            continue
+        if record.get("type") == "result":
+            result = record
+        elif record.get("type") == "rate_limit_event" and isinstance(
+            record.get("rate_limit_info"), dict
+        ):
+            rate_limits.append(record["rate_limit_info"])
+    return result, rate_limits, "\n".join(unparsed)
 
 
 def _mtime(path: Path) -> datetime | None:
@@ -611,6 +715,22 @@ def mint(
         ]
         if receipt_dir is not None:
             argv += ["--receipt-dir", str(receipt_dir)]
+        if route_evidence.scrubbed_env:
+            argv.append("--probe-environment-scrubbed")
+        if route_evidence.subscription_served:
+            argv.append("--subscription-served")
+        # Keep the number the probe saw; the receipt used to reduce it to quota_available. A
+        # window already reset at the observation is dropped, never allowed to cost the receipt.
+        for name, (used_percent, resets_at) in sorted(route_evidence.windows.items()):
+            if resets_at <= observed_at:
+                continue
+            flag = name.replace("_", "-")
+            argv += [
+                f"--{flag}-used-percent",
+                repr(float(used_percent)),
+                f"--{flag}-resets-at",
+                resets_at.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            ]
         if dry_run:
             results.append({"route_id": route_id, "would_run": argv[2:]})
             continue
@@ -630,6 +750,31 @@ def mint(
             }
         )
     return results
+
+
+def newest_window_reading(
+    now: datetime, *, receipt_dir: Path, headless_glob: str
+) -> datetime | None:
+    """When the newest seven-day reading the ledger reads was taken; None when there is none.
+
+    Reads the two sources the ledger reads (probe-backed receipts and headless stream-json
+    outputs) through the same reader, so this and the ledger cannot disagree about staleness.
+    Raises ``TraceReadError`` on an unreadable source.
+    """
+    rows = read_claude_probe_receipts(receipt_dir, now=now)
+    pattern = Path(os.path.expanduser(headless_glob))
+    if pattern.parts[-2:] == ("*", "output.jsonl"):
+        rows += read_claude_stream_windows(pattern.parent.parent, now=now)
+    # A reading whose window has since reset describes a closed window: it is not current.
+    times = [
+        row.observed_at
+        for row in rows
+        if row.capacity_id == "claude.subscription.weekly"
+        and row.observed_at is not None
+        and row.resets_at is not None
+        and row.resets_at > now
+    ]
+    return max(times, default=None)
 
 
 def mint_failed(receipts: list[dict]) -> bool:
@@ -657,8 +802,16 @@ def main(argv: list[str] | None = None) -> int:
         "--probe",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="When no passive evidence exists, make ONE bounded real request to observe "
-        "account-live directly (~$0.02). --no-probe restricts to passive observation.",
+        help="When any requested route lacks passive in-family evidence, make ONE bounded real "
+        "request to observe account-live directly (~$0.02). --no-probe restricts to passive "
+        "observation.",
+    )
+    parser.add_argument(
+        "--quantity-max-age-seconds",
+        type=int,
+        default=DEFAULT_QUANTITY_MAX_AGE_SECONDS,
+        help="Probe when the newest subscription window reading is older than this, even if "
+        "every route has passive evidence; never when it is newer.",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -677,24 +830,92 @@ def main(argv: list[str] | None = None) -> int:
         transcript_glob=args.transcript_glob,
     )
 
-    # A quiet estate is not an exhausted one. Passive evidence only exists when something
-    # happened to run; without a fallback, an idle hour silently drops the review floor —
-    # which is the exact failure this whole change exists to end. The probe is a fresh
-    # process making one bounded real request, so it observes what a reviewer would get.
+    # Probe for ROUTE evidence, not merely for account-level evidence. A Fable serve witnesses
+    # headless.full but says nothing about review.opus; treating that as "the account was served"
+    # and suppressing the probe starves the review route indefinitely. Preserve every passive
+    # route witness already found and let one probe fill only the missing families.
     # NOT used to override a wall: a detected wall is the live state and must stand.
-    if verdict == "no_evidence" and args.probe and not args.dry_run:
+    by_route = (
+        evidence_by_route(found, route_ids) if verdict == "served" else dict.fromkeys(route_ids)
+    )
+    routes_missing_passive_evidence = [
+        route_id for route_id, route_evidence in by_route.items() if route_evidence is None
+    ]
+    # Read the quantity before spending a request on it. An unreadable source narrows:
+    # it never triggers a quantity probe on its own.
+    quantity: dict = {"max_age_seconds": args.quantity_max_age_seconds}
+    try:
+        reading_at = newest_window_reading(
+            now,
+            receipt_dir=args.receipt_dir or DEFAULT_RECEIPT_DIR,
+            headless_glob=args.headless_glob,
+        )
+    except TraceReadError:
+        reading_at, quantity["read_error"] = None, "corrupt_or_unreadable_quantity_source"
+    quantity["newest_reading_at"] = (
+        reading_at.isoformat().replace("+00:00", "Z") if reading_at else None
+    )
+    quantity["stale"] = "read_error" not in quantity and (
+        reading_at is None or (now - reading_at).total_seconds() > args.quantity_max_age_seconds
+    )
+    probe_report: dict | None = None
+    if (
+        verdict != "walled"
+        and (routes_missing_passive_evidence or quantity["stale"])
+        and args.probe
+        and not args.dry_run
+    ):
+        probe_report = {
+            "attempted": True,
+            "requested_for_routes": routes_missing_passive_evidence,
+            "reason": "requested route lacked in-model-family served evidence inside the window"
+            if routes_missing_passive_evidence
+            else "the newest subscription window reading is older than its max-age",
+            "quantity": quantity,
+            "model": PROBE_MODEL,
+            "environment_variables_scrubbed": list(PROBE_ENV_SCRUBBED),
+        }
         probed = probe(now)
         if probed is not None:
-            verdict, evidence, found = probed.kind, probed, [probed]
+            probe_report["outcome"] = probed.kind
+            if probed.kind == "served":
+                # A probe that saw a live weekly window also witnesses every route it can vouch
+                # for, so the minted receipt keeps the pacing number; a passive serve carries
+                # none. Without one it only fills the routes that lacked evidence.
+                weekly = probed.windows.get("seven_day")
+                widen = weekly is not None and weekly[1] > probed.at
+                targets = route_ids if widen else tuple(routes_missing_passive_evidence)
+                witnessed = evidence_by_route([probed], tuple(targets))
+                for route_id, route_evidence in witnessed.items():
+                    if route_evidence is not None:
+                        by_route[route_id] = route_evidence
+                probe_report["witnessed_routes"] = [
+                    route_id for route_id, route_evidence in witnessed.items() if route_evidence
+                ]
+                found.append(probed)
+                verdict, evidence, _ = _verdict(found)
+            elif probed.kind == "wall":
+                # A measured refusal is the live state, whatever the passive evidence said.
+                # Only a "served" verdict reaches mint() below, so nothing is minted.
+                verdict, evidence = "walled", probed
+            elif not any(by_route.values()):
+                verdict, evidence = probed.kind, probed
+            # Otherwise the probe could not run, but passive serves vouch for the routes that
+            # have them: those are minted, the rest stay held, and the unit still exits 7.
+        else:
+            probe_report["outcome"] = "no_evidence"
+            probe_report["witnessed_routes"] = []
     payload: dict = {
         "verdict": verdict,
         "observed_at": evidence.at.isoformat().replace("+00:00", "Z") if evidence else None,
         "source": evidence.source if evidence else None,
         "route_ids": list(route_ids),
+        "quantity": quantity,
     }
+    if probe_report is not None:
+        payload["probe"] = probe_report
 
     if verdict == "served":
-        by_route = evidence_by_route(found, route_ids)
         payload["receipts"] = mint(
             evidence,
             now=now,
@@ -718,6 +939,13 @@ def main(argv: list[str] | None = None) -> int:
         elif not args.dry_run and not any(r.get("returncode") == 0 for r in payload["receipts"]):
             payload["hint"] = "every route was skipped; no receipt was written"
             rc = 5
+        elif probe_report is not None and probe_report.get("outcome") == "probe_failed":
+            # Passive routes were minted; the probe itself is still a broken instrument.
+            payload["hint"] = (
+                "the active probe could not run; passive evidence was minted for the routes it "
+                "covers. Next action: run `claude -p ok` by hand under the observer's environment"
+            )
+            rc = 7
         else:
             rc = 0
     elif verdict == "walled":

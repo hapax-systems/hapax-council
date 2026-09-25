@@ -15,6 +15,136 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+
+def observe_native_lifecycle(
+    path: Path,
+    *,
+    platform: str,
+    offset: int = 0,
+    process_returncode: int | None = None,
+    cancellation_requested: bool = False,
+    expected_resume_id: str | None = None,
+) -> dict[str, Any]:
+    """Translate native stream events; never promote launcher exit to completion.
+
+    `offset` must be captured before this launch, since lane output files append
+    across sessions. `process_returncode` is supplied only after waiting for the
+    owned native process (not an interactive launcher or remote SSH transport).
+    Readiness of instructions/services remains separately unobserved. This is
+    support evidence, not task acceptance or a provider-side attestation.
+    """
+    result: dict[str, Any] = {
+        "platform": platform,
+        "phase": "unobserved",
+        "session_id": None,
+        "session_identity": "unobserved",
+        "readiness": "unobserved",
+        "complete": False,
+        "cancel_requested": cancellation_requested,
+        "cancel_confirmed": False,
+        "resume": "unobserved",
+        "process_returncode": process_returncode,
+        "evidence": [],
+        "malformed_lines": 0,
+        "may_authorize": False,
+    }
+    if platform not in {"claude", "codex"}:
+        result["reason"] = "native_lifecycle_mapping_unimplemented"
+        return result
+    if offset < 0:
+        raise ValueError("native stream offset must be nonnegative")
+    try:
+        with path.open("rb") as stream:
+            if stream.seek(0, 2) < offset:
+                result["reason"] = "native_stream_truncated"
+                return result
+            stream.seek(offset)
+            lines = stream.readlines()
+    except OSError:
+        result["reason"] = "native_stream_unavailable"
+        return result
+    terminal_success = False
+    native_failed = False
+    session_ids: set[str] = set()
+    for number, line in enumerate(lines):
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeError):
+            result["malformed_lines"] += 1
+            continue
+        if not isinstance(event, dict):
+            result["malformed_lines"] += 1
+            continue
+        kind = event.get("type")
+        phase = None
+        session_id = None
+        if platform == "codex":
+            if kind == "thread.started":
+                session_id = event.get("thread_id")
+                phase = "initialized"
+            elif kind in {"turn.started", "item.started", "item.updated", "item.completed"}:
+                phase = "running"
+            elif kind == "turn.completed":
+                phase, terminal_success = "turn_complete", True
+            elif kind in {"turn.failed", "error"}:
+                phase, native_failed = "failed", True
+        else:
+            if kind == "system" and event.get("subtype") == "init":
+                session_id = event.get("session_id")
+                phase = "initialized"
+            elif kind in {"assistant", "stream_event"}:
+                phase = "running"
+            elif kind == "result":
+                terminal_success = event.get("subtype") == "success" and not event.get("is_error")
+                native_failed = not terminal_success
+                phase = "turn_complete" if terminal_success else "failed"
+        if phase:
+            if phase in {"initialized", "running"}:
+                terminal_success = False
+            result["phase"] = phase
+            result["evidence"].append({"offset": offset, "line": number + 1, "type": kind})
+        if isinstance(session_id, str) and session_id:
+            session_ids.add(session_id)
+            result["session_id"] = session_id
+    result["session_identity"] = (
+        "single_native_session"
+        if len(session_ids) == 1
+        else "ambiguous"
+        if session_ids
+        else "unobserved"
+    )
+    if expected_resume_id is not None:
+        result["resume"] = (
+            "unobserved"
+            if len(session_ids) != 1
+            else "same_native_session"
+            if result["session_id"] == expected_resume_id
+            else "session_mismatch"
+        )
+    # subprocess wait's negative signal return code witnesses termination. An
+    # arbitrary positive failure after a cancel request does not prove cancellation.
+    if cancellation_requested and process_returncode is not None and process_returncode < 0:
+        result["cancel_confirmed"] = True
+        result["phase"] = "cancelled"
+    elif process_returncode is not None:
+        result["complete"] = (
+            process_returncode == 0
+            and terminal_success
+            and not native_failed
+            and len(session_ids) == 1
+            and result["malformed_lines"] == 0
+            and result["resume"] != "session_mismatch"
+        )
+        result["phase"] = (
+            "complete"
+            if result["complete"]
+            else "failed"
+            if process_returncode
+            else "exited_unverified"
+        )
+    return result
 
 
 @dataclass(frozen=True)
@@ -254,3 +384,90 @@ def check_execution_invariant(
         unsanctioned_models=unsanctioned_models,
         unsanctioned_fallbacks=unsanctioned_fallbacks,
     )
+
+
+def _native_receipt_main() -> int:
+    import argparse
+    import hashlib
+    import socket
+
+    parser = argparse.ArgumentParser(description="Observe an owned native headless process exit")
+    parser.add_argument("--stream", type=Path, required=True)
+    parser.add_argument("--diagnostics", type=Path, required=True)
+    parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--returncode", type=int, required=True)
+    parser.add_argument("--local-child", action="store_true")
+    parser.add_argument("--cancel-signal", type=int, default=0)
+    parser.add_argument("--execution-descriptor")
+    parser.add_argument("--execution-route")
+    parser.add_argument("--native-home", type=Path)
+    parser.add_argument("--workdir", type=Path)
+    parser.add_argument("--launch-started-at")
+    args = parser.parse_args()
+    # Bash wait conflates signal termination with an explicit exit(128+signal).
+    # Do not manufacture a negative subprocess wait witness from that value.
+    observed = observe_native_lifecycle(
+        args.stream,
+        platform="codex",
+        process_returncode=args.returncode if args.local_child else None,
+        cancellation_requested=bool(args.cancel_signal),
+    )
+    observed.update(
+        {
+            "receipt_path": str(args.receipt),
+            "stream_path": str(args.stream),
+            "stream_sha256": hashlib.sha256(args.stream.read_bytes()).hexdigest(),
+            "diagnostics_path": str(args.diagnostics),
+            "observer_host": socket.gethostname(),
+            "owned_native_process": args.local_child,
+            "wait_status_kind": "shell_wait",
+            "cancel_signal_requested": args.cancel_signal or None,
+            "owned_exit_after_cancel": bool(args.cancel_signal and args.local_child),
+        }
+    )
+    identity = {
+        "status": "unverified",
+        "may_authorize": False,
+        "reason_codes": ["native_launch_descriptor_unavailable"],
+    }
+    if not args.local_child:
+        identity["reason_codes"] = ["remote_native_identity_unobserved"]
+    elif all(
+        (
+            args.execution_descriptor,
+            args.execution_route,
+            args.native_home,
+            args.workdir,
+            args.launch_started_at,
+        )
+    ):
+        try:
+            # This file is selected from the activated source release. -I
+            # isolates ambient paths; use that same explicit root for imports.
+            import sys
+
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+            from shared.codex_execution_receipt import observe_codex_run_identity
+            from shared.platform_capability_registry import ExecutionDescriptor
+
+            descriptor = ExecutionDescriptor.model_validate_json(args.execution_descriptor)
+            identity = observe_codex_run_identity(
+                descriptor,
+                route_id=args.execution_route,
+                session_id=observed["session_id"],
+                native_home=args.native_home,
+                workdir=args.workdir,
+                launch_started_at=args.launch_started_at,
+            )
+        except Exception as exc:
+            # Evidence failure cannot overwrite the waited native exit status.
+            identity["reason_codes"] = [f"native_identity_observer_failed:{type(exc).__name__}"]
+    observed["execution_identity"] = identity
+    args.receipt.parent.mkdir(parents=True, exist_ok=True)
+    with args.receipt.open("x") as out:
+        out.write(json.dumps(observed, sort_keys=True) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_native_receipt_main())

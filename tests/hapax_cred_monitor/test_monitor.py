@@ -1,7 +1,7 @@
 """Tests for snapshot + delta computation.
 
 The monitor must operate exclusively on entry NAMES and never decrypt or
-read ``.gpg`` file contents. Tests cover snapshot walking, delta
+read ``.bin`` blob contents. Tests cover snapshot walking, delta
 computation, and missing-store fallback.
 """
 
@@ -14,56 +14,55 @@ import pytest
 from agents.hapax_cred_monitor.monitor import (
     Snapshot,
     compute_delta,
-    walk_pass_store,
+    walk_secret_store,
 )
 
 
-def _make_pass_store(root: Path, entries: list[str]) -> Path:
-    """Create a fake pass store under ``root`` with ``.gpg`` files at the
-    given entry names. The ``.gpg`` bodies are deliberately non-secret
-    sentinel bytes — tests must never read them, only walk filenames.
+def _make_secret_store(root: Path, entries: list[str]) -> Path:
+    """Create a fake FileStore under ``root`` with ``.bin`` blobs at the
+    given secret names (the flat ``<name>.bin`` layout). The blob bodies are
+    deliberately non-secret sentinel bytes — tests must never read them,
+    only list filenames.
     """
-    store = root / ".password-store"
+    store = root / "secrets"
     store.mkdir(parents=True, exist_ok=True)
     for name in entries:
-        path = store / f"{name}.gpg"
-        path.parent.mkdir(parents=True, exist_ok=True)
         # Sentinel content: if any code path reads this, the redaction
         # test asserts that this string never reaches stdout/log/state.
-        path.write_bytes(b"DO_NOT_READ_THIS_VALUE_SENTINEL")
+        (store / f"{name}.bin").write_bytes(b"DO_NOT_READ_THIS_VALUE_SENTINEL")
     return store
 
 
-class TestWalkPassStore:
-    def test_yields_entry_names_without_gpg_suffix(self, tmp_path: Path) -> None:
-        store = _make_pass_store(tmp_path, ["api/anthropic", "orcid/orcid"])
-        snap = walk_pass_store(store)
-        assert "api/anthropic" in snap.entries
-        assert "orcid/orcid" in snap.entries
-        assert all(not e.endswith(".gpg") for e in snap.entries)
+class TestWalkSecretStore:
+    def test_yields_secret_names_without_bin_suffix(self, tmp_path: Path) -> None:
+        store = _make_secret_store(tmp_path, ["api-anthropic", "orcid-orcid"])
+        snap = walk_secret_store(store)
+        assert "api-anthropic" in snap.entries
+        assert "orcid-orcid" in snap.entries
+        assert all(not e.endswith(".bin") for e in snap.entries)
 
     def test_returns_sorted_tuple(self, tmp_path: Path) -> None:
-        store = _make_pass_store(tmp_path, ["zenodo/api-token", "api/anthropic", "orcid/orcid"])
-        snap = walk_pass_store(store)
+        store = _make_secret_store(tmp_path, ["zenodo-api-token", "api-anthropic", "orcid-orcid"])
+        snap = walk_secret_store(store)
         assert list(snap.entries) == sorted(snap.entries)
 
-    def test_handles_nested_directories(self, tmp_path: Path) -> None:
-        store = _make_pass_store(
-            tmp_path, ["bluesky/operator-app-password", "google/oauth-client-id"]
-        )
-        snap = walk_pass_store(store)
-        assert "bluesky/operator-app-password" in snap.entries
-        assert "google/oauth-client-id" in snap.entries
+    def test_layout_is_flat_so_nested_blobs_are_not_entries(self, tmp_path: Path) -> None:
+        store = _make_secret_store(tmp_path, ["bluesky-operator-app-password"])
+        (store / "nested").mkdir()
+        (store / "nested" / "google-oauth-client-id.bin").write_bytes(b"DO_NOT_READ")
+        (store / "notes.txt").write_bytes(b"DO_NOT_READ")
+        snap = walk_secret_store(store)
+        assert snap.entries == ("bluesky-operator-app-password",)
 
     def test_missing_store_returns_empty_snapshot(self, tmp_path: Path) -> None:
-        snap = walk_pass_store(tmp_path / "nonexistent-store")
+        snap = walk_secret_store(tmp_path / "nonexistent-store")
         assert snap.entries == ()
         assert snap.captured_at  # still timestamped
         assert "nonexistent-store" in snap.store_path
 
     def test_records_capture_timestamp(self, tmp_path: Path) -> None:
-        store = _make_pass_store(tmp_path, ["api/anthropic"])
-        snap = walk_pass_store(store)
+        store = _make_secret_store(tmp_path, ["api-anthropic"])
+        snap = walk_secret_store(store)
         assert snap.captured_at.endswith("Z")
         assert "T" in snap.captured_at  # ISO-8601 shape
 
@@ -106,14 +105,14 @@ class TestComputeDelta:
 
 @pytest.fixture
 def fake_store(tmp_path: Path) -> Path:
-    return _make_pass_store(tmp_path, ["api/anthropic", "orcid/orcid", "zenodo/api-token"])
+    return _make_secret_store(tmp_path, ["api-anthropic", "orcid-orcid", "zenodo-api-token"])
 
 
-def test_walk_does_not_open_gpg_files(fake_store: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """If walk_pass_store ever reads ``.gpg`` bytes, the test fails.
+def test_walk_does_not_open_blob_files(fake_store: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If walk_secret_store ever reads ``.bin`` bytes, the test fails.
 
     Patches ``Path.read_bytes`` and ``Path.read_text`` and ``open`` to fail
-    if invoked on a ``.gpg`` path. ``Path.rglob`` and ``Path.is_dir`` are
+    if invoked on a ``.bin`` path. ``Path.glob`` and ``Path.is_dir`` are
     metadata-only and remain available.
     """
     real_read_bytes = Path.read_bytes
@@ -122,9 +121,9 @@ def test_walk_does_not_open_gpg_files(fake_store: Path, monkeypatch: pytest.Monk
 
     def guard(method_name: str):
         def _wrapped(self: Path, *args, **kwargs):  # type: ignore[no-untyped-def]
-            if str(self).endswith(".gpg"):
+            if str(self).endswith(".bin"):
                 raise AssertionError(
-                    f"cred monitor MUST NOT call {method_name} on .gpg files; got {self}"
+                    f"cred monitor MUST NOT call {method_name} on .bin blobs; got {self}"
                 )
             return {
                 "read_bytes": real_read_bytes,
@@ -138,7 +137,7 @@ def test_walk_does_not_open_gpg_files(fake_store: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(Path, "read_text", guard("read_text"))
     monkeypatch.setattr(Path, "open", guard("open"))
 
-    snap = walk_pass_store(fake_store)
-    assert "api/anthropic" in snap.entries
-    assert "orcid/orcid" in snap.entries
-    assert "zenodo/api-token" in snap.entries
+    snap = walk_secret_store(fake_store)
+    assert "api-anthropic" in snap.entries
+    assert "orcid-orcid" in snap.entries
+    assert "zenodo-api-token" in snap.entries

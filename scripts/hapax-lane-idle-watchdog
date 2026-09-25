@@ -12,7 +12,7 @@
 #
 # Platforms:
 #   Claude:  idle = "❯" prompt visible + no active tool indicators
-#   Codex:   idle = "gpt-5.5" model line at bottom, NO "Working (" indicator
+#   Codex:   idle = input prompt at bottom, NO "Working (" indicator
 #
 # Runs as systemd oneshot (hapax-lane-idle-watchdog.timer, every 2 min).
 # Nudges ALL idle lanes per tick. Cooldown: 120s per lane between kicks.
@@ -54,22 +54,63 @@ CODEX_LAUNCHER="${HOME}/projects/hapax-council/scripts/hapax-codex"
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle: $*"; }
 
-local_dev_maintenance_mode() {
+site_class() {
+    # Explicit site classes (G1 D2). Host names and mode strings map here; they
+    # are placement hints, not identity. remote/thin-client are NOT appendix.
     local mode="${HAPAX_LOCAL_DEV_MAINTENANCE_MODE:-}"
     if [ -z "$mode" ]; then
-        mode="${HAPAX_DEFAULT_DISPATCH_HOST:-${HAPAX_DISPATCH_HOST:-local}}"
+      mode="${HAPAX_DEFAULT_DISPATCH_HOST:-${HAPAX_DISPATCH_HOST:-local}}"
     fi
     case "$mode" in
-        appendix | hapax-appendix | appendix-only | appendix_only | remote | thin-client | thin_client)
-            echo "appendix-only"
-            ;;
-        *)
-            echo "local"
-            ;;
+      appendix|hapax-appendix|appendix-only|appendix_only)
+        echo "appendix-only"
+        ;;
+      remote|thin-client|thin_client|remote-client)
+        echo "remote-client"
+        ;;
+      *)
+        echo "local"
+        ;;
     esac
 }
 
+local_dev_maintenance_mode() {
+    # Policy derived from site class, not from the mode string. Both non-local
+    # classes suppress local required-lane launch; they stay distinct so a future
+    # policy split is one map entry, not a string-match rewrite.
+    case "$(site_class)" in
+      appendix-only|remote-client)
+        echo "appendix-only"
+        ;;
+      *)
+        echo "local"
+        ;;
+    esac
+}
+
+SITE_CLASS="$(site_class)"
+
+# D3 successor (zz-coord-appendix-only-20260919.conf REMOVE WHEN): lane launch
+# is decided by measured headroom, not by membership in a required-lanes list.
+# The list is a candidate pool; this budget is how many lanes may launch now.
+launch_headroom_budget() {
+    # Observation sources are env-overridable (HAPAX_LOADAVG_PATH /
+    # HAPAX_NPROC) so the budget is testable without stubbing coreutils, and so
+    # a host with a non-standard loadavg can be pointed at the right file. The
+    # defaults are the real kernel sources.
+    local nproc load1 free_slots budget load_path
+    load_path="${HAPAX_LOADAVG_PATH:-/proc/loadavg}"
+    nproc="${HAPAX_NPROC:-$(nproc 2>/dev/null || echo 1)}"
+    load1="$(cut -d' ' -f1 "$load_path" 2>/dev/null || echo 0)"
+    free_slots=$(awk -v n="$nproc" -v l="$load1" 'BEGIN{f=n-int(l); if(f<0)f=0; print f}')
+    budget=$free_slots
+    # cap: at most 2 launches per tick so a cold host cannot burst a whole roster
+    [ "$budget" -gt 2 ] && budget=2
+    echo "$budget"
+}
+
 LOCAL_DEV_MAINTENANCE_MODE="$(local_dev_maintenance_mode)"
+log "site-class ${SITE_CLASS} (maintenance=${LOCAL_DEV_MAINTENANCE_MODE})"
 if [ "$LOCAL_DEV_MAINTENANCE_MODE" = "appendix-only" ]; then
     log "appendix-only local-dev maintenance: local required-lane launch/revive and unclaimed idle nudges disabled"
 fi
@@ -159,18 +200,14 @@ is_claude_context_full() {
     echo "$pane" | tail -10 | grep -q "/clear to save"
 }
 
-# Codex: idle when model line visible at bottom, no "Working" indicator
+# Codex: idle when input prompt is visible at bottom, no "Working" indicator
 is_codex_idle() {
     local pane="$1"
     # Active: "Working (Xm Ys" or "Working (Xs"
     if echo "$pane" | grep -qE 'Working \([0-9]'; then
         return 1  # actively working
     fi
-    # Idle: shows model string at bottom (gpt-5.5/gpt-4.1/o3/etc)
-    if echo "$pane" | tail -5 | grep -qE '(gpt-[0-9]|o[0-9]|codex-).*~/projects/'; then
-        return 0  # idle at prompt
-    fi
-    # Also idle if we see the "› " prompt line without Working above it
+    # Idle if we see the "› " prompt line without Working above it
     if echo "$pane" | tail -10 | grep -qE '^› '; then
         if ! echo "$pane" | grep -qE 'Working \('; then
             return 0
@@ -262,8 +299,11 @@ revived_lanes=0
 # L4: the respawn floor yields under 'closed' and under appendix-only local-dev
 # mode. Appendix-only mode keeps podium as a thin client; explicit governed
 # dispatch remains available through hapax-methodology-dispatch.
-if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CLAUDE_LAUNCHER" ]; then
+HEADROOM_BUDGET="$(launch_headroom_budget)"
+log "launch headroom budget=${HEADROOM_BUDGET} (candidate pool: ${REQUIRED_CLAUDE_LANES})"
+if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" != "closed" ] && [ -x "$CLAUDE_LAUNCHER" ] && [ "$HEADROOM_BUDGET" -gt 0 ]; then
     for role in $REQUIRED_CLAUDE_LANES; do
+        [ "$HEADROOM_BUDGET" -gt 0 ] || break
         session="hapax-claude-${role}"
         worktree="${HOME}/projects/hapax-council--${role}"
 
@@ -290,7 +330,8 @@ if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" !
                     log "RecoveryGovernor deferred launch of $role (backoff/pressure); retry next tick"
                     continue
                 fi
-                log "LAUNCHING missing lane: $role"
+                HEADROOM_BUDGET=$((HEADROOM_BUDGET - 1))
+                log "LAUNCHING missing lane: $role (headroom left=${HEADROOM_BUDGET})"
                 echo "$now" > "$cooldown_file"
                 launch_err="$STATE_DIR/${session}.launch.err"
                 if "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux --readonly >"$launch_err" 2>&1; then
@@ -379,7 +420,7 @@ if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" !
             pane_cmd=$(tmux display-message -t "$session" -p '#{pane_current_command}' 2>/dev/null) || continue
             pane_check=$(tmux capture-pane -t "$session" -p -S -5 2>/dev/null)
             codex_tui=false
-            if echo "$pane_check" | grep -qE '(Working|gpt-[0-9]|codex-|context left|› )'; then
+            if echo "$pane_check" | grep -qE '(Working|context left|› )'; then
                 codex_tui=true
             fi
 

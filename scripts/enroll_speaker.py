@@ -147,7 +147,7 @@ def main() -> None:
     if not os.environ.get("HF_TOKEN"):
         print("WARNING: HF_TOKEN not set. The pyannote embedding model requires a")
         print("Hugging Face token with access to pyannote/embedding.")
-        print("Set it with: export HF_TOKEN=$(pass show api/huggingface)")
+        print("Set it with: export HF_TOKEN=$(hapax-secret api/huggingface)")
         print()
         if not prompt_yn("Continue anyway?"):
             sys.exit(0)

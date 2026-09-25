@@ -6,6 +6,24 @@
 **Plan:** [`docs/superpowers/plans/2026-04-13-claude-md-excellence-plan.md`](../plans/2026-04-13-claude-md-excellence-plan.md)
 **Audit:** [`docs/superpowers/audits/2026-04-13-claude-md-excellence-audit.md`](../audits/2026-04-13-claude-md-excellence-audit.md)
 
+## 2026-09-20 instruction-source amendment
+
+The rubric and rotation rules govern authored agent instructions regardless of
+native filename. Council now authors repository policy in `AGENTS.md`, with a
+relative `CLAUDE.md` compatibility alias. Automatic rotation also covers the
+shared `config/agent-instructions/AGENTS.md`, native fragments under
+`config/agent-instructions/native/`, and extracted domain policy in
+`docs/runbooks/council-domain-context.md`. In-tree aliases are checked through
+the authored target once. Explicitly selected external aliases remain supported.
+
+For these Council bindings, the earlier non-goals of retaining filenames and
+avoiding generated distribution are superseded by one authored policy and
+measured native bindings. Generation distributes shared policy; it does not
+create another authored policy or erase native differences. Historical audit
+scores and per-repository targets below remain the April baseline, not current
+measurements. Binding, discovery limits and runnable rechecks are maintained in
+[the instruction binding runbook](../../runbooks/agent-instruction-binding.md).
+
 ## Problem
 
 `CLAUDE.md` files are the primary channel through which Claude Code absorbs project context on session start. They are loaded into context unconditionally, so every line they contain competes with the user's actual prompt for attention. Across the hapax workspace, they drift in three predictable directions:

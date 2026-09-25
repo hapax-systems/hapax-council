@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -40,13 +40,19 @@ CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
     {"claude.headless.full", "claude.review.opus"}
 )
 RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
-    {"agy.review.direct", "glmcp.review.direct", *CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES}
+    {
+        "agy.review.direct",
+        "glmcp.review.direct",
+        "kimi.interactive.lane",
+        *CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES,
+    }
 )
 RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "agy.review.direct": "google-antigravity-cli-agy",
     "glmcp.review.direct": "z_ai-glm-coding-plan",
     "claude.headless.full": "anthropic-claude-subscription",
     "claude.review.opus": "anthropic-claude-subscription",
+    "kimi.interactive.lane": "moonshot-kimi-code-managed",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
 AGY_ADMISSION_SUPPORTED_TOOL = "hapax-agy-reviewer"
@@ -64,6 +70,21 @@ AGY_ADMISSION_SECRETISH_RE = re.compile(
     re.IGNORECASE,
 )
 AGY_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
+KIMI_ADMISSION_SUPPORTED_TOOL = "hapax-kimi-quota-admission"
+KIMI_ADMISSION_MODEL = "kimi-code/k3"
+KIMI_ADMISSION_MODELS = frozenset({KIMI_ADMISSION_MODEL})
+KIMI_ADMISSION_RECEIPT_LABEL_RE = re.compile(
+    r"\Arelay-receipt:"
+    r"(?:[a-z0-9_.+-]*kimi-quota-admission[a-z0-9_.+-]*\.yaml|"
+    r"unsafe-receipt-name-sha256:[0-9a-f]{16})"
+    r":witness:"
+)
+KIMI_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
+KIMI_ADMISSION_SECRETISH_RE = re.compile(
+    r"(?:api[_-]?key|bearer|secret|token|sk-[a-z0-9_-]+|[a-z0-9]{32,})",
+    re.IGNORECASE,
+)
+KIMI_ADMISSION_WITNESS_REF_RE = re.compile(r":witness:([^:]+):supported_tool:")
 # Claude subscription-quota admission (scripts/hapax-claude-subscription-quota-admission →
 # hapax-quota-telemetry-writer). The composite ledger evidence ref MUST end in the account-live
 # suffix so the availability guarantor's _account_live_quota_observed_ref attests; lane/session
@@ -145,6 +166,8 @@ GLMCP_PAYG_BUDGET_PROVIDER = "z_ai"
 GLMCP_PAYG_BUDGET_PROFILE = "glmcp-review-direct"
 GLMCP_PAYG_BUDGET_TASK_CLASS = "independent-review"
 GLMCP_PAYG_BUDGET_QUALITY_FLOOR = "frontier_review_required"
+# Nominal amount for "can this budget still admit a GLMCP PAYG call" checks (seat admission,
+# review-team constitution). A real call reserves glmcp_payg_reservation_usd(...) instead.
 GLMCP_PAYG_ESTIMATED_COST_USD = "0.05"
 GLMCP_ADMISSION_TOOL_ENDPOINTS = {
     "hapax-glmcp-reviewer": frozenset(
@@ -159,8 +182,30 @@ GLMCP_ADMISSION_ENDPOINTS = frozenset(
     endpoint for endpoints in GLMCP_ADMISSION_TOOL_ENDPOINTS.values() for endpoint in endpoints
 )
 # Mirrors scripts/hapax-quota-telemetry-writer and the direct
-# scripts/hapax-glmcp-reviewer route metadata.
-GLMCP_ADMISSION_MODELS = frozenset({"glm-5.2"})
+# scripts/hapax-glmcp-reviewer route metadata. glm-5.3 is the reviewer's default since #4692;
+# glm-5.2 stays admitted because the seat refresh and older receipts still name it. Each
+# request id maps to exactly one structured ModelId — a receipt never borrows another's.
+GLMCP_ADMISSION_MODELS = frozenset({"glm-5.3", "glm-5.2"})
+GLMCP_MODEL_IDS = {"glm-5.3": "z_ai-glm-5.3", "glm-5.2": "z_ai-glm-5.2"}
+# Z.ai PAYG list prices, USD per 1M tokens, from https://docs.z.ai/guides/overview/pricing
+# (retrieved 2026-09-24): GLM-5.3 and GLM-5.2 each $1.4 input, $0.26 cached input, $4.4 output.
+# The page prices only input, cached input and output tokens, no separate reasoning rate.
+# Reasoning is counted inside completion_tokens: the 2026-09-24T19:20:12Z PAYG probe of glm-5.3
+# reported completion_tokens 57 with completion_tokens_details.reasoning_tokens 51 (vault
+# 30-areas/hapax/frame/coordinator-succession-20260924/glm-payg/probe-20260924T192011Z.json),
+# so pricing completion_tokens at the output rate covers reasoning.
+GLMCP_PAYG_PRICE_BASIS_REF = "docs.z.ai-guides-overview-pricing-20260924"
+GLMCP_PAYG_PRICES_USD_PER_MTOK = {
+    model: {
+        "input": Decimal("1.40"),
+        "cached_input": Decimal("0.26"),
+        "output": Decimal("4.40"),
+    }
+    for model in ("glm-5.3", "glm-5.2")
+}
+# Chat-template tokens the provider adds around the messages; generous so the bound holds.
+GLMCP_PAYG_TEMPLATE_TOKEN_ALLOWANCE = 256
+GLMCP_PAYG_COST_QUANTUM = Decimal("0.000001")
 GLMCP_ADMISSION_RECEIPT_LABEL_RE = re.compile(
     r"\Arelay-receipt:"
     r"(?:[a-z0-9_.+-]*glmcp-quota-admission[a-z0-9_.+-]*\.yaml|"
@@ -234,6 +279,7 @@ class ModelId(StrEnum):
     CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
     CLAUDE_FABLE_5 = "claude-fable-5"
     GPT_5_5 = "gpt-5.5"
+    GPT_6_ASTRA = "gpt-6-astra"
     GPT_5_3_CODEX_SPARK = "gpt-5.3-codex-spark"
     GPT_OSS_120B = "gpt-oss-120b"
     COMMAND_R_08_2024 = "command-r-08-2024"
@@ -243,6 +289,8 @@ class ModelId(StrEnum):
     GEMINI_3_5_FLASH = "gemini-3.5-flash"
     Z_AI_GLM_5 = "z_ai-glm-5"
     Z_AI_GLM_5_2 = "z_ai-glm-5.2"
+    Z_AI_GLM_5_3 = "z_ai-glm-5.3"
+    KIMI_K3 = "kimi-code/k3"
     UNKNOWN = "unknown"
 
 
@@ -269,6 +317,9 @@ class SpendReconciliationState(StrEnum):
     PENDING = "pending"
     RECONCILED = "reconciled"
     FROZEN_REFUSED = "frozen_refused"
+    # Resolved without a per-call figure: a provider balance observed after the spend settled
+    # already reflects it (settle_spend_covered_by_provider_balance). No actual is claimed.
+    SETTLED_BY_PROVIDER_BALANCE = "settled_by_provider_balance"
 
 
 class SupportArtifactAuthority(StrEnum):
@@ -345,6 +396,14 @@ class SteadyStateReplacement(StrictModel):
         return all((self.target_route_id, self.blocker_to_remove, self.exit_criterion))
 
 
+PROVIDER_BALANCE_FIELDS = (
+    "provider_balance_usd",
+    "provider_balance_observed_at",
+    "provider_balance_covers_spend_before",
+    "provider_balance_evidence_ref",
+)
+
+
 class TransitionBudget(StrictModel):
     """Time-boxed paid/API authority. Dates and caps are gates, not hints."""
 
@@ -369,6 +428,13 @@ class TransitionBudget(StrictModel):
     ledger_owner: str | None = None
     dashboard_visibility: Literal["required"] = "required"
     lifecycle_state: BudgetLifecycleState = BudgetLifecycleState.ACTIVE
+    # A provider-reported balance the cap was set from. Spend that settled before
+    # ``provider_balance_covers_spend_before`` is already out of that balance, so unresolved
+    # receipts from before it on *other* budgets cannot overspend it and do not block this one.
+    provider_balance_usd: Decimal | None = Field(default=None, ge=Decimal("0"))
+    provider_balance_observed_at: datetime | None = None
+    provider_balance_covers_spend_before: datetime | None = None
+    provider_balance_evidence_ref: str | None = None
 
     @model_validator(mode="after")
     def _budget_contract(self) -> Self:
@@ -376,6 +442,26 @@ class TransitionBudget(StrictModel):
         _require_aware(self.expires_at, "expires_at")
         if self.expires_at <= self.created_at:
             raise ValueError(f"{self.budget_id} expires_at must be after created_at")
+        balance = self.provider_balance_usd
+        observed = self.provider_balance_observed_at
+        covers = self.provider_balance_covers_spend_before
+        evidence = self.provider_balance_evidence_ref
+        if any(field is not None for field in (balance, observed, covers, evidence)):
+            if (
+                balance is None
+                or observed is None
+                or covers is None
+                or not (evidence or "").strip()
+            ):
+                raise ValueError(f"{self.budget_id} provider balance evidence must be complete")
+            _require_aware(observed, "provider_balance_observed_at")
+            _require_aware(covers, "provider_balance_covers_spend_before")
+            if covers > observed:
+                raise ValueError(
+                    f"{self.budget_id} a balance cannot cover spend after it was observed"
+                )
+            if self.total_cap_usd > balance:
+                raise ValueError(f"{self.budget_id} total cap exceeds the observed balance")
         if self.capacity_pool.value not in PAID_CAPACITY_POOLS:
             raise ValueError(f"{self.budget_id} must use a paid/API capacity pool")
         if self.lifecycle_state is BudgetLifecycleState.ACTIVE:
@@ -414,10 +500,35 @@ class TransitionBudget(StrictModel):
                 *self.task_classes_allowed,
                 *self.quality_floors_allowed,
                 self.ledger_owner,
+                self.provider_balance_evidence_ref,
             ),
             "transition budget",
         )
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_without_absent_provider_balance(self, handler: Any) -> dict[str, Any]:
+        # Budgets without provider balance evidence dump exactly as before the fields existed,
+        # so governance records carry over byte-identical through the telemetry writer.
+        payload = handler(self)
+        for key in PROVIDER_BALANCE_FIELDS:
+            if payload.get(key) is None:
+                payload.pop(key, None)
+        return payload
+
+    def provider_balance_covers(self, receipt: SpendReceipt) -> bool:
+        """Whether this budget's observed provider balance already reflects ``receipt``.
+
+        Only the same provider's spend; never the budget's own spend; never spend after the
+        settlement cut-off.
+        """
+
+        return (
+            self.provider_balance_covers_spend_before is not None
+            and receipt.provider in self.providers_allowed
+            and receipt.budget_id != self.budget_id
+            and receipt.created_at < self.provider_balance_covers_spend_before
+        )
 
     def matches_request(self, request: PaidRouteRequest) -> bool:
         return (
@@ -500,6 +611,11 @@ class SpendReceipt(StrictModel):
                 raise ValueError(f"{self.spend_id} frozen/refused spend cannot claim actual cost")
             if self.reconciled_at is None or not self.reconciliation_reason:
                 raise ValueError(f"{self.spend_id} frozen/refused spend requires review evidence")
+        elif self.reconciliation_state is SpendReconciliationState.SETTLED_BY_PROVIDER_BALANCE:
+            if self.actual_cost_usd is not None:
+                raise ValueError(f"{self.spend_id} balance-settled spend cannot claim actual cost")
+            if self.reconciled_at is None or not self.reconciliation_reason:
+                raise ValueError(f"{self.spend_id} balance-settled spend requires its evidence")
         _reject_private_or_identity_refs(
             _refs(
                 self.spend_id,
@@ -709,12 +825,64 @@ class RenewalRecord(StrictModel):
         return self
 
 
-class QuotaSnapshot(StrictModel):
-    quota_snapshot_schema: Literal[1] = 1
+class QuotaMeasurement(StrictModel):
+    """A measurement is evidence, never an admission or a spend authorization."""
+
+    capacity_id: str = Field(min_length=1)
+    quantity: float | None = Field(default=None, allow_inf_nan=False)
+    unit: str | None = None
+    window: str | None = None
+    resets_at: datetime | None = None
+    label: Literal["observed", "derived", "wall-signal", "operator-reported", "unobserved"] = (
+        "unobserved"
+    )
+    source: str = "none"
+    observed_at: datetime | None = None
+    measurement_fresh_until: datetime | None = None
+    reason_code: str | None = None
+    details: dict[str, int | float | str | None] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _measurement_contract(self) -> Self:
+        for key in ("resets_at", "observed_at", "measurement_fresh_until"):
+            value = getattr(self, key)
+            if value is not None:
+                _require_aware(value, key)
+        if self.label in {"observed", "derived"} and self.quantity is None:
+            raise ValueError("observed/derived measurements require a quantity")
+        if self.label in {"wall-signal", "unobserved"} and self.quantity is not None:
+            raise ValueError("walls and missing evidence cannot become a fraction")
+        if self.label != "unobserved" and self.observed_at is None:
+            raise ValueError("evidence requires its source time")
+        if self.label == "unobserved" and not self.reason_code:
+            raise ValueError("unobserved measurements require a reason_code")
+        return self
+
+    def measurement_is_fresh(self, now: datetime) -> bool:
+        return (
+            self.observed_at is not None
+            and self.measurement_fresh_until is not None
+            and self.observed_at <= now < self.measurement_fresh_until
+        )
+
+
+class QuotaSnapshot(QuotaMeasurement):
+    quota_snapshot_schema: Literal[1, 2] = 1
+    capacity_id: str = "legacy.unmeasured"
+    reason_code: str | None = "legacy_binary_snapshot"
+    family: str = "unknown"
+    stage: Literal[
+        "unusable", "usable-undeclared", "declared-unmeasured", "declared-measured", "routable"
+    ] = "declared-unmeasured"
+    next_act: str = "Collect a local quantity with source and observation time"
+    owner: Literal["operator", "source", "runtime"] = "source"
+    measurements: tuple[QuotaMeasurement, ...] = ()
+    # Measurement-only rows must never participate in legacy admission decisions.
+    admission_compatible: bool = True
     snapshot_id: str = Field(pattern=r"^quota-[a-z0-9_.:-]+$")
     captured_at: datetime
     fresh_until: datetime | None = None
-    route_id: str = Field(min_length=1)
+    route_id: str | None = Field(default=None, min_length=1)
     provider: str = Field(min_length=1)
     capacity_pool: CapacityPool
     subscription_quota_state: SubscriptionQuotaState
@@ -724,6 +892,8 @@ class QuotaSnapshot(StrictModel):
     @model_validator(mode="after")
     def _quota_snapshot_contract(self) -> Self:
         _require_aware(self.captured_at, "captured_at")
+        if self.route_id is None and self.admission_compatible:
+            raise ValueError("an undeclared capacity cannot carry route admission")
         if self.fresh_until is not None:
             _require_aware(self.fresh_until, "fresh_until")
             if self.fresh_until <= self.captured_at:
@@ -731,7 +901,7 @@ class QuotaSnapshot(StrictModel):
         _reject_private_or_identity_refs(
             [
                 self.snapshot_id,
-                self.route_id,
+                self.route_id or "undeclared",
                 self.provider,
                 *self.evidence_refs,
                 self.operator_visible_reason,
@@ -872,7 +1042,7 @@ class QuotaSpendDashboard(StrictModel):
 class QuotaSpendLedger(StrictModel):
     """Complete local ledger fixture. Loading this grants no spend authority."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     ledger_id: str = Field(min_length=1)
     captured_at: datetime
     authority_source: Literal["isap:quota-spend-ledger-20260509"]
@@ -891,6 +1061,32 @@ class QuotaSpendLedger(StrictModel):
     artifact_provenance: tuple[ArtifactProvenanceRecord, ...] = Field(default=())
     renewal_records: tuple[RenewalRecord, ...] = Field(default=())
     evidence_refs: tuple[str, ...] = Field(min_length=1)
+    freeze: dict[str, Any] = Field(default_factory=dict)
+    operator_reports: tuple[QuotaMeasurement, ...] = ()
+
+    def schema_v1_payload(self) -> dict[str, Any]:
+        """Explicit downgrade for strict pre-v2 readers; no second ledger is written."""
+        payload = self.model_dump(mode="json")
+        payload["schema_version"] = 1
+        payload.pop("freeze")
+        payload.pop("operator_reports")
+        fields = {
+            "snapshot_id",
+            "captured_at",
+            "fresh_until",
+            "route_id",
+            "provider",
+            "capacity_pool",
+            "subscription_quota_state",
+            "evidence_refs",
+            "operator_visible_reason",
+        }
+        payload["quota_snapshots"] = [
+            {"quota_snapshot_schema": 1, **{key: row[key] for key in fields}}
+            for row in payload["quota_snapshots"]
+            if row["admission_compatible"] and row["route_id"] is not None
+        ]
+        return payload
 
     @model_validator(mode="after")
     def _ledger_contract(self) -> Self:
@@ -1036,6 +1232,14 @@ def evaluate_paid_route_eligibility(
             blocking_reasons=tuple(blocking),
         )
 
+    unexpired = tuple(
+        budget
+        for budget in matching
+        if budget.lifecycle_state is BudgetLifecycleState.ACTIVE and budget.is_unexpired_at(when)
+    )
+    # Every unresolved receipt on a matching budget blocks. Resolution is an act recorded on
+    # the receipt (a reviewed governance record, or settle_spend_covered_by_provider_balance),
+    # never a judgement made here at decision time.
     overdue = tuple(
         budget for budget in matching if ledger.budget_has_overdue_reconciliation(budget, when)
     )
@@ -1049,11 +1253,6 @@ def evaluate_paid_route_eligibility(
             "frozen/refused spend receipts for " + ", ".join(b.budget_id for b in frozen)
         )
 
-    unexpired = tuple(
-        budget
-        for budget in matching
-        if budget.lifecycle_state is BudgetLifecycleState.ACTIVE and budget.is_unexpired_at(when)
-    )
     if not unexpired:
         blocking.append("matching TransitionBudget expired or inactive")
         return PaidRouteEligibility(
@@ -1106,6 +1305,55 @@ def evaluate_paid_route_eligibility(
         cap_remaining_usd=cap_remaining,
         evidence_refs=tuple(evidence_refs),
     )
+
+
+def settle_spend_covered_by_provider_balance(ledger: QuotaSpendLedger) -> QuotaSpendLedger:
+    """Resolve unresolved spend that a later provider balance observation already reflects.
+
+    The act the telemetry writer performs every tick (no operator): a pending or frozen
+    receipt that some budget's provider balance covers (same provider, another budget, created
+    before the settlement cut-off; TransitionBudget.provider_balance_covers) becomes
+    SETTLED_BY_PROVIDER_BALANCE. Whatever it cost is already out of the observed balance that
+    budget's cap was set from. No actual is claimed, the estimate stays held, and the reason
+    names the evidence. Spend no balance covers stays unresolved and keeps blocking.
+    """
+
+    payload = ledger.model_dump(mode="json")
+    settled_any = False
+    for index, receipt in enumerate(ledger.spend_receipts):
+        if receipt.reconciliation_state not in {
+            SpendReconciliationState.PENDING,
+            SpendReconciliationState.FROZEN_REFUSED,
+        }:
+            continue
+        covering = next(
+            (b for b in ledger.transition_budgets if b.provider_balance_covers(receipt)), None
+        )
+        if covering is None:
+            continue
+        settled = dict(payload["spend_receipts"][index])
+        settled.pop("actual_cost_usd", None)
+        if settled.get("estimated_cost_usd") is None:
+            settled["estimated_cost_usd"] = str(receipt.cost_against_cap())
+        settled["reconciliation_state"] = SpendReconciliationState.SETTLED_BY_PROVIDER_BALANCE.value
+        settled["reconciled_at"] = _payload_datetime(covering.provider_balance_observed_at)
+        settled["reconciliation_reason"] = (
+            f"settled against provider balance USD {covering.provider_balance_usd} observed "
+            f"{_payload_datetime(covering.provider_balance_observed_at)} (budget "
+            f"{covering.budget_id}, evidence {covering.provider_balance_evidence_ref}), which "
+            f"covers spend before {_payload_datetime(covering.provider_balance_covers_spend_before)}"
+            f"; per-call cost unknown, estimate held; was {receipt.reconciliation_state.value}: "
+            f"{receipt.reconciliation_reason or 'pending'}"
+        )
+        payload["spend_receipts"][index] = settled
+        settled_any = True
+    return QuotaSpendLedger.model_validate(payload) if settled_any else ledger
+
+
+def _payload_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def build_dashboard(
@@ -1301,7 +1549,8 @@ def _subscription_quota_state(
     snapshots = tuple(
         snapshot
         for snapshot in ledger.quota_snapshots
-        if snapshot.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
+        if snapshot.admission_compatible
+        and snapshot.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
     )
     if not snapshots:
         return SubscriptionQuotaState.UNKNOWN
@@ -1344,7 +1593,8 @@ def subscription_quota_state_for_route(
     snapshots = tuple(
         snapshot
         for snapshot in ledger.quota_snapshots
-        if snapshot.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
+        if snapshot.admission_compatible
+        and snapshot.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
         and _normalize_route_id(snapshot.route_id) == normalized_route_id
     )
     if not snapshots:
@@ -1468,6 +1718,8 @@ def _subscription_quota_missing_required_admission_evidence(
         return not any(_is_agy_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
         return not any(_is_claude_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+    if normalized_route_id == "kimi.interactive.lane":
+        return not any(_is_kimi_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     return True
 
 
@@ -1479,6 +1731,8 @@ def _subscription_quota_untrusted_admission_evidence_reason(snapshot: QuotaSnaps
         return "untrusted_agy_admission_evidence"
     if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
         return "untrusted_claude_admission_evidence"
+    if normalized_route_id == "kimi.interactive.lane":
+        return "untrusted_kimi_admission_evidence"
     return "untrusted_route_admission_evidence"
 
 
@@ -1531,6 +1785,17 @@ def _is_agy_admission_evidence_ref(ref: str) -> bool:
         and _has_safe_agy_admission_witness(ref)
         and f":supported_tool:{AGY_ADMISSION_SUPPORTED_TOOL}:" in ref
         and any(f":model:{model}:" in ref for model in AGY_ADMISSION_MODELS)
+        and ":observed_at:" in ref
+        and ":fresh_until:" in ref
+    )
+
+
+def _is_kimi_admission_evidence_ref(ref: str) -> bool:
+    return (
+        KIMI_ADMISSION_RECEIPT_LABEL_RE.match(ref) is not None
+        and _has_safe_kimi_admission_witness(ref)
+        and f":supported_tool:{KIMI_ADMISSION_SUPPORTED_TOOL}:" in ref
+        and any(f":model:{model}:" in ref for model in KIMI_ADMISSION_MODELS)
         and ":observed_at:" in ref
         and ":fresh_until:" in ref
     )
@@ -1715,7 +1980,7 @@ def successful_task_scoped_glmcp_payg_review_spend_receipts(
         model_id = receipt.model_id.value if receipt.model_id is not None else None
         if (
             receipt.model_or_engine not in GLMCP_ADMISSION_MODELS
-            and model_id != ModelId.Z_AI_GLM_5_2.value
+            and model_id not in GLMCP_MODEL_IDS.values()
         ):
             continue
         if not _glmcp_payg_budget_allows_review_spend(budget, receipt):
@@ -1729,6 +1994,105 @@ def has_successful_task_scoped_glmcp_payg_review_spend(
     task_id: str,
 ) -> bool:
     return bool(successful_task_scoped_glmcp_payg_review_spend_receipts(ledger, task_id))
+
+
+def _glmcp_payg_prices(model: str) -> dict[str, Decimal]:
+    prices = GLMCP_PAYG_PRICES_USD_PER_MTOK.get(model)
+    if prices is None:
+        raise QuotaSpendLedgerError(
+            f"no Z.ai PAYG list price for model {model!r}; admitted: "
+            f"{sorted(GLMCP_PAYG_PRICES_USD_PER_MTOK)}"
+        )
+    return prices
+
+
+def glmcp_payg_reservation_usd(
+    *,
+    model: str,
+    prompt_utf8_bytes: int,
+    max_tokens: int,
+    attempts: int = 1,
+) -> Decimal:
+    """Upper bound on one PAYG call at list price, charged against caps before the call.
+
+    A byte-level tokenizer emits at most one token per prompt byte, so UTF-8 bytes plus a
+    template allowance bound the input tokens; every input token is priced uncached and every
+    allowed output token (reasoning included) as output. ``attempts`` counts provider calls
+    whose input may bill, such as a rejected first attempt before a contract retry.
+    """
+
+    if prompt_utf8_bytes < 0 or max_tokens < 1 or attempts < 1:
+        raise QuotaSpendLedgerError(
+            "PAYG reservation needs bytes >= 0, max_tokens >= 1, attempts >= 1"
+        )
+    prices = _glmcp_payg_prices(model)
+    input_tokens = (prompt_utf8_bytes + GLMCP_PAYG_TEMPLATE_TOKEN_ALLOWANCE) * attempts
+    cost = (input_tokens * prices["input"] + max_tokens * prices["output"]) / Decimal(1_000_000)
+    return cost.quantize(GLMCP_PAYG_COST_QUANTUM, rounding=ROUND_CEILING)
+
+
+def glmcp_payg_usage_cost_usd(
+    *,
+    model: str,
+    prompt_tokens: int,
+    cached_tokens: int,
+    completion_tokens: int,
+) -> Decimal:
+    """List-price cost of provider-reported usage. An estimate from usage, not an invoice."""
+
+    if min(prompt_tokens, cached_tokens, completion_tokens) < 0 or cached_tokens > prompt_tokens:
+        raise QuotaSpendLedgerError("PAYG usage must be non-negative with cached <= prompt tokens")
+    prices = _glmcp_payg_prices(model)
+    cost = (
+        (prompt_tokens - cached_tokens) * prices["input"]
+        + cached_tokens * prices["cached_input"]
+        + completion_tokens * prices["output"]
+    ) / Decimal(1_000_000)
+    return cost.quantize(GLMCP_PAYG_COST_QUANTUM, rounding=ROUND_CEILING)
+
+
+def glmcp_payg_usage_ceiling_usd(*, prompt_tokens: int, completion_tokens: int) -> Decimal:
+    """Usage priced at the dearest known input and output rates, all input uncached.
+
+    For a served model with no recorded list price: it bounds what any known model would
+    charge for the reported usage; it cannot bound an unknown dearer model, which is why
+    callers freeze such spend rather than reconcile it.
+    """
+
+    if min(prompt_tokens, completion_tokens) < 0:
+        raise QuotaSpendLedgerError("PAYG usage must be non-negative")
+    dearest_input = max(p["input"] for p in GLMCP_PAYG_PRICES_USD_PER_MTOK.values())
+    dearest_output = max(p["output"] for p in GLMCP_PAYG_PRICES_USD_PER_MTOK.values())
+    cost = (prompt_tokens * dearest_input + completion_tokens * dearest_output) / Decimal(1_000_000)
+    return cost.quantize(GLMCP_PAYG_COST_QUANTUM, rounding=ROUND_CEILING)
+
+
+def frozen_spend_receipt_payload(
+    payload: dict[str, Any],
+    *,
+    count_usd: Decimal,
+    frozen_at: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Freeze a spend receipt that may have billed but cannot be trusted as reconciled.
+
+    No actual is claimed. The higher of ``count_usd`` and whatever the receipt already
+    counted is held against the caps as its estimate, and the frozen state refuses further
+    paid spend on every matching budget until a reviewed governance record supersedes it.
+    """
+
+    counted = [count_usd]
+    for key in ("estimated_cost_usd", "actual_cost_usd"):
+        value = payload.get(key)
+        if value is not None and str(value).strip():
+            counted.append(Decimal(str(value)))
+    frozen = dict(payload)
+    frozen.pop("actual_cost_usd", None)
+    frozen["estimated_cost_usd"] = str(max(counted))
+    frozen["reconciliation_state"] = SpendReconciliationState.FROZEN_REFUSED.value
+    frozen["reconciled_at"] = frozen_at
+    frozen["reconciliation_reason"] = reason
+    return frozen
 
 
 def _glmcp_payg_budget_request(task_id: str) -> PaidRouteRequest:
@@ -1797,6 +2161,23 @@ def _has_safe_agy_admission_witness(ref: str) -> bool:
     return (
         AGY_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
         and AGY_ADMISSION_SECRETISH_RE.search(witness) is None
+    )
+
+
+def _has_safe_kimi_admission_witness(ref: str) -> bool:
+    witness_matches = KIMI_ADMISSION_WITNESS_REF_RE.findall(ref)
+    if len(witness_matches) != 1:
+        return False
+    witness = witness_matches[0]
+    label = ref.removeprefix("relay-receipt:").split(":witness:", maxsplit=1)[0]
+    label_stem = label.removesuffix(".yaml")
+    return (
+        KIMI_ADMISSION_EVIDENCE_REF_RE.fullmatch(witness) is not None
+        and KIMI_ADMISSION_SECRETISH_RE.search(witness) is None
+        and (
+            label.startswith("unsafe-receipt-name-sha256:")
+            or KIMI_ADMISSION_SECRETISH_RE.search(label_stem) is None
+        )
     )
 
 
@@ -1942,6 +2323,7 @@ def _refs(*values: str | None) -> list[str]:
 
 
 _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
+    QuotaMeasurement._measurement_contract,
     TransitionBudget._budget_contract,
     SpendReceipt._receipt_contract,
     ProviderDependencyRecord._dependency_contract,

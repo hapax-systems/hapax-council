@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 import httpx
 from openai import OpenAI
 
+from shared.secrets import get_secret
+
 try:
     from agents.telemetry.llm_call_span import llm_call_span
 except ImportError:  # telemetry optional
@@ -725,16 +727,11 @@ async def _search_emails_gmail(params, query: str, max_results: int) -> None:
 
 
 def _get_sms_password(pass_key: str) -> str:
-    """Retrieve SMS gateway password from pass store."""
-    result = subprocess.run(
-        ["pass", "show", pass_key],
-        capture_output=True,
-        text=True,
-        timeout=5,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"pass show {pass_key} failed: {result.stderr}")
-    return result.stdout.strip()
+    """The SMS gateway password through ``shared.secrets`` (env, FileStore, CLI); never pass.
+
+    Raises :class:`shared.secrets.SecretUnavailable` (a ``RuntimeError``) when absent.
+    """
+    return get_secret(pass_key)
 
 
 async def handle_send_sms(params) -> None:

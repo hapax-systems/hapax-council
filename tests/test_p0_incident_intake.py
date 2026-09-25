@@ -77,6 +77,9 @@ def test_service_failure_creates_governed_p0_task(tmp_path):
     assert f"authority_case: {DEFAULT_AUTHORITY_CASE}" in task
     assert "stage: S6_IMPLEMENTATION" in task
     assert "implementation_authorized: true" in task
+    assert "preferred_platforms: [codex]" not in task
+    assert "preferred_platforms: [claude]" not in task
+    assert "allowed_platforms: [codex, claude]" in task
     assert "source_mutation_authorized: true" in task
     assert "runtime_mutation_authorized: true" in task
     assert "## Required Work" in task

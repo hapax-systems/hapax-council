@@ -1,5 +1,5 @@
 {
-  "count": 191,
+  "count": 192,
   "records": {
     "agy.review.direct": {
       "fingerprint": "4ea797143ee0282ae82de6de2fa3a874990802f455005825b9eaf48a87da9e68",
@@ -246,7 +246,7 @@
       "inventory_disposition": "admitted_supply"
     },
     "claude.review.opus": {
-      "fingerprint": "f8774dd2963fb932a63435ad68e06ec015f2384a277ef88bab0ffeed706a791c",
+      "fingerprint": "0d88d6ca84bb226117c26fd874d8e4adf1b4b443379b14559cb257eaae45a625",
       "inventory_disposition": "admitted_supply"
     },
     "cockpit_command.llm_backed_agent_commands": {
@@ -254,7 +254,7 @@
       "inventory_disposition": "evidence_only_non_supply"
     },
     "codex.headless.full": {
-      "fingerprint": "f908ff68bdd68206ec38ff4c2f98b8363207440f2884b974bfbd8bbb78ebf57f",
+      "fingerprint": "60e1ac8e82381110905c1200f9d512dbf609a3cf32b41e1b355122a78bc07622",
       "inventory_disposition": "admitted_supply"
     },
     "codex.headless.spark": {
@@ -371,6 +371,10 @@
     },
     "hapax.working_mode_set": {
       "fingerprint": "5f42aebb86379013febf0d0f01984f3fd09fe13ba83ebf897b10d0a2ea00009c",
+      "inventory_disposition": "admitted_supply"
+    },
+    "kimi.interactive.lane": {
+      "fingerprint": "7d1964529b8e8915f39d7cba30994ea3460549ff631a3108549a7e37af78eb00",
       "inventory_disposition": "admitted_supply"
     },
     "litellm.appendix-fast": {

@@ -229,7 +229,7 @@ live_claude_session_exists() {
       return 0
     fi
   fi
-  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "$tmux_name" 2>/dev/null; then
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t "=$tmux_name" 2>/dev/null; then
     return 0
   fi
   return 1
@@ -279,7 +279,7 @@ if [ "$TERMINAL" != "none" ]; then
     echo "hapax-claude: tmux not found; --terminal=$TERMINAL requires tmux" >&2
     exit 10
   fi
-  if "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
+  if "$TMUX_BIN" has-session -t "=$TMUX_NAME" 2>/dev/null && [ "$FORCE" -ne 1 ]; then
     echo "hapax-claude: tmux session already exists: $TMUX_NAME (pass --force to recreate)" >&2
     exit 11
   fi
@@ -385,9 +385,41 @@ RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
 } >"$RUNNER"
 chmod 700 "$RUNNER"
 
+# Create the lane's detached tmux session and KEEP its pane when the runner dies badly.
+#
+# Why `remain-on-exit failed` rather than tmux's default: when a lane's process died,
+# tmux tore the pane down with it, taking the exit status, the death signal and the
+# whole scrollback. The dev lane's death at 2026-09-16T01:19:34Z left no coredump, no
+# kernel line, no oomd record, no killer — and no pane left to ask, so the cause was
+# not merely unknown but unmeasurable. `failed` retains the pane on a non-zero exit or
+# a signal (measured on tmux 3.6b: SIGKILL -> pane_dead_signal=9, `exit 42` ->
+# pane_dead_status=42) while a CLEAN exit still closes it, so an orderly stop is never
+# mistaken for a death.
+#
+# This is half a change. A retained pane keeps the SESSION, and this launcher refuses
+# to start when its session already exists — so `remain-on-exit` alone would wedge the
+# lane it makes legible. hapax-lane-supervisor's capture_dead_pane reads the corpse
+# into ~/.cache/hapax/tmux-pane-exits/ and then kills the session so this launcher can
+# run again. The two ship together; neither is correct alone.
+#
+# `-t "=$TMUX_NAME:"` — anchored, and no window index. `=` pins the EXACT session name:
+# a bare target falls back to prefix and then fnmatch matching, and lane names nest
+# (`cx-cap` / `cx-cap-money`). The trailing `:` makes it a window target resolving to
+# that session's current window — the one window a fresh `new-session -d` has —
+# whatever base-index is. `"$TMUX_NAME":1` is correct only where base-index is 1, and
+# tmux's default is 0 (measured: `no such window`); a bare `=$TMUX_NAME` is refused as a
+# window target (measured on 3.7c: `no such window: =...`).
+tmux_new_lane_session() {
+  "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER" || return $?
+  # Fail open and say so: losing the forensics option is bad, refusing to launch the
+  # lane over it is worse, and a silent loss is how the original gap survived.
+  "$TMUX_BIN" set-option -w -t "=$TMUX_NAME:" remain-on-exit failed 2>/dev/null ||
+    echo "hapax-claude: could not set remain-on-exit on $TMUX_NAME; the lane is running but a bad death will leave no pane to inspect. next: check \`tmux -V\` (remain-on-exit=failed needs tmux >= 3.2), then \`tmux show-options -w -t =$TMUX_NAME: remain-on-exit\`" >&2
+}
+
 case "$TERMINAL" in
   tmux)
-    "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    tmux_new_lane_session
     printf '%s\n' "$TMUX_NAME"
     ;;
   foot)
@@ -396,23 +428,29 @@ case "$TERMINAL" in
       echo "hapax-claude: footclient/foot not found" >&2
       exit 10
     fi
-    if ! "$TMUX_BIN" has-session -t "$TMUX_NAME" 2>/dev/null; then
-      "$TMUX_BIN" new-session -d -s "$TMUX_NAME" -c "$WORKDIR" "$RUNNER"
+    if ! "$TMUX_BIN" has-session -t "=$TMUX_NAME" 2>/dev/null; then
+      tmux_new_lane_session
     fi
+    # `=`: attach the operator to THIS lane and refuse otherwise. Measured on 3.7c with
+    # only `hapax-probe-delta-2` running: `attach-session -t hapax-probe-delta` resolved
+    # to the sibling (it got as far as "open terminal failed"), while
+    # `-t =hapax-probe-delta` said "can't find session". An unanchored attach puts the
+    # operator's own keystrokes into another lane's pane whenever this lane's session is
+    # gone and a longer-named one is not.
     case "$(basename "$FOOT_BIN")" in
       footclient)
         "$FOOT_BIN" -E -N \
           --app-id "hapax-claude-$ROLE" \
           --title "$ROLE" \
           --working-directory "$WORKDIR" \
-          "$TMUX_BIN" attach-session -t "$TMUX_NAME"
+          "$TMUX_BIN" attach-session -t "=$TMUX_NAME"
         ;;
       *)
         setsid -f "$FOOT_BIN" \
           --app-id "hapax-claude-$ROLE" \
           --title "$ROLE" \
           --working-directory "$WORKDIR" \
-          "$TMUX_BIN" attach-session -t "$TMUX_NAME" >/dev/null 2>&1
+          "$TMUX_BIN" attach-session -t "=$TMUX_NAME" >/dev/null 2>&1
         ;;
     esac
     ;;

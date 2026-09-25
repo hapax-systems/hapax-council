@@ -52,8 +52,11 @@ def phase1_system_prompt(rubric: Rubric, seed: int | None = None) -> str:
         f"## Rubric Axes\n\n{axis_block}\n\n"
         "## Scoring Instructions\n\n"
         f"1. Score each axis {axes[0].min_score}-{axes[0].max_score}.\n"
-        "2. For each score, provide a 1-2 sentence rationale.\n"
-        "3. List any research findings (files checked, evidence found or not found).\n\n"
+        "2. You may provide a concise score justification in rationale; do not "
+        "reconstruct or narrate private reasoning. This optional process trace has zero "
+        "oracle weight.\n"
+        "3. List inspectable evidence in research_findings: claims checked with source "
+        "references, tests run with observed results, and relevant counter-evidence.\n\n"
         "Respond in JSON:\n"
         '{"scores": {"axis_name": int, ...}, '
         '"rationale": {"axis_name": "...", ...}, '
@@ -64,7 +67,10 @@ def phase1_system_prompt(rubric: Rubric, seed: int | None = None) -> str:
 RESEARCH_SYSTEM_PROMPT = (
     "You are a council member. Your role is to investigate source material "
     "using your research tools and gather evidence before scoring.\n\n"
-    "Use tools to verify claims, check sources, and gather evidence. "
+    "Use tools to verify claims and report inspectable evidence. Each finding should "
+    "identify the claim checked, its source reference or test and observed result, and "
+    "relevant counter-evidence (including that none was found when applicable). Do not "
+    "reconstruct or narrate private reasoning. "
     "Report your findings as a JSON list:\n"
     '{"research_findings": ["finding 1", "finding 2", ...]}'
 )
@@ -100,8 +106,11 @@ def _phase1_prompt_sections(
         "## Instructions\n\n"
         "1. Use your research tools to investigate the source_ref before scoring.\n"
         f"2. Score each axis {axes[0].min_score}-{axes[0].max_score}.\n"
-        "3. For each score, provide a 1-2 sentence rationale.\n"
-        "4. List any research findings (files checked, evidence found or not found).\n\n"
+        "3. You may provide a concise score justification in rationale; do not "
+        "reconstruct or narrate private reasoning. This optional process trace has zero "
+        "oracle weight.\n"
+        "4. List inspectable evidence in research_findings: claims checked with source "
+        "references, tests run with observed results, and relevant counter-evidence.\n\n"
         "Respond in JSON:\n"
         '{"scores": {"axis_name": int, ...}, '
         '"rationale": {"axis_name": "...", ...}, '
@@ -132,17 +141,17 @@ def phase1_prompt_parts(
 def phase3_adversarial_prompt(
     axis: str,
     your_score: int,
-    your_rationale: str,
     opponent_score: int,
-    opponent_rationale: str,
+    your_findings: list[str],
     opponent_findings: list[str],
     evidence_matrix_summary: str,
 ) -> str:
+    your_findings_text = ", ".join(your_findings) if your_findings else "none"
     findings_text = ", ".join(opponent_findings) if opponent_findings else "none"
     return (
         f"You scored '{axis}' as {your_score}. Another council member scored it {opponent_score}.\n\n"
-        f"**Their rationale:** {opponent_rationale}\n\n"
-        f"**Their research findings:** {findings_text}\n\n"
+        f"**Your inspectable research findings:** {your_findings_text}\n\n"
+        f"**Their inspectable research findings:** {findings_text}\n\n"
         f"**Evidence matrix summary:** {evidence_matrix_summary}\n\n"
         "This is an adversarial challenge. Respond to the strongest points in their argument. Either:\n"
         "- Defend your score with specific counter-evidence\n"
@@ -199,13 +208,10 @@ def phase3_audience_simulation_prompt(
     text: str,
     axis: str,
     your_score: int,
-    your_rationale: str,
     opponent_score: int,
-    opponent_rationale: str,
 ) -> str:
     return (
         f"You scored '{axis}' as {your_score}. Another member scored it {opponent_score}.\n\n"
-        f"**Their rationale:** {opponent_rationale}\n\n"
         "## Audience Simulation Challenge\n\n"
         "Model a naive listener encountering this segment linearly at speech pace. "
         "Report:\n"

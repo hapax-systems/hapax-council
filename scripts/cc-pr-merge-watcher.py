@@ -58,10 +58,12 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 from github_pr_status import (  # noqa: E402
     GRAPHQL_BACKOFF_RC,
+    PrListingUnavailable,
     get_pull_rest,
-    list_open_pr_statuses_rest,
+    list_open_pr_statuses,
     list_pulls_for_branch_rest,
     list_pulls_rest,
+    listing_unavailable_detail,
     rest_pull_state,
     run_graphql_rate_aware,
 )
@@ -954,7 +956,20 @@ def detect_stuck_prs(
     failure mode this task addresses (G5). A single snapshot suffices because
     GitHub enqueues an armed+green PR within seconds, so absence from the queue
     is a real ejection rather than a transient."""
-    prs = list_open_pr_statuses_rest(repo=repo, repo_root=repo_root, runner=runner, limit=100)
+    try:
+        prs, _route = list_open_pr_statuses(
+            repo=repo, repo_root=repo_root, runner=runner, limit=100
+        )
+    except PrListingUnavailable as exc:
+        # Skip this cycle rather than spending a listing plus per-PR hydration into
+        # guaranteed 403s. Loud, because an empty result is otherwise indistinguishable
+        # from "no stuck PRs" — a silent wrong answer.
+        LOG.warning(
+            "stuck-PR detection skipped: %s%s",
+            exc.reason,
+            listing_unavailable_detail(exc),
+        )
+        return []
     if not isinstance(prs, list):
         return []
     queued = fetch_merge_queue_numbers(repo=repo, repo_root=repo_root, runner=runner)

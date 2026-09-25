@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import signal
 import subprocess
 import sys
+from pathlib import Path
 
-PINNED_REVIEW_MODEL = "opus"
+REVIEW_EXECUTION_ROUTE = "claude.review.opus"
 EMPTY_MCP_CONFIG = '{"mcpServers":{}}'
 DEFAULT_TIMEOUT_SECONDS = 1140.0
 MAX_TIMEOUT_SECONDS = 1140.0
@@ -114,7 +116,7 @@ def _default_claude_bin() -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--claude-bin", default=_default_claude_bin())
-    parser.add_argument("--model", default=PINNED_REVIEW_MODEL)
+    parser.add_argument("--model", help="Compatibility assertion; must match the route descriptor")
     parser.add_argument(
         "--timeout-seconds",
         type=_bounded_timeout_seconds,
@@ -123,7 +125,64 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _review_env() -> dict[str, str]:
+def _execution_binding() -> dict:
+    # Use the same explicit source binding as the Codex launchers. Deployment
+    # installs a regular copy, so __file__ does not identify a Council release.
+    # Freeze the physical target before launching the isolated resolver.
+    root = Path(
+        os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+        or os.environ.get("HAPAX_COUNCIL_DIR")
+        or Path.home() / ".cache/hapax/source-activation/worktree"
+    ).resolve()
+    python = root / ".venv/bin/python"
+    if not python.is_file() or not os.access(python, os.X_OK):
+        raise ValueError(
+            f"missing descriptor runtime {python}; next action: use a provisioned Council release"
+        )
+    result = subprocess.run(
+        [
+            str(python),
+            "-I",
+            "-c",
+            "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); "
+            'runpy.run_module("shared.capability_execution",run_name="__main__")',
+            str(root),
+            "--harness",
+            "claude",
+            "--route",
+            REVIEW_EXECUTION_ROUTE,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or "descriptor resolver failed without a diagnostic")
+    try:
+        binding = json.loads(result.stdout)
+        descriptor = binding["descriptor"]
+        model, effort = descriptor["model_id"], descriptor["effort"]
+        if (
+            not isinstance(model, str)
+            or not model.startswith("claude-")
+            or effort not in {"low", "medium", "high", "xhigh", "max"}
+            or any(char in model for char in "\n\r\0")
+            or descriptor.get("context_mode") != "standard"
+            or descriptor.get("fast_mode") != "off"
+            or descriptor.get("quantization") != "none"
+            or binding["argv"] != ["--model", model, "--effort", effort]
+            or binding["env"]
+            != {"CLAUDE_CODE_EFFORT_LEVEL": effort, "CLAUDE_CODE_DISABLE_FAST_MODE": "1"}
+        ):
+            raise ValueError("descriptor and invocation disagree")
+    except (ValueError, TypeError, KeyError) as exc:
+        raise ValueError(
+            "malformed descriptor binding; next action: restore the selected release resolver"
+        ) from exc
+    return binding
+
+
+def _review_env(execution_env: dict[str, str]) -> dict[str, str]:
     env = dict(os.environ)
     env.update(
         {
@@ -132,6 +191,7 @@ def _review_env() -> dict[str, str]:
             "NO_UPDATE_NOTIFIER": "1",
         }
     )
+    env.update(execution_env)
     return env
 
 
@@ -165,6 +225,7 @@ def _run_claude(
     *,
     prompt: str,
     timeout_seconds: float,
+    execution_env: dict[str, str],
 ) -> subprocess.CompletedProcess[str]:
     proc = subprocess.Popen(
         cmd,
@@ -172,7 +233,7 @@ def _run_claude(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env=_review_env(),
+        env=_review_env(execution_env),
         start_new_session=True,
     )
     prior_handlers: dict[int, signal.Handlers] = {}
@@ -202,10 +263,19 @@ def _run_claude(
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if args.model != PINNED_REVIEW_MODEL:
+    try:
+        binding = _execution_binding()
+    except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
         print(
-            "hapax-claude-reviewer: review model is pinned to opus for registry family "
-            "traceability; rerun without --model or with --model opus",
+            f"hapax-claude-reviewer: refusing undeclared invocation: {exc}; "
+            "next action: repair the selected release descriptor/runtime and retry the review",
+            file=sys.stderr,
+        )
+        return 9
+    if args.model is not None and args.model != binding["descriptor"]["model_id"]:
+        print(
+            "hapax-claude-reviewer: model must match the review route descriptor; "
+            "next action: rerun without --model or update the governed route declaration",
             file=sys.stderr,
         )
         return 64
@@ -214,8 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     cmd = [
         args.claude_bin,
         "-p",
-        "--model",
-        PINNED_REVIEW_MODEL,
+        *binding["argv"],
         "--tools",
         "",
         "--allowedTools",
@@ -238,6 +307,7 @@ def main(argv: list[str] | None = None) -> int:
             cmd,
             prompt=prompt,
             timeout_seconds=args.timeout_seconds,
+            execution_env=binding["env"],
         )
     except OSError as exc:
         print(

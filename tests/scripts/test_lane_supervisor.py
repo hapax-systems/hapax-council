@@ -56,6 +56,9 @@ def _write_fake_tmux(bin_dir: Path) -> None:
                 *) shift ;;
               esac
             done
+            # `=name` is tmux's exact-match anchor (a bare name also prefix-matches);
+            # the supervisor anchors every session target, so honour the syntax.
+            target="${target#=}"
             for live in ${TMUX_LIVE:-}; do
               [ "$live" = "$target" ] && exit 0
             done
@@ -676,6 +679,7 @@ def test_supervisor_real_codex_launcher_blocks_wound_down_non_p0_lane(
         tmp_path,
         HAPAX_SUPERVISOR_CODEX_LANES="cx-amber",
         HAPAX_CODEX_BIN=str(REPO_ROOT / "scripts" / "hapax-codex"),
+        HAPAX_COUNCIL_DIR=str(REPO_ROOT),
     )
     fake_codex = tmp_path / "bin" / "codex"
     _write_recorder(fake_codex, tmp_path / "real-codex.txt")

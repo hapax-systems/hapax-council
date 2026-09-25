@@ -181,7 +181,10 @@ class TestRendererIntegration:
         page = render_deposits_page()
         assert page.path == "/deposits"
         assert "snapshot-placeholder" in page.body_html
-        assert "configure-orcid.sh" in page.body_html
+        # Reader-facing placeholder: no operator instruction (the former
+        # configure-orcid.sh hint) leaks into public copy.
+        assert "No reviewed deposit snapshot is included in this build." in page.body_html
+        assert "configure-orcid.sh" not in page.body_html
 
     def test_render_deposits_accepts_injected_snapshot(self):
         """Test path: tests can pass a fixture snapshot directly."""
@@ -198,13 +201,23 @@ class TestRendererIntegration:
         # zero-works path emits the "tracks zero works" sentinel
         assert "tracks zero works" in page.body_html
 
-    def test_render_site_includes_deposits(self, tmp_path, monkeypatch):
+    def test_render_site_omits_ambient_deposits_snapshot(self, tmp_path, monkeypatch):
+        """An ambient snapshot directory is readable, not cleared: render_site leaves it out.
+
+        The site is built from committed chrome and explicitly cleared inputs only
+        (readability is not availability); the deposits page still renders when a
+        snapshot is passed to it directly, which is the reviewed path.
+        """
         monkeypatch.setenv(SNAPSHOT_DIR_ENV, str(tmp_path))
         _write_snapshot(tmp_path / "2026-05-01.json", _real_shape_payload(1))
 
-        from agents.citable_nexus.renderer import render_site
+        from agents.citable_nexus.datacite_snapshot import read_latest_snapshot
+        from agents.citable_nexus.renderer import render_deposits_page, render_site
 
-        site = render_site()
-        assert "/deposits" in site.pages
-        assert site.pages["/deposits"].startswith("<!doctype html>")
-        assert "10.5281/zenodo.1" in site.pages["/deposits"]
+        site = render_site("https://example.invalid")
+        assert "/deposits" not in site.pages
+        assert "10.5281/zenodo.1" not in "".join(site.pages.values())
+
+        page = render_deposits_page(read_latest_snapshot())
+        assert page.path == "/deposits"
+        assert "10.5281/zenodo.1" in page.body_html

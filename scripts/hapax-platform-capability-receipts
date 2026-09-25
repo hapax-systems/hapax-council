@@ -20,7 +20,24 @@ from typing import Any
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ACTIVATION_ROOT = (
+    Path(
+        os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+        or Path.home() / ".cache" / "hapax" / "source-activation" / "worktree"
+    )
+    .expanduser()
+    .resolve()
+)
+_SCRIPT_PATH = Path(__file__).resolve()
+_CHECKOUT_ROOT = _SCRIPT_PATH.parents[1]
+# Explicit source-checkout execution keeps its own implementation dependencies.
+# Regular installed copies import from governed activation, never mutable primary.
+REPO_ROOT = (
+    _CHECKOUT_ROOT
+    if _SCRIPT_PATH.parent.name == "scripts"
+    and (_CHECKOUT_ROOT / "shared" / "platform_capability_receipts.py").is_file()
+    else SOURCE_ACTIVATION_ROOT
+)
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -736,6 +753,8 @@ def build_receipt(
     codex_exec_auth_timeout: float,
     codex_exec_auth_probe: bool,
 ) -> PlatformCapabilityReceipt:
+    from shared.capability_load_set import observe_load_set
+
     primary_route = routes[0]
     cli = observe_cli(platform, timeout=timeout)
     route_wrappers = observe_route_wrappers(routes)
@@ -823,6 +842,17 @@ def build_receipt(
         wrapper=wrapper,
         route_wrappers=route_wrappers,
         config_refs=config_refs(platform),
+        load_sets={
+            route.route_id: observe_load_set(
+                route.native_load_set,
+                home=Path.home(),
+                # Import provenance does not select the host's deployed project.
+                # Keep the selected root even when absent, so absence is observed.
+                project=SOURCE_ACTIVATION_ROOT,
+                env=os.environ,
+            )
+            for route in routes
+        },
         tool_state=tool_state(routes),
         mcp_status=sorted({mcp for route in routes for mcp in route.tool_access.mcp}),
         capability=surface_evidence(

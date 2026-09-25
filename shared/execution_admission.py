@@ -33,6 +33,7 @@ from hapax.context_canon import ContextFrame, ContextPosition, ContextSelection
 from hapax.context_canon.contract import _domain_hash
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from shared.content_address import ContentAddress
 from shared.coord_projection import (
     LifecycleTransitionError,
     ReadOnlyFsSnapshot,
@@ -199,18 +200,6 @@ def _payload_hash(value: object) -> str:
 
 def _self_hash(domain: str, body: Mapping[str, object]) -> str:
     return _domain_hash(domain, body)
-
-
-class ContentAddress(_FrozenModel):
-    """An exact external object reference and its content hash."""
-
-    ref: str
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-    @field_validator("ref")
-    @classmethod
-    def validate_ref(cls, value: str) -> str:
-        return _nonblank(value)
 
 
 def content_address(ref: str, value: object) -> ContentAddress:

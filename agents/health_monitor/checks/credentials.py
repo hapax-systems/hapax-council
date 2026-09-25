@@ -1,9 +1,10 @@
-"""Password store and credential checks."""
+"""Secret-store and credential checks: the FileStore through ``shared.secrets``, never pass."""
 
 from __future__ import annotations
 
-import shlex
 import time
+
+from shared.secrets import has_secret, list_secret_names, put_instruction, secret_store_root
 
 from .. import constants as _c
 from .. import utils as _u
@@ -12,37 +13,40 @@ from ..registry import check_group
 
 
 @check_group("credentials")
-async def check_pass_store() -> list[CheckResult]:
+async def check_secret_store() -> list[CheckResult]:
+    """The FileStore answers with at least one name (names only, never values)."""
     t = time.monotonic()
-    if _c.PASSWORD_STORE.is_dir():
+    root = secret_store_root()
+    where = f" at {root}" if root is not None else " via hapax-secret"
+    names = list_secret_names()
+    if names:
         return [
             CheckResult(
-                name="credentials.pass_store",
+                name="credentials.secret_store",
                 group="credentials",
                 status=Status.HEALTHY,
-                message=str(_c.PASSWORD_STORE),
+                message=f"{len(names)} names{where}",
                 duration_ms=_u._timed(t),
             )
         ]
     return [
         CheckResult(
-            name="credentials.pass_store",
+            name="credentials.secret_store",
             group="credentials",
             status=Status.FAILED,
-            message=f"Password store missing: {_c.PASSWORD_STORE}",
-            remediation="pass init <gpg-id>",
+            message=f"FileStore unreachable or empty{where}",
+            remediation="install the reins API (hapax-secret) on this host, then put the first secret",
             duration_ms=_u._timed(t),
         )
     ]
 
 
 @check_group("credentials")
-async def check_pass_entries() -> list[CheckResult]:
+async def check_secret_entries() -> list[CheckResult]:
     t = time.monotonic()
     results: list[CheckResult] = []
-    for entry in _c.PASS_ENTRIES:
-        gpg_file = _c.PASSWORD_STORE / f"{entry}.gpg"
-        if gpg_file.is_file():
+    for entry in _c.EXPECTED_SECRETS:
+        if has_secret(entry):
             results.append(
                 CheckResult(
                     name=f"credentials.{entry}",
@@ -59,7 +63,7 @@ async def check_pass_entries() -> list[CheckResult]:
                     group="credentials",
                     status=Status.FAILED,
                     message="missing",
-                    remediation=f"pass insert {shlex.quote(entry)}",
+                    remediation=put_instruction(entry),
                     duration_ms=_u._timed(t),
                 )
             )

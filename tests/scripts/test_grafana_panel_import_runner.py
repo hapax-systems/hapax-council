@@ -13,7 +13,7 @@ import sys
 import urllib.error
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "scripts" / "grafana-panel-import-runner.py"
@@ -38,45 +38,41 @@ def test_default_grafana_url_uses_workspace_port() -> None:
     assert _M.DEFAULT_GRAFANA_URL == "http://localhost:3001"
 
 
-def test_resolve_api_key_uses_env_when_pass_unavailable(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def _fake_get_secret(store_value: str | None):
+    """A stand-in for shared.secrets.get_secret honouring the env-first contract."""
+    import os as _os
+
+    def fake(name: str, *, env: str | None = None, required: bool = True):
+        assert name == "grafana/api-key"
+        if env and _os.environ.get(env, "").strip():
+            return _os.environ[env]
+        return store_value
+
+    return fake
+
+
+def test_resolve_api_key_uses_env_first(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("GRAFANA_API_KEY", "env-key-xyz")
-    with patch.object(_M, "subprocess") as mock_sub:
-        mock_sub.run.side_effect = FileNotFoundError()
-        mock_sub.TimeoutExpired = TimeoutError
+    with patch.object(_M, "get_secret", _fake_get_secret("store-key")):
         assert _M._resolve_api_key(None) == "env-key-xyz"
+
+
+def test_resolve_api_key_uses_the_filestore_when_env_is_unset(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.delenv("GRAFANA_API_KEY", raising=False)
+    with patch.object(_M, "get_secret", _fake_get_secret("store-key\nmetadata\n")):
+        assert _M._resolve_api_key("cli-key") == "store-key"
 
 
 def test_resolve_api_key_uses_cli_fallback(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.delenv("GRAFANA_API_KEY", raising=False)
-    with patch.object(_M, "subprocess") as mock_sub:
-        result = MagicMock()
-        result.returncode = 1
-        result.stdout = ""
-        mock_sub.run.return_value = result
-        mock_sub.TimeoutExpired = TimeoutError
+    with patch.object(_M, "get_secret", _fake_get_secret(None)):
         assert _M._resolve_api_key("cli-key") == "cli-key"
 
 
 def test_resolve_api_key_returns_none_when_all_sources_empty(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.delenv("GRAFANA_API_KEY", raising=False)
-    with patch.object(_M, "subprocess") as mock_sub:
-        result = MagicMock()
-        result.returncode = 1
-        result.stdout = ""
-        mock_sub.run.return_value = result
-        mock_sub.TimeoutExpired = TimeoutError
+    with patch.object(_M, "get_secret", _fake_get_secret(None)):
         assert _M._resolve_api_key(None) is None
-
-
-def test_resolve_api_key_prefers_pass_over_env(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("GRAFANA_API_KEY", "env-key")
-    with patch.object(_M, "subprocess") as mock_sub:
-        result = MagicMock()
-        result.returncode = 0
-        result.stdout = "pass-key\n"
-        mock_sub.run.return_value = result
-        mock_sub.TimeoutExpired = TimeoutError
-        assert _M._resolve_api_key(None) == "pass-key"
 
 
 def test_main_missing_panel_json_returns_2(tmp_path: Path) -> None:

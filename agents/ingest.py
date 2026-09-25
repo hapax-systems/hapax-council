@@ -664,27 +664,71 @@ def _record_ingested(path: Path, tracker: dict, collection: str | None = None) -
     tracker[_dedup_key(path, collection)] = entry
 
 
-def _check_consent_for_ingest(payload: dict) -> bool:
-    """Check if all persons in payload have active consent contracts.
+_CONSENT_REFUSE_REMEDY = (
+    "record an active consent contract for each listed person covering this "
+    "source_service, or remove them from the document's people"
+)
+_CONSENT_UNAVAILABLE_REMEDY = "repair the consent contract registry; the file is retried"
 
-    Returns True if safe to ingest, False if unconsented persons present.
-    Degrades gracefully — if the consent registry is unavailable, allows
-    ingestion (sync agents already filter upstream).
+
+def _ingest_consent_decision(payload: dict) -> tuple[str, str]:
+    """Decide whether a payload naming people may be ingested.
+
+    Returns ``(verdict, cause)`` with verdict ``"allow"``, ``"refuse"`` (skip
+    the file) or ``"unavailable"`` (retry later); ``cause`` is a sanitized
+    token. Only an affirmative ``True`` for every listed person allows. A
+    registry that cannot be loaded or checked (including an identity-custody
+    failure raised by the check), a fail-closed registry, or a non-boolean
+    answer is ``"unavailable"``; malformed ``people`` metadata is refused.
     """
     people = payload.get("people", [])
     if not people:
-        return True  # No persons — safe
+        return "allow", "no_people"
+    if not isinstance(people, list) or not all(
+        isinstance(person, str) and person.strip() for person in people
+    ):
+        return "refuse", "malformed_people"
+    source_service = payload.get("source_service", "document")
+    if not isinstance(source_service, str) or not source_service.strip():
+        return "refuse", "malformed_source_service"
 
     try:
         from shared.governance.consent import ConsentRegistry
 
         registry = ConsentRegistry()
         registry.load()
-    except Exception:
-        return True  # Registry unavailable — degrade gracefully
+        if registry.fail_closed:
+            return "unavailable", "consent_registry_unavailable"
+        answers = [registry.contract_check(person, source_service) for person in people]
+    except Exception as exc:
+        return "unavailable", f"consent_check_failed:{type(exc).__name__}"
+    if any(answer is not True and answer is not False for answer in answers):
+        return "unavailable", "malformed_consent_answer"
+    if all(answers):
+        return "allow", "all_consented"
+    return "refuse", "unconsented_person"
 
-    source_service = payload.get("source_service", "document")
-    return all(registry.contract_check(str(person), source_service) for person in people)
+
+def _audit_ingest_consent(path: Path, verdict: str, cause: str) -> None:
+    """Log and record an ingest consent refusal: sanitized cause and remedy,
+    no person identifiers."""
+    remedy = _CONSENT_REFUSE_REMEDY if verdict == "refuse" else _CONSENT_UNAVAILABLE_REMEDY
+    log.info("Consent: %s %s (cause=%s; remedy: %s)", verdict, path.name, cause, remedy)
+    try:
+        from datetime import UTC
+
+        from agents.refusal_brief import RefusalEvent, append
+
+        append(
+            RefusalEvent(
+                timestamp=datetime.now(UTC),
+                axiom="interpersonal_transparency",
+                surface="ingest:consent_gate",
+                reason=f"ingest {verdict} ({cause}); remedy: {remedy}"[:160],
+            )
+        )
+    except Exception:
+        log.debug("refusal-brief append failed", exc_info=True)
 
 
 def ingest_file(path: Path) -> tuple[bool, str]:
@@ -768,10 +812,16 @@ def ingest_file(path: Path) -> tuple[bool, str]:
                     )
                 )
 
-        # Consent check: skip if unconsented persons in any chunk payload
-        if points and not _check_consent_for_ingest(points[0].payload):
-            log.info("Consent: skipping %s — unconsented persons in payload", path.name)
-            return (True, "consent_skipped")
+        # Consent check: every chunk shares the file's frontmatter people, so
+        # the first payload decides. Refusal skips the file; an unavailable
+        # consent check is a failure that the retry queue re-attempts.
+        if points:
+            verdict, cause = _ingest_consent_decision(points[0].payload)
+            if verdict != "allow":
+                _audit_ingest_consent(path, verdict, cause)
+                if verdict == "refuse":
+                    return (True, "consent_skipped")
+                return (False, f"consent_unavailable:{cause}")
 
         if points:
             ensure_collection(CFG.collection, vector_size=len(points[0].vector))

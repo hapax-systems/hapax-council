@@ -47,6 +47,9 @@ def test_apply_annotation_writes_frontier_provenance_and_route_metadata(tmp_path
     assessment = assess_route_metadata(frontmatter)
     assert assessment.status == RouteMetadataStatus.EXPLICIT
     assert assessment.metadata is not None
+    constraints = frontmatter["route_metadata"]["route_constraints"]
+    assert constraints["preferred_platforms"] == ["codex", "claude"]
+    assert constraints["allowed_platforms"] == ["codex", "claude"]
 
 
 def test_run_triage_pass_updates_bounded_candidates_and_writes_state(tmp_path: Path) -> None:
@@ -72,6 +75,28 @@ def test_run_triage_pass_updates_bounded_candidates_and_writes_state(tmp_path: P
     second, _body = parse_frontmatter(root / "active" / "two.md")
     assert first["annotation_source"] == "frontier_triage"
     assert second["annotation_source"] == "deterministic_fallback"
+
+
+def test_apply_annotation_omits_singleton_claude_preferred_platforms(tmp_path: Path) -> None:
+    root = tmp_path / "tasks"
+    path = _write_task(root, "fallback", annotation_source="deterministic_fallback")
+    annotation = TaskTriageAnnotation(
+        quality_floor="frontier_required",
+        mutation_surface="source",
+        authority_level="authoritative",
+        effort_class="high",
+        platform_suitability=["claude"],
+        annotation_confidence=0.91,
+        reasoning="Governance work may allow claude without minting a walled preferred set.",
+    )
+
+    apply_annotation(path, annotation, model_name="balanced")
+
+    frontmatter, _body = parse_frontmatter(path)
+    constraints = frontmatter["route_metadata"]["route_constraints"]
+    assert constraints["preferred_platforms"] == []
+    assert constraints["allowed_platforms"] == ["claude"]
+    assert frontmatter["platform_suitability"] == ["claude"]
 
 
 class _RunResult:
