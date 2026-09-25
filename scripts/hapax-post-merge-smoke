@@ -34,19 +34,33 @@ SINCE=""
 
 # Failure tracking is installed before change discovery so a broken Git object
 # graph cannot turn the smoke run into an empty successful change set.
+MAX_RECORDED_FAILURES=12
+MAX_FAILURE_ENTRY_CHARS=240
+FAILED_GATE_COUNT=0
 FAILED_GATES=()
 record_failure() {
-    FAILED_GATES+=("$1: $2")
+    local entry
+    FAILED_GATE_COUNT=$((FAILED_GATE_COUNT + 1))
+    if [ "${#FAILED_GATES[@]}" -lt "$MAX_RECORDED_FAILURES" ]; then
+        printf -v entry "%.${MAX_FAILURE_ENTRY_CHARS}s" "$1: $2"
+        FAILED_GATES+=("$entry")
+    fi
 }
 
 emit_failure_notice() {
-    local count=${#FAILED_GATES[@]}
+    local count=$FAILED_GATE_COUNT
+    local retained=${#FAILED_GATES[@]}
+    local omitted=$((count - retained))
     [ "$count" -eq 0 ] && return
     local body="merge=$SHA gates_failed=$count"
     for entry in "${FAILED_GATES[@]}"; do
         echo "smoke FAIL: $entry" >&2
         body="$body | $entry"
     done
+    if [ "$omitted" -gt 0 ]; then
+        echo "smoke FAIL: $omitted additional smoke failures omitted from bounded notice output" >&2
+        body="$body | omitted=$omitted"
+    fi
     if [ -n "${NTFY_TOPIC:-}" ]; then
         /usr/bin/timeout --signal=TERM --kill-after=1s "${NTFY_TIMEOUT_S}s" \
             curl --fail --silent --show-error \
@@ -77,6 +91,12 @@ case "$#" in
             record_failure \
                 "change-discovery" \
                 "malformed arguments; next action: invoke hapax-post-merge-smoke <target-sha> or --since <base-sha> <target-sha>"
+            exit 0
+        fi
+        if [ -z "$2" ]; then
+            record_failure \
+                "change-discovery" \
+                "empty --since commit; next action: pass the trusted deployed ancestor explicitly and rerun this smoke"
             exit 0
         fi
         SINCE="$2"
@@ -157,21 +177,43 @@ if [ -n "$SINCE" ]; then
             "cannot enumerate changed files for $DIFF_LABEL; next action: verify both commit objects with git cat-file -e and rerun this smoke"
         exit 0
     fi
-elif FIRST_PARENT="$(git rev-parse --verify --quiet "${SHA}^1" 2>/dev/null)"; then
-    DIFF_LABEL="${FIRST_PARENT}..${SHA}"
-    if ! CHANGED_FILES="$(git diff --name-only "$FIRST_PARENT" "$SHA" -- 2>/dev/null)"; then
+else
+    if ! FIRST_PARENT="$(
+        git cat-file -p "$SHA" 2>/dev/null \
+            | awk '
+                BEGIN { in_header = 1; found = 0 }
+                in_header && /^$/ { in_header = 0; next }
+                in_header && /^parent / && !found { print $2; found = 1 }
+            '
+    )"; then
         record_failure \
             "change-discovery" \
-            "cannot enumerate changed files for $DIFF_LABEL; next action: verify both commit objects with git cat-file -e and rerun this smoke"
+            "cannot inspect target commit header for $SHA; next action: restore the exact commit object and rerun this smoke"
         exit 0
     fi
-else
-    DIFF_LABEL="root..${SHA}"
-    if ! CHANGED_FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" -- 2>/dev/null)"; then
-        record_failure \
-            "change-discovery" \
-            "cannot enumerate changed files for $DIFF_LABEL; next action: verify the root commit object with git cat-file -e and rerun this smoke"
-        exit 0
+    if [ -n "$FIRST_PARENT" ]; then
+        if ! [[ "$FIRST_PARENT" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+            || ! git cat-file -e "${FIRST_PARENT}^{commit}" 2>/dev/null; then
+            record_failure \
+                "change-discovery" \
+                "target $SHA names unavailable first parent object $FIRST_PARENT (likely a shallow boundary); next action: fetch the parent history and rerun this smoke"
+            exit 0
+        fi
+        DIFF_LABEL="${FIRST_PARENT}..${SHA}"
+        if ! CHANGED_FILES="$(git diff --name-only "$FIRST_PARENT" "$SHA" -- 2>/dev/null)"; then
+            record_failure \
+                "change-discovery" \
+                "cannot enumerate changed files for $DIFF_LABEL; next action: verify both commit objects with git cat-file -e and rerun this smoke"
+            exit 0
+        fi
+    else
+        DIFF_LABEL="root..${SHA}"
+        if ! CHANGED_FILES="$(git diff-tree --root --no-commit-id --name-only -r "$SHA" -- 2>/dev/null)"; then
+            record_failure \
+                "change-discovery" \
+                "cannot enumerate changed files for $DIFF_LABEL; next action: verify the root commit object with git cat-file -e and rerun this smoke"
+            exit 0
+        fi
     fi
 fi
 [ -z "$CHANGED_FILES" ] && exit 0
@@ -283,6 +325,15 @@ is_decommissioned_unit() {
     return 1
 }
 
+unit_parked_at_sha() {
+    local unit="$1" content
+    if ! content="$(git show "${SHA}:systemd/units/${unit}" 2>/dev/null)"; then
+        return 2
+    fi
+    grep -Eiq '^[#;][[:space:]]*Hapax-Parked:[[:space:]]*(true|yes|1)[[:space:]]*$' \
+        <<< "$content"
+}
+
 bridge_inactive_expected_for_live_mode() {
     local unit="$1"
     [ "$unit" = "hapax-v4l2-bridge.service" ] || return 1
@@ -311,7 +362,7 @@ bridge_inactive_expected_for_live_mode() {
 }
 
 gate_services_restarted() {
-    local changed_units=() scope
+    local changed_units=() scope inactive_expected parked_rc
     while IFS= read -r f; do
         case "$f" in
             systemd/units/*.service)
@@ -338,8 +389,26 @@ gate_services_restarted() {
         if [[ "$unit" == *@.service ]]; then
             continue
         fi
-        # Skip decommissioned-list units; they should NOT be active.
+        inactive_expected=0
         if is_decommissioned_unit "$unit"; then
+            inactive_expected=1
+        elif unit_parked_at_sha "$unit"; then
+            inactive_expected=1
+        else
+            parked_rc=$?
+            if [ "$parked_rc" -eq 2 ]; then
+                record_failure \
+                    "services-restarted" \
+                    "cannot read exact-SHA unit content for $unit; next action: restore the target Git object and rerun this smoke"
+                continue
+            fi
+        fi
+        if [ "$inactive_expected" -eq 1 ]; then
+            if systemctl --user is-active --quiet "$unit" 2>/dev/null; then
+                record_failure \
+                    "services-restarted" \
+                    "$unit must be inactive after deploy; next action: systemctl --user disable --now $unit and rerun the governed deploy smoke"
+            fi
             continue
         fi
         if ! systemctl --user is-active --quiet "$unit" 2>/dev/null; then

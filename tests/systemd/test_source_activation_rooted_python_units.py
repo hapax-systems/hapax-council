@@ -82,6 +82,14 @@ def test_retired_l12_feedback_detector_is_a_nonexecuting_parked_sentinel() -> No
     assert not any(form in text for form in (*CANON_FORMS, ACTIVATION))
 
 
+def test_retired_l12_detector_has_no_legacy_rebuild_caller() -> None:
+    assert not (REPO_ROOT / "systemd/hapax-rebuild-services.service").exists()
+    canonical = (UNITS_DIR / "hapax-rebuild-services.service").read_text(encoding="utf-8")
+    assert "hapax-feedback-loop-detector.service" not in _section_values(
+        canonical, "Service", "ExecStart"
+    )
+
+
 # ── canonical-rooted python -m units intentionally NOT yet migrated. Each is
 # justified in docs/research/2026-06-07-canonical-rooted-unit-audit.md. This is
 # an upper-bound allow-list: migrating one later (so it leaves the canonical
