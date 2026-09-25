@@ -24,6 +24,13 @@ for _argument in "$@"; do
         --install) _install_requested=1 ;;
     esac
 done
+case "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" in
+    0|1) ;;
+    *)
+        echo "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE must be exactly 1 when present" >&2
+        exit 1
+        ;;
+esac
 if [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" = "1" ]; then
     _status_uid_seen=0
     _status_gid_seen=0
@@ -78,13 +85,24 @@ if [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" = "1" ]; then
             _gid_map_valid=0
         fi
     done < /proc/self/gid_map
-    _script_is_mountpoint=0
-    while read -r _mount_id _mount_parent _mount_device _mount_root _mount_point _mount_rest; do
-        if [ "$_mount_point" = "$0" ]; then
-            _script_is_mountpoint=1
-            break
-        fi
-    done < /proc/self/mountinfo
+    _self_mountinfo=()
+    _init_mountinfo=()
+    if ! mapfile -t _self_mountinfo < /proc/self/mountinfo \
+        || ! mapfile -t _init_mountinfo < /proc/1/mountinfo; then
+        echo "isolated apcupsd installer test mode cannot read current and initial mount state" >&2
+        exit 1
+    fi
+    _mountinfo_equal=1
+    if [ "${#_self_mountinfo[@]}" -ne "${#_init_mountinfo[@]}" ]; then
+        _mountinfo_equal=0
+    else
+        for ((_mount_index = 0; _mount_index < ${#_self_mountinfo[@]}; _mount_index++)); do
+            if [ "${_self_mountinfo[$_mount_index]}" != "${_init_mountinfo[$_mount_index]}" ]; then
+                _mountinfo_equal=0
+                break
+            fi
+        done
+    fi
 
     if [ "$_status_uid_seen" -ne 1 ] || [ "$_status_gid_seen" -ne 1 ] \
         || [ "$_status_cap_seen" -ne 1 ] \
@@ -100,7 +118,7 @@ if [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" = "1" ]; then
         || ! [[ "$_status_cap_eff" =~ ^0+$ ]] \
         || [ "$_uid_map_count" -ne 1 ] || [ "$_uid_map_valid" -ne 1 ] \
         || [ "$_gid_map_count" -ne 1 ] || [ "$_gid_map_valid" -ne 1 ] \
-        || [ "$_script_is_mountpoint" -ne 0 ]; then
+        || [ "$_mountinfo_equal" -ne 1 ]; then
         echo "isolated apcupsd installer test mode refuses root, set-ID, capability-bearing, or non-initial user/mount namespace execution before setup; next action: rerun the scratch-only test as one unprivileged process in the initial namespaces" >&2
         exit 1
     fi
@@ -125,8 +143,8 @@ unset _status_gid_real _status_gid_saved _status_gid_seen _status_key
 unset _status_uid_effective _status_uid_fs _status_uid_real _status_uid_saved
 unset _status_uid_seen _status_1 _status_2 _status_3 _status_4 _status_extra
 unset _gid_map_count _gid_map_valid _map_extra _map_inside _map_length _map_outside
-unset _mount_device _mount_id _mount_parent _mount_point _mount_rest _mount_root
-unset _script_is_mountpoint _uid_map_count _uid_map_valid
+unset _init_mountinfo _mount_index _mountinfo_equal _self_mountinfo
+unset _uid_map_count _uid_map_valid
 
 ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && /usr/bin/pwd -P)"
 SOURCE="$ROOT"
