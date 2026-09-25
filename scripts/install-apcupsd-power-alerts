@@ -619,7 +619,7 @@ acquire_root_required_lock() {
         echo "apcupsd installer internal error: safe shared lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the unmodified installer as UID $TARGET_UID" >&2
         return 1
     fi
-    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
+    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY' || return 1
 from __future__ import annotations
 
 import fcntl
@@ -629,10 +629,22 @@ import sys
 
 fd = int(sys.argv[1])
 lock_path = sys.argv[2]
+lock_parent = os.path.dirname(lock_path) or "."
+lock_base = os.path.basename(lock_path)
+parent_fd = -1
 try:
+    if not os.path.isabs(lock_path) or not lock_base:
+        raise OSError("lock path must be absolute and name one file")
+    parent_fd = os.open(
+        lock_parent,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    parent_inode = os.fstat(parent_fd)
     inode = os.fstat(fd)
-    path_inode = os.lstat(lock_path)
+    path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
 except OSError as exc:
+    if parent_fd >= 0:
+        os.close(parent_fd)
     print(
         f"apcupsd installer refused invalid shared lock descriptor for {lock_path}: {exc}; "
         "next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
@@ -640,13 +652,17 @@ except OSError as exc:
     )
     raise SystemExit(1) from exc
 if (
-    not stat.S_ISREG(inode.st_mode)
+    not stat.S_ISDIR(parent_inode.st_mode)
+    or parent_inode.st_uid != os.geteuid()
+    or parent_inode.st_mode & 0o022
+    or not stat.S_ISREG(inode.st_mode)
     or not stat.S_ISREG(path_inode.st_mode)
     or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
     or inode.st_uid != os.geteuid()
     or inode.st_nlink != 1
     or inode.st_mode & 0o022
 ):
+    os.close(parent_fd)
     print(
         f"apcupsd installer refused invalid shared lock descriptor for {lock_path}; expected "
         "the caller-owned, single-link, non-group-writable regular path inode; next action: "
@@ -656,9 +672,26 @@ if (
     raise SystemExit(1)
 os.fchmod(fd, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
+locked_inode = os.fstat(fd)
+locked_path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+if (
+    (locked_inode.st_dev, locked_inode.st_ino)
+    != (locked_path_inode.st_dev, locked_path_inode.st_ino)
+    or locked_inode.st_uid != os.geteuid()
+    or locked_inode.st_nlink != 1
+    or stat.S_IMODE(locked_inode.st_mode) != 0o600
+):
+    os.close(parent_fd)
+    print(
+        f"apcupsd installer shared lock path changed during acquisition for {lock_path}; "
+        "next action: stop the competing state mutation and rerun",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+os.close(parent_fd)
 PY
-    mkdir -p "$ROOT_REQUIRED_DEFER_ROOT"
-    migrate_legacy_root_required_state
+    mkdir -p "$ROOT_REQUIRED_DEFER_ROOT" || return 1
+    migrate_legacy_root_required_state || return 1
 }
 
 reexec_with_safe_root_required_lock() {
@@ -673,12 +706,32 @@ import sys
 
 lock_path, script, *args = sys.argv[1:]
 lock_parent = os.path.dirname(lock_path) or "."
+lock_base = os.path.basename(lock_path)
+if not os.path.isabs(lock_path) or not lock_base:
+    print(
+        f"apcupsd installer refused invalid shared lock path {lock_path}; expected an absolute "
+        "path naming one file; next action: restore the canonical durable state path",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 old_umask = os.umask(0o077)
 try:
     os.makedirs(lock_parent, exist_ok=True)
 finally:
     os.umask(old_umask)
-parent_inode = os.lstat(lock_parent)
+try:
+    parent_fd = os.open(
+        lock_parent,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+except OSError as exc:
+    print(
+        f"apcupsd installer refused unsafe shared lock parent {lock_parent}: {exc}; next action: "
+        "restore a caller-owned physical durable state directory and rerun as the target account",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from exc
+parent_inode = os.fstat(parent_fd)
 if (
     not stat.S_ISDIR(parent_inode.st_mode)
     or parent_inode.st_uid != os.geteuid()
@@ -693,11 +746,13 @@ if (
     raise SystemExit(1)
 try:
     fd = os.open(
-        lock_path,
+        lock_base,
         os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
         0o600,
+        dir_fd=parent_fd,
     )
 except OSError as exc:
+    os.close(parent_fd)
     print(
         f"apcupsd installer refused unsafe shared lock {lock_path}: {exc}; "
         "next action: remove only a confirmed symlink/non-regular lock and rerun as the target account",
@@ -721,6 +776,21 @@ try:
         raise SystemExit(1)
     os.fchmod(fd, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX)
+    locked_inode = os.fstat(fd)
+    locked_path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
+    if (
+        (locked_inode.st_dev, locked_inode.st_ino)
+        != (locked_path_inode.st_dev, locked_path_inode.st_ino)
+        or locked_inode.st_uid != os.geteuid()
+        or locked_inode.st_nlink != 1
+        or stat.S_IMODE(locked_inode.st_mode) != 0o600
+    ):
+        print(
+            f"apcupsd installer shared lock path changed during acquisition for {lock_path}; "
+            "next action: stop the competing state mutation and rerun",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
@@ -736,6 +806,7 @@ except OSError as exc:
     raise SystemExit(1) from exc
 finally:
     os.close(fd)
+    os.close(parent_fd)
 PY
 }
 
@@ -751,6 +822,7 @@ import sys
 
 receipt, kind = sys.argv[1:]
 parent = os.path.dirname(receipt) or "."
+base = os.path.basename(receipt)
 
 
 def refuse(message: str) -> None:
@@ -762,15 +834,37 @@ def refuse(message: str) -> None:
     raise SystemExit(1)
 
 
+def snapshot(inode: os.stat_result) -> tuple[int, ...]:
+    return (
+        inode.st_dev,
+        inode.st_ino,
+        inode.st_uid,
+        inode.st_gid,
+        inode.st_nlink,
+        stat.S_IMODE(inode.st_mode),
+        inode.st_size,
+        inode.st_mtime_ns,
+        inode.st_ctime_ns,
+    )
+
+
+parent_fd = -1
+fd = -1
 try:
-    parent_inode = os.lstat(parent)
-    expected = os.lstat(receipt)
+    if not os.path.isabs(receipt) or not base:
+        refuse("the receipt path must be absolute and name one file")
+    parent_fd = os.open(
+        parent,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
+    )
+    parent_inode = os.fstat(parent_fd)
     if (
         not stat.S_ISDIR(parent_inode.st_mode)
         or parent_inode.st_uid != os.geteuid()
         or parent_inode.st_mode & 0o022
     ):
         refuse("the parent is not a caller-owned, non-group-writable physical directory")
+    expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
     if (
         not stat.S_ISREG(expected.st_mode)
         or expected.st_uid != os.geteuid()
@@ -782,16 +876,34 @@ try:
             f"owner={expected.st_uid} links={expected.st_nlink} "
             f"mode={stat.S_IMODE(expected.st_mode):04o} size={expected.st_size}"
         )
-    fd = os.open(receipt, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-    try:
-        opened = os.fstat(fd)
-        data = os.read(fd, 42)
-    finally:
-        os.close(fd)
+    fd = os.open(
+        base,
+        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
+    opened = os.fstat(fd)
+    if snapshot(opened) != snapshot(expected):
+        refuse("the receipt inode or metadata changed while opening")
+    chunks: list[bytes] = []
+    remaining = 42
+    while remaining:
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    data = b"".join(chunks)
+    after = os.fstat(fd)
+    published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
 except OSError as exc:
     refuse(f"cannot inspect or read the receipt: {exc}")
-if (opened.st_dev, opened.st_ino) != (expected.st_dev, expected.st_ino):
-    refuse("the inode changed while opening")
+finally:
+    if fd >= 0:
+        os.close(fd)
+    if parent_fd >= 0:
+        os.close(parent_fd)
+if snapshot(after) != snapshot(opened) or snapshot(published) != snapshot(after):
+    refuse("the receipt inode or metadata changed while reading")
 if re.fullmatch(rb"[0-9a-f]{40}\n", data) is None:
     refuse("content is not exactly 40 lowercase hex characters and one newline")
 print(data[:-1].decode("ascii"))
@@ -799,8 +911,8 @@ PY
 }
 
 write_root_required_sha_receipt() {
-    local receipt="$1" sha="$2"
-    /usr/bin/python3 -I - "$receipt" "$sha" <<'PY'
+    local receipt="$1" sha="$2" publication_mode="${3:-publish}"
+    /usr/bin/python3 -I - "$receipt" "$sha" "$publication_mode" <<'PY'
 from __future__ import annotations
 
 import os
@@ -809,7 +921,7 @@ import secrets
 import stat
 import sys
 
-receipt, sha = sys.argv[1:]
+receipt, sha, publication_mode = sys.argv[1:]
 payload = f"{sha}\n".encode()
 parent = os.path.dirname(receipt)
 base = os.path.basename(receipt)
@@ -826,8 +938,27 @@ def refuse(message: str) -> None:
     raise SystemExit(1)
 
 
+def snapshot(inode: os.stat_result) -> tuple[int, ...]:
+    return (
+        inode.st_dev,
+        inode.st_ino,
+        inode.st_uid,
+        inode.st_gid,
+        inode.st_nlink,
+        stat.S_IMODE(inode.st_mode),
+        inode.st_size,
+        inode.st_mtime_ns,
+        inode.st_ctime_ns,
+    )
+
+
 try:
-    if not os.path.isabs(receipt) or not base or re.fullmatch(r"[0-9a-f]{40}", sha) is None:
+    if (
+        not os.path.isabs(receipt)
+        or not base
+        or re.fullmatch(r"[0-9a-f]{40}", sha) is None
+        or publication_mode not in {"publish", "preserve-canonical"}
+    ):
         refuse("the path must be absolute and the value exactly 40 lowercase hex characters")
     old_umask = os.umask(0o077)
     try:
@@ -841,6 +972,41 @@ try:
     parent_inode = os.fstat(parent_fd)
     if parent_inode.st_uid != os.geteuid() or parent_inode.st_mode & 0o022:
         refuse("the receipt directory is not caller-owned and non-group-writable")
+    if publication_mode == "preserve-canonical":
+        expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(expected.st_mode)
+            or expected.st_uid != os.geteuid()
+            or expected.st_nlink != 1
+            or expected.st_mode & 0o022
+            or expected.st_size != len(payload)
+        ):
+            refuse("the existing receipt is unsafe to normalize")
+        fd = os.open(base, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            opened = os.fstat(fd)
+            chunks: list[bytes] = []
+            remaining = len(payload) + 1
+            while remaining:
+                chunk = os.read(fd, remaining)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            observed = b"".join(chunks)
+            after = os.fstat(fd)
+            published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
+        finally:
+            os.close(fd)
+        if (
+            snapshot(expected) != snapshot(opened)
+            or snapshot(opened) != snapshot(after)
+            or snapshot(after) != snapshot(published)
+            or observed != payload
+        ):
+            refuse("the existing receipt changed during normalization")
+        if stat.S_IMODE(after.st_mode) == 0o600:
+            raise SystemExit(0)
     temp = f".{base}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
     fd = os.open(
         temp,
@@ -870,21 +1036,35 @@ try:
         os.close(fd)
     os.replace(temp, base, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
     temp = None
+    expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
     fd = os.open(base, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
     try:
-        inode = os.fstat(fd)
-        observed = os.read(fd, len(payload) + 1)
+        opened = os.fstat(fd)
+        chunks: list[bytes] = []
+        remaining = len(payload) + 1
+        while remaining:
+            chunk = os.read(fd, remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        observed = b"".join(chunks)
+        after = os.fstat(fd)
+        published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
     finally:
         os.close(fd)
     if (
-        not stat.S_ISREG(inode.st_mode)
-        or inode.st_uid != os.geteuid()
-        or inode.st_nlink != 1
-        or stat.S_IMODE(inode.st_mode) != 0o600
-        or inode.st_size != len(payload)
+        snapshot(expected) != snapshot(opened)
+        or snapshot(opened) != snapshot(after)
+        or snapshot(after) != snapshot(published)
+        or not stat.S_ISREG(after.st_mode)
+        or after.st_uid != os.geteuid()
+        or after.st_nlink != 1
+        or stat.S_IMODE(after.st_mode) != 0o600
+        or after.st_size != len(payload)
         or observed != payload
     ):
-        refuse("the published receipt failed its owner/link/mode/content readback")
+        refuse("the published receipt failed its stable path/inode/mode/content readback")
     os.fsync(parent_fd)
 except OSError as exc:
     refuse(f"atomic mode-0600 publication failed: {exc}")
@@ -903,26 +1083,27 @@ migrate_legacy_root_required_state() {
     local label legacy receipt temp receipt_sha
     legacy="$ROOT_REQUIRED_DEFER_ROOT/current-source"
     if [ ! -e "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" ] && [ -d "$legacy" ]; then
-        mkdir -p "$(dirname "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT")"
+        mkdir -p "$(dirname "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT")" || return 1
         temp="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT.migrate.$$"
-        rm -rf "$temp"
-        cp -a "$legacy" "$temp"
-        mv "$temp" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
+        rm -rf "$temp" || return 1
+        cp -a "$legacy" "$temp" || return 1
+        mv "$temp" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" || return 1
         echo "migrated root-required installed-source snapshot to durable state"
     fi
     for label in oom-containment apcupsd-power-alerts; do
         legacy="$ROOT_REQUIRED_DEFER_ROOT/installed-receipts/$label.sha"
         receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
         if [ ! -f "$receipt" ] && [ "$legacy" != "$receipt" ] && [ -f "$legacy" ]; then
-            receipt_sha="$(read_safe_root_required_sha_receipt "$legacy" legacy-installed)"
-            write_root_required_sha_receipt "$receipt" "$receipt_sha"
+            receipt_sha="$(read_safe_root_required_sha_receipt "$legacy" legacy-installed)" || return 1
+            write_root_required_sha_receipt \
+                "$receipt" "$receipt_sha" || return 1
             echo "migrated $label installed-package receipt to durable state"
         fi
         receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
         if [ ! -f "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha" ] && [ -f "$receipt" ]; then
-            receipt_sha="$(read_safe_root_required_sha_receipt "$receipt" installed)"
+            receipt_sha="$(read_safe_root_required_sha_receipt "$receipt" installed)" || return 1
             write_root_required_sha_receipt \
-                "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha" "$receipt_sha"
+                "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha" "$receipt_sha" || return 1
             echo "initialized $label desired-package receipt from installed state"
         fi
     done
@@ -997,14 +1178,26 @@ validate_root_required_package_order() {
         echo "root-required apcupsd package commit is unavailable: $ROOT_REQUIRED_PACKAGE_SHA; next action: fetch it into $ROOT_REQUIRED_GIT_REPO, rerun hapax-post-merge-deploy, and use its live next-action command" >&2
         return 1
     }
-    validate_candidate_against_receipt installed "$ROOT_REQUIRED_RECEIPT"
-    validate_candidate_against_receipt desired "$ROOT_REQUIRED_DESIRED_RECEIPT"
+    validate_candidate_against_receipt installed "$ROOT_REQUIRED_RECEIPT" || return 1
+    validate_candidate_against_receipt desired "$ROOT_REQUIRED_DESIRED_RECEIPT" || return 1
 }
 
 record_root_required_package_receipt() {
-    write_root_required_sha_receipt "$ROOT_REQUIRED_RECEIPT" "$ROOT_REQUIRED_PACKAGE_SHA"
     write_root_required_sha_receipt \
-        "$ROOT_REQUIRED_DESIRED_RECEIPT" "$ROOT_REQUIRED_PACKAGE_SHA"
+        "$ROOT_REQUIRED_RECEIPT" "$ROOT_REQUIRED_PACKAGE_SHA" || return 1
+    write_root_required_sha_receipt \
+        "$ROOT_REQUIRED_DESIRED_RECEIPT" "$ROOT_REQUIRED_PACKAGE_SHA" || return 1
+}
+
+normalize_existing_root_required_package_receipts() {
+    local receipt receipt_sha
+    for receipt in "$ROOT_REQUIRED_RECEIPT" "$ROOT_REQUIRED_DESIRED_RECEIPT"; do
+        if [ -e "$receipt" ] || [ -L "$receipt" ]; then
+            receipt_sha="$(read_safe_root_required_sha_receipt "$receipt" existing)" || return 1
+            write_root_required_sha_receipt \
+                "$receipt" "$receipt_sha" preserve-canonical || return 1
+        fi
+    done
 }
 
 expected_package_git_mode() {
@@ -1126,8 +1319,9 @@ validate_root_required_deferral() {
 
 drain_root_required_deferral() {
     [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ] || return 0
-    [ -n "${ROOT_REQUIRED_DRAIN_REAL:-}" ] || validate_root_required_deferral
-    mv -fT -- "$ROOT_REQUIRED_DRAIN_REAL/RUNBOOK.txt" "$ROOT_REQUIRED_DRAIN_REAL/DRAINED.txt"
+    [ -n "${ROOT_REQUIRED_DRAIN_REAL:-}" ] || validate_root_required_deferral || return 1
+    mv -fT -- "$ROOT_REQUIRED_DRAIN_REAL/RUNBOOK.txt" \
+        "$ROOT_REQUIRED_DRAIN_REAL/DRAINED.txt" || return 1
     echo "root-required deferral marked drained: $ROOT_REQUIRED_DRAIN_REAL"
 }
 
@@ -1159,7 +1353,7 @@ record_installed_source() {
     local rel dest
     for rel in "${package_files[@]}"; do
         dest="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT/$rel"
-        publish_installed_source_file "$(src_path "$rel")" "$dest"
+        publish_installed_source_file "$(src_path "$rel")" "$dest" || return 1
     done
 }
 
@@ -1444,29 +1638,42 @@ verify_live() {
 
 load_authenticated_sealed_sources
 require_authenticated_install_authority
-[ "$CHECK" -eq 0 ] || check_source
-[ "$INSTALL" -eq 0 ] || refuse_whole_script_root
+if [ "$CHECK" -ne 0 ]; then
+    check_source
+fi
+if [ "$INSTALL" -ne 0 ]; then
+    refuse_whole_script_root
+fi
 if [ "$INSTALL" -eq 1 ] && [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
     bind_authenticated_release_root
     validate_package_source_matches_commit
     run_authenticated_authority_gate
 fi
-[ "$INSTALL" -eq 0 ] || reexec_with_safe_root_required_lock
-[ "$INSTALL" -eq 0 ] || acquire_root_required_lock
-[ "$INSTALL" -eq 0 ] || validate_root_required_package_order
+if [ "$INSTALL" -ne 0 ]; then
+    reexec_with_safe_root_required_lock
+    acquire_root_required_lock
+    validate_root_required_package_order
+fi
 if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
     run_authenticated_authority_gate
+    normalize_existing_root_required_package_receipts
     drain_root_required_deferral
     echo "apcupsd superseded deferral drained without live mutation"
     exit 0
 fi
-[ "$INSTALL" -eq 0 ] || validate_package_source_matches_commit
-[ "$INSTALL" -eq 0 ] || validate_no_unhandled_package_removals
-[ "$INSTALL" -eq 0 ] || validate_root_required_deferral
-[ "$INSTALL" -eq 0 ] || install_live
-[ "$VERIFY_LIVE" -eq 0 ] || verify_live
-[ "$INSTALL" -eq 0 ] || run_authenticated_authority_gate
-[ "$INSTALL" -eq 0 ] || record_installed_source
-[ "$INSTALL" -eq 0 ] || record_root_required_package_receipt
-[ "$INSTALL" -eq 0 ] || drain_root_required_deferral
+if [ "$INSTALL" -ne 0 ]; then
+    validate_package_source_matches_commit
+    validate_no_unhandled_package_removals
+    validate_root_required_deferral
+    install_live
+fi
+if [ "$VERIFY_LIVE" -ne 0 ]; then
+    verify_live
+fi
+if [ "$INSTALL" -ne 0 ]; then
+    run_authenticated_authority_gate
+    record_installed_source
+    record_root_required_package_receipt
+    drain_root_required_deferral
+fi
 echo "apcupsd power alert install/check complete"
