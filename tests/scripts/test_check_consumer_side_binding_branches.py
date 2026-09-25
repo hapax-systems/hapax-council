@@ -1620,3 +1620,760 @@ def test_nested_assignment_expressions_publish_in_completion_order(gate, tmp_pat
         if pattern.startswith(("a", "wrong"))
     ] == [truth], "nested bindings resolve to the string Python actually builds"
     assert truth not in unwritten(report)
+
+
+# ------------------------------------------------------------------------------------------
+# C1 — the THIRD exit channel from an undecided region (codex, #4626, at `8417e866f`).
+#
+# `_demote_from` covers two channels: the access list, and the invocation ledger for arguments
+# resolved in a callee's scope. A NAME bound inside the region left it fully CERTAIN, so a write
+# through that name AFTER the region certified a path the program never touches. Isolated by
+# moving only the write: inside the region it is already evidence, after it, certified.
+#
+#     write INSIDE  the undecided region -> ('artifacts/new.json', False)   demotion works
+#     write AFTER   the undecided region -> ('artifacts/new.json', True)    certainty escaped
+#
+# Every defect row is paired with its DECIDED twin, which must keep certifying: this repair is a
+# withhold, and a withhold one case too wide loses a real writer. The unchanged-binding, alias
+# and ordinary-branch controls below exist because that is exactly how the `_orphaned` attempt
+# went wrong — a demotion broad enough to remove the discrimination it existed to make.
+# ------------------------------------------------------------------------------------------
+
+
+def _unbounded_writers(gate, tmp_path):
+    """The half `_bounded_writers` cannot see.
+
+    A pattern is reported once per state, so a name certified by ANY surviving alternative shows
+    up in `_bounded_writers` even when an over-broad demotion has quietly unbounded it in the
+    others. Asserting only membership there is satisfiable by one untouched alternative — which
+    is how the first version of the controls below stayed green while the discrimination they
+    exist to pin was broken. The two sets together are the assertion; either alone is not.
+    """
+
+    accesses, _, _, _ = gate.collect_artifact_accesses(tmp_path)
+    return {
+        access.pattern for access in accesses if access.action == "write" and not access.bounded
+    }
+
+
+C1_UNDECIDED_REGIONS = [
+    pytest.param(
+        "def flag():\n    return not True\n",
+        "flag() and (target := Path('artifacts/new.json'))\n",
+        id="and-operator",
+    ),
+    pytest.param(
+        "def flag():\n    return not False\n",
+        "flag() or (target := Path('artifacts/new.json'))\n",
+        id="or-operator",
+    ),
+    pytest.param(
+        "def flag():\n    return not True\n",
+        "(target := Path('artifacts/new.json')) if flag() else None\n",
+        id="conditional-expression",
+    ),
+    pytest.param(
+        "def size():\n    return 5\n",
+        "size() < 1 < (target := Path('artifacts/new.json'))\n",
+        id="comparison-chain",
+    ),
+]
+
+
+@pytest.mark.parametrize("preamble,region", C1_UNDECIDED_REGIONS)
+def test_a_name_bound_in_an_undecided_region_is_not_certain_after_it(
+    gate, tmp_path: Path, preamble: str, region: str
+) -> None:
+    """The write is OUTSIDE every region; only the NAME is bound inside one.
+
+    In each row Python writes `artifacts/old.json` — the operand carrying the walrus never runs —
+    and reads `artifacts/new.json`, which nothing writes.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        preamble + "target = Path('artifacts/old.json')\n" + region + "target.write_text('{}')\n"
+        "Path('artifacts/new.json').read_text()\n",
+    )
+    assert "artifacts/new.json" not in _bounded_writers(gate, tmp_path)
+    # WITHHOLDING IS NOT ASSERTING ABSENCE. The writer was located and its execution is
+    # undetermined, so the reader is unresolved — not reported as reading an unwritten artifact,
+    # which is the claim this scanner is not entitled to make here.
+    assert "artifacts/new.json" not in unwritten(report)
+    assert "artifacts/new.json" in unwritten(report, UNRESOLVED_WRITER)
+
+
+C1_DECIDED_REGIONS = [
+    pytest.param("False and (target := Path('artifacts/new.json'))\n", id="and-operator"),
+    pytest.param("True or (target := Path('artifacts/new.json'))\n", id="or-operator"),
+    pytest.param(
+        "(target := Path('artifacts/new.json')) if False else None\n",
+        id="conditional-expression",
+    ),
+    pytest.param("2 < 1 < (target := Path('artifacts/new.json'))\n", id="comparison-chain"),
+]
+
+
+@pytest.mark.parametrize("region", C1_DECIDED_REGIONS)
+def test_a_decided_operand_still_certifies_the_binding_it_leaves_standing(
+    gate, tmp_path: Path, region: str
+) -> None:
+    """The twin that must keep working. A decided operand has no undecided region at all.
+
+    `target` is certainly `artifacts/old.json`, so that write stays CERTIFIED. If this row goes
+    unbounded the repair has stopped discriminating and is demoting on the shape of the syntax
+    rather than on whether reachability was established.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "target = Path('artifacts/old.json')\n" + region + "target.write_text('{}')\n"
+        "Path('artifacts/old.json').read_text()\n",
+    )
+    assert "artifacts/old.json" in _bounded_writers(gate, tmp_path)
+    assert "artifacts/old.json" not in unwritten(report)
+
+
+def test_an_unchanged_binding_keeps_its_certainty_across_an_undecided_region(
+    gate, tmp_path: Path
+) -> None:
+    """A name the region never touches is not made uncertain by standing next to one.
+
+    The region binds `other`; `keep` is bound before it and never rebound, so the write through
+    `keep` is as certain as it was. Demoting by position rather than by binding would fail here.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "def flag():\n    return not True\n"
+        "keep = Path('artifacts/keep.json')\n"
+        "flag() and (other := Path('artifacts/new.json'))\n"
+        "keep.write_text('{}')\n"
+        "Path('artifacts/keep.json').read_text()\n",
+    )
+    assert "artifacts/keep.json" in _bounded_writers(gate, tmp_path)
+    # And in NO state is it evidence-only: a demotion keyed to position rather than to binding
+    # marks `keep` in the in-region alternatives while an earlier one still certifies it, which
+    # membership above cannot see.
+    assert "artifacts/keep.json" not in _unbounded_writers(gate, tmp_path)
+    assert "artifacts/keep.json" not in unwritten(report)
+
+
+def test_an_alias_of_an_unchanged_binding_keeps_its_certainty(gate, tmp_path: Path) -> None:
+    """An alias made before the region still names the value it was given.
+
+    Rebinding `base` inside the region does not retroactively change what `alias` holds, so the
+    write through `alias` stays certified while the write through `base` does not.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "def flag():\n    return not True\n"
+        "base = Path('artifacts/keep.json')\n"
+        "alias = base\n"
+        "flag() and (base := Path('artifacts/new.json'))\n"
+        "alias.write_text('{}')\n"
+        "Path('artifacts/keep.json').read_text()\n",
+    )
+    assert "artifacts/keep.json" in _bounded_writers(gate, tmp_path)
+    assert "artifacts/keep.json" not in _unbounded_writers(gate, tmp_path)
+    assert "artifacts/keep.json" not in unwritten(report)
+
+
+def test_ordinary_branches_keep_certifying_both_arms(gate, tmp_path: Path) -> None:
+    """The no-broadening control, and the one most likely to catch an over-wide repair.
+
+    An `if`/`else` under an undecided test is NOT this defect: both arms are reachable and the
+    committed contract certifies both. This repair is about a binding made where reachability was
+    never established, so this row must be untouched by it.
+    """
+
+    report_for(
+        gate,
+        tmp_path,
+        "def flag():\n    return not True\n"
+        "if flag():\n"
+        "    target = Path('artifacts/a.json')\n"
+        "else:\n"
+        "    target = Path('artifacts/b.json')\n"
+        "target.write_text('{}')\n",
+    )
+    assert {"artifacts/a.json", "artifacts/b.json"} <= _bounded_writers(gate, tmp_path)
+    assert not {"artifacts/a.json", "artifacts/b.json"} & _unbounded_writers(gate, tmp_path)
+
+
+def test_a_reached_walrus_is_demoted_too_and_that_is_the_accepted_cost(
+    gate, tmp_path: Path
+) -> None:
+    """Stated openly rather than discovered later: this repair demotes a REAL writer.
+
+    Here the operand does run and Python really does write `artifacts/new.json`. The scanner
+    cannot decide `flag()`, so it cannot tell this row from the ones above — and the honest
+    reading of "reachability not established" demotes it as well. The write is kept as evidence
+    and the reader is unresolved, never reported absent; that discrimination is what makes the
+    cost acceptable rather than a lost writer.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "def flag():\n    return not False\n"
+        "target = Path('artifacts/old.json')\n"
+        "flag() and (target := Path('artifacts/new.json'))\n"
+        "target.write_text('{}')\n"
+        "Path('artifacts/new.json').read_text()\n",
+    )
+    assert "artifacts/new.json" not in _bounded_writers(gate, tmp_path)
+    assert "artifacts/new.json" not in unwritten(report)
+    assert "artifacts/new.json" in unwritten(report, UNRESOLVED_WRITER)
+
+
+# ------------------------------------------------------------------------------------------
+# C2 — an annotation expression that never runs (codex, #4626, at `:5330`).
+#
+# TWO independent conditions, and a repair keyed to either alone is wrong at four positions:
+#
+#   PEP 563   `from __future__ import annotations` — nothing annotated evaluates.
+#   PEP 526   a variable annotation in a FUNCTION body never evaluates, future import or not.
+#             Root's counterexample, and the reason module state is necessary but not sufficient.
+#
+# A class body is not a function body even nested inside one, so `class_in_function` is the row
+# that decides how the predicate is worded rather than merely another position.
+#
+# These cases cannot use `report_for`: it prepends its own imports, and a `from __future__` line
+# after them is a misplaced-future SyntaxError. `_parse` answers a SyntaxError with None and the
+# file is skipped in silence — so the postponed rows would pass while measuring nothing at all.
+# ------------------------------------------------------------------------------------------
+
+_ANN = "Path('artifacts/ann.json').write_text('{}')"
+_VAL = "Path('artifacts/val.json').write_text('{}')"
+
+
+def _annotation_writers(gate, tmp_path: Path, body: str, *, postponed: bool):
+    """(certified, evidence-only) write patterns for one annotated module."""
+
+    _write(
+        tmp_path,
+        "shared/annotated.py",
+        ("from __future__ import annotations\n" if postponed else "")
+        + "from pathlib import Path\n"
+        + body,
+    )
+    accesses, _, _, _ = gate.collect_artifact_accesses(tmp_path)
+    writes = [access for access in accesses if access.action == "write"]
+    return (
+        {access.pattern for access in writes if access.bounded},
+        {access.pattern for access in writes if not access.bounded},
+    )
+
+
+#: Positions where the annotation DOES evaluate when the module does not defer.
+_EVALUATED_POSITIONS = [
+    pytest.param("x: " + _ANN + "\n", id="module_annassign"),
+    pytest.param("class K:\n    x: " + _ANN + "\n", id="class_attribute"),
+    pytest.param("def use(v: " + _ANN + "):\n    return v\n", id="arg_annotation"),
+    pytest.param("def use() -> " + _ANN + ":\n    return 1\n", id="return_annotation"),
+    pytest.param(
+        "def f():\n    class K:\n        x: " + _ANN + "\n    return K\nf()\n",
+        id="class_in_function",
+    ),
+]
+
+
+@pytest.mark.parametrize("body", _EVALUATED_POSITIONS)
+def test_an_evaluated_annotation_still_certifies_its_write(gate, tmp_path: Path, body: str) -> None:
+    """The half that must keep working. Without the future import these annotations DO run."""
+
+    certified, evidence = _annotation_writers(gate, tmp_path, body, postponed=False)
+    assert "artifacts/ann.json" in certified
+    assert "artifacts/ann.json" not in evidence
+
+
+@pytest.mark.parametrize("body", _EVALUATED_POSITIONS)
+def test_a_deferred_annotation_writes_nothing_at_all(gate, tmp_path: Path, body: str) -> None:
+    """With PEP 563 the annotation is a string; no write exists to certify OR to keep as evidence.
+
+    Absent rather than unbounded, and the distinction is deliberate: an undecided region withholds
+    because reachability is UNKNOWN, while this is decided — the expression provably does not run,
+    exactly like a `case` whose guard is constant-false. Recording evidence here would invent an
+    unresolved site the program does not have.
+    """
+
+    certified, evidence = _annotation_writers(gate, tmp_path, body, postponed=True)
+    assert "artifacts/ann.json" not in certified
+    assert "artifacts/ann.json" not in evidence
+
+
+@pytest.mark.parametrize("postponed", [False, True], ids=["eager", "postponed"])
+def test_a_function_local_annotation_never_evaluates(gate, tmp_path: Path, postponed: bool) -> None:
+    """Root's counterexample: the module does NOT defer, and the annotation still never runs.
+
+    A gate keyed only to the future import cannot express this row — which is why the eager case
+    is parametrized here rather than serving as a control that the write survives.
+    """
+
+    certified, evidence = _annotation_writers(
+        gate, tmp_path, "def f():\n    x: " + _ANN + "\nf()\n", postponed=postponed
+    )
+    assert "artifacts/ann.json" not in certified
+    assert "artifacts/ann.json" not in evidence
+
+
+@pytest.mark.parametrize("postponed", [False, True], ids=["eager", "postponed"])
+def test_the_value_beside_a_dead_annotation_still_runs(
+    gate, tmp_path: Path, postponed: bool
+) -> None:
+    """Suppressing the annotation must not suppress the assignment beside it.
+
+    `x: <annotation> = <value>` in a function body runs the VALUE and not the annotation, in both
+    modes. This is the row that catches a repair which skips the whole statement.
+    """
+
+    certified, evidence = _annotation_writers(
+        gate, tmp_path, "def f():\n    x: " + _ANN + " = " + _VAL + "\nf()\n", postponed=postponed
+    )
+    assert "artifacts/val.json" in certified
+    assert "artifacts/val.json" not in evidence
+    assert "artifacts/ann.json" not in certified
+
+
+def test_a_subscript_target_runs_even_when_its_annotation_does_not(gate, tmp_path: Path) -> None:
+    """`d[<target>]: <annotation>` evaluates the target expression whether or not the module defers."""
+
+    body = "d = {}\nd[Path('artifacts/tgt.json').write_text('{}')]: " + _ANN + "\n"
+    certified, evidence = _annotation_writers(gate, tmp_path, body, postponed=True)
+    assert "artifacts/tgt.json" in certified
+    assert "artifacts/tgt.json" not in evidence
+    assert "artifacts/ann.json" not in certified
+
+
+@pytest.mark.parametrize("postponed", [False, True], ids=["eager", "postponed"])
+def test_a_parameter_default_is_not_an_annotation(gate, tmp_path: Path, postponed: bool) -> None:
+    """Defaults run when the `def` executes, deferred annotations included.
+
+    Correct in both modes today; kept as a regression guard because a gate keyed to the future
+    import could plausibly swallow the defaults sitting in the same signature.
+    """
+
+    body = "def use(a=Path('artifacts/def.json').write_text('{}')):\n    return a\n"
+    certified, evidence = _annotation_writers(gate, tmp_path, body, postponed=postponed)
+    assert "artifacts/def.json" in certified
+    assert "artifacts/def.json" not in evidence
+
+
+# ------------------------------------------------------------------------------------------
+# C3 — a `case` body that cannot run (codex, #4626, at `:5579`).
+#
+# The `ast.Match` handler scanned EVERY case body as certainly executed and called
+# `_demote_from` nowhere, so it had not one region but none. Two entry conditions, only one of
+# which codex named:
+#
+#   constant-false guard   `case 1 if False:` — the guard runs and selects nothing.
+#   pattern cannot match   `match 1: case 2:` — the case is never entered at all.
+#
+# THREE OUTCOMES, and only one of them removes anything:
+#
+#   decided dead   skipped entirely — the case, its guard and its body never run.
+#   decided live   certified, unchanged. Positive constant and helper cases must survive.
+#   undecided      EVIDENCE. Demoted across all three channels — accesses, callee invocation
+#                  bindings and escaping name bindings — never certified and never dropped.
+#
+# Unknown pattern entry governs the GUARD as well as the body, and a decided later case is not
+# certainly reached after an undecided earlier one.
+#
+# My first draft got the undecided outcome backwards: it left unknown cases certified, reasoning
+# from `test_check_consumer_side_binding_integrity.py:1682` (`match flags[i]: case True:`, which
+# asserts `unresolvable == 0`). That test preserves possible READ identities; it does not license
+# certifying unknown WRITES, and the wide reading was intentional. See the conflict note in the
+# handoff: the counter assertion is exposed deliberately rather than kept green by exempting
+# unknown writes.
+# ------------------------------------------------------------------------------------------
+
+_DEAD_CASES = [
+    pytest.param("match 1:\n    case 1 if False:\n", id="constant_false_guard"),
+    pytest.param("match 1:\n    case 2:\n", id="value_cannot_match"),
+    pytest.param("match 1:\n    case True:\n", id="singleton_is_not_equal"),
+    pytest.param("match 1:\n    case 2 | 3:\n", id="no_alternative_matches"),
+    pytest.param("match 1:\n    case 2 as seen:\n", id="capture_of_a_dead_value"),
+    pytest.param("match 1:\n    case 1:\n        pass\n    case 1:\n", id="after_a_certain_match"),
+]
+
+
+@pytest.mark.parametrize("header", _DEAD_CASES)
+def test_a_case_that_cannot_run_certifies_nothing(gate, tmp_path: Path, header: str) -> None:
+    """Python enters none of these bodies, so none of them may certify a producer."""
+
+    report = report_for(
+        gate,
+        tmp_path,
+        header + "        Path('artifacts/never.json').write_text('{}')\n"
+        "Path('artifacts/never.json').read_text()\n",
+    )
+    assert "artifacts/never.json" not in _bounded_writers(gate, tmp_path)
+    # Decided, not unknown: like a constant-false conditional arm, the write is absent rather
+    # than withheld, so the reader is genuinely reading an unwritten artifact.
+    assert "artifacts/never.json" in unwritten(report)
+
+
+_LIVE_CASES = [
+    pytest.param("match 1:\n    case 1 if True:\n", id="constant_true_guard"),
+    pytest.param("match 1:\n    case 1:\n", id="value_matches"),
+    pytest.param("match 1:\n    case 1 | 9:\n", id="an_alternative_matches"),
+    pytest.param("match 1:\n    case 1 as seen:\n", id="capture_of_a_live_value"),
+    pytest.param("match None:\n    case None:\n", id="singleton_matches"),
+    pytest.param("match 1:\n    case other:\n", id="bare_capture_always_matches"),
+]
+
+
+@pytest.mark.parametrize("header", _LIVE_CASES)
+def test_a_case_that_does_run_still_certifies(gate, tmp_path: Path, header: str) -> None:
+    """The twin half. Every row here is entered at runtime and must keep its certification."""
+
+    report = report_for(
+        gate,
+        tmp_path,
+        header + "        Path('artifacts/written.json').write_text('{}')\n"
+        "Path('artifacts/written.json').read_text()\n",
+    )
+    assert "artifacts/written.json" in _bounded_writers(gate, tmp_path)
+    assert "artifacts/written.json" not in _unbounded_writers(gate, tmp_path)
+    assert "artifacts/written.json" not in unwritten(report)
+
+
+def test_a_reached_guard_keeps_its_effects(gate, tmp_path: Path) -> None:
+    """The guard runs whenever the PATTERN matches, whatever it then evaluates to.
+
+    The pattern here is decided-match, so the guard definitely executes and its write is
+    certified — the requirement that this repair must not trade away while removing dead bodies.
+
+    The guard's own OUTCOME is undecided here — a call is not literal-decidable — so the body it
+    may select is demoted, and the row below covers that half explicitly. "Guard runs and is
+    decided FALSE" remains only constructible with an effect-free guard, which
+    `constant_false_guard` covers.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "match 1:\n"
+        "    case 1 if Path('artifacts/guard.json').write_text('{}'):\n"
+        "        Path('artifacts/body.json').write_text('{}')\n"
+        "Path('artifacts/guard.json').read_text()\n",
+    )
+    assert "artifacts/guard.json" in _bounded_writers(gate, tmp_path)
+    assert "artifacts/guard.json" not in _unbounded_writers(gate, tmp_path)
+    assert "artifacts/guard.json" not in unwritten(report)
+
+
+#: A helper this scanner CANNOT summarise. `return not True` is the established idiom for it in
+#: this file; a helper that returns a literal IS resolved by the existing summary, so using one
+#: here would have written an "undecided" control that is actually decided — which is exactly the
+#: mistake root found in my first draft of these rows.
+_OPAQUE_FALSE = "def opaque():\n    return not True\n"
+
+_UNDECIDED_CASES = [
+    pytest.param(_OPAQUE_FALSE + "match opaque():\n    case 1:\n", id="unknown_subject"),
+    pytest.param(_OPAQUE_FALSE + "match 1:\n    case 1 if opaque():\n", id="unknown_guard"),
+    pytest.param("match 1:\n    case [x]:\n", id="sequence_pattern_on_an_int"),
+    pytest.param("match 1:\n    case {'k': v}:\n", id="mapping_pattern_on_an_int"),
+    pytest.param("match 1:\n    case seen if seen:\n", id="guard_reads_a_capture"),
+]
+
+
+@pytest.mark.parametrize("header", _UNDECIDED_CASES)
+def test_an_undecided_case_is_evidence_and_never_certified(
+    gate, tmp_path: Path, header: str
+) -> None:
+    """UNKNOWN IS NOT CERTIFIED, and it is not absent either.
+
+    Each row is a case this scanner cannot decide without a structural pattern evaluator, which
+    is out of scope. The write is retained as evidence — the program may perform it — and the
+    certification is withheld, the same three-channel demotion the operator and conditional sites
+    apply. The sequence and mapping rows are the ones my first draft got backwards: it asserted
+    they certify, which certifies a write against an integer subject that cannot match.
+    """
+
+    report_for(
+        gate,
+        tmp_path,
+        header + "        Path('artifacts/kept.json').write_text('{}')\n"
+        "Path('artifacts/kept.json').read_text()\n",
+    )
+    assert "artifacts/kept.json" not in _bounded_writers(gate, tmp_path)
+    assert "artifacts/kept.json" in _unbounded_writers(gate, tmp_path)
+
+
+_HELPER_CONSTANT_CASES = [
+    pytest.param(
+        "def subject():\n    return 1\nmatch subject():\n    case 1:\n", id="helper_subject"
+    ),
+    pytest.param(
+        "def flag():\n    return True\nmatch 1:\n    case 1 if flag():\n", id="helper_guard"
+    ),
+]
+
+
+@pytest.mark.parametrize("header", _HELPER_CONSTANT_CASES)
+def test_a_helper_returning_a_literal_stays_decided(gate, tmp_path: Path, header: str) -> None:
+    """POSITIVE CASES MUST SURVIVE. The existing helper summary resolves literal returns.
+
+    I first filed both of these as "undecided" controls. They are not: the summary resolves them,
+    so they are decided-live and must keep certifying. Forcing uncertainty here would be
+    perpetual, not honest — root's point, and the reason `_OPAQUE_FALSE` above uses `not True`.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        header + "        Path('artifacts/written.json').write_text('{}')\n"
+        "Path('artifacts/written.json').read_text()\n",
+    )
+    assert "artifacts/written.json" in _bounded_writers(gate, tmp_path)
+    assert "artifacts/written.json" not in _unbounded_writers(gate, tmp_path)
+    assert "artifacts/written.json" not in unwritten(report)
+
+
+def test_an_effect_bearing_guard_keeps_its_write_while_its_body_stays_uncertain(
+    gate, tmp_path: Path
+) -> None:
+    """The row I deleted as unconstructible. It is constructible — with an UNDECIDED body.
+
+    `(<write>, False)[1]` is not literal-decidable, so the guard's OUTCOME is unknown. But the
+    pattern is decided-match and entry is established, so the guard itself definitely RUNS and
+    its write stays certified; only the body it may or may not select is demoted. I had asserted
+    the body was absent, which the decision procedure cannot produce, and then concluded the whole
+    row was impossible. Uncertainty was the missing third value, not a reason to drop the case.
+    """
+
+    report = report_for(
+        gate,
+        tmp_path,
+        "match 1:\n"
+        "    case 1 if (Path('artifacts/guard.json').write_text('{}'), False)[1]:\n"
+        "        Path('artifacts/body.json').write_text('{}')\n"
+        "Path('artifacts/guard.json').read_text()\n",
+    )
+    assert "artifacts/guard.json" in _bounded_writers(gate, tmp_path)
+    assert "artifacts/guard.json" not in _unbounded_writers(gate, tmp_path)
+    assert "artifacts/guard.json" not in unwritten(report)
+    assert "artifacts/body.json" not in _bounded_writers(gate, tmp_path)
+    assert "artifacts/body.json" in _unbounded_writers(gate, tmp_path)
+
+
+def test_a_guard_under_an_unknown_pattern_is_itself_uncertain(gate, tmp_path: Path) -> None:
+    """Unknown pattern ENTRY governs the guard, not only the body.
+
+    The guard runs only if the pattern matches. When the subject cannot be resolved, the guard's
+    own write is no better established than the case, so it is evidence rather than certified.
+    """
+
+    report_for(
+        gate,
+        tmp_path,
+        _OPAQUE_FALSE + "match opaque():\n"
+        "    case 1 if Path('artifacts/guard.json').write_text('{}'):\n"
+        "        pass\n",
+    )
+    assert "artifacts/guard.json" not in _bounded_writers(gate, tmp_path)
+    assert "artifacts/guard.json" in _unbounded_writers(gate, tmp_path)
+
+
+def test_a_decided_case_after_an_undecided_one_is_not_certainly_reached(
+    gate, tmp_path: Path
+) -> None:
+    """A `match` runs the FIRST matching case, so an earlier maybe makes a later certainty a maybe.
+
+    The second case is decided-match with no guard. It is still not certainly reached, because the
+    first case may already have selected — the ordering rule that a per-case decision, taken in
+    isolation, cannot see.
+    """
+
+    report_for(
+        gate,
+        tmp_path,
+        _OPAQUE_FALSE + "match 1:\n"
+        "    case 1 if opaque():\n"
+        "        Path('artifacts/first.json').write_text('{}')\n"
+        "    case 1:\n"
+        "        Path('artifacts/second.json').write_text('{}')\n",
+    )
+    assert "artifacts/second.json" not in _bounded_writers(gate, tmp_path)
+    assert "artifacts/second.json" in _unbounded_writers(gate, tmp_path)
+
+
+def test_a_binding_escaping_an_uncertain_case_does_not_certify_later(gate, tmp_path: Path) -> None:
+    """The C1 channel, reached through a `match`.
+
+    The write is outside the statement entirely; only the NAME is bound inside a case whose entry
+    is unknown. Certainty must not leave with it, while the binding made before the statement and
+    never reassigned stays certified.
+    """
+
+    report_for(
+        gate,
+        tmp_path,
+        _OPAQUE_FALSE + "target = Path('artifacts/old.json')\n"
+        "match 1:\n"
+        "    case 1 if opaque():\n"
+        "        target = Path('artifacts/new.json')\n"
+        "target.write_text('{}')\n",
+    )
+    assert "artifacts/new.json" not in _bounded_writers(gate, tmp_path)
+    assert "artifacts/new.json" in _unbounded_writers(gate, tmp_path)
+
+
+# ------------------------------------------------------------------------------------------
+# Controls authored 2026-09-09 as proposals, without being run; the rows below still carry that
+# "PROPOSED" label. Executed 2026-09-25: all pass. Each root's repair was mutation-verified
+# separately:
+#   - a never-marked undecided-region binding turns 13 red;
+#   - a never-false guard turns 6 red;
+#   - an always-eager annotation reading turns 6 red.
+# Exact bytes were restored after each.
+#
+# Three groups, one per defect root reproduced independently:
+#
+#   capped mixed marker composition   uncertainty must survive the branch-state collapse
+#   definite replacement              a certain rebinding must still clear it afterwards
+#   reached-guard state               a guard that ran governs selection AND nonselection
+# ------------------------------------------------------------------------------------------
+
+_OPAQUE = "def opaque():\n    return not True\n"
+
+
+def _capped(gate, tmp_path: Path, monkeypatch, source: str, cap: int = 2):
+    """Run the collector with the disjunctive-state cap lowered, as the integrity corpus does."""
+
+    monkeypatch.setattr(gate, "_MAX_BRANCH_STATES", cap)
+    _write(tmp_path, "shared/capped.py", "from pathlib import Path\n" + source)
+    accesses, _, _, _ = gate.collect_artifact_accesses(tmp_path)
+    writes = [access for access in accesses if access.action == "write"]
+    return (
+        {access.pattern for access in writes if access.bounded},
+        {access.pattern for access in writes if not access.bounded},
+    )
+
+
+@pytest.mark.parametrize("cap", [1, 2, 3])
+def test_uncertainty_survives_the_branch_state_collapse(
+    gate, tmp_path: Path, monkeypatch, cap: int
+) -> None:
+    """PROPOSED. Past the cap, a mixed marker must not be dropped.
+
+    `_merge_states` joins internal keys only when every alternative agrees, so a name marked in
+    some merged states and unmarked in others matched no rule and lost its flag entirely — the
+    binding regained certainty and later writes through it were certified again. Enough undecided
+    cases are generated here to exceed `cap` and force the collapse.
+    """
+
+    cases = "".join(
+        f"    case {i}:\n        target = Path('artifacts/branch-{i}.json')\n"
+        for i in range(cap + 3)
+    )
+    certified, evidence = _capped(
+        gate,
+        tmp_path,
+        monkeypatch,
+        _OPAQUE + "target = Path('artifacts/start.json')\n"
+        "match opaque():\n" + cases + "target.write_text('{}')\n",
+        cap=cap,
+    )
+    branches = {f"artifacts/branch-{i}.json" for i in range(cap + 3)}
+    assert not (branches & certified), "a collapsed uncertain binding was certified"
+    # EVERY enumerated alternative, not merely one of them: the preservation obligation is that
+    # collapsing bounds the state count without deleting a statically known pattern, so a rule
+    # that kept a single branch and dropped the rest would satisfy an intersection and still be
+    # the defect.
+    assert branches <= evidence, "a concrete branch alternative was lost, not just uncertified"
+
+
+@pytest.mark.parametrize("cap", [1, 2, 3])
+def test_a_definite_replacement_after_a_collapse_certifies_again(
+    gate, tmp_path: Path, monkeypatch, cap: int
+) -> None:
+    """PROPOSED, and the twin that keeps the rule above from being a blanket withhold.
+
+    The marker is cleared by rebinding — `_apply_assignment` pops the key and re-sets it only
+    from the RHS — so a definite literal assignment after the collapse must certify normally.
+    Without this row the composition rule could withhold everything downstream and still look
+    correct.
+    """
+
+    cases = "".join(
+        f"    case {i}:\n        target = Path('artifacts/branch-{i}.json')\n"
+        for i in range(cap + 3)
+    )
+    certified, evidence = _capped(
+        gate,
+        tmp_path,
+        monkeypatch,
+        _OPAQUE + "target = Path('artifacts/start.json')\n"
+        "match opaque():\n" + cases + "target = Path('artifacts/fixed.json')\n"
+        "target.write_text('{}')\n",
+        cap=cap,
+    )
+    assert "artifacts/fixed.json" in certified
+    assert "artifacts/fixed.json" not in evidence
+
+
+@pytest.mark.parametrize(
+    "guard",
+    [
+        "(artifact := Path('artifacts/actual.json')) and False",
+        "(artifact := Path('artifacts/actual.json')) and True",
+        "((artifact := Path('artifacts/actual.json')), False)[1]",
+        "((artifact := Path('artifacts/actual.json')), True)[1]",
+    ],
+    ids=["and_false", "and_true", "tuple_false", "tuple_true"],
+)
+def test_a_reached_guard_governs_the_state_after_the_match(
+    gate, tmp_path: Path, guard: str
+) -> None:
+    """PROPOSED. A guard that definitely ran must not leave the pre-match binding standing.
+
+    The pattern decides, so entry is established and the guard evaluates whatever it returns. Its
+    walrus rebinds `artifact`, and control leaves the statement with that binding — selected or
+    not. Re-forking the pre-match state restored `stale.json` and CERTIFIED it, a path the program
+    never writes; `pending` now threads the post-guard state through the cases and the
+    fall-through instead.
+
+    All four guards are compound and therefore undecided, which is exactly why they exercise the
+    threading rather than the decided-false branch.
+    """
+
+    report_for(
+        gate,
+        tmp_path,
+        "artifact = Path('artifacts/stale.json')\n"
+        f"match 1:\n    case 1 if {guard}:\n        pass\n"
+        "artifact.write_text('{}')\n",
+    )
+    certified = _bounded_writers(gate, tmp_path)
+    assert "artifacts/stale.json" not in certified
+    assert "artifacts/actual.json" in certified | _unbounded_writers(gate, tmp_path)
+
+
+def test_an_unentered_case_still_leaves_its_alternative_standing(gate, tmp_path: Path) -> None:
+    """PROPOSED, and the boundary of the threading rule.
+
+    When the pattern is NOT decided the case may never be entered, so the pre-match binding is a
+    real alternative and must survive beside the post-guard one — while the guard's own binding,
+    made where entry was never established, stays evidence rather than being promoted by escaping.
+    """
+
+    report_for(
+        gate,
+        tmp_path,
+        _OPAQUE + "artifact = Path('artifacts/before.json')\n"
+        "match opaque():\n"
+        "    case 1 if (artifact := Path('artifacts/inguard.json')) and False:\n"
+        "        pass\n"
+        "artifact.write_text('{}')\n",
+    )
+    assert "artifacts/before.json" in _bounded_writers(gate, tmp_path)
+    assert "artifacts/inguard.json" not in _bounded_writers(gate, tmp_path)
+    assert "artifacts/inguard.json" in _unbounded_writers(gate, tmp_path)

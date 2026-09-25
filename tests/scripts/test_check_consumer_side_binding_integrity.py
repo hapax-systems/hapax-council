@@ -1683,7 +1683,20 @@ def test_generated_branch_corpus_preserves_concrete_union(
     _write(tmp_path, source + "    return artifact.read_text()\n")
     report = gate.analyse_consumer_side(tmp_path, [])
     assert _orphaned(report) == expected
-    if shape == "loop":
+    # `match` JOINS `loop` here, and the concrete union above is deliberately untouched: every
+    # reader identity this corpus pins still resolves.
+    #
+    # A `match` on a subject this scanner cannot decide enters no case certainly, so the bindings
+    # its cases make are evidence rather than certification and the reader that resolves through
+    # them is unresolved — the same honest execution uncertainty a loop already carries, and the
+    # reason `loop` was the lone `> 0` shape before.
+    #
+    # This is an explanatory amendment, not a waiver: it follows a repaired uncertainty
+    # composition (`_UNREACHED_BINDING_PREFIX` now joins disjunctively when the branch-state cap
+    # collapses alternatives) and independent WRITE counterexamples in which the previous
+    # behaviour certified branch artifacts the program never wrote. Keeping the zero here would
+    # have required exempting unknown writes from that composition, which is the defect.
+    if shape in {"loop", "match"}:
         assert report.unresolvable > 0
     else:
         assert report.unresolvable == 0

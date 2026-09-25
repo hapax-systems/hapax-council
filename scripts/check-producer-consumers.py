@@ -668,6 +668,10 @@ class PathFunctionTable(dict[str, PathFunction]):
         super().__init__()
         self.imports_by_path: dict[Path, frozenset[str]] = {}
         self.aliases_by_path: dict[Path, dict[str, str]] = {}
+        #: Which modules defer annotation evaluation (PEP 563). Per PATH rather than per scope,
+        #: because the future import governs the whole file; the scope only decides the separate
+        #: question of whether an `AnnAssign` annotation is evaluated at all.
+        self.defers_annotations: dict[Path, bool] = {}
         self.capped_expressions: set[str] = set()
         self.unresolved_closures: set[str] = set()
         self.unresolved_paths: set[str] = set()
@@ -1116,6 +1120,12 @@ _VALUE_ALTERNATIVES_PREFIX = "\0value-alternatives:"
 _CONSTANT_VALUE_PREFIX = "\0constant-value:"
 _UNRESOLVED_FORMAT_PREFIX = "\0unresolved-format:"
 _UNRESOLVED_CLOSURE_PREFIX = "\0unresolved-closure:"
+#: Set on a name BOUND inside a region whose reachability was never established, so that a read
+#: of it after the region is evidence rather than certification. The third exit channel from such
+#: a region, after the access list and the invocation ledger; `_demote_from` closes those two and
+#: cannot reach this one, because assignment states are locals rather than walker attributes.
+#: Cleared by `_binding_keys` on rebinding: a name reassigned after the region is certain again.
+_UNREACHED_BINDING_PREFIX = "\0unreached-binding:"
 _HELPER_STACK_KEY = "\0helper-stack"
 _HELPER_EFFECT_KEY = "\0helper-unbounded-effect"
 _FLOW_EXIT_KEY = "\0flow-exit"
@@ -1506,6 +1516,56 @@ def _conditional_expr_variants(node: ast.expr | None) -> tuple[list[ast.expr], b
             for alternative in reversed(alternatives)
         )
     return resolved, truncated
+
+
+def _pattern_selects(
+    pattern: ast.pattern,
+    subject_known: bool,
+    subject_value: object,
+    resolve: _ConstantResolver | None = None,
+) -> bool | None:
+    """Does this `case` pattern definitely match, definitely not match, or is it undecided?
+
+    THREE-VALUED ON PURPOSE. The question a boolean would collapse is the whole point: a pattern
+    that cannot match must not certify its body, and a pattern this scanner cannot decide must
+    keep behaving exactly as it does today. Only the decided-negative answer removes anything.
+
+    Deliberately NOT a matcher. It reuses `_literal_operand` — the same decision the operator,
+    chain and conditional handlers use — and answers `None` for every sequence, mapping, class
+    and starred pattern rather than growing a structural evaluator for them.
+    """
+    if isinstance(pattern, ast.MatchAs):
+        # `case x:` and `case _:` bind and always match; `case <p> as x:` matches when `<p>` does.
+        if pattern.pattern is None:
+            return True
+        return _pattern_selects(pattern.pattern, subject_known, subject_value, resolve)
+    if isinstance(pattern, ast.MatchOr):
+        outcomes = [
+            _pattern_selects(alternative, subject_known, subject_value, resolve)
+            for alternative in pattern.patterns
+        ]
+        if any(outcome is True for outcome in outcomes):
+            return True
+        return False if all(outcome is False for outcome in outcomes) else None
+    if not subject_known:
+        return None
+    if isinstance(pattern, ast.MatchSingleton):
+        # `None`, `True` and `False` in a pattern compare by IDENTITY, which is why `match 1:
+        # case True:` does not match even though `1 == True`.
+        return subject_value is pattern.value
+    if isinstance(pattern, ast.MatchValue):
+        known, value = _literal_operand(pattern.value, resolve)
+        if not known:
+            return None
+        if isinstance(value, bool) or isinstance(subject_value, bool):
+            # `1 == True` is true and a value pattern is not a singleton pattern; rather than
+            # encode that corner, leave it undecided and change nothing.
+            return None
+        try:
+            return bool(subject_value == value)
+        except Exception:  # noqa: BLE001 - an exotic __eq__ decides nothing
+            return None
+    return None
 
 
 def _reachable_alternatives(
@@ -2405,6 +2465,11 @@ def _record_access(
     bounded = action is not None and not _has_unbounded_format(
         expression, values, path, repo_root, path_functions
     )
+    # A resolved pattern is not a reached one. Where the name supplying it was bound inside a
+    # region whose reachability was never established, the pattern is kept — it is real evidence
+    # about what this call would touch — and the certification is withheld.
+    if bounded and _reads_unreached_binding(expression, values):
+        bounded = False
     # Unknown modes retain a possible literal read as uncertainty, never a certified access.
     action = action or "read"
     for pattern in _resolve_path_expr_variants(expression, values, path, repo_root, path_functions):
@@ -2885,6 +2950,49 @@ def _binding_keys(name: str) -> tuple[str, ...]:
         f"{_UNRESOLVED_CLOSURE_PREFIX}{name}",
         f"{_CONSTANT_VALUE_PREFIX}{name}",
         f"{_UNRESOLVED_FORMAT_PREFIX}{name}",
+        _unreached_binding_key(name),
+    )
+
+
+def _unreached_binding_key(name: str) -> str:
+    return f"{_UNREACHED_BINDING_PREFIX}{name}"
+
+
+def _mark_unreached_bindings(states: list[dict[str, str]], before: list[dict[str, str]]) -> None:
+    """Flag names this region BOUND, leaving names it merely stood next to alone.
+
+    Position is not the test — binding is. A name bound before the region and never reassigned
+    holds exactly what it held, and so does an alias made from it, so both stay certain. Only a
+    name whose value this region introduced or changed carries the region's uncertainty out.
+
+    Compared against the UNION of the prior states rather than pairwise, because scanning an
+    operand may merge or fork the state list and a positional zip would then compare unrelated
+    branches. A value already present for that name under some prior alternative is not new.
+    """
+    prior: dict[str, set[str]] = {}
+    for state in before:
+        for name, value in state.items():
+            prior.setdefault(name, set()).add(value)
+    bound: set[str] = set()
+    for state in states:
+        for name, value in state.items():
+            if name.startswith("\0"):
+                continue
+            if value not in prior.get(name, ()):
+                bound.add(name)
+    for state in states:
+        for name in bound:
+            if name in state:
+                state[_unreached_binding_key(name)] = "1"
+
+
+def _reads_unreached_binding(expression: ast.expr | None, values: dict[str, str]) -> bool:
+    """Does this expression resolve through a name bound where reachability was not established?"""
+    if expression is None:
+        return False
+    return any(
+        isinstance(item, ast.Name) and values.get(_unreached_binding_key(item.id)) == "1"
+        for item in ast.walk(expression)
     )
 
 
@@ -3017,6 +3125,18 @@ def _apply_assignment(
         assigned.pop(format_key, None)
         if _has_unbounded_format(statement.value, values, path, repo_root, path_functions):
             assigned[format_key] = "1"
+        # UNCERTAIN ORIGIN SURVIVES DERIVATION; DEFINITE REPLACEMENT CLEARS IT. Both halves are
+        # this one pop-then-set, in the same shape as the constant and format metadata above,
+        # because both were wrong in the first version of this repair: `alias = target`,
+        # `alias = Path(target)`, a tuple alias and a helper's return each dropped the flag and
+        # re-certified a file the program never writes (twelve wrong certifications), while
+        # `target = Path('artifacts/fixed.json')` KEPT it and withheld a write that definitely
+        # happens (two). `_binding_keys` clears the old key, but the copied incoming state put it
+        # straight back, so clearing had to become explicit here (root, on the frozen candidate).
+        unreached_key = _unreached_binding_key(target.id)
+        assigned.pop(unreached_key, None)
+        if _reads_unreached_binding(statement.value, values):
+            assigned[unreached_key] = "1"
         _set_path_value(assigned, target.id, is_path)
         _set_import_alias(assigned, target.id, None)
         alias_expression = _evaluated_expression(statement.value, values)
@@ -3582,6 +3702,20 @@ def _merge_states(states: list[dict[str, str]], *, collapse: bool = False) -> li
         if name.startswith(_UNRESOLVED_FORMAT_PREFIX) and any(alternatives):
             collapsed[name] = "1"
             continue
+        if name.startswith(_UNREACHED_BINDING_PREFIX) and any(alternatives):
+            # UNCERTAINTY IS DISJUNCTIVE ON COLLAPSE, exactly like the three flags above.
+            # Collapsing DESTROYS the per-alternative distinction, so a name that came from an
+            # unreached region in even one merged state is uncertain in the joined state that
+            # replaces them all. Without this the mixed case — marked in some alternatives,
+            # unmarked in others — matched none of the rules below (`{"1", None}` is two
+            # alternatives), the key was dropped, and the binding silently regained certainty
+            # past the cap: later WRITES through it were certified again.
+            #
+            # The bug only appears once `_MAX_BRANCH_STATES` is exceeded, which is why it hid
+            # behind one generated corpus width and not its neighbours (root, on frozen
+            # `229ebe33`: `generated_branch_corpus[match-2]` alone).
+            collapsed[name] = "1"
+            continue
         if name.startswith(_IMPORT_ALIAS_PREFIX) and len(alternatives) > 1:
             collapsed[name] = ""
             continue
@@ -3861,6 +3995,12 @@ class _BlockScanner:
         #: (review finding, codex). Consumption is a property of the PARENT, which is why it is
         #: recorded by the handlers that hold one rather than inferred inside the body handler.
         self.consumed_generators: set[int] = set()
+        #: How many class bodies deep this walk currently is WITHIN one scope. `_scan_class_body`
+        #: reuses this scanner, so `scope_node` still names the enclosing function while a class
+        #: body is being walked — and a class body is exactly where an annotation DOES evaluate.
+        #: Without this counter, `def f(): class K: x: <annotation>` looks function-local and its
+        #: annotation would be skipped, withholding a write the program really performs.
+        self.class_body_depth = 0
         #: Comprehension targets bound to a literal element, for reachability INSIDE the body.
         #: A proven consumer establishes that the body runs; it says nothing about which
         #: expressions in it are reached, and `any(x or open(...) for x in [True])` writes
@@ -4336,6 +4476,49 @@ class _BlockScanner:
                     state.pop(key, None)
         return _merge_states(exhausted + broken)
 
+    def _defers_annotations(self) -> bool:
+        """Whether PEP 563 applies to the module being walked.
+
+        Absent table or absent entry means the current, unchanged behaviour. Every collecting
+        path builds a `PathFunctionTable` and fills this map beside `imports_by_path`, so the
+        fallback is not a live decision about a real module — and defaulting the other way would
+        withhold annotation effects corpus-wide on a fact that was never established, which is
+        the failure this repair exists to avoid in the opposite direction.
+        """
+        table = self.path_functions
+        if not isinstance(table, PathFunctionTable):
+            return False
+        return bool(table.defers_annotations.get(self.path, False))
+
+    def _annotation_is_evaluated(self, *, own_scope: bool) -> bool:
+        """Does an annotation expression HERE actually run?
+
+        Two independent conditions, because a repair keyed to either one alone is wrong at four
+        positions. Qualified against an independent 32-fixture Python 3.12 runtime oracle — 16
+        positions with and without postponed annotations — at root's 2026-09-09T17:04:42Z run,
+        evidence `frame-reader-grammar-20260909T170441Z`; the arms ignoring deferral, ignoring
+        function-local scope and ignoring nested-class depth fail 18, 6 and 2 respectively:
+
+        * **PEP 563.** With `from __future__ import annotations`, no annotation evaluates.
+        * **PEP 526 scope.** A variable annotation in a FUNCTION body never evaluates, future
+          import or not — root's counterexample, and the reason module state is necessary but
+          not sufficient. `own_scope` marks that second question as the caller's to answer:
+          parameter and return annotations belong to the `def` STATEMENT and run wherever that
+          statement runs, so they are governed by deferral alone and pass `own_scope=False`.
+
+        A class body is not a function body even when the class is nested inside a function,
+        which `class_body_depth` is what distinguishes.
+        """
+        if self._defers_annotations():
+            return False
+        if not own_scope:
+            return True
+        function_local = (
+            isinstance(self.scope_node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+            and self.class_body_depth == 0
+        )
+        return not function_local
+
     def _bind(self, target: ast.expr, value: ast.expr | None, states: list[dict[str, str]]) -> None:
         for state in states:
             assigned = _apply_assignment(
@@ -4663,10 +4846,15 @@ class _BlockScanner:
             # runs. Demoting both is the honest reading of "one of these two, unknown which",
             # and it is why the decided case above still certifies its single arm.
             arms_from = self._region_mark()
+            entering = _fork(states)
             taken, not_taken = _fork(states), _fork(states)
             self._scan_expression(node.body, taken)
             self._scan_expression(node.orelse, not_taken)
             self._demote_from(arms_from)
+            # Both arms, for the reason the comment above gives: one of them runs and this
+            # scanner does not know which, so a name bound in EITHER is uncertain afterwards.
+            _mark_unreached_bindings(taken, entering)
+            _mark_unreached_bindings(not_taken, entering)
             states[:] = _merge_states(taken + not_taken)
             return
         if isinstance(node, ast.BoolOp):
@@ -4674,7 +4862,12 @@ class _BlockScanner:
             alternatives: list[dict[str, str]] = []
             unreached_from: int | None = None
             for index, value in enumerate(node.values):
+                # Marked BEFORE the alternative below is forked, so the state that flows out of
+                # the operator carries the flag rather than a copy taken a line too early.
+                region_entry = _fork(continued) if unreached_from is not None else None
                 self._scan_expression(value, continued)
+                if region_entry is not None:
+                    _mark_unreached_bindings(continued, region_entry)
                 # THE INVARIANT, held identically in the `ast.Compare` handler below:
                 # keep every REACHABLE stop point, and only those. A constant operand
                 # decides the operator, so the alternative it rules out is not a cautious
@@ -4758,7 +4951,10 @@ class _BlockScanner:
                 # untouched: the chain definitely continues, so the next operand definitely runs.
                 if decided is None and chain_unreached_from is None:
                     chain_unreached_from = self._region_mark()
+                region_entry = _fork(continued) if chain_unreached_from is not None else None
                 self._scan_expression(node.comparators[index], continued)
+                if region_entry is not None:
+                    _mark_unreached_bindings(continued, region_entry)
             self._demote_from(chain_unreached_from)
             alternatives.extend(_fork(continued))
             states[:] = _merge_states(alternatives)
@@ -5324,12 +5520,19 @@ class _BlockScanner:
                     states,
                 )
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # DEFAULTS ARE NOT ANNOTATIONS. A default expression runs when the `def` executes
+            # under every Python this scanner targets, deferred annotations included, so it stays
+            # outside the guard below — a gate keyed to the future import could plausibly swallow
+            # it, and that would withhold a write that definitely happens.
             self._scan_defaults(statement, states)
-            for argument in ast.walk(statement.args):
-                if isinstance(argument, ast.arg) and argument.annotation is not None:
-                    self._scan_expression(argument.annotation, states)
-            if statement.returns is not None:
-                self._scan_expression(statement.returns, states)
+            # Parameter and return annotations belong to this `def` statement and run where it
+            # runs, so deferral alone decides them: `own_scope=False`.
+            if self._annotation_is_evaluated(own_scope=False):
+                for argument in ast.walk(statement.args):
+                    if isinstance(argument, ast.arg) and argument.annotation is not None:
+                        self._scan_expression(argument.annotation, states)
+                if statement.returns is not None:
+                    self._scan_expression(statement.returns, states)
         elif not isinstance(statement, (ast.With, ast.AsyncWith)):
             for child in ast.iter_child_nodes(statement):
                 if (
@@ -5337,6 +5540,24 @@ class _BlockScanner:
                     and child not in getattr(statement, "decorator_list", ())
                     and not isinstance(child, (ast.stmt, ast.ExceptHandler, ast.match_case))
                 ):
+                    # The `AnnAssign` annotation is the one child here whose evaluation is not
+                    # implied by reaching the statement. Its VALUE does run — `x: <ann> = <value>`
+                    # assigns even when the annotation is a string — so the guard names the
+                    # annotation child exactly rather than skipping expression children generally.
+                    #
+                    # Widening it to every expression child costs the VALUE effects: root's
+                    # "skipping other AnnAssign expression children" arm fails 7 (qualification
+                    # 2026-09-09T17:04:42Z, evidence `frame-reader-grammar-20260909T170441Z`).
+                    # It does NOT lose the subscript TARGET, which is handled as an owned target
+                    # outside this walk, and cannot affect parameter defaults, which are not
+                    # `AnnAssign` at all — I predicted both of those failures and root measured
+                    # that they do not occur.
+                    if (
+                        isinstance(statement, ast.AnnAssign)
+                        and child is statement.annotation
+                        and not self._annotation_is_evaluated(own_scope=True)
+                    ):
+                        continue
                     # `for x in (genexp):` iterates it, so its body runs. This is the third
                     # consuming position, and the only one reached through the generic child
                     # walk rather than a dedicated handler.
@@ -5561,8 +5782,28 @@ class _BlockScanner:
             return continued
         if isinstance(statement, ast.Match):
             case_states: list[dict[str, str]] = []
+            resolve = self._constant_resolver(states)
+            subject_known, subject_value = _literal_operand(statement.subject, resolve)
+            selected_earlier = False
+            unknown_earlier = False
+            #: The states in which NO case has selected yet. Threaded through the cases instead
+            #: of re-forking `states` at each one, because a guard that definitely ran has
+            #: already changed them: `case 1 if (a := Path('actual')) and False:` binds `a`, does
+            #: not select, and control leaves the statement with `a` bound. Re-forking the
+            #: pre-match state restored the stale binding and CERTIFIED a path the program never
+            #: writes — a wrong certified path, not a benign read over-approximation.
+            pending = _fork(states)
             for case in statement.cases:
-                inputs = _fork(states)
+                if selected_earlier:
+                    continue
+                selects = _pattern_selects(case.pattern, subject_known, subject_value, resolve)
+                if selects is False:
+                    # `match 1: case 2:` — this case cannot run, so neither its guard nor its
+                    # body does. TRULY DECIDED DEAD, and the only outcome that removes anything:
+                    # an undecided pattern is demoted below, never skipped. `pending` is left
+                    # alone: a case that cannot run changes nothing for the ones after it.
+                    continue
+                inputs = _fork(pending)
                 names = {
                     item.name
                     for item in ast.walk(case.pattern)
@@ -5574,16 +5815,87 @@ class _BlockScanner:
                 }
                 for state in inputs:
                     _invalidate_names(state, names)
+                # UNKNOWN ENTRY GOVERNS THE GUARD. The guard runs only when the pattern matches
+                # AND control reaches this case, so an undecided pattern — or an earlier case
+                # that may already have selected — leaves the guard's own effects unestablished
+                # and they are scanned inside the region. When entry IS established the guard
+                # definitely runs and keeps its certification, which is the half this must not
+                # trade away.
+                entering = _fork(inputs)
+                guard_reached = selects is True and not unknown_earlier
+                region = None if guard_reached else self._region_mark()
+                region_entry = None if guard_reached else entering
+                guard_outcome: bool | None = True
                 if case.guard is not None:
                     self._scan_expression(case.guard, inputs)
-                case_states += self.scan_block(case.body, inputs, exception_states, exit_states)
-            exhaustive = any(
+                    # Decided against the states BEFORE this case, so a guard that reads a name
+                    # the pattern captures must stay undecided: the capture shadows the outer
+                    # binding this resolver knows, and deciding on the wrong one could skip a
+                    # body that really runs.
+                    captured = any(
+                        isinstance(item, ast.Name) and item.id in names
+                        for item in ast.walk(case.guard)
+                    )
+                    guard_known, guard_value = (
+                        (False, None) if captured else _literal_operand(case.guard, resolve)
+                    )
+                    guard_outcome = bool(guard_value) if guard_known else None
+                # Mark the guard's OWN bindings before they escape, whenever its execution was
+                # not established. Done here rather than with the body below because `pending`
+                # is taken from `inputs` on the next line and must not carry a promoted binding.
+                if region is not None:
+                    _mark_unreached_bindings(inputs, region_entry)
+                # THREAD THE NON-SELECTION PATH. Once a known pattern establishes guard entry the
+                # guard definitely evaluated, so its mutations govern selection AND nonselection:
+                # later cases and the fall-through continue from AFTER it, and the pre-match state
+                # does not survive. When entry is not established the case may never have been
+                # entered, so the unentered alternative is retained beside the entered one — and
+                # the entered one carries the marks just applied, so nothing uncertain is promoted.
+                pending = _fork(inputs) if guard_reached else _merge_states(pending + _fork(inputs))
+                if guard_outcome is False:
+                    # `case 1 if False:` — wherever the guard runs it selects nothing, so the
+                    # body is unreachable and certifying it invented a producer for a file the
+                    # program never writes (review finding, codex, at `:5579`). Unlike the
+                    # operator and conditional sites this handler had no region at all: every
+                    # case body was scanned as certainly executed. The case cannot select, so it
+                    # leaves no uncertainty behind it either.
+                    # The guard's bindings already escaped through `pending` above, which is
+                    # where a non-selecting case belongs; the body contributes nothing, which is
+                    # the whole of what this case does not do.
+                    if region is not None:
+                        self._demote_from(region)
+                    continue
+                if region is None and guard_outcome is not True:
+                    # Entry is established, so the guard's own effects stay certified and only
+                    # what it DECIDES is unknown — the region starts after it rather than around
+                    # it, which is why the mark is taken here and not above.
+                    region = self._region_mark()
+                    region_entry = _fork(inputs)
+                normal = self.scan_block(case.body, inputs, exception_states, exit_states)
+                if region is not None:
+                    # One region over the body: `_demote_from` covers the access list and the
+                    # callee invocation ledger, `_mark_unreached_bindings` the bindings that
+                    # escape into the merged states below. All three channels, as at C1.
+                    self._demote_from(region)
+                    _mark_unreached_bindings(normal, region_entry)
+                case_states += normal
+                if selects is True and guard_outcome is True and not unknown_earlier:
+                    # A `match` executes the FIRST matching case only, so a case that definitely
+                    # selects makes every later case dead and removes the fall-through.
+                    selected_earlier = True
+                else:
+                    # A DECIDED LATER MATCH IS NOT CERTAINLY REACHED after an undecided case:
+                    # this one may have selected, so everything below inherits the doubt.
+                    unknown_earlier = True
+            exhaustive = selected_earlier or any(
                 isinstance(case.pattern, ast.MatchAs)
                 and case.pattern.pattern is None
                 and case.guard is None
                 for case in statement.cases
             )
-            return _merge_states(case_states + ([] if exhaustive else _fork(states)))
+            # `pending`, not a fresh fork of the pre-match state: the fall-through is reached
+            # THROUGH the cases, carrying whatever their reached guards did.
+            return _merge_states(case_states + ([] if exhaustive else pending))
         if isinstance(statement, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
             if exit_states is not None:
                 exit_states.extend(
@@ -5661,7 +5973,14 @@ class _BlockScanner:
             inner[_CLASS_OUTER_KEY] = _intern_binding_state(state, table)
             class_exceptions: list[dict[str, str]] = []
             class_exits: list[dict[str, str]] = []
-            normal = self.scan_block(statement.body, [inner], class_exceptions, class_exits)
+            # Counted, not set, because a class may nest inside a class; try/finally because an
+            # exception here would otherwise leave every later statement in the enclosing scope
+            # looking like class-body code.
+            self.class_body_depth += 1
+            try:
+                normal = self.scan_block(statement.body, [inner], class_exceptions, class_exits)
+            finally:
+                self.class_body_depth -= 1
             completed.extend(project(result) for result in normal)
             if exception_states is not None:
                 exception_states.extend(
@@ -6014,6 +6333,25 @@ def _iter_function_scopes(
     return visitor.scopes
 
 
+def _module_defers_annotations(tree: ast.Module) -> bool:
+    """Does PEP 563 apply to this module — is every annotation a string at runtime?
+
+    `from __future__ import annotations` makes annotation expressions unevaluated, so a write
+    spelled in one never happens. Certifying it invented a producer for a file the program never
+    touches (review finding, codex, at `:5330`), and the same certification was correct without
+    the import, so this is the condition and not a blanket rule.
+
+    A `__future__` import is only legal at the top of a module, after the docstring, which is why
+    the top-level body is the whole search.
+    """
+    return any(
+        isinstance(statement, ast.ImportFrom)
+        and statement.module == "__future__"
+        and any(alias.name == "annotations" for alias in statement.names)
+        for statement in tree.body
+    )
+
+
 def _module_imports(
     tree: ast.Module, module_name: str = "", *, is_package: bool = False
 ) -> frozenset[str]:
@@ -6126,6 +6464,9 @@ def collect_artifact_accesses(
         for relative, tree in parsed
     }
     path_functions.imports_by_path = imports_by_path
+    path_functions.defers_annotations = {
+        relative: _module_defers_annotations(tree) for relative, tree in parsed
+    }
     path_functions.aliases_by_path = {
         relative: _module_aliases(
             tree, _module_name(relative), is_package=relative.name == "__init__.py"
