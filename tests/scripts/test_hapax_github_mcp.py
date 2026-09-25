@@ -21,23 +21,24 @@ def test_github_mcp_script_is_valid_bash() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_github_mcp_loads_token_from_pass_and_filters_tools(tmp_path: Path) -> None:
+def test_github_mcp_loads_token_from_filestore_and_filters_tools(tmp_path: Path) -> None:
+    """Token comes from hapax-secret (FileStore CLI), never pass; value stays off argv/stdout."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker_args = tmp_path / "docker-args.txt"
     token_seen = tmp_path / "token-seen"
 
-    fake_pass = bin_dir / "pass"
-    fake_pass.write_text(
+    fake_secret = bin_dir / "hapax-secret"
+    fake_secret.write_text(
         """#!/usr/bin/env bash
-if [ "$1" = "show" ] && [ "$2" = "github/codex-personal-access-token" ]; then
+if [ "$1" = "github/codex-personal-access-token" ]; then
   printf '%s\\n' 'test-token'
   exit 0
 fi
 exit 1
 """
     )
-    fake_pass.chmod(0o755)
+    fake_secret.chmod(0o755)
 
     fake_gh = bin_dir / "gh"
     fake_gh.write_text("#!/usr/bin/env bash\nexit 1\n")

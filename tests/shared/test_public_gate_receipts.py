@@ -410,7 +410,8 @@ def test_missing_authority_secret_warns_with_next_action(
 
     assert public_gate_receipts.PUBLIC_GATE_AUTHORITY_SECRET_ENV not in caplog.text
     assert (
-        "next action: restore the public-gate authority signing credential from pass" in caplog.text
+        "next action: restore the public-gate authority signing credential from the FileStore"
+        in caplog.text
     )
 
 

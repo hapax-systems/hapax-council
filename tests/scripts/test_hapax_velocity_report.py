@@ -33,9 +33,10 @@ class TestVelocityScript:
     def test_strict_mode(self):
         assert "set -euo pipefail" in SCRIPT.read_text()
 
-    def test_uses_pass_for_token(self):
+    def test_uses_the_filestore_for_the_token_never_pass(self):
         text = SCRIPT.read_text()
-        assert "pass show" in text
+        assert "hapax_secret_get github/token" in text
+        assert "pass show" not in text
 
     def test_writes_json_output(self):
         text = SCRIPT.read_text()

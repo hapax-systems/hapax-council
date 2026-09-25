@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from opentelemetry import trace
+
+from shared.prose_assertion_extractor import instruction_source_paths
 
 from .config import (
     AI_AGENTS_DIR,
@@ -18,17 +22,6 @@ _tracer = trace.get_tracer(__name__)
 
 # ── Documentation sources ────────────────────────────────────────────────────
 
-DOC_FILES = [
-    CLAUDE_CONFIG_DIR / "CLAUDE.md",
-    HAPAXROMANA_DIR / "CLAUDE.md",
-    HAPAXROMANA_DIR / "agent-architecture.md",
-    HAPAXROMANA_DIR / "operations-manual.md",
-    HAPAXROMANA_DIR / "README.md",
-    AI_AGENTS_DIR / "CLAUDE.md",
-    AI_AGENTS_DIR / "docs" / "logos-design-language.md",
-    AI_AGENTS_DIR / "systemd" / "README.md",
-]
-
 # Hardware devices removed — Pi fleet handles camera monitoring (see pi-edge/).
 EXPECTED_DEVICES: dict[str, str] = {}
 
@@ -40,24 +33,43 @@ HAPAX_REPO_DIRS = [
     HAPAX_VSCODE_DIR,
 ]
 
-# Also check CLAUDE.md in canonical repos (scoped to HAPAX_REPO_DIRS only)
-for _p in HAPAX_REPO_DIRS:
-    _candidate = _p / "CLAUDE.md"
-    if _candidate.is_file() and _candidate not in DOC_FILES:
-        DOC_FILES.append(_candidate)
+
+def _doc_files() -> list[Path]:
+    """Select authored instructions and the existing explicit documentation set."""
+    paths = [
+        HAPAXROMANA_DIR / "agent-architecture.md",
+        HAPAXROMANA_DIR / "operations-manual.md",
+        HAPAXROMANA_DIR / "README.md",
+        AI_AGENTS_DIR / "docs" / "logos-design-language.md",
+        AI_AGENTS_DIR / "systemd" / "README.md",
+    ]
+    for repo in HAPAX_REPO_DIRS:
+        paths.extend(instruction_source_paths(repo, recursive=False))
+
+    shared_policy = AI_AGENTS_DIR / "config" / "agent-instructions" / "AGENTS.md"
+    if not shared_policy.is_file():
+        paths.append(CLAUDE_CONFIG_DIR / "CLAUDE.md")
+    return list(dict.fromkeys(paths))
+
+
+DOC_FILES = _doc_files()
 
 
 def load_docs() -> dict[str, str]:
     """Load all documentation files as {short_path: content}."""
     with _tracer.start_as_current_span("drift.load_docs"):
         docs = {}
+        seen: set[Path] = set()
         home = str(HAPAX_HOME)
         for path in DOC_FILES:
-            if path.is_file():
-                try:
-                    text = path.read_text(errors="replace")
-                    short = str(path).replace(home, "~")
-                    docs[short] = text
-                except OSError:
+            try:
+                path = path.resolve()
+                if path in seen or not path.is_file():
                     continue
+                text = path.read_text(errors="replace")
+                short = str(path).replace(home, "~")
+                docs[short] = text
+                seen.add(path)
+            except (OSError, RuntimeError):
+                continue
         return docs

@@ -32,6 +32,8 @@ _IDENTITY_ENV = (
     "HAPAX_WORKTREE_ROLE",
     "HAPAX_SESSION_ID",
     "CLAUDE_CODE_SESSION_ID",
+    "CODEX_ROLE",
+    "CODEX_SESSION_NAME",
     "CODEX_SESSION",
     "CODEX_THREAD_ID",
     "CODEX_THREAD_NAME",
@@ -76,7 +78,7 @@ class TestSessionIdNotInherited:
             captured["env"] = env
             return 0
 
-        route = SimpleNamespace(profile="full")
+        route = SimpleNamespace(platform="claude", mode="headless", profile="full")
         with (
             patch.dict(os.environ, {"HAPAX_SESSION_ID": "parent-leaked-id"}),
             patch.object(mod, "_sliced_call", fake_sliced),

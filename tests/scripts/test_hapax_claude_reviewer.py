@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import os
 import shutil
@@ -15,6 +17,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WRAPPER = REPO_ROOT / "scripts" / "hapax-claude-reviewer"
 
 
+@pytest.fixture(autouse=True)
+def _select_test_release(monkeypatch):
+    monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(REPO_ROOT))
+
+
 def _fake_claude(path: Path) -> None:
     path.write_text(
         "#!/usr/bin/env python3\n"
@@ -22,7 +29,8 @@ def _fake_claude(path: Path) -> None:
         "Path = __import__('pathlib').Path\n"
         "argv = sys.argv[1:]\n"
         "required_pairs = {\n"
-        "    '--model': 'opus',\n"
+        "    '--model': os.environ.get('HAPAX_FAKE_EXPECTED_MODEL', 'claude-opus-4-8'),\n"
+        "    '--effort': os.environ.get('HAPAX_FAKE_EXPECTED_EFFORT', 'xhigh'),\n"
         "    '--tools': '',\n"
         "    '--allowedTools': '',\n"
         "    '--permission-mode': 'manual',\n"
@@ -45,6 +53,8 @@ def _fake_claude(path: Path) -> None:
         "Path(os.environ['HAPAX_FAKE_CLAUDE_STDIN']).write_text(\n"
         "    sys.stdin.read(), encoding='utf-8'\n"
         ")\n"
+        "if os.environ.get('HAPAX_FAKE_CLAUDE_ENV'):\n"
+        "    Path(os.environ['HAPAX_FAKE_CLAUDE_ENV']).write_text(json.dumps({k:os.environ.get(k) for k in ['CLAUDE_CODE_EFFORT_LEVEL','CLAUDE_CODE_DISABLE_FAST_MODE']}))\n"
         "print('```yaml')\n"
         "print('verdict: accept')\n"
         "print('findings: []')\n"
@@ -55,19 +65,25 @@ def _fake_claude(path: Path) -> None:
     path.chmod(0o700)
 
 
-def test_claude_reviewer_pins_opus_and_disables_tools(tmp_path: Path) -> None:
+@pytest.mark.parametrize("model_assertion", [None, "claude-opus-4-8"])
+def test_claude_reviewer_binds_declared_identity_and_disables_tools(
+    tmp_path: Path, model_assertion: str | None
+) -> None:
     fake = tmp_path / "claude"
     argv_path = tmp_path / "argv.json"
     stdin_path = tmp_path / "stdin.txt"
+    env_path = tmp_path / "environment.json"
     _fake_claude(fake)
 
     env = {
         **os.environ,
         "HAPAX_FAKE_CLAUDE_ARGV": str(argv_path),
         "HAPAX_FAKE_CLAUDE_STDIN": str(stdin_path),
+        "HAPAX_FAKE_CLAUDE_ENV": str(env_path),
     }
+    assertion_args = ["--model", model_assertion] if model_assertion is not None else []
     result = subprocess.run(
-        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake), *assertion_args],
         input="review packet",
         capture_output=True,
         text=True,
@@ -78,8 +94,12 @@ def test_claude_reviewer_pins_opus_and_disables_tools(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert result.stdout == "```yaml\nverdict: accept\nfindings: []\nchecklist: {}\n```\n"
     assert stdin_path.read_text(encoding="utf-8") == "review packet"
+    assert json.loads(env_path.read_text()) == {
+        "CLAUDE_CODE_EFFORT_LEVEL": "xhigh",
+        "CLAUDE_CODE_DISABLE_FAST_MODE": "1",
+    }
     argv = json.loads(argv_path.read_text(encoding="utf-8"))
-    assert argv[:3] == ["-p", "--model", "opus"]
+    assert argv[:5] == ["-p", "--model", "claude-opus-4-8", "--effort", "xhigh"]
     assert argv[argv.index("--tools") + 1] == ""
     assert argv[argv.index("--allowedTools") + 1] == ""
     disallowed = argv[argv.index("--disallowedTools") + 1]
@@ -98,6 +118,58 @@ def test_claude_reviewer_pins_opus_and_disables_tools(tmp_path: Path) -> None:
     assert "exactly one fenced yaml" in system_prompt
     assert "invalid-output" in system_prompt
     assert "Do all reasoning silently" in system_prompt
+
+    # Join the actual subprocess arguments to the declared route. Blind review
+    # deliberately excludes the ambient instructions used by worker sessions.
+    from shared.platform_capability_registry import NativeLoadSet
+
+    registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+    route = next(item for item in registry["routes"] if item["route_id"] == "claude.review.opus")
+    declared = NativeLoadSet.model_validate(route["native_load_set"])
+    assert len(declared.files) == 1
+    configured = declared.files[0]
+    assert (configured.root, configured.path, configured.kind) == (
+        "native_home",
+        "settings.json",
+        "configuration",
+    )
+    assert configured.sha256 is None and configured.required is False
+    assert declared.plugins == declared.skills == declared.mcp == []
+    # Safe mode retains managed-policy hooks; an empty hook claim would exceed
+    # the wrapper's evidence. No native load observation is made by this stub.
+    assert declared.hooks is None
+    assert declared.loading_flags == [
+        "--safe-mode",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--strict-mcp-config",
+    ]
+    # Review every argument at this boundary: an added setting, directory or
+    # instruction option must not pass just because the declared flags remain.
+    assert argv == [
+        "-p",
+        "--model",
+        "claude-opus-4-8",
+        "--effort",
+        "xhigh",
+        "--tools",
+        "",
+        "--allowedTools",
+        "",
+        "--disallowedTools",
+        disallowed,
+        "--permission-mode",
+        "manual",
+        "--safe-mode",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+        "--mcp-config",
+        '{"mcpServers":{}}',
+        "--strict-mcp-config",
+        "--append-system-prompt",
+        system_prompt,
+    ]
+    assert "scripts/hapax-claude-reviewer" in declared.source_refs
 
 
 def test_claude_reviewer_prefers_hapax_claude_bin_over_legacy_env(tmp_path: Path) -> None:
@@ -143,8 +215,311 @@ def test_claude_reviewer_rejects_model_override(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 64
-    assert "pinned to opus" in result.stderr
-    assert "with --model opus" in result.stderr
+    assert "model must match the review route descriptor" in result.stderr
+    assert "rerun without --model" in result.stderr
+
+
+@pytest.mark.parametrize("effort", ["low", "high"])
+def test_review_child_uses_descriptor_despite_stale_text_and_environment(tmp_path, effort):
+    registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+    route = next(item for item in registry["routes"] if item["route_id"] == "claude.review.opus")
+    # Change only the declaration. The wrapper must not use the profile name,
+    # the registry's free text, the caller's effort, or its cwd as identity.
+    route["execution_descriptor"]["effort"] = effort
+    route["execution_descriptor"]["model_id"] = "claude-sonnet-4-6"
+    config = tmp_path / "registry.json"
+    config.write_text(json.dumps(registry))
+    fake = tmp_path / "claude"
+    _fake_claude(fake)
+    captured = tmp_path / "env.json"
+    argv_path = tmp_path / "argv.json"
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(config),
+            "CLAUDE_CODE_EFFORT_LEVEL": "max",
+            "CLAUDE_CODE_DISABLE_FAST_MODE": "0",
+            "HAPAX_FAKE_EXPECTED_EFFORT": effort,
+            "HAPAX_FAKE_EXPECTED_MODEL": "claude-sonnet-4-6",
+            "HAPAX_FAKE_CLAUDE_ENV": str(captured),
+            "HAPAX_FAKE_CLAUDE_ARGV": str(argv_path),
+            "HAPAX_FAKE_CLAUDE_STDIN": str(tmp_path / "stdin.txt"),
+        },
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(captured.read_text()) == {
+        "CLAUDE_CODE_EFFORT_LEVEL": effort,
+        "CLAUDE_CODE_DISABLE_FAST_MODE": "1",
+    }
+    argv = json.loads(argv_path.read_text())
+    assert argv[argv.index("--effort") + 1] == effort
+    assert argv[argv.index("--model") + 1] == "claude-sonnet-4-6"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("execution_descriptor", None),
+        ("model_id", "gpt-6-astra"),
+        ("effort", "none"),
+        ("context_mode", "extended_1m"),
+        ("fast_mode", "fast"),
+        ("quantization", "exl3_4_0bpw"),
+    ],
+)
+def test_review_refuses_invalid_or_unmapped_descriptor_before_native_spawn(tmp_path, field, value):
+    registry = json.loads((REPO_ROOT / "config/platform-capability-registry.json").read_text())
+    route = next(item for item in registry["routes"] if item["route_id"] == "claude.review.opus")
+    if field == "execution_descriptor":
+        route.pop(field)
+    else:
+        route["execution_descriptor"][field] = value
+    config = tmp_path / "registry.json"
+    config.write_text(json.dumps(registry))
+    fake = tmp_path / "claude"
+    marker = tmp_path / "native-called"
+    fake.write_text(
+        f"#!/usr/bin/env python3\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n"
+    )
+    fake.chmod(0o700)
+    result = subprocess.run(
+        [sys.executable, str(WRAPPER), "--claude-bin", str(fake)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HAPAX_PLATFORM_CAPABILITY_REGISTRY": str(config)},
+        timeout=20,
+    )
+    assert result.returncode == 9, result.stderr
+    assert "refusing undeclared invocation" in result.stderr
+    assert not marker.exists()
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "binding",
+    ["default", "explicit", "legacy_explicit", "missing", "invalid_explicit", "invalid_legacy"],
+)
+def test_copied_installed_reviewer_uses_declared_source(tmp_path, binding):
+    home = tmp_path / "home"
+    installed = home / ".local/bin/hapax-claude-reviewer"
+    installed.parent.mkdir(parents=True)
+    shutil.copy2(WRAPPER, installed)
+    assert not installed.is_symlink()
+    activation = home / ".cache/hapax/source-activation/worktree"
+    activation.parent.mkdir(parents=True)
+    if binding != "missing":
+        activation.symlink_to(REPO_ROOT, target_is_directory=True)
+    # A usable legacy primary must never substitute for a missing activation.
+    primary = home / "projects/hapax-council"
+    primary.parent.mkdir()
+    primary.symlink_to(REPO_ROOT, target_is_directory=True)
+    fake = tmp_path / "claude"
+    _fake_claude(fake)
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "HAPAX_FAKE_CLAUDE_ARGV": str(tmp_path / "argv.json"),
+        "HAPAX_FAKE_CLAUDE_STDIN": str(tmp_path / "stdin.txt"),
+    }
+    for key in ("HAPAX_SOURCE_ACTIVATE_WORKTREE", "HAPAX_COUNCIL_DIR"):
+        env.pop(key, None)
+    if binding == "explicit":
+        env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(activation)
+        env["HAPAX_COUNCIL_DIR"] = str(tmp_path / "unprovisioned-primary")
+    elif binding == "legacy_explicit":
+        activation.rename(home / "explicit-release")
+        env["HAPAX_COUNCIL_DIR"] = str(home / "explicit-release")
+    elif binding == "invalid_explicit":
+        env["HAPAX_SOURCE_ACTIVATE_WORKTREE"] = str(tmp_path / "unprovisioned-explicit")
+        env["HAPAX_COUNCIL_DIR"] = str(activation)
+    elif binding == "invalid_legacy":
+        env["HAPAX_COUNCIL_DIR"] = str(tmp_path / "unprovisioned-explicit")
+    result = subprocess.run(
+        [sys.executable, str(installed), "--claude-bin", str(fake)],
+        input="installed review packet",
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+        timeout=20,
+    )
+    if binding in {"missing", "invalid_explicit", "invalid_legacy"}:
+        assert result.returncode == 9
+        assert "missing descriptor runtime" in result.stderr
+        assert not (tmp_path / "argv.json").exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert (tmp_path / "stdin.txt").read_text() == "installed review packet"
+        assert (tmp_path / "argv.json").exists()
+
+
+def test_review_resolver_isolates_imports_in_selected_physical_release(tmp_path):
+    launcher = tmp_path / "reviewer"
+    launcher.symlink_to(WRAPPER)
+    poison = tmp_path / "shared"
+    poison.mkdir()
+    (poison / "__init__.py").write_text("raise RuntimeError('ambient shared imported')\n")
+    imported = tmp_path / "ambient-startup-imported"
+    (tmp_path / "sitecustomize.py").write_text(
+        "import sys\nfrom pathlib import Path\n"
+        f"if '-c' in sys.orig_argv: Path({str(imported)!r}).touch()\n"
+    )
+    # The resolver is itself a -c invocation: removing -I must trip this
+    # marker. The wrapper and fake native executable are file invocations.
+    env = {**os.environ, "PYTHONPATH": str(tmp_path)}
+    # Prove the startup fixture runs without isolation before testing that the
+    # actual wrapper's resolver excludes it. A dormant poison proves nothing.
+    subprocess.run([sys.executable, "-c", "pass"], env=env, check=True, timeout=10)
+    assert imported.exists()
+    imported.unlink()
+    fake = tmp_path / "claude"
+    _fake_claude(fake)
+    result = subprocess.run(
+        [sys.executable, str(launcher), "--claude-bin", str(fake)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={
+            **env,
+            "HAPAX_FAKE_CLAUDE_ARGV": str(tmp_path / "argv.json"),
+            "HAPAX_FAKE_CLAUDE_STDIN": str(tmp_path / "stdin.txt"),
+        },
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "argv.json").exists()
+    assert not imported.exists()
+
+
+def test_review_resolver_freezes_activation_target_before_subprocess(tmp_path, monkeypatch):
+    activation = tmp_path / "activation"
+    activation.symlink_to(REPO_ROOT, target_is_directory=True)
+    monkeypatch.setenv("HAPAX_SOURCE_ACTIVATE_WORKTREE", str(activation))
+    loader = importlib.machinery.SourceFileLoader("reviewer_activation_test", str(WRAPPER))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    original_run = subprocess.run
+    calls = []
+
+    def move_activation_then_run(command, **kwargs):
+        calls.append(command)
+        activation.unlink()
+        activation.symlink_to(tmp_path / "unprovisioned-next-release", target_is_directory=True)
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "run", move_activation_then_run)
+    binding = module._execution_binding()
+    assert len(calls) == 1
+    assert calls[0][0] == str(REPO_ROOT / ".venv/bin/python")
+    assert calls[0][4] == str(REPO_ROOT)
+    assert binding["argv"] == ["--model", "claude-opus-4-8", "--effort", "xhigh"]
+
+
+@pytest.mark.parametrize(
+    "resolver_output",
+    [
+        None,
+        "[]",
+        '{"argv":["--model","opus"]}',
+        json.dumps(
+            {
+                "descriptor": {
+                    "model_id": "claude-opus-4-8",
+                    "effort": "xhigh",
+                    "context_mode": "standard",
+                    "fast_mode": "off",
+                    "quantization": "none",
+                },
+                "argv": ["--model", "claude-opus-4-8", "--effort", "xhigh"],
+                "env": {"CLAUDE_CODE_EFFORT_LEVEL": "low", "CLAUDE_CODE_DISABLE_FAST_MODE": "1"},
+            }
+        ),
+    ],
+)
+def test_review_refuses_missing_runtime_or_malformed_binding(tmp_path, resolver_output):
+    root = tmp_path / "release"
+    script = root / "scripts/hapax-claude-reviewer"
+    script.parent.mkdir(parents=True)
+    shutil.copy2(WRAPPER, script)
+    if resolver_output is not None:
+        python = root / ".venv/bin/python"
+        python.parent.mkdir(parents=True)
+        python.write_text(f"#!{sys.executable}\nprint({resolver_output!r})\n")
+        python.chmod(0o700)
+    native = tmp_path / "native"
+    marker = tmp_path / "native-called"
+    native.write_text(
+        f"#!{sys.executable}\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n"
+    )
+    native.chmod(0o700)
+    result = subprocess.run(
+        [sys.executable, str(script), "--claude-bin", str(native)],
+        input="review packet",
+        capture_output=True,
+        text=True,
+        env={**os.environ, "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(root)},
+        timeout=20,
+    )
+    assert result.returncode == 9, result.stderr
+    assert "refusing undeclared invocation" in result.stderr
+    assert not marker.exists()
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize(
+    "failure", [OSError("fixture launch error"), subprocess.TimeoutExpired("resolver", 15)]
+)
+def test_resolver_system_failure_refuses_with_remedy(monkeypatch, capsys, failure):
+    loader = importlib.machinery.SourceFileLoader("reviewer_failure_test", str(WRAPPER))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    calls = []
+
+    def fail_external_resolution(command, **kwargs):
+        calls.append(command)
+        raise failure
+
+    # Inject at the external subprocess boundary, not the binding predicate.
+    monkeypatch.setattr(module.subprocess, "run", fail_external_resolution)
+    assert module.main([]) == 9
+    assert len(calls) == 1 and "shared.capability_execution" in calls[0][3]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "refusing undeclared invocation" in captured.err
+    assert "next action: repair the selected release descriptor/runtime" in captured.err
+
+
+def test_resolver_nonzero_without_diagnostic_refuses_with_remedy(tmp_path):
+    root = tmp_path / "release"
+    wrapper = root / "scripts/hapax-claude-reviewer"
+    wrapper.parent.mkdir(parents=True)
+    shutil.copy2(WRAPPER, wrapper)
+    python = root / ".venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(8)\n")
+    python.chmod(0o700)
+    result = subprocess.run(
+        [sys.executable, str(wrapper)],
+        capture_output=True,
+        text=True,
+        input="packet",
+        env={**os.environ, "HAPAX_SOURCE_ACTIVATE_WORKTREE": str(root)},
+        timeout=20,
+    )
+    assert result.returncode == 9
+    assert "descriptor resolver failed without a diagnostic" in result.stderr
+    assert "next action: repair the selected release descriptor/runtime" in result.stderr
+    assert result.stdout == ""
 
 
 def test_claude_reviewer_missing_binary_path_is_legible(tmp_path: Path) -> None:
@@ -453,7 +828,9 @@ def test_claude_cli_reports_empty_tools_with_wrapper_equivalent_flags() -> None:
         "-p",
         "--verbose",
         "--model",
-        "opus",
+        "claude-opus-4-8",
+        "--effort",
+        "xhigh",
         "--safe-mode",
         "--disable-slash-commands",
         "--no-session-persistence",

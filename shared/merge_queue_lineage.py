@@ -157,6 +157,13 @@ class MergeQueueSummary(BaseModel):
     repeated_successful_synthetic_prs: list[int] = Field(default_factory=list)
     stale_synthetic_run_ids: list[int] = Field(default_factory=list)
     slowest_recent_job: JobDuration | None = None
+    #: PRs the collector could not hydrate, and why. Kept OUT of the PR rows on purpose: those
+    #: feed every lineage record as real PR status, so a synthetic row there would be a
+    #: fabricated measurement. A short run that looks complete is the failure this reports.
+    unhydrated_prs: list[dict[str, Any]] = Field(default_factory=list)
+    #: False whenever `unhydrated_prs` is non-empty — so a consumer can tell "nothing was
+    #: missing" from "we did not check", without reasoning about list lengths.
+    hydration_complete: bool = True
 
 
 def parse_datetime(value: Any) -> datetime | None:

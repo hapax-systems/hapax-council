@@ -43,29 +43,64 @@ fi
 canonical_dir=$(mktemp -d)
 trap 'rm -rf "$canonical_dir"' EXIT
 
+canonical_from_git=1
+canonical_label="origin/main"
+vscode_label="origin/main"
 mkdir -p "$canonical_dir/council/vscode"
-if ! git -C "$COUNCIL_CANONICAL" show origin/main:CLAUDE.md > "$canonical_dir/council/CLAUDE.md" 2>/dev/null; then
-    echo "monthly-claude-md-audit: git show origin/main:CLAUDE.md failed (council main not fetched?)" >&2
+if ! git -C "$COUNCIL_CANONICAL" show origin/main:AGENTS.md > "$canonical_dir/council/AGENTS.md" 2>/dev/null; then
+    echo "monthly-claude-md-audit: git show origin/main:AGENTS.md failed; verify COUNCIL_CANONICAL=$COUNCIL_CANONICAL, fetch origin/main in that checkout if appropriate, then retry. Trying working-tree content." >&2
+    canonical_from_git=0
+    canonical_label="working-tree-fallback (origin/main comparison unobserved)"
     # Fall back to the working tree.
-    cp "$COUNCIL_CANONICAL/CLAUDE.md" "$canonical_dir/council/CLAUDE.md" 2>/dev/null \
-        || { echo "monthly-claude-md-audit: working-tree fallback also failed" >&2; exit 2; }
+    cp "$COUNCIL_CANONICAL/AGENTS.md" "$canonical_dir/council/AGENTS.md" 2>/dev/null \
+        || { echo "monthly-claude-md-audit: working-tree fallback also failed; restore AGENTS.md in the verified COUNCIL_CANONICAL checkout, then retry." >&2; exit 2; }
 fi
 if ! git -C "$COUNCIL_CANONICAL" show origin/main:vscode/CLAUDE.md > "$canonical_dir/council/vscode/CLAUDE.md" 2>/dev/null; then
+    vscode_label="working-tree-fallback (origin/main comparison unobserved)"
     cp "$COUNCIL_CANONICAL/vscode/CLAUDE.md" "$canonical_dir/council/vscode/CLAUDE.md" 2>/dev/null \
         || { echo "monthly-claude-md-audit: vscode/CLAUDE.md fallback failed" >&2; exit 2; }
 fi
 
+# Extracted governing prose belongs to the same canonical snapshot. Binding
+# JSON and the installer are governance inputs, not prose-rotation targets.
+policy_paths=()
+if [[ $canonical_from_git -eq 1 ]]; then
+    mapfile -t policy_paths < <(git -C "$COUNCIL_CANONICAL" ls-tree -r --name-only origin/main -- \
+        config/agent-instructions/AGENTS.md config/agent-instructions/native/ \
+        docs/runbooks/council-domain-context.md | grep -E '\.md$')
+else
+    for policy in "$COUNCIL_CANONICAL/config/agent-instructions/AGENTS.md" \
+        "$COUNCIL_CANONICAL"/config/agent-instructions/native/*.md \
+        "$COUNCIL_CANONICAL/docs/runbooks/council-domain-context.md"; do
+        [[ -f "$policy" ]] && policy_paths+=("${policy#"$COUNCIL_CANONICAL/"}")
+    done
+fi
+for policy in "${policy_paths[@]}"; do
+    mkdir -p "$(dirname "$canonical_dir/council/$policy")"
+    if [[ $canonical_from_git -eq 1 ]]; then
+        git -C "$COUNCIL_CANONICAL" show "origin/main:$policy" > "$canonical_dir/council/$policy" \
+            || { echo "monthly-claude-md-audit: cannot read $policy from origin/main; verify the canonical ref, then retry" >&2; exit 2; }
+    else
+        cp "$COUNCIL_CANONICAL/$policy" "$canonical_dir/council/$policy" \
+            || { echo "monthly-claude-md-audit: cannot stage $policy; restore the canonical working-tree file, then retry" >&2; exit 2; }
+    fi
+done
+
 # Build target list:
 #   1. Council canonical files (from origin/main via git show)
 #   2. Sibling repos (officium, watch, phone, mcp, constitution, distro-work, atlas, tabbyAPI)
-#   3. Workspace root CLAUDE.md (resolves dotfiles symlink)
+#   3. Workspace root AGENTS.md / CLAUDE.md (resolves dotfiles symlinks)
 #
 # Worktree dirs (alpha hapax-council/, delta hapax-council--*) are excluded
 # from auto-discovery because their working-tree state is not authoritative.
 targets=(
-    "$canonical_dir/council/CLAUDE.md"
+    "$canonical_dir/council/AGENTS.md"
     "$canonical_dir/council/vscode/CLAUDE.md"
 )
+
+for policy in "${policy_paths[@]}"; do
+    targets+=("$canonical_dir/council/$policy")
+done
 
 while IFS= read -r f; do
     targets+=("$f")
@@ -78,28 +113,30 @@ done < <(
            -o -name venv \
            -o -name node_modules \
         \) -prune \
-        -o \( -name CLAUDE.md \( -type f -o -type l \) \) -print \
+        -o \( \( -name AGENTS.md -o -name CLAUDE.md \) \( -type f -o -type l \) \) -print \
         2>/dev/null \
         | sort -u
 )
 
-# Filter out missing files and dedupe.
+# Filter out missing files and dedupe by resolved target, preserving the first
+# discovered name (AGENTS sorts before CLAUDE for the canonical/alias pair).
 filtered=()
 seen=()
 for t in "${targets[@]}"; do
     [[ -e "$t" ]] || continue
+    resolved=$(realpath -e -- "$t") || exit 2
     skip=0
     for s in "${seen[@]}"; do
-        if [[ "$s" == "$t" ]]; then skip=1; break; fi
+        if [[ "$s" == "$resolved" ]]; then skip=1; break; fi
     done
     [[ $skip -eq 0 ]] || continue
-    seen+=("$t")
+    seen+=("$resolved")
     filtered+=("$t")
 done
 targets=("${filtered[@]}")
 
 if [[ ${#targets[@]} -eq 0 ]]; then
-    echo "monthly-claude-md-audit: no CLAUDE.md files found under $WORKSPACE" >&2
+    echo "monthly-claude-md-audit: no AGENTS.md or CLAUDE.md files found under $WORKSPACE" >&2
     exit 2
 fi
 
@@ -125,6 +162,7 @@ fi
 
 if [[ ${#failed[@]} -gt 0 ]]; then
     body=$(printf 'Monthly CLAUDE.md audit found issues: %s\n\n' "${failed[*]}")
+    body+=$(printf '\nSources: core=%s; vscode=%s\n' "$canonical_label" "$vscode_label")
     body+=$(cat "$fail_log")
 
     if command -v curl >/dev/null 2>&1; then
@@ -139,3 +177,4 @@ fi
 
 # Quiet success — log only at info.
 printf 'monthly-claude-md-audit: %d file(s) clean.\n' "${#targets[@]}"
+printf 'Sources: core=%s; vscode=%s\n' "$canonical_label" "$vscode_label"

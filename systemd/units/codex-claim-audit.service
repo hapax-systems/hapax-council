@@ -14,6 +14,14 @@ WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 # mutable dev tree. The activation worktree is a governed, reviewed checkout.
 ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/codex-claim-audit --release --stale-hours=6
 Environment=GH_REPO=hapax-systems/hapax-council
+# #4090 canonical-root: never the mutable dev tree.
+Environment=HAPAX_COUNCIL_DIR=%h/.cache/hapax/source-activation/worktree
+# Authoritative claim plane (the pin). The registry read in
+# claim_plane_hosts() is the growth path and errors closed when empty.
+# Claim-plane pin intentionally NOT set here (G1 D4): the plane is
+# derived from the host registry and must prove itself (errors closed
+# when empty). Set HAPAX_CLAIM_PLANE_HOSTS only as a temporary override.
+# Environment="HAPAX_CLAIM_PLANE_HOSTS="
 Environment=NTFY_URL=https://ntfy.sh
 Environment=NTFY_TOPIC=hapax-ops
 # Reconcile cleared state to the PEER host (class #4 fix). The preset enables
@@ -22,4 +30,7 @@ Environment=NTFY_TOPIC=hapax-ops
 # we declare the two-host claim plane and let the audit derive the peer = the
 # plane host that is not the one it runs on. Reconciliation is therefore
 # bidirectional: podium reconciles to appendix, appendix reconciles to podium.
-Environment="HAPAX_CLAIM_PLANE_HOSTS=hapax-podium hapax-appendix"
+# Claim-plane hosts are derived from the host registry (scripts/codex-claim-audit
+# claim_plane_hosts). HAPAX_CLAIM_PLANE_HOSTS remains an optional override for
+# a pinned reconcile window; do not set it here as the plane's identity.
+# Environment="HAPAX_CLAIM_PLANE_HOSTS="

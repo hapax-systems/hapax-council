@@ -16,7 +16,7 @@ Usage:
 
 Browser opens with ``prompt=consent`` — pick the account, then pick the
 sub-channel on the second screen. The resulting token gets written to
-the specified pass key. After minting, ``channels.list(mine=true)``
+the specified secret name. After minting, ``channels.list(mine=true)``
 reports the sub-channel id; the Phase-5 resolver will then see
 broadcasts on that channel.
 
@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import subprocess
 import sys
 
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -38,8 +37,9 @@ from googleapiclient.discovery import build as discovery_build
 from shared.google_auth import (
     CLIENT_SECRET_PASS_KEY,
     YOUTUBE_STREAMING_TOKEN_PASS_KEY,
-    _save_token_to_pass,
+    _save_token,
 )
+from shared.secrets import get_secret
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("mint-google-token")
@@ -61,7 +61,7 @@ def main() -> int:
     parser.add_argument(
         "--pass-key",
         default=YOUTUBE_STREAMING_TOKEN_PASS_KEY,
-        help="Pass store entry to write the token to.",
+        help="Secret name to write the token to (the FileStore).",
     )
     parser.add_argument(
         "--scopes",
@@ -72,12 +72,9 @@ def main() -> int:
     args = parser.parse_args()
 
     scopes = [_expand_scope(s) for s in args.scopes]
-    log.info("Minting token for pass key %s with scopes: %s", args.pass_key, scopes)
+    log.info("Minting token for secret %s with scopes: %s", args.pass_key, scopes)
 
-    client_json = subprocess.check_output(
-        ["pass", "show", CLIENT_SECRET_PASS_KEY],
-        stderr=subprocess.DEVNULL,
-    ).decode()
+    client_json = get_secret(CLIENT_SECRET_PASS_KEY)
     flow = InstalledAppFlow.from_client_config(json.loads(client_json), scopes)
 
     # prompt=consent forces Google to re-show the account picker AND the
@@ -96,8 +93,8 @@ def main() -> int:
         ),
     )
 
-    _save_token_to_pass(creds, pass_key=args.pass_key)
-    log.info("Token saved to pass entry: %s", args.pass_key)
+    _save_token(creds, pass_key=args.pass_key)
+    log.info("Token saved to the FileStore as secret: %s", args.pass_key)
 
     # Verify which channel we actually got.
     yt = discovery_build("youtube", "v3", credentials=creds, cache_discovery=False)

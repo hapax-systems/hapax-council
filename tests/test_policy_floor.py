@@ -318,12 +318,30 @@ class TestAxiomDefenseInDepth:
             ".github/CODEOWNERS",
             "CLAUDE.md",
             "agents/CLAUDE.md",
+            "AGENTS.md",
+            "agents/AGENTS.md",
+            "config/agent-instructions/AGENTS.md",
+            "config/agent-instructions/native/claude.md",
+            "config/agent-instructions/native/grok.md",
+            "config/agent-instructions/native/kimi.md",
+            "config/agent-instructions/native/vibe.md",
+            "config/agent-instructions/native/future-client.md",
+            "config/agent-instructions/bindings.json",
+            "docs/runbooks/council-domain-context.md",
+            "scripts/install-agent-instructions.py",
             "config/pipewire/voice-fx-warm.conf",
         ],
     )
-    def test_governance_paths_block_axiom(self, file_path):
-        d = evaluate_floor("Edit", file_path=file_path)
+    @pytest.mark.parametrize("prefix", ["", "/abs/repo/"])
+    @pytest.mark.parametrize("tool_name", ["Edit", "Write", "Bash"])
+    def test_governance_paths_block_axiom(self, file_path, prefix, tool_name):
+        path = prefix + file_path
+        if tool_name == "Bash":
+            d = evaluate_floor(tool_name, command=f"sed -i s/a/b/ {path}")
+        else:
+            d = evaluate_floor(tool_name, file_path=path)
         assert d.blocked and d.gate == "floor:axiom"
+        assert d.fail_mode is FailMode.FAIL_CLOSED
 
     def test_pipewire_user_config_blocks_axiom(self):
         d = evaluate_floor("Write", file_path="~/.config/pipewire/pipewire.conf.d/x.conf")
@@ -333,10 +351,40 @@ class TestAxiomDefenseInDepth:
         d = evaluate_floor("Bash", command="sed -i s/a/b/ .github/CODEOWNERS")
         assert d.blocked and d.gate == "floor:axiom"
 
-    @pytest.mark.parametrize("file_path", ["docs/foo.md", "shared/config.py", "agents/foo.py"])
-    def test_ordinary_source_and_docs_still_reversible(self, file_path):
-        d = evaluate_floor("Edit", file_path=file_path)
+    @pytest.mark.parametrize(
+        "file_path",
+        [
+            "docs/foo.md",
+            "shared/config.py",
+            "agents/foo.py",
+            "docs/AGENTS.md.example",
+            "docs/CLAUDE.md.example",
+            "docs/runbooks/ordinary.md",
+            "config/ordinary.yaml",
+            "config/agent-instructions/README.md",
+            "config/agent-instructions/native/claude.md.example",
+            "config/agent-instructions/native-extra/claude.md",
+            "config/agent-instructions/bindings.json.example",
+            "config/agent-instructions-extra/bindings.json",
+            "other-config/agent-instructions/native/claude.md",
+            "docs/runbooks/council-domain-context.md.example",
+            "docs/runbooks/other-council-domain-context.md",
+            "other-docs/runbooks/council-domain-context.md",
+            "scripts/install-agent-instructions.py.example",
+            "scripts/other-install-agent-instructions.py",
+            "other-scripts/install-agent-instructions.py",
+        ],
+    )
+    @pytest.mark.parametrize("prefix", ["", "/abs/repo/"])
+    @pytest.mark.parametrize("tool_name", ["Edit", "Write", "Bash"])
+    def test_ordinary_source_and_docs_still_reversible(self, file_path, prefix, tool_name):
+        path = prefix + file_path
+        if tool_name == "Bash":
+            d = evaluate_floor(tool_name, command=f"sed -i s/a/b/ {path}")
+        else:
+            d = evaluate_floor(tool_name, file_path=path)
         assert d.allowed and d.gate == "floor:reversible"
+        assert d.fail_mode is FailMode.FAIL_OPEN_WITH_LEDGER
 
 
 class TestIrreversibleGateContract:

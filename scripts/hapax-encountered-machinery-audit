@@ -1,0 +1,425 @@
+#!/usr/bin/env python3
+"""Audit ENCOUNTERED-MACHINERY on a cadence and act on the disposition ladder.
+
+Declared as producer ``encountered-machinery-audit`` in ``config/determination-producers.json``;
+``hapax-determine`` runs it and witnesses every run. The evaluation lives in
+``shared.encountered_machinery_audit``. This script only does I/O:
+
+1. Read the catalogue and the class ledger. Both are authored; this script never writes them.
+2. Look up each class's owner rows in the task store (read-only; T3 is a flag, not an edit).
+3. Read the catalogue's own git history at -14 d and -7 d for the trend (T5). If git is
+   unavailable, the trend is reported as unobserved and T5 does not fire.
+4. Mint reduction and sweep rows. They are offered, carry no authority, and are never overwritten
+   or reminted. No more than ``--wip-cap`` auto-minted rows are open at a time.
+5. Post one lanebus drop to the seat when the flag set changed.
+6. Write the derived pile-status file (embedded at the top of the catalogue), but only when its
+   content changed.
+
+Exit codes: 0 is a completed audit, flags or not; flags are healthy bad news. 1 means an action
+failed, such as a mint or post error; the evaluation stands and the next run retries. 2 means the
+inputs are unreadable and nothing was evaluated.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared import encountered_machinery_audit as ema  # noqa: E402
+
+FRAME_RELATIVE = Path("30-areas") / "hapax" / "frame" / "coordination-20260904"
+CATALOGUE_NAME = "ENCOUNTERED-MACHINERY.md"
+LEDGER_NAME = "MECHANISM-DISPOSITION-THRESHOLDS-20260914.md"
+PILE_STATUS_NAME = "ENCOUNTERED-MACHINERY-PILE-STATUS.md"
+SENDER = "encountered-machinery-audit"
+DEFAULT_WIP_CAP = 3
+GIT_TIMEOUT_S = 60
+TREND_WINDOW = timedelta(days=7)
+TERMINAL_ROW_STATUSES = frozenset(
+    {"done", "completed", "closed", "refused", "withdrawn", "cancelled", "superseded"}
+)
+TASK_STATES = ("active", "closed", "refused")
+
+
+def _vault() -> Path:
+    raw = os.environ.get("PERSONAL_VAULT_PATH", "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / "Documents" / "Personal"
+
+
+def _task_root() -> Path:
+    from shared.cc_task_root import resolve_cc_task_root
+
+    return resolve_cc_task_root().path
+
+
+def _parse_now(value: str | None) -> datetime:
+    if not value:
+        return datetime.now(UTC).replace(microsecond=0)
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+
+
+def _as_dt(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+    return None
+
+
+def load_owner_rows(task_root: Path, ledger: list[ema.LedgerClass]) -> dict:
+    rows: dict[str, ema.OwnerRow | None] = {}
+    for c in ledger:
+        for task_id in c.rows:
+            if task_id in rows:
+                continue
+            rows[task_id] = None
+            for state in TASK_STATES:
+                path = task_root / state / f"{task_id}.md"
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                front, _ = ema.split_frontmatter(text)
+                rows[task_id] = ema.OwnerRow(
+                    task_id=task_id,
+                    status=str(front.get("status") or "") or None,
+                    created_at=_as_dt(front.get("created_at")),
+                    updated_at=_as_dt(front.get("updated_at")),
+                )
+                break
+    return rows
+
+
+def _git(repo: Path, *args: str) -> str:
+    proc = subprocess.run(  # noqa: S603
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        timeout=GIT_TIMEOUT_S,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"git {args[0]} exit {proc.returncode}: {proc.stderr.strip()[:200]}")
+    return proc.stdout
+
+
+def load_trend(catalogue: Path, ledger: list[ema.LedgerClass], now: datetime, current: ema.Audit):
+    """Accidental share (and pile) at -14 d, -7 d, now, with the CURRENT ledger applied to past
+    catalogues. Judgments recorded later are not back-dated: a past catalogue carries only the
+    judgments it held then."""
+    try:
+        repo = Path(_git(catalogue.parent, "rev-parse", "--show-toplevel").strip())
+        rel = catalogue.resolve().relative_to(repo.resolve()).as_posix()
+        points: list[ema.TrendPoint] = []
+        for label, delta in (("-14d", 2 * TREND_WINDOW), ("-7d", TREND_WINDOW)):
+            before = (now - delta).strftime("%Y-%m-%dT%H:%M:%SZ")
+            sha = _git(repo, "log", "-1", f"--before={before}", "--format=%H", "--", rel).strip()
+            if not sha:
+                return ema.Trend.unobserved(f"no catalogue commit before {before}")
+            text = _git(repo, "show", f"{sha}:{rel}")
+            past = ema.evaluate(
+                ema.parse_catalogue(text),
+                ledger,
+                now=now - delta,
+                owner_rows={},
+                trend=ema.Trend.unobserved("historical"),
+            )
+            points.append(past.point(label))
+        points.append(current.point("now"))
+        return ema.Trend(points=tuple(points), note=f"git history of {rel}")
+    except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as exc:
+        return ema.Trend.unobserved(f"trend unobserved: {exc}")
+
+
+def _reduce_pattern(key: str) -> re.Pattern[str]:
+    return re.compile(rf"^encountered-machinery-reduce-{re.escape(key)}-20\d{{6}}\.md$")
+
+
+def _sweep_pattern(subject: str) -> re.Pattern[str]:
+    return re.compile(rf"^encountered-machinery-pile-sweep-{re.escape(subject)}-20\d{{6}}\.md$")
+
+
+_AUTO_ROW = re.compile(r"^encountered-machinery-(?:reduce|pile-sweep)-.+-20\d{6}\.md$")
+
+
+def _row_status(path: Path) -> str:
+    try:
+        front, _ = ema.split_frontmatter(path.read_text(encoding="utf-8"))
+    except OSError:
+        return ""
+    return str(front.get("status") or "").lower()
+
+
+def open_auto_rows(task_root: Path) -> list[str]:
+    active = task_root / "active"
+    try:
+        names = sorted(p.name for p in active.iterdir() if _AUTO_ROW.match(p.name))
+    except OSError:
+        return []
+    return [n[:-3] for n in names if _row_status(active / n) not in TERMINAL_ROW_STATUSES]
+
+
+def _existing(task_root: Path, pattern: re.Pattern[str]) -> dict[str, list[Path]]:
+    found: dict[str, list[Path]] = {}
+    for state in TASK_STATES:
+        try:
+            found[state] = [p for p in (task_root / state).iterdir() if pattern.match(p.name)]
+        except OSError:
+            found[state] = []
+    return found
+
+
+def _create_once(path: Path, text: str) -> None:
+    """Write a new file; refuse if the path exists. Never replaces anything."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def _replace(path: Path, text: str) -> None:
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--catalogue", type=Path)
+    p.add_argument("--ledger", type=Path)
+    p.add_argument("--pile-status", type=Path)
+    p.add_argument("--task-root", type=Path)
+    p.add_argument("--seat-inbox", type=Path, help="lanebus inbox of the coordinator seat")
+    p.add_argument("--seat-name", default="claude/dev1")
+    p.add_argument("--wip-cap", type=int, default=DEFAULT_WIP_CAP)
+    p.add_argument("--no-trend", action="store_true", help="skip git history (T5 unobserved)")
+    p.add_argument("--dry-run", action="store_true", help="evaluate and report; write nothing")
+    p.add_argument(
+        "--run-on-host",
+        help="act only on this host (short name). Every host runs hapax-determine against the "
+        "one shared vault, and two writers would double-post and race the mint",
+    )
+    p.add_argument("--now", help="ISO timestamp (tests)")
+    p.add_argument("--json", action="store_true", help="accepted for producer-registry symmetry")
+    return p
+
+
+def main(argv: list[str] | None = None, emit: Callable[[str], None] = print) -> int:
+    args = build_parser().parse_args(argv)
+    if args.run_on_host:
+        here = socket.gethostname().split(".")[0]
+        if here != args.run_on_host.split(".")[0]:
+            emit(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "skipped": f"not the designated host: {here} != {args.run_on_host}",
+                    }
+                )
+            )
+            return 0
+    now = _parse_now(args.now)
+    frame = _vault() / FRAME_RELATIVE
+    catalogue = args.catalogue or frame / CATALOGUE_NAME
+    ledger_path = args.ledger or frame / LEDGER_NAME
+    status_path = args.pile_status or catalogue.parent / PILE_STATUS_NAME
+    seat = args.seat_inbox or _vault() / "30-areas" / "hapax" / "lanebus" / "dev1"
+    report: dict[str, Any] = {
+        "ok": False,
+        "errors": [],
+        "minted": [],
+        "would_mint": [],
+        "deferred": [],
+        "posted": None,
+        "status_written": False,
+    }
+
+    try:
+        cat = ema.parse_catalogue(catalogue.read_text(encoding="utf-8"))
+        ledger = ema.parse_ledger(ledger_path.read_text(encoding="utf-8"))
+        task_root = args.task_root or _task_root()
+    except (OSError, ema.LedgerError, RuntimeError) as exc:
+        report["errors"].append(
+            f"{exc}; next action: restore the catalogue at {catalogue} and the class ledger at "
+            f"{ledger_path}, then rerun"
+        )
+        emit(json.dumps(report, sort_keys=True))
+        return 2
+
+    owner_rows = load_owner_rows(task_root, ledger)
+    audit = ema.evaluate(
+        cat, ledger, now=now, owner_rows=owner_rows, trend=ema.Trend.unobserved("pending")
+    )
+    trend = (
+        ema.Trend.unobserved("trend disabled (--no-trend)")
+        if args.no_trend
+        else load_trend(catalogue, ledger, now, audit)
+    )
+    audit = ema.evaluate(cat, ledger, now=now, owner_rows=owner_rows, trend=trend)
+
+    # --- mint -------------------------------------------------------------------------------
+    open_rows = open_auto_rows(task_root)
+    date_tag = now.strftime("%Y%m%d")
+    for cand in audit.mint_candidates:
+        if cand.kind == "sweep":
+            pattern, task_id = (
+                _sweep_pattern(cand.subject),
+                (f"encountered-machinery-pile-sweep-{cand.subject}-{date_tag}"),
+            )
+        else:
+            pattern, task_id = (
+                _reduce_pattern(cand.subject),
+                (f"encountered-machinery-reduce-{cand.subject}-{date_tag}"),
+            )
+        existing = _existing(task_root, pattern)
+        live = [p for p in existing["active"] if _row_status(p) not in TERMINAL_ROW_STATUSES]
+        if live:
+            continue
+        spent = existing["closed"] + existing["refused"] + existing["active"]
+        if spent:
+            audit.flags.append(
+                ema.Flag(
+                    cand.triggers[0],
+                    cand.subject,
+                    f"still firing after its reduction row closed ({spent[0].stem}): the shape "
+                    "did not change; the seat decides the next row",
+                )
+            )
+            continue
+        if len(open_rows) >= args.wip_cap:
+            report["deferred"].append(task_id)
+            continue
+        path = task_root / "active" / f"{task_id}.md"
+        if args.dry_run:
+            report["would_mint"].append(str(path))
+            open_rows.append(task_id)
+            continue
+        text = ema.render_reduction_row(
+            cand,
+            audit,
+            task_id=task_id,
+            now=now,
+            parent_spec=str(ledger_path),
+            catalogue_ref=str(catalogue),
+        )
+        try:
+            _create_once(path, text)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            report["errors"].append(f"mint {path}: {exc}; next action: repair the task root")
+            continue
+        report["minted"].append(str(path))
+        open_rows.append(task_id)
+
+    # --- post -------------------------------------------------------------------------------
+    previous_text = ""
+    try:
+        previous_text = status_path.read_text(encoding="utf-8")
+    except OSError:
+        previous_text = ""
+    prev_front, _ = ema.split_frontmatter(previous_text)
+    posted = str(prev_front.get("posted_flag_fingerprint") or "")
+    fingerprint = audit.flag_fingerprint
+    if fingerprint != posted and not args.dry_run:
+        drop = seat / f"{now.strftime('%Y%m%dT%H%M%SZ')}-{SENDER}-flags.md"
+        body = ema.render_flag_drop(
+            audit,
+            sender=SENDER,
+            recipient=args.seat_name,
+            now=now,
+            minted=[Path(m).stem for m in report["minted"]],
+            deferred=report["deferred"],
+            status_ref=str(status_path),
+        )
+        if not seat.is_dir():
+            report["errors"].append(
+                f"seat inbox {seat} does not exist; next action: create it deliberately (lanebus "
+                "never creates inboxes) or pass --seat-inbox"
+            )
+        else:
+            try:
+                _create_once(drop, body)
+                posted = fingerprint
+                report["posted"] = str(drop)
+            except OSError as exc:
+                report["errors"].append(f"post {drop}: {exc}; the next run retries")
+
+    # --- pile status ------------------------------------------------------------------------
+    rendered = ema.render_pile_status(
+        audit,
+        auto_rows=open_auto_rows(task_root) if not args.dry_run else open_rows,
+        posted_fingerprint=posted,
+        sources={"catalogue": str(catalogue), "ledger": str(ledger_path)},
+    )
+    if rendered != previous_text and not args.dry_run:
+        try:
+            _replace(status_path, rendered)
+            report["status_written"] = True
+        except OSError as exc:
+            report["errors"].append(f"write {status_path}: {exc}; the next run retries")
+
+    report.update(
+        {
+            "ok": not report["errors"],
+            "accidental_share": audit.accidental_share,
+            "accidental_weight": audit.accidental_weight,
+            "total_weight": audit.total_weight,
+            "unjudged": audit.unjudged,
+            "awaiting_reconstitution": audit.awaiting_reconstitution,
+            "live_readback": audit.live_readback,
+            "entries": audit.entries,
+            "weighted_pile": audit.weighted_pile,
+            "counts": audit.counts,
+            "age_buckets": audit.age_buckets,
+            "trend": {
+                "verdict": audit.trend_verdict,
+                "points": [vars(p) for p in audit.trend.points],
+                "note": audit.trend.note,
+            },
+            "flag_fingerprint": fingerprint,
+            "flag_counts": {
+                t: sum(1 for f in audit.flags if f.trigger == t)
+                for t in ("T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9")
+            },
+            "flags": [
+                {"trigger": f.trigger, "subject": f.subject, "detail": f.detail}
+                for f in audit.flags
+            ],
+            "classes": [
+                {
+                    "class": cs.key,
+                    "weighted": cs.weighted,
+                    "pile": len(cs.pile_ids),
+                    "pile_weight": cs.pile_weight,
+                    "open": len(cs.open_ids),
+                    "disposition_named": cs.disposition_named,
+                    "rows": [*cs.rows, *cs.prs],
+                    "score": cs.score,
+                }
+                for cs in sorted(audit.class_state.values(), key=lambda s: (-s.score, s.key))
+            ],
+        }
+    )
+    emit(json.dumps(report, sort_keys=True, default=str))
+    return 0 if report["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

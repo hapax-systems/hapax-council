@@ -290,6 +290,38 @@ def test_missing_quality_floor_is_hold_not_permissive() -> None:
     assert assessment.dispatchable is False
 
 
+def test_known_stale_route_tokens_coerce_and_unknown_tokens_do_not() -> None:
+    renamed = _explicit_metadata()
+    renamed["mutation_surface"] = "docs"
+    renamed["context_shape"] = dict(renamed["context_shape"])
+    renamed["context_shape"]["codebase_locality"] = "single_module"
+    assessment = assess_route_metadata(renamed)
+    assert assessment.metadata is not None
+    assert assessment.metadata.mutation_surface.value == "vault_docs"
+    assert assessment.metadata.context_shape.codebase_locality.value == "module"
+
+    derived_floor = _explicit_metadata()
+    derived_floor["quality_floor"] = "verification_receipt"
+    derived_floor["risk_tier"] = "T1"
+    floored = assess_route_metadata(derived_floor)
+    assert floored.metadata is not None
+    assert floored.metadata.quality_floor.value == "frontier_required"
+
+    still_illegal = _explicit_metadata()
+    still_illegal["mutation_surface"] = "scripts_and_units"
+    refused = assess_route_metadata(still_illegal)
+    assert refused.status == RouteMetadataStatus.MALFORMED
+    assert refused.validation_errors
+
+
+def test_quality_floor_is_normalized_before_validation() -> None:
+    noisy = _explicit_metadata()
+    noisy["quality_floor"] = "  FRONTIER_REQUIRED  "
+    accepted = assess_route_metadata(noisy)
+    assert accepted.metadata is not None
+    assert accepted.metadata.quality_floor.value == "frontier_required"
+
+
 def test_mutation_surface_unknown_is_hold_condition() -> None:
     assessment = assess_route_metadata(
         {

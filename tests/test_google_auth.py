@@ -17,7 +17,7 @@ def test_get_credentials_returns_valid_cached(tmp_path):
 
     mock_creds = MagicMock()
     mock_creds.valid = True
-    with patch("shared.google_auth._load_token_from_pass", return_value=mock_creds):
+    with patch("shared.google_auth._load_token", return_value=mock_creds):
         result = get_google_credentials(["https://www.googleapis.com/auth/drive.readonly"])
     assert result is mock_creds
 
@@ -31,8 +31,8 @@ def test_get_credentials_refreshes_expired(tmp_path):
     mock_creds.expired = True
     mock_creds.refresh_token = "refresh_tok"
     with (
-        patch("shared.google_auth._load_token_from_pass", return_value=mock_creds),
-        patch("shared.google_auth._save_token_to_pass") as mock_save,
+        patch("shared.google_auth._load_token", return_value=mock_creds),
+        patch("shared.google_auth._save_token") as mock_save,
     ):
         get_google_credentials(["https://www.googleapis.com/auth/drive.readonly"])
     mock_creds.refresh.assert_called_once()
@@ -58,3 +58,50 @@ def test_pass_key_names():
 
     assert TOKEN_PASS_KEY == "google/token"
     assert CLIENT_SECRET_PASS_KEY == "google/client-secret"
+
+
+def test_load_token_reads_the_secret_and_absent_is_none(monkeypatch):
+    import json
+
+    import shared.google_auth as ga
+
+    payload = {
+        "token": "t",
+        "refresh_token": "r",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "client_id": "c",
+        "client_secret": "s",
+        "scopes": ["https://www.googleapis.com/auth/drive.readonly"],
+    }
+    monkeypatch.setattr(
+        ga, "get_secret", lambda name, *, env=None, required=True: json.dumps(payload)
+    )
+    creds = ga._load_token(payload["scopes"], pass_key="google/token")
+    assert creds is not None
+    assert creds.refresh_token == "r"
+
+    monkeypatch.setattr(ga, "get_secret", lambda name, *, env=None, required=True: None)
+    assert ga._load_token(payload["scopes"], pass_key="google/token") is None
+
+
+def test_save_token_puts_the_six_fields_as_utf8_json(monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    import shared.google_auth as ga
+
+    saved: dict[str, bytes] = {}
+    monkeypatch.setattr(ga, "put_secret", lambda name, value: saved.__setitem__(name, value))
+    creds = SimpleNamespace(
+        token="t", refresh_token="r", token_uri="u", client_id="c", client_secret="s", scopes=["a"]
+    )
+    ga._save_token(creds, pass_key="google/token-youtube-streaming")
+    assert list(saved) == ["google/token-youtube-streaming"]
+    assert json.loads(saved["google/token-youtube-streaming"].decode("utf-8")) == {
+        "token": "t",
+        "refresh_token": "r",
+        "token_uri": "u",
+        "client_id": "c",
+        "client_secret": "s",
+        "scopes": ["a"],
+    }

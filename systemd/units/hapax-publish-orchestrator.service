@@ -16,6 +16,7 @@ WorkingDirectory=%h/.cache/hapax/source-activation/worktree
 # optional — service still starts on hosts where hapax-secrets isn't
 # materialised yet (CI runners, fresh VMs).
 EnvironmentFile=-/run/user/1000/hapax-secrets.env
+EnvironmentFile=-/run/user/%U/hapax-public-gate-authority.env
 Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
 ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.publish_orchestrator
 Restart=on-failure

@@ -140,7 +140,7 @@ def create_agent() -> Agent:
         """Read a section from the full infrastructure manifest.
 
         Valid sections: docker, systemd, qdrant_collections, ollama, gpu,
-        disk, listening_ports, pass_entries, litellm_routes, profile_files.
+        disk, listening_ports, secret_names, litellm_routes, profile_files.
         """
         from agents._ops_live import get_manifest_section
 

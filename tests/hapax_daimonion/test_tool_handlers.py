@@ -510,3 +510,19 @@ class TestGetSystemStatusHandler:
 
         result = mock_fn_params.result_callback.call_args[0][0]
         assert "no" in result.lower()
+
+
+class TestSmsPasswordOffPass:
+    def test_reads_through_the_resolver_and_propagates_absence(self, monkeypatch):
+        from agents.hapax_daimonion import tools
+        from shared.secrets import SecretUnavailable
+
+        monkeypatch.setattr(tools, "get_secret", lambda name: f"value-for:{name}")
+        assert tools._get_sms_password("sms/gateway") == "value-for:sms/gateway"
+
+        def absent(name):
+            raise SecretUnavailable(name, "put it")
+
+        monkeypatch.setattr(tools, "get_secret", absent)
+        with pytest.raises(RuntimeError):
+            tools._get_sms_password("sms/gateway")

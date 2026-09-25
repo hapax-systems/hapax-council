@@ -39,7 +39,7 @@ class MissingCredItem:
     """One actionable unblocker entry for the operator dashboard.
 
     Entry-NAME-only payload; no values, ever. ``remediation`` is the
-    canonical ``pass insert <name>`` command — never a sample value.
+    canonical ``hapax-secret`` put instruction — never a sample value.
     """
 
     entry_name: str
@@ -93,7 +93,7 @@ def build_report(snapshot: Snapshot) -> UnblockerReport:
     actual = snapshot.as_set()
     present = expected & actual
     missing = expected - actual
-    unexpected = actual - expected  # entries in pass store but not in registry
+    unexpected = actual - expected  # names in the FileStore but not in the registry
 
     missing_items = tuple(
         sorted(

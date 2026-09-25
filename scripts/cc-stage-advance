@@ -148,6 +148,41 @@ def advance(task_id: str, new_stage: str, allow_backward: bool) -> int:
     if note is None:
         print(f"cc-stage-advance: task '{task_id}' not found under {VAULT}", file=sys.stderr)
         return ERROR
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from shared.task_note_lock import TaskNoteLockError, projected_path_lock
+
+    # The whole read-modify-write goes under the projection lock, not just the write: this note
+    # is a path coord_projection relocates transactionally, and a stamp that lands between its
+    # preimage pin and its install is counted by the safety check and then destroyed, with the
+    # transition still recorded applied. Locking only the write would serialize the wrong half.
+    try:
+        with projected_path_lock(task_id, (note,)):
+            # Re-resolve under the lock. The path above was found before the lock existed, and a
+            # transition relocating this note (active/ -> closed/) in that window would leave us
+            # holding a lock on a name that no longer refers to it — and the write would then
+            # recreate a stale copy at the old name, which is the very outcome this lock exists to
+            # prevent. Locking a stale path is not locking the note.
+            current = _find_note(task_id)
+            if current is None or current != note:
+                print(
+                    f"cc-stage-advance: '{task_id}' moved while acquiring its lock "
+                    f"({note} -> {current}); rerun to act on its current position",
+                    file=sys.stderr,
+                )
+                return ERROR
+            return _advance_locked(task_id, note, new_stage, allow_backward)
+
+
+    except TaskNoteLockError as exc:
+        # A refusal from the lock is an operator-facing outcome, not a crash: the estate's
+        # executive_function axiom requires the message to carry its own next action, and a
+        # Python traceback carries the stack instead.
+        print(f"cc-stage-advance: REFUSED — {exc}", file=sys.stderr)
+        return REFUSED
+def _advance_locked(task_id: str, note: Path, new_stage: str, allow_backward: bool) -> int:
+    """The read-modify-write itself. Called only with the projection lock held."""
+
     text = note.read_text(encoding="utf-8")
     if not text.startswith("---"):
         print("cc-stage-advance: note has no frontmatter", file=sys.stderr)

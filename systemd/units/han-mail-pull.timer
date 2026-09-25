@@ -1,0 +1,11 @@
+[Unit]
+Description=Pull HAN inbound mail at most once every five minutes
+
+[Timer]
+OnStartupSec=5min
+OnUnitInactiveSec=5min
+AccuracySec=1s
+Unit=han-mail-pull.service
+
+[Install]
+WantedBy=timers.target

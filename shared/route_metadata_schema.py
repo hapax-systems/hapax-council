@@ -1201,6 +1201,51 @@ def _field_is_absent(field: object, value: object) -> bool:
     return _is_empty_frontmatter_value(value)
 
 
+# Renames the enum already decided. Compound tokens (scripts_and_units, shell_source)
+# are not here: collapsing them would invent a surface.
+_MUTATION_SURFACE_ALIASES = {
+    "docs": "vault_docs",
+    "doc": "vault_docs",
+    "scripts": "source",
+    "shared": "source",
+    "python_tests": "source",
+}
+_LOCALITY_ALIASES = {
+    "single_module": "module",
+}
+
+
+def _coerce_known_route_tokens(
+    frontmatter: Mapping[str, Any], payload: dict[str, Any]
+) -> dict[str, Any]:
+    """Replace tokens the schema has already named. Leave every other illegal token."""
+    surface = payload.get("mutation_surface")
+    if isinstance(surface, str):
+        aliased = _MUTATION_SURFACE_ALIASES.get(surface.strip().lower())
+        if aliased is not None:
+            payload["mutation_surface"] = aliased
+    context = payload.get("context_shape")
+    if isinstance(context, Mapping):
+        locality = context.get("codebase_locality")
+        if isinstance(locality, str):
+            aliased = _LOCALITY_ALIASES.get(locality.strip().lower())
+            if aliased is not None:
+                context = dict(context)
+                context["codebase_locality"] = aliased
+                payload["context_shape"] = context
+    floor = payload.get("quality_floor")
+    legal = {item.value for item in QualityFloor}
+    if isinstance(floor, str):
+        token = floor.strip().lower()
+        if token in legal:
+            payload["quality_floor"] = token
+        else:
+            derived = _derive_quality_floor({**frontmatter, "quality_floor": None})
+            if derived is not None:
+                payload["quality_floor"] = derived.value
+    return payload
+
+
 def route_metadata_payload_from_frontmatter(frontmatter: Mapping[str, Any]) -> dict[str, Any]:
     """Extract route metadata fields from canonical frontmatter data."""
     payload: dict[str, Any] = {}
@@ -1212,7 +1257,7 @@ def route_metadata_payload_from_frontmatter(frontmatter: Mapping[str, Any]) -> d
     for field in ROUTE_METADATA_FIELDS:
         if field in frontmatter and not _field_is_absent(field, frontmatter[field]):
             payload[field] = frontmatter[field]
-    return payload
+    return _coerce_known_route_tokens(frontmatter, payload)
 
 
 def frontmatter_has_route_metadata(frontmatter: Mapping[str, Any]) -> bool:

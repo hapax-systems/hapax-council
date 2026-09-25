@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import subprocess
 import sys
@@ -170,7 +171,127 @@ def normalized_route_fields(fields: dict[str, Any]) -> tuple[dict[str, Any], dic
     return normalized, changes
 
 
-def route_metadata_blocker(fields: dict[str, Any]) -> str | None:
+WALLED_SINGLETON_CARRIERS = frozenset({"claude"})
+CONCENTRATION_CAP_NUMERATOR = 1
+CONCENTRATION_CAP_DENOMINATOR = 2
+# Next-action classes while claude/codex remain in family-outage.
+CONCENTRATION_LIVE_CLASSES = ("kimi", "glm", "gemini")
+
+
+def _route_constraint_dicts(fields: dict[str, Any]) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    nested = fields.get("route_metadata")
+    if isinstance(nested, dict):
+        nested_constraints = nested.get("route_constraints")
+        if isinstance(nested_constraints, dict):
+            found.append(nested_constraints)
+    top = fields.get("route_constraints")
+    if isinstance(top, dict):
+        found.append(top)
+    return found
+
+
+def singleton_walled_carrier_blocker(fields: dict[str, Any]) -> str | None:
+    """Refuse mint-time preferred_platforms:[claude] (OD2). Historical rows stay lint-clean."""
+    for constraints in _route_constraint_dicts(fields):
+        if "preferred_platforms" not in constraints:
+            continue
+        preferred = normalize_list(constraints.get("preferred_platforms"))
+        if len(preferred) != 1:
+            continue
+        only = preferred[0].strip().lower()
+        if only in WALLED_SINGLETON_CARRIERS:
+            return (
+                "preferred_platforms is a singleton walled carrier "
+                f"[{only}] (OD2); omit preferred_platforms or use a set of live classes"
+            )
+    return None
+
+
+def _preferred_platforms_of(fields: dict[str, Any]) -> list[str] | None:
+    found: list[str] | None = None
+    for constraints in _route_constraint_dicts(fields):
+        if "preferred_platforms" not in constraints:
+            continue
+        found = [
+            item.strip().lower() for item in normalize_list(constraints.get("preferred_platforms"))
+        ]
+    return found
+
+
+def _is_same_task(path: Path, fields: dict[str, Any], task_id: str) -> bool:
+    other_id = strip_scalar(fields.get("task_id", path.stem))
+    return other_id == task_id or path.stem == task_id or path.stem.startswith(f"{task_id}-")
+
+
+def _concentration_next_class(family: str) -> str:
+    for candidate in CONCENTRATION_LIVE_CLASSES:
+        if candidate != family:
+            return candidate
+    return CONCENTRATION_LIVE_CLASSES[0]
+
+
+def preferred_platforms_concentration_blocker(
+    fields: dict[str, Any],
+    *,
+    vault_root: Path,
+    task_id: str,
+) -> str | None:
+    """Refuse a singleton preferred family that would take more than half the estate."""
+    preferred = _preferred_platforms_of(fields)
+    if preferred is None or len(preferred) != 1:
+        return None
+    family = preferred[0]
+    if not family:
+        return None
+
+    from shared.sdlc_lifecycle import TASK_ACTIVE_STATUSES
+
+    n = 0
+    family_count = 0
+    active_dir = vault_root / "active"
+    if active_dir.is_dir():
+        for path in active_dir.glob("*.md"):
+            try:
+                other = parse_fields(path)
+            except (ValueError, yaml.YAMLError, OSError):
+                continue
+            if _is_same_task(path, other, task_id):
+                continue
+            status = strip_scalar(other.get("status", "")).lower()
+            if status not in TASK_ACTIVE_STATUSES:
+                continue
+            other_pref = _preferred_platforms_of(other)
+            if not other_pref:
+                continue
+            n += 1
+            if len(other_pref) == 1 and other_pref[0] == family:
+                family_count += 1
+
+    n += 1
+    family_count += 1
+    if n < 2:
+        return None
+    cap = math.ceil(CONCENTRATION_CAP_NUMERATOR * n / CONCENTRATION_CAP_DENOMINATOR)
+    if family_count <= cap:
+        return None
+    alt = _concentration_next_class(family)
+    return (
+        f"preferred_platforms singleton [{family}] would be {family_count}/{n} of "
+        f"preferred active notes, exceeding concentration cap "
+        f"CONCENTRATION_CAP_NUMERATOR/CONCENTRATION_CAP_DENOMINATOR "
+        f"({CONCENTRATION_CAP_NUMERATOR}/{CONCENTRATION_CAP_DENOMINATOR}, ceil={cap}); "
+        f"next action: omit preferred_platforms or use a live class such as {alt} "
+        f"(not claude/codex while they are in family-outage)"
+    )
+
+
+def route_metadata_blocker(
+    fields: dict[str, Any],
+    *,
+    vault_root: Path | None = None,
+    task_id: str | None = None,
+) -> str | None:
     values = metadata_payload(fields)
     missing = [
         key
@@ -195,7 +316,12 @@ def route_metadata_blocker(fields: dict[str, Any]) -> str | None:
         return f"route_metadata_schema: invalid value {strip_scalar(schema)!r}"
     if quality_floor == "frontier_review_required" and authority_level == "authoritative":
         return "frontier_review_required artifacts cannot be authoritative directly"
-    return None
+    walled = singleton_walled_carrier_blocker(fields)
+    if walled:
+        return walled
+    if vault_root is None or task_id is None:
+        return None
+    return preferred_platforms_concentration_blocker(fields, vault_root=vault_root, task_id=task_id)
 
 
 def metadata_payload(fields: dict[str, Any]) -> dict[str, Any]:
@@ -250,7 +376,114 @@ def rewrite_note(
     timestamp: str,
     task_id: str,
     dry_run: bool,
+    vault_root: Path,
+) -> int:
+    from shared.task_note_lock import TaskNoteLockError
+
+    # Read and write together under the projection lock: this note is a path
+    # coord_projection relocates transactionally, and a promotion landing between its
+    # preimage pin and its install is counted by the safety check and then destroyed.
+    try:
+        return _promote_under_lock(
+            path=path,
+            status=status,
+            route_changes=route_changes,
+            timestamp=timestamp,
+            task_id=task_id,
+            dry_run=dry_run,
+            vault_root=vault_root,
+        )
+    except TaskNoteLockError as exc:
+        # An operator-facing refusal, not a crash: executive_function requires the message
+        # to carry its own next action, and a traceback carries the stack instead.
+        print(f"cc-task-offer-ready: REFUSED — {exc}", file=sys.stderr)
+        return 3
+
+
+def _promote_under_lock(
+    *,
+    path: Path,
+    status: str,
+    route_changes: dict[str, str],
+    timestamp: str,
+    task_id: str,
+    dry_run: bool,
+    vault_root: Path,
+) -> int:
+    from shared.task_note_lock import projected_path_lock
+
+    with projected_path_lock(task_id, (path,)):
+        # Re-resolve under the lock: the path was found before the lock existed, and a
+        # transition relocating this note in that window would leave us holding a lock
+        # on a name that no longer refers to it. Locking a stale path is not locking
+        # the note. Siblings (cc-stage-advance, cc-scope-widen, cc-task-repair) re-run
+        # _find_note here; locate_task is this writer's equivalent.
+        current_path = locate_task(vault_root, task_id)
+        if current_path is None or current_path != path:
+            print(
+                f"cc-task-offer-ready: '{task_id}' moved while acquiring its lock "
+                f"({path} -> {current_path}); rerun to act on its current position",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            current = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            print(
+                f"cc-task-offer-ready: '{task_id}' moved while acquiring its lock "
+                f"({path} -> missing); rerun to act on its current position",
+                file=sys.stderr,
+            )
+            return 2
+        # The readiness verdict was computed from a scan taken before this lock existed.
+        # Re-derive the part of it that another writer can invalidate: a note claimed in that
+        # window would otherwise be overwritten back to offered/unassigned by a stale verdict,
+        # which is the lost update the lock exists to prevent, moved up from the bytes to the
+        # decision about them. Locking only the write does not reach it.
+        assignee = re.search(r"^assigned_to:\s*(\S+)", current, re.M)
+        if assignee and not is_claimable_assignee(assignee.group(1)):
+            print(
+                f"cc-task-offer-ready: '{task_id}' was claimed by {assignee.group(1)} while "
+                "acquiring its lock — not promoting; rerun once it is unassigned",
+                file=sys.stderr,
+            )
+            return 4
+        status_now = re.search(r"^status:\s*(\S+)", current, re.M)
+        if status_now and status_now.group(1) not in ("ready", status):
+            print(
+                f"cc-task-offer-ready: '{task_id}' moved to status "
+                f"{status_now.group(1)} while acquiring its lock — not promoting",
+                file=sys.stderr,
+            )
+            return 4
+        try:
+            _rewrite_note_locked(
+                path=path,
+                status=status,
+                route_changes=route_changes,
+                timestamp=timestamp,
+                dry_run=dry_run,
+            )
+        except FileNotFoundError:
+            print(
+                f"cc-task-offer-ready: '{task_id}' moved while acquiring its lock "
+                f"({path} -> missing); rerun to act on its current position",
+                file=sys.stderr,
+            )
+            return 2
+        return 0
+
+
+def _rewrite_note_locked(
+    *,
+    path: Path,
+    status: str,
+    route_changes: dict[str, str],
+    timestamp: str,
+    dry_run: bool,
 ) -> None:
+    """The read-modify-write itself. Called only with the projection lock held."""
+
     text = path.read_text(encoding="utf-8")
     lines, suffix = split_frontmatter(text)
     replace_or_insert_scalar(lines, "status", status)
@@ -329,7 +562,7 @@ def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
         "assigned_to": "unassigned",
         "claimed_at": normalized_fields.get("claimed_at"),
     }
-    route_blocker = route_metadata_blocker(candidate_fields)
+    route_blocker = route_metadata_blocker(candidate_fields, vault_root=vault_root, task_id=task_id)
     if route_blocker:
         print(
             f"cc-task-offer-ready: refusing task '{task_id}' because route metadata is not "
@@ -339,14 +572,17 @@ def promote(task_id: str, *, vault_root: Path, dry_run: bool) -> int:
         return 7
 
     timestamp = now_utc()
-    rewrite_note(
+    rc = rewrite_note(
         path=task_path,
         status="offered",
         route_changes=route_changes,
         timestamp=timestamp,
         task_id=task_id,
         dry_run=dry_run,
+        vault_root=vault_root,
     )
+    if rc != 0:
+        return rc
     normalized = ""
     if route_changes:
         fields_text = ", ".join(f"{key}={value}" for key, value in sorted(route_changes.items()))

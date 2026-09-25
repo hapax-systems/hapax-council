@@ -3,33 +3,22 @@
 
 set -euo pipefail
 
-pass_first_line() {
-  local name="$1"
-  command -v pass >/dev/null 2>&1 || return 1
-  pass show "$name" 2>/dev/null | sed -n '1p'
-}
-
-load_first_available_pass_secret() {
-  local env_name="$1"
-  shift
-  [ -n "${!env_name:-}" ] && return 0
-  local entry value
-  for entry in "$@"; do
-    value="$(pass_first_line "$entry" || true)"
-    if [ -n "$value" ]; then
-      export "$env_name=$value"
-      return 0
-    fi
-  done
-  return 1
-}
+# Secrets come from the FileStore through the one shared helper, never from pass.
+# Operator ruling 2026-09-16: pass and gopass are not used to manage secrets going forward.
+# The installed entry points are ~/.local/bin symlinks into the release tree, and BASH_SOURCE is
+# the symlink path — so the lib lives beside the TARGET and must be resolved first (measured:
+# invoked through the symlink, `${BASH_SOURCE[0]%/*}/lib` was ~/.local/bin/lib, absent, rc=1).
+# /usr/bin/readlink by absolute path keeps this independent of PATH; the fallback keeps a host
+# without coreutils on the direct-invocation behaviour rather than dying here.
+_hapax_self="$(/usr/bin/readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+. "${_hapax_self%/*}/lib/secret.sh"
 
 LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/mcp-logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/context7-mcp.log"
 
-load_first_available_pass_secret CONTEXT7_API_KEY context7/api-key || {
-  echo "hapax-context7-mcp: no token found in CONTEXT7_API_KEY or pass:context7/api-key" >&2
+hapax_secret_into CONTEXT7_API_KEY context7/api-key || {
+  echo "hapax-context7-mcp: no token found. Next action: put one with \`hapax-secret context7/api-key\`, or export CONTEXT7_API_KEY." >&2
   exit 2
 }
 

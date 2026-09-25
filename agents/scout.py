@@ -669,8 +669,8 @@ async def main() -> None:
     configure_logging(agent="scout")
 
     if not load_tavily_api_key() and not args.dry_run:
-        print("Error: TAVILY_API_KEY not set and not found in pass store", file=sys.stderr)
-        print("Set TAVILY_API_KEY or run: pass insert tavily/api-key", file=sys.stderr)
+        print("Error: TAVILY_API_KEY not set and not found in the FileStore", file=sys.stderr)
+        print("Set TAVILY_API_KEY or put tavily/api-key with hapax-secret", file=sys.stderr)
         sys.exit(1)
 
     report = await run_scout(

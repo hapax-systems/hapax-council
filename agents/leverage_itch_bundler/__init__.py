@@ -213,7 +213,7 @@ def render_dry_run_report(manifest: BundleManifest) -> str:
             "## Re-run with --commit",
             "",
             "Re-run with `--commit` after the operator runs",
-            "`pass insert itch/butler-token` (one-time bootstrap).",
+            "the one-time put of itch/butler-token with hapax-secret.",
             "",
         ]
     )

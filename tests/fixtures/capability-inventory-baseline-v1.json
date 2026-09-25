@@ -1,5 +1,5 @@
 {
-  "count": 179,
+  "count": 180,
   "fingerprints": {
     "agy.review.direct": "623fdb606d2fa7c7f92b969e951a1367fe58d06a46c57c29ac91402457eeaa6b",
     "anthropic_web_search": "4a84a85c58c98dd5a2a4f10dea7886e399d98ed37b8822b7f956e9577c9d3db0",
@@ -61,7 +61,7 @@
     "claude.headless.sonnet": "16024fc88078a86b102f64b54e6b1c6c89867a3ac18c431fcfc6761594e71d7a",
     "claude.interactive.full": "c760e46d6418c7171c37c9d155ee64831e1c2b017a5d746c40a51b9b834696b1",
     "claude.review.opus": "8590592522318dfb61fed1ab6502f65c94cf4d2adea71fab26ceae64d978a594",
-    "codex.headless.full": "dbfe91cb13cdb3586c721f56d822fe842fbb66757bda7dfc788c32eddd7544c0",
+    "codex.headless.full": "c06c1f61d85732d97c771aa44c24ebfa646d5f9fdd1521904d7f2a9ed1096c71",
     "codex.headless.spark": "eeb0b7930170431828acafc4c9b93dec3e8f7742a77f6029738a871827e4d17e",
     "context7.query_docs": "9d549b7c27612a8f8e47c6205a143d3a5b16f5b6b36cf2304a99bdd183f20fde",
     "context7.resolve_library_id": "e3fd627e68c33fb77a248d015ba13775b539a16067786ed02325225269808ade",
@@ -91,6 +91,7 @@
     "hapax.query": "da4cd98ea9d984cc67c44feec03edb65229d178b9e2961ff1328b1e9f725a1b5",
     "hapax.scout_decide": "934e8b1b15563035043cf06af1bc49b94926f2920ff19e939cd0b012fa5aefe4",
     "hapax.working_mode_set": "54be32550b962a9fc2f75946e3b9b6ad75f51645d733bd24affc0287c05e1de4",
+    "kimi.interactive.lane": "6cf186a02aa4a4c4f6a30d0fbdd29cb835069b069c0be2a1172f6665606ae859",
     "litellm.appendix-fast": "d22514d523ac34dcac730380506726047c651f514a7000f201f36854312a18f4",
     "litellm.balanced": "26daa9826e54a94452467d2673eea3619dc41ca5fd7a42f456460eadcd3610b9",
     "litellm.coding": "3be0dcaf556c3160e8a5ce3d5eeca56d910ab916492c0f29fb06f57185bfbe59",

@@ -11,7 +11,7 @@ shaped: ``IsRequiredBy`` to the target surface's hypothetical deposit,
 ``IsObsoletedBy`` to sibling refusal DOIs) so the deposit participates
 in the DataCite citation graph.
 
-Cred-arrival path: when ``zenodo/api-token`` arrives in pass-store
+Cred-arrival path: when ``zenodo/api-token`` arrives in the FileStore
 (now confirmed live this cycle), the daemon can mint deposits. Until
 ``--commit`` is explicitly passed, the daemon stays in dry-run.
 
@@ -23,8 +23,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -32,6 +30,7 @@ from agents.publication_bus.refusal_brief_publisher import (
     RefusedTaskSummary,
     scan_refused_cc_tasks,
 )
+from shared.secrets import get_secret
 
 log = logging.getLogger(__name__)
 
@@ -40,23 +39,12 @@ DEFAULT_VAULT_BASE = Path.home() / "Documents/Personal/20-projects/hapax-cc-task
 ZENODO_PASS_KEY = "zenodo/api-token"
 
 
-def _read_pass_value(key: str) -> str | None:
-    """Return the pass-store value for ``key``, or None if absent / no pass binary."""
-    if not shutil.which("pass"):
+def _read_secret_value(key: str) -> str | None:
+    """The first line of the secret named ``key``, or ``None`` if absent (never pass)."""
+    value = get_secret(key, required=False)
+    if not value or not value.strip():
         return None
-    try:
-        result = subprocess.run(
-            ["pass", "show", key],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip().splitlines()[0] if result.stdout.strip() else None
+    return value.strip().splitlines()[0]
 
 
 def scan_all_refused(vault_base: Path = DEFAULT_VAULT_BASE) -> list[RefusedTaskSummary]:
@@ -126,10 +114,10 @@ def main(argv: list[str] | None = None) -> int:
     summaries = scan_all_refused(args.vault_base)
 
     if args.commit:
-        token = _read_pass_value(ZENODO_PASS_KEY)
+        token = _read_secret_value(ZENODO_PASS_KEY)
         if not token:
             print(
-                f"# ABORT — {ZENODO_PASS_KEY} not in pass-store. Run cred-provisioner first.",
+                f"# ABORT — {ZENODO_PASS_KEY} not in the FileStore. Run cred-provisioner first.",
                 file=sys.stderr,
             )
             return 2

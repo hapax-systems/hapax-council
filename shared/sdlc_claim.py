@@ -9,12 +9,14 @@ activation files are published only after that receipt exists.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import json
 import os
 import re
 import secrets
+import shutil
 import stat
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -52,7 +54,11 @@ from shared.execution_admission import (
     require_admitted_execution_lease,
 )
 from shared.frontmatter import parse_frontmatter_with_diagnostics
-from shared.sdlc_lifecycle import TASK_CLAIMABLE_STATUSES, TASK_RESUMABLE_STATUSES
+from shared.sdlc_lifecycle import (
+    TASK_CLAIMABLE_STATUSES,
+    TASK_RESUMABLE_STATUSES,
+    TASK_TERMINAL_STATUSES,
+)
 from shared.sdlc_task_store import (
     ClaimDispatchBinding,
     ClaimLeaseSnapshot,
@@ -62,6 +68,7 @@ from shared.sdlc_task_store import (
     load_claim_dispatch_binding,
     resolve_task_note,
 )
+from shared.task_note_lock import held_by_current_thread, projected_path_lock
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -1567,6 +1574,15 @@ class ClaimPublicationRecoveryResult:
 
 
 @dataclass(frozen=True)
+class ClaimActivationRehydrationResult(ClaimPublicationRecoveryResult):
+    """Cache repair observations, without a new claim or issuance timestamp."""
+
+    detail: str = ""
+    written_paths: tuple[Path, ...] = ()
+    observed_before: tuple[tuple[Path, Literal["absent"]], ...] = ()
+
+
+@dataclass(frozen=True)
 class ClaimPublicationInspection:
     """Self-hashed, non-authorizing estate observation at one bounded frontier."""
 
@@ -2421,6 +2437,21 @@ def _claim_publication_lock(
     *,
     lock_root: Path | None,
 ) -> Iterator[None]:
+    # Direction, checked at the moment of use. This lock takes a projected-path lock INSIDE
+    # it, so a caller that already holds one and asks for this is hold-and-wait across two
+    # lock domains: it would sit on the role lock while a publisher on the other side sits on
+    # its note. Both waits are bounded, so the failure is mutual refusal rather than a wedge —
+    # but "bounded" is not "safe", and a count of acquisition sites cannot see this shape at
+    # all, because it needs no new site: an existing note-holder calling onward into claim
+    # publication is enough. Refuse before opening anything.
+    held = held_by_current_thread()
+    if held:
+        raise ClaimPublicationError(
+            "claim_publication_lock_order_inversion",
+            "release the projected-path lock before publishing a claim; the role lock is "
+            "taken first and the note lock inside it, never the reverse",
+            ", ".join(f"{lock_root_}:{name}" for lock_root_, name in held),
+        )
     root = _lock_root(lock_root)
     _ensure_claim_private_directory(root)
     digest = _claim_publication_role_lock_digest(intent.role)
@@ -2465,7 +2496,18 @@ def _claim_publication_lock(
                         str(path),
                     ) from exc
                 time.sleep(_CLAIM_PUBLICATION_LOCK_RETRY_SECONDS)
-        yield
+        # The role lock above serializes one role's publications against each other. It does
+        # NOT exclude a lifecycle transition over this task's note: it is keyed by the role,
+        # not by the note, and it lives under a different root. So the publication's
+        # _apply_projections calls — which take no lock of their own — could land between a
+        # transition's preimage pin and its atomic install. Take the projection lock too.
+        #
+        # Order is role-then-note, always. One direction only means no cycle — and the
+        # direction is enforced at the top of this function, not inferred from the number of
+        # places the role lock is taken: the guard refuses when the calling thread already holds
+        # any projected-path lock. tests/shared/test_task_note_lock.py drives both orders.
+        with projected_path_lock(intent.task_id, (intent.note_path,)):
+            yield
     finally:
         if locked:
             try:
@@ -4877,6 +4919,32 @@ def _content_address_for_file(path: Path, content: bytes) -> ContentAddress:
 
 
 _CLAIM_PUBLICATION_DIRECTORY_RE = re.compile(r"^claim-pub-[0-9a-f]{64}$")
+#: A journal an operator has already quarantined in place.
+#:
+#: Deliberately tolerant after the suffix, because **no code in this estate
+#: produces this name.** Every "quarantine …" string in this module and in
+#: ``coord_projection`` is a *repair action* addressed to a person, so the suffix
+#: is a hand-applied convention and the four journals on disk carry three
+#: different shapes (``.quarantined-20260821``, ``.quarantined-20260905T0041Z``,
+#: ``.quarantined-20260913T205924Z``). A regex pinning any one timestamp grammar
+#: would leave the others holding forever, so this matches the marker and not the
+#: stamp. Tightening it requires first giving the estate a quarantine *verb* —
+#: filed separately, not assumed here.
+#:
+#: "No code produces this name" is the SOLE rationale for a deliberately loose pattern that
+#: skips inspection, so it is recheckable rather than asserted. From the repo root::
+#:
+#:     rg -n 'quarantined-' --glob '!*.md' -- scripts shared agents hooks
+#:
+#: Expected as of 2026-09-15, and stated so the output DECIDES something rather than merely
+#: printing: four hits in this file (this comment and the pattern itself) plus exactly one
+#: unrelated hit, ``scripts/hapax-audio-topology`` returning the audio-domain constant
+#: ``"quarantined-declared-inactive"``. **No hit renames, creates or otherwise emits a
+#: ``claim-pub-<sha>.quarantined-<stamp>`` directory.** If that ever changes, this pattern can
+#: and should be tightened to the grammar the new producer emits.
+_CLAIM_PUBLICATION_QUARANTINED_DIRECTORY_RE = re.compile(
+    r"^claim-pub-[0-9a-f]{64}\.quarantined-\S+$"
+)
 _CLAIM_PUBLICATION_BLOB_RE = re.compile(r"^[0-9]{4}\.(?:before|after)$")
 _MAX_CLAIM_PUBLICATIONS = 4096
 _MAX_CLAIM_JOURNAL_CHILDREN = 32
@@ -5035,6 +5103,16 @@ def _capture_claim_journals(
     root_frontier = (listing, _directory_address(directory))
     for name in names:
         if _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(name) is None:
+            if _CLAIM_PUBLICATION_QUARANTINED_DIRECTORY_RE.fullmatch(name) is not None:
+                # An already-quarantined journal is the completed remedy, not an
+                # unknown entry. Holding on it prescribed "quarantine every entry
+                # outside the exact grammar" — the very act that produced this
+                # name — so the hold demanded its own cause and could only be
+                # cleared by moving the journal out of the scan root by hand
+                # (measured 2026-09-13: cx-p0 had to do exactly that). The names
+                # stay in the content-addressed listing above, so skipping the
+                # hold drops the verdict, not the evidence.
+                continue
             entries.append(
                 _ClaimJournalCaptureFailure(
                     name,
@@ -5628,6 +5706,422 @@ def inspect_claim_publications(
     return tuple(draft.materialize(seal=seal, observed_at=observed_at) for draft in drafts)
 
 
+def _activation_install_error(
+    exc: LifecycleTransitionError | OSError,
+    *,
+    failed_path: Path,
+    written_paths: Sequence[Path],
+    attempted_paths: Sequence[Path],
+) -> ClaimPublicationError:
+    # The projection layer can wrap a syscall failure in a parent/path refusal.
+    # Preserve the actual errno instead of misreporting it as a competing claim.
+    cause: BaseException | None = exc
+    while cause is not None and not isinstance(cause, OSError):
+        cause = cause.__cause__
+    if isinstance(exc, LifecycleTransitionError):
+        reason = exc.reason_code
+        remedy = exc.repair_action
+        failure_reason = reason
+        if reason == "transition_precondition_changed":
+            reason = "claim_activation_cache_conflict"
+            remedy = "preserve the activation cache and retry after the named path stabilizes"
+    else:
+        reason = "claim_activation_cache_filesystem_error"
+        remedy = "repair the named filesystem operation, preserve retained effects, then retry"
+        failure_reason = "OSError"
+    if isinstance(cause, OSError) and not (
+        isinstance(exc, LifecycleTransitionError)
+        and exc.reason_code
+        in {"transition_precondition_changed", "transition_atomic_cas_unavailable"}
+    ):
+        failure_reason = errno.errorcode.get(cause.errno, "UNKNOWN_ERRNO")
+        reason = f"claim_activation_cache_{failure_reason.lower()}"
+        remedy = {
+            errno.ENOSPC: "free space on the named filesystem, preserve retained effects, then retry",
+            errno.EIO: "repair the named filesystem's I/O failure, preserve retained effects, then retry",
+            errno.EACCES: "restore access to the named path, preserve retained effects, then retry",
+            errno.EPERM: "restore permission for the named operation, preserve retained effects, then retry",
+            errno.ENOTDIR: "restore real parent directories for the named path, preserve retained effects, then retry",
+        }.get(
+            cause.errno,
+            "repair the named filesystem operation, preserve retained effects, then retry",
+        )
+
+    # These are observations, not ownership claims. A rename may have succeeded
+    # before fsync/readback failed, or a concurrent writer may now own the entry.
+    # Never roll back: even previously installed paths may have changed hands.
+    retained: dict[str, str] = {}
+    for path in dict.fromkeys((*written_paths, *attempted_paths)):
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as observation_error:
+            retained[str(path)] = "unverified:" + errno.errorcode.get(
+                observation_error.errno, "UNKNOWN_ERRNO"
+            )
+        else:
+            retained[str(path)] = "present; ownership not inferred"
+    return ClaimPublicationError(
+        reason,
+        remedy,
+        _canonical(
+            {
+                "failed_path": str(failed_path),
+                "failure_reason": failure_reason,
+                "failure_detail": exc.detail if isinstance(exc, LifecycleTransitionError) else None,
+                "written_paths": [str(path) for path in written_paths],
+                "retained_effects": retained,
+            }
+        ).decode("ascii"),
+    )
+
+
+def _rehydrate_applied_activation(
+    manifest_path: Path,
+    expected_intent: ClaimPublicationIntent,
+    *,
+    receipt_root: Path,
+    lock_root: Path,
+) -> ClaimActivationRehydrationResult:
+    with _claim_publication_lock(expected_intent, lock_root=lock_root):
+        with ReadOnlyFsSnapshot(change_scope="observed_paths") as snapshot:
+            journal = _capture_publication_journal(snapshot, manifest_path)
+            intent, projections, publication_id, state, consumption = _load_any_manifest(
+                journal.manifest_path,
+                manifest_content=journal.manifest_content,
+                captured_blobs=journal.blobs,
+            )
+            if intent != expected_intent:
+                raise ClaimPublicationError(
+                    "claim_publication_current_identity_mismatch",
+                    "retry after the task, lease, dispatch, and publication identity stabilizes",
+                    intent.task_id,
+                )
+            if consumption is None:
+                raise ClaimPublicationError(
+                    "legacy_claim_publication_recovery_forbidden",
+                    "republish the claim through one current admitted claim-publication executor",
+                    publication_id,
+                )
+            if not isinstance(consumption, ClaimAdmissionConsumption):
+                raise ClaimPublicationError(
+                    "historical_claim_publication_recovery_forbidden",
+                    "preserve historical non-authorizing bytes and republish through the current executor",
+                    publication_id,
+                )
+            if state != "applied":
+                raise ClaimPublicationError(
+                    "claim_publication_not_applied",
+                    "recover the exact publication before rehydrating its activation cache",
+                    f"{publication_id}:{state}",
+                )
+
+            current_task = _capture_current_task_note(
+                snapshot, intent.note_path.parent.parent, intent.task_id
+            )
+            receipt_path = claim_publication_receipt_path(
+                intent.cache_dir, intent.binding, receipt_root=receipt_root
+            )
+            # Reconstruct the publisher's immutable bytes, including JSON formatting.
+            # The task note and missing activation files are deliberately excluded.
+            survivors = [
+                projection
+                for projection in projections[1:7]
+                if not _is_claim_activation_projection(projection)
+            ]
+            # Proof sources may have retired since publication. Any that survive
+            # must still be regular, exact journal projections.
+            for projection in projections[7:]:
+                parent = snapshot.pin_absolute_dir(
+                    projection.path.parent, private_final=False, allow_missing=True
+                )
+                if (
+                    parent is not None
+                    and snapshot.observe_file_at(
+                        parent,
+                        projection.path.name,
+                        private=False,
+                        max_bytes=_CLAIM_SNAPSHOT_MAX_PROJECTION_BYTES,
+                    ).captured
+                    is not None
+                ):
+                    survivors.append(projection)
+            for path, content in (
+                (
+                    manifest_path,
+                    _admitted_manifest_bytes(
+                        intent, consumption, projections, publication_id, state="applied"
+                    ),
+                ),
+                (
+                    receipt_path,
+                    _canonical(
+                        _admitted_receipt_record(intent, consumption, projections, publication_id)
+                    )
+                    + b"\n",
+                ),
+            ):
+                survivors.append(
+                    FileProjection.from_snapshot(
+                        path, before=None, before_mode=None, after=content, after_mode=0o600
+                    )
+                )
+            _require_captured_postimages(snapshot, survivors)
+            receipt_capture = _capture_receipt(snapshot, receipt_path)
+            cache = snapshot.pin_absolute_dir(intent.cache_dir, private_final=False)
+            assert cache is not None
+            captures: dict[Path, CapturedFile | None] = {}
+            missing: list[_ClaimProjectionPhaseItem] = []
+            for index, projection in enumerate(projections[1:7], start=1):
+                capture = snapshot.observe_file_at(
+                    cache,
+                    projection.path.name,
+                    private=False,
+                    max_bytes=_CLAIM_SNAPSHOT_MAX_SIDECAR_BYTES,
+                ).captured
+                captures[projection.path] = capture
+                if _is_claim_activation_projection(projection):
+                    if capture is None:
+                        missing.append(_ClaimProjectionPhaseItem(index, projection))
+                    elif (
+                        capture.content != projection.after
+                        or stat.S_IMODE(capture.stamp.mode) != projection.after_mode
+                    ):
+                        raise ClaimPublicationError(
+                            "claim_activation_cache_conflict",
+                            "preserve the conflicting activation cache and reconcile its owner before retrying",
+                            str(projection.path),
+                        )
+
+            leases: list[ClaimLeaseSnapshot] = []
+            for offset, key in zip(
+                (1, 4), (intent.role, f"{intent.role}-{intent.session_id}"), strict=True
+            ):
+                claim, epoch, dispatch = projections[offset : offset + 3]
+                epoch_capture = captures[epoch.path]
+                dispatch_capture = captures[dispatch.path]
+                assert epoch_capture is not None and dispatch_capture is not None
+                assert claim.after is not None and claim.after_mode is not None
+                binding = load_claim_dispatch_binding(
+                    dispatch.path, content=dispatch_capture.content
+                )
+                # Only the activation members are prospective. Every identity-bearing
+                # member comes from the surviving sidecars, verified above.
+                leases.append(
+                    ClaimLeaseSnapshot(
+                        claim_key=key,
+                        claim_path=claim.path,
+                        claim_content=claim.after,
+                        claim_mode=claim.after_mode,
+                        epoch_path=epoch.path,
+                        epoch_content=epoch_capture.content,
+                        epoch_mode=stat.S_IMODE(epoch_capture.stamp.mode),
+                        binding_path=dispatch.path,
+                        binding_content=dispatch_capture.content,
+                        binding_mode=stat.S_IMODE(dispatch_capture.stamp.mode),
+                        binding=binding,
+                    )
+                )
+            try:
+                _resolve_applied_captured(
+                    current_task=current_task,
+                    leases=tuple(leases),
+                    journal=journal,
+                    receipt_path=receipt_path,
+                    receipt_content=receipt_capture.content,
+                    receipt_mode=stat.S_IMODE(receipt_capture.stamp.mode),
+                )
+            except ClaimPublicationError as exc:
+                if exc.reason_code == "claim_publication_current_task_identity_mismatch":
+                    raise ClaimPublicationError(
+                        "claim_publication_current_identity_mismatch",
+                        exc.repair_action,
+                        exc.detail,
+                    ) from exc
+                raise
+            snapshot.seal()
+
+        if not missing:
+            return ClaimActivationRehydrationResult(
+                publication_id, "noop", detail="both activation projections already exact"
+            )
+        activation = _phase_projections(missing)
+        scratches = _phase_scratches(missing, publication_id)
+        written: list[Path] = []
+        attempted: list[Path] = []
+
+        def installed(phase: str, index: int | None) -> None:
+            if phase == "after_projection":
+                written.append(projection.path)
+
+        for projection, scratch in zip(activation, scratches, strict=True):
+            attempted.extend((projection.path, scratch.path))
+            try:
+                _apply_projections((projection,), (scratch,), installed)
+                _finalize_applied_scratches((projection,), (scratch,))
+            except (LifecycleTransitionError, OSError) as exc:
+                raise _activation_install_error(
+                    exc,
+                    failed_path=projection.path,
+                    written_paths=written,
+                    attempted_paths=attempted,
+                ) from exc
+        paths = tuple(projection.path for projection in activation)
+        return ClaimActivationRehydrationResult(
+            publication_id,
+            "rehydrated",
+            detail=", ".join(f"{path}: absent -> restored" for path in paths),
+            written_paths=paths,
+            observed_before=tuple((path, "absent") for path in paths),
+        )
+
+
+def rehydrate_applied_activation_projections(
+    *,
+    cache_dir: Path,
+    transaction_root: Path,
+    receipt_root: Path,
+    lock_root: Path,
+    task_id: str,
+) -> tuple[ClaimActivationRehydrationResult, ...]:
+    """Restore only absent activation caches of an already-applied admitted claim.
+
+    The role lock and original CAS projection installer are the publication's.
+    Surviving sidecars retain authority; note evolution does not issue a claim.
+    """
+
+    if (
+        not task_id.strip()
+        or task_id != task_id.strip()
+        or "/" in task_id
+        or task_id in {".", ".."}
+    ):
+        raise ClaimPublicationError("task_id_invalid", "use one non-path task identifier", task_id)
+    cache = _normalized(cache_dir)
+    root = _manifest_root(transaction_root, cache)
+    candidates = {}
+    observations: dict[str, ClaimActivationRehydrationResult] = {}
+    refusals: dict[str, ClaimPublicationError] = {}
+    try:
+        with ReadOnlyFsSnapshot(change_scope="observed_paths") as snapshot:
+            directory = snapshot.pin_absolute_dir(root, private_final=True, allow_missing=True)
+            names = snapshot.list_names(directory) if directory is not None else ()
+            if len(names) > _MAX_CLAIM_PUBLICATIONS:
+                raise ClaimPublicationError(
+                    "claim_publication_journal_entry_limit",
+                    "restore the bounded claim-publication journal set",
+                    str(root),
+                )
+            snapshot.seal()
+        # A retained journal's failure must not poison another journal's snapshot
+        # or trigger a repair before the current receipt has selected its owner.
+        for name in sorted(names):
+            if _CLAIM_PUBLICATION_DIRECTORY_RE.fullmatch(name) is None:
+                continue
+            try:
+                with ReadOnlyFsSnapshot(change_scope="observed_paths") as snapshot:
+                    journal = _capture_publication_journal(snapshot, root / name / "manifest.json")
+                    intent, projections, publication_id, state, consumption = _load_any_manifest(
+                        journal.manifest_path,
+                        manifest_content=journal.manifest_content,
+                        captured_blobs=journal.blobs,
+                    )
+                    snapshot.seal()
+                if intent.task_id != task_id:
+                    continue
+                observations[name] = ClaimActivationRehydrationResult(
+                    publication_id,
+                    state,
+                    "claim_publication_not_current",
+                    detail=(
+                        "preserved non-current journal; journal_reason_code:"
+                        f"{json.loads(journal.manifest_content).get('reason_code')}"
+                    ),
+                )
+                candidates[name] = (journal.manifest_path, intent)
+                with ReadOnlyFsSnapshot(change_scope="observed_paths") as snapshot:
+                    if intent.cache_dir != cache:
+                        raise ClaimPublicationError(
+                            "claim_publication_current_identity_mismatch",
+                            "use the cache root declared by the exact applied publication",
+                            task_id,
+                        )
+                    if consumption is None:
+                        raise ClaimPublicationError(
+                            "legacy_claim_publication_recovery_forbidden",
+                            "republish the claim through one current admitted claim-publication executor",
+                            publication_id,
+                        )
+                    if not isinstance(consumption, ClaimAdmissionConsumption):
+                        raise ClaimPublicationError(
+                            "historical_claim_publication_recovery_forbidden",
+                            "preserve historical non-authorizing bytes and republish through the current executor",
+                            publication_id,
+                        )
+                    # All four surviving identity sidecars AND the immutable
+                    # receipt must name this publication, before any CAS runs.
+                    survivors = [
+                        projection
+                        for projection in projections[1:7]
+                        if not _is_claim_activation_projection(projection)
+                    ]
+                    survivors.append(
+                        FileProjection.from_snapshot(
+                            claim_publication_receipt_path(
+                                cache, intent.binding, receipt_root=receipt_root
+                            ),
+                            before=None,
+                            before_mode=None,
+                            after=_canonical(
+                                _admitted_receipt_record(
+                                    intent, consumption, projections, publication_id
+                                )
+                            )
+                            + b"\n",
+                            after_mode=0o600,
+                        )
+                    )
+                    _require_captured_postimages(snapshot, survivors)
+                    snapshot.seal()
+            except (ClaimPublicationError, ReadOnlySnapshotError, TaskStoreError) as exc:
+                refusals[name] = ClaimPublicationError(
+                    exc.reason_code, exc.repair_action, exc.detail
+                )
+                if name not in observations:
+                    observations[name] = ClaimActivationRehydrationResult(
+                        name, "unreadable", exc.reason_code, detail=str(refusals[name])
+                    )
+        selected = [name for name in candidates if name not in refusals]
+        if not selected:
+            if refusals:
+                raise refusals[sorted(refusals)[0]]
+            raise ClaimPublicationError(
+                "claim_publication_not_found",
+                "restore the task's admitted applied journal before rehydrating its activation cache",
+                task_id,
+            )
+        if len(selected) != 1:
+            raise ClaimPublicationError(
+                "claim_publication_current_identity_mismatch",
+                "retain one current lease vector and its exact applied publication receipt",
+                ",".join(sorted(selected)),
+            )
+        current = selected[0]
+        path, intent = candidates[current]
+        observations[current] = _rehydrate_applied_activation(
+            path,
+            intent,
+            receipt_root=_normalized(receipt_root),
+            lock_root=_normalized(lock_root),
+        )
+        return tuple(observations[name] for name in sorted(observations))
+    except ReadOnlySnapshotError as exc:
+        _raise_snapshot_error(exc)
+    except TaskStoreError as exc:
+        raise ClaimPublicationError(exc.reason_code, exc.repair_action, exc.detail) from exc
+
+
 def recover_claim_publications(
     *,
     cache_dir: Path | None = None,
@@ -5669,6 +6163,149 @@ def recover_claim_publications(
     return tuple(results)
 
 
+class ClaimResidueArchiveHold(RuntimeError):
+    """Terminal dispatch-only claim residue cannot be lawfully archived."""
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+
+def _safe_lineage_component(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._:-]+", "_", value).strip("._:-")[:160] or "unknown"
+
+
+def _task_note_path_for_any_state(vault_root: Path, observed_task_id: str) -> Path | None:
+    for subdir in ("closed", "active"):
+        root = vault_root / subdir
+        exact = root / f"{observed_task_id}.md"
+        if exact.is_file():
+            return exact
+        for candidate in sorted(root.glob(f"{observed_task_id}-*.md")):
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _task_status_for_any_state(vault_root: Path, observed_task_id: str) -> str:
+    task_path = _task_note_path_for_any_state(vault_root, observed_task_id)
+    if task_path is None:
+        return "missing"
+    text = task_path.read_text(encoding="utf-8")
+    match = re.search(r"^status:[ \t]*(.*)$", text, re.MULTILINE)
+    return (match.group(1).strip() if match else "") or "unknown"
+
+
+def archive_dispatch_only_claim_residue(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    role: str,
+    session_id: str,
+    current_task_id: str,
+    observed_at: str,
+) -> list[Path]:
+    """Archive terminal dispatch-only residue into the task lineage.
+
+    Returns the archived destination paths (empty when no residue existed).
+    Raises :class:`ClaimResidueArchiveHold` when the residue belongs to a live
+    claim, another lane, or a non-terminal task — the caller holds the claim.
+    The move tolerates a cross-device cache/vault boundary (shutil.move falls
+    back to copy+unlink where os.replace raises EXDEV) and is idempotent under
+    retry after a half-applied crash: an existing lineage directory is reused,
+    an already-moved dispatch file is not moved again, and the README is
+    (re)written from the binding.
+    """
+
+    keys_to_check: set[str] = {role, f"{role}-{session_id}"}
+    role_dispatch = claim_dispatch_binding_path(cache_dir, role)
+    if role_dispatch.exists() and not (
+        (cache_dir / f"cc-active-task-{role}").exists()
+        or (cache_dir / f"cc-claim-epoch-{role}").exists()
+    ):
+        try:
+            role_binding = load_claim_dispatch_binding(role_dispatch)
+        except TaskStoreError:
+            role_binding = None
+        if role_binding is not None:
+            keys_to_check.add(f"{role}-{role_binding.session_id}")
+
+    dispatch_only: list[tuple[str, Path, ClaimDispatchBinding]] = []
+    for claim_key in sorted(keys_to_check):
+        dispatch_path = claim_dispatch_binding_path(cache_dir, claim_key)
+        claim_path = cache_dir / f"cc-active-task-{claim_key}"
+        epoch_path = cache_dir / f"cc-claim-epoch-{claim_key}"
+        if not dispatch_path.exists():
+            continue
+        if claim_path.exists() or epoch_path.exists():
+            continue
+        try:
+            binding = load_claim_dispatch_binding(dispatch_path)
+        except TaskStoreError as exc:
+            raise ClaimResidueArchiveHold(
+                f"HOLD - {exc}. Next action: restore the matching "
+                f"cc-active-task/cc-claim-epoch sidecars for {dispatch_path}, "
+                "or archive this corrupt dispatch-only residue through the "
+                "task lineage before retrying."
+            ) from exc
+        if binding.task_id == current_task_id:
+            raise ClaimResidueArchiveHold(
+                "HOLD - current task has dispatch-only claim residue "
+                f"at {dispatch_path}. Next action: restore the matching "
+                "cc-active-task and cc-claim-epoch sidecars for this admitted "
+                "claim, or run admitted recovery before retrying."
+            )
+        if binding.lane != role:
+            raise ClaimResidueArchiveHold(
+                "HOLD - dispatch-only claim residue is bound to a "
+                f"different lane at {dispatch_path}. Next action: preserve the "
+                "sidecar and ask the owning lane/operator to reconcile its "
+                "claim lineage before retrying."
+            )
+        status = _task_status_for_any_state(vault_root, binding.task_id)
+        if status not in TASK_TERMINAL_STATUSES:
+            raise ClaimResidueArchiveHold(
+                "HOLD - dispatch-only claim residue belongs to a "
+                f"non-terminal or missing task (task_id={binding.task_id}, "
+                f"status={status}). Next action: restore the matching "
+                "cc-active-task/cc-claim-epoch sidecars or close/release that "
+                "task through the governed lifecycle before retrying."
+            )
+        dispatch_only.append((claim_key, dispatch_path, binding))
+
+    if not dispatch_only:
+        return []
+
+    lineage_root = vault_root / "_lineage"
+    archived: list[Path] = []
+    for claim_key, dispatch_path, binding in dispatch_only:
+        lineage_dir = (
+            lineage_root
+            / _safe_lineage_component(binding.task_id)
+            / (
+                "closed-claim-dispatch-residue-"
+                f"{_safe_lineage_component(observed_at)}-"
+                f"{_safe_lineage_component(claim_key)}"
+            )
+        )
+        lineage_dir.mkdir(parents=True, exist_ok=True)
+        destination = lineage_dir / dispatch_path.name
+        if dispatch_path.exists():
+            shutil.move(str(dispatch_path), str(destination))
+        (lineage_dir / "README.md").write_text(
+            "Archived dispatch-only claim residue before a fresh admitted claim.\n"
+            f"task_id: {binding.task_id}\n"
+            f"claim_key: {claim_key}\n"
+            f"source: {dispatch_path}\n"
+            f"archived_at: {observed_at}\n"
+            "reason: normal close removed active/epoch sidecars but preserved "
+            "the dispatch binding spent leg.\n",
+            encoding="utf-8",
+        )
+        archived.append(destination)
+    return archived
+
+
 __all__ = [
     "ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA",
     "ADMITTED_CLAIM_PUBLICATION_SCHEMA",
@@ -5677,12 +6314,16 @@ __all__ = [
     "CLAIM_PUBLICATION_SCHEMA",
     "AppliedClaimPublicationSnapshot",
     "ClaimAdmissionConsumption",
+    "ClaimActivationRehydrationResult",
     "ClaimPublicationAdmissionProvenance",
     "ClaimPublicationError",
     "ClaimPublicationIntent",
     "ClaimPublicationInspection",
     "ClaimPublicationReceipt",
     "ClaimPublicationRecoveryResult",
+    "ClaimResidueArchiveHold",
+    "admitted_claim_publication_id",
+    "archive_dispatch_only_claim_residue",
     "admitted_claim_publication_id",
     "claim_publication_id",
     "claim_publication_mutation_scope_address",
@@ -5694,6 +6335,7 @@ __all__ = [
     "prospective_claim_publication_basis",
     "inspect_claim_publications",
     "recover_claim_publications",
+    "rehydrate_applied_activation_projections",
     "resolve_applied_claim_publication",
     "resolve_applied_claim_publication_for_task",
     "resolve_claim_publication_admission_provenance",

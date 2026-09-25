@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check-claude-md-rot — scan CLAUDE.md files for content classes that decay into noise.
+# check-claude-md-rot — scan AGENTS.md and CLAUDE.md for content that decays into noise.
 #
 # Operationalizes the rotation policy from
 # docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md.
@@ -12,7 +12,7 @@
 #   - "migration pending" / "temporary workaround"
 #
 # Usage:
-#   scripts/check-claude-md-rot.sh                 # auto-discover all CLAUDE.md under cwd
+#   scripts/check-claude-md-rot.sh                 # discover both instruction names under cwd
 #   scripts/check-claude-md-rot.sh path/to/file …  # scan explicit file(s)
 #   scripts/check-claude-md-rot.sh --quiet …       # exit code only, no output on success
 #   scripts/check-claude-md-rot.sh --strict …      # also fail on TODO/FIXME/XXX patterns
@@ -56,13 +56,13 @@ else
     mapfile -t targets < <(
         find . \
             \( -path './.git' -o -path './node_modules' -o -path './.venv' -o -path './target' -o -path './build' \) -prune \
-            -o -name CLAUDE.md -type f -print \
+            -o \( -name AGENTS.md -o -name CLAUDE.md -o -path "*/config/agent-instructions/native/*.md" -o -path "*/docs/runbooks/council-domain-context.md" \) -type f -print \
             | sort
     )
 fi
 
 if [[ ${#targets[@]} -eq 0 ]]; then
-    [[ $quiet -eq 0 ]] && echo "check-claude-md-rot: no CLAUDE.md files found" >&2
+    [[ $quiet -eq 0 ]] && echo "check-claude-md-rot: no AGENTS.md or CLAUDE.md files found" >&2
     exit 0
 fi
 
@@ -93,7 +93,7 @@ done
 if [[ $found -ne 0 ]]; then
     if [[ $quiet -eq 0 ]]; then
         echo
-        echo "CLAUDE.md rotation policy violations found." >&2
+        echo "Agent instruction rotation policy violations found." >&2
         echo "See docs/superpowers/specs/2026-04-13-claude-md-excellence-design.md" >&2
     fi
     exit 1

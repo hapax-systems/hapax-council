@@ -25,22 +25,23 @@ class TestRegistryShape:
     def test_every_entry_has_remediation(self) -> None:
         for entry in EXPECTED_ENTRIES:
             assert entry.remediation, f"entry {entry.name} has empty remediation"
-            assert "pass insert" in entry.remediation, (
-                f"entry {entry.name} remediation must use 'pass insert' form"
+            assert "hapax-secret" in entry.remediation, (
+                f"entry {entry.name} remediation must name the hapax-secret put dialogue"
             )
+            assert "pass insert" not in entry.remediation
 
-    def test_remediation_is_exactly_pass_insert_with_entry_name(self) -> None:
-        """Remediation must be exactly ``pass insert <entry_name>`` — no
-        sample values, partial fingerprints, example tokens, or any other
-        material that could leak credential shape. The contract is
-        verified by string equality against the entry name, which
-        forbids any extra payload by construction.
-        """
+    def test_remediation_is_exactly_the_one_put_instruction(self) -> None:
+        """Remediation is derived from the entry name through the single estate helper —
+        no hand-written command per entry, so it cannot drift from how a secret is put."""
+        from shared.secrets import put_instruction
+
         for entry in EXPECTED_ENTRIES:
-            expected = f"pass insert {entry.name}"
-            assert entry.remediation == expected, (
-                f"entry {entry.name} remediation {entry.remediation!r} != {expected!r}"
-            )
+            assert entry.remediation == put_instruction(entry.name)
+
+    def test_names_are_blob_names_as_hapax_secret_lists_them(self) -> None:
+        for entry in EXPECTED_ENTRIES:
+            assert "/" not in entry.name, entry.name
+            assert entry.name == entry.name.strip().lower()
 
     def test_every_entry_has_at_least_one_unblock(self) -> None:
         for entry in EXPECTED_ENTRIES:
@@ -56,9 +57,9 @@ class TestRegistryShape:
 
 class TestLookup:
     def test_known_entry(self) -> None:
-        result = lookup("api/anthropic")
+        result = lookup("api-anthropic")
         assert isinstance(result, ExpectedEntry)
-        assert result.name == "api/anthropic"
+        assert result.name == "api-anthropic"
 
     def test_unknown_entry_returns_none(self) -> None:
         assert lookup("nonexistent/entry") is None
@@ -69,17 +70,17 @@ class TestServicesUnblockedBy:
         assert services_unblocked_by(frozenset()) == frozenset()
 
     def test_known_entry_yields_its_unblocks(self) -> None:
-        services = services_unblocked_by(frozenset({"orcid/orcid"}))
+        services = services_unblocked_by(frozenset({"orcid-orcid"}))
         assert "hapax-orcid-verifier.timer" in services
         assert "hapax-datacite-mirror.timer" in services
 
     def test_unknown_entry_is_skipped_silently(self) -> None:
-        services = services_unblocked_by(frozenset({"nonexistent/entry", "orcid/orcid"}))
+        services = services_unblocked_by(frozenset({"nonexistent/entry", "orcid-orcid"}))
         assert "hapax-orcid-verifier.timer" in services
 
     def test_multiple_entries_compose_unblock_sets(self) -> None:
         services = services_unblocked_by(
-            frozenset({"orcid/orcid", "ia/access-key", "ia/secret-key"})
+            frozenset({"orcid-orcid", "ia-access-key", "ia-secret-key"})
         )
         assert "hapax-orcid-verifier.timer" in services
         assert "internet-archive-ias3-publisher" in services
@@ -87,18 +88,18 @@ class TestServicesUnblockedBy:
 
 class TestCategorize:
     def test_categorize_returns_present_and_missing_per_category(self) -> None:
-        present = frozenset({"api/anthropic"})
-        missing = frozenset({"orcid/orcid", "zenodo/api-token"})
+        present = frozenset({"api-anthropic"})
+        missing = frozenset({"orcid-orcid", "zenodo-api-token"})
         views = categorize(present, missing)
         by_cat = {v.category: v for v in views}
         assert "infra" in by_cat
-        assert "api/anthropic" in by_cat["infra"].present
+        assert "api-anthropic" in by_cat["infra"].present
         assert "publication" in by_cat
-        assert "zenodo/api-token" in by_cat["publication"].missing
+        assert "zenodo-api-token" in by_cat["publication"].missing
 
 
 class TestExpectedEntryNames:
     def test_returns_frozenset(self) -> None:
         result = expected_entry_names()
         assert isinstance(result, frozenset)
-        assert "api/anthropic" in result
+        assert "api-anthropic" in result
