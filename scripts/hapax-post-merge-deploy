@@ -597,6 +597,10 @@ def verify_distribution_record(
             refuse(f"runtime-authority dependency RECORD digest is malformed: {name}: {exc}")
         if len(expected_digest) != hashlib.sha256().digest_size:
             refuse(f"runtime-authority dependency RECORD digest has the wrong size: {name}")
+        # Wheel RECORD hashes are unpadded urlsafe base64; re-encoding also rejects nonzero pad bits.
+        canonical_digest = base64.urlsafe_b64encode(expected_digest).rstrip(b"=").decode("ascii")
+        if canonical_digest != encoded_digest:
+            refuse(f"runtime-authority dependency RECORD digest is noncanonical: {name}")
         try:
             fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
             try:
