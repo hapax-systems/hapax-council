@@ -25,7 +25,6 @@ REQUIRED_PROVIDER_ADAPTERS = frozenset(
         "anthropic_web_search",
         "gemini_google_search",
         "gemini_deep_research",
-        "perplexity_search_or_sonar",
     }
 )
 

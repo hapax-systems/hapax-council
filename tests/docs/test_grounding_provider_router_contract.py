@@ -62,7 +62,6 @@ def test_schemas_configs_and_required_adapter_ids_are_parseable() -> None:
         "anthropic_web_search",
         "gemini_google_search",
         "gemini_deep_research",
-        "perplexity_search_or_sonar",
     }
 
 

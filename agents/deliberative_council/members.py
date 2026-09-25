@@ -29,7 +29,6 @@ MODEL_TOOL_LEVELS: dict[str, ToolLevel] = {
     "balanced": ToolLevel.FULL,
     "gemini-3-pro": ToolLevel.FULL,
     "local-fast": ToolLevel.RESTRICTED,
-    "web-research": ToolLevel.FULL,
     "mistral-large": ToolLevel.FULL,
 }
 

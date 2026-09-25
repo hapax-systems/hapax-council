@@ -73,12 +73,9 @@ class GroundingEvidenceEnvelope(BaseModel):
     retrieved_at: str = ""
 
 
-_MODEL_ALIAS_TO_ID = {
-    "web-scout": "sonar",
-    "web-research": "sonar-pro",
-    "web-reason": "sonar-reasoning-pro",
-    "web-deep": "sonar-deep-research",
-}
+# Sonar Chat Completions aliases are retired. Unknown aliases are not rewritten
+# onto sonar model ids.
+_MODEL_ALIAS_TO_ID: dict[str, str] = {}
 
 
 class PerplexityPricingError(ValueError):
