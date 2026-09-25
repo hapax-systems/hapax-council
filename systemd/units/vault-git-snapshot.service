@@ -1,0 +1,11 @@
+[Unit]
+Description=Vault git snapshot — commit on podium, mirror history to appendix bare repo
+Documentation=file://%h/Documents/Personal/20-projects/hapax-requests/active/ratify-line-20260818-infra-gates.txt
+OnFailure=notify-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/scripts/vault-git-snapshot
+Environment=HOME=%h
+# A latched oneshot would stay active and hide the next failure.
+RemainAfterExit=no

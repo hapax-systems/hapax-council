@@ -1,0 +1,14 @@
+[Unit]
+Description=Vault git snapshot every 20 minutes
+Documentation=file://%h/Documents/Personal/20-projects/hapax-requests/active/ratify-line-20260818-infra-gates.txt
+
+[Timer]
+# scripts/vault-git-snapshot reaps an index.lock only once it is at least
+# this interval old (VAULT_SNAPSHOT_INTERVAL_SEC=1200). Change both together.
+OnCalendar=*:0/20
+RandomizedDelaySec=2m
+Persistent=true
+Unit=vault-git-snapshot.service
+
+[Install]
+WantedBy=timers.target
