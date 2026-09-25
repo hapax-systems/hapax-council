@@ -1503,10 +1503,31 @@ def _evidence_file_newer_than(path: Path, since: datetime, *, now: datetime) -> 
     return False
 
 
+def _release_stamp_newer_than(
+    task: TaskNote, head_sha: str | None, since: datetime, *, now: datetime
+) -> bool:
+    """Whether the note authorizes release at this listing head, stamped after ``since``.
+
+    A seat release stamp is a frontmatter edit, so the note's mtime dates it. It counts
+    only when it authorizes release at the PR's current head, the one stamp an exam can
+    act on; a note edit that names no head, or another head, is not evidence.
+    """
+    if head_sha is None or not assess_release_auto_arm(task.frontmatter).armed:
+        return False
+    if _release_authorized_head_stamp_blocker(task.frontmatter, expected_head_sha=head_sha):
+        return False
+    try:
+        mtime = datetime.fromtimestamp(task.path.stat().st_mtime, UTC)
+    except OSError:
+        return False
+    return since < mtime <= now
+
+
 def _fresh_evidence_probe(
     tasks: list[TaskNote], *, now: datetime
 ) -> Callable[[dict[str, Any], datetime], bool]:
-    """Answer "did a linked receipt or dossier land after ``since``?" for a listing row.
+    """Answer "did a linked receipt, dossier or current-head release stamp land after
+    ``since``?" for a listing row.
 
     Rows link to tasks the way ``_matching_tasks`` links hydrated PRs: by
     ``pr`` first, else by head branch. Each task folder is listed at most once.
@@ -1537,10 +1558,11 @@ def _fresh_evidence_probe(
 
     def probe(row: dict[str, Any], since: datetime) -> bool:
         matches = by_pr.get(row["number"]) or by_branch.get(_listing_head_ref(row) or "", [])
+        head_sha = _listing_head_sha(row)
         return any(
-            _evidence_file_newer_than(path, since, now=now)
+            _release_stamp_newer_than(task, head_sha, since, now=now)
+            or any(_evidence_file_newer_than(path, since, now=now) for path in evidence_paths(task))
             for task in matches
-            for path in evidence_paths(task)
         )
 
     return probe
@@ -2641,14 +2663,21 @@ def _review_team_quorum_evidence_blockers(
     changed_files: tuple[str, ...] | None,
     changed_file_count: int | None,
 ) -> tuple[str, ...]:
-    return review_team.review_dossier_validity_blockers(
+    floor_release: dict[str, Any] = {}
+    blockers = review_team.review_dossier_validity_blockers(
         frontmatter,
         task.path,
         pr_head_sha=pr_head_sha,
         pr_number=pr_number,
         changed_files=changed_files or (),
         changed_file_count=changed_file_count,
+        floor_release_out=floor_release,
     )
+    if floor_release:
+        # The seat's T2 rule admits a merge below the family floor; it is not the
+        # quorum-accept that sensitive classes need to auto-arm, so the seat still releases them.
+        return (*blockers, f"review_team_quorum_by_seat_rule:{floor_release['rule']}")
+    return blockers
 
 
 def _release_mitigation_verified_checks(

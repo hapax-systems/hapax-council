@@ -3293,11 +3293,13 @@ def write_acceptance_receipt_if_due(
 ) -> Path | None:
     """The dossier IS the acceptance receipt for review-floor tasks (spec §5).
 
-    Only on quorum-accept, only for ``frontier_review_required`` tasks, and an
-    existing receipt (e.g. operator-signed) is never overwritten.
+    Only on quorum-accept, or a no-quorum the seat's T2 rule excuses (the admission
+    recomputation decides and the receipt records the rule, the tier and the evidence);
+    only for ``frontier_review_required`` tasks, and an existing receipt (e.g.
+    operator-signed) is never overwritten.
     """
 
-    if dossier["review_team_verdict"] != review_team.QUORUM_ACCEPT:
+    if dossier["review_team_verdict"] not in {review_team.QUORUM_ACCEPT, "no-quorum"}:
         return None
     witness_snapshot_path: Path | None = None
     validation_outage_state_path = outage_state_path or FAMILY_OUTAGE_STATE
@@ -3319,6 +3321,7 @@ def write_acceptance_receipt_if_due(
             tmp.write(json.dumps(witness_snapshot, indent=1))
             witness_snapshot_path = Path(tmp.name)
         validation_outage_state_path = witness_snapshot_path
+    floor_release: dict[str, Any] = {}
     try:
         blockers = review_team.review_dossier_validity_blockers(
             frontmatter,
@@ -3330,6 +3333,7 @@ def write_acceptance_receipt_if_due(
             outage_state_path=validation_outage_state_path,
             admission_time=now_iso,
             route_blocked_families=route_blocked_families,
+            floor_release_out=floor_release,
         )
     finally:
         if witness_snapshot_path is not None:
@@ -3362,6 +3366,8 @@ def write_acceptance_receipt_if_due(
             for r in dossier.get("reviewers") or []
         ],
     }
+    if floor_release:
+        receipt["review_team_release_rule"] = floor_release
     artifact_review = dossier.get("artifact_review")
     if isinstance(artifact_review, dict):
         # A vault-only acceptance covers exactly these bytes. The closure gate
