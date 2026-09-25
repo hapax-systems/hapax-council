@@ -94,6 +94,7 @@ LOCAL_JUDGE_DOCKER_MEMORY="4G"
 LOCAL_JUDGE_DOCKER_MEMORY_SWAP="6G"
 LOCAL_JUDGE_DOCKER_HOST_ARG="--host=unix:///var/run/docker.sock"
 LOCAL_JUDGE_DOCKER_CONFIG_SUFFIX="/hapax-local-judge/docker-config"
+readonly OOM_REPAIR_ACTION="the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK"
 GOVERNED_MEMORY_KEYS=(MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin)
 
 usage() {
@@ -1713,15 +1714,15 @@ loaded_memory_unit_property() {
 verify_loaded_governed_unit_dropins() {
     local scope="$1" unit="$2" canonical="$3" need_reload fragment paths path rc canonical_found=0
     if ! need_reload="$(loaded_memory_unit_property "$scope" "$unit" NeedDaemonReload)"; then
-        echo "unable to query authoritative NeedDaemonReload for $unit; next action: restore the manager query and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "unable to query authoritative NeedDaemonReload for $unit; next action: restore the manager query and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     if [ "$need_reload" != "no" ]; then
-        echo "authoritative manager state is stale for $unit: NeedDaemonReload=${need_reload:-missing}; next action: reload the manager and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "authoritative manager state is stale for $unit: NeedDaemonReload=${need_reload:-missing}; next action: reload the manager and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     if ! fragment="$(loaded_memory_unit_property "$scope" "$unit" FragmentPath)"; then
-        echo "unable to query authoritative FragmentPath for $unit; next action: restore the manager query and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "unable to query authoritative FragmentPath for $unit; next action: restore the manager query and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     if [ -n "$fragment" ]; then
@@ -1730,7 +1731,7 @@ verify_loaded_governed_unit_dropins() {
             return 1
         fi
         if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$fragment"; then
-            echo "authoritative FragmentPath reports an unowned OOM memory assignment for $unit at $fragment; next action: remove the assignment and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "authoritative FragmentPath reports an unowned OOM memory assignment for $unit at $fragment; next action: remove the assignment and rerun $OOM_REPAIR_ACTION" >&2
             return 1
         else
             rc=$?
@@ -1741,7 +1742,7 @@ verify_loaded_governed_unit_dropins() {
         fi
     fi
     if ! paths="$(loaded_memory_unit_property "$scope" "$unit" DropInPaths)"; then
-        echo "unable to query authoritative DropInPaths for $unit; next action: restore the manager query and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "unable to query authoritative DropInPaths for $unit; next action: restore the manager query and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     while IFS= read -r path; do
@@ -1755,7 +1756,7 @@ verify_loaded_governed_unit_dropins() {
             continue
         fi
         if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$path"; then
-            echo "authoritative DropInPaths reports an unowned OOM memory assignment for $unit at $path; next action: remove the assignment and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "authoritative DropInPaths reports an unowned OOM memory assignment for $unit at $path; next action: remove the assignment and rerun $OOM_REPAIR_ACTION" >&2
             return 1
         else
             rc=$?
@@ -1817,18 +1818,18 @@ verify_effective_service_unit() {
     actual_failure="$(loaded_unit_property "$manager" "$unit" OnFailure)" || actual_failure="query-error"
     actual_user="$(loaded_unit_property "$manager" "$unit" User)" || actual_user="query-error"
     if [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
-        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     case "$actual_exec" in
         *"argv[]=$expected_exec ;"*) ;;
         *)
-            echo "effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec; next action: remove unauthorized overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
             return 1
             ;;
     esac
     if [ "$actual_failure" != "$expected_failure" ] || [ "$actual_user" != "$expected_user" ]; then
-        echo "effective $unit failure/identity drift: OnFailure=${actual_failure:-none} User=${actual_user:-default} expected OnFailure=${expected_failure:-none} User=${expected_user:-default}; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "effective $unit failure/identity drift: OnFailure=${actual_failure:-none} User=${actual_user:-default} expected OnFailure=${expected_failure:-none} User=${expected_user:-default}; next action: remove unauthorized overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
 }
@@ -1842,11 +1843,11 @@ verify_effective_local_judge_unit() {
     actual_dropins="$(loaded_unit_property user "$unit" DropInPaths)" || actual_dropins="query-error"
     actual_exec="$(loaded_unit_property user "$unit" ExecStart)" || actual_exec=""
     if [ "$need_reload" != "no" ]; then
-        echo "effective $unit manager state is stale: NeedDaemonReload=${need_reload:-unavailable}; next action: reload the user manager and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "effective $unit manager state is stale: NeedDaemonReload=${need_reload:-unavailable}; next action: reload the user manager and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     if [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
-        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the user manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the user manager, and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     if [[ "$actual_exec" != *"argv[]=/usr/bin/env -i "* \
@@ -1882,19 +1883,19 @@ verify_effective_failure_intake_unit() {
     actual_interval="$(loaded_unit_property system "$unit" StartLimitIntervalUSec)" || actual_interval="query-error"
     actual_burst="$(loaded_unit_property system "$unit" StartLimitBurst)" || actual_burst="query-error"
     if [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
-        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized template or instance overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized template or instance overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     case "$actual_exec" in
         *"argv[]=$expected_exec ;"*) ;;
         *)
-            echo "effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec; next action: remove unauthorized template or instance overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec; next action: remove unauthorized template or instance overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
             return 1
             ;;
     esac
     if [ "$actual_user" != "$expected_user" ] || [ "$actual_environment" != "$expected_environment" ] \
         || [ "$actual_interval" != "$expected_interval" ] || [ "$actual_burst" != "$expected_burst" ]; then
-        echo "effective $unit identity/limit drift: User=${actual_user:-default} Environment=${actual_environment:-none} StartLimitIntervalUSec=${actual_interval:-none} StartLimitBurst=${actual_burst:-none} expected User=$expected_user Environment=$expected_environment StartLimitIntervalUSec=$expected_interval StartLimitBurst=$expected_burst; next action: remove unauthorized template or instance overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "effective $unit identity/limit drift: User=${actual_user:-default} Environment=${actual_environment:-none} StartLimitIntervalUSec=${actual_interval:-none} StartLimitBurst=${actual_burst:-none} expected User=$expected_user Environment=$expected_environment StartLimitIntervalUSec=$expected_interval StartLimitBurst=$expected_burst; next action: remove unauthorized template or instance overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
 }
@@ -1911,17 +1912,17 @@ verify_effective_timer_unit() {
     actual_target="$(loaded_unit_property "$manager" "$unit" Unit)" || actual_target="query-error"
     actual_timers="$(loaded_unit_property "$manager" "$unit" TimersMonotonic)" || actual_timers="query-error"
     if [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
-        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     if [ "$actual_target" != "$expected_target" ]; then
-        echo "effective $unit target drift: actual=${actual_target:-unavailable} expected=$expected_target; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "effective $unit target drift: actual=${actual_target:-unavailable} expected=$expected_target; next action: remove unauthorized overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     case "$actual_timers" in
         *"OnBootUSec=$expected_boot"*"OnUnitActiveUSec=$expected_active"*|*"OnUnitActiveUSec=$expected_active"*"OnBootUSec=$expected_boot"*) ;;
         *)
-            echo "effective $unit cadence drift: actual=${actual_timers:-unavailable} expected OnBootUSec=$expected_boot and OnUnitActiveUSec=$expected_active; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "effective $unit cadence drift: actual=${actual_timers:-unavailable} expected OnBootUSec=$expected_boot and OnUnitActiveUSec=$expected_active; next action: remove unauthorized overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
             return 1
             ;;
     esac
@@ -2029,14 +2030,14 @@ verify_docker_container_limit() {
     fi
     separators="${output//[^|]/}"
     if [[ "$output" == *$'\n'* ]] || [ "${#separators}" -ne 4 ]; then
-        echo "unparseable Docker inspect result for $name id=$id: expected one five-field record, got ${output:-empty}; next action: rerun scripts/install-p0-oom-containment --install --verify-live after repairing Docker inspect output" >&2
+        echo "unparseable Docker inspect result for $name id=$id: expected one five-field record, got ${output:-empty}; next action: rerun $OOM_REPAIR_ACTION after repairing Docker inspect output" >&2
         return 1
     fi
     IFS='|' read -r inspected_id inspected_name actual_memory actual_swap oom_kill_disable <<< "$output"
     if [ "$oom_kill_disable" != "null" ] \
         && [ "$oom_kill_disable" != "false" ] \
         && [ "$oom_kill_disable" != "true" ]; then
-        echo "unparseable Docker OomKillDisable for $name id=$id: expected canonical null, false, or true, got ${oom_kill_disable:-empty}; next action: rerun scripts/install-p0-oom-containment --install --verify-live after repairing Docker inspect output" >&2
+        echo "unparseable Docker OomKillDisable for $name id=$id: expected canonical null, false, or true, got ${oom_kill_disable:-empty}; next action: rerun $OOM_REPAIR_ACTION after repairing Docker inspect output" >&2
         return 1
     fi
     inspected_name="${inspected_name#/}"
@@ -2047,7 +2048,7 @@ verify_docker_container_limit() {
         || [ "$actual_memory" != "$expected_memory" ] \
         || [ "$actual_swap" != "$expected_swap" ] \
         || [ "$oom_kill_disable" = "true" ]; then
-        echo "Docker containment drift for $name: id=${inspected_id:-unavailable} name=${inspected_name:-unavailable} Memory=${actual_memory:-unavailable} MemorySwap=${actual_swap:-unavailable} OomKillDisable=${oom_kill_disable:-unavailable} expected_id=$id expected_limits=$expected_memory/$expected_swap expected_OomKillDisable=false-or-null; next action: recreate the container from its governed launch source without --oom-kill-disable and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "Docker containment drift for $name: id=${inspected_id:-unavailable} name=${inspected_name:-unavailable} Memory=${actual_memory:-unavailable} MemorySwap=${actual_swap:-unavailable} OomKillDisable=${oom_kill_disable:-unavailable} expected_id=$id expected_limits=$expected_memory/$expected_swap expected_OomKillDisable=false-or-null; next action: recreate the container from its governed launch source without --oom-kill-disable and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
 }
@@ -2069,7 +2070,7 @@ docker_target_absent() {
 reconcile_docker_memory_limits() {
     local records record id name policy memory memory_swap update_output verify_rc absence_rc
     if ! records="$(docker_target_records)"; then
-        echo "unable to enumerate Docker containers for OOM containment; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "unable to enumerate Docker containers for OOM containment; next action: restore Docker access and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     while IFS= read -r record; do
@@ -2090,13 +2091,13 @@ reconcile_docker_memory_limits() {
                     continue
                     ;;
                 1)
-                    echo "unable to apply Docker memory limits to $name id=$id while the original identity or same-name target remains; docker update diagnostics: ${update_output:-none}; next action: resolve the reported Docker failure and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                    echo "unable to apply Docker memory limits to $name id=$id while the original identity or same-name target remains; docker update diagnostics: ${update_output:-none}; next action: resolve the reported Docker failure and rerun $OOM_REPAIR_ACTION" >&2
                     ;;
                 2)
-                    echo "unable to confirm Docker target $name id=$id after update failure because re-enumeration failed; docker update diagnostics: ${update_output:-none}; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                    echo "unable to confirm Docker target $name id=$id after update failure because re-enumeration failed; docker update diagnostics: ${update_output:-none}; next action: restore Docker access and rerun $OOM_REPAIR_ACTION" >&2
                     ;;
                 *)
-                    echo "unexpected Docker absence-check status $absence_rc for $name id=$id after update failure; next action: restore the matched OOM installer and rerun --install --verify-live" >&2
+                    echo "unexpected Docker absence-check status $absence_rc for $name id=$id after update failure; next action: restore the matched OOM installer and rerun $OOM_REPAIR_ACTION" >&2
                     ;;
             esac
             return 1
@@ -2120,18 +2121,18 @@ reconcile_docker_memory_limits() {
                             continue
                             ;;
                         1)
-                            echo "Docker inspect failed while the original identity or same-name target remains for $name id=$id; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                            echo "Docker inspect failed while the original identity or same-name target remains for $name id=$id; next action: restore Docker access and rerun $OOM_REPAIR_ACTION" >&2
                             ;;
                         2)
-                            echo "unable to confirm Docker target $name id=$id after inspect failure because re-enumeration failed; next action: restore Docker access and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                            echo "unable to confirm Docker target $name id=$id after inspect failure because re-enumeration failed; next action: restore Docker access and rerun $OOM_REPAIR_ACTION" >&2
                             ;;
                         *)
-                            echo "unexpected Docker absence-check status $absence_rc for $name id=$id after inspect failure; next action: restore the matched OOM installer and rerun --install --verify-live" >&2
+                            echo "unexpected Docker absence-check status $absence_rc for $name id=$id after inspect failure; next action: restore the matched OOM installer and rerun $OOM_REPAIR_ACTION" >&2
                             ;;
                     esac
                     ;;
                 *)
-                    echo "unexpected Docker limit-verification status $verify_rc for $name id=$id; next action: restore the matched OOM installer and rerun --install --verify-live" >&2
+                    echo "unexpected Docker limit-verification status $verify_rc for $name id=$id; next action: restore the matched OOM installer and rerun $OOM_REPAIR_ACTION" >&2
                     ;;
             esac
             return 1
@@ -2325,13 +2326,13 @@ main_pid_for_unit() {
 main_pid_for_user_unit() {
     local unit="$1" pid
     if ! pid="$(user_systemctl show "$unit" -p MainPID --value 2>/dev/null)"; then
-        echo "unable to query user unit $unit MainPID; next action: inspect the UID $TARGET_UID user manager and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "unable to query user unit $unit MainPID; next action: inspect the UID $TARGET_UID user manager and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
         printf '%s\n' "$pid"
     elif [ -n "$pid" ] && [ "$pid" != "0" ]; then
-        echo "invalid user unit $unit MainPID=$pid; next action: inspect systemctl --user show $unit -p MainPID and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "invalid user unit $unit MainPID=$pid; next action: inspect systemctl --user show $unit -p MainPID and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     return 0
@@ -2340,11 +2341,11 @@ main_pid_for_user_unit() {
 control_group_for_user_unit() {
     local unit="$1" cgroup
     if ! cgroup="$(user_systemctl show "$unit" -p ControlGroup --value 2>/dev/null)"; then
-        echo "unable to query user unit $unit ControlGroup; next action: inspect the UID $TARGET_UID user manager and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "unable to query user unit $unit ControlGroup; next action: inspect the UID $TARGET_UID user manager and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     if [ -n "$cgroup" ] && [[ "$cgroup" != /* ]]; then
-        echo "invalid user unit $unit ControlGroup=$cgroup; next action: inspect systemctl --user show $unit -p ControlGroup and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "invalid user unit $unit ControlGroup=$cgroup; next action: inspect systemctl --user show $unit -p ControlGroup and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     printf '%s\n' "$cgroup"
@@ -2373,7 +2374,7 @@ refresh_protected_user_unit_snapshot() {
         pid="$(main_pid_for_user_unit "$unit")" || return 1
         cgroup="$(control_group_for_user_unit "$unit")" || return 1
         if [ -n "$pid" ] && [ -z "$cgroup" ]; then
-            echo "user unit $unit has live MainPID=$pid but an empty ControlGroup; next action: inspect systemctl --user show $unit -p MainPID -p ControlGroup and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "user unit $unit has live MainPID=$pid but an empty ControlGroup; next action: inspect systemctl --user show $unit -p MainPID -p ControlGroup and rerun $OOM_REPAIR_ACTION" >&2
             return 1
         fi
         next_main_pids["$unit"]="$pid"
@@ -2417,7 +2418,7 @@ write_oom_score_or_warn() {
     if write_oom_score "$pid" "$score"; then
         return 0
     fi
-    echo "warning: failed to set oom_score_adj for $label pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+    echo "warning: failed to set oom_score_adj for $label pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun $OOM_REPAIR_ACTION" >&2
     return 0
 }
 
@@ -2491,7 +2492,7 @@ apply_user_process_oom_floor() {
         if write_oom_score "$pid" 100; then
             fixed=$((fixed + 1))
         else
-            echo "warning: failed to set oom_score_adj for user process name=$name pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "warning: failed to set oom_score_adj for user process name=$name pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun $OOM_REPAIR_ACTION" >&2
         fi
     done
     if [ "$fixed" -gt 0 ]; then
@@ -2505,7 +2506,7 @@ scrub_legacy_user_oom_overrides() {
         path="$SYSTEMD_USER_DIR/$rel"
         [ -e "$path" ] || continue
         if [ -L "$path" ]; then
-            echo "refusing symlinked legacy user OOM override: $path; next action: replace it with a regular file and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "refusing symlinked legacy user OOM override: $path; next action: replace it with a regular file and rerun $OOM_REPAIR_ACTION" >&2
             return 1
         fi
         grep -Eq '^[[:space:]]*OOMScoreAdjust=' "$path" || continue
@@ -2672,11 +2673,11 @@ install_live() {
         scrub_generated_memory_property_files
         validate_no_unauthorized_host_policy_overrides 0
         run_root "$SYSTEMCTL" daemon-reload || {
-            echo "unable to reload the system manager after scrubbing transient OOM controls; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "unable to reload the system manager after scrubbing transient OOM controls; next action: rerun $OOM_REPAIR_ACTION" >&2
             return 1
         }
         user_systemctl daemon-reload || {
-            echo "unable to reload the user manager after scrubbing transient OOM controls; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "unable to reload the user manager after scrubbing transient OOM controls; next action: rerun $OOM_REPAIR_ACTION" >&2
             return 1
         }
         apply_recovery_unit_oom_scores
@@ -2699,7 +2700,7 @@ apply_system_runtime_memory() {
         "MemorySwapMax=$(system_memory_value "$rel" MemorySwapMax)" \
         "MemoryLow=$(system_memory_value "$rel" MemoryLow)" \
         "MemoryMin=$(system_memory_value "$rel" MemoryMin)" || {
-        echo "unable to apply runtime memory policy to $unit; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "unable to apply runtime memory policy to $unit; next action: run $OOM_REPAIR_ACTION" >&2
         return 1
     }
 }
@@ -2707,11 +2708,11 @@ apply_system_runtime_memory() {
 verify_pair() {
     local source="$1" dest="$2"
     [ -f "$dest" ] || {
-        echo "missing live file: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "missing live file: $dest; next action: run $OOM_REPAIR_ACTION" >&2
         return 1
     }
     cmp -s "$source" "$dest" || {
-        echo "live drift: $dest differs from $source; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "live drift: $dest differs from $source; next action: run $OOM_REPAIR_ACTION" >&2
         return 1
     }
 }
@@ -2719,11 +2720,11 @@ verify_pair() {
 verify_root_pair() {
     local source="$1" dest="$2"
     run_root test -f "$dest" || {
-        echo "missing live file: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "missing live file: $dest; next action: run $OOM_REPAIR_ACTION" >&2
         return 1
     }
     run_root cmp -s "$source" "$dest" || {
-        echo "live drift: $dest differs from $source; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "live drift: $dest differs from $source; next action: run $OOM_REPAIR_ACTION" >&2
         return 1
     }
 }
@@ -2731,12 +2732,12 @@ verify_root_pair() {
 verify_sudoers_trust() {
     local path="$1" expected_mode="$2" label="$3" actual
     if [ ! -f "$path" ] || [ -L "$path" ]; then
-        echo "installed OOM $label is missing, symlinked, or not a regular file: $path; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "installed OOM $label is missing, symlinked, or not a regular file: $path; next action: rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
     if [ "$actual" != "$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode" ]; then
-        echo "installed OOM $label trust drift: $path owner/mode=${actual:-unavailable} expected=$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "installed OOM $label trust drift: $path owner/mode=${actual:-unavailable} expected=$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode; next action: rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
 }
@@ -2745,12 +2746,12 @@ verify_production_reference_dirs() {
     local path actual
     for path in /usr/local/share/hapax /usr/local/share/hapax/root-required; do
         if [ ! -d "$path" ] || [ -L "$path" ]; then
-            echo "installed OOM sudoers reference directory is missing, symlinked, or not a directory: $path; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "installed OOM sudoers reference directory is missing, symlinked, or not a directory: $path; next action: rerun $OOM_REPAIR_ACTION" >&2
             return 1
         fi
         actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
         if [ "$actual" != "0:0:755" ]; then
-            echo "installed OOM sudoers reference directory trust drift: $path owner/mode=${actual:-unavailable} expected=0:0:755; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "installed OOM sudoers reference directory trust drift: $path owner/mode=${actual:-unavailable} expected=0:0:755; next action: rerun $OOM_REPAIR_ACTION" >&2
             return 1
         fi
     done
@@ -2769,12 +2770,12 @@ verify_root_artifact_trust() {
             ;;
     esac
     if [ ! -f "$path" ] || [ -L "$path" ]; then
-        echo "installed root artifact is missing, symlinked, or not a regular file: $path; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "installed root artifact is missing, symlinked, or not a regular file: $path; next action: rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
     if [ "$actual" != "$expected_uid:$expected_gid:$expected_mode" ]; then
-        echo "installed root artifact trust drift: $path owner/mode=${actual:-unavailable} expected=$expected_uid:$expected_gid:$expected_mode; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "installed root artifact trust drift: $path owner/mode=${actual:-unavailable} expected=$expected_uid:$expected_gid:$expected_mode; next action: rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     parent="$(dirname "$path")"
@@ -2784,7 +2785,7 @@ verify_root_artifact_trust() {
         || [ "$parent_actual" != "$expected_uid:$expected_gid" ] \
         || ! [[ "$parent_mode" =~ ^[0-7]+$ ]] \
         || (( (8#$parent_mode & 8#022) != 0 )); then
-        echo "installed root artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable}; next action: repair the root-owned directory and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "installed root artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable}; next action: repair the root-owned directory and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
 }
@@ -2801,13 +2802,13 @@ verify_selected_host_policy_files() {
         "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/zz-hapax-host-memory.conf" \
         "$LEGACY_ZRAM_POLICY_DEST"; do
         if run_root test -e "$legacy" || run_root test -L "$legacy"; then
-            echo "legacy OOM host-policy override remains authoritative: $legacy; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "legacy OOM host-policy override remains authoritative: $legacy; next action: rerun $OOM_REPAIR_ACTION" >&2
             return 1
         fi
     done
     legacy="$SYSTEMD_USER_DIR/app.slice.d/zz-hapax-host-memory.conf"
     if [ -e "$legacy" ] || [ -L "$legacy" ]; then
-        echo "legacy OOM host-policy override remains authoritative: $legacy; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "legacy OOM host-policy override remains authoritative: $legacy; next action: rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     expected_zram=$((HOST_ZRAM_SIZE_MIB * 1024 * 1024))
@@ -2834,7 +2835,7 @@ verify_live() {
         verify_root_artifact_trust "$dest" 644
         dest="$SYSTEMD_USER_DIR/$(basename "$rel")"
         if [ -e "$dest" ] || [ -L "$dest" ]; then
-            echo "stale user-scope copy of system unit remains: $dest; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "stale user-scope copy of system unit remains: $dest; next action: rerun $OOM_REPAIR_ACTION" >&2
             return 1
         fi
     done
@@ -2843,7 +2844,7 @@ verify_live() {
     verify_pair "$(src_path "$oom_trigger_source")" "$OOM_TRIGGER_DEST"
     verify_root_artifact_trust "$OOM_TRIGGER_DEST" 755
     [ -x "$OOM_TRIGGER_DEST" ] || {
-        echo "installed OOM startup trigger is not executable: $OOM_TRIGGER_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "installed OOM startup trigger is not executable: $OOM_TRIGGER_DEST; next action: rerun $OOM_REPAIR_ACTION" >&2
         return 1
     }
     verify_sudoers_trust "$OOM_SUDOERS_DEST" 440 "sudoers policy"
@@ -2856,7 +2857,7 @@ verify_live() {
     verify_pair "$(src_path "$oom_sudoers_source")" "$OOM_SUDOERS_REFERENCE_DEST"
     verify_root_pair "$OOM_SUDOERS_REFERENCE_DEST" "$OOM_SUDOERS_DEST"
     run_root "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null || {
-        echo "installed OOM enforcer sudoers policy no longer parses: $OOM_SUDOERS_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "installed OOM enforcer sudoers policy no longer parses: $OOM_SUDOERS_DEST; next action: rerun $OOM_REPAIR_ACTION" >&2
         return 1
     }
     verify_pair "$(src_path "$root_failure_intake_source")" "$ROOT_FAILURE_INTAKE_DEST"
@@ -2866,13 +2867,13 @@ verify_live() {
     verify_pair "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
     verify_root_artifact_trust "$ROOT_REQUIRED_AUDIT_DEST" 755
     if [ -L "$LOCAL_JUDGE_CONTAINER_ID_DEST" ]; then
-        echo "live local-judge lifecycle helper is a symlink: $LOCAL_JUDGE_CONTAINER_ID_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "live local-judge lifecycle helper is a symlink: $LOCAL_JUDGE_CONTAINER_ID_DEST; next action: rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     verify_pair "$(src_path scripts/hapax-local-judge-container-id)" \
         "$LOCAL_JUDGE_CONTAINER_ID_DEST"
     [ -x "$LOCAL_JUDGE_CONTAINER_ID_DEST" ] || {
-        echo "live local-judge lifecycle helper is not executable: $LOCAL_JUDGE_CONTAINER_ID_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "live local-judge lifecycle helper is not executable: $LOCAL_JUDGE_CONTAINER_ID_DEST; next action: rerun $OOM_REPAIR_ACTION" >&2
         return 1
     }
     verify_selected_host_policy_files
@@ -2890,7 +2891,7 @@ verify_live() {
         source_rel="$(selected_source_rel "$rel")"
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
         if [ -L "$dest" ]; then
-            echo "live P0 slice drop-in is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live to replace it with a copy" >&2
+            echo "live P0 slice drop-in is a symlink: $dest; next action: run $OOM_REPAIR_ACTION to replace it with a copy" >&2
             return 1
         fi
         verify_pair "$(src_path "$source_rel")" "$dest"
@@ -2901,7 +2902,7 @@ verify_live() {
     for rel in "${managed_user_units[@]}"; do
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
         if [ -L "$dest" ]; then
-            echo "live P0 managed user unit is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "live P0 managed user unit is a symlink: $dest; next action: run $OOM_REPAIR_ACTION" >&2
             return 1
         fi
         verify_pair "$(src_path "$rel")" "$dest"
@@ -2942,22 +2943,22 @@ verify_user_audit_loaded_timeouts() {
         rel="${spec#*|}"
         expected="$(source_unit_value "$rel" TimeoutStartSec)" || return 1
         if ! actual="$(user_systemctl show "$unit" -p TimeoutStartUSec --value 2>/dev/null)"; then
-            echo "unable to query loaded $unit TimeoutStartUSec; next action: inspect systemctl --user status $unit and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "unable to query loaded $unit TimeoutStartUSec; next action: inspect systemctl --user status $unit and rerun $OOM_REPAIR_ACTION" >&2
             return 1
         fi
         if [ "$actual" != "$expected" ]; then
-            echo "live $unit TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "live $unit TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: run systemctl --user daemon-reload and $OOM_REPAIR_ACTION" >&2
             return 1
         fi
         expected_environment="$(source_unit_value "$rel" Environment)" || return 1
         if ! loaded_environment="$(user_systemctl show "$unit" -p Environment --value 2>/dev/null)"; then
-            echo "unable to query loaded $unit Environment; next action: inspect systemctl --user status $unit and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "unable to query loaded $unit Environment; next action: inspect systemctl --user status $unit and rerun $OOM_REPAIR_ACTION" >&2
             return 1
         fi
         case " $loaded_environment " in
             *" $expected_environment "*) ;;
             *)
-                echo "live $unit Environment drift: actual=${loaded_environment:-unavailable} expected to contain $expected_environment; next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "live $unit Environment drift: actual=${loaded_environment:-unavailable} expected to contain $expected_environment; next action: run systemctl --user daemon-reload and $OOM_REPAIR_ACTION" >&2
                 return 1
                 ;;
         esac
@@ -2968,11 +2969,11 @@ verify_enforcer_loaded_timeout() {
     local expected actual
     expected="$(source_unit_value systemd/units/hapax-oom-score-enforce.service TimeoutStartSec)"
     if ! actual="$("$SYSTEMCTL" show hapax-oom-score-enforce.service -p TimeoutStartUSec --value 2>/dev/null)"; then
-        echo "unable to query loaded hapax-oom-score-enforce.service TimeoutStartUSec; next action: inspect systemctl status hapax-oom-score-enforce.service and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "unable to query loaded hapax-oom-score-enforce.service TimeoutStartUSec; next action: inspect systemctl status hapax-oom-score-enforce.service and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     if [ "$actual" != "$expected" ]; then
-        echo "live hapax-oom-score-enforce.service TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: run sudo systemctl daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "live hapax-oom-score-enforce.service TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: run sudo systemctl daemon-reload and $OOM_REPAIR_ACTION" >&2
         return 1
     fi
 }
@@ -2987,7 +2988,7 @@ verify_system_unit_runtime_memory() {
         }
         actual="$("$SYSTEMCTL" show "$unit" -p "$key" --value 2>/dev/null || true)"
         if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
-            echo "live $unit $key drift: actual=$actual expected=$expected_raw; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "live $unit $key drift: actual=$actual expected=$expected_raw; next action: run $OOM_REPAIR_ACTION" >&2
             failed=1
         fi
     done
@@ -3004,7 +3005,7 @@ verify_app_slice_runtime() {
         }
         actual="$(user_systemctl show app.slice -p "$key" --value 2>/dev/null || true)"
         if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
-            echo "live app.slice $key drift: actual=$actual expected=$expected_raw; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "live app.slice $key drift: actual=$actual expected=$expected_raw; next action: run $OOM_REPAIR_ACTION" >&2
             failed=1
         fi
     done
@@ -3021,7 +3022,7 @@ verify_session_slice_runtime() {
         }
         actual="$(user_systemctl show session.slice -p "$key" --value 2>/dev/null || true)"
         if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
-            echo "live session.slice $key drift: actual=$actual expected=$expected_raw; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "live session.slice $key drift: actual=$actual expected=$expected_raw; next action: run $OOM_REPAIR_ACTION" >&2
             failed=1
         fi
     done
@@ -3035,25 +3036,25 @@ verify_recovery_unit_oom_scores() {
         score="${spec##*:}"
         configured="$("$SYSTEMCTL" show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
         if [ "$configured" != "$score" ]; then
-            echo "effective OOM policy drift for $unit: configured=$configured expected=$score; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "effective OOM policy drift for $unit: configured=$configured expected=$score; next action: remove higher-priority drop-in drift and rerun $OOM_REPAIR_ACTION" >&2
             failed=1
         fi
         if [ "$unit" = "sshd.service" ]; then
             policy="$("$SYSTEMCTL" show "$unit" -p OOMPolicy --value 2>/dev/null || true)"
             if [ "$policy" != "continue" ]; then
-                echo "effective OOM policy drift for sshd.service: OOMPolicy=$policy expected=continue; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "effective OOM policy drift for sshd.service: OOMPolicy=$policy expected=continue; next action: remove higher-priority drop-in drift and rerun $OOM_REPAIR_ACTION" >&2
                 failed=1
             fi
         fi
         pid="$(main_pid_for_unit "$unit")"
         if [ -z "$pid" ]; then
-            echo "recovery daemon has no live MainPID: $unit; next action: inspect systemctl status $unit and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "recovery daemon has no live MainPID: $unit; next action: inspect systemctl status $unit and rerun $OOM_REPAIR_ACTION" >&2
             failed=1
             continue
         fi
         actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
         if [ "$actual" != "$score" ]; then
-            echo "live OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "live OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run $OOM_REPAIR_ACTION" >&2
             failed=1
         fi
     done
@@ -3064,22 +3065,22 @@ verify_user_manager_oom_score() {
     local pid actual policy configured
     configured="$("$SYSTEMCTL" show user@1000.service -p OOMScoreAdjust --value 2>/dev/null || true)"
     if [ "$configured" != "100" ]; then
-        echo "effective user@1000.service OOMScoreAdjust drift: actual=$configured expected=100; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "effective user@1000.service OOMScoreAdjust drift: actual=$configured expected=100; next action: remove higher-priority drop-in drift and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     policy="$("$SYSTEMCTL" show user@1000.service -p OOMPolicy --value 2>/dev/null || true)"
     if [ "$policy" != "continue" ]; then
-        echo "effective user@1000.service OOMPolicy drift: actual=$policy expected=continue; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "effective user@1000.service OOMPolicy drift: actual=$policy expected=continue; next action: remove higher-priority drop-in drift and rerun $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
     if ! [[ "$pid" =~ ^[0-9]+$ ]] || [ "$pid" -le 0 ]; then
-        echo "unable to read live user@1000.service MainPID; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "unable to read live user@1000.service MainPID; next action: run $OOM_REPAIR_ACTION" >&2
         return 1
     fi
     actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
     if [ "$actual" != "100" ]; then
-        echo "live user@1000.service OOM score drift: pid=$pid actual=$actual expected=100; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "live user@1000.service OOM score drift: pid=$pid actual=$actual expected=100; next action: run $OOM_REPAIR_ACTION" >&2
         return 1
     fi
 }
@@ -3110,7 +3111,7 @@ verify_protected_user_unit_oom_scores() {
             # on SOME host; only the unit file says whether THIS host is one of them. Checked first,
             # so an allow-listed unit that is installed here but unloadable can never reach the skip.
             if user_unit_file_present "$unit"; then
-                echo "protected user unit $unit reports LoadState=not-found but a unit file for it EXISTS on this host: the package IS installed here and the user manager cannot load it, so this is a load failure, not host-absence, and skipping it would report success having verified nothing; next action: run 'systemctl --user status $unit' and 'systemd-analyze --user verify $unit' to find the masked/dangling/malformed unit, then rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "protected user unit $unit reports LoadState=not-found but a unit file for it EXISTS on this host: the package IS installed here and the user manager cannot load it, so this is a load failure, not host-absence, and skipping it would report success having verified nothing; next action: run 'systemctl --user status $unit' and 'systemd-analyze --user verify $unit' to find the masked/dangling/malformed unit, then rerun $OOM_REPAIR_ACTION" >&2
                 failed=1
                 continue
             fi
@@ -3118,7 +3119,7 @@ verify_protected_user_unit_oom_scores() {
                 # The skip rests on having proven absence, which a reconstructed search path
                 # cannot do. Fail closed rather than skip on a list that may not be complete.
                 if ! user_unit_search_paths_are_authoritative; then
-                    echo "protected user unit $unit is not loaded and no unit file was found, but the user unit search path could NOT be obtained from systemd ('$SYSTEMD_ANALYZE --user unit-paths' failed), so the list searched is a RECONSTRUCTION and may omit a directory this system uses; absence is therefore unproven and skipping it would be a false green; next action: restore '$SYSTEMD_ANALYZE --user unit-paths' for the target user, then rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                    echo "protected user unit $unit is not loaded and no unit file was found, but the user unit search path could NOT be obtained from systemd ('$SYSTEMD_ANALYZE --user unit-paths' failed), so the list searched is a RECONSTRUCTION and may omit a directory this system uses; absence is therefore unproven and skipping it would be a false green; next action: restore '$SYSTEMD_ANALYZE --user unit-paths' for the target user, then rerun $OOM_REPAIR_ACTION" >&2
                     failed=1
                     continue
                 fi
@@ -3132,7 +3133,7 @@ verify_protected_user_unit_oom_scores() {
         fi
         configured="$(user_systemctl show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
         if [ "$configured" != "100" ]; then
-            echo "user unit startup OOM policy drift for $unit: configured=$configured expected=100; the user manager cannot lower a child score, so root must apply live score $score after start; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "user unit startup OOM policy drift for $unit: configured=$configured expected=100; the user manager cannot lower a child score, so root must apply live score $score after start; next action: run $OOM_REPAIR_ACTION" >&2
             failed=1
         fi
         case "$unit" in
@@ -3140,7 +3141,7 @@ verify_protected_user_unit_oom_scores() {
                 expected_slice=session.slice
                 actual="$(user_systemctl show "$unit" -p NoNewPrivileges --value 2>/dev/null || true)"
                 if [ "$actual" != "yes" ]; then
-                    echo "live user unit NoNewPrivileges drift for $unit: actual=$actual expected=yes; next action: restore the distro audio sandbox and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                    echo "live user unit NoNewPrivileges drift for $unit: actual=$actual expected=yes; next action: restore the distro audio sandbox and rerun $OOM_REPAIR_ACTION" >&2
                     failed=1
                 fi
                 ;;
@@ -3148,7 +3149,7 @@ verify_protected_user_unit_oom_scores() {
         esac
         actual="$(user_systemctl show "$unit" -p Slice --value 2>/dev/null || true)"
         if [ "$actual" != "$expected_slice" ]; then
-            echo "live user unit Slice drift for $unit: actual=$actual expected=$expected_slice; next action: remove higher-priority user-unit drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+            echo "live user unit Slice drift for $unit: actual=$actual expected=$expected_slice; next action: remove higher-priority user-unit drop-in drift and rerun $OOM_REPAIR_ACTION" >&2
             failed=1
         fi
         rel="systemd/units/$unit.d/oom-protect.conf"
@@ -3160,20 +3161,20 @@ verify_protected_user_unit_oom_scores() {
             }
             actual="$(user_systemctl show "$unit" -p "$key" --value 2>/dev/null || true)"
             if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
-                echo "live user unit $key drift for $unit: actual=$actual expected=$expected_raw; next action: remove higher-priority user-unit drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "live user unit $key drift for $unit: actual=$actual expected=$expected_raw; next action: remove higher-priority user-unit drop-in drift and rerun $OOM_REPAIR_ACTION" >&2
                 failed=1
             fi
         done
         while IFS= read -r pid; do
             [ -n "$pid" ] || continue
             if ! pid_matches_cgroup "$pid" "$cgroup"; then
-                echo "live user unit cgroup changed before OOM score readback for $unit pid $pid; next action: rerun scripts/install-p0-oom-containment --install --verify-live after unit churn settles" >&2
+                echo "live user unit cgroup changed before OOM score readback for $unit pid $pid; next action: rerun $OOM_REPAIR_ACTION after unit churn settles" >&2
                 failed=1
                 continue
             fi
             actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
             if [ "$actual" != "$score" ]; then
-                echo "live user unit OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+                echo "live user unit OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run $OOM_REPAIR_ACTION" >&2
                 failed=1
             fi
         done < <(snapshotted_user_unit_pids "$unit")
@@ -3213,7 +3214,7 @@ verify_user_process_oom_floor() {
         [ "$score" -le -800 ] || continue
         protected_user_unit_member_pid "$pid" && continue
         allowed_user_protected_process "$name" && continue
-        echo "residual inherited OOM protection: pid=$pid name=$name oom_score_adj=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
+        echo "residual inherited OOM protection: pid=$pid name=$name oom_score_adj=$score; next action: run $OOM_REPAIR_ACTION" >&2
         failed=1
     done
     [ "$failed" -eq 0 ]
