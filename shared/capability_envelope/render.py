@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -341,12 +342,27 @@ def render(decl: EnvelopeDeclaration, *, run_root: Path) -> RenderedEnvelope:
     return RenderedEnvelope(argv=tuple(a), run_root=run_root, masked=tuple(masked), facts=facts)
 
 
+class EnvelopeCarrierError(RuntimeError):
+    """The carrier could not start the job. Never a reason to run the job unenveloped."""
+
+
 def execute(
     rendered: RenderedEnvelope, *, stdin: str | None = None, timeout: float
 ) -> subprocess.CompletedProcess[str]:
-    """Run one rendered job. The caller keeps or discards ``rendered.run_root`` afterwards."""
-    return subprocess.run(
-        list(rendered.argv),
+    """Run one rendered job. The caller keeps or discards ``rendered.run_root`` afterwards.
+
+    Raises EnvelopeCarrierError when bubblewrap is not on the caller's PATH, or when bubblewrap
+    itself fails (a nonzero exit whose stderr is bubblewrap's), for example without unprivileged
+    user namespaces or when a declared binary is not inside the job.
+    """
+    carrier = shutil.which(rendered.argv[0])
+    if carrier is None:
+        raise EnvelopeCarrierError(
+            "bubblewrap not found on PATH; next action: install bubblewrap on this host, or "
+            "route the job to a host that has it"
+        )
+    result = subprocess.run(
+        [carrier, *rendered.argv[1:]],
         input=stdin,
         capture_output=True,
         text=True,
@@ -354,3 +370,10 @@ def execute(
         check=False,
         env={"PATH": ":".join(_BASE_PATH)},
     )
+    if result.returncode != 0 and result.stderr.startswith("bwrap:"):
+        first = result.stderr.splitlines()[0]
+        raise EnvelopeCarrierError(
+            f"the envelope carrier failed ({first}); next action: enable unprivileged user "
+            "namespaces for bubblewrap on this host, or declare the missing binary"
+        )
+    return result

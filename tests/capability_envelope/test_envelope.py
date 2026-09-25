@@ -27,6 +27,7 @@ from shared.capability_envelope import (
     MASKED_NAMES,
     DeclaredHook,
     DeclaredMcpServer,
+    EnvelopeCarrierError,
     EnvelopeDeclaration,
     EnvelopeRefusal,
     execute,
@@ -330,6 +331,30 @@ def test_declared_checkout_instruction_file_is_readable_and_the_rest_stay_masked
     others = set(report["_opened"]) - {world.checkout / "AGENTS.md"}
     assert others == set()
     assert world.tokens[world.checkout / "CLAUDE.md"] not in json.dumps(report["read"])
+
+
+# ---------------------------------------------------------------- carrier failures
+
+
+def test_missing_bubblewrap_is_a_carrier_error_and_nothing_runs(
+    world: World, tmp_path: Path, monkeypatch
+):
+    rendered = render(world.declaration(), run_root=tmp_path / "run")
+    empty = tmp_path / "no-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    with pytest.raises(EnvelopeCarrierError, match="bubblewrap not found"):
+        execute(rendered, timeout=30)
+    assert not (world.spool / "report.json").exists()
+
+
+@needs_bwrap
+def test_a_bubblewrap_failure_is_a_carrier_error(tmp_path: Path):
+    """The declared binary is not inside the job, so bubblewrap cannot exec it."""
+    decl = EnvelopeDeclaration(harness="claude", argv=(str(tmp_path / "missing-binary"),))
+    rendered = render(decl, run_root=tmp_path / "run")
+    with pytest.raises(EnvelopeCarrierError, match="carrier failed"):
+        execute(rendered, timeout=30)
 
 
 # ---------------------------------------------------------------- render-time refusals
