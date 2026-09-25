@@ -3125,6 +3125,7 @@ def _run_install_verify_live(
     unit_files: set[str] | None = None,
     no_unit_path_override: bool = False,
     systemd_analyze: str | None = None,
+    host_profile: str = "appendix",
 ) -> subprocess.CompletedProcess[str]:
     """Drive the REAL installer through --install --verify-live against temp destinations.
 
@@ -3166,9 +3167,9 @@ def _run_install_verify_live(
         '  *"show user@1000.service -p MainPID --value"*) printf "900\\n" ;;\n'
         f"{_drift_cases(drift)}\n"
         f"{_load_state_cases(load_state)}\n"
-        f"{_systemctl_system_memory_cases(RECOVERY_SYSTEM_UNIT_PIDS)}\n"
+        f"{_systemctl_system_memory_cases(RECOVERY_SYSTEM_UNIT_PIDS, host_profile=host_profile)}\n"
         f"{_systemctl_user_unit_cases()}\n"
-        f"{_systemctl_app_slice_cases()}\n"
+        f"{_systemctl_app_slice_cases(host_profile)}\n"
         "esac\n"
         "exit 0\n",
         encoding="utf-8",
@@ -3185,6 +3186,11 @@ def _run_install_verify_live(
         encoding="utf-8",
     )
     fake_runuser.chmod(0o755)
+
+    Path(os.environ["HAPAX_OOM_ZRAM_DISKSIZE_PATH"]).write_text(
+        f"{(16 if host_profile == 'appendix' else 32) * 1024**3}\n",
+        encoding="utf-8",
+    )
 
     unit_path_dir = tmp_path / "user-unit-path"
     unit_path_dir.mkdir()
@@ -3228,6 +3234,12 @@ def _run_install_verify_live(
             "HAPAX_ROOT_REQUIRED_PACKAGE_SHA": REPO_HEAD,
             "HAPAX_ROOT_REQUIRED_GIT_REPO": str(REPO_ROOT),
             "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT": str(installed_source),
+            "HAPAX_OOM_POLICY_HOSTNAME": (
+                "hapax-appendix" if host_profile == "appendix" else "hapax-podium"
+            ),
+            "HAPAX_OOM_POLICY_MEMTOTAL_KIB": (
+                "63310228" if host_profile == "appendix" else "131007744"
+            ),
         },
     )
 
@@ -3270,6 +3282,16 @@ def test_verify_live_fails_closed_on_an_absent_required_unit(tmp_path: Path) -> 
         "per executive_function the failure must carry a next action and name both lawful exits "
         f"(install the unit, or justify the allow-list entry).\nstderr: {result.stderr[-2000:]}"
     )
+
+
+def test_podium_treats_an_absent_appendix_optional_unit_as_required(tmp_path: Path) -> None:
+    result = _run_install_verify_live(
+        tmp_path,
+        load_state={"hapax-daimonion.service": "not-found"},
+        host_profile="podium",
+    )
+    assert result.returncode != 0
+    assert "required protected user unit hapax-daimonion.service is absent" in result.stderr
 
 
 def test_allow_list_membership_only_narrows_the_not_found_case(tmp_path: Path) -> None:
