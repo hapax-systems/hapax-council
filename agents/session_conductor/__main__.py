@@ -77,8 +77,10 @@ def cmd_start(args: argparse.Namespace) -> None:
     spawn_rule = SpawnRule(topology, state)
     registry.register(spawn_rule)
 
-    # C2: Child sessions claim pending manifests at startup
-    claimed = spawn_rule.claim_pending_manifest(state)
+    # C2: a child claims only the manifest its launcher named (M103: never "any pending").
+    claimed = spawn_rule.claim_pending_manifest(
+        state, manifest_id=os.environ.get("HAPAX_CONDUCTOR_SPAWN_MANIFEST")
+    )
     if claimed:
         log.info("Claimed spawn manifest: topic=%s", claimed.get("topic", "unknown"))
 
@@ -108,6 +110,8 @@ def cmd_start(args: argparse.Namespace) -> None:
             if hasattr(rule, "write_completion"):
                 summary = state.workstream_summary or "Session ended"
                 rule.write_completion(summary)  # type: ignore[attr-defined]
+            if hasattr(rule, "retire_pending_children"):
+                rule.retire_pending_children()  # type: ignore[attr-defined]
         try:
             state.save(state_path)
         except OSError:

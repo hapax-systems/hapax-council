@@ -75,6 +75,9 @@ class SessionState:
     children: list[ChildSession] = field(default_factory=list)
     active_topics: dict[str, TopicState] = field(default_factory=dict)
     in_flight_files: set[str] = field(default_factory=set)
+    # Files the parent had in flight when it spawned this child (from the manifest).
+    # Kept apart from in_flight_files, which is this session's own edits (M103).
+    parent_blocked_patterns: set[str] = field(default_factory=set)
     epic_phase: EpicPhase | None = None
     last_relay_sync: datetime | None = None
     workstream_summary: str = ""
@@ -112,6 +115,7 @@ class SessionState:
                 for slug, t in self.active_topics.items()
             },
             "in_flight_files": sorted(self.in_flight_files),
+            "parent_blocked_patterns": sorted(self.parent_blocked_patterns),
             "epic_phase": self.epic_phase.value if self.epic_phase else None,
             "last_relay_sync": self.last_relay_sync.isoformat() if self.last_relay_sync else None,
             "workstream_summary": self.workstream_summary,
@@ -163,6 +167,7 @@ class SessionState:
             for slug, t in data.get("active_topics", {}).items()
         }
         state.in_flight_files = set(data.get("in_flight_files", []))
+        state.parent_blocked_patterns = set(data.get("parent_blocked_patterns", []))
         phase = data.get("epic_phase")
         state.epic_phase = EpicPhase(phase) if phase else None
         sync = data.get("last_relay_sync")

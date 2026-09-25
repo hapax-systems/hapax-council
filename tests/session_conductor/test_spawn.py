@@ -68,12 +68,30 @@ def test_detect_spawn_intent_no_match():
 # ---------------------------------------------------------------------------
 
 
-def test_writes_manifest_on_spawn_intent(tmp_path: Path):
+def test_tool_output_never_mints_a_manifest(tmp_path: Path):
+    """M103: conductor-post.sh sends a tool's stdout as `user_message`. A grep of source
+    code containing a spawn phrase minted a manifest that an unrelated lane adopted."""
     state = _make_state()
-    topology = TopologyConfig()
-    rule = SpawnRule(topology, state, spawns_dir=tmp_path)
+    rule = SpawnRule(TopologyConfig(), state, spawns_dir=tmp_path)
 
-    event = _make_user_msg_event("let's break this out into a new session for the relay work")
+    rule.on_post_tool_use(_make_user_msg_event("27:    re.compile(r'spawn a (child|session)')"))
+    rule.on_post_tool_use(_make_user_msg_event("let's break this out into a new session"))
+
+    assert list(tmp_path.glob("*.yaml")) == []
+    assert state.children == []
+
+
+def test_operator_prompt_event_writes_manifest(tmp_path: Path):
+    state = _make_state()
+    rule = SpawnRule(TopologyConfig(), state, spawns_dir=tmp_path)
+    event = HookEvent(
+        event_type="user_prompt",
+        tool_name="",
+        tool_input={},
+        session_id="sess-alpha",
+        user_message="let's break this out into a new session for the relay work",
+    )
+
     rule.on_post_tool_use(event)
 
     manifests = list(tmp_path.glob("*.yaml"))
@@ -84,44 +102,77 @@ def test_writes_manifest_on_spawn_intent(tmp_path: Path):
     assert len(state.children) == 1
 
 
-def test_child_claims_manifest(tmp_path: Path):
-    # Parent writes manifest
+def test_no_manifest_is_adopted_without_an_explicit_binding(tmp_path: Path):
+    """M103: adoption was lineage-blind: any conductor starting within 10 minutes took any
+    pending manifest (dev14 -> dev17 -> dev18, and the seat). Only a named one is taken."""
     parent_state = _make_state("sess-alpha")
     topology = TopologyConfig()
-    parent_rule = SpawnRule(topology, parent_state, spawns_dir=tmp_path)
-    parent_rule._write_manifest(topic="fix relay bug")
+    manifest = SpawnRule(topology, parent_state, spawns_dir=tmp_path)._write_manifest(
+        topic="fix relay bug"
+    )
+    before = manifest.read_bytes()
 
-    # Child claims it
+    stranger = _make_state("sess-unrelated")
+    rule = SpawnRule(topology, stranger, spawns_dir=tmp_path)
+
+    assert rule.claim_pending_manifest(stranger) is None
+    assert rule.claim_pending_manifest(stranger, manifest_id="no-such-child") is None
+    assert rule.claim_pending_manifest(stranger, manifest_id="../escape") is None
+    assert stranger.parent_session is None
+    assert manifest.read_bytes() == before
+
+
+def test_child_claims_the_manifest_it_was_launched_for(tmp_path: Path):
+    parent_state = _make_state("sess-alpha")
+    parent_state.in_flight_files = {"/foo/bar.py"}
+    topology = TopologyConfig()
+    manifest = SpawnRule(topology, parent_state, spawns_dir=tmp_path)._write_manifest(
+        topic="fix relay bug"
+    )
+
     child_state = _make_state("sess-beta")
     child_rule = SpawnRule(topology, child_state, spawns_dir=tmp_path)
-    claimed = child_rule.claim_pending_manifest(child_state)
+    claimed = child_rule.claim_pending_manifest(child_state, manifest_id=manifest.stem)
 
     assert claimed is not None
     assert claimed["status"] == "claimed"
     assert claimed["claimed_by"] == "sess-beta"
     assert child_state.parent_session == "sess-alpha"
+    assert child_state.parent_blocked_patterns == {"/foo/bar.py"}
+    assert child_state.in_flight_files == set()
 
 
 def test_child_blocked_from_parent_files(tmp_path: Path):
-    # Parent session has in-flight files
-    parent_state = _make_state("sess-alpha")
-    parent_state.in_flight_files = {"/foo/bar.py", "/baz/qux.py"}
-
-    # Child session knows it has a parent
     child_state = _make_state("sess-beta", parent="sess-alpha")
-    child_state.in_flight_files = {"/foo/bar.py", "/baz/qux.py"}  # same files as parent
+    child_state.parent_blocked_patterns = {"/foo/bar.py", "/baz/qux.py"}
+    child_rule = SpawnRule(TopologyConfig(), child_state, spawns_dir=tmp_path)
 
-    topology = TopologyConfig()
-    # Child's rule knows about the parent's blocked files via state
-    child_rule = SpawnRule(topology, child_state, spawns_dir=tmp_path)
-
-    # Block child from editing a parent-owned file
-    event = _make_edit_event("/foo/bar.py", session_id="sess-beta")
-    response = child_rule.on_pre_tool_use(event)
+    response = child_rule.on_pre_tool_use(_make_edit_event("/foo/bar.py", session_id="sess-beta"))
 
     assert response is not None
     assert response.action == "block"
     assert "sess-alpha" in (response.message or "")
+
+
+def test_child_is_never_blocked_by_its_own_edits(tmp_path: Path):
+    """M103: the block read the child's own in_flight_files, which grow on every edit, so
+    a child could write each file exactly once."""
+    child_state = _make_state("sess-beta", parent="sess-alpha")
+    child_state.in_flight_files = {"/mine/row.md"}
+    child_rule = SpawnRule(TopologyConfig(), child_state, spawns_dir=tmp_path)
+
+    assert child_rule.on_pre_tool_use(_make_edit_event("/mine/row.md", "sess-beta")) is None
+
+
+def test_stopping_a_parent_abandons_its_pending_children(tmp_path: Path):
+    """M106 (2): a stopped session's pending manifests stayed adoptable after it was gone."""
+    parent_state = _make_state("sess-alpha")
+    rule = SpawnRule(TopologyConfig(), parent_state, spawns_dir=tmp_path)
+    manifest = rule._write_manifest(topic="never launched")
+
+    rule.retire_pending_children()
+
+    assert yaml.safe_load(manifest.read_text())["status"] == "abandoned"
 
 
 def test_stale_manifest_ignored(tmp_path: Path):
