@@ -7,6 +7,7 @@ readonly -a AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES=(
     GIT_CONFIG_NOSYSTEM
     GIT_NO_REPLACE_OBJECTS
     GIT_OPTIONAL_LOCKS
+    HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256
     HAPAX_POST_MERGE_ROOT_DEFER_DIR
     HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT
     HAPAX_ROOT_REQUIRED_DRAIN_DIR
@@ -37,11 +38,11 @@ readonly -a AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES=(
     USER
     XDG_RUNTIME_DIR
 )
-readonly -a AUTHENTICATED_PRODUCTION_OPTIONAL_ENV_NAMES=(
-    HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256
-)
-AUTHENTICATED_PRODUCTION_OBSERVED_ENV_NAMES=()
+AUTHENTICATED_PRODUCTION_INPUT_ENV_NAMES=()
+AUTHENTICATED_PRODUCTION_MISSING_ENV_NAMES=()
+AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT=()
 AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES=()
+AUTHENTICATED_PRODUCTION_INPUT_ENVIRONMENT_VALIDATED=0
 _authenticated_requested=0
 _source_value_follows=0
 for _argument in "$@"; do
@@ -56,25 +57,85 @@ for _argument in "$@"; do
 done
 if [ "$_authenticated_requested" -eq 1 ] \
     && [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" != "1" ]; then
-    mapfile -t AUTHENTICATED_PRODUCTION_OBSERVED_ENV_NAMES < <(compgen -e)
-    for _environment_name in "${AUTHENTICATED_PRODUCTION_OBSERVED_ENV_NAMES[@]}"; do
+    if ! mapfile -d '' -t AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT < "/proc/$$/environ"; then
+        echo "authenticated production OOM install cannot read its raw exported environment; next action: discard the direct invocation and regenerate its exact live command with hapax-post-merge-deploy" >&2
+        exit 1
+    fi
+    for _environment_entry in "${AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT[@]}"; do
+        case "$_environment_entry" in
+            *=*) _environment_name="${_environment_entry%%=*}" ;;
+            *) _environment_name= ;;
+        esac
+        if [[ "$_environment_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+            _environment_display="$_environment_name"
+        else
+            _environment_display="<invalid-environment-entry>"
+        fi
+        _environment_duplicate=0
+        for _observed_environment_name in "${AUTHENTICATED_PRODUCTION_INPUT_ENV_NAMES[@]}"; do
+            if [ "$_environment_name" = "$_observed_environment_name" ]; then
+                _environment_duplicate=1
+                break
+            fi
+        done
+        if [ "$_environment_duplicate" -eq 1 ]; then
+            AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES+=("$_environment_display(duplicate)")
+            continue
+        fi
+        AUTHENTICATED_PRODUCTION_INPUT_ENV_NAMES+=("$_environment_name")
         _environment_allowed=0
-        for _allowed_environment_name in \
-            "${AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES[@]}" \
-            "${AUTHENTICATED_PRODUCTION_OPTIONAL_ENV_NAMES[@]}"; do
+        for _allowed_environment_name in "${AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES[@]}"; do
+            case "$_allowed_environment_name" in
+                PWD|SHLVL) continue ;;
+            esac
             if [ "$_environment_name" = "$_allowed_environment_name" ]; then
                 _environment_allowed=1
                 break
             fi
         done
         if [ "$_environment_allowed" -eq 0 ]; then
-            AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES+=("$_environment_name")
-            unset "$_environment_name" 2>/dev/null || true
+            AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES+=("$_environment_display")
         fi
     done
+    for _required_environment_name in "${AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES[@]}"; do
+        case "$_required_environment_name" in
+            PWD|SHLVL) continue ;;
+        esac
+        _environment_found=0
+        for _observed_environment_name in "${AUTHENTICATED_PRODUCTION_INPUT_ENV_NAMES[@]}"; do
+            if [ "$_required_environment_name" = "$_observed_environment_name" ]; then
+                _environment_found=1
+                break
+            fi
+        done
+        [ "$_environment_found" -eq 1 ] \
+            || AUTHENTICATED_PRODUCTION_MISSING_ENV_NAMES+=("$_required_environment_name")
+    done
+    if [ "${#AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES[@]}" -ne 0 ] \
+        || [ "${#AUTHENTICATED_PRODUCTION_MISSING_ENV_NAMES[@]}" -ne 0 ]; then
+        echo "authenticated production OOM install refuses an unexpected raw exported environment vocabulary: missing=${AUTHENTICATED_PRODUCTION_MISSING_ENV_NAMES[*]:-none} unexpected=${AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES[*]:-none}; next action: discard the direct invocation and regenerate its exact live command with hapax-post-merge-deploy" >&2
+        exit 1
+    fi
+    if [ "${GIT_CONFIG_GLOBAL-}" != "/dev/null" ] \
+        || [ "${GIT_CONFIG_NOSYSTEM-}" != "1" ] \
+        || [ "${GIT_NO_REPLACE_OBJECTS-}" != "1" ] \
+        || [ "${GIT_OPTIONAL_LOCKS-}" != "0" ] \
+        || [ "${LANG-}" != "C.UTF-8" ] || [ "${LC_ALL-}" != "C.UTF-8" ] \
+        || [ "${PATH-}" != "/usr/local/sbin:/usr/local/bin:/usr/bin:/bin" ] \
+        || [ "${PYTHONNOUSERSITE-}" != "1" ] || [ "${PYTHONSAFEPATH-}" != "1" ] \
+        || [ "${XDG_RUNTIME_DIR-}" != "/run/user/$UID" ] || [ "${SHLVL-}" != "1" ] \
+        || { [ -n "${HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256-}" ] \
+            && ! [[ "${HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256-}" =~ ^[0-9a-f]{64}$ ]]; }; then
+        echo "authenticated production OOM install refuses noncanonical fixed environment values before command execution; next action: discard the direct invocation and regenerate its exact live command with hapax-post-merge-deploy" >&2
+        exit 1
+    fi
+    AUTHENTICATED_PRODUCTION_INPUT_ENVIRONMENT_VALIDATED=1
 fi
+unset AUTHENTICATED_PRODUCTION_INPUT_ENV_NAMES AUTHENTICATED_PRODUCTION_RAW_ENVIRONMENT
 unset _allowed_environment_name _argument _authenticated_requested _environment_allowed
-unset _environment_name _source_value_follows
+unset _environment_display _environment_duplicate _environment_entry _environment_found
+unset _environment_name _observed_environment_name _required_environment_name
+unset _source_value_follows
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE="$ROOT"
@@ -1752,23 +1813,10 @@ validate_authenticated_test_root() {
 }
 
 validate_authenticated_production_environment_names() {
-    local expected observed found
-    local -a missing=()
     [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
     [ "$ROOT_REQUIRED_INSTALLER_TEST_MODE" = "0" ] || return 0
-    for expected in "${AUTHENTICATED_PRODUCTION_REQUIRED_ENV_NAMES[@]}"; do
-        found=0
-        for observed in "${AUTHENTICATED_PRODUCTION_OBSERVED_ENV_NAMES[@]}"; do
-            if [ "$expected" = "$observed" ]; then
-                found=1
-                break
-            fi
-        done
-        [ "$found" -eq 1 ] || missing+=("$expected")
-    done
-    if [ "${#AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES[@]}" -ne 0 ] \
-        || [ "${#missing[@]}" -ne 0 ]; then
-        echo "authenticated production OOM install refuses an unexpected exported environment vocabulary: missing=${missing[*]:-none} unexpected=${AUTHENTICATED_PRODUCTION_UNEXPECTED_ENV_NAMES[*]:-none}; next action: discard the direct invocation and regenerate its exact live command with hapax-post-merge-deploy" >&2
+    if [ "$AUTHENTICATED_PRODUCTION_INPUT_ENVIRONMENT_VALIDATED" -ne 1 ]; then
+        echo "authenticated production OOM install has no complete raw-environment validation; next action: discard the direct invocation and regenerate its exact live command with hapax-post-merge-deploy" >&2
         return 1
     fi
 }
@@ -1790,6 +1838,11 @@ PY
     canonical_defer="$account_home/.cache/hapax/post-merge-root-required"
     canonical_release="$account_home/.cache/hapax/source-activation/releases/$ROOT_REQUIRED_PACKAGE_SHA"
     canonical_stage="$canonical_defer/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment"
+    if [ -n "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" ] \
+        && ! [[ "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "authenticated production OOM install rejected a malformed helper-bound local-judge cap digest; next action: discard the altered invocation and regenerate its live command with hapax-post-merge-deploy" >&2
+        return 1
+    fi
     if [ "$account_uid" = "0" ] || [ "$TARGET_UID" != "$account_uid" ] \
         || [ "$TARGET_GID" != "$account_gid" ] || [ "$TARGET_USER" != "$account_user" ] \
         || [ "$TARGET_HOME" != "$account_home" ] || [ "$HOME" != "$account_home" ] \
@@ -2081,6 +2134,29 @@ load_host_policy() {
         return 1
     }
     HOST_POLICY_LOADED=1
+}
+
+validate_authenticated_cap_environment_for_host() {
+    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
+    [ "$ROOT_REQUIRED_INSTALLER_TEST_MODE" = "0" ] || return 0
+    case "$HOST_PROFILE" in
+        appendix)
+            if ! [[ "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+                echo "authenticated appendix OOM install requires the helper-bound local-judge cap digest; next action: rerun the governed cap canary and regenerate the live command with hapax-post-merge-deploy" >&2
+                return 1
+            fi
+            ;;
+        podium)
+            if [ -n "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" ]; then
+                echo "authenticated podium OOM install refuses an appendix-only local-judge cap digest; next action: discard the altered invocation and regenerate its live command with hapax-post-merge-deploy" >&2
+                return 1
+            fi
+            ;;
+        *)
+            echo "authenticated OOM cap contract has no exact selected host profile; next action: restore the sealed host policy and regenerate the live command with hapax-post-merge-deploy" >&2
+            return 1
+            ;;
+    esac
 }
 
 publish_installed_source_file() {
@@ -4017,6 +4093,7 @@ if [ "$INSTALL" -eq 1 ] && [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
     bind_authenticated_release_root
     validate_package_source_matches_commit
     load_host_policy
+    validate_authenticated_cap_environment_for_host
     validate_selected_host_sources
     run_authenticated_authority_gate authority-only
 fi
