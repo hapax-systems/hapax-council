@@ -251,6 +251,7 @@ def test_source_checkout_probe_failure_is_a_structured_fail_closed_result(tmp_pa
     assert check["status"] == "fail"
     assert check["actual"] == "unverified source checkout; installed-mode diagnostics only"
     assert "next action:" in check["detail"]
+    assert check["detail"] in result.stderr
     assert "WARNING hapax-oom-policy-audit source checkout verification failed" in result.stderr
     assert "continuing installed-mode diagnostics with a fail-closed result" in result.stderr
     assert "fatal:" in result.stderr
@@ -798,7 +799,26 @@ def _fake_docker(tmp_path: Path, *, state: str = "bounded") -> Path:
   *) exit 9 ;;
 esac
 """
-    path.write_text(f"#!/usr/bin/env bash\nset -euo pipefail\n{body}", encoding="utf-8")
+    path.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        'if [ -n "${HAPAX_TEST_DOCKER_BOUNDARY_CALLS:-}" ]; then\n'
+        "  printf 'host=%s context=%s config=%s cert=%s tls_verify=%s tls=%s api=%s args=%s\\n' \\\n"
+        '    "${DOCKER_HOST-unset}" "${DOCKER_CONTEXT-unset}" "${DOCKER_CONFIG-unset}" \\\n'
+        '    "${DOCKER_CERT_PATH-unset}" "${DOCKER_TLS_VERIFY-unset}" "${DOCKER_TLS-unset}" \\\n'
+        '    "${DOCKER_API_VERSION-unset}" "$*" >> "$HAPAX_TEST_DOCKER_BOUNDARY_CALLS"\n'
+        "fi\n"
+        'if [ "${1:-}" = --config ]; then\n'
+        '  [ "${2:-}" = /nonexistent/hapax-local-docker-config ] || exit 97\n'
+        "  shift 2\n"
+        "fi\n"
+        'if [ "${1:-}" = --host ]; then\n'
+        '  [ "${2:-}" = unix:///var/run/docker.sock ] || exit 98\n'
+        "  shift 2\n"
+        "fi\n"
+        f"{body}",
+        encoding="utf-8",
+    )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return path
 
@@ -1347,6 +1367,9 @@ def test_shipped_host_profile_rows_satisfy_the_declared_zram_invariant() -> None
     ]
 
     assert "-k shipped_host_profile_rows_satisfy_the_declared_zram_invariant" in table_text
+    assert "exact zram contract: appendix=16384 MiB, podium=32768 MiB" in table_text
+    assert "appendix=config/root-required/oom-host-policy/appendix/" in table_text
+    assert "podium=systemd/units/app.slice.d/oom-containment.conf" in table_text
     assert {row[0] for row in rows} == {"hapax-appendix", "hapax-podium"}
     for row in rows:
         assert len(row) == 9
@@ -1539,6 +1562,36 @@ def test_audit_fails_when_docker_cannot_be_queried(tmp_path: Path) -> None:
         if check["name"] == "docker_container_limits"
     )
     assert check["status"] == "error"
+
+
+def test_audit_pins_local_docker_daemon_against_hostile_selectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    boundary_calls = tmp_path / "docker-boundary-calls"
+    monkeypatch.setenv("HAPAX_TEST_DOCKER_BOUNDARY_CALLS", str(boundary_calls))
+    monkeypatch.setenv("DOCKER_HOST", "tcp://attacker.invalid:2376")
+    monkeypatch.setenv("DOCKER_CONTEXT", "remote-production")
+    monkeypatch.setenv("DOCKER_CONFIG", str(tmp_path / "hostile-docker-config"))
+    monkeypatch.setenv("DOCKER_CERT_PATH", str(tmp_path / "hostile-certs"))
+    monkeypatch.setenv("DOCKER_TLS_VERIFY", "1")
+    monkeypatch.setenv("DOCKER_TLS", "1")
+    monkeypatch.setenv("DOCKER_API_VERSION", "1.24")
+
+    result = _run(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    calls = boundary_calls.read_text(encoding="utf-8")
+    assert calls
+    for call in calls.splitlines():
+        assert "host=unix:///var/run/docker.sock" in call
+        assert "context=unset" in call
+        assert "config=/nonexistent/hapax-local-docker-config" in call
+        assert "cert=unset" in call
+        assert "tls_verify=unset" in call
+        assert "tls=unset" in call
+        assert "api=unset" in call
+        assert "--config /nonexistent/hapax-local-docker-config" in call
+        assert "--host unix:///var/run/docker.sock" in call
 
 
 def test_audit_rejects_exited_same_name_local_judge_container(tmp_path: Path) -> None:
