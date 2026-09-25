@@ -24,19 +24,18 @@ no measurement — the review floor drops without anything saying so.
 
 WHAT IS ACTUALLY OBSERVABLE
 
-A Claude invocation that returns token usage IS the subscription serving a request. That
-is a direct observation of account-live quota, and the estate already produces these
-constantly:
+Token usage and a Claude model name prove a serve, but not its authentication or
+billing surface. The existing passive sources contain no request-bound subscription
+auth evidence, so their quota walls are diagnostics, not subscription decisions:
 
   - ``~/.cache/hapax/claude-headless/*/output.jsonl``  headless lane results
     (``is_error`` / ``api_error_status`` / ``usage``)
   - ``~/.claude/projects/*/*.jsonl``                   session transcripts
     (``assistant`` records with ``message.usage``)
 
-The comparable case is codex, whose quota state is read straight off its CLI
-("You've hit your usage limit ... try again at 10:29 PM") and whose ``reviewer_command``
-is literally ``codex exec``. Nobody attests codex. Claude is no less observable; it just
-had no observer.
+Subscription observation uses the existing bounded active probe with its controlled
+subscription environment. With --no-probe, all unbound passive input leaves the route held.
+Current login state cannot retroactively authenticate a historical request.
 
 WHAT THIS IS NOT
 
@@ -47,8 +46,8 @@ session PRESENCE as evidence. Presence is exactly the defect the receipt validat
 evidence is a request that was SERVED, not a process that exists. A session sitting idle
 against an exhausted quota produces no recent usage record and therefore no receipt.
 
-Fail-closed. A wall observation newer than the newest served observation refuses to mint
-and exits non-zero, so the route stays held. No evidence in the window also refuses.
+Fail-closed. A subscription-bound probe wall refuses to mint and exits non-zero.
+No subscription-bound evidence also refuses; passive timestamps cannot change either result.
 """
 
 from __future__ import annotations
@@ -59,18 +58,35 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Final
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+# Match the existing capability-receipt producer's installed-release binding.
+# Published hapax-* commands can be regular copies in ~/.local/bin, whose
+# parent is not a source tree. Explicit checkout execution keeps its own code.
+_SCRIPT_PATH = Path(__file__).resolve()
+_CHECKOUT_ROOT = _SCRIPT_PATH.parents[1]
+REPO_ROOT = (
+    _CHECKOUT_ROOT
+    if _SCRIPT_PATH.parent.name == "scripts"
+    and (_CHECKOUT_ROOT / "shared" / "quota_spend_ledger.py").is_file()
+    else Path(
+        os.environ.get("HAPAX_SOURCE_ACTIVATE_WORKTREE")
+        or Path.home() / ".cache/hapax/source-activation/worktree"
+    )
+    .expanduser()
+    .resolve()
+)
+sys.path.insert(0, str(REPO_ROOT))
 ADMISSION_WRITER = REPO_ROOT / "scripts" / "hapax-claude-subscription-quota-admission"
 
 #: The witness name the receipt validator's allowlist requires for this observation.
 WITNESS_PREFIX = "claude-subscription-headroom-observed"
 OBSERVATION = "subscription_quota_headroom_observed"
-DEFAULT_ROUTE_IDS = ("claude.review.opus", "claude.headless.full")
+DEFAULT_ROUTE_IDS = ("claude.review.opus", "claude.headless.full", "claude.interactive.full")
 
 DEFAULT_HEADLESS_GLOB = "~/.cache/hapax/claude-headless/*/output.jsonl"
 DEFAULT_TRANSCRIPT_GLOB = "~/.claude/projects/*/*.jsonl"
@@ -105,11 +121,12 @@ CLAUDE_MODEL_RE = re.compile(r"\Aclaude-[a-z0-9.-]+\Z")
 ROUTE_MODEL_PREFIXES: Final[dict[str, tuple[str, ...]]] = {
     "claude.review.opus": ("claude-opus",),
     "claude.headless.full": ("claude-",),
+    "claude.interactive.full": ("claude-opus",),
 }
 
 
 class Observation:
-    __slots__ = ("kind", "at", "source", "detail", "model", "scrubbed_env")
+    __slots__ = ("kind", "at", "source", "detail", "model", "scrubbed_env", "credential_binding")
 
     def __init__(
         self,
@@ -119,6 +136,7 @@ class Observation:
         detail: str = "",
         model: str | None = None,
         scrubbed_env: tuple[str, ...] = (),
+        credential_binding: str | None = None,
     ) -> None:
         self.kind = kind  # "served" | "wall"
         self.at = at
@@ -126,6 +144,7 @@ class Observation:
         self.detail = detail
         self.model = model
         self.scrubbed_env = scrubbed_env
+        self.credential_binding = credential_binding
 
 
 def _anthropic_model(record: Mapping[str, object]) -> str | None:
@@ -225,15 +244,12 @@ def _wall_text(record: dict) -> str:
 
 
 def _classify(record: Mapping[str, object], at: datetime, source: str) -> Observation | None:
-    """One record -> wall / served / nothing. Wall is checked FIRST and needs no model."""
+    """Keep passive wall diagnostics without asserting subscription authentication."""
     if any(marker.search(_wall_text(record)) for marker in WALL_MARKERS):
         return Observation("wall", at, source, "provider-quota-refusal")
-    if record.get("is_error") or _served_tokens(record.get("usage")) <= 0:
-        return None
-    model = _anthropic_model(record)
-    if model is None:
-        return None  # served, but not by Anthropic — witnesses nothing about this subscription
-    return Observation("served", at, source, model=model)
+    # Neither source binds a serve to its auth surface. API/PAYG and subscription
+    # responses share this metadata; even an Opus serve must therefore hold.
+    return None
 
 
 def _scan_headless(path: Path, floor: datetime) -> list[Observation]:
@@ -276,13 +292,8 @@ def _scan_headless(path: Path, floor: datetime) -> list[Observation]:
                 obs = _classify(record, mtime, "headless-result")
                 if obs is None:
                     continue
-                if obs.kind == "served":
-                    # mtime is a FILE fact, not a record fact. Dating a serve with it
-                    # fabricates freshness: a 30-day-old success in a file appended to a
-                    # minute ago would read as a serve a minute ago. Undated serves are
-                    # therefore not evidence at all. Dating a WALL with mtime is merely
-                    # conservative (it can only withhold availability), so walls are kept.
-                    continue
+                # Only wall diagnostics reach here; mtime must never grant
+                # subscription freshness to an undated serve.
                 undated_last = obs
     except OSError:
         return []
@@ -329,16 +340,15 @@ def _scan_transcript(path: Path, floor: datetime) -> list[Observation]:
     return out
 
 
-#: Bounded active probe, used when any requested route lacks recent in-family passive evidence,
-#: so either a quiet estate or a busy session in another family cannot silently drop the review
-#: floor. Measured 2026-08-19: ~$0.02 once the prompt cache is warm. A FRESH PROCESS taking the
-#: same path a reviewer would is better evidence than this process's own liveness and is not
-#: presence.
+#: Bounded active probe. Passive serves and walls lack subscription-auth binding
+#: and cannot suppress this producer or decide the measured account's admission.
+#: A fresh process with the controlled subscription environment measures a response;
+#: this process's own liveness is not evidence.
 #: The probe must request a model whose family can witness EVERY route it intends to mint.
 #: An earlier revision probed with Haiku, which cannot witness claude.review.opus — the one
 #: route the review floor depends on — so the probe could only ever have covered the route
 #: that mattered least. An Opus serve satisfies both `claude-opus*` and `claude-*`, so one
-#: probe covers both routes; probing per family would double the spend for nothing.
+#: probe covers headless, review and interactive routes.
 PROBE_MODEL = "claude-opus-5"
 
 PROBE_ARGV = (
@@ -352,8 +362,65 @@ PROBE_ARGV = (
     "--strict-mcp-config",
     "--mcp-config",
     '{"mcpServers":{}}',
+    "--setting-sources",
+    "",
+    "--tools",
+    "",
+    "--no-session-persistence",
 )
 PROBE_TIMEOUT_SECONDS = 180
+
+# Claude's documented Linux system-policy binding. Managed configurations need
+# their own request-time proof; do not suppress or override their policy.
+PROBE_MANAGED_DIR = Path("/etc/claude-code")
+
+
+def _unmanaged_linux_probe() -> bool:
+    if sys.platform != "linux" or "microsoft" in os.uname().release.lower():
+        return False
+    try:
+        PROBE_MANAGED_DIR.stat()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
+def _subscription_probe_token(now: datetime) -> str | None:
+    """Read the CLI's explicit saved-login binding; keep the token in memory only.
+
+    Only Pro/Max personal subscriptions are supported by this isolated producer.
+    Team/Enterprise can acquire server-managed policy after startup, so they hold
+    rather than being treated as equivalent to an unmanaged personal account.
+    No refresh, key helper, inherited token or API credential is a fallback.
+    """
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    try:
+        data = json.loads((config / ".credentials.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
+    if not isinstance(oauth, dict):
+        return None
+    token = oauth.get("accessToken")
+    scopes = oauth.get("scopes")
+    expires = oauth.get("expiresAt")
+    if (
+        not isinstance(token, str)
+        or not token
+        or any(char.isspace() for char in token)
+        or oauth.get("subscriptionType") not in ("pro", "max")
+        or not isinstance(scopes, list)
+        or "user:inference" not in scopes
+        or isinstance(expires, bool)
+        or not isinstance(expires, (int, float))
+        or not 0 < expires < 253402300800000
+        or expires / 1000 <= now.timestamp() + PROBE_TIMEOUT_SECONDS
+    ):
+        return None
+    return token
+
 
 #: Known provider controls that the operator-subscription probe deliberately removes. Only names,
 #: never values, are persisted in a probe-backed admission receipt so the measurement discloses
@@ -381,12 +448,195 @@ def provider_redirect_env(env: Mapping[str, str] | None = None) -> list[str]:
     )
 
 
+# The CLI's documented host-routing contract excludes settings-file provider/env
+# overrides while retaining hooks, MCP, plugins and session continuity. Keep the
+# lock in both the process env (before settings load) and the highest-precedence
+# CLI settings (during settings reload). Managed policy is never overridden.
+INTERACTIVE_SUBSCRIPTION_SETTINGS = json.dumps(
+    {
+        "apiKeyHelper": "",
+        "forceLoginMethod": "claudeai",
+        "env": {"CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST": "1"},
+    },
+    separators=(",", ":"),
+)
+INTERACTIVE_ENV_NAMES = frozenset(
+    {
+        "HOME",
+        "PATH",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "TERM",
+        "COLORTERM",
+        "TMUX",
+        "TMUX_PANE",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "SSH_AUTH_SOCK",
+        "CLAUDE_ROLE",
+        "CLAUDE_CONFIG_DIR",
+    }
+)
+# CLI whose host-routing effect this producer has actually exercised. An
+# unmeasured version's interpretation of the flag is not an auth boundary.
+INTERACTIVE_VALIDATED_CLI = (2, 1, 281)
+
+
+def _interactive_credential_admitted(token: str) -> bool:
+    # Read the same explicit/live ledger as dispatch. No fixture fallback and no
+    # receipt refresh: a delayed tmux child must still hold at actual execution.
+    try:
+        from shared.quota_spend_ledger import (
+            DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
+            QuotaSpendLedgerError,
+            claude_interactive_credential_admitted,
+            claude_subscription_wall_observed_at,
+            load_quota_spend_ledger,
+        )
+    except ImportError:
+        return False
+    path = Path(
+        os.environ.get("HAPAX_QUOTA_SPEND_LEDGER")
+        or os.environ.get("HAPAX_QUOTA_SPEND_LEDGER_LIVE")
+        or DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+    ).expanduser()
+    try:
+        # Observe new bound refusals independently of the ledger's writer tick.
+        # This read also runs in the delayed child and after its auth check.
+        walls = []
+        now = datetime.now(UTC)
+        receipt_dir = Path(
+            os.environ.get("HAPAX_RELAY_RECEIPT_DIR") or Path.home() / ".cache/hapax/relay/receipts"
+        ).expanduser()
+        if receipt_dir.exists():
+            for receipt in receipt_dir.iterdir():
+                if not (
+                    receipt.name.startswith("claude-subscription-observed-")
+                    and receipt.name.endswith("-quota-wall.yaml")
+                ):
+                    continue
+                fields = dict(line.split(": ", 1) for line in receipt.read_text().splitlines())
+                # Unreadable/malformed producer evidence cannot restore an old positive.
+                at = _parse_ts(fields.get("detected_at"))
+                if at is None:
+                    return False
+                if now - at > timedelta(hours=24):
+                    continue
+                if claude_subscription_wall_observed_at(fields, now=now) is None:
+                    return False
+                walls.append(fields)
+        return claude_interactive_credential_admitted(
+            load_quota_spend_ledger(path), token, now=now, quota_walls=walls
+        )
+    except (OSError, ValueError, QuotaSpendLedgerError):
+        return False
+
+
+def interactive_subscription(argv: list[str], *, execute: bool) -> int:
+    """Bind the admitted child, not just its probe, to saved subscription OAuth.
+
+    This rechecks existing quota evidence; it does not observe or mint headroom.
+    No token is written to argv, spawn scripts, status output or another store.
+    """
+
+    def hold(reason: str) -> int:
+        print(
+            f"interactive subscription launch held: {reason}. Next action: restore "
+            "a current Pro/Max saved login on unmanaged Linux and a Claude CLI that "
+            "supports host-managed provider routing; reconcile any gateway or managed "
+            "configuration through its owner. Obtain an authorized account-live observation "
+            "for this saved credential, regenerate quota telemetry, then retry governed "
+            "dispatch. No API fallback.",
+            file=sys.stderr,
+        )
+        return 4
+
+    if not argv or any(
+        arg == "--" or arg.split("=", 1)[0] in {"--settings", "--setting-sources"}
+        for arg in argv[1:]
+    ):
+        return hold("caller settings overrides cannot be bound to the measured route")
+    if not (REPO_ROOT / "shared" / "quota_spend_ledger.py").is_file():
+        return hold(
+            "governed quota implementation unavailable; restore the declared "
+            "HAPAX_SOURCE_ACTIVATE_WORKTREE release before retrying"
+        )
+    token = _subscription_probe_token(datetime.now(UTC)) if _unmanaged_linux_probe() else None
+    if token is None:
+        return hold("subscription authentication or host policy is unproven")
+    if not _interactive_credential_admitted(token):
+        return hold("current quota evidence does not bind the launch credential")
+    # Like the probe, exclude provider, proxy and runtime-injection controls.
+    # Retain coordination, terminal, locale and desktop bindings for full tools.
+    child_env = {
+        name: value
+        for name, value in os.environ.items()
+        if name in INTERACTIVE_ENV_NAMES or name.startswith(("HAPAX_", "XDG_", "LC_"))
+    }
+    child_env.update(
+        CLAUDE_CODE_OAUTH_TOKEN=token,
+        CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST="1",
+    )
+    settings = ["--settings", INTERACTIVE_SUBSCRIPTION_SETTINGS]
+    try:
+        version_result = subprocess.run(
+            [argv[0], "--version"], env=child_env, capture_output=True, text=True, timeout=15
+        )
+        version = re.fullmatch(
+            r"(\d+)\.(\d+)\.(\d+) \(Claude Code\)", version_result.stdout.strip()
+        )
+        if (
+            version_result.returncode != 0
+            or version is None
+            or tuple(map(int, version.groups())) != INTERACTIVE_VALIDATED_CLI
+        ):
+            return hold(
+                "Claude CLI 2.1.281 is the validated host-routing version; other versions "
+                "require the isolated CLI contract recheck before route admission"
+            )
+        # Check the installed interpreter's selection with the exact child env
+        # and settings. Old/unsupported CLIs and saved gateway sessions hold.
+        # Auth status may contain account PII; parse in memory, never echo it.
+        result = subprocess.run(
+            [argv[0], *settings, "auth", "status", "--json"],
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        status = json.loads(result.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return hold("the CLI authentication check failed")
+    if (
+        result.returncode != 0
+        or not isinstance(status, dict)
+        or status.get("loggedIn") is not True
+        or status.get("authMethod") != "oauth_token"
+        or status.get("apiProvider") != "firstParty"
+        or status.get("apiKeySource") is not None
+        or not _unmanaged_linux_probe()
+    ):
+        return hold("the actual CLI did not select the bound first-party OAuth route")
+    if execute:
+        if not _interactive_credential_admitted(token):
+            return hold("launch credential evidence expired or changed during authentication check")
+        try:
+            os.execvpe(argv[0], [*argv, *settings], child_env)
+        except OSError:
+            return hold("the bound CLI could not start")
+    return 0
+
+
 def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
     """Actively observe account-live by making one bounded real request.
 
-    Known provider controls are removed from the subprocess environment. Any redirecting
-    variable not in that explicit scrub list still refuses the probe. Returning ``None`` means
-    "no evidence", which holds the route; it never mints.
+    A fresh private HOME/config/cwd, no file settings sources, and an allowlisted
+    environment bind this request to a validated saved subscription OAuth token.
+    ``cwd`` is retained for callers but is never used as a configuration source.
+    Missing proof returns ``None`` and keeps admission held without an inference.
     """
     probe_env = dict(os.environ)
     for name in PROBE_ENV_SCRUBBED:
@@ -396,26 +646,55 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         print(
             "probe refused: environment would redirect the Claude CLI off the operator "
             f"subscription ({', '.join(redirected)} set). A receipt minted here would "
-            "assert auth_surface=subscription for an endpoint that is not the subscription.",
+            "assert auth_surface=subscription for an endpoint that is not the subscription. "
+            "Next action: unset the named redirect variables in the observer environment "
+            "and retry the governed subscription observation.",
+            file=sys.stderr,
+        )
+        return None
+    token = _subscription_probe_token(now) if _unmanaged_linux_probe() else None
+    if token is None:
+        print(
+            "probe refused: isolated subscription authentication is unproven. "
+            "Next action: restore a current Pro/Max Claude saved login on an unmanaged "
+            "Linux host, or obtain a governed subscription observation for this "
+            "configuration. Admission remains held; no API fallback was attempted.",
             file=sys.stderr,
         )
         return None
     try:
-        proc = subprocess.run(
-            list(PROBE_ARGV),
-            capture_output=True,
-            text=True,
-            timeout=PROBE_TIMEOUT_SECONDS,
-            cwd=cwd,
-            env=probe_env,
-        )
+        with tempfile.TemporaryDirectory(prefix="hapax-claude-subscription-probe-") as root:
+            config = Path(root) / ".claude"
+            config.mkdir(mode=0o700)
+            # An allowlist also excludes alternate profile/gateway bindings,
+            # runtime injection and proxy controls, including future additions.
+            # No credential is written into the temporary home or a log.
+            child_env = {
+                name: probe_env[name] for name in ("PATH", "LANG", "LC_ALL") if name in probe_env
+            }
+            child_env.update(
+                HOME=root,
+                CLAUDE_CONFIG_DIR=str(config),
+                CLAUDE_CODE_OAUTH_TOKEN=token,
+            )
+            proc = subprocess.run(
+                list(PROBE_ARGV),
+                capture_output=True,
+                text=True,
+                timeout=PROBE_TIMEOUT_SECONDS,
+                cwd=root,
+                env=child_env,
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         # A probe that could not RUN is a broken instrument, not an absence of evidence.
         # Collapsing the two made a missing `claude` binary or a timed-out request exit 4,
         # which SuccessExitStatus accepts — so the unit would stay green forever while
         # never observing anything. This is the same declined-vs-failed distinction the
         # determination spine enforces; it belongs here too.
-        return Observation("probe_failed", now, "active-probe", f"{type(exc).__name__}: {exc}")
+        # Exceptions may embed argv, output or environment. Retain only the type.
+        return Observation("probe_failed", now, "active-probe", type(exc).__name__)
+    if not _unmanaged_linux_probe():
+        return None
     blob = (proc.stdout or "").strip()
     try:
         record = json.loads(blob)
@@ -424,13 +703,29 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
         # how codex reports its wall — so classify it rather than discarding it.
         combined = f"{blob} {proc.stderr or ''}"
         if any(marker.search(combined) for marker in WALL_MARKERS):
-            return Observation("wall", now, "active-probe", "provider-quota-refusal")
+            return Observation(
+                "wall",
+                now,
+                "active-probe",
+                "provider-quota-refusal",
+                credential_binding=_probe_credential_binding(token, now),
+            )
         return None
     if not isinstance(record, dict):
         return None
     if any(marker.search(_wall_text(record)) for marker in WALL_MARKERS):
-        return Observation("wall", now, "active-probe", "provider-quota-refusal")
-    if not record.get("is_error") and _served_tokens(record.get("usage")) > 0:
+        return Observation(
+            "wall",
+            now,
+            "active-probe",
+            "provider-quota-refusal",
+            credential_binding=_probe_credential_binding(token, now),
+        )
+    if (
+        proc.returncode == 0
+        and not record.get("is_error")
+        and _served_tokens(record.get("usage")) > 0
+    ):
         # Record the model the response ACTUALLY reports, never the one requested. The
         # request is an intention; only the response is evidence, and a serve with no
         # identifiable Anthropic model witnesses nothing (same rule as the passive path).
@@ -443,8 +738,15 @@ def probe(now: datetime, *, cwd: str = "/") -> Observation | None:
             "active-probe",
             model=model,
             scrubbed_env=PROBE_ENV_SCRUBBED,
+            credential_binding=_probe_credential_binding(token, now),
         )
     return None
+
+
+def _probe_credential_binding(token: str, now: datetime) -> str:
+    from shared.quota_spend_ledger import claude_subscription_credential_binding
+
+    return claude_subscription_credential_binding(token, now)
 
 
 def _mtime(path: Path) -> datetime | None:
@@ -495,16 +797,7 @@ def observe_all(
     headless_glob: str,
     transcript_glob: str,
 ) -> tuple[str, Observation | None, list[Observation]]:
-    """``observe`` plus every observation inside the window, so routes can pick their own.
-
-    The account-level verdict (served / walled / no_evidence) is a property of the NEWEST
-    observation. Which observation may vouch for a given ROUTE is not: measured 2026-09-02,
-    every 10-minute cycle for ~24h logged ``claude.review.opus: skipped model-family-mismatch,
-    observed_model: claude-fable-5-1`` — the newest serve was a Fable run, so the opus review
-    route was never minted although opus serves sat minutes older inside the same window.
-    A new model family arriving had silently starved a route. The per-route choice lives in
-    ``evidence_by_route``; this function only stops discarding the evidence it needs.
-    """
+    """Return passive wall observations; unbound serves cannot establish account liveness."""
     floor = now - timedelta(seconds=max_age_seconds)
     found: list[Observation] = []
     for path in _recent_files(headless_glob, floor):
@@ -635,6 +928,8 @@ def mint(
             argv += ["--receipt-dir", str(receipt_dir)]
         if route_evidence.scrubbed_env:
             argv.append("--probe-environment-scrubbed")
+        if route_evidence.credential_binding:
+            argv += ["--credential-binding", route_evidence.credential_binding]
         if dry_run:
             results.append({"route_id": route_id, "would_run": argv[2:]})
             continue
@@ -668,6 +963,42 @@ def mint_failed(receipts: list[dict]) -> bool:
     return any(r.get("returncode") not in (0, None) for r in receipts)
 
 
+def publish_bound_wall(evidence: Observation, receipt_dir: Path | None) -> Path:
+    """Publish one immutable negative observation in the existing relay wall format."""
+    if evidence.source != "active-probe" or not evidence.credential_binding:
+        raise ValueError("bound subscription refusal required")
+    receipt_dir = (
+        receipt_dir
+        or Path(
+            os.environ.get("HAPAX_RELAY_RECEIPT_DIR") or Path.home() / ".cache/hapax/relay/receipts"
+        ).expanduser()
+    )
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    fields = {
+        "role": "claude-subscription-observed",
+        "status": "quota_blocked",
+        "detected_at": evidence.at.isoformat().replace("+00:00", "Z"),
+        "signal_kind": "provider-quota-refusal",
+        "failure_class": "quota_exhausted",
+        "rate_limit_type": "unknown",
+        "resets_at": "unknown",
+        "provider": "anthropic-claude-subscription",
+        "auth_surface": "subscription",
+        "source": "scripts/hapax-claude-account-live-observe",
+        "observation": "subscription_quota_wall_observed",
+        "credential_binding": evidence.credential_binding,
+    }
+    # Publish complete bytes atomically; never overwrite earlier evidence.
+    with tempfile.NamedTemporaryFile(mode="w", dir=receipt_dir, prefix=".bound-wall-") as handle:
+        handle.write("".join(f"{key}: {value}\n" for key, value in fields.items()))
+        handle.flush()
+        os.fsync(handle.fileno())
+        name = f"claude-subscription-observed-{Path(handle.name).name.removeprefix('.bound-wall-')}-quota-wall.yaml"
+        path = receipt_dir / name
+        os.link(handle.name, path)
+    return path
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--max-age-seconds", type=int, default=DEFAULT_MAX_AGE_SECONDS)
@@ -681,9 +1012,8 @@ def main(argv: list[str] | None = None) -> int:
         "--probe",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="When any requested route lacks passive in-family evidence, make ONE bounded real "
-        "request to observe account-live directly (~$0.02). --no-probe restricts to passive "
-        "observation.",
+        help="Make ONE bounded real subscription request for account-live evidence. "
+        "--no-probe reads passive walls only; unbound passive serves cannot admit a route.",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -695,30 +1025,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     route_ids = tuple(args.route_ids or DEFAULT_ROUTE_IDS)
 
-    verdict, evidence, found = observe_all(
+    passive_verdict, passive_evidence, passive_found = observe_all(
         now=now,
         max_age_seconds=args.max_age_seconds,
         headless_glob=args.headless_glob,
         transcript_glob=args.transcript_glob,
     )
 
-    # Probe for ROUTE evidence, not merely for account-level evidence. A Fable serve witnesses
-    # headless.full but says nothing about review.opus; treating that as "the account was served"
-    # and suppressing the probe starves the review route indefinitely. Preserve every passive
-    # route witness already found and let one probe fill only the missing families.
-    # NOT used to override a wall: a detected wall is the live state and must stand.
-    by_route = (
-        evidence_by_route(found, route_ids) if verdict == "served" else dict.fromkeys(route_ids)
-    )
-    routes_missing_passive_evidence = [
-        route_id for route_id, route_evidence in by_route.items() if route_evidence is None
-    ]
+    # Passive records do not bind the request to this subscription account. Keep
+    # their diagnostics separate: even a newer gateway wall cannot veto this
+    # controlled request, and passive success cannot stand in for one.
+    verdict, evidence = "no_evidence", None
+    by_route = dict.fromkeys(route_ids)
     probe_report: dict | None = None
-    if verdict != "walled" and routes_missing_passive_evidence and args.probe and not args.dry_run:
+    if args.probe and not args.dry_run:
         probe_report = {
             "attempted": True,
-            "requested_for_routes": routes_missing_passive_evidence,
-            "reason": "requested route lacked in-model-family served evidence inside the window",
+            "requested_for_routes": list(route_ids),
+            "reason": "passive records do not bind requests to the subscription account",
             "model": PROBE_MODEL,
             "environment_variables_scrubbed": list(PROBE_ENV_SCRUBBED),
         }
@@ -726,17 +1050,14 @@ def main(argv: list[str] | None = None) -> int:
         if probed is not None:
             probe_report["outcome"] = probed.kind
             if probed.kind == "served":
-                witnessed = evidence_by_route([probed], tuple(routes_missing_passive_evidence))
-                for route_id, route_evidence in witnessed.items():
-                    if route_evidence is not None:
-                        by_route[route_id] = route_evidence
+                by_route = evidence_by_route([probed], route_ids)
                 probe_report["witnessed_routes"] = [
-                    route_id for route_id, route_evidence in witnessed.items() if route_evidence
+                    route_id for route_id, route_evidence in by_route.items() if route_evidence
                 ]
-                found.append(probed)
-                verdict, evidence, _ = _verdict(found)
+                verdict, evidence = "served", probed
             else:
-                verdict, evidence = probed.kind, probed
+                verdict = "walled" if probed.kind == "wall" else probed.kind
+                evidence = probed
         else:
             probe_report["outcome"] = "no_evidence"
             probe_report["witnessed_routes"] = []
@@ -745,6 +1066,15 @@ def main(argv: list[str] | None = None) -> int:
         "observed_at": evidence.at.isoformat().replace("+00:00", "Z") if evidence else None,
         "source": evidence.source if evidence else None,
         "route_ids": list(route_ids),
+        "passive": {
+            "verdict": passive_verdict,
+            "observed_at": (
+                passive_evidence.at.isoformat().replace("+00:00", "Z") if passive_evidence else None
+            ),
+            "source": passive_evidence.source if passive_evidence else None,
+            "subscription_bound": False,
+            "observation_count": len(passive_found),
+        },
     }
     if probe_report is not None:
         payload["probe"] = probe_report
@@ -768,33 +1098,57 @@ def main(argv: list[str] | None = None) -> int:
                 "observation succeeded but at least one receipt write FAILED — the route is "
                 "not vouched for. Exit 5 is deliberately outside SuccessExitStatus so this "
                 "surfaces instead of leaving systemd green with no receipts."
+                " Next action: check receipt-directory permissions, repair the writer, "
+                "then rerun `hapax-claude-account-live-observe --probe --json` for the "
+                "same authorized route and regenerate `hapax-quota-telemetry-writer --json`."
             )
             rc = 5
         elif not args.dry_run and not any(r.get("returncode") == 0 for r in payload["receipts"]):
-            payload["hint"] = "every route was skipped; no receipt was written"
+            payload["hint"] = (
+                "every route was skipped; no receipt was written. Next action: restore "
+                "the declared Opus probe model and rerun "
+                "`hapax-claude-account-live-observe --probe --json` for the same route."
+            )
             rc = 5
         else:
             rc = 0
     elif verdict == "walled":
+        try:
+            payload["wall_receipt"] = str(publish_bound_wall(evidence, args.receipt_dir))
+        except (OSError, ValueError):
+            payload["wall_receipt_write_failed"] = True
         payload["hint"] = (
-            "subscription refused for quota reasons more recently than it served; "
-            "holding the route rather than minting availability"
+            "the controlled subscription probe refused for quota reasons; "
+            "no availability was minted. Next action: after "
+            "quota recovery rerun `hapax-claude-account-live-observe --probe --json` "
+            "for the same authorized route, then `hapax-quota-telemetry-writer --json`."
         )
-        rc = 3
+        rc = 5 if payload.get("wall_receipt_write_failed") else 3
+        if rc == 5:
+            payload["hint"] += (
+                " Negative receipt publication failed: check receipt-directory permissions "
+                "and restore the writer before any launch; earlier telemetry is not revoked."
+            )
     elif verdict == "probe_failed":
         # NOT exit 4. The instrument broke; nothing was observed either way. Exit 7 is
         # outside SuccessExitStatus so a missing binary or a hung request surfaces instead
         # of leaving the unit green while it silently observes nothing.
         payload["hint"] = (
             f"the active probe could not run ({evidence.detail if evidence else 'unknown'}); "
-            "this is a broken instrument, not an absence of evidence"
+            "this is a broken instrument, not an absence of evidence. Next action: "
+            "check `command -v claude` in the observer's configured PATH and "
+            "`systemctl --user status hapax-claude-account-live-observe.service`; "
+            "restore the executable or resolve the request timeout, then rerun "
+            "`hapax-claude-account-live-observe --probe --json` under the same "
+            "authorized subscription configuration. Admission stays held."
         )
         rc = 7
     else:
         payload["hint"] = (
-            f"no served Claude response within {args.max_age_seconds}s; nothing exercised "
-            "the subscription, so account-live cannot be observed (this is not evidence of "
-            "exhaustion — it is absence of evidence, and the route stays held)"
+            f"no subscription-bound Claude response within {args.max_age_seconds}s; "
+            "passive serves lack request-bound subscription-auth evidence. Obtain an "
+            "authorized subscription observation through the governed producer; the route "
+            "stays held (this is not evidence of exhaustion)."
         )
         rc = 4
 
@@ -808,4 +1162,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] in {
+        "--check-interactive-subscription",
+        "--exec-interactive-subscription",
+    }:
+        raise SystemExit(
+            interactive_subscription(
+                sys.argv[2:], execute=sys.argv[1] == "--exec-interactive-subscription"
+            )
+        )
     raise SystemExit(main())

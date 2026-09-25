@@ -8,9 +8,11 @@ dispatch work, or mutate runtime state.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
-from datetime import UTC, datetime
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
@@ -37,7 +39,7 @@ DEFAULT_QUOTA_SPEND_LEDGER_LIVE = (
 
 PAID_CAPACITY_POOLS = frozenset({"api_paid_spend", "bootstrap_budget", "incident_override"})
 CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
-    {"claude.headless.full", "claude.review.opus"}
+    {"claude.headless.full", "claude.review.opus", "claude.interactive.full"}
 )
 RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES = frozenset(
     {
@@ -52,6 +54,7 @@ RECEIPT_BOUNDED_SUBSCRIPTION_PROVIDERS = {
     "glmcp.review.direct": "z_ai-glm-coding-plan",
     "claude.headless.full": "anthropic-claude-subscription",
     "claude.review.opus": "anthropic-claude-subscription",
+    "claude.interactive.full": "anthropic-claude-subscription",
     "kimi.interactive.lane": "moonshot-kimi-code-managed",
 }
 GLMCP_QUOTA_TELEMETRY_WRITER_REF = "scripts/hapax-quota-telemetry-writer"
@@ -114,8 +117,10 @@ CLAUDE_ADMISSION_COMPOSITE_REF_RE = re.compile(
     r"(?P<label>[a-z0-9_.+-]*claude-subscription-quota-admission[a-z0-9_.+-]*\.yaml):"
     rf"witness:(?P<witness>{CLAUDE_ADMISSION_WITNESS_PATTERN}):"
     rf"observation:(?P<observation>{CLAUDE_ADMISSION_OBSERVATION_PATTERN}):"
+    r"route_id:(?P<route_id>claude\.(?:headless\.full|review\.opus|interactive\.full)):"
     r"observed_at:(?P<observed_at>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z):"
     r"fresh_until:(?P<fresh_until>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
+    r"(?::credential_binding:(?P<credential_binding>[0-9a-f]{64}))?"
     rf"{re.escape(CLAUDE_ADMISSION_ACCOUNT_LIVE_QUOTA_SUFFIX)}\Z"
 )
 CLAUDE_ADMISSION_EVIDENCE_REF_RE = re.compile(r"\A[a-z0-9][a-z0-9_.+-]{2,239}\Z")
@@ -1390,6 +1395,11 @@ def subscription_quota_state_for_route(
         for snapshot in snapshots
         if _subscription_quota_missing_required_fresh_until(snapshot)
     )
+    noncurrent_receipt_refs = tuple(
+        f"quota-snapshot:{snapshot.snapshot_id}:claude_receipt_not_current"
+        for snapshot in snapshots
+        if _subscription_quota_missing_current_claude_receipt(snapshot, now=checked_at)
+    )
     untrusted_fresh_refs = tuple(
         "quota-snapshot:"
         f"{snapshot.snapshot_id}:"
@@ -1406,6 +1416,7 @@ def subscription_quota_state_for_route(
         *evidence_refs,
         *expired_refs,
         *missing_fresh_until_refs,
+        *noncurrent_receipt_refs,
         *untrusted_fresh_refs,
         *missing_payg_spend_gate_refs,
     )
@@ -1458,7 +1469,23 @@ def _effective_subscription_quota_state(
         return SubscriptionQuotaState.UNKNOWN
     if _subscription_quota_fresh_until_expired(snapshot, now=now):
         return SubscriptionQuotaState.STALE
+    if _subscription_quota_missing_current_claude_receipt(snapshot, now=now):
+        return SubscriptionQuotaState.STALE
     return snapshot.subscription_quota_state
+
+
+def _subscription_quota_missing_current_claude_receipt(
+    snapshot: QuotaSnapshot, *, now: datetime
+) -> bool:
+    route_id = _normalize_route_id(snapshot.route_id)
+    return (
+        snapshot.subscription_quota_state is SubscriptionQuotaState.FRESH
+        and route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES
+        and not any(
+            _is_claude_admission_evidence_ref(ref, route_id=route_id, now=now)
+            for ref in snapshot.evidence_refs
+        )
+    )
 
 
 def _subscription_quota_missing_required_fresh_until(snapshot: QuotaSnapshot) -> bool:
@@ -1490,7 +1517,10 @@ def _subscription_quota_missing_required_admission_evidence(
     if normalized_route_id == "agy.review.direct":
         return not any(_is_agy_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     if normalized_route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES:
-        return not any(_is_claude_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
+        return not any(
+            _is_claude_admission_evidence_ref(ref, route_id=normalized_route_id)
+            for ref in snapshot.evidence_refs
+        )
     if normalized_route_id == "kimi.interactive.lane":
         return not any(_is_kimi_admission_evidence_ref(ref) for ref in snapshot.evidence_refs)
     return True
@@ -1574,10 +1604,107 @@ def _is_kimi_admission_evidence_ref(ref: str) -> bool:
     )
 
 
-def _is_claude_admission_evidence_ref(ref: str) -> bool:
-    if CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref) is None:
+def claude_subscription_credential_binding(credential: str, observed_at: datetime) -> str:
+    """Opaque proof of the measured credential, scoped to one observation time.
+
+    No account identifier or credential is persisted. Credential rotation requires
+    another observation, even if the replacement belongs to the same account.
+    This is a binding to the request's credential, not independent acceptance.
+    """
+    stamp = observed_at.astimezone(UTC).replace(microsecond=0).isoformat()
+    message = f"hapax:claude:subscription:first-party:credential-binding:v1:{stamp}"
+    return hmac.new(credential.encode(), message.encode(), hashlib.sha256).hexdigest()
+
+
+def claude_interactive_credential_admitted(
+    ledger: QuotaSpendLedger,
+    credential: str,
+    *,
+    now: datetime,
+    quota_walls: Iterable[Mapping[str, str]] = (),
+) -> bool:
+    """Require fresh quota and a current receipt for the exact launch credential."""
+    route_id = "claude.interactive.full"
+    state, _ = subscription_quota_state_for_route(ledger, route_id, now=now)
+    if state is not SubscriptionQuotaState.FRESH or ledger.ledger_stale(now):
         return False
-    return _has_safe_claude_admission_receipt_label(ref) and _has_safe_claude_admission_witness(ref)
+    bound_wall_times = [
+        at
+        for wall in quota_walls
+        if (at := claude_subscription_wall_observed_at(wall, now=now)) is not None
+        and hmac.compare_digest(
+            wall["credential_binding"], claude_subscription_credential_binding(credential, at)
+        )
+    ]
+    # Public evidence projection deliberately omits the opaque credential proof.
+    refs = (
+        ref
+        for snapshot in ledger.quota_snapshots
+        if snapshot.route_id == route_id
+        and snapshot.capacity_pool is CapacityPool.SUBSCRIPTION_QUOTA
+        for ref in snapshot.evidence_refs
+    )
+    for ref in refs:
+        if not _is_claude_admission_evidence_ref(ref, route_id=route_id, now=now):
+            continue
+        match = CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref)
+        assert match is not None
+        observed_at = datetime.fromisoformat(match.group("observed_at"))
+        if any(at >= observed_at for at in bound_wall_times):
+            continue
+        proof = match.group("credential_binding")
+        if proof and hmac.compare_digest(
+            proof,
+            claude_subscription_credential_binding(credential, observed_at),
+        ):
+            return True
+    return False
+
+
+def claude_subscription_wall_observed_at(
+    fields: Mapping[str, str], *, now: datetime
+) -> datetime | None:
+    """Validate the controlled producer's binding, never a lane/model inference.
+
+    Reset predictions cannot authenticate a wall or override a newer serve.
+    The existing resetless-wall lifetime bounds this negative observation.
+    This validates provenance; actual launch additionally matches the credential.
+    """
+    if (
+        fields.get("status") != "quota_blocked"
+        or fields.get("provider") != "anthropic-claude-subscription"
+        or fields.get("auth_surface") != "subscription"
+        or fields.get("source") != "scripts/hapax-claude-account-live-observe"
+        or fields.get("observation") != "subscription_quota_wall_observed"
+        or re.fullmatch(r"[0-9a-f]{64}", fields.get("credential_binding", "")) is None
+    ):
+        return None
+    try:
+        at = datetime.fromisoformat(fields.get("detected_at", ""))
+    except ValueError:
+        return None
+    if at.tzinfo is None or not timedelta(0) <= now - at <= timedelta(hours=24):
+        return None
+    return at
+
+
+def _is_claude_admission_evidence_ref(
+    ref: str, *, route_id: str | None = None, now: datetime | None = None
+) -> bool:
+    match = CLAUDE_ADMISSION_COMPOSITE_REF_RE.fullmatch(ref)
+    if match is None or (route_id is not None and match.group("route_id") != route_id):
+        return False
+    try:
+        observed_at = datetime.fromisoformat(match.group("observed_at"))
+        fresh_until = datetime.fromisoformat(match.group("fresh_until"))
+    except ValueError:
+        return False
+    return (
+        observed_at < fresh_until
+        and (now is None or observed_at <= now < fresh_until)
+        and _has_safe_claude_admission_receipt_label(ref)
+        and _has_safe_claude_admission_witness(ref)
+    )
 
 
 def _has_safe_claude_admission_receipt_label(ref: str) -> bool:
@@ -1877,6 +2004,12 @@ def _redact_secretish_quota_evidence_ref(ref: str) -> str:
 
 
 def _redact_quota_evidence_ref(route_id: str, ref: str) -> str:
+    if route_id in CLAUDE_RECEIPT_BOUNDED_SUBSCRIPTION_ROUTES and _is_claude_admission_evidence_ref(
+        ref, route_id=route_id
+    ):
+        # Launch verifies the opaque proof from the raw ledger. Status/registry
+        # projections need only the observation; never relax generic redaction.
+        ref = re.sub(r":credential_binding:[0-9a-f]{64}", "", ref)
     redacted = _redact_secretish_quota_evidence_ref(ref)
     if redacted != ref:
         return redacted
@@ -2045,6 +2178,9 @@ __all__ = [
     "SupportArtifactAuthority",
     "TransitionBudget",
     "build_dashboard",
+    "claude_interactive_credential_admitted",
+    "claude_subscription_credential_binding",
+    "claude_subscription_wall_observed_at",
     "evaluate_paid_route_eligibility",
     "load_quota_spend_ledger",
     "load_quota_spend_ledger_resolved",

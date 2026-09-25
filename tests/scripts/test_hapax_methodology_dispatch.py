@@ -236,6 +236,7 @@ def _claude_subscription_quota_ledger(
     state: str,
     evidence_refs: list[str] | None = None,
     fresh_until: datetime | None = None,
+    route_id: str = "claude.headless.full",
 ) -> Path:
     now = datetime.now(UTC).replace(microsecond=0)
     payload = json.loads(QUOTA_SPEND_LEDGER_FIXTURES.read_text(encoding="utf-8"))
@@ -248,13 +249,13 @@ def _claude_subscription_quota_ledger(
     payload["quota_snapshots"] = [
         snapshot
         for snapshot in payload.get("quota_snapshots", [])
-        if snapshot.get("route_id") != "claude.headless.full"
+        if snapshot.get("route_id") != route_id
     ]
     snapshot: dict[str, object] = {
         "quota_snapshot_schema": 1,
-        "snapshot_id": f"quota-claude-headless-full-{state}-dispatch-test",
+        "snapshot_id": f"quota-{route_id.replace('.', '-')}-{state}-dispatch-test",
         "captured_at": _iso(now),
-        "route_id": "claude.headless.full",
+        "route_id": route_id,
         "provider": "anthropic-claude-subscription",
         "capacity_pool": "subscription_quota",
         "subscription_quota_state": state,
@@ -266,19 +267,22 @@ def _claude_subscription_quota_ledger(
     if fresh_until is not None:
         snapshot["fresh_until"] = _iso(fresh_until)
     payload["quota_snapshots"].append(snapshot)
-    path = tmp_path / "fixtures" / f"quota-spend-ledger-claude-{state}.json"
+    path = tmp_path / "fixtures" / f"quota-spend-ledger-{route_id.replace('.', '-')}-{state}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
 
-def _fresh_claude_subscription_quota_ledger(tmp_path: Path) -> Path:
+def _fresh_claude_subscription_quota_ledger(
+    tmp_path: Path, *, route_id: str = "claude.headless.full"
+) -> Path:
     now = datetime.now(UTC).replace(microsecond=0)
     fresh_until = now + timedelta(minutes=15)
     evidence_ref = (
         "relay-receipt:claude-subscription-quota-admission-dispatch-test.yaml:"
         f"witness:{CLAUDE_DISPATCH_ADMISSION_WITNESS}:"
         "observation:subscription_quota_headroom_observed:"
+        f"route_id:{route_id}:"
         f"observed_at:{_iso(now)}:"
         f"fresh_until:{_iso(fresh_until)}:"
         "account-live-quota:observed"
@@ -288,6 +292,7 @@ def _fresh_claude_subscription_quota_ledger(tmp_path: Path) -> Path:
         state="fresh",
         evidence_refs=[evidence_ref],
         fresh_until=fresh_until,
+        route_id=route_id,
     )
 
 
@@ -2090,6 +2095,13 @@ def test_operator_coupled_interactive_and_receipt_only_still_dispatch(tmp_path: 
         "--mode",
         "interactive",
         "--print-prompt",
+        extra_env={
+            "HAPAX_QUOTA_SPEND_LEDGER": str(
+                _fresh_claude_subscription_quota_ledger(
+                    tmp_path, route_id="claude.interactive.full"
+                )
+            )
+        },
     )
     receipt_only = _run(
         tmp_path,
@@ -4517,7 +4529,10 @@ def test_sliced_call_preserves_dispatch_env_and_marks_attached(monkeypatch) -> N
     assert env["HAPAX_SDLC_SLICE_ATTACHED"] == "1"
 
 
-def test_launches_claude_interactive_visible_lane_with_task_binding(tmp_path: Path) -> None:
+@pytest.mark.parametrize("quota_admitted", [False, True])
+def test_launches_claude_interactive_visible_lane_with_task_binding(
+    tmp_path: Path, quota_admitted: bool
+) -> None:
     _worktree(tmp_path / "worktree")
     spec = _spec(tmp_path / "isap-test.md")
     _task(
@@ -4540,6 +4555,12 @@ printf '%s\\n' "$@" > {launcher_args}
     )
     fake_launcher.chmod(0o755)
 
+    env = {"HAPAX_METHODOLOGY_CLAUDE_LAUNCHER": str(fake_launcher)}
+    if quota_admitted:
+        env["HAPAX_QUOTA_SPEND_LEDGER"] = str(
+            _fresh_claude_subscription_quota_ledger(tmp_path, route_id="claude.interactive.full")
+        )
+
     result = _run(
         tmp_path,
         "--task",
@@ -4551,8 +4572,22 @@ printf '%s\\n' "$@" > {launcher_args}
         "--mode",
         "interactive",
         "--launch",
-        extra_env={"HAPAX_METHODOLOGY_CLAUDE_LAUNCHER": str(fake_launcher)},
+        extra_env=env,
     )
+
+    if not quota_admitted:
+        assert result.returncode == 10, result.stderr
+        assert "subscription_route_quota_not_fresh" in result.stderr
+        assert "Next action:" in result.stderr
+        assert "genuine Opus-family account-live observation" in result.stderr
+        assert (
+            "hapax-claude-subscription-quota-admission --route-id claude.interactive.full"
+            in result.stderr
+        )
+        assert "hapax-quota-telemetry-writer --json" in result.stderr
+        assert "retry" in result.stderr
+        assert not launcher_args.exists()
+        return
 
     assert result.returncode == 0, result.stderr
     args = launcher_args.read_text(encoding="utf-8").splitlines()
@@ -4563,6 +4598,7 @@ printf '%s\\n' "$@" > {launcher_args}
         "tmux",
         "--task",
         "governed-build",
+        "--subscription-only",
         "--",
         "--model",
         "claude-opus-4-8",

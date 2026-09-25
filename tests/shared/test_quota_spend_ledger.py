@@ -110,6 +110,7 @@ CLAUDE_ADMISSION_EVIDENCE_REF = (
     "relay-receipt:claude-subscription-quota-admission-20260708t140000z.yaml:"
     "witness:claude-subscription-headroom-observed-20260708t1400z:"
     "observation:subscription_quota_headroom_observed:"
+    "route_id:claude.headless.full:"
     "observed_at:2026-07-08T14:00:00Z:"
     "fresh_until:2026-07-08T14:15:00Z:"
     "account-live-quota:observed"
@@ -1713,8 +1714,11 @@ def test_receipt_bounded_route_accepts_claude_admission_evidence() -> None:
 
 
 def test_claude_review_receipt_bounded_route_accepts_claude_admission_evidence() -> None:
+    evidence_ref = CLAUDE_ADMISSION_EVIDENCE_REF.replace(
+        "claude.headless.full", "claude.review.opus"
+    )
     ledger = _claude_ledger(
-        CLAUDE_ADMISSION_EVIDENCE_REF,
+        evidence_ref,
         snapshot_id="quota-claude-review-opus-fresh",
         route_id="claude.review.opus",
     )
@@ -1722,7 +1726,7 @@ def test_claude_review_receipt_bounded_route_accepts_claude_admission_evidence()
     state, refs = subscription_quota_state_for_route(ledger, "claude.review.opus", now=CLAUDE_NOW)
 
     assert state is SubscriptionQuotaState.FRESH
-    assert refs == (CLAUDE_ADMISSION_EVIDENCE_REF,)
+    assert refs == (evidence_ref,)
 
 
 def test_receipt_bounded_route_rejects_secretish_claude_witness() -> None:
