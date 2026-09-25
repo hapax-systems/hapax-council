@@ -1,152 +1,9 @@
-#!/usr/bin/bash -p
+#!/usr/bin/env bash
 # Install P0 OOM containment policy from the source tree to live systemd/earlyoom paths.
-if [[ "${BASH_SOURCE[0]}" != "$0" ]] || [[ "${BASH_LINENO[0]:-1}" != "0" ]]; then
-    printf '%s\n' "OOM containment installer must be executed, not sourced; next action: execute scripts/install-p0-oom-containment as a command through hapax-post-merge-deploy" >&2
-    [[ -n "" ]]
-elif [[ "$-" != *p* ]]; then
-    printf '%s\n' "OOM containment installer requires Bash privileged mode; next action: execute the installer directly or let hapax-post-merge-deploy invoke its sealed copy" >&2
-    [[ -n "" ]]
-else
-# Keep the body in this branch: moving it into an if condition suppresses errexit.
 set -euo pipefail
 ORIGINAL_ARGS=("$@")
-_authenticated_requested=0
-_install_requested=0
-_source_value_follows=0
-for _argument in "$@"; do
-    if [ "$_source_value_follows" -eq 1 ]; then
-        _source_value_follows=0
-        continue
-    fi
-    case "$_argument" in
-        --source) _source_value_follows=1 ;;
-        --authenticated-sealed-source) _authenticated_requested=1 ;;
-        --install) _install_requested=1 ;;
-    esac
-done
-case "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" in
-    0|1) ;;
-    *)
-        echo "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE must be exactly 1 when present" >&2
-        exit 1
-        ;;
-esac
-if [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" = "1" ]; then
-    _status_uid_seen=0
-    _status_gid_seen=0
-    _status_cap_seen=0
-    _status_uid_real=
-    _status_uid_effective=
-    _status_uid_saved=
-    _status_uid_fs=
-    _status_gid_real=
-    _status_gid_effective=
-    _status_gid_saved=
-    _status_gid_fs=
-    _status_cap_eff=
-    while read -r _status_key _status_1 _status_2 _status_3 _status_4 _status_extra; do
-        case "$_status_key" in
-            Uid:)
-                _status_uid_seen=1
-                _status_uid_real="$_status_1"
-                _status_uid_effective="$_status_2"
-                _status_uid_saved="$_status_3"
-                _status_uid_fs="$_status_4"
-                ;;
-            Gid:)
-                _status_gid_seen=1
-                _status_gid_real="$_status_1"
-                _status_gid_effective="$_status_2"
-                _status_gid_saved="$_status_3"
-                _status_gid_fs="$_status_4"
-                ;;
-            CapEff:)
-                _status_cap_seen=1
-                _status_cap_eff="$_status_1"
-                ;;
-        esac
-    done < /proc/self/status
 
-    _uid_map_count=0
-    _uid_map_valid=1
-    while read -r _map_inside _map_outside _map_length _map_extra; do
-        _uid_map_count=$((_uid_map_count + 1))
-        if [ "$_map_inside" != 0 ] || [ "$_map_outside" != 0 ] \
-            || [ "$_map_length" != 4294967295 ] || [ -n "${_map_extra:-}" ]; then
-            _uid_map_valid=0
-        fi
-    done < /proc/self/uid_map
-    _gid_map_count=0
-    _gid_map_valid=1
-    while read -r _map_inside _map_outside _map_length _map_extra; do
-        _gid_map_count=$((_gid_map_count + 1))
-        if [ "$_map_inside" != 0 ] || [ "$_map_outside" != 0 ] \
-            || [ "$_map_length" != 4294967295 ] || [ -n "${_map_extra:-}" ]; then
-            _gid_map_valid=0
-        fi
-    done < /proc/self/gid_map
-    _self_mountinfo=()
-    _init_mountinfo=()
-    if ! mapfile -t _self_mountinfo < /proc/self/mountinfo \
-        || ! mapfile -t _init_mountinfo < /proc/1/mountinfo; then
-        echo "isolated OOM installer test mode cannot read current and initial mount state" >&2
-        exit 1
-    fi
-    _mountinfo_equal=1
-    if [ "${#_self_mountinfo[@]}" -ne "${#_init_mountinfo[@]}" ]; then
-        _mountinfo_equal=0
-    else
-        for ((_mount_index = 0; _mount_index < ${#_self_mountinfo[@]}; _mount_index++)); do
-            if [ "${_self_mountinfo[$_mount_index]}" != "${_init_mountinfo[$_mount_index]}" ]; then
-                _mountinfo_equal=0
-                break
-            fi
-        done
-    fi
-
-    if [ "$_status_uid_seen" -ne 1 ] || [ "$_status_gid_seen" -ne 1 ] \
-        || [ "$_status_cap_seen" -ne 1 ] \
-        || [ "$_status_uid_real" != "$UID" ] \
-        || [ "$_status_uid_effective" != "$EUID" ] \
-        || [ "$_status_uid_real" = 0 ] \
-        || [ "$_status_uid_real" != "$_status_uid_effective" ] \
-        || [ "$_status_uid_real" != "$_status_uid_saved" ] \
-        || [ "$_status_uid_real" != "$_status_uid_fs" ] \
-        || [ "$_status_gid_real" != "$_status_gid_effective" ] \
-        || [ "$_status_gid_real" != "$_status_gid_saved" ] \
-        || [ "$_status_gid_real" != "$_status_gid_fs" ] \
-        || ! [[ "$_status_cap_eff" =~ ^0+$ ]] \
-        || [ "$_uid_map_count" -ne 1 ] || [ "$_uid_map_valid" -ne 1 ] \
-        || [ "$_gid_map_count" -ne 1 ] || [ "$_gid_map_valid" -ne 1 ] \
-        || [ "$_mountinfo_equal" -ne 1 ]; then
-        echo "isolated OOM installer test mode refuses root, set-ID, capability-bearing, or non-initial user/mount namespace execution before setup; next action: rerun the scratch-only test as one unprivileged process in the initial namespaces" >&2
-        exit 1
-    fi
-fi
-if [ -n "${HAPAX_OOM_INSTALL_SUDO:-}" ]; then
-    echo "HAPAX_OOM_INSTALL_SUDO is retired; no interpreted installer may delegate through sudo; next action: remove the selector and dispatch separately authorized broker/attestation work because this source revision keeps production disabled" >&2
-    exit 1
-fi
-if [ "$_install_requested" -eq 1 ] \
-    && [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" != "1" ]; then
-    echo "production OOM installation is disabled until a separately reviewed root-owned broker and source-pinned cryptographic completion attestation are implemented; no Bash installer effect or receipt advancement is permitted; next action: dispatch that separately runtime-authorized broker/attestation work and do not restore this interpreted path" >&2
-    exit 1
-fi
-if [ "$_authenticated_requested" -eq 1 ] \
-    && [ "${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}" != "1" ]; then
-    echo "authenticated production OOM installation is unavailable in this source revision; caller-created sealed descriptors do not establish runtime authority; next action: dispatch separately authorized broker/attestation work" >&2
-    exit 1
-fi
-unset _argument _authenticated_requested _install_requested _source_value_follows
-unset _status_cap_eff _status_cap_seen _status_gid_effective _status_gid_fs
-unset _status_gid_real _status_gid_saved _status_gid_seen _status_key
-unset _status_uid_effective _status_uid_fs _status_uid_real _status_uid_saved
-unset _status_uid_seen _status_1 _status_2 _status_3 _status_4 _status_extra
-unset _gid_map_count _gid_map_valid _map_extra _map_inside _map_length _map_outside
-unset _init_mountinfo _mount_index _mountinfo_equal _self_mountinfo
-unset _uid_map_count _uid_map_valid
-
-ROOT="$(cd "$(/usr/bin/dirname "${BASH_SOURCE[0]}")/.." && /usr/bin/pwd -P)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE="$ROOT"
 SYSTEMD_SYSTEM_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
 TARGET_UID="${HAPAX_OOM_TARGET_UID:-1000}"
@@ -154,13 +11,13 @@ TARGET_USER="${HAPAX_OOM_TARGET_USER:-}"
 TARGET_HOME="${HAPAX_OOM_TARGET_HOME:-}"
 TARGET_GID="${HAPAX_OOM_TARGET_GID:-}"
 if [ -z "$TARGET_USER" ]; then
-    TARGET_USER="$(/usr/bin/getent passwd "$TARGET_UID" | /usr/bin/cut -d: -f1 || true)"
+    TARGET_USER="$(getent passwd "$TARGET_UID" | cut -d: -f1 || true)"
 fi
 if [ -z "$TARGET_HOME" ]; then
-    TARGET_HOME="$(/usr/bin/getent passwd "$TARGET_UID" | /usr/bin/cut -d: -f6 || true)"
+    TARGET_HOME="$(getent passwd "$TARGET_UID" | cut -d: -f6 || true)"
 fi
 if [ -z "$TARGET_GID" ]; then
-    TARGET_GID="$(/usr/bin/getent passwd "$TARGET_UID" | /usr/bin/cut -d: -f4 || true)"
+    TARGET_GID="$(getent passwd "$TARGET_UID" | cut -d: -f4 || true)"
 fi
 if [ -z "$TARGET_USER" ] || [ -z "$TARGET_HOME" ] || [ -z "$TARGET_GID" ]; then
     echo "unable to resolve account/home/group for OOM target UID $TARGET_UID; next action: set HAPAX_OOM_TARGET_UID, HAPAX_OOM_TARGET_USER, HAPAX_OOM_TARGET_HOME, and HAPAX_OOM_TARGET_GID explicitly" >&2
@@ -168,11 +25,6 @@ if [ -z "$TARGET_USER" ] || [ -z "$TARGET_HOME" ] || [ -z "$TARGET_GID" ]; then
 fi
 SYSTEMD_USER_DIR="${HAPAX_OOM_SYSTEMD_USER_DIR:-$TARGET_HOME/.config/systemd/user}"
 SYSTEMD_USER_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_CONTROL_DIR:-$TARGET_HOME/.config/systemd/user.control}"
-SYSTEMD_SYSTEM_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_CONTROL_DIR:-/etc/systemd/system.control}"
-SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR:-/run/systemd/system.control}"
-SYSTEMD_SYSTEM_TRANSIENT_DIR="${HAPAX_OOM_SYSTEMD_SYSTEM_TRANSIENT_DIR:-/run/systemd/transient}"
-SYSTEMD_USER_RUNTIME_CONTROL_DIR="${HAPAX_OOM_SYSTEMD_USER_RUNTIME_CONTROL_DIR:-/run/user/$TARGET_UID/systemd/user.control}"
-SYSTEMD_USER_TRANSIENT_DIR="${HAPAX_OOM_SYSTEMD_USER_TRANSIENT_DIR:-/run/user/$TARGET_UID/systemd/transient}"
 EARLYOOM_DEST="${HAPAX_OOM_EARLYOOM_DEST:-/etc/default/earlyoom}"
 OOM_ENFORCER_DEST="${HAPAX_OOM_ENFORCER_DEST:-/usr/local/sbin/hapax-oom-score-enforce}"
 OOM_TRIGGER_DEST="${HAPAX_OOM_TRIGGER_DEST:-/usr/local/bin/hapax-oom-score-trigger}"
@@ -183,49 +35,36 @@ OOM_SUDOERS_OWNER_GID="${HAPAX_OOM_SUDOERS_OWNER_GID:-0}"
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
-LOCAL_JUDGE_CONTAINER_ID_DEST="$TARGET_HOME/.local/bin/hapax-local-judge-container-id"
-OOM_PROFILE_TABLE_DEST="${HAPAX_OOM_PROFILE_TABLE_DEST:-/usr/local/share/hapax/root-required/oom-host-profiles.tsv}"
-ZRAM_POLICY_DEST="${HAPAX_OOM_ZRAM_POLICY_DEST:-/etc/systemd/zram-generator.conf}"
-LEGACY_ZRAM_POLICY_DEST="${HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST:-/etc/systemd/zram-generator.conf.d/90-hapax-host-policy.conf}"
-ZRAM_DROPIN_DIRS="${HAPAX_OOM_ZRAM_DROPIN_DIRS:-/etc/systemd/zram-generator.conf.d:/run/systemd/zram-generator.conf.d:/usr/local/lib/systemd/zram-generator.conf.d:/usr/lib/systemd/zram-generator.conf.d}"
-ZRAM_HIGH_PRIORITY_CONFIGS="${HAPAX_OOM_ZRAM_HIGH_PRIORITY_CONFIGS:-/run/systemd/zram-generator.conf}"
-ZRAM_DISKSIZE_PATH="${HAPAX_OOM_ZRAM_DISKSIZE_PATH:-/sys/block/zram0/disksize}"
-DOCKER="${HAPAX_OOM_DOCKER:-/usr/bin/docker}"
-LOCAL_DOCKER_HOST="unix:///var/run/docker.sock"
-LOCAL_DOCKER_CONFIG="/nonexistent/hapax-local-docker-config"
-SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-/usr/bin/systemctl}"
-SYSTEMD_ANALYZE="${HAPAX_OOM_SYSTEMD_ANALYZE:-/usr/bin/systemd-analyze}"
+SYSTEMCTL="${HAPAX_OOM_SYSTEMCTL:-systemctl}"
+SYSTEMD_ANALYZE="${HAPAX_OOM_SYSTEMD_ANALYZE:-systemd-analyze}"
+SUDO="${HAPAX_OOM_INSTALL_SUDO-sudo}"
 ACTUAL_UID="$(/usr/bin/id -u)"
 if [ "$ACTUAL_UID" != "0" ] && [ "${HAPAX_OOM_INSTALL_TEST_ACTUAL_UID:-}" = "0" ]; then
     ACTUAL_UID=0
 fi
-RUNUSER="${HAPAX_OOM_RUNUSER:-/usr/bin/runuser}"
-VISUDO="${HAPAX_OOM_VISUDO:-/usr/bin/visudo}"
-EFFECTIVE_UID="${HAPAX_OOM_EFFECTIVE_UID:-$(/usr/bin/id -u)}"
+RUNUSER="${HAPAX_OOM_RUNUSER:-runuser}"
+VISUDO="${HAPAX_OOM_VISUDO:-visudo}"
+EFFECTIVE_UID="${HAPAX_OOM_EFFECTIVE_UID:-$(id -u)}"
 ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-$TARGET_HOME/.local/state/hapax/root-required}"
 ROOT_REQUIRED_INSTALLED_SOURCE_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT:-$ROOT_REQUIRED_STATE_ROOT/current-source}"
-ROOT_REQUIRED_DEFER_ROOT="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-$TARGET_HOME/.cache/hapax/post-merge-root-required}"
+ROOT_REQUIRED_DEFER_ROOT="${HAPAX_POST_MERGE_ROOT_DEFER_DIR:-}"
+if [ -z "$ROOT_REQUIRED_DEFER_ROOT" ] && [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ]; then
+    ROOT_REQUIRED_DEFER_ROOT="$(dirname "$(dirname "$HAPAX_ROOT_REQUIRED_DRAIN_DIR")")"
+fi
+ROOT_REQUIRED_DEFER_ROOT="${ROOT_REQUIRED_DEFER_ROOT:-$TARGET_HOME/.cache/hapax/post-merge-root-required}"
 ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/installed-receipts}"
 ROOT_REQUIRED_DESIRED_RECEIPT_ROOT="${HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT:-$ROOT_REQUIRED_STATE_ROOT/desired-receipts}"
 ROOT_REQUIRED_GIT_REPO="${HAPAX_ROOT_REQUIRED_GIT_REPO:-$TARGET_HOME/.cache/hapax/source-activation/worktree}"
 ROOT_REQUIRED_PACKAGE_SHA="${HAPAX_ROOT_REQUIRED_PACKAGE_SHA:-}"
 ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-$ROOT_REQUIRED_STATE_ROOT/.lock}"
-ROOT_REQUIRED_SEALED_SOURCE_FDS="${HAPAX_ROOT_REQUIRED_SEALED_SOURCE_FDS:-}"
-ROOT_REQUIRED_LEGACY_FINALIZE_GATE="${HAPAX_ROOT_REQUIRED_FINALIZE_GATE:-}"
-ROOT_REQUIRED_INSTALLER_TEST_MODE="${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE:-0}"
-ROOT_REQUIRED_INSTALLER_TEST_ROOT="${HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT:-}"
-RUNTIME_AUTHORITY_TASK="${HAPAX_RUNTIME_AUTHORITY_TASK:-}"
-RUNTIME_AUTHORITY_TASK_SHA256="${HAPAX_RUNTIME_AUTHORITY_TASK_SHA256:-}"
-LOCAL_JUDGE_CAP_RECEIPT_SHA256="${HAPAX_LOCAL_JUDGE_CAP_RECEIPT_SHA256:-}"
 ROOT_REQUIRED_RECEIPT="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/oom-containment.sha"
 ROOT_REQUIRED_DESIRED_RECEIPT="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/oom-containment.sha"
 SKIP_SUPERSEDED_INSTALL=0
-AUTHENTICATED_SEALED_SOURCE=0
 PROC_ROOT="${HAPAX_OOM_PROC_ROOT:-/proc}"
 if [ -n "${HAPAX_OOM_CGROUP_ROOT:-}" ]; then
     CGROUP_ROOT="$HAPAX_OOM_CGROUP_ROOT"
 elif [ "$PROC_ROOT" != "/proc" ]; then
-    CGROUP_ROOT="$(/usr/bin/dirname "$PROC_ROOT")/cgroup"
+    CGROUP_ROOT="$(dirname "$PROC_ROOT")/cgroup"
 else
     CGROUP_ROOT="/sys/fs/cgroup"
 fi
@@ -234,20 +73,12 @@ INSTALL=0
 CHECK=0
 VERIFY_LIVE=0
 APPLY_RUNTIME=1
-MCP_DOCKER_MEMORY="512M"
-MCP_DOCKER_MEMORY_SWAP="768M"
-LOCAL_JUDGE_DOCKER_MEMORY="4G"
-LOCAL_JUDGE_DOCKER_MEMORY_SWAP="6G"
-LOCAL_JUDGE_DOCKER_HOST_ARG="--host=unix:///var/run/docker.sock"
-LOCAL_JUDGE_DOCKER_CONFIG_SUFFIX="/hapax-local-judge/docker-config"
-readonly OOM_REPAIR_ACTION="the runtime-authorized hapax-post-merge-deploy OOM reconciliation for the desired receipt SHA with HAPAX_RUNTIME_AUTHORITY_TASK"
-GOVERNED_MEMORY_KEYS=(MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin)
 
 usage() {
     cat <<'USAGE'
 usage: scripts/install-p0-oom-containment [--source DIR] [--check] [--install] [--verify-live] [--no-runtime]
 
-Installs the P0 host-profiled OOM containment package:
+Installs the P0 podium OOM containment package:
   systemd/system/user@1000.service.d/oom.conf       -> /etc/systemd/system/user@1000.service.d/oom.conf
   systemd/system/system.slice.d/oom-containment.conf -> /etc/systemd/system/system.slice.d/oom-containment.conf
   systemd/system/*.service.d/oom-protect.conf       -> /etc/systemd/system/*.service.d/oom-protect.conf
@@ -260,9 +91,6 @@ Installs the P0 host-profiled OOM containment package:
   scripts/hapax-root-failure-intake                  -> /usr/local/sbin/hapax-root-failure-intake
   scripts/hapax-oom-policy-audit                     -> /usr/local/sbin/hapax-oom-policy-audit
   scripts/hapax-root-required-deploy-audit            -> /usr/local/sbin/hapax-root-required-deploy-audit
-  config/root-required/oom-host-profiles.tsv          -> /usr/local/share/hapax/root-required/
-  selected host zram policy                           -> /etc/systemd/zram-generator.conf
-  systemd/units/hapax-local-judge.service             -> ~/.config/systemd/user/
   systemd/units/hapax-{oom-policy,root-required-deploy}-audit.{service,timer}
                                                      -> ~/.config/systemd/user/
   systemd/units/*.service.d/oom-protect.conf        -> ~/.config/systemd/user/*.service.d/oom-protect.conf
@@ -271,10 +99,9 @@ Installs the P0 host-profiled OOM containment package:
 
 The app.slice and session.slice drop-ins are copied, not symlinked, so live
 containment does not depend on a mutable PR worktree. Runtime activation uses
-set-property without restarting either slice, then removes the generated
-control files and reloads the receipt-owned canonical policy. Mutation-capable
-paths run only in parent-selected isolated tests. Production --install is
-broker-only; this interpreted script has no production install authority.
+set-property instead of restarting either slice. Run as the target account;
+the installer uses sudo only for root-owned destinations and refuses
+whole-script root execution.
 USAGE
 }
 
@@ -300,10 +127,6 @@ while [ "$#" -gt 0 ]; do
             APPLY_RUNTIME=0
             shift
             ;;
-        --authenticated-sealed-source)
-            AUTHENTICATED_SEALED_SOURCE=1
-            shift
-            ;;
         -h|--help)
             usage
             exit 0
@@ -325,7 +148,11 @@ if [ "$CHECK" -eq 0 ] && [ "$INSTALL" -eq 0 ] && [ "$VERIFY_LIVE" -eq 0 ]; then
 fi
 
 run_root() {
-    "$@"
+    if [ -n "$SUDO" ]; then
+        "$SUDO" "$@"
+    else
+        "$@"
+    fi
 }
 
 user_systemctl() {
@@ -340,12 +167,17 @@ user_systemctl() {
 }
 
 preflight_root() {
-    return 0
+    if [ -n "$SUDO" ] && [ "$INSTALL" -eq 1 ]; then
+        "$SUDO" -n true 2>/dev/null || {
+            echo "sudo non-interactive access is required for OOM containment install; next action: run sudo -v or grant the target account NOPASSWD for the governed install/systemctl/tee commands, then rerun as that account" >&2
+            return "$ROOT_REQUIRED_RC"
+        }
+    fi
 }
 
 refuse_whole_script_root() {
     if [ "$INSTALL" -eq 1 ] && [ "$ACTUAL_UID" = "0" ]; then
-        echo "whole-script root execution is refused because durable package state and its shared lock are owned by UID $TARGET_UID; next action: rerun only an isolated test as UID $TARGET_UID without privilege selectors, or dispatch separately authorized broker/attestation work because this source revision keeps production disabled" >&2
+        echo "whole-script root execution is refused because durable package state and its shared lock are owned by UID $TARGET_UID; next action: run this installer as UID $TARGET_UID after sudo -v so only run_root commands cross the privilege boundary" >&2
         return 2
     fi
 }
@@ -356,33 +188,13 @@ canonical_dir() {
     (cd "$dir" && pwd -P)
 }
 
-git() {
-    /usr/bin/env -i \
-        HOME=/nonexistent \
-        PATH=/usr/bin:/bin \
-        LANG=C.UTF-8 \
-        LC_ALL=C.UTF-8 \
-        GIT_CONFIG_GLOBAL=/dev/null \
-        GIT_CONFIG_NOSYSTEM=1 \
-        GIT_NO_REPLACE_OBJECTS=1 \
-        GIT_OPTIONAL_LOCKS=0 \
-        /usr/bin/git "$@"
-}
-
 acquire_root_required_lock() {
     local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
-    local state_fd="${HAPAX_ROOT_REQUIRED_STATE_FD:-}"
-    local guard_fd="${HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD:-}"
-    local lexical_root="${HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT:-}"
-    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
-        || ! [[ "$state_fd" =~ ^[0-9]+$ ]] || [ "$state_fd" -lt 3 ] \
-        || ! [[ "$guard_fd" =~ ^[0-9]+$ ]] || [ "$guard_fd" -lt 3 ]; then
-        echo "OOM installer refused invalid shared lock descriptor: the lock, state, or generation-guard descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the unmodified installer as UID $TARGET_UID" >&2
+    if ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ]; then
+        echo "OOM installer internal error: safe shared lock descriptor is absent; next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun the unmodified installer as UID $TARGET_UID" >&2
         return 1
     fi
-    /usr/bin/python3 -I - \
-        "$lock_fd" "$state_fd" "$guard_fd" "$ROOT_REQUIRED_LOCK_FILE" \
-        "$ROOT_REQUIRED_STATE_ROOT" "$lexical_root" <<'PY' || return 1
+    /usr/bin/python3 - "$lock_fd" "$ROOT_REQUIRED_LOCK_FILE" <<'PY'
 from __future__ import annotations
 
 import fcntl
@@ -390,67 +202,12 @@ import os
 import stat
 import sys
 
-
-def host_root_uid() -> int:
-    with open("/proc/self/uid_map", encoding="ascii") as stream:
-        for line in stream:
-            inside, outside, length = (int(field) for field in line.split())
-            if outside <= 0 < outside + length:
-                return inside - outside
-    raise SystemExit(
-        "host UID 0 is unmapped; rerun from the initial host user namespace"
-    )
-
-
 fd = int(sys.argv[1])
-state_fd = int(sys.argv[2])
-guard_fd = int(sys.argv[3])
-lock_path = sys.argv[4]
-bound_root = sys.argv[5]
-lexical_root = sys.argv[6]
-lock_parent = os.path.dirname(lock_path) or "."
-lock_base = os.path.basename(lock_path)
-parent_fd = -1
+lock_path = sys.argv[2]
 try:
-    if (
-        not os.path.isabs(lock_path)
-        or not lock_base
-        or not os.path.isabs(lexical_root)
-        or os.path.abspath(os.path.normpath(lock_parent))
-        != os.path.abspath(os.path.normpath(lexical_root))
-    ):
-        raise OSError("lock path must be absolute and name one file")
-    guard_inode = os.fstat(guard_fd)
-    published_guard = os.stat("/home", follow_symlinks=False)
-    if (
-        not stat.S_ISDIR(guard_inode.st_mode)
-        or guard_inode.st_uid != host_root_uid()
-        or guard_inode.st_mode & 0o022
-        or (guard_inode.st_dev, guard_inode.st_ino)
-        != (published_guard.st_dev, published_guard.st_ino)
-    ):
-        raise OSError("generation guard is not the immutable host anchor")
-    fcntl.flock(guard_fd, fcntl.LOCK_EX)
-    locked_guard = os.fstat(guard_fd)
-    published_guard = os.stat("/home", follow_symlinks=False)
-    if (locked_guard.st_dev, locked_guard.st_ino) != (
-        published_guard.st_dev,
-        published_guard.st_ino,
-    ):
-        raise OSError("generation-guard anchor changed during acquisition")
-    parent_fd = os.open(
-        lock_parent,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
-    )
-    parent_inode = os.fstat(parent_fd)
-    state_inode = os.fstat(state_fd)
     inode = os.fstat(fd)
-    path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
-    bound_inode = os.stat(bound_root)
-    lexical_inode = os.stat(lexical_root, follow_symlinks=False)
+    path_inode = os.lstat(lock_path)
 except OSError as exc:
-    if parent_fd >= 0:
-        os.close(parent_fd)
     print(
         f"OOM installer refused invalid shared lock descriptor for {lock_path}: {exc}; "
         "next action: remove caller-supplied HAPAX_ROOT_REQUIRED_LOCK_* values and rerun",
@@ -458,23 +215,13 @@ except OSError as exc:
     )
     raise SystemExit(1) from exc
 if (
-    not stat.S_ISDIR(parent_inode.st_mode)
-    or parent_inode.st_uid != os.geteuid()
-    or parent_inode.st_mode & 0o022
-    or (state_inode.st_dev, state_inode.st_ino)
-    != (parent_inode.st_dev, parent_inode.st_ino)
-    or (bound_inode.st_dev, bound_inode.st_ino)
-    != (state_inode.st_dev, state_inode.st_ino)
-    or (lexical_inode.st_dev, lexical_inode.st_ino)
-    != (state_inode.st_dev, state_inode.st_ino)
-    or not stat.S_ISREG(inode.st_mode)
+    not stat.S_ISREG(inode.st_mode)
     or not stat.S_ISREG(path_inode.st_mode)
     or (inode.st_dev, inode.st_ino) != (path_inode.st_dev, path_inode.st_ino)
     or inode.st_uid != os.geteuid()
     or inode.st_nlink != 1
     or inode.st_mode & 0o022
 ):
-    os.close(parent_fd)
     print(
         f"OOM installer refused invalid shared lock descriptor for {lock_path}; expected the "
         "caller-owned, single-link, non-group-writable regular path inode; next action: "
@@ -484,140 +231,31 @@ if (
     raise SystemExit(1)
 os.fchmod(fd, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
-locked_inode = os.fstat(fd)
-locked_path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
-locked_lexical_inode = os.stat(lexical_root, follow_symlinks=False)
-if (
-    (locked_inode.st_dev, locked_inode.st_ino)
-    != (locked_path_inode.st_dev, locked_path_inode.st_ino)
-    or locked_inode.st_uid != os.geteuid()
-    or locked_inode.st_nlink != 1
-    or stat.S_IMODE(locked_inode.st_mode) != 0o600
-    or (locked_lexical_inode.st_dev, locked_lexical_inode.st_ino)
-    != (state_inode.st_dev, state_inode.st_ino)
-):
-    os.close(parent_fd)
-    print(
-        f"OOM installer shared lock path changed during acquisition for {lock_path}; "
-        "next action: stop the competing state mutation and rerun",
-        file=sys.stderr,
-    )
-    raise SystemExit(1)
-os.close(parent_fd)
 PY
-    mkdir -p "$ROOT_REQUIRED_DEFER_ROOT" || return 1
+    mkdir -p "$ROOT_REQUIRED_DEFER_ROOT"
+    migrate_legacy_root_required_state
 }
 
 reexec_with_safe_root_required_lock() {
     [ -z "${HAPAX_ROOT_REQUIRED_LOCK_FD:-}" ] || return 0
-    exec /usr/bin/python3 -I - \
-        "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_LOCK_FILE" \
-        "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
+    exec /usr/bin/python3 - "$ROOT_REQUIRED_LOCK_FILE" "$0" "${ORIGINAL_ARGS[@]}" <<'PY'
 from __future__ import annotations
 
 import fcntl
 import os
 import stat
+import subprocess
 import sys
 
-
-def host_root_uid() -> int:
-    with open("/proc/self/uid_map", encoding="ascii") as stream:
-        for line in stream:
-            inside, outside, length = (int(field) for field in line.split())
-            if outside <= 0 < outside + length:
-                return inside - outside
-    raise SystemExit(
-        "host UID 0 is unmapped; rerun from the initial host user namespace"
-    )
-
-
-state_root, lock_path, script, *args = sys.argv[1:]
-lock_parent = os.path.dirname(lock_path) or "."
-lock_base = os.path.basename(lock_path)
-lexical_root = os.path.abspath(os.path.normpath(state_root))
-if (
-    not os.path.isabs(state_root)
-    or not os.path.isabs(lock_path)
-    or not lock_base
-    or os.path.abspath(os.path.normpath(lock_parent)) != lexical_root
-):
-    print(
-        f"OOM installer refused invalid shared lock path {lock_path}; expected an absolute "
-        ".lock inside the selected durable state root; next action: restore the canonical "
-        "durable state path",
-        file=sys.stderr,
-    )
-    raise SystemExit(1)
-try:
-    guard_fd = os.open(
-        "/home",
-        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
-    )
-    guard_inode = os.fstat(guard_fd)
-    published_guard = os.stat("/home", follow_symlinks=False)
-    if (
-        not stat.S_ISDIR(guard_inode.st_mode)
-        or guard_inode.st_uid != host_root_uid()
-        or guard_inode.st_mode & 0o022
-        or (guard_inode.st_dev, guard_inode.st_ino)
-        != (published_guard.st_dev, published_guard.st_ino)
-    ):
-        raise OSError("generation guard is not the immutable host anchor")
-    fcntl.flock(guard_fd, fcntl.LOCK_EX)
-    locked_guard = os.fstat(guard_fd)
-    published_guard = os.stat("/home", follow_symlinks=False)
-    if (locked_guard.st_dev, locked_guard.st_ino) != (
-        published_guard.st_dev,
-        published_guard.st_ino,
-    ):
-        raise OSError("generation-guard anchor changed during acquisition")
-except OSError as exc:
-    print(
-        f"OOM installer cannot acquire the host-global state-generation guard: {exc}; "
-        "next action: repair the immutable /home anchor and rerun",
-        file=sys.stderr,
-    )
-    raise SystemExit(1) from exc
-old_umask = os.umask(0o077)
-try:
-    os.makedirs(lexical_root, exist_ok=True)
-finally:
-    os.umask(old_umask)
-try:
-    parent_fd = os.open(
-        lexical_root,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
-    )
-except OSError as exc:
-    print(
-        f"OOM installer refused unsafe shared lock parent {lock_parent}: {exc}; next action: "
-        "restore a caller-owned physical durable state directory and rerun as the target account",
-        file=sys.stderr,
-    )
-    raise SystemExit(1) from exc
-parent_inode = os.fstat(parent_fd)
-if (
-    not stat.S_ISDIR(parent_inode.st_mode)
-    or parent_inode.st_uid != os.geteuid()
-    or parent_inode.st_mode & 0o022
-):
-    print(
-        f"OOM installer refused unsafe shared lock parent {lock_parent}; expected a "
-        "caller-owned, non-group-writable physical directory; next action: repair "
-        "the durable root-required state directory and rerun as the target account",
-        file=sys.stderr,
-    )
-    raise SystemExit(1)
+lock_path, script, *args = sys.argv[1:]
+os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
 try:
     fd = os.open(
-        lock_base,
+        lock_path,
         os.O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR,
         0o600,
-        dir_fd=parent_fd,
     )
 except OSError as exc:
-    os.close(parent_fd)
     print(
         f"OOM installer refused unsafe shared lock {lock_path}: {exc}; "
         "next action: remove only a confirmed symlink/non-regular lock and rerun as the target account",
@@ -641,360 +279,46 @@ try:
         raise SystemExit(1)
     os.fchmod(fd, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX)
-    locked_inode = os.fstat(fd)
-    locked_path_inode = os.stat(lock_base, dir_fd=parent_fd, follow_symlinks=False)
-    published_parent_inode = os.stat(lexical_root, follow_symlinks=False)
-    if (
-        (locked_inode.st_dev, locked_inode.st_ino)
-        != (locked_path_inode.st_dev, locked_path_inode.st_ino)
-        or locked_inode.st_uid != os.geteuid()
-        or locked_inode.st_nlink != 1
-        or stat.S_IMODE(locked_inode.st_mode) != 0o600
-        or (parent_inode.st_dev, parent_inode.st_ino)
-        != (published_parent_inode.st_dev, published_parent_inode.st_ino)
-    ):
-        print(
-            f"OOM installer shared lock path changed during acquisition for {lock_path}; "
-            "next action: stop the competing state mutation and rerun",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
     env = os.environ.copy()
     env.pop("HAPAX_ROOT_REQUIRED_LOCK_HELD", None)
-    stable_root = f"/proc/self/fd/{parent_fd}"
-    env["HAPAX_ROOT_REQUIRED_STATE_ROOT"] = stable_root
-    env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = lock_path
     env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(fd)
-    env["HAPAX_ROOT_REQUIRED_STATE_FD"] = str(parent_fd)
-    env["HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD"] = str(guard_fd)
-    env["HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT"] = lexical_root
-    env["HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH"] = lock_path
-    executable = os.path.abspath(script)
-    os.set_inheritable(fd, True)
-    os.set_inheritable(parent_fd, True)
-    os.set_inheritable(guard_fd, True)
-    os.execve(executable, [executable, *args], env)
-except OSError as exc:
-    print(
-        f"OOM installer could not re-exec under the shared lock: {exc}; next action: "
-        "leave the deferral pending and rerun its exact authenticated command",
-        file=sys.stderr,
+    result = subprocess.run(
+        [os.path.abspath(script), *args],
+        env=env,
+        pass_fds=(fd,),
+        check=False,
     )
-    raise SystemExit(1) from exc
+    raise SystemExit(result.returncode)
 finally:
     os.close(fd)
-    os.close(parent_fd)
-    os.close(guard_fd)
-PY
-}
-
-read_safe_root_required_sha_receipt() {
-    local receipt="$1" kind="$2"
-    /usr/bin/python3 -I - "$receipt" "$kind" <<'PY'
-from __future__ import annotations
-
-import os
-import re
-import stat
-import sys
-
-receipt, kind = sys.argv[1:]
-parent = os.path.dirname(receipt) or "."
-base = os.path.basename(receipt)
-
-
-def refuse(message: str) -> None:
-    print(
-        f"unsafe {kind} root-required receipt {receipt}: {message}; next action: "
-        "repair only the caller-owned receipt state and rerun the exact governed package",
-        file=sys.stderr,
-    )
-    raise SystemExit(1)
-
-
-def snapshot(inode: os.stat_result) -> tuple[int, ...]:
-    return (
-        inode.st_dev,
-        inode.st_ino,
-        inode.st_uid,
-        inode.st_gid,
-        inode.st_nlink,
-        stat.S_IMODE(inode.st_mode),
-        inode.st_size,
-        inode.st_mtime_ns,
-        inode.st_ctime_ns,
-    )
-
-
-parent_fd = -1
-fd = -1
-try:
-    if not os.path.isabs(receipt) or not base:
-        refuse("the receipt path must be absolute and name one file")
-    parent_fd = os.open(
-        parent,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
-    )
-    parent_inode = os.fstat(parent_fd)
-    if (
-        not stat.S_ISDIR(parent_inode.st_mode)
-        or parent_inode.st_uid != os.geteuid()
-        or parent_inode.st_mode & 0o022
-    ):
-        refuse("the parent is not a caller-owned, non-group-writable physical directory")
-    expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
-    if (
-        not stat.S_ISREG(expected.st_mode)
-        or expected.st_uid != os.geteuid()
-        or expected.st_nlink != 1
-        or expected.st_mode & 0o022
-        or expected.st_size != 41
-    ):
-        refuse(
-            f"owner={expected.st_uid} links={expected.st_nlink} "
-            f"mode={stat.S_IMODE(expected.st_mode):04o} size={expected.st_size}"
-        )
-    fd = os.open(
-        base,
-        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
-        dir_fd=parent_fd,
-    )
-    opened = os.fstat(fd)
-    if snapshot(opened) != snapshot(expected):
-        refuse("the receipt inode or metadata changed while opening")
-    chunks: list[bytes] = []
-    remaining = 42
-    while remaining:
-        chunk = os.read(fd, remaining)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    data = b"".join(chunks)
-    after = os.fstat(fd)
-    published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
-except OSError as exc:
-    refuse(f"cannot inspect or read the receipt: {exc}")
-finally:
-    if fd >= 0:
-        os.close(fd)
-    if parent_fd >= 0:
-        os.close(parent_fd)
-if snapshot(after) != snapshot(opened) or snapshot(published) != snapshot(after):
-    refuse("the receipt inode or metadata changed while reading")
-if re.fullmatch(rb"[0-9a-f]{40}\n", data) is None:
-    refuse("content is not exactly 40 lowercase hex characters and one newline")
-print(data[:-1].decode("ascii"))
-PY
-}
-
-write_root_required_sha_receipt() {
-    local receipt="$1" sha="$2" publication_mode="${3:-publish}"
-    /usr/bin/python3 -I - "$receipt" "$sha" "$publication_mode" <<'PY'
-from __future__ import annotations
-
-import os
-import re
-import secrets
-import stat
-import sys
-
-receipt, sha, publication_mode = sys.argv[1:]
-payload = f"{sha}\n".encode()
-parent = os.path.dirname(receipt)
-base = os.path.basename(receipt)
-temp: str | None = None
-parent_fd = -1
-
-
-def refuse(message: str) -> None:
-    print(
-        f"root-required receipt publication refused for {receipt}: {message}; next action: "
-        "repair the caller-owned receipt state and rerun the exact governed package",
-        file=sys.stderr,
-    )
-    raise SystemExit(1)
-
-
-def snapshot(inode: os.stat_result) -> tuple[int, ...]:
-    return (
-        inode.st_dev,
-        inode.st_ino,
-        inode.st_uid,
-        inode.st_gid,
-        inode.st_nlink,
-        stat.S_IMODE(inode.st_mode),
-        inode.st_size,
-        inode.st_mtime_ns,
-        inode.st_ctime_ns,
-    )
-
-
-try:
-    if (
-        not os.path.isabs(receipt)
-        or not base
-        or re.fullmatch(r"[0-9a-f]{40}", sha) is None
-        or publication_mode not in {"publish", "preserve-canonical"}
-    ):
-        refuse("the path must be absolute and the value exactly 40 lowercase hex characters")
-    old_umask = os.umask(0o077)
-    try:
-        os.makedirs(parent, mode=0o700, exist_ok=True)
-    finally:
-        os.umask(old_umask)
-    parent_fd = os.open(
-        parent,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
-    )
-    parent_inode = os.fstat(parent_fd)
-    if parent_inode.st_uid != os.geteuid() or parent_inode.st_mode & 0o022:
-        refuse("the receipt directory is not caller-owned and non-group-writable")
-    if publication_mode == "preserve-canonical":
-        expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(expected.st_mode)
-            or expected.st_uid != os.geteuid()
-            or expected.st_nlink != 1
-            or expected.st_mode & 0o022
-            or expected.st_size != len(payload)
-        ):
-            refuse("the existing receipt is unsafe to normalize")
-        fd = os.open(
-            base,
-            os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
-            dir_fd=parent_fd,
-        )
-        try:
-            opened = os.fstat(fd)
-            chunks: list[bytes] = []
-            remaining = len(payload) + 1
-            while remaining:
-                chunk = os.read(fd, remaining)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                remaining -= len(chunk)
-            observed = b"".join(chunks)
-            after = os.fstat(fd)
-            published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
-        finally:
-            os.close(fd)
-        if (
-            snapshot(expected) != snapshot(opened)
-            or snapshot(opened) != snapshot(after)
-            or snapshot(after) != snapshot(published)
-            or observed != payload
-        ):
-            refuse("the existing receipt changed during normalization")
-        if stat.S_IMODE(after.st_mode) == 0o600:
-            raise SystemExit(0)
-    temp = f".{base}.tmp.{os.getpid()}.{secrets.token_hex(8)}"
-    fd = os.open(
-        temp,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
-        0o600,
-        dir_fd=parent_fd,
-    )
-    try:
-        os.fchmod(fd, 0o600)
-        view = memoryview(payload)
-        while view:
-            written = os.write(fd, view)
-            if written <= 0:
-                refuse("the temporary receipt write made no progress")
-            view = view[written:]
-        os.fsync(fd)
-        inode = os.fstat(fd)
-        if (
-            not stat.S_ISREG(inode.st_mode)
-            or inode.st_uid != os.geteuid()
-            or inode.st_nlink != 1
-            or stat.S_IMODE(inode.st_mode) != 0o600
-            or inode.st_size != len(payload)
-        ):
-            refuse("the temporary receipt inode failed its owner/link/mode/size check")
-    finally:
-        os.close(fd)
-    os.replace(temp, base, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-    temp = None
-    expected = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
-    fd = os.open(
-        base,
-        os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW,
-        dir_fd=parent_fd,
-    )
-    try:
-        opened = os.fstat(fd)
-        chunks: list[bytes] = []
-        remaining = len(payload) + 1
-        while remaining:
-            chunk = os.read(fd, remaining)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        observed = b"".join(chunks)
-        after = os.fstat(fd)
-        published = os.stat(base, dir_fd=parent_fd, follow_symlinks=False)
-    finally:
-        os.close(fd)
-    if (
-        snapshot(expected) != snapshot(opened)
-        or snapshot(opened) != snapshot(after)
-        or snapshot(after) != snapshot(published)
-        or not stat.S_ISREG(after.st_mode)
-        or after.st_uid != os.geteuid()
-        or after.st_nlink != 1
-        or stat.S_IMODE(after.st_mode) != 0o600
-        or after.st_size != len(payload)
-        or observed != payload
-    ):
-        refuse("the published receipt failed its stable path/inode/mode/content readback")
-    os.fsync(parent_fd)
-except OSError as exc:
-    refuse(f"atomic mode-0600 publication failed: {exc}")
-finally:
-    if temp is not None and parent_fd >= 0:
-        try:
-            os.unlink(temp, dir_fd=parent_fd)
-        except FileNotFoundError:
-            pass
-    if parent_fd >= 0:
-        os.close(parent_fd)
 PY
 }
 
 migrate_legacy_root_required_state() {
-    local label legacy receipt desired temp receipt_sha
+    local label legacy receipt temp
     legacy="$ROOT_REQUIRED_DEFER_ROOT/current-source"
     if [ ! -e "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" ] && [ -d "$legacy" ]; then
-        mkdir -p "$(dirname "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT")" || return 1
+        mkdir -p "$(dirname "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT")"
         temp="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT.migrate.$$"
-        rm -rf "$temp" || return 1
-        cp -a "$legacy" "$temp" || return 1
-        mv "$temp" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" || return 1
+        rm -rf "$temp"
+        cp -a "$legacy" "$temp"
+        mv "$temp" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
         echo "migrated root-required installed-source snapshot to durable state"
     fi
     for label in oom-containment apcupsd-power-alerts; do
         legacy="$ROOT_REQUIRED_DEFER_ROOT/installed-receipts/$label.sha"
         receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
-        if [ -e "$receipt" ] || [ -L "$receipt" ]; then
-            read_safe_root_required_sha_receipt "$receipt" installed >/dev/null || return 1
-        elif [ "$legacy" != "$receipt" ] && { [ -e "$legacy" ] || [ -L "$legacy" ]; }; then
-            receipt_sha="$(read_safe_root_required_sha_receipt "$legacy" legacy-installed)" || return 1
-            write_root_required_sha_receipt \
-                "$receipt" "$receipt_sha" || return 1
+        if [ ! -f "$receipt" ] && [ "$legacy" != "$receipt" ] && [ -f "$legacy" ]; then
+            mkdir -p "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"
+            cp "$legacy" "$receipt.migrate.$$"
+            mv -f "$receipt.migrate.$$" "$receipt"
             echo "migrated $label installed-package receipt to durable state"
         fi
         receipt="$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT/$label.sha"
-        desired="$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
-        if [ -e "$desired" ] || [ -L "$desired" ]; then
-            read_safe_root_required_sha_receipt "$desired" desired >/dev/null || return 1
-        elif [ -e "$receipt" ] || [ -L "$receipt" ]; then
-            receipt_sha="$(read_safe_root_required_sha_receipt "$receipt" installed)" || return 1
-            write_root_required_sha_receipt \
-                "$desired" "$receipt_sha" || return 1
+        if [ ! -f "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha" ] && [ -f "$receipt" ]; then
+            mkdir -p "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
+            cp "$receipt" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha.migrate.$$"
+            mv -f "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha.migrate.$$" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT/$label.sha"
             echo "initialized $label desired-package receipt from installed state"
         fi
     done
@@ -1002,11 +326,15 @@ migrate_legacy_root_required_state() {
 
 package_commits_equivalent() {
     local installed_sha="$1" candidate_sha="$2" rel installed_mode candidate_mode
+    cmp -s \
+        <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" 2>/dev/null) \
+        <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$package_manifest_source" 2>/dev/null) || return 1
     for rel in "${package_files[@]}"; do
         git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$rel" 2>/dev/null || return 1
         git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$candidate_sha:$rel" 2>/dev/null || return 1
-        git -C "$ROOT_REQUIRED_GIT_REPO" diff --quiet --no-ext-diff \
-            "$installed_sha:$rel" "$candidate_sha:$rel" || return 1
+        cmp -s \
+            <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$rel") \
+            <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$candidate_sha:$rel") || return 1
         installed_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$installed_sha" -- "$rel" | awk 'NR == 1 {print $1}')"
         candidate_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$candidate_sha" -- "$rel" | awk 'NR == 1 {print $1}')"
         [ -n "$installed_mode" ] && [ "$installed_mode" = "$candidate_mode" ] || return 1
@@ -1015,13 +343,15 @@ package_commits_equivalent() {
 
 validate_candidate_against_receipt() {
     local receipt_kind="$1" receipt_path="$2" receipt_sha
-    if [ ! -e "$receipt_path" ] && [ ! -L "$receipt_path" ]; then
-        return 0
-    fi
-    receipt_sha="$(read_safe_root_required_sha_receipt "$receipt_path" "$receipt_kind")" || return 1
+    [ -f "$receipt_path" ] || return 0
+    receipt_sha="$(tr -d '[:space:]' < "$receipt_path")"
+    [[ "$receipt_sha" =~ ^[0-9a-f]{40}$ ]] || {
+        echo "invalid $receipt_kind OOM package receipt: $receipt_path; next action: inspect the receipt and rerun the newest governed post-merge package" >&2
+        return 1
+    }
     [ "$receipt_sha" != "$ROOT_REQUIRED_PACKAGE_SHA" ] || return 0
     if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$receipt_sha^{commit}" 2>/dev/null; then
-        echo "cannot validate OOM package order for $receipt_kind=$receipt_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: fetch both commits into $ROOT_REQUIRED_GIT_REPO, rerun hapax-post-merge-deploy, and use its live next-action command" >&2
+        echo "cannot validate OOM package order for $receipt_kind=$receipt_sha candidate=$ROOT_REQUIRED_PACKAGE_SHA; next action: fetch both commits into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
         return 1
     fi
     if git -C "$ROOT_REQUIRED_GIT_REPO" merge-base --is-ancestor "$receipt_sha" "$ROOT_REQUIRED_PACKAGE_SHA"; then
@@ -1048,7 +378,7 @@ validate_root_required_package_order() {
         if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
             ROOT_REQUIRED_PACKAGE_SHA="$staged_sha"
         elif [ "$ROOT_REQUIRED_PACKAGE_SHA" != "$staged_sha" ]; then
-            echo "root-required OOM package SHA mismatch: env=$ROOT_REQUIRED_PACKAGE_SHA staged=$staged_sha; next action: rerun hapax-post-merge-deploy for the desired SHA and use only its live next-action command" >&2
+            echo "root-required OOM package SHA mismatch: env=$ROOT_REQUIRED_PACKAGE_SHA staged=$staged_sha; next action: rerun the unmodified command from this package's RUNBOOK.txt" >&2
             return 1
         fi
     fi
@@ -1056,37 +386,30 @@ validate_root_required_package_order() {
         ROOT_REQUIRED_PACKAGE_SHA="$(git -C "$SOURCE" rev-parse HEAD 2>/dev/null || true)"
     fi
     if [ -z "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
-        echo "OOM install source has no package SHA; next action: run from a clean Git worktree or rerun hapax-post-merge-deploy for the desired SHA" >&2
+        echo "OOM install source has no package SHA; next action: run from a Git worktree or the exact staged RUNBOOK command" >&2
         return 1
     fi
     [[ "$ROOT_REQUIRED_PACKAGE_SHA" =~ ^[0-9a-f]{40}$ ]] || {
-        echo "invalid root-required package SHA: $ROOT_REQUIRED_PACKAGE_SHA; next action: rerun hapax-post-merge-deploy for the desired receipt SHA and use its live next-action command" >&2
+        echo "invalid root-required package SHA: $ROOT_REQUIRED_PACKAGE_SHA; next action: rerun the exact command from the staged RUNBOOK.txt" >&2
         return 1
     }
     git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$ROOT_REQUIRED_PACKAGE_SHA^{commit}" 2>/dev/null || {
-        echo "root-required OOM package commit is unavailable: $ROOT_REQUIRED_PACKAGE_SHA; next action: fetch it into $ROOT_REQUIRED_GIT_REPO, rerun hapax-post-merge-deploy, and use its live next-action command" >&2
+        echo "root-required OOM package commit is unavailable: $ROOT_REQUIRED_PACKAGE_SHA; next action: fetch it into $ROOT_REQUIRED_GIT_REPO and rerun the staged RUNBOOK" >&2
         return 1
     }
-    validate_candidate_against_receipt installed "$ROOT_REQUIRED_RECEIPT" || return 1
-    validate_candidate_against_receipt desired "$ROOT_REQUIRED_DESIRED_RECEIPT" || return 1
+    validate_candidate_against_receipt installed "$ROOT_REQUIRED_RECEIPT"
+    validate_candidate_against_receipt desired "$ROOT_REQUIRED_DESIRED_RECEIPT"
 }
 
 record_root_required_package_receipt() {
-    write_root_required_sha_receipt \
-        "$ROOT_REQUIRED_RECEIPT" "$ROOT_REQUIRED_PACKAGE_SHA" || return 1
-    write_root_required_sha_receipt \
-        "$ROOT_REQUIRED_DESIRED_RECEIPT" "$ROOT_REQUIRED_PACKAGE_SHA" || return 1
-}
-
-normalize_existing_root_required_package_receipts() {
-    local receipt receipt_sha
-    for receipt in "$ROOT_REQUIRED_RECEIPT" "$ROOT_REQUIRED_DESIRED_RECEIPT"; do
-        if [ -e "$receipt" ] || [ -L "$receipt" ]; then
-            receipt_sha="$(read_safe_root_required_sha_receipt "$receipt" existing)" || return 1
-            write_root_required_sha_receipt \
-                "$receipt" "$receipt_sha" preserve-canonical || return 1
-        fi
-    done
+    local temp desired_temp
+    mkdir -p "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
+    temp="$ROOT_REQUIRED_RECEIPT.tmp.$$"
+    printf '%s\n' "$ROOT_REQUIRED_PACKAGE_SHA" > "$temp"
+    mv -f "$temp" "$ROOT_REQUIRED_RECEIPT"
+    desired_temp="$ROOT_REQUIRED_DESIRED_RECEIPT.tmp.$$"
+    printf '%s\n' "$ROOT_REQUIRED_PACKAGE_SHA" > "$desired_temp"
+    mv -f "$desired_temp" "$ROOT_REQUIRED_DESIRED_RECEIPT"
 }
 
 expected_package_git_mode() {
@@ -1097,25 +420,24 @@ expected_package_git_mode() {
 }
 
 validate_package_source_matches_commit() {
-    local rel git_mode expected_mode source_path
+    local rel git_mode expected_mode
     for rel in "${package_files[@]}"; do
-        source_path="$(src_path "$rel")" || return 1
         git_mode="$(git -C "$ROOT_REQUIRED_GIT_REPO" ls-tree "$ROOT_REQUIRED_PACKAGE_SHA" -- "$rel" | awk 'NR == 1 {print $1}')"
         expected_mode="$(expected_package_git_mode "$rel")"
         if [ "$git_mode" != "$expected_mode" ]; then
-            echo "OOM package Git mode violates the destination contract at $rel: actual=$git_mode expected=$expected_mode; next action: restore the tracked executable class and rerun from a clean Git worktree or a fresh post-merge live command" >&2
+            echo "OOM package Git mode violates the destination contract at $rel: actual=$git_mode expected=$expected_mode; next action: restore the tracked executable class and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
             return 1
         fi
-        if ! /usr/bin/python3 -I - "$source_path" "$git_mode" "$AUTHENTICATED_SEALED_SOURCE" <<'PY'
+        if ! /usr/bin/python3 - "$SOURCE/$rel" "$git_mode" <<'PY'
 from __future__ import annotations
 
 import os
 import stat
 import sys
 
-path, git_mode, sealed = sys.argv[1:]
+path, git_mode = sys.argv[1:]
 try:
-    inode = os.stat(path) if sealed == "1" else os.lstat(path)
+    inode = os.lstat(path)
 except OSError:
     raise SystemExit(1)
 if not stat.S_ISREG(inode.st_mode):
@@ -1125,41 +447,33 @@ if git_mode not in {"100644", "100755"} or worktree_mode != git_mode:
     raise SystemExit(1)
 PY
         then
-            echo "OOM install source is not a regular file with the claimed Git mode at $rel; next action: discard the substituted or mode-drifted package and rerun from a clean Git worktree or a fresh post-merge live command" >&2
+            echo "OOM install source is not a regular file with the claimed Git mode at $rel; next action: discard the substituted or mode-drifted package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
             return 1
         fi
-        if ! git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel" \
-            | cmp -s - "$source_path"; then
-            echo "OOM install source does not match claimed commit $ROOT_REQUIRED_PACKAGE_SHA at $rel; next action: discard the modified package and rerun from a clean Git worktree or a fresh post-merge live command" >&2
+        if ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$ROOT_REQUIRED_PACKAGE_SHA:$rel") "$SOURCE/$rel"; then
+            echo "OOM install source does not match claimed commit $ROOT_REQUIRED_PACKAGE_SHA at $rel; next action: discard the modified package and rerun from a clean Git worktree or exact staged RUNBOOK" >&2
             return 1
         fi
     done
 }
 
 validate_no_unhandled_package_removals() {
-    local installed_sha installed_manifest rel
-    if [ ! -e "$ROOT_REQUIRED_RECEIPT" ] && [ ! -L "$ROOT_REQUIRED_RECEIPT" ]; then
-        return 0
-    fi
-    installed_sha="$(read_safe_root_required_sha_receipt "$ROOT_REQUIRED_RECEIPT" installed)" \
-        || return 1
+    local installed_sha rel
+    [ -f "$ROOT_REQUIRED_RECEIPT" ] || return 0
+    installed_sha="$(tr -d '[:space:]' < "$ROOT_REQUIRED_RECEIPT")"
     if ! git -C "$ROOT_REQUIRED_GIT_REPO" cat-file -e "$installed_sha:$package_manifest_source" 2>/dev/null; then
         echo "installed OOM commit predates the versioned ownership manifest; package-removal guard is using the one-time legacy bridge"
         return 0
     fi
-    installed_manifest="$(
-        git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source"
-    )" || {
-        echo "cannot materialize the installed OOM ownership manifest; next action: repair the exact installed Git object before advancing receipts" >&2
-        return 1
-    }
     while IFS= read -r rel; do
-        [ -n "$rel" ] || continue
         if ! awk -v wanted="$rel" 'NF && $1 !~ /^#/ && $1 == wanted { found = 1 } END { exit !found }' "$(src_path "$package_manifest_source")"; then
             echo "refusing OOM package removal or rename of $rel; next action: retain the owned path or add explicit governed live-removal handling before advancing receipts" >&2
             return 1
         fi
-    done < <(/usr/bin/awk 'NF && $1 !~ /^#/ {print $1}' <<< "$installed_manifest")
+    done < <(
+        git -C "$ROOT_REQUIRED_GIT_REPO" show "$installed_sha:$package_manifest_source" |
+            awk 'NF && $1 !~ /^#/ {print $1}'
+    )
 }
 
 validate_root_required_deferral_dir() {
@@ -1192,15 +506,15 @@ validate_root_required_deferral_dir() {
             ;;
     esac
     expected_real="$(canonical_dir "$ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment")" || {
-        echo "expected OOM deferral package is missing: $ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment; next action: rerun hapax-post-merge-deploy for $ROOT_REQUIRED_PACKAGE_SHA and use its live next-action command" >&2
+        echo "expected OOM deferral package is missing: $ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment; next action: rerun the exact command from that package's RUNBOOK.txt" >&2
         return 1
     }
     source_real="$(canonical_dir "$SOURCE")" || {
-        echo "OOM install source is missing: $SOURCE; next action: rerun hapax-post-merge-deploy for $ROOT_REQUIRED_PACKAGE_SHA and use its live next-action command" >&2
+        echo "OOM install source is missing: $SOURCE; next action: rerun the exact staged RUNBOOK command" >&2
         return 1
     }
     if [ "$drain_real" != "$expected_real" ] || [ "$source_real" != "$expected_real" ]; then
-        echo "refusing mismatched OOM deferral drain: source=$source_real drain=$drain_real expected=$expected_real; next action: rerun hapax-post-merge-deploy for $ROOT_REQUIRED_PACKAGE_SHA and use only its live next-action command" >&2
+        echo "refusing mismatched OOM deferral drain: source=$source_real drain=$drain_real expected=$expected_real; next action: use the unmodified command from $expected_real/RUNBOOK.txt" >&2
         return 1
     fi
     ROOT_REQUIRED_DRAIN_REAL="$drain_real"
@@ -1213,9 +527,8 @@ validate_root_required_deferral() {
 
 drain_root_required_deferral() {
     [ -n "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" ] || return 0
-    [ -n "${ROOT_REQUIRED_DRAIN_REAL:-}" ] || validate_root_required_deferral || return 1
-    mv -fT -- "$ROOT_REQUIRED_DRAIN_REAL/RUNBOOK.txt" \
-        "$ROOT_REQUIRED_DRAIN_REAL/DRAINED.txt" || return 1
+    [ -n "${ROOT_REQUIRED_DRAIN_REAL:-}" ] || validate_root_required_deferral
+    mv "$ROOT_REQUIRED_DRAIN_REAL/RUNBOOK.txt" "$ROOT_REQUIRED_DRAIN_REAL/DRAINED.txt"
     echo "root-required deferral marked drained: $ROOT_REQUIRED_DRAIN_REAL"
 }
 
@@ -1237,8 +550,7 @@ system_units=(
     systemd/units/hapax-oom-score-enforce.service
     systemd/units/hapax-oom-score-enforce.timer
 )
-managed_user_units=(
-    systemd/units/hapax-local-judge.service
+user_audit_units=(
     systemd/units/hapax-oom-policy-audit.service
     systemd/units/hapax-oom-policy-audit.timer
     systemd/units/hapax-root-required-deploy-audit.service
@@ -1274,33 +586,14 @@ oom_sudoers_source="config/root-required/hapax-oom-score-enforce.sudoers"
 root_failure_intake_source="scripts/hapax-root-failure-intake"
 oom_policy_audit_source="scripts/hapax-oom-policy-audit"
 root_required_audit_source="scripts/hapax-root-required-deploy-audit"
-authority_verifier_source="scripts/hapax-post-merge-deploy"
 package_manifest_source="config/root-required/oom-containment.files"
-effect_descriptor_source="config/root-required/oom-containment.effects"
-host_profile_table_source="config/root-required/oom-host-profiles.tsv"
-host_profile_sources=(
-    config/root-required/oom-host-policy/appendix/app.slice.conf
-    config/root-required/oom-host-policy/appendix/user-1000.slice.conf
-    config/root-required/oom-host-policy/appendix/user@1000.service.conf
-    config/root-required/oom-host-policy/appendix/zram-generator.conf
-    config/root-required/oom-host-policy/podium/app.slice.conf
-    config/root-required/oom-host-policy/podium/user-1000.slice.conf
-    config/root-required/oom-host-policy/podium/user@1000.service.conf
-    config/root-required/oom-host-policy/podium/zram-generator.conf
-)
 package_files=(
     "$package_manifest_source"
-    "$effect_descriptor_source"
-    "$host_profile_table_source"
-    "${host_profile_sources[@]}"
     scripts/install-p0-oom-containment
-    scripts/hapax-root-required-deferred-install
-    "$authority_verifier_source"
-    scripts/hapax-local-judge-container-id
     "$oom_sudoers_source"
     "${system_dropins[@]}"
     "${system_units[@]}"
-    "${managed_user_units[@]}"
+    "${user_audit_units[@]}"
     "${user_slice_dropins[@]}"
     "${user_protection_dropins[@]}"
     "$earlyoom_source"
@@ -1310,186 +603,6 @@ package_files=(
     "$oom_policy_audit_source"
     "$root_required_audit_source"
 )
-declare -A ROOT_REQUIRED_SEALED_SOURCES=()
-
-load_authenticated_sealed_sources() {
-    local raw="$ROOT_REQUIRED_SEALED_SOURCE_FDS" index
-    local -a source_fds=()
-    if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 0 ]; then
-        if [ -n "$raw" ] || [ -n "$ROOT_REQUIRED_LEGACY_FINALIZE_GATE" ] \
-            || [ -n "$RUNTIME_AUTHORITY_TASK_SHA256" ] \
-            || [ -n "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" ]; then
-            echo "refusing sealed-source, authority-snapshot, or retired finalizer descriptors without the authenticated helper protocol flag; next action: remove helper-owned descriptor variables and regenerate the live command with hapax-post-merge-deploy" >&2
-            return 1
-        fi
-        return 0
-    fi
-    if [ -n "$ROOT_REQUIRED_LEGACY_FINALIZE_GATE" ]; then
-        echo "refusing the retired caller-supplied finalizer protocol; next action: remove HAPAX_ROOT_REQUIRED_FINALIZE_GATE and regenerate the live command with hapax-post-merge-deploy" >&2
-        return 1
-    fi
-    if [ "$INSTALL" -ne 1 ] || [ -z "$raw" ] || [ -z "$RUNTIME_AUTHORITY_TASK" ] \
-        || ! [[ "$ROOT_REQUIRED_PACKAGE_SHA" =~ ^[0-9a-f]{40}$ ]] \
-        || ! [[ "$RUNTIME_AUTHORITY_TASK_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-        echo "authenticated sealed-source mode requires --install, an exact 40-hex package SHA, helper-owned source descriptors, HAPAX_RUNTIME_AUTHORITY_TASK, and its helper-bound SHA-256 snapshot; next action: regenerate the live command with hapax-post-merge-deploy" >&2
-        return 1
-    fi
-    IFS=: read -r -a source_fds <<< "$raw"
-    if [ "${#source_fds[@]}" -ne "${#package_files[@]}" ]; then
-        echo "authenticated OOM source descriptor count mismatch: actual=${#source_fds[@]} expected=${#package_files[@]}; next action: discard the altered invocation and regenerate it with hapax-post-merge-deploy" >&2
-        return 1
-    fi
-    if ! /usr/bin/python3 -I - "${source_fds[@]}" <<'PY'
-from __future__ import annotations
-
-import fcntl
-import os
-import re
-import stat
-import sys
-
-required = fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
-source_paths = sys.argv[1:]
-source_fds: set[int] = set()
-for path in source_paths:
-    match = re.fullmatch(r"/proc/self/fd/([0-9]+)", path)
-    if match is None:
-        raise SystemExit(1)
-    source_fd = int(match.group(1))
-    if source_fd < 3 or source_fd in source_fds:
-        raise SystemExit(1)
-    source_fds.add(source_fd)
-    try:
-        target = os.readlink(path)
-        inherited_inode = os.fstat(source_fd)
-        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
-        try:
-            inode = os.fstat(fd)
-            seals = fcntl.fcntl(fd, fcntl.F_GET_SEALS)
-        finally:
-            os.close(fd)
-    except OSError:
-        raise SystemExit(1)
-    if (
-        not target.startswith("/memfd:hapax-")
-        or not stat.S_ISREG(inode.st_mode)
-        or inode.st_uid != os.geteuid()
-        or (inode.st_dev, inode.st_ino) != (inherited_inode.st_dev, inherited_inode.st_ino)
-        or seals & required != required
-    ):
-        raise SystemExit(1)
-PY
-    then
-        echo "authenticated OOM source descriptors are unavailable, unsealed, or not caller-owned memfds; next action: leave the deferral pending and regenerate its live command with hapax-post-merge-deploy" >&2
-        return 1
-    fi
-    for index in "${!package_files[@]}"; do
-        ROOT_REQUIRED_SEALED_SOURCES["${package_files[$index]}"]="${source_fds[$index]}"
-    done
-}
-
-bind_authenticated_release_root() {
-    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
-    production_destinations_selected || return 0
-    local account_home activation_alias release_root release provided owner_uid git_root git_head
-    account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" || {
-        echo "authenticated OOM install cannot derive the caller account home; next action: repair the local passwd entry and regenerate the live command with hapax-post-merge-deploy" >&2
-        return 1
-    }
-    activation_alias="$account_home/.cache/hapax/source-activation/worktree"
-    release_root="$account_home/.cache/hapax/source-activation/releases"
-    release="$(/usr/bin/realpath -e -- "$activation_alias" 2>/dev/null)" || {
-        echo "authenticated OOM install cannot resolve the canonical source-activation release; next action: reconcile source activation and regenerate the live command with hapax-post-merge-deploy" >&2
-        return 1
-    }
-    provided="$(/usr/bin/realpath -e -- "$ROOT_REQUIRED_GIT_REPO" 2>/dev/null)" || {
-        echo "authenticated OOM install cannot resolve its claimed Git repository; next action: discard the altered invocation and regenerate it with hapax-post-merge-deploy" >&2
-        return 1
-    }
-    if [ "$release" != "$release_root/$ROOT_REQUIRED_PACKAGE_SHA" ] || [ "$provided" != "$release" ]; then
-        echo "authenticated OOM install is not bound to the canonical exact-SHA release: activation=$release claimed=$provided expected=$release_root/$ROOT_REQUIRED_PACKAGE_SHA; next action: reconcile source activation and regenerate the live command with hapax-post-merge-deploy" >&2
-        return 1
-    fi
-    owner_uid="$(/usr/bin/stat -c %u -- "$release" 2>/dev/null || true)"
-    git_root="$(git -C "$release" rev-parse --show-toplevel 2>/dev/null || true)"
-    git_root="$(/usr/bin/realpath -e -- "$git_root" 2>/dev/null || true)"
-    git_head="$(git -C "$release" rev-parse --verify HEAD 2>/dev/null || true)"
-    if [ "$owner_uid" != "$(/usr/bin/id -u)" ] || [ "$git_root" != "$release" ] \
-        || [ "$git_head" != "$ROOT_REQUIRED_PACKAGE_SHA" ]; then
-        echo "authenticated OOM install rejected an unowned or mismatched canonical release; next action: reconcile source-activation ownership and HEAD, then regenerate the live command with hapax-post-merge-deploy" >&2
-        return 1
-    fi
-    ROOT_REQUIRED_GIT_REPO="$release"
-}
-
-run_authenticated_authority_gate() {
-    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
-    local cap_phase="${1:-candidate}" verifier
-    local -a scopes=()
-    case "$cap_phase" in
-        candidate|applied|authority-only) ;;
-        *)
-            echo "invalid authenticated authority phase: $cap_phase; next action: regenerate the live command with hapax-post-merge-deploy" >&2
-            return 1
-            ;;
-    esac
-    verifier="$(src_path "$authority_verifier_source")" || return 1
-    mapfile -t scopes < <(/usr/bin/awk '/^runtime:/ {print}' "$(src_path "$effect_descriptor_source")")
-    if [ "${#scopes[@]}" -eq 0 ] || [ "$(printf '%s\n' "${scopes[@]}" | /usr/bin/sort -u | /usr/bin/wc -l)" -ne "${#scopes[@]}" ]; then
-        echo "authenticated OOM effect scope set is empty or duplicated; next action: restore the exact effect descriptor and regenerate the live command with hapax-post-merge-deploy" >&2
-        return 1
-    fi
-    /usr/bin/env -i \
-        HOME="$TARGET_HOME" \
-        PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin \
-        LANG=C.UTF-8 \
-        LC_ALL=C.UTF-8 \
-        GIT_CONFIG_GLOBAL=/dev/null \
-        GIT_CONFIG_NOSYSTEM=1 \
-        GIT_NO_REPLACE_OBJECTS=1 \
-        GIT_OPTIONAL_LOCKS=0 \
-        PYTHONNOUSERSITE=1 \
-        PYTHONSAFEPATH=1 \
-        /usr/bin/bash --noprofile --norc -p "$verifier" \
-        --verify-runtime-authority-snapshot-for-release \
-        "$ROOT_REQUIRED_PACKAGE_SHA" "$RUNTIME_AUTHORITY_TASK" \
-        "$RUNTIME_AUTHORITY_TASK_SHA256" "${scopes[@]}" || {
-        echo "authenticated OOM runtime-authority recheck rejected; no further effect or receipt advancement is permitted; next action: restore the canonical runtime-authorized task and regenerate the live command with hapax-post-merge-deploy" >&2
-        return 1
-    }
-    if [ "$cap_phase" != authority-only ] && [ "$HOST_PROFILE" = appendix ]; then
-        if ! [[ "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-            echo "authenticated OOM local-judge cap snapshot is absent or malformed; next action: regenerate the live command with hapax-post-merge-deploy" >&2
-            return 1
-        fi
-        /usr/bin/env -i \
-            HOME="$TARGET_HOME" \
-            PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin \
-            LANG=C.UTF-8 \
-            LC_ALL=C.UTF-8 \
-            GIT_CONFIG_GLOBAL=/dev/null \
-            GIT_CONFIG_NOSYSTEM=1 \
-            GIT_NO_REPLACE_OBJECTS=1 \
-            GIT_OPTIONAL_LOCKS=0 \
-            PYTHONNOUSERSITE=1 \
-            PYTHONSAFEPATH=1 \
-            HAPAX_ROOT_REQUIRED_STATE_ROOT="$ROOT_REQUIRED_STATE_ROOT" \
-            HAPAX_ROOT_REQUIRED_LOCK_FILE="$ROOT_REQUIRED_LOCK_FILE" \
-            HAPAX_ROOT_REQUIRED_LOCK_FD="$HAPAX_ROOT_REQUIRED_LOCK_FD" \
-            HAPAX_ROOT_REQUIRED_STATE_FD="$HAPAX_ROOT_REQUIRED_STATE_FD" \
-            HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD="$HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD" \
-            HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT="$HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT" \
-            HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH="$HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH" \
-            HAPAX_ROOT_REQUIRED_LOCK_MODE=exclusive \
-            /usr/bin/bash --noprofile --norc -p "$verifier" \
-            --verify-local-judge-cap-receipt-snapshot \
-            "$ROOT_REQUIRED_PACKAGE_SHA" "$cap_phase" \
-            "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" || {
-            echo "authenticated OOM local-judge cap recheck rejected at phase $cap_phase; no further effect or receipt advancement is permitted; next action: rerun the governed cap canary and regenerate the live command with hapax-post-merge-deploy" >&2
-            return 1
-        }
-    fi
-}
 recovery_unit_scores=(
     apcupsd.service:-900
     systemd-logind.service:-800
@@ -1542,20 +655,8 @@ host_optional_user_units=(
     hapax-imagination.service
 )
 
-HOST_POLICY_LOADED=0
-HOST_POLICY_AUTHORITY=""
-HOST_HOSTNAME=""
-HOST_PROFILE=""
-HOST_PHYSICAL_BYTES=""
-HOST_APP_MEMORY_HIGH=""
-HOST_APP_MEMORY_MAX=""
-HOST_UID_MEMORY_HIGH=""
-HOST_UID_MEMORY_MAX=""
-HOST_ZRAM_SIZE_MIB=""
-
 is_host_optional_user_unit() {
     local candidate="$1" optional
-    [ "$HOST_PROFILE" = "appendix" ] || return 1
     for optional in "${host_optional_user_units[@]}"; do
         [ "$candidate" = "$optional" ] && return 0
     done
@@ -1581,46 +682,6 @@ user_systemd_analyze() {
     fi
 }
 
-governed_system_unit_search_paths() {
-    local discovered override="${HAPAX_OOM_GOVERNED_SYSTEM_UNIT_PATHS:-}"
-    if [ -n "$override" ]; then
-        if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" != "1" ]; then
-            echo "governed system unit-path override is test-only; next action: remove HAPAX_OOM_GOVERNED_SYSTEM_UNIT_PATHS and rerun against systemd's authoritative search path" >&2
-            return 1
-        fi
-        discovered="${override//:/$'\n'}"
-    elif ! discovered="$("$SYSTEMD_ANALYZE" unit-paths 2>/dev/null)"; then
-        echo "unable to obtain the authoritative system unit search path; next action: restore '$SYSTEMD_ANALYZE unit-paths' and rerun the OOM installer" >&2
-        return 1
-    fi
-    printf '%s\n' "$discovered" \
-        "$SYSTEMD_SYSTEM_CONTROL_DIR" \
-        "$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR" \
-        "$SYSTEMD_SYSTEM_TRANSIENT_DIR" \
-        "$SYSTEMD_SYSTEM_DIR" \
-        | awk 'NF && !seen[$0]++'
-}
-
-governed_user_unit_search_paths() {
-    local discovered override="${HAPAX_OOM_GOVERNED_USER_UNIT_PATHS:-}"
-    if [ -n "$override" ]; then
-        if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" != "1" ]; then
-            echo "governed user unit-path override is test-only; next action: remove HAPAX_OOM_GOVERNED_USER_UNIT_PATHS and rerun against systemd's authoritative search path" >&2
-            return 1
-        fi
-        discovered="${override//:/$'\n'}"
-    elif ! discovered="$(user_systemd_analyze unit-paths 2>/dev/null)"; then
-        echo "unable to obtain the authoritative target-user unit search path; next action: restore '$SYSTEMD_ANALYZE --user unit-paths' for UID $TARGET_UID and rerun the OOM installer" >&2
-        return 1
-    fi
-    printf '%s\n' "$discovered" \
-        "$SYSTEMD_USER_CONTROL_DIR" \
-        "$SYSTEMD_USER_RUNTIME_CONTROL_DIR" \
-        "$SYSTEMD_USER_TRANSIENT_DIR" \
-        "$SYSTEMD_USER_DIR" \
-        | awk 'NF && !seen[$0]++'
-}
-
 # Where the user manager looks for unit files. Asked of systemd rather than hardcoded: the real
 # path includes generator, transient and .control directories that a static list silently omits,
 # and omitting one turns "installed here" into "absent here" -- the exact misread this whole
@@ -1628,10 +689,6 @@ governed_user_unit_search_paths() {
 # manager; it is a floor, not the answer.
 user_unit_search_paths() {
     if [ -n "${HAPAX_OOM_USER_UNIT_PATHS:-}" ]; then
-        if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" != "1" ]; then
-            echo "HAPAX_OOM_USER_UNIT_PATHS is test-only and cannot prove production unit absence" >&2
-            return 2
-        fi
         printf '%s\n' "${HAPAX_OOM_USER_UNIT_PATHS//:/$'\n'}"
         return 0
     fi
@@ -1672,10 +729,7 @@ user_unit_search_paths() {
 # So a degraded enumeration may still PROVE presence (finding a file is positive evidence), but it
 # may never be used to prove ABSENCE.
 user_unit_search_paths_are_authoritative() {
-    if [ -n "${HAPAX_OOM_USER_UNIT_PATHS:-}" ]; then
-        [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" = "1" ]
-        return
-    fi
+    [ -n "${HAPAX_OOM_USER_UNIT_PATHS:-}" ] && return 0
     user_systemd_analyze unit-paths >/dev/null 2>&1
 }
 
@@ -1708,408 +762,7 @@ user_unit_file_present() {
 }
 
 src_path() {
-    local rel="$1" sealed
-    if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
-        sealed="${ROOT_REQUIRED_SEALED_SOURCES[$rel]-}"
-        if [ -z "$sealed" ]; then
-            echo "authenticated OOM source map omits $rel; next action: leave the deferral pending and regenerate its live command with hapax-post-merge-deploy" >&2
-            return 1
-        fi
-        printf '%s\n' "$sealed"
-        return 0
-    fi
-    printf '%s/%s\n' "$SOURCE" "$rel"
-}
-
-validate_authenticated_installer_call_form() {
-    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
-    local expected
-    expected="$(src_path scripts/install-p0-oom-containment)" || return 1
-    if [[ "${BASH_SOURCE[1]:-}" != "$0" ]] \
-        || [[ "${BASH_LINENO[1]:-1}" != "0" ]] \
-        || ! [[ "$0" =~ ^/proc/self/fd/[0-9]+$ ]] \
-        || ! [[ "$0" -ef "$expected" ]] \
-        || ! [[ "/proc/$$/fd/255" -ef "$expected" ]]; then
-        echo "authenticated OOM installer call form is not bound to its inherited sealed source descriptor; next action: discard the sourced/evaluated/foreign-holder invocation and regenerate it with hapax-post-merge-deploy" >&2
-        return 1
-    fi
-}
-
-production_destinations_selected() {
-    local path
-    for path in \
-        "$SYSTEMD_SYSTEM_DIR" "$SYSTEMD_USER_DIR" "$EARLYOOM_DEST" \
-        "$OOM_ENFORCER_DEST" "$OOM_TRIGGER_DEST" "$OOM_SUDOERS_DEST" \
-        "$OOM_SUDOERS_REFERENCE_DEST" "$ROOT_FAILURE_INTAKE_DEST" \
-        "$OOM_POLICY_AUDIT_DEST" "$ROOT_REQUIRED_AUDIT_DEST" \
-        "$OOM_PROFILE_TABLE_DEST" "$ZRAM_POLICY_DEST" \
-        "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" \
-        "$ROOT_REQUIRED_DEFER_ROOT" "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" \
-        "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$ROOT_REQUIRED_LOCK_FILE" "$TARGET_HOME"; do
-        case "$path" in
-            /etc/*|/usr/local/*|/home/hapax/*) return 0 ;;
-        esac
-    done
-    return 1
-}
-
-path_is_within_test_root() {
-    local path="$1" root="$2" canonical
-    canonical="$(/usr/bin/realpath -m -- "$path")" || return 1
-    case "$canonical" in
-        "$root"|"$root"/*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-validate_isolated_test_executable() {
-    local label="$1" command="$2" root="$3" canonical
-    case "$command" in
-        /*) ;;
-        *)
-            echo "isolated OOM test install requires an absolute fake $label command under $root; got $command" >&2
-            return 1
-            ;;
-    esac
-    canonical="$(/usr/bin/realpath -e -- "$command" 2>/dev/null)" || {
-        echo "isolated OOM test install cannot resolve fake $label command $command under $root" >&2
-        return 1
-    }
-    if [ ! -f "$canonical" ] || [ -L "$command" ] || [ ! -x "$canonical" ] \
-        || ! path_is_within_test_root "$canonical" "$root"; then
-        echo "isolated OOM test install requires a non-symlink executable fake $label command under $root; got $command" >&2
-        return 1
-    fi
-}
-
-validate_authenticated_state_contract() {
-    local lexical_root="$1" state_fd="${HAPAX_ROOT_REQUIRED_STATE_FD:-}"
-    local lock_fd="${HAPAX_ROOT_REQUIRED_LOCK_FD:-}"
-    local guard_fd="${HAPAX_ROOT_REQUIRED_GENERATION_GUARD_FD:-}"
-    local expected_lock="$lexical_root/.lock"
-    if ! [[ "$state_fd" =~ ^[0-9]+$ ]] || [ "$state_fd" -lt 3 ] \
-        || ! [[ "$lock_fd" =~ ^[0-9]+$ ]] || [ "$lock_fd" -lt 3 ] \
-        || ! [[ "$guard_fd" =~ ^[0-9]+$ ]] || [ "$guard_fd" -lt 3 ] \
-        || [ "$ROOT_REQUIRED_STATE_ROOT" != "/proc/self/fd/$state_fd" ] \
-        || [ "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" != "$ROOT_REQUIRED_STATE_ROOT/current-source" ] \
-        || [ "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" != "$ROOT_REQUIRED_STATE_ROOT/installed-receipts" ] \
-        || [ "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" != "$ROOT_REQUIRED_STATE_ROOT/desired-receipts" ] \
-        || [ "$ROOT_REQUIRED_RECEIPT" != "$ROOT_REQUIRED_STATE_ROOT/installed-receipts/oom-containment.sha" ] \
-        || [ "$ROOT_REQUIRED_DESIRED_RECEIPT" != "$ROOT_REQUIRED_STATE_ROOT/desired-receipts/oom-containment.sha" ] \
-        || [ "${HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT:-}" != "$lexical_root" ] \
-        || [ "$ROOT_REQUIRED_LOCK_FILE" != "$expected_lock" ] \
-        || [ "${HAPAX_ROOT_REQUIRED_LOCK_LEXICAL_PATH:-}" != "$expected_lock" ] \
-        || [ "${HAPAX_ROOT_REQUIRED_LOCK_MODE:-}" != "exclusive" ]; then
-        echo "authenticated OOM install rejected a noncanonical inherited state contract; next action: discard the altered invocation and regenerate its live command with hapax-post-merge-deploy" >&2
-        return 1
-    fi
-}
-
-validate_authenticated_test_root() {
-    local raw="$ROOT_REQUIRED_INSTALLER_TEST_ROOT" root_mode account_home
-    if [ "$ROOT_REQUIRED_INSTALLER_TEST_MODE" != "1" ] || [ -z "$raw" ] \
-        || [[ "$raw" != /* ]] || [ -L "$raw" ]; then
-        echo "authenticated OOM isolated test mode requires an absolute non-symlink HAPAX_ROOT_REQUIRED_INSTALLER_TEST_ROOT" >&2
-        return 1
-    fi
-    AUTHENTICATED_TEST_ROOT="$(/usr/bin/realpath -e -- "$raw" 2>/dev/null)" || {
-        echo "authenticated OOM isolated test root is unavailable: $raw" >&2
-        return 1
-    }
-    root_mode="$(/usr/bin/stat -c %a -- "$AUTHENTICATED_TEST_ROOT" 2>/dev/null || true)"
-    account_home="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
-        || return 1
-    if [ "$AUTHENTICATED_TEST_ROOT" = / ] || [ "$AUTHENTICATED_TEST_ROOT" != "$raw" ] \
-        || [ ! -d "$AUTHENTICATED_TEST_ROOT" ] \
-        || [ "$(/usr/bin/stat -c %u -- "$AUTHENTICATED_TEST_ROOT" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
-        || ! [[ "$root_mode" =~ ^[0-7]+$ ]] \
-        || (( (8#$root_mode & 8#022) != 0 )) \
-        || [[ "$account_home" == "$AUTHENTICATED_TEST_ROOT" ]] \
-        || [[ "$account_home" == "$AUTHENTICATED_TEST_ROOT"/* ]]; then
-        echo "authenticated OOM isolated test root must be physical, caller-owned, and not group/other-writable: $raw" >&2
-        return 1
-    fi
-}
-
-validate_authenticated_test_contract() {
-    local path selector_value
-    local canonical_stage="$ROOT_REQUIRED_DEFER_ROOT/$ROOT_REQUIRED_PACKAGE_SHA/oom-containment"
-    local -a destinations selector_paths
-    validate_authenticated_test_root || return 1
-    if [ "$SOURCE" != "$canonical_stage" ] \
-        || [ "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" != "$canonical_stage" ]; then
-        echo "authenticated OOM isolated test source and drain must name the exact staged package under $ROOT_REQUIRED_DEFER_ROOT" >&2
-        return 1
-    fi
-    validate_authenticated_state_contract "${HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT:-}" || return 1
-    destinations=(
-        "$SYSTEMD_SYSTEM_DIR" "$SYSTEMD_USER_DIR" "$SYSTEMD_USER_CONTROL_DIR"
-        "$SYSTEMD_SYSTEM_CONTROL_DIR" "$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR"
-        "$SYSTEMD_SYSTEM_TRANSIENT_DIR" "$SYSTEMD_USER_RUNTIME_CONTROL_DIR"
-        "$SYSTEMD_USER_TRANSIENT_DIR" "$EARLYOOM_DEST" "$OOM_ENFORCER_DEST"
-        "$OOM_TRIGGER_DEST" "$OOM_SUDOERS_DEST" "$OOM_SUDOERS_REFERENCE_DEST"
-        "$ROOT_FAILURE_INTAKE_DEST" "$OOM_POLICY_AUDIT_DEST" "$ROOT_REQUIRED_AUDIT_DEST"
-        "$LOCAL_JUDGE_CONTAINER_ID_DEST" "$OOM_PROFILE_TABLE_DEST" "$ZRAM_POLICY_DEST"
-        "$LEGACY_ZRAM_POLICY_DEST" "$ZRAM_DISKSIZE_PATH" "$PROC_ROOT" "$CGROUP_ROOT"
-        "$ROOT_REQUIRED_STATE_ROOT" "${HAPAX_ROOT_REQUIRED_STATE_LEXICAL_ROOT:-}"
-        "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT" "$ROOT_REQUIRED_DEFER_ROOT"
-        "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT" "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT"
-        "$ROOT_REQUIRED_LOCK_FILE" "$ROOT_REQUIRED_GIT_REPO" "$SOURCE"
-        "${HAPAX_ROOT_REQUIRED_DRAIN_DIR:-}" "$RUNTIME_AUTHORITY_TASK" "$TARGET_HOME"
-    )
-    for selector_value in \
-        "$ZRAM_DROPIN_DIRS" \
-        "$ZRAM_HIGH_PRIORITY_CONFIGS" \
-        "${HAPAX_OOM_GOVERNED_SYSTEM_UNIT_PATHS:-}" \
-        "${HAPAX_OOM_GOVERNED_USER_UNIT_PATHS:-}" \
-        "${HAPAX_OOM_USER_UNIT_PATHS:-}"; do
-        IFS=: read -r -a selector_paths <<< "$selector_value"
-        destinations+=("${selector_paths[@]}")
-    done
-    for path in "${destinations[@]}"; do
-        [ -n "$path" ] || continue
-        if ! path_is_within_test_root "$path" "$AUTHENTICATED_TEST_ROOT"; then
-            echo "authenticated OOM isolated test destination escapes $AUTHENTICATED_TEST_ROOT: $path" >&2
-            return 1
-        fi
-    done
-    validate_isolated_test_executable Docker "$DOCKER" "$AUTHENTICATED_TEST_ROOT" || return 1
-    validate_isolated_test_executable systemctl "$SYSTEMCTL" "$AUTHENTICATED_TEST_ROOT" || return 1
-    validate_isolated_test_executable systemd-analyze "$SYSTEMD_ANALYZE" "$AUTHENTICATED_TEST_ROOT" || return 1
-    validate_isolated_test_executable runuser "$RUNUSER" "$AUTHENTICATED_TEST_ROOT" || return 1
-    validate_isolated_test_executable visudo "$VISUDO" "$AUTHENTICATED_TEST_ROOT" || return 1
-}
-
-validate_authenticated_install_contract() {
-    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
-    case "$ROOT_REQUIRED_INSTALLER_TEST_MODE" in
-        0)
-            echo "authenticated production OOM installation is unavailable in this source revision; next action: dispatch separately authorized broker/attestation work" >&2
-            return 1
-            ;;
-        1) validate_authenticated_test_contract ;;
-        *)
-            echo "HAPAX_ROOT_REQUIRED_INSTALLER_TEST_MODE must be exactly 1 when present" >&2
-            return 1
-            ;;
-    esac
-}
-
-require_authenticated_install_authority() {
-    local raw_root root root_mode path
-    local -a destinations dropin_dirs high_priority_configs
-    [ "$INSTALL" -eq 1 ] || return 0
-    if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
-        validate_authenticated_install_contract
-        return
-    fi
-    if production_destinations_selected; then
-        echo "refusing unauthenticated production OOM install; next action: set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task and rerun hapax-post-merge-deploy so its sealed helper invokes this installer" >&2
-        return 1
-    fi
-    if [ "${HAPAX_ROOT_REQUIRED_ALLOW_UNAUTHENTICATED_TEST_INSTALL:-0}" != "1" ]; then
-        echo "refusing unauthenticated OOM install outside an isolated test; next action: use the authenticated hapax-post-merge-deploy helper for live installation" >&2
-        return 1
-    fi
-    raw_root="${HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT:-}"
-    if [ -z "$raw_root" ] || [[ "$raw_root" != /* ]] || [ -L "$raw_root" ]; then
-        echo "unauthenticated OOM test install requires an absolute non-symlink HAPAX_ROOT_REQUIRED_UNAUTHENTICATED_TEST_ROOT" >&2
-        return 1
-    fi
-    root="$(/usr/bin/realpath -e -- "$raw_root" 2>/dev/null)" || {
-        echo "unauthenticated OOM test root is unavailable: $raw_root" >&2
-        return 1
-    }
-    root_mode="$(/usr/bin/stat -c %a -- "$root" 2>/dev/null || true)"
-    if [ "$root" = / ] || [ ! -d "$root" ] \
-        || [ "$(/usr/bin/stat -c %u -- "$root" 2>/dev/null || true)" != "$(/usr/bin/id -u)" ] \
-        || ! [[ "$root_mode" =~ ^[0-7]+$ ]] \
-        || (( (8#$root_mode & 8#022) != 0 )); then
-        echo "unauthenticated OOM test root must be caller-owned and not group/other-writable: $root" >&2
-        return 1
-    fi
-    destinations=(
-        "$SYSTEMD_SYSTEM_DIR" "$SYSTEMD_USER_DIR" "$SYSTEMD_USER_CONTROL_DIR"
-        "$SYSTEMD_SYSTEM_CONTROL_DIR" "$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR"
-        "$SYSTEMD_SYSTEM_TRANSIENT_DIR" "$SYSTEMD_USER_RUNTIME_CONTROL_DIR"
-        "$SYSTEMD_USER_TRANSIENT_DIR" "$EARLYOOM_DEST" "$OOM_ENFORCER_DEST"
-        "$OOM_TRIGGER_DEST" "$OOM_SUDOERS_DEST" "$OOM_SUDOERS_REFERENCE_DEST"
-        "$ROOT_FAILURE_INTAKE_DEST" "$OOM_POLICY_AUDIT_DEST" "$ROOT_REQUIRED_AUDIT_DEST"
-        "$LOCAL_JUDGE_CONTAINER_ID_DEST" "$OOM_PROFILE_TABLE_DEST" "$ZRAM_POLICY_DEST"
-        "$LEGACY_ZRAM_POLICY_DEST" "$ZRAM_DISKSIZE_PATH" "$PROC_ROOT" "$CGROUP_ROOT"
-        "$ROOT_REQUIRED_STATE_ROOT" "$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT"
-        "$ROOT_REQUIRED_DEFER_ROOT" "$ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT"
-        "$ROOT_REQUIRED_DESIRED_RECEIPT_ROOT" "$ROOT_REQUIRED_LOCK_FILE" "$TARGET_HOME"
-    )
-    IFS=: read -r -a dropin_dirs <<< "$ZRAM_DROPIN_DIRS"
-    IFS=: read -r -a high_priority_configs <<< "$ZRAM_HIGH_PRIORITY_CONFIGS"
-    destinations+=("${dropin_dirs[@]}" "${high_priority_configs[@]}")
-    for path in "${destinations[@]}"; do
-        [ -n "$path" ] || continue
-        if ! path_is_within_test_root "$path" "$root"; then
-            echo "unauthenticated OOM test install destination escapes $root: $path" >&2
-            return 1
-        fi
-    done
-    validate_isolated_test_executable Docker "$DOCKER" "$root"
-    validate_isolated_test_executable systemctl "$SYSTEMCTL" "$root"
-}
-
-validate_docker_command() {
-    local override="${HAPAX_OOM_DOCKER:-}"
-    if [ -z "$override" ]; then
-        [ "$DOCKER" = "/usr/bin/docker" ] || {
-            echo "internal Docker command drift: expected /usr/bin/docker, got $DOCKER; next action: restore the governed installer" >&2
-            return 1
-        }
-        return 0
-    fi
-    if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" != "1" ]; then
-        echo "HAPAX_OOM_DOCKER is test-only; production reconciliation is pinned to /usr/bin/docker" >&2
-        return 1
-    fi
-    if production_destinations_selected; then
-        echo "refusing test-mode Docker command override for production OOM destinations; next action: remove HAPAX_OOM_DOCKER and HAPAX_OOM_ENFORCE_TEST_MODE" >&2
-        return 1
-    fi
-    case "$DOCKER" in
-        /*) ;;
-        *)
-            echo "test Docker command override must be an absolute path: $DOCKER" >&2
-            return 1
-            ;;
-    esac
-    if [ ! -f "$DOCKER" ] || [ -L "$DOCKER" ] || [ ! -x "$DOCKER" ]; then
-        echo "test Docker command override must be a non-symlink executable regular file: $DOCKER" >&2
-        return 1
-    fi
-}
-
-local_docker() {
-    /usr/bin/env \
-        --unset=DOCKER_CONTEXT \
-        --unset=DOCKER_CERT_PATH \
-        --unset=DOCKER_TLS_VERIFY \
-        --unset=DOCKER_TLS \
-        --unset=DOCKER_API_VERSION \
-        DOCKER_HOST="$LOCAL_DOCKER_HOST" \
-        DOCKER_CONFIG="$LOCAL_DOCKER_CONFIG" \
-        "$DOCKER" --config "$LOCAL_DOCKER_CONFIG" --host "$LOCAL_DOCKER_HOST" "$@"
-}
-
-load_host_policy() {
-    local output key value
-    [ "$HOST_POLICY_LOADED" -eq 0 ] || return 0
-    if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" = "1" ] && production_destinations_selected; then
-        echo "refusing test-mode host-policy overrides for production OOM destinations; next action: remove HAPAX_OOM_ENFORCE_TEST_MODE, HAPAX_OOM_POLICY_MEMTOTAL_KIB, and HAPAX_OOM_POLICY_HOSTNAME" >&2
-        return 1
-    fi
-    if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
-        if [ "${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" = "1" ]; then
-            if ! output="$(
-                HAPAX_OOM_AUDIT_SEALED_PACKAGE_SOURCE=1 \
-                HAPAX_OOM_AUDIT_PROC_ROOT="$PROC_ROOT" \
-                HAPAX_OOM_AUDIT_TEST_MODE=1 \
-                HAPAX_OOM_AUDIT_MEMTOTAL_KIB="${HAPAX_OOM_POLICY_MEMTOTAL_KIB:-}" \
-                HAPAX_OOM_AUDIT_HOSTNAME="${HAPAX_OOM_POLICY_HOSTNAME:-}" \
-                HAPAX_OOM_AUDIT_PROFILE_TABLE="$(src_path "$host_profile_table_source")" \
-                /usr/bin/python3 -I "$(src_path "$oom_policy_audit_source")" --host-policy-lines
-            )"; then
-                output=""
-            fi
-        else
-            if ! output="$(
-                HAPAX_OOM_AUDIT_SEALED_PACKAGE_SOURCE=1 \
-                HAPAX_OOM_AUDIT_PROFILE_TABLE="$(src_path "$host_profile_table_source")" \
-                /usr/bin/python3 -I "$(src_path "$oom_policy_audit_source")" --host-policy-lines
-            )"; then
-                output=""
-            fi
-        fi
-        if [ -z "$output" ]; then
-            echo "unable to derive the governed OOM host policy from sealed Git sources; next action: leave the deferral pending and regenerate its live command with hapax-post-merge-deploy" >&2
-            return 1
-        fi
-    elif ! output="$(
-        HAPAX_OOM_AUDIT_PROC_ROOT="$PROC_ROOT" \
-        HAPAX_OOM_AUDIT_TEST_MODE="${HAPAX_OOM_ENFORCE_TEST_MODE:-0}" \
-        HAPAX_OOM_AUDIT_MEMTOTAL_KIB="${HAPAX_OOM_POLICY_MEMTOTAL_KIB:-}" \
-        HAPAX_OOM_AUDIT_HOSTNAME="${HAPAX_OOM_POLICY_HOSTNAME:-}" \
-        /usr/bin/python3 -I "$(src_path "$oom_policy_audit_source")" --host-policy-lines
-    )"; then
-        echo "unable to derive the governed OOM host policy from physical RAM; next action: run scripts/hapax-oom-policy-audit --host-policy-lines and add a reviewed host sizing-table entry if this is a new memory class" >&2
-        return 1
-    fi
-    while IFS='=' read -r key value; do
-        case "$key" in
-            POLICY_AUTHORITY) HOST_POLICY_AUTHORITY="$value" ;;
-            HOSTNAME) HOST_HOSTNAME="$value" ;;
-            PROFILE) HOST_PROFILE="$value" ;;
-            PHYSICAL_BYTES) HOST_PHYSICAL_BYTES="$value" ;;
-            APP_MEMORY_HIGH) HOST_APP_MEMORY_HIGH="$value" ;;
-            APP_MEMORY_MAX) HOST_APP_MEMORY_MAX="$value" ;;
-            UID_MEMORY_HIGH) HOST_UID_MEMORY_HIGH="$value" ;;
-            UID_MEMORY_MAX) HOST_UID_MEMORY_MAX="$value" ;;
-            ZRAM_SIZE_MIB) HOST_ZRAM_SIZE_MIB="$value" ;;
-            *)
-                echo "unexpected OOM host policy field: $key; next action: restore the matched installer/audit package" >&2
-                return 1
-                ;;
-        esac
-    done <<< "$output"
-    case "$HOST_POLICY_AUTHORITY" in
-        internal-sealed-package-source)
-            if [ "$AUTHENTICATED_SEALED_SOURCE" -ne 1 ]; then
-                echo "OOM host policy falsely claims sealed-package authority; next action: restore the matched installer/audit package" >&2
-                return 1
-            fi
-            ;;
-        non-authoritative-source-tree|non-authoritative-test-override)
-            if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
-                echo "sealed OOM package did not emit sealed-package authority; next action: leave the deferral pending and regenerate it with hapax-post-merge-deploy" >&2
-                return 1
-            fi
-            ;;
-        *)
-            echo "unacceptable OOM host policy authority: ${HOST_POLICY_AUTHORITY:-missing}; next action: restore the matched installer/audit package" >&2
-            return 1
-            ;;
-    esac
-    [[ "$HOST_HOSTNAME" =~ ^hapax-(appendix|podium)$ ]] \
-        && [[ "$HOST_PROFILE" =~ ^(appendix|podium)$ ]] \
-        && [[ "$HOST_PHYSICAL_BYTES" =~ ^[0-9]+$ ]] \
-        && [[ "$HOST_APP_MEMORY_HIGH" =~ ^[0-9]+G$ ]] \
-        && [[ "$HOST_APP_MEMORY_MAX" =~ ^[0-9]+G$ ]] \
-        && [[ "$HOST_UID_MEMORY_HIGH" =~ ^[0-9]+G$ ]] \
-        && [[ "$HOST_UID_MEMORY_MAX" =~ ^[0-9]+G$ ]] \
-        && [[ "$HOST_ZRAM_SIZE_MIB" =~ ^[0-9]+$ ]] || {
-        echo "incomplete or invalid OOM host policy output; next action: restore scripts/hapax-oom-policy-audit from the same package commit" >&2
-        return 1
-    }
-    HOST_POLICY_LOADED=1
-}
-
-validate_authenticated_cap_environment_for_host() {
-    [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ] || return 0
-    [ "$ROOT_REQUIRED_INSTALLER_TEST_MODE" = "0" ] || return 0
-    case "$HOST_PROFILE" in
-        appendix)
-            if ! [[ "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-                echo "authenticated appendix OOM install requires the helper-bound local-judge cap digest; next action: rerun the governed cap canary and regenerate the live command with hapax-post-merge-deploy" >&2
-                return 1
-            fi
-            ;;
-        podium)
-            if [ -n "$LOCAL_JUDGE_CAP_RECEIPT_SHA256" ]; then
-                echo "authenticated podium OOM install refuses an appendix-only local-judge cap digest; next action: discard the altered invocation and regenerate its live command with hapax-post-merge-deploy" >&2
-                return 1
-            fi
-            ;;
-        *)
-            echo "authenticated OOM cap contract has no exact selected host profile; next action: restore the sealed host policy and regenerate the live command with hapax-post-merge-deploy" >&2
-            return 1
-            ;;
-    esac
+    printf '%s/%s\n' "$SOURCE" "$1"
 }
 
 publish_installed_source_file() {
@@ -2120,15 +773,11 @@ publish_installed_source_file() {
         echo "unable to reserve installed-source snapshot for $dest; next action: verify durable state ownership and capacity, then rerun the OOM installer" >&2
         return 1
     fi
-    if [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
-        cp --dereference --preserve=mode -- "$source" "$temp"
-    else
-        cp -a -- "$source" "$temp"
-    fi || {
+    if ! cp -a -- "$source" "$temp"; then
         rm -f "$temp" 2>/dev/null || true
         echo "unable to materialize installed-source snapshot for $dest; next action: verify the package source and durable state capacity, then rerun the OOM installer" >&2
         return 1
-    }
+    fi
     if ! mv -fT -- "$temp" "$dest"; then
         rm -f "$temp" 2>/dev/null || true
         echo "unable to atomically publish installed-source snapshot $dest; next action: remove unsafe destination drift and rerun the OOM installer" >&2
@@ -2140,7 +789,7 @@ record_installed_source() {
     local rel dest
     for rel in "${package_files[@]}"; do
         dest="$ROOT_REQUIRED_INSTALLED_SOURCE_ROOT/$rel"
-        publish_installed_source_file "$(src_path "$rel")" "$dest" || return 1
+        publish_installed_source_file "$(src_path "$rel")" "$dest"
     done
 }
 
@@ -2161,7 +810,14 @@ validate_package_manifest() {
 }
 
 app_slice_value() {
-    selected_source_unit_value "$user_dropin" "$1"
+    local key="$1" file value
+    file="$(src_path "$user_dropin")"
+    value="$(awk -F= -v key="$key" '$1 == key {print $2; exit}' "$file" 2>/dev/null || true)"
+    if [ -z "$value" ]; then
+        echo "app.slice drop-in missing $key; next action: restore $user_dropin from the P0 PR" >&2
+        return 1
+    fi
+    printf '%s\n' "$value"
 }
 
 source_unit_value() {
@@ -2173,432 +829,6 @@ source_unit_value() {
         return 1
     fi
     printf '%s\n' "$value"
-}
-
-selected_source_rel() {
-    local rel="$1"
-    case "$rel" in
-        systemd/units/app.slice.d/oom-containment.conf)
-            printf 'config/root-required/oom-host-policy/%s/app.slice.conf\n' "$HOST_PROFILE"
-            ;;
-        systemd/system/user-1000.slice.d/oom-containment.conf)
-            printf 'config/root-required/oom-host-policy/%s/user-1000.slice.conf\n' "$HOST_PROFILE"
-            ;;
-        systemd/system/user@1000.service.d/oom.conf)
-            printf 'config/root-required/oom-host-policy/%s/user@1000.service.conf\n' "$HOST_PROFILE"
-            ;;
-        *)
-            printf '%s\n' "$rel"
-            ;;
-    esac
-}
-
-selected_zram_source_rel() {
-    printf 'config/root-required/oom-host-policy/%s/zram-generator.conf\n' "$HOST_PROFILE"
-}
-
-selected_source_unit_value() {
-    local rel="$1" key="$2"
-    source_unit_value "$(selected_source_rel "$rel")" "$key"
-}
-
-system_memory_value() {
-    selected_source_unit_value "$1" "$2"
-}
-
-validate_selected_host_sources() {
-    local actual zram_source
-    [ "$(app_slice_value MemoryHigh)" = "$HOST_APP_MEMORY_HIGH" ] \
-        && [ "$(app_slice_value MemoryMax)" = "$HOST_APP_MEMORY_MAX" ] \
-        && [ "$(system_memory_value systemd/system/user-1000.slice.d/oom-containment.conf MemoryHigh)" = "$HOST_UID_MEMORY_HIGH" ] \
-        && [ "$(system_memory_value systemd/system/user-1000.slice.d/oom-containment.conf MemoryMax)" = "$HOST_UID_MEMORY_MAX" ] \
-        && [ "$(system_memory_value systemd/system/user@1000.service.d/oom.conf MemoryHigh)" = "$HOST_UID_MEMORY_HIGH" ] \
-        && [ "$(system_memory_value systemd/system/user@1000.service.d/oom.conf MemoryMax)" = "$HOST_UID_MEMORY_MAX" ] || {
-        echo "selected $HOST_PROFILE systemd sources disagree with the receipt-bound host profile table; next action: reconcile the exact profile sources and table in one commit" >&2
-        return 1
-    }
-    zram_source="$(src_path "$(selected_zram_source_rel)")"
-    actual="$(awk -F= '$1 ~ /^[[:space:]]*zram-size[[:space:]]*$/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$zram_source")"
-    if [ "$actual" != "$HOST_ZRAM_SIZE_MIB" ] || ! grep -Eq '^compression-algorithm[[:space:]]*=[[:space:]]*zstd$' "$zram_source"; then
-        echo "selected $HOST_PROFILE zram source disagrees with the receipt-bound host profile table; next action: reconcile the exact profile source and table in one commit" >&2
-        return 1
-    fi
-}
-
-governed_dropin_suffixes() {
-    case "$1" in
-        user-1000.slice)
-            printf '%s\n' user-1000.slice.d user-.slice.d slice.d
-            ;;
-        user@1000.service)
-            printf '%s\n' user@1000.service.d user@.service.d service.d
-            ;;
-        system.slice|user.slice|app.slice|session.slice)
-            printf '%s\n' "$1.d" slice.d
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-governed_fragment_names() {
-    case "$1" in
-        user@1000.service)
-            printf '%s\n' user@1000.service user@.service
-            ;;
-        system.slice|user.slice|user-1000.slice|app.slice|session.slice)
-            printf '%s\n' "$1"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-systemctl_generated_property_value() {
-    local path="$1" key="$2"
-    [ -f "$path" ] && [ ! -L "$path" ] || return 1
-    grep -Fq 'created via "systemctl set-property"' "$path" || return 1
-    awk -v key="$key" '
-        /^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=/ {
-            name = $0
-            sub(/^[[:space:]]*/, "", name)
-            sub(/[[:space:]]*=.*/, "", name)
-            value = $0
-            sub(/^[^=]*=[[:space:]]*/, "", value)
-            sub(/[[:space:]]*$/, "", value)
-            governed += 1
-            if (name == key) {
-                matched += 1
-                result = value
-            }
-        }
-        END {
-            if (governed == 1 && matched == 1) print result
-            else exit 1
-        }
-    ' "$path"
-}
-
-control_property_kind() {
-    local scope="$1" unit="$2" key="$3" path="$4" persistent runtime
-    case "$scope|$unit" in
-        system\|system.slice|system\|user.slice|system\|user-1000.slice|system\|user@1000.service)
-            persistent="$SYSTEMD_SYSTEM_CONTROL_DIR/$unit.d/50-$key.conf"
-            runtime="$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR/$unit.d/50-$key.conf"
-            ;;
-        user\|app.slice|user\|session.slice)
-            persistent="$SYSTEMD_USER_CONTROL_DIR/$unit.d/50-$key.conf"
-            runtime="$SYSTEMD_USER_RUNTIME_CONTROL_DIR/$unit.d/50-$key.conf"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-    if [ "$path" = "$persistent" ]; then
-        printf 'persistent\n'
-    elif [ "$path" = "$runtime" ]; then
-        printf 'runtime\n'
-    else
-        return 1
-    fi
-}
-
-is_known_legacy_memory_override() {
-    local scope="$1" unit="$2" path="$3"
-    case "$scope|$unit|$path" in
-        "system|user-1000.slice|$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/zz-hapax-host-memory.conf"|\
-        "system|user@1000.service|$SYSTEMD_SYSTEM_DIR/user@1000.service.d/zz-hapax-host-memory.conf"|\
-        "user|app.slice|$SYSTEMD_USER_DIR/app.slice.d/zz-hapax-host-memory.conf")
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-check_governed_unit_dropins() {
-    local allow_repair="$1" scope="$2" unit="$3" canonical="$4"
-    local root fragment suffix path rc key kind found_kind roots_output fragments_output suffixes_output
-    if [ "$scope" = "system" ]; then
-        roots_output="$(governed_system_unit_search_paths)" || return 1
-    else
-        roots_output="$(governed_user_unit_search_paths)" || return 1
-    fi
-    fragments_output="$(governed_fragment_names "$unit")" || {
-        echo "missing governed full-fragment mapping for $unit; next action: define its exact fragment and template names before extending OOM policy" >&2
-        return 1
-    }
-    suffixes_output="$(governed_dropin_suffixes "$unit")" || {
-        echo "missing governed drop-in mapping for $unit; next action: define its exact inherited drop-in names before extending OOM policy" >&2
-        return 1
-    }
-    while IFS= read -r root; do
-        [ -n "$root" ] || continue
-        while IFS= read -r fragment; do
-            path="$root/$fragment"
-            [ -e "$path" ] || [ -L "$path" ] || continue
-            if [ -L "$path" ]; then
-                echo "unowned OOM memory fragment is symlinked in the $unit search path: $path; next action: remove the override or govern a regular receipt-bound file" >&2
-                return 1
-            fi
-            if [ ! -f "$path" ]; then
-                echo "unsafe non-regular OOM memory fragment in the $unit search path: $path; next action: remove the override or govern a regular receipt-bound file" >&2
-                return 1
-            fi
-            if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$path"; then
-                echo "unowned OOM memory assignment for $unit in full fragment $path; next action: remove the governed-key assignment or fold it into the receipt-bound host profile" >&2
-                return 1
-            else
-                rc=$?
-                if [ "$rc" -gt 1 ]; then
-                    echo "unable to inspect OOM memory fragment: $path; next action: restore readable trusted unit fragments and rerun the installer" >&2
-                    return 1
-                fi
-            fi
-        done <<< "$fragments_output"
-        while IFS= read -r suffix; do
-            [ -d "$root/$suffix" ] || continue
-            for path in "$root/$suffix"/*.conf; do
-                [ -e "$path" ] || [ -L "$path" ] || continue
-                if [ "$path" = "$canonical" ]; then
-                    if [ -L "$path" ]; then
-                        echo "canonical OOM memory drop-in is symlinked: $path; next action: reinstall the receipt-bound regular file" >&2
-                        return 1
-                    fi
-                    continue
-                fi
-                if [ -L "$path" ]; then
-                    echo "unowned OOM memory drop-in is symlinked in the $unit search path: $path; next action: remove the override or govern a regular receipt-bound file" >&2
-                    return 1
-                fi
-                if [ "$allow_repair" -eq 1 ] \
-                    && is_known_legacy_memory_override "$scope" "$unit" "$path"; then
-                    continue
-                fi
-                if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$path"; then
-                    :
-                else
-                    rc=$?
-                    if [ "$rc" -gt 1 ]; then
-                        echo "unable to inspect OOM memory drop-in: $path; next action: restore readable trusted drop-ins and rerun the installer" >&2
-                        return 1
-                    fi
-                    continue
-                fi
-                found_kind=""
-                for key in "${GOVERNED_MEMORY_KEYS[@]}"; do
-                    grep -Eq "^[[:space:]]*$key[[:space:]]*=" "$path" || continue
-                    kind="$(control_property_kind "$scope" "$unit" "$key" "$path" 2>/dev/null || true)"
-                    if [ -n "$kind" ] && systemctl_generated_property_value "$path" "$key" >/dev/null; then
-                        if [ "$allow_repair" -eq 1 ]; then
-                            found_kind="$kind"
-                            break
-                        fi
-                    fi
-                    echo "unowned OOM memory assignment for $unit at $path; next action: remove the governed-key assignment or fold it into the receipt-bound host profile" >&2
-                    return 1
-                done
-                [ -n "$found_kind" ] || {
-                    echo "unable to classify governed OOM memory assignment for $unit at $path; next action: remove the override and rerun the installer" >&2
-                    return 1
-                }
-            done
-        done <<< "$suffixes_output"
-    done <<< "$roots_output"
-}
-
-check_governed_memory_dropins() {
-    local allow_repair="$1"
-    check_governed_unit_dropins "$allow_repair" system system.slice \
-        "$SYSTEMD_SYSTEM_DIR/system.slice.d/oom-containment.conf" || return 1
-    check_governed_unit_dropins "$allow_repair" system user.slice \
-        "$SYSTEMD_SYSTEM_DIR/user.slice.d/oom-containment.conf" || return 1
-    check_governed_unit_dropins "$allow_repair" system user-1000.slice \
-        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf" || return 1
-    check_governed_unit_dropins "$allow_repair" system user@1000.service \
-        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf" || return 1
-    check_governed_unit_dropins "$allow_repair" user app.slice \
-        "$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf" || return 1
-    check_governed_unit_dropins "$allow_repair" user session.slice \
-        "$SYSTEMD_USER_DIR/session.slice.d/oom-containment.conf" || return 1
-}
-
-check_zram_dropin_overrides() {
-    local allow_legacy="$1" dir path rc
-    while IFS= read -r path; do
-        [ -n "$path" ] || continue
-        if [ -e "$path" ] || [ -L "$path" ]; then
-            echo "higher-priority zram-generator main configuration shadows the canonical profile: $path; next action: remove the runtime override or govern it instead of /etc/systemd/zram-generator.conf" >&2
-            return 1
-        fi
-    done < <(printf '%s\n' "${ZRAM_HIGH_PRIORITY_CONFIGS//:/$'\n'}")
-    while IFS= read -r dir; do
-        [ -d "$dir" ] || continue
-        for path in "$dir"/*.conf; do
-            [ -e "$path" ] || [ -L "$path" ] || continue
-            if [ "$allow_legacy" -eq 1 ] && [ "$path" = "$LEGACY_ZRAM_POLICY_DEST" ]; then
-                continue
-            fi
-            if [ -L "$path" ]; then
-                echo "unowned zram-generator drop-in is symlinked: $path; next action: remove the override or govern it in the canonical host profile" >&2
-                return 1
-            fi
-            if grep -Eq '^[[:space:]]*(zram-size|compression-algorithm)[[:space:]]*=' "$path"; then
-                echo "unowned zram-generator drop-in overrides the canonical profile: $path; next action: remove the governed-key assignment or fold it into the receipt-bound host profile" >&2
-                return 1
-            else
-                rc=$?
-                if [ "$rc" -gt 1 ]; then
-                    echo "unable to inspect zram-generator drop-in: $path; next action: restore readable trusted drop-ins and rerun the installer" >&2
-                    return 1
-                fi
-            fi
-        done
-    done < <(printf '%s\n' "${ZRAM_DROPIN_DIRS//:/$'\n'}")
-}
-
-validate_no_unauthorized_host_policy_overrides() {
-    local allow_legacy="$1"
-    check_governed_memory_dropins "$allow_legacy" || return 1
-    check_zram_dropin_overrides "$allow_legacy" || return 1
-}
-
-scrub_generated_memory_property_files() {
-    local spec scope unit dir key path value
-    local -a dirs
-    for spec in \
-        "system|system.slice" \
-        "system|user.slice" \
-        "system|user-1000.slice" \
-        "system|user@1000.service" \
-        "user|app.slice" \
-        "user|session.slice"; do
-        scope="${spec%%|*}"
-        unit="${spec#*|}"
-        unit="${unit%%|*}"
-        if [ "$scope" = "system" ]; then
-            dirs=(
-                "$SYSTEMD_SYSTEM_CONTROL_DIR/$unit.d"
-                "$SYSTEMD_SYSTEM_RUNTIME_CONTROL_DIR/$unit.d"
-            )
-        else
-            dirs=(
-                "$SYSTEMD_USER_CONTROL_DIR/$unit.d"
-                "$SYSTEMD_USER_RUNTIME_CONTROL_DIR/$unit.d"
-            )
-        fi
-        for dir in "${dirs[@]}"; do
-            [ -d "$dir" ] || continue
-            for key in "${GOVERNED_MEMORY_KEYS[@]}"; do
-                path="$dir/50-$key.conf"
-                [ -e "$path" ] || [ -L "$path" ] || continue
-                value="$(systemctl_generated_property_value "$path" "$key")" || {
-                    echo "refusing non-systemctl control file at governed path: $path; next action: inspect and remove or govern it explicitly before reinstalling" >&2
-                    return 1
-                }
-                if [ "$scope" = "system" ]; then
-                    run_root rm -f -- "$path"
-                else
-                    rm -f -- "$path"
-                fi
-                echo "removed generated set-property override for $unit $key=$value at $path"
-            done
-            if [ "$scope" = "system" ]; then
-                run_root rmdir "$dir" 2>/dev/null || true
-            else
-                rmdir "$dir" 2>/dev/null || true
-            fi
-        done
-    done
-}
-
-loaded_memory_unit_property() {
-    local scope="$1" unit="$2" property="$3"
-    if [ "$scope" = "system" ]; then
-        "$SYSTEMCTL" show "$unit" -p "$property" --value 2>/dev/null
-    else
-        user_systemctl show "$unit" -p "$property" --value 2>/dev/null
-    fi
-}
-
-verify_loaded_governed_unit_dropins() {
-    local scope="$1" unit="$2" canonical="$3" need_reload fragment paths path rc canonical_found=0
-    if ! need_reload="$(loaded_memory_unit_property "$scope" "$unit" NeedDaemonReload)"; then
-        echo "unable to query authoritative NeedDaemonReload for $unit; next action: restore the manager query and rerun $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-    if [ "$need_reload" != "no" ]; then
-        echo "authoritative manager state is stale for $unit: NeedDaemonReload=${need_reload:-missing}; next action: reload the manager and rerun $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-    if ! fragment="$(loaded_memory_unit_property "$scope" "$unit" FragmentPath)"; then
-        echo "unable to query authoritative FragmentPath for $unit; next action: restore the manager query and rerun $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-    if [ -n "$fragment" ]; then
-        if [ ! -f "$fragment" ] || [ -L "$fragment" ]; then
-            echo "authoritative FragmentPath reports an unsafe OOM memory source for $unit: $fragment; next action: restore a readable regular fragment or remove the override before rerunning the installer" >&2
-            return 1
-        fi
-        if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$fragment"; then
-            echo "authoritative FragmentPath reports an unowned OOM memory assignment for $unit at $fragment; next action: remove the assignment and rerun $OOM_REPAIR_ACTION" >&2
-            return 1
-        else
-            rc=$?
-            if [ "$rc" -gt 1 ]; then
-                echo "unable to inspect authoritative FragmentPath for $unit: $fragment; next action: restore a readable regular source or remove it before rerunning the installer" >&2
-                return 1
-            fi
-        fi
-    fi
-    if ! paths="$(loaded_memory_unit_property "$scope" "$unit" DropInPaths)"; then
-        echo "unable to query authoritative DropInPaths for $unit; next action: restore the manager query and rerun $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-    while IFS= read -r path; do
-        [ -n "$path" ] || continue
-        if [ "$path" = "$canonical" ]; then
-            if [ ! -f "$path" ] || [ -L "$path" ]; then
-                echo "authoritative DropInPaths reports an unsafe canonical OOM memory source for $unit: $path; next action: reinstall the receipt-bound regular file and reload the manager" >&2
-                return 1
-            fi
-            canonical_found=$((canonical_found + 1))
-            continue
-        fi
-        if grep -Eq '^[[:space:]]*(MemoryHigh|MemoryMax|MemorySwapMax|MemoryLow|MemoryMin)[[:space:]]*=' "$path"; then
-            echo "authoritative DropInPaths reports an unowned OOM memory assignment for $unit at $path; next action: remove the assignment and rerun $OOM_REPAIR_ACTION" >&2
-            return 1
-        else
-            rc=$?
-            if [ "$rc" -gt 1 ]; then
-                echo "unable to inspect authoritative DropInPath for $unit: $path; next action: restore a readable regular source or remove it before rerunning the installer" >&2
-                return 1
-            fi
-        fi
-    done < <(printf '%s\n' "$paths" | tr ' ' '\n')
-    if [ "$canonical_found" -ne 1 ]; then
-        echo "authoritative DropInPaths for $unit does not contain exactly one receipt-owned source: expected=$canonical actual=${paths:-none}; next action: reload the manager from the installed canonical policy and rerun --verify-live" >&2
-        return 1
-    fi
-    return 0
-}
-
-verify_loaded_memory_dropin_ownership() {
-    verify_loaded_governed_unit_dropins system system.slice \
-        "$SYSTEMD_SYSTEM_DIR/system.slice.d/oom-containment.conf" || return 1
-    verify_loaded_governed_unit_dropins system user.slice \
-        "$SYSTEMD_SYSTEM_DIR/user.slice.d/oom-containment.conf" || return 1
-    verify_loaded_governed_unit_dropins system user-1000.slice \
-        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/oom-containment.conf" || return 1
-    verify_loaded_governed_unit_dropins system user@1000.service \
-        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/oom.conf" || return 1
-    verify_loaded_governed_unit_dropins user app.slice \
-        "$SYSTEMD_USER_DIR/app.slice.d/oom-containment.conf" || return 1
-    verify_loaded_governed_unit_dropins user session.slice \
-        "$SYSTEMD_USER_DIR/session.slice.d/oom-containment.conf" || return 1
 }
 
 source_unit_optional_value() {
@@ -2631,45 +861,18 @@ verify_effective_service_unit() {
     actual_failure="$(loaded_unit_property "$manager" "$unit" OnFailure)" || actual_failure="query-error"
     actual_user="$(loaded_unit_property "$manager" "$unit" User)" || actual_user="query-error"
     if [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
-        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
+        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     case "$actual_exec" in
         *"argv[]=$expected_exec ;"*) ;;
         *)
-            echo "effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec; next action: remove unauthorized overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
+            echo "effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
             ;;
     esac
     if [ "$actual_failure" != "$expected_failure" ] || [ "$actual_user" != "$expected_user" ]; then
-        echo "effective $unit failure/identity drift: OnFailure=${actual_failure:-none} User=${actual_user:-default} expected OnFailure=${expected_failure:-none} User=${expected_user:-default}; next action: remove unauthorized overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-}
-
-verify_effective_local_judge_unit() {
-    local unit="hapax-local-judge.service"
-    local expected_fragment="$SYSTEMD_USER_DIR/$unit"
-    local need_reload actual_fragment actual_dropins actual_exec
-    need_reload="$(loaded_unit_property user "$unit" NeedDaemonReload)" || need_reload="query-error"
-    actual_fragment="$(loaded_unit_property user "$unit" FragmentPath)" || actual_fragment=""
-    actual_dropins="$(loaded_unit_property user "$unit" DropInPaths)" || actual_dropins="query-error"
-    actual_exec="$(loaded_unit_property user "$unit" ExecStart)" || actual_exec=""
-    if [ "$need_reload" != "no" ]; then
-        echo "effective $unit manager state is stale: NeedDaemonReload=${need_reload:-unavailable}; next action: reload the user manager and rerun $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-    if [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
-        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the user manager, and rerun $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-    if [[ "$actual_exec" != *"argv[]=/usr/bin/env -i "* \
-        || "$actual_exec" != *" /usr/bin/docker $LOCAL_JUDGE_DOCKER_HOST_ARG --config="* \
-        || "$actual_exec" != *"$LOCAL_JUDGE_DOCKER_CONFIG_SUFFIX run "* \
-        || "$actual_exec" != *" --name hapax-local-judge "* \
-        || "$actual_exec" != *" --memory $LOCAL_JUDGE_DOCKER_MEMORY "* \
-        || "$actual_exec" != *" --memory-swap $LOCAL_JUDGE_DOCKER_MEMORY_SWAP "* ]]; then
-        echo "effective $unit ExecStart drift: durable launch does not contain the governed clean-environment local-Docker selector and $LOCAL_JUDGE_DOCKER_MEMORY/$LOCAL_JUDGE_DOCKER_MEMORY_SWAP limits; next action: remove unauthorized overrides, reload the user manager, and rerun the runtime-authorized hapax-post-merge-deploy reconciliation" >&2
+        echo "effective $unit failure/identity drift: OnFailure=${actual_failure:-none} User=${actual_user:-default} expected OnFailure=${expected_failure:-none} User=${expected_user:-default}; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
 }
@@ -2696,19 +899,19 @@ verify_effective_failure_intake_unit() {
     actual_interval="$(loaded_unit_property system "$unit" StartLimitIntervalUSec)" || actual_interval="query-error"
     actual_burst="$(loaded_unit_property system "$unit" StartLimitBurst)" || actual_burst="query-error"
     if [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
-        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized template or instance overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
+        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized template or instance overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     case "$actual_exec" in
         *"argv[]=$expected_exec ;"*) ;;
         *)
-            echo "effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec; next action: remove unauthorized template or instance overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
+            echo "effective $unit ExecStart drift: actual=${actual_exec:-unavailable} expected=$expected_exec; next action: remove unauthorized template or instance overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
             ;;
     esac
     if [ "$actual_user" != "$expected_user" ] || [ "$actual_environment" != "$expected_environment" ] \
         || [ "$actual_interval" != "$expected_interval" ] || [ "$actual_burst" != "$expected_burst" ]; then
-        echo "effective $unit identity/limit drift: User=${actual_user:-default} Environment=${actual_environment:-none} StartLimitIntervalUSec=${actual_interval:-none} StartLimitBurst=${actual_burst:-none} expected User=$expected_user Environment=$expected_environment StartLimitIntervalUSec=$expected_interval StartLimitBurst=$expected_burst; next action: remove unauthorized template or instance overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
+        echo "effective $unit identity/limit drift: User=${actual_user:-default} Environment=${actual_environment:-none} StartLimitIntervalUSec=${actual_interval:-none} StartLimitBurst=${actual_burst:-none} expected User=$expected_user Environment=$expected_environment StartLimitIntervalUSec=$expected_interval StartLimitBurst=$expected_burst; next action: remove unauthorized template or instance overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
 }
@@ -2725,17 +928,17 @@ verify_effective_timer_unit() {
     actual_target="$(loaded_unit_property "$manager" "$unit" Unit)" || actual_target="query-error"
     actual_timers="$(loaded_unit_property "$manager" "$unit" TimersMonotonic)" || actual_timers="query-error"
     if [ "$actual_fragment" != "$expected_fragment" ] || [ -n "$actual_dropins" ]; then
-        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
+        echo "effective $unit unit-source drift: FragmentPath=${actual_fragment:-unavailable} DropInPaths=${actual_dropins:-none} expected FragmentPath=$expected_fragment and no drop-ins; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     if [ "$actual_target" != "$expected_target" ]; then
-        echo "effective $unit target drift: actual=${actual_target:-unavailable} expected=$expected_target; next action: remove unauthorized overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
+        echo "effective $unit target drift: actual=${actual_target:-unavailable} expected=$expected_target; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     case "$actual_timers" in
         *"OnBootUSec=$expected_boot"*"OnUnitActiveUSec=$expected_active"*|*"OnUnitActiveUSec=$expected_active"*"OnBootUSec=$expected_boot"*) ;;
         *)
-            echo "effective $unit cadence drift: actual=${actual_timers:-unavailable} expected OnBootUSec=$expected_boot and OnUnitActiveUSec=$expected_active; next action: remove unauthorized overrides, reload the manager, and rerun $OOM_REPAIR_ACTION" >&2
+            echo "effective $unit cadence drift: actual=${actual_timers:-unavailable} expected OnBootUSec=$expected_boot and OnUnitActiveUSec=$expected_active; next action: remove unauthorized overrides, reload the manager, and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
             ;;
     esac
@@ -2761,7 +964,6 @@ verify_effective_safety_units() {
     verify_effective_timer_unit user hapax-root-required-deploy-audit.timer \
         systemd/units/hapax-root-required-deploy-audit.timer \
         "$SYSTEMD_USER_DIR/hapax-root-required-deploy-audit.timer" || return 1
-    verify_effective_local_judge_unit || return 1
 }
 
 memory_to_bytes() {
@@ -2786,218 +988,6 @@ memory_to_bytes() {
             printf '%s\n' "$value"
             ;;
     esac
-}
-
-docker_policy_for_container() {
-    local name="$1"
-    case "$name" in
-        hapax-local-judge)
-            printf '%s|%s\n' "$LOCAL_JUDGE_DOCKER_MEMORY" "$LOCAL_JUDGE_DOCKER_MEMORY_SWAP"
-            ;;
-        hapax-github-mcp-?*)
-            printf '%s|%s\n' "$MCP_DOCKER_MEMORY" "$MCP_DOCKER_MEMORY_SWAP"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-docker_container_records() {
-    local output record id name remainder
-    output="$(local_docker ps -a --no-trunc --format '{{.ID}}|{{.Names}}')" || return 1
-    while IFS= read -r record; do
-        [ -n "$record" ] || continue
-        remainder="${record#*|}"
-        if [ "$remainder" = "$record" ] || [[ "$remainder" == *"|"* ]]; then
-            echo "unparseable Docker identity record: $record; next action: restore full two-field --no-trunc Docker enumeration before retrying" >&2
-            return 1
-        fi
-        IFS='|' read -r id name <<< "$record"
-        if ! [[ "$id" =~ ^[0-9a-f]{64}$ ]] || [ -z "$name" ]; then
-            echo "unparseable Docker identity record: $record; next action: restore full 64-hex --no-trunc Docker identities before any containment mutation" >&2
-            return 1
-        fi
-        printf '%s|%s\n' "$id" "$name"
-    done <<< "$output"
-}
-
-docker_target_records() {
-    local records record name
-    records="$(docker_container_records)" || return 1
-    while IFS= read -r record; do
-        [ -n "$record" ] || continue
-        name="${record#*|}"
-        docker_policy_for_container "$name" >/dev/null || continue
-        printf '%s\n' "$record"
-    done <<< "$records"
-}
-
-verify_docker_container_limit() {
-    local id="$1" name="$2" memory="$3" memory_swap="$4"
-    local output separators inspected_id inspected_name actual_memory actual_swap oom_kill_disable
-    local expected_memory expected_swap
-    if ! output="$(local_docker inspect --format '{{.Id}}|{{.Name}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{json .HostConfig.OomKillDisable}}' "$id" 2>&1)"; then
-        echo "Docker inspect failed for $name id=$id: ${output:-no diagnostics returned}" >&2
-        return 2
-    fi
-    separators="${output//[^|]/}"
-    if [[ "$output" == *$'\n'* ]] || [ "${#separators}" -ne 4 ]; then
-        echo "unparseable Docker inspect result for $name id=$id: expected one five-field record, got ${output:-empty}; next action: rerun $OOM_REPAIR_ACTION after repairing Docker inspect output" >&2
-        return 1
-    fi
-    IFS='|' read -r inspected_id inspected_name actual_memory actual_swap oom_kill_disable <<< "$output"
-    if [ "$oom_kill_disable" != "null" ] \
-        && [ "$oom_kill_disable" != "false" ] \
-        && [ "$oom_kill_disable" != "true" ]; then
-        echo "unparseable Docker OomKillDisable for $name id=$id: expected canonical null, false, or true, got ${oom_kill_disable:-empty}; next action: rerun $OOM_REPAIR_ACTION after repairing Docker inspect output" >&2
-        return 1
-    fi
-    inspected_name="${inspected_name#/}"
-    expected_memory="$(memory_to_bytes "$memory")" || return 1
-    expected_swap="$(memory_to_bytes "$memory_swap")" || return 1
-    if [ "$inspected_id" != "$id" ] \
-        || [ "$inspected_name" != "$name" ] \
-        || [ "$actual_memory" != "$expected_memory" ] \
-        || [ "$actual_swap" != "$expected_swap" ] \
-        || [ "$oom_kill_disable" = "true" ]; then
-        echo "Docker containment drift for $name: id=${inspected_id:-unavailable} name=${inspected_name:-unavailable} Memory=${actual_memory:-unavailable} MemorySwap=${actual_swap:-unavailable} OomKillDisable=${oom_kill_disable:-unavailable} expected_id=$id expected_limits=$expected_memory/$expected_swap expected_OomKillDisable=false-or-null; next action: recreate the container from its governed launch source without --oom-kill-disable and rerun $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-}
-
-docker_target_absent() {
-    local expected_id="$1" expected_name="$2" records record id name
-    records="$(docker_container_records)" || return 2
-    while IFS= read -r record; do
-        [ -n "$record" ] || continue
-        id="${record%%|*}"
-        name="${record#*|}"
-        if [ "$id" = "$expected_id" ] || [ "$name" = "$expected_name" ]; then
-            return 1
-        fi
-    done <<< "$records"
-    return 0
-}
-
-reconcile_docker_memory_limits() {
-    local records record id name policy memory memory_swap update_output verify_rc absence_rc
-    if ! records="$(docker_target_records)"; then
-        echo "unable to enumerate Docker containers for OOM containment; next action: restore Docker access and rerun $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-    while IFS= read -r record; do
-        [ -n "$record" ] || continue
-        id="${record%%|*}"
-        name="${record#*|}"
-        policy="$(docker_policy_for_container "$name")"
-        IFS='|' read -r memory memory_swap <<< "$policy"
-        if ! update_output="$(local_docker update --memory "$memory" --memory-swap "$memory_swap" "$id" 2>&1)"; then
-            if docker_target_absent "$id" "$name"; then
-                absence_rc=0
-            else
-                absence_rc=$?
-            fi
-            case "$absence_rc" in
-                0)
-                    echo "Docker target $name id=$id disappeared during limit convergence; neither its identity nor owned name remains to cap"
-                    continue
-                    ;;
-                1)
-                    echo "unable to apply Docker memory limits to $name id=$id while the original identity or same-name target remains; docker update diagnostics: ${update_output:-none}; next action: resolve the reported Docker failure and rerun $OOM_REPAIR_ACTION" >&2
-                    ;;
-                2)
-                    echo "unable to confirm Docker target $name id=$id after update failure because re-enumeration failed; docker update diagnostics: ${update_output:-none}; next action: restore Docker access and rerun $OOM_REPAIR_ACTION" >&2
-                    ;;
-                *)
-                    echo "unexpected Docker absence-check status $absence_rc for $name id=$id after update failure; next action: restore the matched OOM installer and rerun $OOM_REPAIR_ACTION" >&2
-                    ;;
-            esac
-            return 1
-        fi
-        if verify_docker_container_limit "$id" "$name" "$memory" "$memory_swap"; then
-            echo "converged Docker memory limits for $name id=$id: Memory=$memory MemorySwap=$memory_swap"
-            continue
-        else
-            verify_rc=$?
-            case "$verify_rc" in
-                1) ;;
-                2)
-                    if docker_target_absent "$id" "$name"; then
-                        absence_rc=0
-                    else
-                        absence_rc=$?
-                    fi
-                    case "$absence_rc" in
-                        0)
-                            echo "Docker target $name id=$id disappeared during post-update verification; neither its identity nor owned name remains to cap"
-                            continue
-                            ;;
-                        1)
-                            echo "Docker inspect failed while the original identity or same-name target remains for $name id=$id; next action: restore Docker access and rerun $OOM_REPAIR_ACTION" >&2
-                            ;;
-                        2)
-                            echo "unable to confirm Docker target $name id=$id after inspect failure because re-enumeration failed; next action: restore Docker access and rerun $OOM_REPAIR_ACTION" >&2
-                            ;;
-                        *)
-                            echo "unexpected Docker absence-check status $absence_rc for $name id=$id after inspect failure; next action: restore the matched OOM installer and rerun $OOM_REPAIR_ACTION" >&2
-                            ;;
-                    esac
-                    ;;
-                *)
-                    echo "unexpected Docker limit-verification status $verify_rc for $name id=$id; next action: restore the matched OOM installer and rerun $OOM_REPAIR_ACTION" >&2
-                    ;;
-            esac
-            return 1
-        fi
-    done <<< "$records"
-}
-
-verify_docker_memory_limits() {
-    local records record id name policy memory memory_swap verify_rc absence_rc
-    if ! records="$(docker_target_records)"; then
-        echo "unable to enumerate Docker containers for OOM containment; next action: restore Docker access, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
-        return 1
-    fi
-    while IFS= read -r record; do
-        [ -n "$record" ] || continue
-        id="${record%%|*}"
-        name="${record#*|}"
-        policy="$(docker_policy_for_container "$name")"
-        IFS='|' read -r memory memory_swap <<< "$policy"
-        if verify_docker_container_limit "$id" "$name" "$memory" "$memory_swap"; then
-            echo "verified Docker memory limits for $name id=$id: Memory=$memory MemorySwap=$memory_swap"
-            continue
-        else
-            verify_rc=$?
-            case "$verify_rc" in
-                1) ;;
-                2)
-                    if docker_target_absent "$id" "$name"; then
-                        absence_rc=0
-                    else
-                        absence_rc=$?
-                    fi
-                    case "$absence_rc" in
-                        0) continue ;;
-                        1)
-                            echo "Docker inspect failed while the original identity or same-name target remains for $name id=$id; next action: restore Docker access, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
-                            ;;
-                        2)
-                            echo "unable to confirm Docker target $name id=$id after inspect failure because re-enumeration failed; next action: restore Docker access, set HAPAX_RUNTIME_AUTHORITY_TASK to the canonical runtime-authorized task, and rerun hapax-post-merge-deploy" >&2
-                            ;;
-                        *)
-                            echo "unexpected Docker absence-check status $absence_rc for $name id=$id after inspect failure; next action: restore the matched OOM installer and rerun --verify-live" >&2
-                            ;;
-                    esac
-                    ;;
-                *)
-                    echo "unexpected Docker limit-verification status $verify_rc for $name id=$id; next action: restore the matched OOM installer and rerun --verify-live" >&2
-                    ;;
-            esac
-            return 1
-        fi
-    done <<< "$records"
 }
 
 system_dest() {
@@ -3067,11 +1057,11 @@ check_source() {
         echo "sshd OOM drop-in must continue after a session OOM; next action: restore systemd/system/sshd.service.d/oom-protect.conf from the P0 PR" >&2
         return 1
     }
-    source_unit_value "$user_dropin" MemoryHigh >/dev/null
-    source_unit_value "$user_dropin" MemoryMax >/dev/null
-    source_unit_value "$user_dropin" MemorySwapMax >/dev/null
-    source_unit_value "$user_dropin" MemoryLow >/dev/null
-    source_unit_value "$user_dropin" MemoryMin >/dev/null
+    app_slice_value MemoryHigh >/dev/null
+    app_slice_value MemoryMax >/dev/null
+    app_slice_value MemorySwapMax >/dev/null
+    app_slice_value MemoryLow >/dev/null
+    app_slice_value MemoryMin >/dev/null
     source_unit_value "$session_slice_dropin" MemoryHigh >/dev/null
     source_unit_value "$session_slice_dropin" MemoryMax >/dev/null
     source_unit_value "$session_slice_dropin" MemorySwapMax >/dev/null
@@ -3107,128 +1097,23 @@ check_source() {
     fi
 }
 
-OOM_SCORE_WRITES_ATTEMPTED=0
-OOM_SCORE_WRITES_APPLIED=0
-OOM_SCORE_WRITES_STALE=0
-OOM_SCORE_WRITES_FAILED=0
-
-capture_oom_target_starttime() {
-    local pid="$1" expected_cgroup="$2"
-    /usr/bin/python3 -I - "$PROC_ROOT" "$pid" "$expected_cgroup" <<'PY'
-from __future__ import annotations
-
-import os
-import sys
-
-STALE_IDENTITY = 75
-
-
-def read_at(parent_fd: int, name: str) -> bytes:
-    fd = os.open(
-        name,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
-        dir_fd=parent_fd,
-    )
-    try:
-        data = os.read(fd, 65537)
-        if len(data) > 65536:
-            raise OSError(f"{name} exceeds 65536 bytes")
-        return data
-    finally:
-        os.close(fd)
-
-
-def process_starttime(raw: bytes) -> str:
-    close = raw.rfind(b")")
-    fields = raw[close + 1 :].split() if close >= 0 else []
-    if len(fields) <= 19 or not fields[19].isdigit():
-        raise OSError("malformed process stat record")
-    return fields[19].decode("ascii")
-
-
-def cgroup_matches(raw: bytes, expected: str) -> bool:
-    for line in raw.decode("utf-8", errors="strict").splitlines():
-        fields = line.split(":", 2)
-        if len(fields) == 3 and (
-            fields[2] == expected or fields[2].startswith(f"{expected}/")
-        ):
-            return True
-    return False
-
-
-proc_root, pid, expected_cgroup = sys.argv[1:]
-if not pid.isdigit() or int(pid) <= 0 or not expected_cgroup.startswith("/"):
-    raise SystemExit(1)
-root_fd = -1
-pid_fd = -1
-try:
-    root_fd = os.open(
-        proc_root,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
-    )
-    pid_fd = os.open(
-        pid,
-        os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW,
-        dir_fd=root_fd,
-    )
-    if not cgroup_matches(read_at(pid_fd, "cgroup"), expected_cgroup):
-        raise SystemExit(STALE_IDENTITY)
-    print(process_starttime(read_at(pid_fd, "stat")))
-except (FileNotFoundError, ProcessLookupError):
-    raise SystemExit(STALE_IDENTITY)
-except OSError:
-    raise SystemExit(1)
-finally:
-    if pid_fd >= 0:
-        os.close(pid_fd)
-    if root_fd >= 0:
-        os.close(root_fd)
-PY
-}
-
 write_oom_score() {
-    local pid="$1" score="$2" expected_cgroup="${3:-}"
-    local path starttime output rc
+    local pid score path
+    pid="$1"
+    score="$2"
     path="$PROC_ROOT/$pid/oom_score_adj"
-    OOM_SCORE_WRITES_ATTEMPTED=$((OOM_SCORE_WRITES_ATTEMPTED + 1))
-    if [ -z "$expected_cgroup" ]; then
-        if [ ! -e "$path" ]; then
-            OOM_SCORE_WRITES_STALE=$((OOM_SCORE_WRITES_STALE + 1))
-            return 75
-        fi
-        if [ "${HAPAX_OOM_FORCE_DIRECT_WRITE_FAIL:-0}" != "1" ] \
-            && { printf '%s\n' "$score" > "$path"; } 2>/dev/null; then
-            OOM_SCORE_WRITES_APPLIED=$((OOM_SCORE_WRITES_APPLIED + 1))
-            return 0
-        fi
-        OOM_SCORE_WRITES_FAILED=$((OOM_SCORE_WRITES_FAILED + 1))
-        return 1
-    fi
-    if starttime="$(capture_oom_target_starttime "$pid" "$expected_cgroup")"; then
-        :
-    else
-        rc=$?
-        if [ "$rc" -eq 75 ]; then
-            OOM_SCORE_WRITES_STALE=$((OOM_SCORE_WRITES_STALE + 1))
-            return 75
-        fi
-        OOM_SCORE_WRITES_FAILED=$((OOM_SCORE_WRITES_FAILED + 1))
-        return 1
-    fi
-    # The starttime closes the pre-escalation-to-dirfd window. The root-owned
-    # enforcer then checks it and the cgroup through one pinned /proc/PID dirfd.
-    if output="$(run_root "$OOM_ENFORCER_DEST" \
-        --write-scoped "$pid" "$score" "$starttime" "$expected_cgroup")"; then
-        OOM_SCORE_WRITES_APPLIED=$((OOM_SCORE_WRITES_APPLIED + 1))
+    [ -e "$path" ] || return 0
+    if [ "${HAPAX_OOM_FORCE_DIRECT_WRITE_FAIL:-0}" != "1" ] && { printf '%s\n' "$score" > "$path"; } 2>/dev/null; then
         return 0
-    else
-        rc=$?
     fi
-    if [ "$rc" -eq 75 ]; then
-        OOM_SCORE_WRITES_STALE=$((OOM_SCORE_WRITES_STALE + 1))
-        return 75
+    [ ! -e "$path" ] && return 0
+    if [ -n "$SUDO" ] || [ "$(id -u)" = "0" ]; then
+        printf '%s\n' "$score" | run_root tee "$path" >/dev/null || {
+            [ ! -e "$path" ] && return 0
+            return 1
+        }
+        return 0
     fi
-    OOM_SCORE_WRITES_FAILED=$((OOM_SCORE_WRITES_FAILED + 1))
     return 1
 }
 
@@ -3244,13 +1129,13 @@ main_pid_for_unit() {
 main_pid_for_user_unit() {
     local unit="$1" pid
     if ! pid="$(user_systemctl show "$unit" -p MainPID --value 2>/dev/null)"; then
-        echo "unable to query user unit $unit MainPID; next action: inspect the UID $TARGET_UID user manager and rerun $OOM_REPAIR_ACTION" >&2
+        echo "unable to query user unit $unit MainPID; next action: inspect the UID $TARGET_UID user manager and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     if [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ]; then
         printf '%s\n' "$pid"
     elif [ -n "$pid" ] && [ "$pid" != "0" ]; then
-        echo "invalid user unit $unit MainPID=$pid; next action: inspect systemctl --user show $unit -p MainPID and rerun $OOM_REPAIR_ACTION" >&2
+        echo "invalid user unit $unit MainPID=$pid; next action: inspect systemctl --user show $unit -p MainPID and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     return 0
@@ -3259,11 +1144,11 @@ main_pid_for_user_unit() {
 control_group_for_user_unit() {
     local unit="$1" cgroup
     if ! cgroup="$(user_systemctl show "$unit" -p ControlGroup --value 2>/dev/null)"; then
-        echo "unable to query user unit $unit ControlGroup; next action: inspect the UID $TARGET_UID user manager and rerun $OOM_REPAIR_ACTION" >&2
+        echo "unable to query user unit $unit ControlGroup; next action: inspect the UID $TARGET_UID user manager and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     if [ -n "$cgroup" ] && [[ "$cgroup" != /* ]]; then
-        echo "invalid user unit $unit ControlGroup=$cgroup; next action: inspect systemctl --user show $unit -p ControlGroup and rerun $OOM_REPAIR_ACTION" >&2
+        echo "invalid user unit $unit ControlGroup=$cgroup; next action: inspect systemctl --user show $unit -p ControlGroup and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     printf '%s\n' "$cgroup"
@@ -3292,7 +1177,7 @@ refresh_protected_user_unit_snapshot() {
         pid="$(main_pid_for_user_unit "$unit")" || return 1
         cgroup="$(control_group_for_user_unit "$unit")" || return 1
         if [ -n "$pid" ] && [ -z "$cgroup" ]; then
-            echo "user unit $unit has live MainPID=$pid but an empty ControlGroup; next action: inspect systemctl --user show $unit -p MainPID -p ControlGroup and rerun $OOM_REPAIR_ACTION" >&2
+            echo "user unit $unit has live MainPID=$pid but an empty ControlGroup; next action: inspect systemctl --user show $unit -p MainPID -p ControlGroup and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
         fi
         next_main_pids["$unit"]="$pid"
@@ -3332,17 +1217,11 @@ pid_matches_cgroup() {
 }
 
 write_oom_score_or_warn() {
-    local pid="$1" score="$2" label="$3" expected_cgroup="$4" rc
-    if write_oom_score "$pid" "$score" "$expected_cgroup"; then
-        return 0
-    else
-        rc=$?
-    fi
-    if [ "$rc" -eq 75 ]; then
-        echo "warning: skipped stale oom_score_adj identity for $label pid=$pid; the privileged write was not retargeted; next action: rerun scripts/hapax-oom-policy-audit --json and $OOM_REPAIR_ACTION" >&2
+    local pid="$1" score="$2" label="$3"
+    if write_oom_score "$pid" "$score"; then
         return 0
     fi
-    echo "warning: failed to set oom_score_adj for $label pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun $OOM_REPAIR_ACTION" >&2
+    echo "warning: failed to set oom_score_adj for $label pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
     return 0
 }
 
@@ -3353,7 +1232,7 @@ apply_recovery_unit_oom_scores() {
         score="${spec##*:}"
         pid="$(main_pid_for_unit "$unit")"
         [ -n "$pid" ] || continue
-        write_oom_score_or_warn "$pid" "$score" "$unit" "/system.slice/$unit"
+        write_oom_score_or_warn "$pid" "$score" "$unit"
     done
 }
 
@@ -3367,7 +1246,7 @@ apply_protected_user_unit_oom_scores() {
         while IFS= read -r pid; do
             [ -n "$pid" ] || continue
             pid_matches_cgroup "$pid" "$cgroup" || continue
-            write_oom_score_or_warn "$pid" "$score" "$unit" "$cgroup"
+            write_oom_score_or_warn "$pid" "$score" "$unit"
         done < <(printf '%s\n' "$output" | sort -u)
     done
 }
@@ -3397,7 +1276,7 @@ status_field() {
 }
 
 apply_user_process_oom_floor() {
-    local adj pid_dir pid status uid name score rc fixed=0
+    local adj pid_dir pid status uid name score fixed=0
     [ -d "$PROC_ROOT" ] || return 0
     for adj in "$PROC_ROOT"/[0-9]*/oom_score_adj; do
         [ -e "$adj" ] || continue
@@ -3413,15 +1292,10 @@ apply_user_process_oom_floor() {
         [ "$score" -le -800 ] || continue
         protected_user_unit_member_pid "$pid" && continue
         allowed_user_protected_process "$name" && continue
-        if write_oom_score "$pid" 100 ""; then
+        if write_oom_score "$pid" 100; then
             fixed=$((fixed + 1))
         else
-            rc=$?
-            if [ "$rc" -eq 75 ]; then
-                echo "warning: skipped vanished user process name=$name pid=$pid while resetting oom_score_adj; next action: rerun scripts/hapax-oom-policy-audit --json" >&2
-            else
-                echo "warning: failed to set oom_score_adj for user process name=$name pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun $OOM_REPAIR_ACTION" >&2
-            fi
+            echo "warning: failed to set oom_score_adj for user process name=$name pid=$pid; next action: run scripts/hapax-oom-policy-audit --json and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         fi
     done
     if [ "$fixed" -gt 0 ]; then
@@ -3435,7 +1309,7 @@ scrub_legacy_user_oom_overrides() {
         path="$SYSTEMD_USER_DIR/$rel"
         [ -e "$path" ] || continue
         if [ -L "$path" ]; then
-            echo "refusing symlinked legacy user OOM override: $path; next action: replace it with a regular file and rerun $OOM_REPAIR_ACTION" >&2
+            echo "refusing symlinked legacy user OOM override: $path; next action: replace it with a regular file and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
         fi
         grep -Eq '^[[:space:]]*OOMScoreAdjust=' "$path" || continue
@@ -3454,16 +1328,14 @@ scrub_legacy_user_oom_overrides() {
 }
 
 install_live() {
-    local rel source_rel dest timer user_pid mem_high mem_max mem_swap
+    local rel dest timer control_dropin_dir user_pid mem_high mem_max mem_swap
     check_source
     preflight_root
-    validate_no_unauthorized_host_policy_overrides 1
     for rel in "${system_dropins[@]}"; do
-        source_rel="$(selected_source_rel "$rel")"
         dest="$(system_dest "$rel")"
         run_root install -d -m 0755 "$(dirname "$dest")"
-        run_root install -m 0644 "$(src_path "$source_rel")" "$dest"
-        echo "  '$source_rel' -> '$dest'"
+        run_root install -m 0644 "$(src_path "$rel")" "$dest"
+        echo "  '$rel' -> '$dest'"
     done
     for rel in "${system_units[@]}"; do
         dest="$(system_dest "$rel")"
@@ -3507,40 +1379,19 @@ install_live() {
     run_root install -d -m 0755 "$(dirname "$ROOT_REQUIRED_AUDIT_DEST")"
     run_root install -m 0755 "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
     echo "  '$root_required_audit_source' -> '$ROOT_REQUIRED_AUDIT_DEST'"
-    install -d -m 0755 "$(dirname "$LOCAL_JUDGE_CONTAINER_ID_DEST")"
-    [ ! -L "$LOCAL_JUDGE_CONTAINER_ID_DEST" ] || rm -f "$LOCAL_JUDGE_CONTAINER_ID_DEST"
-    install -m 0755 "$(src_path scripts/hapax-local-judge-container-id)" \
-        "$LOCAL_JUDGE_CONTAINER_ID_DEST"
-    echo "  'scripts/hapax-local-judge-container-id' -> '$LOCAL_JUDGE_CONTAINER_ID_DEST'"
-    run_root install -d -m 0755 "$(dirname "$OOM_PROFILE_TABLE_DEST")"
-    run_root install -m 0644 "$(src_path "$host_profile_table_source")" "$OOM_PROFILE_TABLE_DEST"
-    echo "  '$host_profile_table_source' -> '$OOM_PROFILE_TABLE_DEST'"
-    source_rel="$(selected_zram_source_rel)"
-    run_root install -d -m 0755 "$(dirname "$ZRAM_POLICY_DEST")"
-    run_root install -m 0644 "$(src_path "$source_rel")" "$ZRAM_POLICY_DEST"
-    echo "  '$source_rel' -> '$ZRAM_POLICY_DEST'"
     run_root install -d -m 0755 "$(dirname "$EARLYOOM_DEST")"
     run_root install -m 0644 "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     echo "  '$earlyoom_source' -> '$EARLYOOM_DEST'"
 
     for rel in "${user_slice_dropins[@]}"; do
-        source_rel="$(selected_source_rel "$rel")"
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
         install -d -m 0755 "$(dirname "$dest")"
         if [ -L "$dest" ]; then
             rm -f "$dest"
         fi
-        install -m 0644 "$(src_path "$source_rel")" "$dest"
-        echo "  '$source_rel' -> '$dest' (copy)"
+        install -m 0644 "$(src_path "$rel")" "$dest"
+        echo "  '$rel' -> '$dest' (copy)"
     done
-
-    run_root rm -f \
-        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/zz-hapax-host-memory.conf" \
-        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/zz-hapax-host-memory.conf"
-    rm -f "$SYSTEMD_USER_DIR/app.slice.d/zz-hapax-host-memory.conf"
-    run_root rm -f "$LEGACY_ZRAM_POLICY_DEST"
-    scrub_generated_memory_property_files
-    validate_no_unauthorized_host_policy_overrides 0
 
     for rel in "${user_protection_dropins[@]}"; do
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
@@ -3551,7 +1402,7 @@ install_live() {
 
     scrub_legacy_user_oom_overrides
 
-    for rel in "${managed_user_units[@]}"; do
+    for rel in "${user_audit_units[@]}"; do
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
         install -d -m 0755 "$(dirname "$dest")"
         [ ! -L "$dest" ] || rm -f "$dest"
@@ -3559,23 +1410,34 @@ install_live() {
         echo "  '$rel' -> '$dest' (copy)"
     done
 
+    control_dropin_dir="$SYSTEMD_USER_CONTROL_DIR/app.slice.d"
+    if [ -d "$control_dropin_dir" ]; then
+        rm -f \
+            "$control_dropin_dir/50-MemoryHigh.conf" \
+            "$control_dropin_dir/50-MemoryMax.conf" \
+            "$control_dropin_dir/50-MemorySwapMax.conf" \
+            "$control_dropin_dir/50-MemoryLow.conf" \
+            "$control_dropin_dir/50-MemoryMin.conf"
+        rmdir "$control_dropin_dir" 2>/dev/null || true
+    fi
+
     run_root "$SYSTEMCTL" daemon-reload
     run_root "$SYSTEMCTL" enable --now hapax-oom-score-enforce.timer >/dev/null 2>&1 || {
-        echo "unable to enable hapax-oom-score-enforce.timer; next action: rerun $OOM_REPAIR_ACTION" >&2
+        echo "unable to enable hapax-oom-score-enforce.timer; next action: run sudo systemctl enable --now hapax-oom-score-enforce.timer" >&2
         return 1
     }
     run_root "$SYSTEMCTL" enable --now earlyoom.service >/dev/null 2>&1 || {
-        echo "unable to enable earlyoom.service; next action: rerun $OOM_REPAIR_ACTION" >&2
+        echo "unable to enable earlyoom.service; next action: run sudo systemctl enable --now earlyoom.service" >&2
         return 1
     }
     run_root "$SYSTEMCTL" restart earlyoom.service || {
-        echo "unable to restart earlyoom.service with the installed policy; next action: inspect journalctl -u earlyoom.service and rerun $OOM_REPAIR_ACTION" >&2
+        echo "unable to restart earlyoom.service with the installed policy; next action: run sudo systemctl restart earlyoom.service and inspect journalctl -u earlyoom.service" >&2
         return 1
     }
     user_systemctl daemon-reload
     for timer in "${user_audit_timers[@]}"; do
         user_systemctl enable --now "$timer" >/dev/null 2>&1 || {
-            echo "unable to enable $timer for UID $TARGET_UID; next action: rerun $OOM_REPAIR_ACTION" >&2
+            echo "unable to enable $timer for UID $TARGET_UID; next action: run systemctl --user enable --now $timer as $TARGET_USER" >&2
             return 1
         }
     done
@@ -3599,39 +1461,26 @@ install_live() {
             "MemorySwapMax=$(source_unit_value "$session_slice_dropin" MemorySwapMax)" \
             "MemoryLow=$(source_unit_value "$session_slice_dropin" MemoryLow)" \
             "MemoryMin=$(source_unit_value "$session_slice_dropin" MemoryMin)"
-        scrub_generated_memory_property_files
-        validate_no_unauthorized_host_policy_overrides 0
-        run_root "$SYSTEMCTL" daemon-reload || {
-            echo "unable to reload the system manager after scrubbing transient OOM controls; next action: rerun $OOM_REPAIR_ACTION" >&2
-            return 1
-        }
-        user_systemctl daemon-reload || {
-            echo "unable to reload the user manager after scrubbing transient OOM controls; next action: rerun $OOM_REPAIR_ACTION" >&2
-            return 1
-        }
         apply_recovery_unit_oom_scores
         refresh_protected_user_unit_snapshot
         apply_protected_user_unit_oom_scores
         user_pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
         if [[ "$user_pid" =~ ^[0-9]+$ ]] && [ "$user_pid" -gt 0 ]; then
-            write_oom_score_or_warn "$user_pid" 100 "user@1000.service" \
-                "/user.slice/user-1000.slice/user@1000.service"
+            write_oom_score_or_warn "$user_pid" 100 "user@1000.service"
         fi
         apply_user_process_oom_floor
-        echo "oom_score_adj reconciliation summary: attempted=$OOM_SCORE_WRITES_ATTEMPTED applied=$OOM_SCORE_WRITES_APPLIED stale=$OOM_SCORE_WRITES_STALE failed=$OOM_SCORE_WRITES_FAILED"
-        reconcile_docker_memory_limits
     fi
 }
 
 apply_system_runtime_memory() {
     local unit="$1" rel="$2"
     run_root "$SYSTEMCTL" set-property --runtime "$unit" \
-        "MemoryHigh=$(system_memory_value "$rel" MemoryHigh)" \
-        "MemoryMax=$(system_memory_value "$rel" MemoryMax)" \
-        "MemorySwapMax=$(system_memory_value "$rel" MemorySwapMax)" \
-        "MemoryLow=$(system_memory_value "$rel" MemoryLow)" \
-        "MemoryMin=$(system_memory_value "$rel" MemoryMin)" || {
-        echo "unable to apply runtime memory policy to $unit; next action: run $OOM_REPAIR_ACTION" >&2
+        "MemoryHigh=$(source_unit_value "$rel" MemoryHigh)" \
+        "MemoryMax=$(source_unit_value "$rel" MemoryMax)" \
+        "MemorySwapMax=$(source_unit_value "$rel" MemorySwapMax)" \
+        "MemoryLow=$(source_unit_value "$rel" MemoryLow)" \
+        "MemoryMin=$(source_unit_value "$rel" MemoryMin)" || {
+        echo "unable to apply runtime memory policy to $unit; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     }
 }
@@ -3639,11 +1488,11 @@ apply_system_runtime_memory() {
 verify_pair() {
     local source="$1" dest="$2"
     [ -f "$dest" ] || {
-        echo "missing live file: $dest; next action: run $OOM_REPAIR_ACTION" >&2
+        echo "missing live file: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     }
     cmp -s "$source" "$dest" || {
-        echo "live drift: $dest differs from $source; next action: run $OOM_REPAIR_ACTION" >&2
+        echo "live drift: $dest differs from $source; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     }
 }
@@ -3651,11 +1500,11 @@ verify_pair() {
 verify_root_pair() {
     local source="$1" dest="$2"
     run_root test -f "$dest" || {
-        echo "missing live file: $dest; next action: run $OOM_REPAIR_ACTION" >&2
+        echo "missing live file: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     }
     run_root cmp -s "$source" "$dest" || {
-        echo "live drift: $dest differs from $source; next action: run $OOM_REPAIR_ACTION" >&2
+        echo "live drift: $dest differs from $source; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     }
 }
@@ -3663,12 +1512,12 @@ verify_root_pair() {
 verify_sudoers_trust() {
     local path="$1" expected_mode="$2" label="$3" actual
     if [ ! -f "$path" ] || [ -L "$path" ]; then
-        echo "installed OOM $label is missing, symlinked, or not a regular file: $path; next action: rerun $OOM_REPAIR_ACTION" >&2
+        echo "installed OOM $label is missing, symlinked, or not a regular file: $path; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
     if [ "$actual" != "$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode" ]; then
-        echo "installed OOM $label trust drift: $path owner/mode=${actual:-unavailable} expected=$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode; next action: rerun $OOM_REPAIR_ACTION" >&2
+        echo "installed OOM $label trust drift: $path owner/mode=${actual:-unavailable} expected=$OOM_SUDOERS_OWNER_UID:$OOM_SUDOERS_OWNER_GID:$expected_mode; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
 }
@@ -3677,12 +1526,12 @@ verify_production_reference_dirs() {
     local path actual
     for path in /usr/local/share/hapax /usr/local/share/hapax/root-required; do
         if [ ! -d "$path" ] || [ -L "$path" ]; then
-            echo "installed OOM sudoers reference directory is missing, symlinked, or not a directory: $path; next action: rerun $OOM_REPAIR_ACTION" >&2
+            echo "installed OOM sudoers reference directory is missing, symlinked, or not a directory: $path; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
         fi
         actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
         if [ "$actual" != "0:0:755" ]; then
-            echo "installed OOM sudoers reference directory trust drift: $path owner/mode=${actual:-unavailable} expected=0:0:755; next action: rerun $OOM_REPAIR_ACTION" >&2
+            echo "installed OOM sudoers reference directory trust drift: $path owner/mode=${actual:-unavailable} expected=0:0:755; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
         fi
     done
@@ -3701,12 +1550,12 @@ verify_root_artifact_trust() {
             ;;
     esac
     if [ ! -f "$path" ] || [ -L "$path" ]; then
-        echo "installed root artifact is missing, symlinked, or not a regular file: $path; next action: rerun $OOM_REPAIR_ACTION" >&2
+        echo "installed root artifact is missing, symlinked, or not a regular file: $path; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     actual="$(stat -c '%u:%g:%a' "$path" 2>/dev/null || true)"
     if [ "$actual" != "$expected_uid:$expected_gid:$expected_mode" ]; then
-        echo "installed root artifact trust drift: $path owner/mode=${actual:-unavailable} expected=$expected_uid:$expected_gid:$expected_mode; next action: rerun $OOM_REPAIR_ACTION" >&2
+        echo "installed root artifact trust drift: $path owner/mode=${actual:-unavailable} expected=$expected_uid:$expected_gid:$expected_mode; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     parent="$(dirname "$path")"
@@ -3716,48 +1565,16 @@ verify_root_artifact_trust() {
         || [ "$parent_actual" != "$expected_uid:$expected_gid" ] \
         || ! [[ "$parent_mode" =~ ^[0-7]+$ ]] \
         || (( (8#$parent_mode & 8#022) != 0 )); then
-        echo "installed root artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable}; next action: repair the root-owned directory and rerun $OOM_REPAIR_ACTION" >&2
+        echo "installed root artifact parent trust drift: $parent owner/mode=${parent_actual:-unavailable}:${parent_mode:-unavailable}; next action: repair the root-owned directory and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
-}
-
-verify_selected_host_policy_files() {
-    local source_rel actual_zram expected_zram legacy
-    verify_root_pair "$(src_path "$host_profile_table_source")" "$OOM_PROFILE_TABLE_DEST"
-    verify_root_artifact_trust "$OOM_PROFILE_TABLE_DEST" 644
-    source_rel="$(selected_zram_source_rel)"
-    verify_root_pair "$(src_path "$source_rel")" "$ZRAM_POLICY_DEST"
-    verify_root_artifact_trust "$ZRAM_POLICY_DEST" 644
-    for legacy in \
-        "$SYSTEMD_SYSTEM_DIR/user-1000.slice.d/zz-hapax-host-memory.conf" \
-        "$SYSTEMD_SYSTEM_DIR/user@1000.service.d/zz-hapax-host-memory.conf" \
-        "$LEGACY_ZRAM_POLICY_DEST"; do
-        if run_root test -e "$legacy" || run_root test -L "$legacy"; then
-            echo "legacy OOM host-policy override remains authoritative: $legacy; next action: rerun $OOM_REPAIR_ACTION" >&2
-            return 1
-        fi
-    done
-    legacy="$SYSTEMD_USER_DIR/app.slice.d/zz-hapax-host-memory.conf"
-    if [ -e "$legacy" ] || [ -L "$legacy" ]; then
-        echo "legacy OOM host-policy override remains authoritative: $legacy; next action: rerun $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-    expected_zram=$((HOST_ZRAM_SIZE_MIB * 1024 * 1024))
-    actual_zram="$(cat "$ZRAM_DISKSIZE_PATH" 2>/dev/null || true)"
-    if [ "$actual_zram" != "$expected_zram" ]; then
-        echo "live zram size drift: actual=${actual_zram:-unavailable} expected=$expected_zram for $HOST_PROFILE; next action: apply the installed zram policy through a separately authorized reboot or safe zram recreation, then rerun --verify-live" >&2
-        return 1
-    fi
-    validate_no_unauthorized_host_policy_overrides 0
-    verify_loaded_memory_dropin_ownership
 }
 
 verify_live() {
-    local rel source_rel dest timer
+    local rel dest timer
     for rel in "${system_dropins[@]}"; do
-        source_rel="$(selected_source_rel "$rel")"
         dest="$(system_dest "$rel")"
-        verify_pair "$(src_path "$source_rel")" "$dest"
+        verify_pair "$(src_path "$rel")" "$dest"
         verify_root_artifact_trust "$dest" 644
     done
     for rel in "${system_units[@]}"; do
@@ -3766,7 +1583,7 @@ verify_live() {
         verify_root_artifact_trust "$dest" 644
         dest="$SYSTEMD_USER_DIR/$(basename "$rel")"
         if [ -e "$dest" ] || [ -L "$dest" ]; then
-            echo "stale user-scope copy of system unit remains: $dest; next action: rerun $OOM_REPAIR_ACTION" >&2
+            echo "stale user-scope copy of system unit remains: $dest; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
         fi
     done
@@ -3775,7 +1592,7 @@ verify_live() {
     verify_pair "$(src_path "$oom_trigger_source")" "$OOM_TRIGGER_DEST"
     verify_root_artifact_trust "$OOM_TRIGGER_DEST" 755
     [ -x "$OOM_TRIGGER_DEST" ] || {
-        echo "installed OOM startup trigger is not executable: $OOM_TRIGGER_DEST; next action: rerun $OOM_REPAIR_ACTION" >&2
+        echo "installed OOM startup trigger is not executable: $OOM_TRIGGER_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     }
     verify_sudoers_trust "$OOM_SUDOERS_DEST" 440 "sudoers policy"
@@ -3788,7 +1605,7 @@ verify_live() {
     verify_pair "$(src_path "$oom_sudoers_source")" "$OOM_SUDOERS_REFERENCE_DEST"
     verify_root_pair "$OOM_SUDOERS_REFERENCE_DEST" "$OOM_SUDOERS_DEST"
     run_root "$VISUDO" -cf "$OOM_SUDOERS_DEST" >/dev/null || {
-        echo "installed OOM enforcer sudoers policy no longer parses: $OOM_SUDOERS_DEST; next action: rerun $OOM_REPAIR_ACTION" >&2
+        echo "installed OOM enforcer sudoers policy no longer parses: $OOM_SUDOERS_DEST; next action: rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     }
     verify_pair "$(src_path "$root_failure_intake_source")" "$ROOT_FAILURE_INTAKE_DEST"
@@ -3797,54 +1614,42 @@ verify_live() {
     verify_root_artifact_trust "$OOM_POLICY_AUDIT_DEST" 755
     verify_pair "$(src_path "$root_required_audit_source")" "$ROOT_REQUIRED_AUDIT_DEST"
     verify_root_artifact_trust "$ROOT_REQUIRED_AUDIT_DEST" 755
-    if [ -L "$LOCAL_JUDGE_CONTAINER_ID_DEST" ]; then
-        echo "live local-judge lifecycle helper is a symlink: $LOCAL_JUDGE_CONTAINER_ID_DEST; next action: rerun $OOM_REPAIR_ACTION" >&2
-        return 1
-    fi
-    verify_pair "$(src_path scripts/hapax-local-judge-container-id)" \
-        "$LOCAL_JUDGE_CONTAINER_ID_DEST"
-    [ -x "$LOCAL_JUDGE_CONTAINER_ID_DEST" ] || {
-        echo "live local-judge lifecycle helper is not executable: $LOCAL_JUDGE_CONTAINER_ID_DEST; next action: rerun $OOM_REPAIR_ACTION" >&2
-        return 1
-    }
-    verify_selected_host_policy_files
     verify_pair "$(src_path "$earlyoom_source")" "$EARLYOOM_DEST"
     verify_root_artifact_trust "$EARLYOOM_DEST" 644
     run_root "$SYSTEMCTL" is-enabled --quiet earlyoom.service || {
-        echo "earlyoom.service is not enabled; next action: rerun $OOM_REPAIR_ACTION" >&2
+        echo "earlyoom.service is not enabled; next action: run sudo systemctl enable --now earlyoom.service" >&2
         return 1
     }
     run_root "$SYSTEMCTL" is-active --quiet earlyoom.service || {
-        echo "earlyoom.service is not active; next action: inspect journalctl -u earlyoom.service and rerun $OOM_REPAIR_ACTION" >&2
+        echo "earlyoom.service is not active; next action: run sudo systemctl enable --now earlyoom.service and inspect journalctl -u earlyoom.service" >&2
         return 1
     }
     for rel in "${user_slice_dropins[@]}"; do
-        source_rel="$(selected_source_rel "$rel")"
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
         if [ -L "$dest" ]; then
-            echo "live P0 slice drop-in is a symlink: $dest; next action: run $OOM_REPAIR_ACTION to replace it with a copy" >&2
+            echo "live P0 slice drop-in is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live to replace it with a copy" >&2
             return 1
         fi
-        verify_pair "$(src_path "$source_rel")" "$dest"
+        verify_pair "$(src_path "$rel")" "$dest"
     done
     for rel in "${user_protection_dropins[@]}"; do
         verify_pair "$(src_path "$rel")" "$SYSTEMD_USER_DIR/${rel#systemd/units/}"
     done
-    for rel in "${managed_user_units[@]}"; do
+    for rel in "${user_audit_units[@]}"; do
         dest="$SYSTEMD_USER_DIR/${rel#systemd/units/}"
         if [ -L "$dest" ]; then
-            echo "live P0 managed user unit is a symlink: $dest; next action: run $OOM_REPAIR_ACTION" >&2
+            echo "live P0 audit unit is a symlink: $dest; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
         fi
         verify_pair "$(src_path "$rel")" "$dest"
     done
     for timer in "${user_audit_timers[@]}"; do
         user_systemctl is-enabled --quiet "$timer" || {
-            echo "$timer is not enabled for UID $TARGET_UID; next action: rerun $OOM_REPAIR_ACTION" >&2
+            echo "$timer is not enabled for UID $TARGET_UID; next action: run systemctl --user enable --now $timer as $TARGET_USER" >&2
             return 1
         }
         user_systemctl is-active --quiet "$timer" || {
-            echo "$timer is not active for UID $TARGET_UID; next action: rerun $OOM_REPAIR_ACTION" >&2
+            echo "$timer is not active for UID $TARGET_UID; next action: run systemctl --user enable --now $timer as $TARGET_USER" >&2
             return 1
         }
     done
@@ -3862,7 +1667,6 @@ verify_live() {
     refresh_protected_user_unit_snapshot
     verify_protected_user_unit_oom_scores
     verify_user_process_oom_floor
-    verify_docker_memory_limits
 }
 
 verify_user_audit_loaded_timeouts() {
@@ -3874,22 +1678,22 @@ verify_user_audit_loaded_timeouts() {
         rel="${spec#*|}"
         expected="$(source_unit_value "$rel" TimeoutStartSec)" || return 1
         if ! actual="$(user_systemctl show "$unit" -p TimeoutStartUSec --value 2>/dev/null)"; then
-            echo "unable to query loaded $unit TimeoutStartUSec; next action: inspect systemctl --user status $unit and rerun $OOM_REPAIR_ACTION" >&2
+            echo "unable to query loaded $unit TimeoutStartUSec; next action: inspect systemctl --user status $unit and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
         fi
         if [ "$actual" != "$expected" ]; then
-            echo "live $unit TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: rerun $OOM_REPAIR_ACTION; the governed transaction owns manager reload" >&2
+            echo "live $unit TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
         fi
         expected_environment="$(source_unit_value "$rel" Environment)" || return 1
         if ! loaded_environment="$(user_systemctl show "$unit" -p Environment --value 2>/dev/null)"; then
-            echo "unable to query loaded $unit Environment; next action: inspect systemctl --user status $unit and rerun $OOM_REPAIR_ACTION" >&2
+            echo "unable to query loaded $unit Environment; next action: inspect systemctl --user status $unit and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             return 1
         fi
         case " $loaded_environment " in
             *" $expected_environment "*) ;;
             *)
-                echo "live $unit Environment drift: actual=${loaded_environment:-unavailable} expected to contain $expected_environment; next action: rerun $OOM_REPAIR_ACTION; the governed transaction owns manager reload" >&2
+                echo "live $unit Environment drift: actual=${loaded_environment:-unavailable} expected to contain $expected_environment; next action: run systemctl --user daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
                 return 1
                 ;;
         esac
@@ -3900,11 +1704,11 @@ verify_enforcer_loaded_timeout() {
     local expected actual
     expected="$(source_unit_value systemd/units/hapax-oom-score-enforce.service TimeoutStartSec)"
     if ! actual="$("$SYSTEMCTL" show hapax-oom-score-enforce.service -p TimeoutStartUSec --value 2>/dev/null)"; then
-        echo "unable to query loaded hapax-oom-score-enforce.service TimeoutStartUSec; next action: inspect systemctl status hapax-oom-score-enforce.service and rerun $OOM_REPAIR_ACTION" >&2
+        echo "unable to query loaded hapax-oom-score-enforce.service TimeoutStartUSec; next action: inspect systemctl status hapax-oom-score-enforce.service and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     if [ "$actual" != "$expected" ]; then
-        echo "live hapax-oom-score-enforce.service TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: rerun $OOM_REPAIR_ACTION; the broker transaction owns daemon reload" >&2
+        echo "live hapax-oom-score-enforce.service TimeoutStartUSec drift: actual=${actual:-unavailable} expected=$expected; next action: run sudo systemctl daemon-reload and scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
 }
@@ -3912,14 +1716,14 @@ verify_enforcer_loaded_timeout() {
 verify_system_unit_runtime_memory() {
     local unit="$1" rel="$2" key expected_raw expected_bytes actual failed=0
     for key in MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin; do
-        expected_raw="$(system_memory_value "$rel" "$key")"
+        expected_raw="$(source_unit_value "$rel" "$key")"
         expected_bytes="$(memory_to_bytes "$expected_raw")" || {
             echo "cannot parse $unit $key=$expected_raw from $rel; next action: fix the source drop-in and rerun scripts/install-p0-oom-containment --check" >&2
             return 1
         }
         actual="$("$SYSTEMCTL" show "$unit" -p "$key" --value 2>/dev/null || true)"
         if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
-            echo "live $unit $key drift: actual=$actual expected=$expected_raw; next action: run $OOM_REPAIR_ACTION" >&2
+            echo "live $unit $key drift: actual=$actual expected=$expected_raw; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
     done
@@ -3936,7 +1740,7 @@ verify_app_slice_runtime() {
         }
         actual="$(user_systemctl show app.slice -p "$key" --value 2>/dev/null || true)"
         if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
-            echo "live app.slice $key drift: actual=$actual expected=$expected_raw; next action: run $OOM_REPAIR_ACTION" >&2
+            echo "live app.slice $key drift: actual=$actual expected=$expected_raw; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
     done
@@ -3953,7 +1757,7 @@ verify_session_slice_runtime() {
         }
         actual="$(user_systemctl show session.slice -p "$key" --value 2>/dev/null || true)"
         if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
-            echo "live session.slice $key drift: actual=$actual expected=$expected_raw; next action: run $OOM_REPAIR_ACTION" >&2
+            echo "live session.slice $key drift: actual=$actual expected=$expected_raw; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
     done
@@ -3967,25 +1771,25 @@ verify_recovery_unit_oom_scores() {
         score="${spec##*:}"
         configured="$("$SYSTEMCTL" show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
         if [ "$configured" != "$score" ]; then
-            echo "effective OOM policy drift for $unit: configured=$configured expected=$score; next action: remove higher-priority drop-in drift and rerun $OOM_REPAIR_ACTION" >&2
+            echo "effective OOM policy drift for $unit: configured=$configured expected=$score; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
         if [ "$unit" = "sshd.service" ]; then
             policy="$("$SYSTEMCTL" show "$unit" -p OOMPolicy --value 2>/dev/null || true)"
             if [ "$policy" != "continue" ]; then
-                echo "effective OOM policy drift for sshd.service: OOMPolicy=$policy expected=continue; next action: remove higher-priority drop-in drift and rerun $OOM_REPAIR_ACTION" >&2
+                echo "effective OOM policy drift for sshd.service: OOMPolicy=$policy expected=continue; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
                 failed=1
             fi
         fi
         pid="$(main_pid_for_unit "$unit")"
         if [ -z "$pid" ]; then
-            echo "recovery daemon has no live MainPID: $unit; next action: inspect systemctl status $unit and rerun $OOM_REPAIR_ACTION" >&2
+            echo "recovery daemon has no live MainPID: $unit; next action: inspect systemctl status $unit and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
             continue
         fi
         actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
         if [ "$actual" != "$score" ]; then
-            echo "live OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run $OOM_REPAIR_ACTION" >&2
+            echo "live OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
     done
@@ -3996,22 +1800,22 @@ verify_user_manager_oom_score() {
     local pid actual policy configured
     configured="$("$SYSTEMCTL" show user@1000.service -p OOMScoreAdjust --value 2>/dev/null || true)"
     if [ "$configured" != "100" ]; then
-        echo "effective user@1000.service OOMScoreAdjust drift: actual=$configured expected=100; next action: remove higher-priority drop-in drift and rerun $OOM_REPAIR_ACTION" >&2
+        echo "effective user@1000.service OOMScoreAdjust drift: actual=$configured expected=100; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     policy="$("$SYSTEMCTL" show user@1000.service -p OOMPolicy --value 2>/dev/null || true)"
     if [ "$policy" != "continue" ]; then
-        echo "effective user@1000.service OOMPolicy drift: actual=$policy expected=continue; next action: remove higher-priority drop-in drift and rerun $OOM_REPAIR_ACTION" >&2
+        echo "effective user@1000.service OOMPolicy drift: actual=$policy expected=continue; next action: remove higher-priority drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     pid="$("$SYSTEMCTL" show user@1000.service -p MainPID --value 2>/dev/null || true)"
     if ! [[ "$pid" =~ ^[0-9]+$ ]] || [ "$pid" -le 0 ]; then
-        echo "unable to read live user@1000.service MainPID; next action: run $OOM_REPAIR_ACTION" >&2
+        echo "unable to read live user@1000.service MainPID; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
     actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
     if [ "$actual" != "100" ]; then
-        echo "live user@1000.service OOM score drift: pid=$pid actual=$actual expected=100; next action: run $OOM_REPAIR_ACTION" >&2
+        echo "live user@1000.service OOM score drift: pid=$pid actual=$actual expected=100; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         return 1
     fi
 }
@@ -4042,7 +1846,7 @@ verify_protected_user_unit_oom_scores() {
             # on SOME host; only the unit file says whether THIS host is one of them. Checked first,
             # so an allow-listed unit that is installed here but unloadable can never reach the skip.
             if user_unit_file_present "$unit"; then
-                echo "protected user unit $unit reports LoadState=not-found but a unit file for it EXISTS on this host: the package IS installed here and the user manager cannot load it, so this is a load failure, not host-absence, and skipping it would report success having verified nothing; next action: run 'systemctl --user status $unit' and 'systemd-analyze --user verify $unit' to find the masked/dangling/malformed unit, then rerun $OOM_REPAIR_ACTION" >&2
+                echo "protected user unit $unit reports LoadState=not-found but a unit file for it EXISTS on this host: the package IS installed here and the user manager cannot load it, so this is a load failure, not host-absence, and skipping it would report success having verified nothing; next action: run 'systemctl --user status $unit' and 'systemd-analyze --user verify $unit' to find the masked/dangling/malformed unit, then rerun scripts/install-p0-oom-containment --install --verify-live" >&2
                 failed=1
                 continue
             fi
@@ -4050,7 +1854,7 @@ verify_protected_user_unit_oom_scores() {
                 # The skip rests on having proven absence, which a reconstructed search path
                 # cannot do. Fail closed rather than skip on a list that may not be complete.
                 if ! user_unit_search_paths_are_authoritative; then
-                    echo "protected user unit $unit is not loaded and no unit file was found, but the user unit search path could NOT be obtained from systemd ('$SYSTEMD_ANALYZE --user unit-paths' failed), so the list searched is a RECONSTRUCTION and may omit a directory this system uses; absence is therefore unproven and skipping it would be a false green; next action: restore '$SYSTEMD_ANALYZE --user unit-paths' for the target user, then rerun $OOM_REPAIR_ACTION" >&2
+                    echo "protected user unit $unit is not loaded and no unit file was found, but the user unit search path could NOT be obtained from systemd ('$SYSTEMD_ANALYZE --user unit-paths' failed), so the list searched is a RECONSTRUCTION and may omit a directory this system uses; absence is therefore unproven and skipping it would be a false green; next action: make systemd-analyze usable for the target user, or set HAPAX_OOM_USER_UNIT_PATHS to the authoritative colon-separated search path, then rerun scripts/install-p0-oom-containment --install --verify-live" >&2
                     failed=1
                     continue
                 fi
@@ -4064,7 +1868,7 @@ verify_protected_user_unit_oom_scores() {
         fi
         configured="$(user_systemctl show "$unit" -p OOMScoreAdjust --value 2>/dev/null || true)"
         if [ "$configured" != "100" ]; then
-            echo "user unit startup OOM policy drift for $unit: configured=$configured expected=100; the user manager cannot lower a child score, so root must apply live score $score after start; next action: run $OOM_REPAIR_ACTION" >&2
+            echo "user unit startup OOM policy drift for $unit: configured=$configured expected=100; the user manager cannot lower a child score, so root must apply live score $score after start; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
         case "$unit" in
@@ -4072,7 +1876,7 @@ verify_protected_user_unit_oom_scores() {
                 expected_slice=session.slice
                 actual="$(user_systemctl show "$unit" -p NoNewPrivileges --value 2>/dev/null || true)"
                 if [ "$actual" != "yes" ]; then
-                    echo "live user unit NoNewPrivileges drift for $unit: actual=$actual expected=yes; next action: restore the distro audio sandbox and rerun $OOM_REPAIR_ACTION" >&2
+                    echo "live user unit NoNewPrivileges drift for $unit: actual=$actual expected=yes; next action: restore the distro audio sandbox and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
                     failed=1
                 fi
                 ;;
@@ -4080,7 +1884,7 @@ verify_protected_user_unit_oom_scores() {
         esac
         actual="$(user_systemctl show "$unit" -p Slice --value 2>/dev/null || true)"
         if [ "$actual" != "$expected_slice" ]; then
-            echo "live user unit Slice drift for $unit: actual=$actual expected=$expected_slice; next action: remove higher-priority user-unit drop-in drift and rerun $OOM_REPAIR_ACTION" >&2
+            echo "live user unit Slice drift for $unit: actual=$actual expected=$expected_slice; next action: remove higher-priority user-unit drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
             failed=1
         fi
         rel="systemd/units/$unit.d/oom-protect.conf"
@@ -4092,20 +1896,20 @@ verify_protected_user_unit_oom_scores() {
             }
             actual="$(user_systemctl show "$unit" -p "$key" --value 2>/dev/null || true)"
             if [ "$actual" != "$expected_raw" ] && [ "$actual" != "$expected_bytes" ]; then
-                echo "live user unit $key drift for $unit: actual=$actual expected=$expected_raw; next action: remove higher-priority user-unit drop-in drift and rerun $OOM_REPAIR_ACTION" >&2
+                echo "live user unit $key drift for $unit: actual=$actual expected=$expected_raw; next action: remove higher-priority user-unit drop-in drift and rerun scripts/install-p0-oom-containment --install --verify-live" >&2
                 failed=1
             fi
         done
         while IFS= read -r pid; do
             [ -n "$pid" ] || continue
             if ! pid_matches_cgroup "$pid" "$cgroup"; then
-                echo "live user unit cgroup changed before OOM score readback for $unit pid $pid; next action: rerun $OOM_REPAIR_ACTION after unit churn settles" >&2
+                echo "live user unit cgroup changed before OOM score readback for $unit pid $pid; next action: rerun scripts/install-p0-oom-containment --install --verify-live after unit churn settles" >&2
                 failed=1
                 continue
             fi
             actual="$(cat "$PROC_ROOT/$pid/oom_score_adj" 2>/dev/null || true)"
             if [ "$actual" != "$score" ]; then
-                echo "live user unit OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run $OOM_REPAIR_ACTION" >&2
+                echo "live user unit OOM score drift for $unit pid $pid: actual=$actual expected=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
                 failed=1
             fi
         done < <(snapshotted_user_unit_pids "$unit")
@@ -4145,62 +1949,28 @@ verify_user_process_oom_floor() {
         [ "$score" -le -800 ] || continue
         protected_user_unit_member_pid "$pid" && continue
         allowed_user_protected_process "$name" && continue
-        echo "residual inherited OOM protection: pid=$pid name=$name oom_score_adj=$score; next action: run $OOM_REPAIR_ACTION" >&2
+        echo "residual inherited OOM protection: pid=$pid name=$name oom_score_adj=$score; next action: run scripts/install-p0-oom-containment --install --verify-live" >&2
         failed=1
     done
     [ "$failed" -eq 0 ]
 }
 
-load_authenticated_sealed_sources
-validate_authenticated_installer_call_form
-require_authenticated_install_authority
-if [ "$INSTALL" -eq 1 ] && [ "$AUTHENTICATED_SEALED_SOURCE" -eq 1 ]; then
-    bind_authenticated_release_root
-    validate_package_source_matches_commit
-    load_host_policy
-    validate_authenticated_cap_environment_for_host
-    validate_selected_host_sources
-    run_authenticated_authority_gate authority-only
-fi
-if [ "$INSTALL" -eq 1 ]; then
-    refuse_whole_script_root
-    reexec_with_safe_root_required_lock
-    acquire_root_required_lock
-    validate_authenticated_install_contract
-    migrate_legacy_root_required_state
-fi
-validate_docker_command
-
-if [ "$INSTALL" -eq 1 ]; then
-    validate_root_required_package_order
-    if [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
-        run_authenticated_authority_gate authority-only
-        normalize_existing_root_required_package_receipts
-        drain_root_required_deferral
-        echo "p0 oom containment superseded deferral drained without live mutation"
-        exit 0
-    fi
-    run_authenticated_authority_gate candidate
-    validate_package_source_matches_commit
-    validate_no_unhandled_package_removals
-    validate_root_required_deferral
-    check_source
-    load_host_policy
-    validate_selected_host_sources
-    install_live
-elif [ "$CHECK" -eq 1 ] || [ "$VERIFY_LIVE" -eq 1 ]; then
-    check_source
-    load_host_policy
-    validate_selected_host_sources
-fi
-if [ "$VERIFY_LIVE" -ne 0 ]; then
-    verify_live
-fi
-if [ "$INSTALL" -ne 0 ]; then
-    run_authenticated_authority_gate applied
-    record_installed_source
-    record_root_required_package_receipt
+[ "$CHECK" -eq 0 ] || check_source
+[ "$INSTALL" -eq 0 ] || refuse_whole_script_root
+[ "$INSTALL" -eq 0 ] || reexec_with_safe_root_required_lock
+[ "$INSTALL" -eq 0 ] || acquire_root_required_lock
+[ "$INSTALL" -eq 0 ] || validate_root_required_package_order
+if [ "$INSTALL" -eq 1 ] && [ "$SKIP_SUPERSEDED_INSTALL" -eq 1 ]; then
     drain_root_required_deferral
+    echo "p0 oom containment superseded deferral drained without live mutation"
+    exit 0
 fi
+[ "$INSTALL" -eq 0 ] || validate_package_source_matches_commit
+[ "$INSTALL" -eq 0 ] || validate_no_unhandled_package_removals
+[ "$INSTALL" -eq 0 ] || validate_root_required_deferral
+[ "$INSTALL" -eq 0 ] || install_live
+[ "$VERIFY_LIVE" -eq 0 ] || verify_live
+[ "$INSTALL" -eq 0 ] || record_installed_source
+[ "$INSTALL" -eq 0 ] || record_root_required_package_receipt
+[ "$INSTALL" -eq 0 ] || drain_root_required_deferral
 echo "p0 oom containment install/check complete"
-fi
