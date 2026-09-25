@@ -425,23 +425,32 @@ def test_local_judge_container_has_a_finite_memory_cap() -> None:
     assert "ExecStartPre=-/usr/bin/docker rm" not in text
 
 
-def test_local_judge_runbook_authenticates_fixed_deferred_installer_helper() -> None:
+def test_local_judge_keeps_docker_ordering_convention_and_bounded_retry() -> None:
+    text = (UNITS_DIR / "hapax-local-judge.service").read_text()
+
+    assert "After=docker.service" in text
+    assert "Wants=docker.service" not in text
+    assert "Requires=docker.service" not in text
+    assert "Restart=always" in text
+    assert "RestartSec=5" in text
+
+
+def test_local_judge_runbook_requires_live_authenticated_command() -> None:
     text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
     assert "desired-receipts/oom-containment.sha" in text
     assert 'test "$(/usr/bin/wc -c < "$receipt")" = 41' in text
     assert 'IFS= read -r sha < "$receipt"' in text
-    assert 'helper="$repo/$helper_rel"' in text
     assert '"$stage/scripts/install-p0-oom-containment"' not in text
     assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in text
-    assert '/usr/bin/realpath -e -- "$repo_alias"' in text
-    assert '/usr/bin/git -C "$repo" hash-object -- "/proc/self/fd/$helper_fd"' in text
-    assert 'test ! -L "$helper"' in text
-    assert "/usr/bin/env -i" in text
-    assert "--package oom-containment" in text
-    assert '--expected-sha "$sha" --activation-release "$repo"' in text
-    authenticate = text.index('/usr/bin/git -C "$repo" hash-object -- "/proc/self/fd/$helper_fd"')
-    execute = text.index('/usr/bin/python3 "/proc/self/fd/$helper_fd"', authenticate)
-    assert authenticate < execute
+    assert 'runbook="$stage/RUNBOOK.txt"' in text
+    assert 'test ! -L "$runbook"' in text
+    assert 'test ! -x "$runbook"' in text
+    assert "DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT" in text
+    assert '~/.local/bin/hapax-post-merge-deploy "$sha"' in text
+    assert '/usr/bin/bash -p "$runbook"' not in text
+    assert "completed authenticated package=oom-containment sha=$sha" in text
+    assert '"$stage/AUTHENTICATED-INSTALL.log"' in text
+    assert "/usr/bin/git" not in text[: text.index("## LiteLLM route")]
     assert "cp systemd/units/hapax-local-judge.service" not in text
 
 
