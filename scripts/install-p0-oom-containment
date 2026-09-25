@@ -1,6 +1,6 @@
 #!/usr/bin/bash -p
 # Install P0 OOM containment policy from the source tree to live systemd/earlyoom paths.
-if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+if [[ "${BASH_SOURCE[0]}" != "$0" ]] || [[ "${BASH_LINENO[0]:-1}" != "0" ]]; then
     printf '%s\n' "OOM containment installer must be executed, not sourced; next action: execute scripts/install-p0-oom-containment as a command through hapax-post-merge-deploy" >&2
     return 1
 fi
