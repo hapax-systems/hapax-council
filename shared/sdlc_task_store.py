@@ -6,10 +6,8 @@ import ctypes
 import hashlib
 import json
 import os
-import random
 import re
 import stat
-import time
 from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -24,15 +22,6 @@ _TASK_STATES: tuple[TaskState, ...] = ("active", "closed", "refused")
 CLAIM_DISPATCH_BINDING_SCHEMA = "hapax.claim-dispatch-binding.v1"
 _CLAIM_KEY_FRAGMENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{3,127}")
 _RENAME_NOREPLACE = 1
-# Frontier churn during an index build is the only retried refusal (M95): the
-# build is a pure read, and ~10 lanes writing rows make a ~10 s NFS walk race
-# them routinely. Every other refusal, and churn at any later stage, is final.
-_INDEX_BUILD_CHURN_REASON = "task_store_frontier_changed_during_index_build"
-INDEX_BUILD_CHURN_MAX_ATTEMPTS = 4
-INDEX_BUILD_CHURN_DEADLINE_SECONDS = 90.0
-INDEX_BUILD_CHURN_JITTER_SECONDS = (0.25, 1.5)
-_churn_sleep = time.sleep
-_churn_clock = time.monotonic
 
 
 class TaskStoreError(RuntimeError):
@@ -1200,30 +1189,9 @@ def _make_identity_index(
 
 
 def build_task_identity_index(vault_root: Path) -> TaskIdentityIndex:
-    """Build one immutable, non-authorizing parsed-identity index.
-
-    A build that races a concurrent row write is rebuilt from scratch, with
-    jitter, at most ``INDEX_BUILD_CHURN_MAX_ATTEMPTS`` times inside
-    ``INDEX_BUILD_CHURN_DEADLINE_SECONDS``; each rebuild is a distinct resolution.
-    """
+    """Build one immutable, non-authorizing parsed-identity index."""
 
     root = _normalized_path(vault_root)
-    deadline = _churn_clock() + INDEX_BUILD_CHURN_DEADLINE_SECONDS
-    attempt = 1
-    while True:
-        try:
-            return _build_task_identity_index_once(root)
-        except TaskStoreError as exc:
-            if exc.reason_code != _INDEX_BUILD_CHURN_REASON:
-                raise
-            delay = random.uniform(*INDEX_BUILD_CHURN_JITTER_SECONDS)
-            if attempt >= INDEX_BUILD_CHURN_MAX_ATTEMPTS or _churn_clock() + delay > deadline:
-                raise
-        _churn_sleep(delay)
-        attempt += 1
-
-
-def _build_task_identity_index_once(root: Path) -> TaskIdentityIndex:
     frontier = _complete_frontier(root)
     entries = tuple(
         _index_entry(path, state=state, stat_vector=stat_vector)

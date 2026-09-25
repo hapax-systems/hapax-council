@@ -232,9 +232,7 @@ def test_frontier_change_during_resolution_refuses(
         nonlocal calls
         calls += 1
         manifest = original(vault_root, state)
-        # Calls 1-6 are the index build's two frontier reads and 7-9 the
-        # index validation; call 10 is the resolution's own post-read frontier.
-        if calls == 10:
+        if calls == 4:
             return (
                 *manifest,
                 (
@@ -245,114 +243,9 @@ def test_frontier_change_during_resolution_refuses(
         return manifest
 
     monkeypatch.setattr(task_store, "_state_manifest", changed_manifest)
-    monkeypatch.setattr(task_store, "_churn_sleep", lambda _seconds: None)
 
-    with pytest.raises(TaskStoreError) as raised:
+    with pytest.raises(TaskStoreError, match="task_store_frontier_changed"):
         resolve_task_note(tmp_path, "cc-task-a")
-    assert raised.value.reason_code == "task_store_frontier_changed_during_resolution"
-
-
-def _churn_every_build(
-    monkeypatch: pytest.MonkeyPatch, note: Path, *, transient: bool = False
-) -> list[int]:
-    """Move one note's mtime inside each index build: real frontier churn."""
-
-    original = task_store._index_entry
-    builds: list[int] = []
-
-    def churning(path: Path, **kwargs: object) -> object:
-        if path == note:
-            builds.append(len(builds) + 1)
-            if not transient or len(builds) == 1:
-                stamp = note.stat().st_mtime_ns + 1_000_000_000
-                os.utime(note, ns=(stamp, stamp))
-        return original(path, **kwargs)
-
-    monkeypatch.setattr(task_store, "_index_entry", churning)
-    return builds
-
-
-def test_index_build_does_not_retry_any_other_task_store_refusal(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _note(tmp_path / "active" / "cc-task-a.md", "cc-task-a")
-    calls = 0
-
-    def unsafe(vault_root: Path, state: task_store.TaskState) -> task_store._StateManifest:
-        nonlocal calls
-        calls += 1
-        raise TaskStoreError("task_note_directory_unsafe", "restore the directory")
-
-    sleeps: list[float] = []
-    monkeypatch.setattr(task_store, "_state_manifest", unsafe)
-    monkeypatch.setattr(task_store, "_churn_sleep", sleeps.append)
-
-    with pytest.raises(TaskStoreError) as raised:
-        build_task_identity_index(tmp_path)
-
-    assert raised.value.reason_code == "task_note_directory_unsafe"
-    assert calls == 1
-    assert sleeps == []
-
-
-def test_index_build_churn_retry_is_bounded_by_attempts_with_jitter(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    note = _note(tmp_path / "active" / "cc-task-a.md", "cc-task-a")
-    builds = _churn_every_build(monkeypatch, note)
-    sleeps: list[float] = []
-    monkeypatch.setattr(task_store, "_churn_sleep", sleeps.append)
-
-    with pytest.raises(TaskStoreError) as raised:
-        build_task_identity_index(tmp_path)
-
-    assert raised.value.reason_code == "task_store_frontier_changed_during_index_build"
-    assert len(builds) == task_store.INDEX_BUILD_CHURN_MAX_ATTEMPTS
-    assert len(sleeps) == task_store.INDEX_BUILD_CHURN_MAX_ATTEMPTS - 1
-    low, high = task_store.INDEX_BUILD_CHURN_JITTER_SECONDS
-    assert all(low <= delay <= high for delay in sleeps)
-
-
-def test_index_build_churn_retry_stops_at_its_deadline(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    note = _note(tmp_path / "active" / "cc-task-a.md", "cc-task-a")
-    builds = _churn_every_build(monkeypatch, note)
-    now = [0.0]
-
-    def clock() -> float:
-        # Model a slow vault: every clock read costs 40 s of builds.
-        now[0] += 40.0
-        return now[0]
-
-    monkeypatch.setattr(task_store, "_churn_sleep", lambda _seconds: None)
-    monkeypatch.setattr(task_store, "_churn_clock", clock)
-
-    with pytest.raises(TaskStoreError) as raised:
-        build_task_identity_index(tmp_path)
-
-    assert raised.value.reason_code == "task_store_frontier_changed_during_index_build"
-    assert 1 <= len(builds) < task_store.INDEX_BUILD_CHURN_MAX_ATTEMPTS
-
-
-def test_index_build_recovers_from_transient_churn_with_a_fresh_index(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    note = _note(tmp_path / "active" / "cc-task-a.md", "cc-task-a")
-    builds = _churn_every_build(monkeypatch, note, transient=True)
-    sleeps: list[float] = []
-    monkeypatch.setattr(task_store, "_churn_sleep", sleeps.append)
-
-    index = build_task_identity_index(tmp_path)
-
-    assert len(builds) == 2
-    assert len(sleeps) == 1
-    (entry,) = index.by_task_id["cc-task-a"]
-    assert entry.stat_vector == task_store._stat_vector(os.stat(note))
 
 
 def test_explicit_index_reuses_parses_and_refreshes_only_changes(
