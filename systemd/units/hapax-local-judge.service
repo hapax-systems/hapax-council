@@ -4,6 +4,10 @@
 # INSTALL TARGET: appendix (hapax-appendix), the SDLC rig. Reached cross-rig by the
 # podium LiteLLM gateway as the `local-judge` route -> http://192.168.68.50:5001/v1.
 # Deploy + validation: docs/runbooks/local-judge-stack.md.
+# After=docker.service is deliberately omitted: a user unit cannot order the system
+# manager's docker.service. A bounded first preflight probes the pinned local daemon;
+# Restart=always/RestartSec=5 retries persistent cross-manager unavailability while
+# static image and model failures remain explicit preflight errors in the journal.
 Description=Hapax Local Judge — CompassVerifier-7B answer-verification (cost-offload Tier-1)
 
 [Service]
@@ -26,10 +30,6 @@ Environment=JUDGE_MODEL_HOST=/store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b
 # Canary and durable service use the same immutable image digest. Updating this
 # digest requires a fresh cap canary and candidate-SHA receipt.
 Environment=JUDGE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:841b199aed2649a748875b043b32fed2e8c2d4d87e1d563556817fb7fa44b72b
-# After=docker.service is deliberately omitted: a user unit cannot order the system
-# manager's docker.service. A bounded first preflight probes the pinned local daemon;
-# Restart=always/RestartSec=5 retries persistent cross-manager unavailability while
-# static image and model failures remain explicit preflight errors in the journal.
 RuntimeDirectory=hapax-local-judge
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
