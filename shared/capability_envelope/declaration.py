@@ -26,14 +26,20 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 def _check_name(value: str) -> str:
     if not _NAME_RE.fullmatch(value):
-        raise ValueError(f"{value!r} must match {_NAME_RE.pattern}")
+        raise ValueError(
+            f"{value!r} must match {_NAME_RE.pattern}; next action: use a lowercase name of "
+            "letters, digits and hyphens"
+        )
     return value
 
 
 def _check_relative(value: str) -> str:
     path = PurePosixPath(value)
     if path.is_absolute() or ".." in path.parts or not path.parts:
-        raise ValueError(f"{value!r} must be a relative path inside the job without '..'")
+        raise ValueError(
+            f"{value!r} must be a relative path inside the job without '..'; next action: "
+            "give the path relative to the job home or workdir"
+        )
     return value
 
 

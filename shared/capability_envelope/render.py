@@ -179,8 +179,14 @@ def _masks(workdir: Path, declared: tuple[str, ...]) -> list[str]:
                 target = path.resolve()
                 try:
                     target_rel = target.relative_to(root).as_posix()
-                except ValueError:
-                    continue  # points outside the checkout, so it dangles inside the job
+                except ValueError as exc:
+                    # Inside the job it could resolve to any file the job can see (a bound
+                    # credential, /etc), and a harness would import it as instructions.
+                    raise EnvelopeRefusal(
+                        f"checkout symlink {rel} points outside the checkout "
+                        f"({os.readlink(path)}); next action: remove it from the checkout, or "
+                        "declare it in declared_work_files if that file is meant to be read"
+                    ) from exc
                 if target_rel in declared_set:
                     continue
                 if target.name in MASKED_NAMES:
