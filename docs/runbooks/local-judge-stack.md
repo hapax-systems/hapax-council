@@ -57,7 +57,7 @@ runbook="$stage/RUNBOOK.txt"
 test -f "$runbook"
 test ! -L "$runbook"
 test ! -x "$runbook"
-grep -Fqx 'DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT. It is caller-owned pending-state' <(head -n 5 "$runbook" | tail -n 1)
+grep -Fqx 'DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT. It is caller-owned pending-state' "$runbook"
 # Run hapax-post-merge-deploy for "$sha" and execute only its live terminal line
 # beginning "next action: run:". The pending RUNBOOK is metadata, not code.
 ~/.local/bin/hapax-post-merge-deploy "$sha"
@@ -160,10 +160,11 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
 
 - **No-co-residency guarantee:** the container is pinned to the 5060 Ti UUID; the
   3090 grounding instance (TabbyAPI `:5000`) is independent. Confirm with `nvidia-smi`.
-- **Host-memory ceiling:** both systemd and manual launches use `--memory 4G
+- **Candidate host-memory ceiling:** source and manual launches use `--memory 4G
   --memory-swap 6G`: a 4 GiB RAM cap and a 6 GiB combined memory-plus-swap cap,
-  permitting at most 2 GiB of swap while leaving the OOM killer enabled. Before runtime closure after a
-  limit change, deploy `hapax-local-judge.service` only through the manifest-owned
+  permitting at most 2 GiB of swap while leaving the OOM killer enabled. This is
+  not runtime-accepted merely because the source tests pass. Before activation or
+  runtime closure, deploy `hapax-local-judge.service` only through the manifest-owned
   P0 OOM package; ordinary post-merge deployment stages it without copying or
   restarting the user unit. Then run this 8-worker, 24-request canary and require
   identical container health/restart/OOM state plus unchanged `oom` and

@@ -411,6 +411,7 @@ import sys
 from pathlib import Path
 
 BYTES_1G = 1024**3
+BYTES_8G = 8 * BYTES_1G
 
 
 def memory_bytes(value: str, *, field: str, line_number: int) -> int:
@@ -510,10 +511,12 @@ for line_number, line in enumerate(table.read_text(encoding="utf-8").splitlines(
         0 < app_high_bytes < app_max_bytes < reviewed_floor_bytes
         and 0 < uid_high_bytes < uid_max_bytes < reviewed_floor_bytes
         and app_max_bytes < uid_max_bytes
-        and zram_size > 0
+        and zram_size >= BYTES_8G
+        and zram_size * 2 <= reviewed_floor_bytes
     ):
         print(
-            f"host profile ceilings are not below interval floor at row {line_number}",
+            f"host profile ceilings are not below interval floor or zram safety bounds "
+            f"at row {line_number}",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -750,7 +753,7 @@ audit_package_receipt() {
             || [ -L "$INSTALLED_SOURCE_ROOT/$rel" ] \
             || ! cmp -s <(git -C "$ROOT_REQUIRED_GIT_REPO" show "$sha:$rel") "$INSTALLED_SOURCE_ROOT/$rel"; then
             echo "root-required installed source is not bound to $label receipt $sha: $INSTALLED_SOURCE_ROOT/$rel" >&2
-            echo "  next action: rerun the newest governed $label installer package from an exact staged RUNBOOK" >&2
+            echo "  next action: rerun hapax-post-merge-deploy for the desired SHA and use only its live next-action command" >&2
             failed=1
         fi
     done
@@ -778,7 +781,7 @@ audit_desired_receipt() {
     fi
     if [ "$installed_sha" != "$desired_sha" ]; then
         echo "root-required desired package is not installed: $label desired=$desired_sha installed=${installed_sha:-missing}" >&2
-        echo "  next action: regenerate the exact package from $desired_sha and run its governed installer, even if the cached RUNBOOK was lost" >&2
+        echo "  next action: rerun hapax-post-merge-deploy for $desired_sha and use only its live next-action command, even if cached metadata was lost" >&2
         return 1
     fi
 }
@@ -1514,12 +1517,7 @@ fi
 echo "root-required post-merge deploy deferrals pending (${#runbooks[@]}):" >&2
 for runbook in "${runbooks[@]}"; do
     dir="$(dirname "$runbook")"
-    command="$(awk '/^  .*--install --verify-live$/ {sub(/^  /, ""); print; exit}' "$runbook")"
     echo "  $dir" >&2
-    if [ -n "$command" ]; then
-        echo "    next action: $command" >&2
-    else
-        echo "    next action: inspect $runbook and run the root-required installer" >&2
-    fi
+    echo "    next action: rerun hapax-post-merge-deploy for the desired receipt SHA and use only its live 'next action: run:' command; RUNBOOK.txt is metadata, not code" >&2
 done
 exit 1
