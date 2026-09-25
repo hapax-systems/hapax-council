@@ -156,6 +156,18 @@ try:
     )
 except (ClaimPublicationError, ExecutionAdmissionError, ValueError) as exc:
     detail = f" ({exc.detail})" if getattr(exc, "detail", None) else ""
+    if not hasattr(exc, "reason_code"):
+        # A bare ValueError has no reason code: name its type and, for a validation error, the
+        # failing fields and error types, never the values (they echo composition content).
+        from pydantic import ValidationError
+
+        detail = f" ({type(exc).__name__}"
+        if isinstance(exc, ValidationError):
+            detail += ": " + "; ".join(
+                f"{'.'.join(map(str, error['loc'])) or '<root>'} {error['type']}"
+                for error in exc.errors(include_input=False, include_url=False)
+            )
+        detail += ")"
     print(
         f"cc-claim: HOLD — {getattr(exc, 'reason_code', 'claim_composition_invalid')}{detail}. "
         f"Next action: {getattr(exc, 'repair_action', 'restore the installed composition')}.",
@@ -590,8 +602,18 @@ if canon_enforced:
         ):
             print(f"cc-claim: HOLD — {exc}. Next action: {exc.repair_action}.", file=sys.stderr)
             sys.exit(8)
-    except ValueError:
-        print("cc-claim: HOLD — claim_composition_invalid. "
+    except ValueError as exc:
+        # Name which validation refused, by field and error type, never by value: the label
+        # alone hides the cause, and the message would echo installed composition content.
+        from pydantic import ValidationError
+
+        cause = type(exc).__name__
+        if isinstance(exc, ValidationError):
+            cause += ": " + "; ".join(
+                f"{'.'.join(map(str, error['loc'])) or '<root>'} {error['type']}"
+                for error in exc.errors(include_input=False, include_url=False)
+            )
+        print(f"cc-claim: HOLD — claim_composition_invalid ({cause}). "
               "Next action: restore the validated installed claim composition before retrying.",
               file=sys.stderr)
         sys.exit(8)

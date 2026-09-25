@@ -69,7 +69,8 @@ def test_writer_refuses_unqualified_installed_namespace(tmp_path, writer, damage
     assert not Path(roots.claim_lock_root).exists()
 
 
-def test_claim_composition_invalid_gives_bounded_repair(tmp_path):
+@pytest.mark.parametrize("route", ["claim", "rehydrate"])
+def test_claim_composition_invalid_gives_bounded_repair(tmp_path, route):
     import json
 
     home = tmp_path / "home"
@@ -83,10 +84,13 @@ def test_claim_composition_invalid_gives_bounded_repair(tmp_path):
     payload["schema_version"] = "malformed-sensitive-composition"
     manifest.write_text(json.dumps(payload))
     before = _ownership_bytes(home)
-    result = _claim(home, "invalid-composition", install_gate0b=False)
+    extra_args = ["--rehydrate-activation-cache"] if route == "rehydrate" else []
+    result = _claim(home, "invalid-composition", install_gate0b=False, extra_args=extra_args)
     assert result.returncode == 8
     assert "claim_composition_invalid" in result.stderr
-    assert "Next action: restore the validated installed claim composition" in result.stderr
+    # The true cause is named (exception type, failing field, error type), never its value.
+    assert "(ValidationError: schema_version " in result.stderr
+    assert "Next action: restore the" in result.stderr
     assert "malformed-sensitive-composition" not in result.stderr
     assert _ownership_bytes(home) == before
 

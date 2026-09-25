@@ -2865,13 +2865,18 @@ def test_claim_publication_lock_refuses_hardlinked_lock_file(tmp_path: Path) -> 
     assert raised.value.reason_code == "claim_publication_lock_unsafe"
 
 
+@pytest.mark.parametrize("entry", ["publication", "role_exclusion"])
 def test_claim_publication_lock_reports_open_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    entry: str,
 ) -> None:
+    # A failed open leaves no descriptor and no lock, so the release path must not run: the
+    # refusal carries the original OSError as its cause, never an UnboundLocalError masking it.
     fixture = _fixture(tmp_path)
     fixture.locks.mkdir(mode=0o700)
     original_open = sdlc_claim.os.open
+    injected = OSError(errno.EACCES, "simulated lock open failure")
 
     def fail_lock_open(
         path: str | bytes | os.PathLike[str],
@@ -2881,15 +2886,22 @@ def test_claim_publication_lock_reports_open_failure(
         dir_fd: int | None = None,
     ) -> int:
         if Path(path).name.endswith(".lock"):
-            raise OSError("simulated lock open failure")
+            raise injected
         return original_open(path, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(sdlc_claim.os, "open", fail_lock_open)
+    lock = (
+        sdlc_claim._claim_publication_lock(fixture.intent, lock_root=fixture.locks)
+        if entry == "publication"
+        else sdlc_claim.claim_role_exclusion(fixture.intent.role, lock_root=fixture.locks)
+    )
     with pytest.raises(ClaimPublicationError) as raised:
-        with sdlc_claim._claim_publication_lock(fixture.intent, lock_root=fixture.locks):
+        with lock:
             pass
 
     assert raised.value.reason_code == "claim_publication_lock_unavailable"
+    assert raised.value.__cause__ is injected
+    assert raised.value.__context__ is injected
 
 
 def _claim_publication_lock_child(
