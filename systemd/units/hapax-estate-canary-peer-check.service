@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the peer host's estate-store canary registration
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/docs/runbooks/estate-store-registration-stage1.md
+X-Hapax-Store=None
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/uv --directory %h/.cache/hapax/source-activation/worktree run python scripts/hapax-estate-store-registry check-peer
+NoNewPrivileges=true
+PrivateTmp=true
