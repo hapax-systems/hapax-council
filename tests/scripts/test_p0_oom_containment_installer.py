@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -3812,6 +3813,7 @@ def _run_install_verify_live(
     local_judge_need_reload: str = "no",
     through_deferred_helper: bool = False,
     omit_nested_sudo: bool = False,
+    hostile_umask: bool = False,
     package_repo: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Drive the REAL installer through --install --verify-live against temp destinations.
@@ -4009,6 +4011,16 @@ def _run_install_verify_live(
             "--runtime-authority-task",
             str(runtime_task),
         ]
+    if hostile_umask:
+        command = [
+            "/usr/bin/bash",
+            "--noprofile",
+            "--norc",
+            "-c",
+            'umask 000; exec "$@"',
+            "hostile-umask",
+            *command,
+        ]
     return subprocess.run(
         command,
         text=True,
@@ -4055,6 +4067,31 @@ def test_authenticated_deferred_helper_neutralizes_omitted_nested_sudo(
     assert result.returncode == 0, result.stderr
     assert "completed authenticated package=oom-containment" in result.stdout
     assert not (tmp_path / "root-sudo-calls").exists()
+
+
+def test_authenticated_deferred_helper_publishes_safe_receipts_under_hostile_umask(
+    tmp_path: Path,
+) -> None:
+    result = _run_install_verify_live(
+        tmp_path,
+        through_deferred_helper=True,
+        hostile_umask=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    state_root = tmp_path / "root-state"
+    receipts = (
+        state_root / "installed-receipts/oom-containment.sha",
+        state_root / "desired-receipts/oom-containment.sha",
+    )
+    for receipt in receipts:
+        assert len(receipt.read_text(encoding="utf-8").strip()) == 40
+        assert stat.S_IMODE(receipt.stat().st_mode) == 0o600
+        assert receipt.parent.stat().st_mode & 0o022 == 0
+    package_sha = receipts[0].read_text(encoding="utf-8").strip()
+    stage = tmp_path / "root-required" / package_sha / "oom-containment"
+    assert (stage / "DRAINED.txt").is_file()
+    assert not (stage / "RUNBOOK.txt").exists()
 
 
 def test_install_pins_local_docker_daemon_against_hostile_selectors(
