@@ -23,6 +23,8 @@ import fcntl
 import hashlib
 import json
 import os
+import pwd
+import signal
 import subprocess
 import textwrap
 import time
@@ -33,6 +35,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 INSTALL_SCRIPT = REPO_ROOT / "systemd" / "scripts" / "install-units.sh"
 POST_MERGE_DEPLOY = REPO_ROOT / "scripts" / "hapax-post-merge-deploy"
+APCUPSD_INSTALLER = REPO_ROOT / "scripts" / "install-apcupsd-power-alerts"
 LOCAL_JUDGE_UNIT = REPO_ROOT / "systemd" / "units" / "hapax-local-judge.service"
 
 F53FED723_LOCAL_JUDGE_UNIT = """[Unit]
@@ -346,6 +349,11 @@ esac
     return systemctl
 
 
+@pytest.fixture(autouse=True)
+def _isolate_root_required_mutation_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT", str(tmp_path))
+
+
 def _basic_installer_env(tmp_path: Path) -> dict[str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -353,7 +361,7 @@ def _basic_installer_env(tmp_path: Path) -> dict[str, str]:
         executable = bin_dir / command
         executable.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
         executable.chmod(0o755)
-    return {
+    env = {
         **os.environ,
         "ALLOW_NONSTANDARD_REPO": "1",
         "HOME": str(tmp_path / "home"),
@@ -362,6 +370,52 @@ def _basic_installer_env(tmp_path: Path) -> dict[str, str]:
         "HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL": str(_retired_manager_systemctl(tmp_path)),
         "SKIP_TIMER_ENABLE": "1",
     }
+    for name in (
+        "HAPAX_ROOT_REQUIRED_LOCK_FD",
+        "HAPAX_ROOT_REQUIRED_LOCK_FILE",
+        "HAPAX_ROOT_REQUIRED_LOCK_MODE",
+        "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+    ):
+        env.pop(name, None)
+    return env
+
+
+def _wait_for_flock_block(process: subprocess.Popen[str]) -> None:
+    deadline = time.monotonic() + 10
+    while process.poll() is None and time.monotonic() < deadline:
+        descendants = {process.pid}
+        changed = True
+        while changed:
+            changed = False
+            for status_path in Path("/proc").glob("[0-9]*/status"):
+                try:
+                    fields = dict(
+                        line.split(":", 1) for line in status_path.read_text().splitlines()
+                    )
+                    pid = int(status_path.parent.name)
+                    ppid = int(fields["PPid"].strip())
+                except (OSError, KeyError, ValueError):
+                    continue
+                if ppid in descendants and pid not in descendants:
+                    descendants.add(pid)
+                    changed = True
+        for pid in descendants:
+            try:
+                waiting = (Path("/proc") / str(pid) / "wchan").read_text().strip()
+            except OSError:
+                continue
+            if waiting == "locks_lock_inode_wait":
+                return
+        time.sleep(0.01)
+    raise AssertionError("child did not reach the deterministic flock wait")
+
+
+def _kill_process_group(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    process.wait(timeout=5)
 
 
 class TestInstallUnitsScriptExists:
@@ -405,21 +459,86 @@ class TestPrimaryWorktreeGuard:
 class TestSharedInstallLock:
     def test_canonical_lock_is_acquired_before_user_unit_mutation(self) -> None:
         body = INSTALL_SCRIPT.read_text(encoding="utf-8")
-        deploy = POST_MERGE_DEPLOY.read_text(encoding="utf-8")
         assert (
-            'ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-'
-            '$HOME/.local/state/hapax/root-required/.lock}"'
+            'ROOT_REQUIRED_LOCK_FILE="$NSS_HOME/.local/state/hapax/root-required/.lock"'
         ) in body
-        assert (
-            'ROOT_REQUIRED_STATE_ROOT="${HAPAX_ROOT_REQUIRED_STATE_ROOT:-'
-            '$HOME/.local/state/hapax/root-required}"'
-        ) in deploy
-        assert (
-            'ROOT_REQUIRED_LOCK_FILE="${HAPAX_ROOT_REQUIRED_LOCK_FILE:-'
-            '$ROOT_REQUIRED_STATE_ROOT/.lock}"'
-        ) in deploy
+        assert "pwd.getpwuid(os.geteuid()).pw_dir" in body
+        assert 'env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = lock_path' not in body
         assert '\nreexec_with_safe_root_required_lock\n\nmkdir -p "$DEST_DIR"' in body
         assert "O_CLOEXEC | os.O_CREAT | os.O_NOFOLLOW | os.O_RDWR" in body
+
+    def test_production_refuses_spoofed_home_before_user_mutation(self, tmp_path: Path) -> None:
+        env = _basic_installer_env(tmp_path)
+        env.pop("HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT")
+        spoofed_home = tmp_path / "spoofed-home"
+        env["HOME"] = str(spoofed_home)
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+
+        assert result.returncode != 0
+        assert "HOME must exactly match canonical NSS home" in result.stderr
+        assert not (spoofed_home / ".config/systemd/user").exists()
+
+    @pytest.mark.parametrize(
+        "selector", ("HAPAX_ROOT_REQUIRED_STATE_ROOT", "HAPAX_ROOT_REQUIRED_LOCK_FILE")
+    )
+    def test_production_refuses_state_selector_presence_before_mutation(
+        self, tmp_path: Path, selector: str
+    ) -> None:
+        env = _basic_installer_env(tmp_path)
+        env.pop("HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT")
+        env["HOME"] = pwd.getpwuid(os.geteuid()).pw_dir
+        unsafe_selector = tmp_path / "selector-directory"
+        unsafe_selector.mkdir()
+        env[selector] = str(unsafe_selector)
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+
+        assert result.returncode != 0
+        assert f"production refuses {selector}" in result.stderr
+
+    @pytest.mark.parametrize("escape_kind", ("home", "lock"))
+    def test_isolated_mode_refuses_paths_outside_test_root(
+        self, tmp_path: Path, escape_kind: str
+    ) -> None:
+        isolated_root = tmp_path / "isolated"
+        isolated_root.mkdir(mode=0o700)
+        env = _basic_installer_env(tmp_path)
+        env["HAPAX_ROOT_REQUIRED_ISOLATED_TEST_ROOT"] = str(isolated_root)
+        env["HOME"] = str(isolated_root / "home")
+        if escape_kind == "home":
+            escaped_path = tmp_path / "escaped-home"
+            env["HOME"] = str(escaped_path)
+        else:
+            escaped_path = tmp_path / "escaped.lock"
+            env["HAPAX_ROOT_REQUIRED_LOCK_FILE"] = str(escaped_path)
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+
+        assert result.returncode != 0
+        assert f"isolated test {escape_kind} escapes" in result.stderr
+        assert not (Path(env["HOME"]) / ".config/systemd/user").exists()
 
     def test_default_lock_is_created_private(self, tmp_path: Path) -> None:
         env = _basic_installer_env(tmp_path)
@@ -593,6 +712,128 @@ class TestSharedInstallLock:
         assert first.returncode == 0, f"{first_stdout}\n{first_stderr}"
         assert second.returncode == 0, f"{second_stdout}\n{second_stderr}"
         assert len(events.read_text(encoding="utf-8").splitlines()) >= 4
+
+    @pytest.mark.parametrize("inherited_descriptor", (False, True))
+    def test_lock_path_replaced_while_waiting_is_refused(
+        self, tmp_path: Path, inherited_descriptor: bool
+    ) -> None:
+        env = _basic_installer_env(tmp_path)
+        lock = Path(env["HOME"]) / ".local/state/hapax/root-required/.lock"
+        lock.parent.mkdir(parents=True)
+        lock.write_text("", encoding="utf-8")
+        lock.chmod(0o600)
+        blocker_fd = os.open(lock, os.O_RDWR)
+        waiter_fd = os.open(lock, os.O_RDWR)
+        fcntl.flock(blocker_fd, fcntl.LOCK_EX)
+        pass_fds: tuple[int, ...] = ()
+        if inherited_descriptor:
+            env["HAPAX_ROOT_REQUIRED_LOCK_FD"] = str(waiter_fd)
+            env["HAPAX_ROOT_REQUIRED_LOCK_MODE"] = "exclusive"
+            pass_fds = (waiter_fd,)
+        installer = subprocess.Popen(
+            ["bash", str(INSTALL_SCRIPT)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            pass_fds=pass_fds,
+            start_new_session=True,
+        )
+        try:
+            _wait_for_flock_block(installer)
+            replacement = lock.with_name("replacement.lock")
+            replacement.write_text("", encoding="utf-8")
+            replacement.chmod(0o600)
+            os.replace(replacement, lock)
+            fcntl.flock(blocker_fd, fcntl.LOCK_UN)
+            stdout, stderr = installer.communicate(timeout=10)
+        finally:
+            if installer.poll() is None:
+                _kill_process_group(installer)
+            os.close(waiter_fd)
+            os.close(blocker_fd)
+
+        assert installer.returncode == 1, stdout
+        assert "lock identity changed while acquiring" in stderr
+        assert not (Path(env["HOME"]) / ".config/systemd/user").exists()
+
+    def test_all_mutating_entry_points_wait_on_one_default_lock(self, tmp_path: Path) -> None:
+        env = _basic_installer_env(tmp_path)
+        home = Path(env["HOME"])
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True
+        )
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+        (repo / "README.md").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        for name in (
+            "HAPAX_POST_MERGE_TRACE_PATH",
+            "HAPAX_POST_MERGE_LAST_DEPLOYED_SHA_PATH",
+            "HAPAX_POST_MERGE_SYSTEMD_PENDING_PATH",
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR",
+            "HAPAX_ROOT_REQUIRED_STATE_ROOT",
+            "HAPAX_ROOT_REQUIRED_INSTALLED_SOURCE_ROOT",
+            "HAPAX_ROOT_REQUIRED_INSTALLED_RECEIPT_ROOT",
+            "HAPAX_ROOT_REQUIRED_DESIRED_RECEIPT_ROOT",
+            "HAPAX_ROOT_REQUIRED_LOCK_FILE",
+        ):
+            env.pop(name, None)
+        env.update(
+            {
+                "REPO": str(repo),
+                "HAPAX_APCUPSD_TARGET_UID": str(os.geteuid()),
+                "HAPAX_APCUPSD_TARGET_GID": str(os.getegid()),
+                "HAPAX_APCUPSD_TARGET_HOME": str(home),
+                "HAPAX_APCUPSD_DEST": str(tmp_path / "apcupsd"),
+                "HAPAX_APCUPSD_AUDIT_DIR": str(tmp_path / "audit"),
+                "HAPAX_APCUPSD_LOGROTATE_DEST": str(tmp_path / "logrotate"),
+                "HAPAX_UPOWER_CONF_DEST": str(tmp_path / "upower"),
+                "HAPAX_APCUPSD_SYSTEMCTL": str(tmp_path / "bin/systemctl"),
+                "HAPAX_APCUPSD_BUSCTL": str(tmp_path / "bin/systemctl"),
+                "HAPAX_APCUPSD_APCACCESS": str(tmp_path / "bin/systemctl"),
+                "HAPAX_APCUPSD_INSTALL_SUDO": "",
+            }
+        )
+        lock = home / ".local/state/hapax/root-required/.lock"
+        lock.parent.mkdir(parents=True)
+        lock.write_text("", encoding="utf-8")
+        lock.chmod(0o600)
+        blocker_fd = os.open(lock, os.O_RDWR)
+        fcntl.flock(blocker_fd, fcntl.LOCK_EX)
+        commands = (
+            [str(POST_MERGE_DEPLOY), sha],
+            [str(APCUPSD_INSTALLER), "--source", str(tmp_path / "missing"), "--install"],
+            ["bash", str(INSTALL_SCRIPT)],
+        )
+        try:
+            for command in commands:
+                process = subprocess.Popen(
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    start_new_session=True,
+                )
+                try:
+                    _wait_for_flock_block(process)
+                    assert process.poll() is None
+                finally:
+                    _kill_process_group(process)
+        finally:
+            os.close(blocker_fd)
 
 
 class TestTimerEnablementSweep:
