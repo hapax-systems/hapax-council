@@ -1,0 +1,74 @@
+```yaml
+verdict: accept-with-findings
+findings:
+  - severity: major
+    lens: silent-failure-hunting
+    file: scripts/hapax-glmcp-reviewer
+    line: 845
+    title: ZaiHttpError escapes reservation failure reconciliation
+    detail: >
+      In call_glm, if the PAYG endpoint raises a ZaiHttpError (e.g., re-raised at line 814), it is not caught by `except ApiError as fallback_exc:` at line 845 because ZaiHttpError does not appear to inherit from ApiError (as evidenced by line 783 wrapping it). Consequently, the exception will bubble up and bypass `_mark_payg_spend_receipt_failed`, leaving a dangling reservation in the ledger. Furthermore, the `isinstance(fallback_exc, ZaiHttpError)` check at line 849 is unreachable. The block should likely catch `(ApiError, ZaiHttpError)`.
+checklist:
+  tests-cover-the-diff:
+    diff-behavior-coverage: pass
+    red-before-green: pass
+    new-paths-tested: pass
+    no-coverage-theater: pass
+  exit-predicate-adequacy:
+    predicate-testable: pass
+    predicate-evidenced: pass
+    diff-matches-predicate: pass
+    witness-durability: pass
+  doc-claims-recheck:
+    recheck-cmds-present: NA
+    claims-match-code: pass
+    stale-docs-updated: pass
+    next-actions-on-error: pass
+  security:
+    input-validation-boundary: pass
+    secret-handling: pass
+    least-privilege: pass
+    injection-surfaces: pass
+  silent-failure-hunting:
+    no-swallowed-exceptions: pass
+    loud-fallbacks: pass
+    error-paths-reach-operator: pass
+    partial-success-honest: finding
+```
+```yaml
+verdict: accept-with-findings
+findings:
+  - severity: major
+    lens: silent-failure-hunting
+    file: scripts/hapax-glmcp-reviewer
+    line: 845
+    title: ZaiHttpError escapes reservation failure reconciliation
+    detail: >
+      In call_glm, if the PAYG endpoint raises a ZaiHttpError (e.g., re-raised at line 814), it is not caught by `except ApiError as fallback_exc:` at line 845 because ZaiHttpError does not appear to inherit from ApiError (as evidenced by line 783 wrapping it). Consequently, the exception will bubble up and bypass `_mark_payg_spend_receipt_failed`, leaving a dangling reservation in the ledger. Furthermore, the `isinstance(fallback_exc, ZaiHttpError)` check at line 849 is unreachable. The block should likely catch `(ApiError, ZaiHttpError)`.
+checklist:
+  tests-cover-the-diff:
+    diff-behavior-coverage: pass
+    red-before-green: pass
+    new-paths-tested: pass
+    no-coverage-theater: pass
+  exit-predicate-adequacy:
+    predicate-testable: pass
+    predicate-evidenced: pass
+    diff-matches-predicate: pass
+    witness-durability: pass
+  doc-claims-recheck:
+    recheck-cmds-present: NA
+    claims-match-code: pass
+    stale-docs-updated: pass
+    next-actions-on-error: pass
+  security:
+    input-validation-boundary: pass
+    secret-handling: pass
+    least-privilege: pass
+    injection-surfaces: pass
+  silent-failure-hunting:
+    no-swallowed-exceptions: pass
+    loud-fallbacks: pass
+    error-paths-reach-operator: pass
+    partial-success-honest: finding
+```
