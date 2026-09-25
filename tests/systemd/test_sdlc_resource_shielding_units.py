@@ -448,6 +448,10 @@ def test_oom_runtime_receipt_requires_each_host_memtotal_before_drain() -> None:
     assert "`hapax-podium` immediately before each host's first authenticated deferred" in text
     assert "a witness from the other" in text
     assert "host is not evidence of the target host's installed RAM class" in text
+    assert "Podium's first transition from the observed 8 GiB zram device" in text
+    assert "require `zramctl` and `/proc/swaps` to show no swap-backed pressure" in text
+    assert "runtime-authorized" in text
+    assert "do not hand-edit the generator config" in text
 
 
 def test_local_judge_container_has_a_finite_memory_cap() -> None:
@@ -578,13 +582,26 @@ def test_local_judge_unit_names_the_protected_model_recheck() -> None:
 
 def test_local_judge_runbook_has_read_only_protected_model_recheck_before_mutation() -> None:
     text = (REPO_ROOT / "docs" / "runbooks" / "local-judge-stack.md").read_text()
+    unit = (UNITS_DIR / "hapax-local-judge.service").read_text()
+    environment = {
+        key: value
+        for line in unit.splitlines()
+        if line.startswith("Environment=")
+        for key, value in (line.removeprefix("Environment=").split("=", 1),)
+    }
 
     read_only = "Before requesting runtime authority, perform this read-only source/live identity"
     measure = "--measure-protected-local-judge-model"
     mutation_boundary = "Every command below mutates the appendix runtime"
+    flattened = " ".join(text.replace("\\\n", "").split())
     assert read_only in text
     assert text.index(read_only) < text.index(measure) < text.index(mutation_boundary)
-    assert "without staging, starting, stopping, or replacing anything" in " ".join(text.split())
+    assert "without staging, starting, stopping, or replacing anything" in flattened
+    assert f"{measure} {environment['JUDGE_MODEL_HOST']}" in flattened
+    assert Path(environment["JUDGE_MODEL_HOST"]).parent == Path(environment["JUDGE_MODEL_HOST_DIR"])
+    assert environment["JUDGE_MODEL_SHA256"] in environment["JUDGE_MODEL_HOST"]
+    assert 'expected_model_size_bytes="$(printf' in text
+    assert "JUDGE_MODEL_SIZE_BYTES" in text
 
 
 def test_local_judge_runbook_requires_live_authenticated_command() -> None:
@@ -739,6 +756,9 @@ def test_local_judge_activation_is_separately_authority_gated() -> None:
     assert 'release_git cat-file blob "$verifier_oid"' in activation
     assert 'test "$(release_git rev-parse --verify \'HEAD^{commit}\')" = "$sha"' in activation
     assert 'authority_check="$HOME/.local/bin/hapax-post-merge-deploy"' not in activation
+    assert '[[ "$exec_start" == *"argv[]=/usr/bin/env -i "* ]]' in activation
+    assert "--host=unix:///var/run/docker.sock --config=" in activation
+    assert "/hapax-local-judge/docker-config run " in activation
     assert '[[ "$exec_start" == *" --memory 4G "* ]]' in activation
     assert '[[ "$exec_start" == *" --memory-swap 6G "* ]]' in activation
     assert "--fail --silent --show-error --max-time 30" in activation
@@ -927,7 +947,7 @@ exit 0
         tmp_path / "systemctl",
         f"""printf '%s\\n' "$*" >> {systemctl_log}
 if [[ "$*" == *" -p ExecStart --value" ]]; then
-  printf 'argv[]=/usr/bin/docker run --name hapax-local-judge --memory 4G --memory-swap 6G image\\n'
+  printf 'argv[]=/usr/bin/env -i HOME=/home/hapax /usr/bin/docker --host=unix:///var/run/docker.sock --config=/run/user/1000/hapax-local-judge/docker-config run --name hapax-local-judge --memory 4G --memory-swap 6G image\\n'
 fi
 """,
     )
@@ -1593,6 +1613,9 @@ def test_local_judge_runtime_canary_fails_fast() -> None:
     assert '/usr/bin/systemctl --user show "$unit" -p FragmentPath --value' in canary
     assert '/usr/bin/systemctl --user show "$unit" -p DropInPaths --value' in canary
     assert '/usr/bin/systemctl --user show "$unit" -p ExecStart --value' in canary
+    assert '"argv[]=/usr/bin/env -i "' in canary
+    assert "--host=unix:///var/run/docker.sock --config=" in canary
+    assert "/hapax-local-judge/docker-config run " in canary
     assert '" --memory 4G "' in canary
     assert '" --memory-swap 6G "' in canary
     assert "{{json .HostConfig.OomKillDisable}}" in canary

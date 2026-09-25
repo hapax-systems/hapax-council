@@ -22,9 +22,10 @@ HOME="$ACCOUNT_HOME"
 USER="$ACCOUNT_NAME"
 LOGNAME="$ACCOUNT_NAME"
 PATH=/usr/local/bin:/usr/bin:/bin
-DOCKER_HOST=unix:///var/run/docker.sock
-export HOME USER LOGNAME PATH DOCKER_HOST
-unset CDPATH ENV BASH_ENV DOCKER_CONTEXT GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
+export HOME USER LOGNAME PATH
+unset CDPATH ENV BASH_ENV DOCKER_CONTEXT DOCKER_HOST DOCKER_CONFIG DOCKER_CERT_PATH
+unset DOCKER_TLS DOCKER_TLS_VERIFY DOCKER_API_VERSION
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
 unset GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 unset GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE
 
@@ -267,6 +268,19 @@ if [ -z "${GITHUB_PERSONAL_ACCESS_TOKEN:-}" ]; then
   exit 2
 fi
 
+local_docker() {
+  /usr/bin/env -i \
+    HOME=/nonexistent \
+    PATH=/usr/bin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    GITHUB_PERSONAL_ACCESS_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN" \
+    /usr/bin/docker \
+    --host=unix:///var/run/docker.sock \
+    --config=/nonexistent/hapax-local-docker-config \
+    "$@"
+}
+
 /usr/bin/mkdir -p -- "$LOG_DIR" || canonical_refusal \
   "hapax-github-mcp: cannot create the canonical MCP log directory: $LOG_DIR; next action: repair account ownership and mode under $ACCOUNT_HOME/.cache/hapax"
 CONTAINER_NAME="hapax-github-mcp-$USER-$$"
@@ -300,7 +314,7 @@ cleanup() {
       || ! [[ "$cid" =~ ^[0-9a-f]{64}$ ]]; then
       cleanup_failed=1
       record_diagnostic "hapax-github-mcp: cleanup refused unsafe immutable-ID scratch: $CID_FILE; next action: inspect the retained scratch and Docker inventory, then remove only a proven full container ID"
-    elif ! matches="$(/usr/bin/docker ps -aq --no-trunc --filter "id=$cid" 2>&1)"; then
+    elif ! matches="$(local_docker ps -aq --no-trunc --filter "id=$cid" 2>&1)"; then
       cleanup_failed=1
       query_error="$(bounded_diagnostic_reason "$matches")"
       record_diagnostic "hapax-github-mcp: cannot prove cleanup state for immutable container ID $cid: ${query_error:-unknown Docker error}; next action: restore the pinned local Docker socket, inspect that exact ID, and remove it only after identity confirmation; retained scratch: $CID_FILE"
@@ -308,8 +322,8 @@ cleanup() {
       cleanup_failed=1
       record_diagnostic "hapax-github-mcp: Docker returned an unexpected identity while cleaning $cid; next action: inspect the retained scratch and full Docker inventory without removing by name; retained scratch: $CID_FILE"
     elif [ "$matches" = "$cid" ] \
-      && ! remove_error="$(/usr/bin/docker rm -f "$cid" 2>&1)"; then
-      if ! recheck="$(/usr/bin/docker ps -aq --no-trunc --filter "id=$cid" 2>&1)"; then
+      && ! remove_error="$(local_docker rm -f "$cid" 2>&1)"; then
+      if ! recheck="$(local_docker ps -aq --no-trunc --filter "id=$cid" 2>&1)"; then
         cleanup_failed=1
         query_error="$(bounded_diagnostic_reason "$recheck")"
         remove_error="$(bounded_diagnostic_reason "$remove_error")"
@@ -337,7 +351,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
-/usr/bin/docker run -i --rm \
+local_docker run -i --rm \
   --cidfile "$CID_FILE" \
   --name "$CONTAINER_NAME" \
   --memory 512M \
