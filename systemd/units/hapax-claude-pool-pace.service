@@ -1,0 +1,20 @@
+[Unit]
+Description=Record the Claude 7-day pool pacing reading (linear pace line, no provider call)
+Documentation=file://%h/.cache/hapax/source-activation/worktree/scripts/hapax-claude-pool-pace
+# Deliberately NO EnvironmentFile. As with hapax-claude-account-live-observe.service, a
+# secrets environment file carries ANTHROPIC_BASE_URL pointing at the LiteLLM proxy, which
+# this unit must not inherit: it makes no provider call at all. It reads the windows the
+# existing observe probe already mints (its admission receipts and headless stream-json
+# traces) through shared.quota_headroom's own readers, and writes one pacing ledger row.
+# Deliberately NO OnFailure=notify-failure@%n.service. Exits 3 (over the pace line) and 4
+# (no, stale or unledgered reading) are NORMAL fail-closed outcomes: the pace decision is
+# meant to refuse, and paging on a refusal would train the operator to ignore the notifier.
+# A genuine defect here is the timer not firing, which the reading's own freshness bound
+# (60m) surfaces as a refusal rather than as silence.
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python \
+  %h/.cache/hapax/source-activation/worktree/scripts/hapax-claude-pool-pace record --json
+WorkingDirectory=%h/.cache/hapax/source-activation/worktree
+Nice=10

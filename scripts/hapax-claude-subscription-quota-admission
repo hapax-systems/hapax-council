@@ -70,6 +70,66 @@ ALLOWED_OBSERVATIONS = (
 # Provider window names the probe reply reports under rate_limit_event.unifiedWindows.
 PROBE_WINDOWS = ("five_hour", "seven_day")
 
+#: The pacing governor's ledger stream. The gate binds from the moment the governor has
+#: recorded a reading (its activation), and reports ``not_armed`` before that rather than
+#: letting an unarmed governor pass silently.
+PACE_SCRIPT = Path(__file__).resolve().parent / "hapax-claude-pool-pace"
+PACE_STREAM = "claude-pool"
+PACE_GATE_RECOVERY_HINT = (
+    "next action: the Claude 7-day pool is at or over its linear pace line, so this route "
+    "holds; wait for the line (or the window reset), or repair the pacing reading with "
+    "scripts/hapax-claude-pool-pace record. There is deliberately no bypass flag."
+)
+
+
+def _pace_gate(receipt_dir: Path, headless_glob: str, *, now: datetime) -> tuple[str, str]:
+    """Ask the pacing governor. Returns (state, detail); state is armed_allow / armed_refuse
+    / not_armed / gate_error, and only armed_allow mints."""
+    record = _ledgered_pace_rows()
+    if record is None:
+        return "not_armed", "no claude-pool ledger row: the governor has not been activated"
+    if not record:
+        return "not_armed", "the claude-pool ledger stream is empty"
+    try:
+        from importlib.machinery import SourceFileLoader
+        from importlib.util import module_from_spec, spec_from_loader
+
+        loader = SourceFileLoader("hapax_claude_pool_pace_gate", str(PACE_SCRIPT))
+        spec = spec_from_loader(loader.name, loader)
+        if spec is None:  # pragma: no cover - loader always provides a spec here
+            return "gate_error", "the pacing governor module could not be loaded"
+        module = module_from_spec(spec)
+        loader.exec_module(module)
+        state = module.evaluate(Path(receipt_dir), headless_glob, now=now)
+    except Exception as exc:  # noqa: BLE001 — an unreadable governor refuses, never permits
+        return "gate_error", f"pacing governor unreadable: {exc}"
+    if state.get("decision") == "allow":
+        return "armed_allow", str(state.get("reason"))
+    return "armed_refuse", str(state.get("reason"))
+
+
+def _ledgered_pace_rows() -> list[dict] | None:
+    """The governor's ledger rows, or None when its stream does not exist."""
+    try:
+        import sys as _sys
+
+        root = Path(__file__).resolve().parents[1]
+        if str(root) not in _sys.path:
+            _sys.path.insert(0, str(root))
+        from shared.durable_jsonl_sink import DurableJsonlSink
+
+        path = DurableJsonlSink().path_for_stream(PACE_STREAM)
+        if not path.exists():
+            return None
+        return [
+            __import__("json").loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    except Exception:  # noqa: BLE001 — an unusable sink means the governor is not armed
+        return None
+
+
 VALIDATION_RECOVERY_HINT = (
     "next action: rerun with --help to confirm bounds, pass a sanitized --evidence-ref that names "
     "the account-live observation (never a lane/tmux name), pick an allowed --observation, then "
@@ -120,6 +180,15 @@ def _parse_utc(value: str) -> datetime | None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC).replace(microsecond=0)
 
+
+
+
+class PaceRefused(RuntimeError):
+    """The Claude pool pacing governor refused this receipt; nothing is written."""
+
+def _instant(value: str) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed.astimezone(UTC) if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 def _iso(value: datetime) -> str:
     return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -302,6 +371,11 @@ def _parser() -> argparse.ArgumentParser:
             help=f"Probe-reported {name} reset, ISO-8601 UTC (with --{flag}-used-percent)",
         )
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--pace-receipt-dir", type=Path, default=DEFAULT_RECEIPT_DIR)
+    parser.add_argument("--pace-headless-glob",
+                        default=str(Path.home() / ".cache" / "hapax" / "claude-headless"
+                                    / "*" / "output.jsonl"))
+    parser.add_argument("--pace-now")
     return parser
 
 
@@ -345,7 +419,21 @@ def main(argv: list[str] | None = None) -> int:
             ("positive_admission", True),
             *windows,
         ]
+        pace_state, pace_detail = _pace_gate(
+            args.pace_receipt_dir,
+            args.pace_headless_glob,
+            now=_now(args) if args.pace_now is None else _instant(args.pace_now),
+        )
+        if pace_state in {"armed_refuse", "gate_error"}:
+            raise PaceRefused(f"{pace_state}: {pace_detail}")
         _write_flat_yaml_atomic(path, fields)
+    except PaceRefused as exc:
+        print(
+            f"hapax-claude-subscription-quota-admission: refused by the Claude pool pacing "
+            f"governor ({exc}); {PACE_GATE_RECOVERY_HINT}",
+            file=sys.stderr,
+        )
+        return 3
     except ValueError as exc:
         print(
             f"hapax-claude-subscription-quota-admission: {exc}; {VALIDATION_RECOVERY_HINT}",

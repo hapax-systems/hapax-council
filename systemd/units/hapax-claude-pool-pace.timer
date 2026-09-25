@@ -1,0 +1,19 @@
+# Hapax-Auto-Enable: true
+# Without this marker `hapax-post-merge-deploy` installs the unit but never enables it —
+# the file lands, nothing arms, and the pace line stays decorative.
+[Unit]
+Description=Record the Claude 7-day pool pacing reading every 30m (line: ~14%/day)
+
+[Timer]
+# Two fires inside the reading's own 60m freshness bound, so one slipped or failed run
+# cannot make the governor refuse on staleness alone. The observe probe fires every 10m,
+# so every 30m tick sees a fresh window reading.
+OnBootSec=4min
+OnUnitActiveSec=30min
+AccuracySec=1min
+# Deliberately NO Persistent=. systemd.timer(5): Persistent= only affects OnCalendar=
+# timers, so on a monotonic timer it is silently inert — and after downtime a FRESH
+# reading is wanted, not a replayed one; OnBootSec provides that.
+
+[Install]
+WantedBy=timers.target
