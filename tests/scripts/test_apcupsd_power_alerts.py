@@ -1082,6 +1082,111 @@ def test_installer_install_implies_verify_live_against_temp_destinations(tmp_pat
     assert records[1]["delivery"]["ok"] is False
 
 
+def test_authenticated_deferred_helper_runs_real_apcupsd_installer_through_sudo(
+    tmp_path: Path,
+) -> None:
+    activation = tmp_path / "activation-release"
+    activation.mkdir()
+    _copy_apcupsd_package(activation)
+    subprocess.run(["git", "init", "-q"], cwd=activation, check=True)
+    subprocess.run(["git", "config", "user.email", "tests@hapax.local"], cwd=activation, check=True)
+    subprocess.run(["git", "config", "user.name", "Hapax Tests"], cwd=activation, check=True)
+    subprocess.run(["git", "add", "."], cwd=activation, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "authenticated apcupsd package"],
+        cwd=activation,
+        check=True,
+    )
+    package_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=activation,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    activation_alias = tmp_path / "activation-alias"
+    activation_alias.symlink_to(activation, target_is_directory=True)
+    defer_root = tmp_path / "root-required"
+    stage = defer_root / package_sha / "apcupsd-power-alerts"
+    _copy_apcupsd_package(stage)
+    (stage / ".hapax-root-required-package-sha").write_text(f"{package_sha}\n", encoding="utf-8")
+    (stage / "RUNBOOK.txt").write_text("authenticated test deferral\n", encoding="utf-8")
+    state_root = tmp_path / "root-state"
+    desired = state_root / "desired-receipts/apcupsd-power-alerts.sha"
+    desired.parent.mkdir(parents=True)
+    desired.write_text(f"{package_sha}\n", encoding="utf-8")
+
+    warmup_sudo = tmp_path / "warmup-sudo"
+    warmup_sudo.write_text("#!/usr/bin/bash\nexit 0\n", encoding="utf-8")
+    warmup_sudo.chmod(0o755)
+    root_sudo_calls = tmp_path / "root-sudo-calls"
+    root_sudo = tmp_path / "root-sudo"
+    root_sudo.write_text(
+        "#!/usr/bin/bash\n"
+        "set -euo pipefail\n"
+        'if [ "$#" -eq 2 ] && [ "$1" = -n ] && [ "$2" = true ]; then exit 0; fi\n'
+        f"printf '%s\\n' \"$*\" >> {root_sudo_calls}\n"
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    root_sudo.chmod(0o755)
+    systemctl_calls = tmp_path / "systemctl-calls"
+    systemctl = tmp_path / "systemctl"
+    systemctl.write_text(
+        f"#!/usr/bin/bash\nprintf '%s\\n' \"$*\" >> {systemctl_calls}\nexit 0\n",
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    target_home = tmp_path / "target-home"
+    target_home.mkdir()
+
+    result = subprocess.run(
+        [
+            str(REPO_ROOT / "scripts/hapax-root-required-deferred-install"),
+            "--package",
+            "apcupsd-power-alerts",
+            "--expected-sha",
+            package_sha,
+            "--activation-release",
+            str(activation),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_TEST_MODE": "1",
+            "HAPAX_ROOT_REQUIRED_STATE_ROOT": str(state_root),
+            "HAPAX_POST_MERGE_ROOT_DEFER_DIR": str(defer_root),
+            "HAPAX_ROOT_REQUIRED_GIT_REPO": str(activation_alias),
+            "HAPAX_ROOT_REQUIRED_DEFERRED_INSTALL_SUDO": str(warmup_sudo),
+            "HAPAX_APCUPSD_DEST": str(tmp_path / "apcupsd"),
+            "HAPAX_APCUPSD_AUDIT_DIR": str(tmp_path / "hapax-log"),
+            "HAPAX_APCUPSD_AUDIT_GROUP": "",
+            "HAPAX_APCUPSD_LOGROTATE_DEST": str(tmp_path / "logrotate/hapax-ups"),
+            "HAPAX_UPOWER_CONF_DEST": str(tmp_path / "upower/90-hapax.conf"),
+            "HAPAX_APCUPSD_SYSTEMCTL": str(systemctl),
+            "HAPAX_APCUPSD_INSTALL_SUDO": str(root_sudo),
+            "HAPAX_APCUPSD_TARGET_UID": str(os.getuid()),
+            "HAPAX_APCUPSD_TARGET_GID": str(os.getgid()),
+            "HAPAX_APCUPSD_TARGET_HOME": str(target_home),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "completed authenticated package=apcupsd-power-alerts" in result.stdout
+    calls = root_sudo_calls.read_text(encoding="utf-8")
+    assert "install -m" in calls
+    assert "/proc/" in calls and "/fd/" in calls
+    assert (state_root / "installed-receipts/apcupsd-power-alerts.sha").read_text().strip() == (
+        package_sha
+    )
+    assert (stage / "DRAINED.txt").is_file()
+    assert (state_root / "current-source/scripts/install-apcupsd-power-alerts").read_bytes() == (
+        INSTALLER.read_bytes()
+    )
+
+
 def test_installer_retry_repairs_loaded_policy_after_interrupted_activation(tmp_path: Path) -> None:
     dest = tmp_path / "apcupsd"
     dest.mkdir()
