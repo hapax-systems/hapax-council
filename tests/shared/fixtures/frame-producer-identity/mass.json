@@ -1,0 +1,56 @@
+{
+  "declaration_version": "fixture-1",
+  "projection": "frame-reduction",
+  "members": [
+    {
+      "id": "fixture-notes",
+      "declared": "2026-09-05",
+      "axes": {
+        "phase": "fixture",
+        "host": "local",
+        "capability": "notes",
+        "status": "active",
+        "cwd": "tree",
+        "time": "persistent"
+      },
+      "enumerability": "BOUNDED",
+      "boundary": "Synthetic café notes, excluding generated residue",
+      "location": {
+        "path": "tree",
+        "patterns": [
+          "*.md",
+          "nested/*.md",
+          "excluded/*.md",
+          "cache/*.md"
+        ],
+        "skip_dirs": [
+          "cache"
+        ]
+      },
+      "reader": {
+        "id": "fs.glob",
+        "version": "1.0.1"
+      },
+      "extractors": [],
+      "rules": [],
+      "bounds": {
+        "max_units": 16,
+        "max_bytes": 4096,
+        "max_seconds": null
+      },
+      "acceptance_required": false,
+      "note": "UTF-8: café / λ"
+    }
+  ],
+  "exclusions": [
+    {
+      "id": "fixture-generated",
+      "declared": "2026-09-05",
+      "receipt": "fixture:generated-residue",
+      "reason": "Synthetic generated output",
+      "paths": [
+        "tree/excluded"
+      ]
+    }
+  ]
+}
