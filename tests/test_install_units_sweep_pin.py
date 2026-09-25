@@ -358,10 +358,19 @@ def _isolate_root_required_mutation_paths(tmp_path: Path, monkeypatch: pytest.Mo
 def _basic_installer_env(tmp_path: Path) -> dict[str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
-    for command in ("systemctl", "uv"):
-        executable = bin_dir / command
-        executable.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-        executable.chmod(0o755)
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  "--user show "*" -p ActiveState --value") printf \'inactive\\n\' ;;\n'
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    uv = bin_dir / "uv"
+    uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    uv.chmod(0o755)
     env = {
         **os.environ,
         "ALLOW_NONSTANDARD_REPO": "1",
@@ -971,6 +980,9 @@ class TestTimerEnablementSweep:
                 f"""\
                 #!/usr/bin/env bash
                 printf '%s\n' "$*" >> "{calls}"
+                case "$*" in
+                  "--user show "*" -p ActiveState --value") printf 'inactive\n' ;;
+                esac
                 exit 0
                 """
             ),
@@ -1019,9 +1031,19 @@ class TestParkedUnits:
                 #!/usr/bin/env bash
                 read -r enabled active result < "{state}"
                 case "$*" in
-                  "--user disable --now hapax-live-cuepoints.service")
-                    enabled=disabled
+                  "--user stop hapax-live-cuepoints.service")
                     active=inactive
+                    ;;
+                  "--user show hapax-live-cuepoints.service -p ActiveState --value")
+                    printf '%s\n' "$active"
+                    exit 0
+                    ;;
+                  "--user disable hapax-live-cuepoints.service")
+                    enabled=disabled
+                    ;;
+                  "--user show "*" -p ActiveState --value")
+                    printf 'inactive\n'
+                    exit 0
                     ;;
                   "--user reset-failed hapax-live-cuepoints.service")
                     result=success
@@ -1039,7 +1061,17 @@ class TestParkedUnits:
         )
         systemctl.chmod(0o755)
         uv = bin_dir / "uv"
-        uv.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        uv.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                read -r enabled active result < "{state}"
+                [ "$enabled $active" = "disabled inactive" ] || exit 93
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
         uv.chmod(0o755)
 
         env = os.environ.copy()
@@ -1049,6 +1081,9 @@ class TestParkedUnits:
         env["HAPAX_INSTALL_UNITS_RETIRE_DOCKER"] = str(_empty_retirement_docker(tmp_path))
         env["HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL"] = str(_retired_manager_systemctl(tmp_path))
         env.pop("SKIP_TIMER_ENABLE", None)
+        installed = Path(env["HOME"]) / ".config/systemd/user/hapax-live-cuepoints.service"
+        installed.parent.mkdir(parents=True)
+        installed.write_text("[Service]\nRestart=always\n", encoding="utf-8")
 
         result = subprocess.run(
             ["bash", str(INSTALL_SCRIPT)],
@@ -1060,7 +1095,82 @@ class TestParkedUnits:
 
         assert result.returncode == 0, result.stderr
         assert state.read_text(encoding="utf-8").strip() == "disabled inactive success"
+        assert "pre-parked before dependency sync: hapax-live-cuepoints.service" in result.stdout
         assert "parked: hapax-live-cuepoints.service" in result.stdout
+
+    def test_installed_parked_unit_is_neutralized_before_failing_uv_sync(
+        self, tmp_path: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        state = tmp_path / "parked-state.txt"
+        state.write_text("active enabled\n", encoding="utf-8")
+        calls = tmp_path / "systemctl-calls.txt"
+        systemctl = bin_dir / "systemctl"
+        systemctl.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                printf '%s\n' "$*" >> "{calls}"
+                read -r active enabled < "{state}"
+                case "$*" in
+                  "--user stop hapax-feedback-loop-detector.service") active=inactive ;;
+                  "--user show hapax-feedback-loop-detector.service -p ActiveState --value")
+                    printf '%s\n' "$active"
+                    exit 0
+                    ;;
+                  "--user disable hapax-feedback-loop-detector.service") enabled=disabled ;;
+                  "--user show "*" -p ActiveState --value") printf 'inactive\n'; exit 0 ;;
+                esac
+                printf '%s %s\n' "$active" "$enabled" > "{state}"
+                exit 0
+                """
+            ),
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        uv = bin_dir / "uv"
+        uv.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                [ "$(cat "{state}")" = "inactive disabled" ] || exit 93
+                exit 86
+                """
+            ),
+            encoding="utf-8",
+        )
+        uv.chmod(0o755)
+        home = tmp_path / "home"
+        installed = home / ".config/systemd/user/hapax-feedback-loop-detector.service"
+        installed.parent.mkdir(parents=True)
+        historical_body = "[Service]\nRestart=always\n"
+        installed.write_text(historical_body, encoding="utf-8")
+        env = {
+            **os.environ,
+            "ALLOW_NONSTANDARD_REPO": "1",
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HAPAX_INSTALL_UNITS_RETIRE_DOCKER": str(_empty_retirement_docker(tmp_path)),
+            "HAPAX_INSTALL_UNITS_RETIRE_SYSTEMCTL": str(_retired_manager_systemctl(tmp_path)),
+            "SKIP_TIMER_ENABLE": "1",
+        }
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SCRIPT)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert result.returncode == 86
+        assert state.read_text(encoding="utf-8").strip() == "inactive disabled"
+        assert installed.read_text(encoding="utf-8") == historical_body
+        ordered_calls = calls.read_text(encoding="utf-8").splitlines()
+        assert ordered_calls.index(
+            "--user stop hapax-feedback-loop-detector.service"
+        ) < ordered_calls.index("--user disable hapax-feedback-loop-detector.service")
 
     def test_parked_cleanup_timer_is_never_reenabled_by_either_timer_path(self) -> None:
         body = INSTALL_SCRIPT.read_text(encoding="utf-8")
@@ -1186,6 +1296,9 @@ class TestServiceDropInInstall:
                 f"""\
                 #!/usr/bin/env bash
                 printf '%s\n' "$*" >> "{calls}"
+                case "$*" in
+                  "--user show "*" -p ActiveState --value") printf 'inactive\n' ;;
+                esac
                 exit 0
                 """
             ),
@@ -1247,6 +1360,9 @@ class TestServiceDropInInstall:
                 f"""\
                 #!/usr/bin/env bash
                 printf '%s\n' "$*" >> "{calls}"
+                case "$*" in
+                  "--user show "*" -p ActiveState --value") printf 'inactive\n' ;;
+                esac
                 exit 0
                 """
             ),
@@ -1296,7 +1412,12 @@ class TestServiceDropInInstall:
         calls = tmp_path / "systemctl-calls.txt"
         systemctl = bin_dir / "systemctl"
         systemctl.write_text(
-            f"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> {calls!s}\nexit 0\n",
+            f"#!/usr/bin/env bash\n"
+            f"printf '%s\\n' \"$*\" >> {calls!s}\n"
+            'case "$*" in\n'
+            '  "--user show "*" -p ActiveState --value") printf \'inactive\\n\' ;;\n'
+            "esac\n"
+            "exit 0\n",
             encoding="utf-8",
         )
         systemctl.chmod(0o755)
@@ -1630,6 +1751,9 @@ def _prepare_local_judge_retirement(
             #!/usr/bin/env bash
             printf 'systemctl %s\n' "$*" >> "{events}"
             case "$*" in
+              "--user show "*" -p ActiveState --value")
+                printf 'inactive\n'
+                ;;
               "--user disable hapax-local-judge.service")
                 exit {disable_rc}
                 ;;

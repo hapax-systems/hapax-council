@@ -1476,6 +1476,27 @@ parked_unit() {
     grep -Eiq '^[#;][[:space:]]*Hapax-Parked:[[:space:]]*(true|yes|1)[[:space:]]*$' "$1"
 }
 
+park_user_unit_checked() {
+    local name="$1" active_state
+    if ! systemctl --user stop "$name"; then
+        echo "ERROR: failed to stop parked unit $name" >&2
+        return 2
+    fi
+    if ! active_state="$(systemctl --user show "$name" -p ActiveState --value)"; then
+        echo "ERROR: failed to query ActiveState for parked unit $name" >&2
+        return 2
+    fi
+    if [ "$active_state" != "inactive" ]; then
+        echo "ERROR: parked unit $name remained ActiveState=${active_state:-missing} after stop" >&2
+        return 2
+    fi
+    if ! systemctl --user disable "$name"; then
+        echo "ERROR: failed to disable parked unit $name after verified stop" >&2
+        return 2
+    fi
+    systemctl --user reset-failed "$name" >/dev/null 2>&1 || true
+}
+
 dedicated_p0_oom_unit() {
     case "$1" in
         hapax-oom-policy-audit.service|\
@@ -1503,6 +1524,20 @@ for retired_unit in "${DECOMMISSIONED_UNITS[@]}"; do
             exit "$retirement_rc"
             ;;
     esac
+done
+
+# Stop installed parked units before dependency synchronization. A broken venv
+# must not leave an old Restart=always definition running while its retirement
+# marker waits behind uv.
+for parked_file in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.path; do
+    [ -f "$parked_file" ] || continue
+    parked_unit "$parked_file" || continue
+    parked_name="$(basename "$parked_file")"
+    parked_dest="$DEST_DIR/$parked_name"
+    if [ -e "$parked_dest" ] || [ -L "$parked_dest" ]; then
+        park_user_unit_checked "$parked_name" || exit $?
+        echo "pre-parked before dependency sync: $parked_name"
+    fi
 done
 
 # Retire stale units before dependency synchronization. Decommissioning must
@@ -1577,8 +1612,7 @@ for parked_file in "$REPO_DIR"/*.service "$REPO_DIR"/*.timer "$REPO_DIR"/*.path;
     [ -f "$parked_file" ] || continue
     parked_unit "$parked_file" || continue
     parked_name="$(basename "$parked_file")"
-    systemctl --user disable --now "$parked_name"
-    systemctl --user reset-failed "$parked_name" >/dev/null 2>&1 || true
+    park_user_unit_checked "$parked_name" || exit $?
     echo "parked: $parked_name"
 done
 

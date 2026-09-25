@@ -82,9 +82,12 @@ def test_retired_l12_feedback_detector_is_a_nonexecuting_parked_sentinel() -> No
     assert not any(form in text for form in (*CANON_FORMS, ACTIVATION))
 
 
-def test_retired_l12_detector_has_no_legacy_rebuild_caller() -> None:
-    assert not (REPO_ROOT / "systemd/hapax-rebuild-services.service").exists()
-    canonical = (UNITS_DIR / "hapax-rebuild-services.service").read_text(encoding="utf-8")
+def test_rebuild_compatibility_copy_has_no_retired_l12_caller() -> None:
+    compatibility_path = REPO_ROOT / "systemd/hapax-rebuild-services.service"
+    canonical_path = UNITS_DIR / "hapax-rebuild-services.service"
+
+    assert compatibility_path.read_bytes() == canonical_path.read_bytes()
+    canonical = canonical_path.read_text(encoding="utf-8")
     assert "hapax-feedback-loop-detector.service" not in _section_values(
         canonical, "Service", "ExecStart"
     )

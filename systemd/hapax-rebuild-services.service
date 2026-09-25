@@ -1,0 +1,134 @@
+[Unit]
+Description=Hapax Python services — rebuild from main
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HOME=%h
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+SyslogIdentifier=hapax-rebuild-services
+TimeoutStartSec=600
+
+# hapax-dmn: restart if DMN, imagination, or reverie code changed
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-dmn.service --watch "agents/dmn/ agents/imagination.py agents/imagination_resolver.py agents/imagination_context.py agents/reverie/ agents/visual_chain.py agents/effect_graph/ shared/" --sha-key dmn
+
+# hapax-daimonion: restart if voice agent or shared code changed
+# hapax-tts-local owns the TTS models separately. Restart it only for TTS
+# engine/protocol/speech-safety code so ordinary daimonion deploys keep the
+# "daemon restart reloads no TTS models" invariant.
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-tts-local.service --watch "agents/hapax_daimonion/tts.py agents/hapax_daimonion/tts_local_server.py shared/speech_lexicon.py shared/speech_safety.py" --sha-key voice-tts-local
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-daimonion.service --watch "agents/hapax_daimonion/ shared/" --sha-key voice
+
+# logos-api: restart if logos backend code changed
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service logos-api.service --watch "logos/" --sha-key logos-api
+
+# officium-api: restart if officium code changed (separate repo)
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/projects/hapax-officium --service officium-api.service --sha-key officium
+
+# hapax-mcp: pull-only (MCP server restarts on Claude Code reconnect)
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/projects/hapax-mcp --sha-key hapax-mcp --pull-only
+
+# studio-compositor: restart if compositor, effect-graph, shader nodes, or
+# preset code changed. BETA-FINDING-P (queue 025 Phase 6) — migrates the
+# compositor off the local ``studio-compositor-reload.path`` unit, which
+# fired on any file-system change without a branch check and caused three
+# unexplained restarts during queue 023 research while alpha was editing
+# the compositor on a feature branch. rebuild-service.sh runs the
+# branch-check and skips the deploy on feature branches instead.
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service studio-compositor.service --watch "agents/studio_compositor/ agents/effect_graph/ agents/shaders/nodes/ presets/ shared/ config/compositor-layouts/" --sha-key compositor
+
+# ── Gap 2 (round-4 Phase 6 coverage expansion): 8 daemons that previously
+# had no rebuild coverage. The editing-then-restart pattern was manual for
+# all of them; now they are picked up by the 5-minute
+# hapax-rebuild-services.timer with the same branch-check discipline as
+# the services above. Watch lists are minimised to the subdirectories
+# each daemon actually imports so an unrelated edit to another module
+# under ``shared/`` still triggers every service — that is intentional
+# because the shared layer is cross-cutting.
+
+# visual-layer-aggregator: perception fusion feeding stimmung
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service visual-layer-aggregator.service --watch "agents/visual_layer_aggregator/ shared/" --sha-key vla
+
+# hapax-content-resolver: content scheduling / ground-surface enrichment
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-content-resolver.service --watch "agents/content_resolver/ shared/" --sha-key content-resolver
+
+# hapax-watch-receiver: biometric ingestion (watch_receiver is a single module, not a package)
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-watch-receiver.service --watch "agents/watch_receiver.py shared/" --sha-key watch-receiver
+
+# hapax-reverie: visual expression Python daemon (distinct from the Rust wgpu binary)
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-reverie.service --watch "agents/reverie/ shared/" --sha-key reverie
+
+# hapax-parametric-modulation-heartbeat: writes live visual-parameter
+# overrides into the same Reverie/imagination uniform surface. Restart on
+# edits to the heartbeat or shared policy so live effect bounds are not
+# stranded in the source tree while the old walker keeps writing /dev/shm.
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-parametric-modulation-heartbeat.service --watch "agents/parametric_modulation_heartbeat/ shared/" --sha-key parametric-modulation-heartbeat
+
+# hapax-imagination-loop: imagination daemon loop (single-file modules)
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-imagination-loop.service --watch "agents/imagination.py agents/imagination_loop.py agents/imagination_resolver.py agents/imagination_context.py shared/" --sha-key imagination-loop
+
+# studio-fx retired 2026-04-17: the numpy/OpenCV effects pipeline was
+# orphaned after the effect_graph/WGSL unification. Every fx-*.jpg
+# output had zero readers, and the virtualcam target (/dev/video50) is
+# owned by the YouTube slot-0 ffmpeg. Freed ~1 core of wasted CPU.
+# The effect_graph watch group (agents/effect_graph/) is still covered
+# via studio-compositor's own rebuild entry above.
+
+# studio-fx-output: shell-launcher driving the GStreamer output bin; the
+# ExecStart IS the shell script, so its own source is the watch path.
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service studio-fx-output.service --watch "systemd/units/studio-fx-output.sh" --sha-key studio-fx-output
+
+# studio-person-detector: camera-side person detection
+# (agents/studio_person_detector.py is the single-file module)
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service studio-person-detector.service --watch "agents/studio_person_detector.py shared/" --sha-key studio-person-detector
+
+# hapax-audio-router: 5 Hz Evil Pet + S-4 dynamic arbiter (Phase B of
+# the dual-processor routing epic, PR #1136). Restart on edits to the
+# router code OR its policy/state inputs (s4_midi, s4_scenes,
+# evil_pet_presets) so the live daemon picks up CC-table changes /
+# scene additions / preset additions without manual intervention.
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-router.service --watch "agents/audio_router/ shared/s4_midi.py shared/s4_scenes.py shared/evil_pet_presets.py shared/" --sha-key audio-router
+
+# hapax-operator-awareness: 30s tick canonical state aggregator (the MAPE-K
+# Knowledge layer). Restart on edits to the awareness package, the payment
+# event log (which the monetization source reads), or shared modules so
+# all consumers (waybar, watch, sidebar, omg.lol fanout) see new fields
+# the moment a producer ships them.
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-operator-awareness.service --watch "agents/operator_awareness/ agents/payment_processors/event_log.py shared/" --sha-key operator-awareness
+
+# hapax-audio-self-perception: restart if audio self-perception or shared code changed
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-self-perception.service --watch "agents/audio_self_perception/ shared/" --sha-key audio-self-perception
+
+# hapax-audio-health-channel-position: restart if audio health or shared code changed
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-channel-position.service --watch "agents/audio_health/ shared/" --sha-key audio-health-channel-position
+
+# hapax-audio-health-crest-flatness
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-crest-flatness.service --watch "agents/audio_health/ shared/" --sha-key audio-health-crest-flatness
+
+# hapax-audio-health-inter-stage-corr
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-inter-stage-corr.service --watch "agents/audio_health/ shared/" --sha-key audio-health-inter-stage-corr
+
+# hapax-audio-health-l12-usb
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-l12-usb.service --watch "agents/audio_health/ shared/" --sha-key audio-health-l12-usb
+
+# hapax-audio-health-lufs-s
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-lufs-s.service --watch "agents/audio_health/ shared/" --sha-key audio-health-lufs-s
+
+# hapax-audio-health-pipewire-xrun
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-pipewire-xrun.service --watch "agents/audio_health/ shared/" --sha-key audio-health-pipewire-xrun
+
+# hapax-audio-health-topology-drift
+ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-health-topology-drift.service --watch "agents/audio_health/ shared/" --sha-key audio-health-topology-drift
+
+# ── Operator-gated audio-touching services ──────────────────────────────
+# These entries are COMMENTED OUT by default. The operator must explicitly
+# uncomment them to auto-restart audio-touching services on deploy.
+# Per the deploy pipeline audit §B: auto-restart of audio-touching
+# services requires operator greenlight because a restart during a live
+# broadcast can cause audible glitches.
+#
+# hapax-broadcast-orchestrator: OBS scene management + broadcast chain
+# ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-broadcast-orchestrator.service --watch "agents/broadcast_orchestrator/ shared/" --sha-key broadcast-orchestrator
+#
+# hapax-audio-ducker: PipeWire ducking agent
+# ExecStart=%h/.cache/hapax/rebuild/worktree/scripts/rebuild-service.sh --repo %h/.cache/hapax/rebuild/worktree --service hapax-audio-ducker.service --watch "agents/audio_ducker/ shared/" --sha-key audio-ducker
