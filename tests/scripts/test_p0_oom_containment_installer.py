@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -2136,6 +2137,7 @@ def _write_proc(
     uid: int,
     oom_score: int,
     cgroup: str | None = None,
+    starttime: int | None = None,
 ) -> None:
     pid_dir = proc_root / str(pid)
     pid_dir.mkdir(parents=True, exist_ok=True)
@@ -2143,6 +2145,11 @@ def _write_proc(
         f"Name:\t{name}\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n", encoding="utf-8"
     )
     (pid_dir / "oom_score_adj").write_text(f"{oom_score}\n", encoding="utf-8")
+    stat_fields = ["S", *(["0"] * 18), str(starttime if starttime is not None else pid * 1000 + 7)]
+    (pid_dir / "stat").write_text(
+        f"{pid} ({name}) {' '.join(stat_fields)}\n",
+        encoding="utf-8",
+    )
     if cgroup is not None:
         (pid_dir / "cgroup").write_text(f"0::{cgroup}\n", encoding="utf-8")
 
@@ -2619,8 +2626,10 @@ def test_p0_oom_containment_install_applies_live_scores_and_scrubs_inherited_use
     )
 
 
-def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
+@pytest.mark.parametrize("replace_scoped_pid", (False, True))
+def test_installer_uses_identity_bound_enforcer_for_privileged_oom_score_write(
     tmp_path: Path,
+    replace_scoped_pid: bool,
 ) -> None:
     system_dir = tmp_path / "systemd-system"
     user_dir = tmp_path / "systemd-user"
@@ -2663,11 +2672,24 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
     )
     fake_systemctl.chmod(0o755)
     sudo_calls = tmp_path / "sudo-calls"
+    swap_marker = tmp_path / "scoped-pid-swapped"
+    replacement_stat = "910 (replacement) " + " ".join(["S", *(["0"] * 18), "9999999"])
+    swap_script = ""
+    if replace_scoped_pid:
+        swap_script = (
+            'if [ "${2:-}" = "--write-scoped" ] && [ "${3:-}" = "910" ] '
+            f"&& [ ! -e {shlex.quote(str(swap_marker))} ]; then\n"
+            f"  : > {shlex.quote(str(swap_marker))}\n"
+            f"  printf '%s\\n' {shlex.quote(replacement_stat)} > "
+            f"{shlex.quote(str(proc_root / '910' / 'stat'))}\n"
+            "fi\n"
+        )
     fake_sudo = tmp_path / "sudo"
     fake_sudo.write_text(
         "#!/usr/bin/env bash\n"
         f"printf '%s\\n' \"$*\" >> {sudo_calls!s}\n"
         'if [ "${1:-}" = "-n" ]; then shift; fi\n'
+        f"{swap_script}"
         'exec "$@"\n',
         encoding="utf-8",
     )
@@ -2694,7 +2716,14 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
         },
     )
 
-    assert result.returncode == 0, result.stderr
+    if replace_scoped_pid:
+        assert result.returncode == 1
+        assert "refusing stale oom_score_adj identity" in result.stderr
+        assert "skipped stale oom_score_adj identity for pipewire.service pid=910" in result.stderr
+        assert "stale=1" in result.stdout
+        assert swap_marker.is_file()
+    else:
+        assert result.returncode == 0, result.stderr
     assert any(
         line.startswith("cmp -s ")
         and os.environ["HAPAX_OOM_SUDOERS_REFERENCE_DEST"] in line
@@ -2702,7 +2731,12 @@ def test_installer_falls_back_to_sudo_when_direct_oom_score_write_fails(
         for line in sudo_calls.read_text(encoding="utf-8").splitlines()
     )
     assert (proc_root / "900" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
-    assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+    assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == (
+        "100" if replace_scoped_pid else "-900"
+    )
+    sudo_lines = sudo_calls.read_text(encoding="utf-8").splitlines()
+    assert any("--write-scoped 910 -900" in line for line in sudo_lines)
+    assert all(not line.startswith("tee ") for line in sudo_lines)
 
 
 def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
@@ -2781,6 +2815,93 @@ def test_root_oom_score_enforcer_writes_live_user_manager_and_service_scores(
         assert (proc_root / str(pid) / "oom_score_adj").read_text(encoding="utf-8").strip() == str(
             score
         )
+
+
+def test_root_oom_score_enforcer_scoped_write_rejects_stale_starttime(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    cgroup = _unit_cgroup("pipewire.service")
+    _write_proc(
+        proc_root,
+        910,
+        name="pipewire",
+        uid=1000,
+        oom_score=100,
+        cgroup=cgroup,
+        starttime=123456,
+    )
+    env = {
+        **os.environ,
+        "HAPAX_OOM_PROC_ROOT": str(proc_root),
+        "HAPAX_OOM_TARGET_UID": "1000",
+    }
+
+    stale = subprocess.run(
+        [str(OOM_ENFORCER), "--write-scoped", "910", "-900", "123457", cgroup],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert stale.returncode == 75
+    assert "refusing stale oom_score_adj identity" in stale.stderr
+    assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
+
+    current = subprocess.run(
+        [str(OOM_ENFORCER), "--write-scoped", "910", "-900", "123456", cgroup],
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+    assert current.returncode == 0, current.stderr
+    assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+
+
+@pytest.mark.parametrize(
+    ("score", "cgroup"),
+    (
+        ("-800", _unit_cgroup("pipewire.service")),
+        ("-900", "/user.slice/user-1000.slice/user@1000.service/app.slice/attacker.service"),
+        ("-900", "/user.slice/user-1000.slice/user@1000.service/../pipewire.service"),
+    ),
+)
+def test_root_oom_score_enforcer_scoped_write_rejects_forged_contract(
+    tmp_path: Path,
+    score: str,
+    cgroup: str,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    _write_proc(
+        proc_root,
+        910,
+        name="pipewire",
+        uid=1000,
+        oom_score=100,
+        cgroup=_unit_cgroup("pipewire.service"),
+        starttime=123456,
+    )
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--write-scoped", "910", score, "123456", cgroup],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_TARGET_UID": "1000",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "refusing" in result.stderr
+    assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "100"
 
 
 def test_oom_score_trigger_uses_allowlisted_root_command(tmp_path: Path) -> None:
@@ -2901,12 +3022,81 @@ def test_oom_enforcer_hostile_path_cannot_select_attacker_bash(tmp_path: Path) -
             "HAPAX_OOM_ENFORCE_TEST_MODE": "1",
             "HAPAX_OOM_TARGET_USER": "ci-test-user",
             "HAPAX_OOM_TARGET_UID": str(os.getuid()),
+            "HAPAX_OOM_TARGET_GID": str(os.getgid()),
+            "HAPAX_OOM_TARGET_HOME": str(tmp_path),
         },
     )
 
     assert result.returncode == 2
     assert "usage: hapax-oom-score-enforce" in result.stderr
     assert not marker.exists()
+
+
+def test_root_oom_score_enforcer_uses_setpriv_without_pam_for_user_manager(
+    tmp_path: Path,
+) -> None:
+    proc_root = tmp_path / "proc"
+    proc_root.mkdir()
+    cgroup = _unit_cgroup("pipewire.service")
+    _write_proc(
+        proc_root,
+        910,
+        name="pipewire",
+        uid=1000,
+        oom_score=100,
+        cgroup=cgroup,
+    )
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        'case "$*" in\n'
+        '  "show user@1000.service -p ActiveState --value") printf "active\\n" ;;\n'
+        f'  "--user show pipewire.service -p ControlGroup --value") printf "%s\\n" {cgroup!r} ;;\n'
+        '  "--user show pipewire.service -p MainPID --value") printf "910\\n" ;;\n'
+        '  *) echo "unexpected systemctl args: $*" >&2; exit 9 ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    setpriv_calls = tmp_path / "setpriv-calls"
+    fake_setpriv = tmp_path / "setpriv"
+    fake_setpriv.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> {setpriv_calls!s}\n"
+        'while [ "$#" -gt 0 ] && [ "$1" != "/usr/bin/env" ]; do shift; done\n'
+        '[ "$#" -gt 0 ] || exit 9\n'
+        'exec "$@"\n',
+        encoding="utf-8",
+    )
+    fake_setpriv.chmod(0o755)
+
+    result = subprocess.run(
+        [str(OOM_ENFORCER), "--apply-unit", "pipewire.service"],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "HAPAX_OOM_ENFORCE_EFFECTIVE_UID": "0",
+            "HAPAX_OOM_PROC_ROOT": str(proc_root),
+            "HAPAX_OOM_SETPRIV": str(fake_setpriv),
+            "HAPAX_OOM_SYSTEMCTL": str(fake_systemctl),
+            "HAPAX_OOM_TARGET_GID": "1000",
+            "HAPAX_OOM_TARGET_HOME": str(tmp_path / "target-home"),
+            "HAPAX_OOM_TARGET_UID": "1000",
+            "HAPAX_OOM_TARGET_USER": "hapax",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (proc_root / "910" / "oom_score_adj").read_text(encoding="utf-8").strip() == "-900"
+    calls = setpriv_calls.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 2
+    assert all("--reuid=1000 --regid=1000 --init-groups" in call for call in calls)
+    assert all("--inh-caps=-all --ambient-caps=-all --bounding-set=-all" in call for call in calls)
+    assert all("--no-new-privs /usr/bin/env -i" in call for call in calls)
+    assert all("XDG_RUNTIME_DIR=/run/user/1000" in call for call in calls)
+    assert "/usr/bin/runuser" not in OOM_ENFORCER.read_text(encoding="utf-8")
 
 
 def test_root_oom_score_enforcer_refuses_production_environment_overrides(
