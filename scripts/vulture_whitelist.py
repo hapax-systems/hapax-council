@@ -5258,3 +5258,19 @@ _ = (
     _ema_render_reduction_row,
     _ema_split_frontmatter,
 )
+
+# cc-task communication-pathway-audience-channel-reception-20260925, slice 7: the escalation
+# detector ships ahead of its runner. The runner (a follow-up slice-7 PR that records the
+# findings) is the static caller; it removes these entries and carries a red-first test that
+# they are gone.
+from shared.escalation_detector import (  # noqa: E402
+    docker_findings as _ed_docker_findings,
+)
+from shared.escalation_detector import (  # noqa: E402
+    journal_findings as _ed_journal_findings,
+)
+
+_ = (
+    _ed_docker_findings,
+    _ed_journal_findings,
+)
