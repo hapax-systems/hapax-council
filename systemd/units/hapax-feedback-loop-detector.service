@@ -1,29 +1,14 @@
+# Hapax-Parked: true
 [Unit]
-Description=Hapax L-12 feedback-loop detector + smooth auto-mute
-Documentation=https://github.com/ryanklee/hapax-council/pull/1517
-After=hapax-secrets.service pipewire.service
-PartOf=hapax.target
-Requires=hapax-secrets.service
-Wants=pipewire.service
+Description=Retired L-12 feedback-loop detector sentinel
+Documentation=https://github.com/hapax-systems/hapax-council/blob/main/docs/audio-topology-reference.md
+RefuseManualStart=yes
+# The Behringer L-12 path is retired. Keep this historical unit inert even if a
+# stale dependency or enablement link survives until the next governed deploy.
+ConditionPathExists=!/
 
 [Service]
-Type=notify
-WorkingDirectory=%h/.cache/hapax/source-activation/worktree
-EnvironmentFile=-%h/.config/hapax/secrets.env
-Environment=PATH=%h/.cache/hapax/source-activation/worktree/.venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=PYTHONPATH=%h/.cache/hapax/source-activation/worktree
-ExecStartPre=%h/.cache/hapax/source-activation/worktree/scripts/hapax-compositor-runtime-source-check --require-file agents/studio_compositor/feedback_loop_daemon.py
-ExecStart=%h/.cache/hapax/source-activation/worktree/.venv/bin/python -m agents.studio_compositor.feedback_loop_daemon
-Restart=always
-RestartSec=5s
-WatchdogSec=120s
-
-# Memory cap per cc-task spec.
+Type=oneshot
+ExecStart=/usr/bin/true
 MemoryMax=200M
-
-# The delegated user tree remains at the user-manager score. Cgroup memory
-# reservations, not root-only negative score grants, protect safety services.
 OOMScoreAdjust=100
-
-[Install]
-WantedBy=hapax.target
