@@ -193,6 +193,7 @@
     {
       "entitlement_id": "xiaomi-mimo-pro-gui",
       "registry_shape_ids": ["model_provider.xiaomi_mimo"],
+      "monthly_cost_usd": 200,
       "provider": "xiaomi",
       "kind": "cognition",
       "cost_class": "subscription",
@@ -212,6 +213,7 @@
     {
       "entitlement_id": "qwen-cloud-coding-plan-pro",
       "registry_shape_ids": ["model_provider.qwen_cloud_coding_plan"],
+      "monthly_cost_usd": 50,
       "provider": "alibaba",
       "kind": "cognition",
       "cost_class": "subscription",
@@ -230,6 +232,10 @@
       "cost_class": "subscription",
       "credential_names": ["verboo-api-key"],
       "readbacks": [{"readback_id": "verboo_models", "secret": "verboo-api-key"}],
+      "monthly_cost_usd": 269,
+      "usage_ledger": true,
+      "concurrency_slots": 2,
+      "renewal_day": 19,
       "declared_refs": [
         {"fact": "$269/mo, 2 concurrent, renews 2026-10-19", "source": "operator console 2026-09-19", "recorded_at": "2026-09-19T00:00:00Z", "expires_at": "2026-10-19T00:00:00Z"}
       ]
@@ -242,6 +248,9 @@
       "cost_class": "prepaid",
       "credential_names": ["featherless-api-key"],
       "readbacks": [{"readback_id": "featherless_plan", "secret": "featherless-api-key"}],
+      "monthly_cost_usd": 200,
+      "usage_ledger": true,
+      "renewal_day": 19,
       "declared_refs": [
         {"fact": "$200/mo prepaid, rolls over, renews 2026-10-19, auto top-up off", "source": "operator console 2026-09-19", "recorded_at": "2026-09-19T00:00:00Z", "expires_at": "2026-10-19T00:00:00Z"}
       ]

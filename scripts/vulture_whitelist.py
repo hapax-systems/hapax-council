@@ -5219,6 +5219,9 @@ from shared.entitlement_census import (
     load_registry as _census_load_registry,
 )
 from shared.entitlement_census import (
+    provider_calls_for as _census_provider_calls_for,
+)
+from shared.entitlement_census import (
     read_dispatched_demand as _census_read_dispatched_demand,
 )
 from shared.entitlement_census import (
@@ -5234,6 +5237,7 @@ from shared.entitlement_census import (
 _ = (
     _census_attach_history,
     _census_load_history,
+    _census_provider_calls_for,
     _census_read_dispatched_demand,
     _census_read_queued_demand,
     _census_read_wall_witness,

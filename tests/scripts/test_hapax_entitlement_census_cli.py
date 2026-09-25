@@ -32,8 +32,13 @@ def _load_cli():
 
 
 @pytest.fixture
-def cli(monkeypatch: pytest.MonkeyPatch):
+def cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    # Never the real durable sink: the history and per-call ledger streams go to a temp root.
+    sink_root = tmp_path / "durable-sink"
+    sink_root.mkdir()
+    monkeypatch.setenv("HAPAX_DURABLE_SINK_ROOT", str(sink_root))
     module = _load_cli()
+    module.SINK_ROOT = sink_root
     calls: dict[str, list[Any]] = {"hosts": [], "http": [], "intake": [], "secrets": []}
 
     def fake_collect(binding, *, login_files, harness_bins, now, timeout):
@@ -204,8 +209,11 @@ def test_on_another_host_the_run_is_skipped_and_touches_nothing(
 def test_real_runs_append_the_series_and_dry_runs_never_do(
     cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    from shared.durable_jsonl_sink import DurableJsonlSink
+    from shared.entitlement_census import HISTORY_STREAM
+
     paths = _files(tmp_path, remote=False)
-    history = paths["out"] / "history.jsonl"
+    history = DurableJsonlSink(cli.SINK_ROOT).path_for_stream(HISTORY_STREAM)
     assert cli.main(_argv(paths, "--dry-run")) == 0
     assert not history.exists()
 

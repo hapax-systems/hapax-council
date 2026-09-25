@@ -64,6 +64,7 @@ from shared.capability_surface_delta import (
     SurfaceKind,
     build_surface_delta,
 )
+from shared.durable_jsonl_sink import DurableJsonlSink
 from shared.entitlement_capability import EntitlementShape, classify_entitlement
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -411,9 +412,19 @@ class EntitlementDecl(_Strict):
     expected_shape_class: str | None = None
     ledger_providers: tuple[str, ...] = ()
     notes: str | None = None
+    #: Utilization inputs (operator-accepted 2026-09-25T10:15Z: underuse is the failure to surface).
+    monthly_cost_usd: float | None = Field(default=None, ge=0)
+    usage_ledger: bool = False  # utilization comes from the per-call ledger stream
+    concurrency_slots: int | None = Field(default=None, ge=1)  # flat-price capacity, e.g. Verboo 2
+    renewal_day: int | None = Field(default=None, ge=1, le=28)  # billing period start, day of month
 
     @model_validator(mode="after")
     def _probe_rules(self) -> EntitlementDecl:
+        if self.usage_ledger and self.renewal_day is None:
+            raise ValueError(
+                f"{self.entitlement_id}: a per-call-ledger entitlement needs its billing period; next "
+                "action: set renewal_day (the day of month the plan renews)"
+            )
         if self.terms_restricted and (self.readbacks or self.vendor_cache):
             raise ValueError(
                 f"{self.entitlement_id}: a terms-restricted provider is never probed; next action: "
@@ -1116,7 +1127,12 @@ def _x_elevenlabs(payload: Any, at: datetime, src: str) -> Extracted:
                 observed_at=at,
                 resets_at=_instant(_get(payload, "next_character_count_reset_unix")),
                 source=src,
-                details={"limit": _number(_get(payload, "character_limit"))},
+                details={
+                    "limit": _number(_get(payload, "character_limit")),
+                    "period_days": 30
+                    if _get(payload, "billing_period") == "monthly_period"
+                    else None,
+                },
             )
         )
     return out
@@ -1356,6 +1372,7 @@ class CensusRow(BaseModel):
     ledger: tuple[str, ...] = ()
     reasons: tuple[str, ...] = ()
     notes: str | None = None
+    utilization: dict[str, Any] | None = None
 
 
 _FRESHNESS = {
@@ -2095,6 +2112,7 @@ def run_census(
     gpu_probe: Callable[[str], tuple[bool, list[str]]] | None = None,
     deadline: float | None = None,
     clock: Callable[[], float] = time.monotonic,
+    provider_calls: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> CensusRun:
     """``deadline`` is a ``clock()`` instant bounding every network step (secret resolution,
     readbacks, serving GETs, the GPU probe). Past it, the remaining probes are not made and their
@@ -2164,6 +2182,8 @@ def run_census(
         )
         for decl in config.entitlements
     ]
+    for decl, row in zip(config.entitlements, rows, strict=True):
+        row.utilization = _utilization(decl, row, now=now, provider_calls=provider_calls)
     serving = [
         _serving_row(
             ep,
@@ -2214,9 +2234,21 @@ def run_census(
 # - demand: queued task rows, and dispatched route decisions carrying their own staleness;
 # - wall events per pool: windows at >= 100 %, plus the estate's wall witness.
 # In USE-method terms these are utilization, saturation and errors.
+#
+# The series is a stream on the estate's durable append-only primitive (shared/durable_jsonl_sink.py:
+# per-stream SHA-256 chain, append rolled back on failure), not a bespoke file.
 
-HISTORY_FILE = "history.jsonl"
-HISTORY_ROTATE_BYTES = 32_000_000  # rotated to a dated file past this size, never deleted
+HISTORY_STREAM = "entitlement-census.history"
+#: dev22's direct-API channel writes one write-ahead pair per call here (attempted, then final);
+#: E1 only reads it (contract lanebus/dev16/20260925T102149Z-dev22-provider-calls-contract-accepted).
+PROVIDER_CALLS_STREAM = "provider-calls"
+#: Underuse thresholds. A window is judged only after a fifth of it has elapsed; use below half of
+#: pace is underuse. Flat-price slot capacity below 5 % busy is underuse; zero recorded calls in a
+#: paid period is always underuse.
+MIN_ELAPSED_PCT_TO_JUDGE = 20.0
+UNDERUSE_PACE_RATIO = 0.5
+UNDERUSE_CAPACITY_PCT = 5.0
+
 TREND_WINDOW = timedelta(days=7)
 DEMAND_WINDOW = timedelta(hours=24)
 #: The route recorder ran at ~27 decisions/h (648 in the 24 h to 2026-09-24T14:07Z). Silent for
@@ -2330,21 +2362,113 @@ def read_wall_witness(path: Path) -> dict[str, dict[str, Any]]:
     return witness
 
 
-def load_history(
-    path: Path, *, now: datetime, window: timedelta = TREND_WINDOW
-) -> list[dict[str, Any]]:
-    """The records of the append-only series inside the trend window (a torn tail line is skipped)."""
-    records: list[dict[str, Any]] = []
+def _jsonl_payloads(path: Path) -> list[dict[str, Any]]:
+    """Each line's durable-sink ``payload``, or the line itself when it is not a sink envelope."""
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return records
+        return []
+    out: list[dict[str, Any]] = []
     for line in lines:
         try:
-            record = json.loads(line)
+            value = json.loads(line)
         except ValueError:
             continue
-        at = _instant(record.get("ts")) if isinstance(record, dict) else None
+        if (
+            isinstance(value, dict)
+            and "stream_id" in value
+            and isinstance(value.get("payload"), dict)
+        ):
+            value = value["payload"]
+        if isinstance(value, dict):
+            out.append(value)
+    return out
+
+
+def read_provider_calls(
+    path: Path, *, since: datetime, until: datetime
+) -> dict[str, dict[str, Any]]:
+    """Per-entitlement call counts from the per-call ledger stream, counts only.
+
+    The channel writes a write-ahead pair per call (``attempted`` then ``final``, one ``call_id``). A
+    call counts once, from its final row when there is one. An attempted call with no final (a crash
+    mid-call) still counts, with unknown tokens and duration, so utilization never under-reports.
+    Rows without a ``call_id`` count as final rows of their own."""
+    calls: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(_jsonl_payloads(path)):
+        key = str(row.get("call_id") or f"row-{index}")
+        entry = calls.setdefault(key, {})
+        if row.get("phase") == "attempted" and "final" not in entry:
+            entry["attempted"] = row
+        else:
+            entry["final"] = row
+    out: dict[str, dict[str, Any]] = {}
+    for entry in calls.values():
+        row = entry.get("final") or entry.get("attempted") or {}
+        entitlement = _safe_fact(row.get("entitlement_id"))
+        started = _instant(row.get("started_at"))
+        if not isinstance(entitlement, str) or started is None or not since <= started <= until:
+            continue
+        agg = out.setdefault(
+            entitlement,
+            {
+                "calls": 0,
+                "tokens": 0,
+                "busy_seconds": 0.0,
+                "errors": 0,
+                "incomplete": 0,
+                "last_at": None,
+            },
+        )
+        agg["calls"] += 1
+        ended = _instant(row.get("ended_at"))
+        if "final" not in entry:
+            agg["incomplete"] += 1
+        else:
+            for field_name in ("tokens_in", "tokens_out"):
+                agg["tokens"] += int(_number(row.get(field_name)) or 0)
+            if ended is not None and ended >= started:
+                agg["busy_seconds"] += (ended - started).total_seconds()
+            if row.get("status") not in (None, "ok"):
+                agg["errors"] += 1
+        latest = max(t for t in (started, ended) if t is not None)
+        if agg["last_at"] is None or latest > _instant(agg["last_at"]):
+            agg["last_at"] = _iso(latest)
+    for agg in out.values():
+        if not agg["incomplete"]:
+            del agg["incomplete"]
+    return out
+
+
+def provider_calls_for(
+    config: CensusConfig, path: Path, *, now: datetime
+) -> dict[str, dict[str, Any]]:
+    """Each per-call-ledger entitlement's counts over its own current billing period."""
+    out: dict[str, dict[str, Any]] = {}
+    for renewal_day in sorted(
+        {d.renewal_day for d in config.entitlements if d.usage_ledger and d.renewal_day}
+    ):
+        counts = read_provider_calls(path, since=_period_start(now, renewal_day), until=now)
+        for decl in config.entitlements:
+            if (
+                decl.usage_ledger
+                and decl.renewal_day == renewal_day
+                and decl.entitlement_id in counts
+            ):
+                out[decl.entitlement_id] = counts[decl.entitlement_id]
+    return out
+
+
+def load_history(
+    path: Path, *, now: datetime, window: timedelta = TREND_WINDOW
+) -> list[dict[str, Any]]:
+    """The records of the series inside the trend window (a torn tail line is skipped).
+
+    Reads durable-sink envelopes (the record is the ``payload``) and, for the two pre-sink runs of
+    2026-09-25, plain records."""
+    records: list[dict[str, Any]] = []
+    for record in _jsonl_payloads(path):
+        at = _instant(record.get("ts"))
         if at is not None and now - window <= at <= now:
             records.append(record)
     return records
@@ -2482,6 +2606,132 @@ def compute_trend(
     }
 
 
+# --- utilization per entitlement ------------------------------------------------------------------
+#
+# Operator-accepted 2026-09-25T10:15Z: the census reports utilization per entitlement, and underuse is
+# the failure to surface. Each row states its basis, from the best evidence available:
+# window pace, then the per-call ledger, then nothing. It never defaults to fine.
+
+_WINDOW_RE = re.compile(r"^(\d+)m$")
+
+
+def _window_length(measurement: Mapping[str, Any]) -> timedelta | None:
+    match = _WINDOW_RE.match(str(measurement.get("window") or ""))
+    if match:
+        return timedelta(minutes=int(match.group(1)))
+    days = _number((measurement.get("details") or {}).get("period_days"))
+    return timedelta(days=days) if days else None
+
+
+def _period_start(now: datetime, renewal_day: int) -> datetime:
+    start = now.replace(day=renewal_day, hour=0, minute=0, second=0, microsecond=0)
+    if start <= now:
+        return start
+    month, year = (now.month - 1, now.year) if now.month > 1 else (12, now.year - 1)
+    return start.replace(year=year, month=month)
+
+
+def _utilization(
+    decl: EntitlementDecl,
+    row: CensusRow,
+    *,
+    now: datetime,
+    provider_calls: Mapping[str, Mapping[str, Any]] | None,
+) -> dict[str, Any]:
+    base: dict[str, Any] = {"monthly_cost_usd": decl.monthly_cost_usd}
+    if decl.usage_ledger:
+        assert decl.renewal_day is not None
+        start = _period_start(now, decl.renewal_day)
+        elapsed = (now - start).total_seconds()
+        if provider_calls is None:
+            return {
+                **base,
+                "basis": "per_call_ledger",
+                "period_start": _iso(start),
+                "used_pct": None,
+                "pace_ratio": None,
+                "underuse": None,
+                "reason": "per-call ledger not read this run (sink unavailable)",
+            }
+        usage = provider_calls.get(decl.entitlement_id) or {}
+        calls = int(usage.get("calls") or 0)
+        busy = float(usage.get("busy_seconds") or 0.0)
+        used_pct = (
+            round(busy / (decl.concurrency_slots * elapsed) * 100, 4)
+            if decl.concurrency_slots and elapsed > 0
+            else None
+        )
+        days = elapsed / 86400
+        if calls == 0:
+            underuse: bool | None = True
+            reason = (
+                f"0 calls recorded through a declared channel since {_iso(start)} "
+                f"({days:.1f} d into the paid period)"
+            )
+        elif used_pct is not None:
+            underuse = used_pct < UNDERUSE_CAPACITY_PCT
+            reason = f"{used_pct:.2f} % of {decl.concurrency_slots} slots busy since {_iso(start)}"
+        else:
+            underuse = None
+            reason = (
+                f"{calls} calls, {int(usage.get('tokens') or 0)} tokens since {_iso(start)}; capacity "
+                "is not readable, so compare with the provider dashboard"
+            )
+        return {
+            **base,
+            "basis": "per_call_ledger",
+            "period_start": _iso(start),
+            "calls": calls,
+            "tokens": int(usage.get("tokens") or 0),
+            "busy_seconds": busy,
+            "incomplete_calls": int(usage.get("incomplete") or 0),
+            "used_pct": used_pct,
+            "pace_ratio": None,
+            "underuse": underuse,
+            "reason": reason,
+        }
+    best: tuple[timedelta, Mapping[str, Any], float] | None = None
+    for m in row.measurements:
+        length = _window_length(m)
+        reset, observed = _instant(m.get("resets_at")), _instant(m.get("observed_at"))
+        if m.get("unit") != "percent_used" or length is None or reset is None or observed is None:
+            continue
+        elapsed_pct = min(100.0, max(0.0, (observed - (reset - length)) / length * 100))
+        if best is None or length > best[0]:  # the longest window paces the entitlement
+            best = (length, m, elapsed_pct)
+    if best is None:
+        return {
+            **base,
+            "basis": "none",
+            "underuse": None,
+            "used_pct": None,
+            "pace_ratio": None,
+            "reason": "no usage evidence (a name, a login file, a cache or a key-validity check)",
+        }
+    _, measurement, elapsed_pct = best
+    used = float(measurement["quantity"])
+    pace = round(used / elapsed_pct, 4) if elapsed_pct >= 1 else None
+    if elapsed_pct < MIN_ELAPSED_PCT_TO_JUDGE or pace is None:
+        underuse, reason = (
+            None,
+            f"only {elapsed_pct:.0f} % of the {measurement['window']} window elapsed",
+        )
+    else:
+        underuse = pace < UNDERUSE_PACE_RATIO
+        reason = f"{used:g} % used at {elapsed_pct:.0f} % of the {measurement['window']} window"
+    return {
+        **base,
+        "basis": "window_pace",
+        "window": measurement["window"],
+        "capacity_id": measurement["capacity_id"],
+        "used_pct": used,
+        "elapsed_pct": round(elapsed_pct, 2),
+        "pace_ratio": pace,
+        "underuse": underuse,
+        "reason": reason,
+    }
+
+
 def history_record(
     run: CensusRun, *, now: datetime, demand: Mapping[str, Any], witness: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -2527,6 +2777,23 @@ def _row_view(row: CensusRow) -> dict[str, Any]:
     return data
 
 
+def _underuse(rows: Sequence[CensusRow]) -> list[dict[str, Any]]:
+    """Paid capacity going unused, most expensive first. Underuse is the failure to surface."""
+    flagged = [
+        {
+            "entitlement_id": r.entitlement_id,
+            "monthly_cost_usd": r.utilization.get("monthly_cost_usd"),
+            "basis": r.utilization.get("basis"),
+            "used_pct": r.utilization.get("used_pct"),
+            "pace_ratio": r.utilization.get("pace_ratio"),
+            "reason": r.utilization.get("reason"),
+        }
+        for r in rows
+        if r.utilization is not None and r.utilization.get("underuse") is True
+    ]
+    return sorted(flagged, key=lambda u: (-(u["monthly_cost_usd"] or 0.0), u["entitlement_id"]))
+
+
 def render_view(run: CensusRun, *, now: datetime) -> dict[str, Any]:
     states: dict[str, int] = {}
     stages: dict[str, int] = {}
@@ -2563,6 +2830,12 @@ def render_view(run: CensusRun, *, now: datetime) -> dict[str, Any]:
             for h in run.holdings
         ],
         "rows": [_row_view(row) for row in run.rows],
+        "underuse": _underuse(run.rows),
+        "utilization_unjudged": sum(
+            1
+            for r in run.rows
+            if r.utilization is not None and r.utilization.get("underuse") is None
+        ),
         "unclassified_names": run.unclassified,
         "potential": run.potential,
         "trend": run.trend
@@ -2610,6 +2883,20 @@ def render_markdown(view: Mapping[str, Any]) -> str:
         f"Summary: {json.dumps(view['summary']['by_state'])}; recruitment stages "
         f"{json.dumps(view['summary']['by_recruitment_stage'])}; {view['summary']['deltas']} deltas.",
         "Recruitment stage is the routing table's ladder. It is not formal admission.",
+        "",
+        f"## Underuse (paid capacity going unused; {len(view.get('underuse') or [])} flagged, "
+        f"{view.get('utilization_unjudged', 0)} not judgeable from the evidence)",
+        "",
+        "| entitlement | $/month | basis | used-% | pace | why |",
+        "|---|---|---|---|---|---|",
+        *(
+            [
+                f"| {u['entitlement_id']} | {_cell(u['monthly_cost_usd'])} | {u['basis']} | "
+                f"{_cell(u['used_pct'])} | {_cell(u['pace_ratio'])} | {_cell(u['reason'])} |"
+                for u in view.get("underuse") or []
+            ]
+            or ["| none flagged | | | | | |"]
+        ),
         "",
         "## Hosts",
         "",
@@ -2780,8 +3067,12 @@ def write_outputs(
     output_root: Path,
     projection_md: Path | None,
     now: datetime,
+    history_sink_root: Path | None = None,
 ) -> dict[str, Path]:
-    """Render everything, scan everything, and only then write anything."""
+    """Render everything, scan everything, and only then write anything.
+
+    The history record goes to the durable sink stream ``HISTORY_STREAM`` (the configured sink root
+    unless ``history_sink_root`` is given); an unusable root raises and the caller reports it."""
     view = render_view(run, now=now)
     rendered: dict[Path, str] = {
         output_root / "view.json": json.dumps(view, indent=2, sort_keys=True) + "\n",
@@ -2805,27 +3096,20 @@ def write_outputs(
     for path, text in rendered.items():
         run.secrets.require_clean(text, label=path.name)
     if history_line is not None:
-        run.secrets.require_clean(history_line, label=HISTORY_FILE)
+        run.secrets.require_clean(history_line, label=HISTORY_STREAM)
     for path, text in rendered.items():
         _atomic_write(path, text)
     written = {path.name: path for path in rendered}
-    if history_line is not None:
-        written[HISTORY_FILE] = _append_history(output_root / HISTORY_FILE, history_line, now=now)
+    if run.history_record is not None:
+        sink = DurableJsonlSink(history_sink_root)
+        sink.append(
+            stream_id=HISTORY_STREAM,
+            data_class="entitlement_census_history",
+            source_receipt_ref=f"{PRODUCER_REF}@{_iso(now)}",
+            payload=run.history_record,
+        )
+        written[HISTORY_STREAM] = sink.path_for_stream(HISTORY_STREAM)
     return written
-
-
-def _append_history(path: Path, line: str, *, now: datetime) -> Path:
-    """Append one line. Past the size bound the file is renamed with a date suffix (kept, never
-    deleted) and a new one is started: the series stays append-only."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        if path.stat().st_size > HISTORY_ROTATE_BYTES:
-            path.rename(path.with_name(f"history-{now.strftime('%Y%m%dT%H%M%SZ')}.jsonl"))
-    except FileNotFoundError:
-        pass
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write(line)
-    return path
 
 
 _PYDANTIC_DYNAMIC_ENTRYPOINTS = (

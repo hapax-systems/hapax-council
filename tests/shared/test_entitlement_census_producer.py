@@ -1314,31 +1314,242 @@ def test_trend_ignores_history_outside_its_window() -> None:
     assert trend["usage"]["direction"] == "flat"
 
 
-def test_history_is_append_only_across_runs_and_secret_scanned(tmp_path: Path) -> None:
+def test_history_is_a_chained_durable_stream_append_only_and_secret_scanned(tmp_path: Path) -> None:
+    """The series lives on the estate's durable append-only primitive (shared/durable_jsonl_sink.py,
+    per-stream SHA-256 chain), not a bespoke file: align, per frame/append-only-logs-20260925."""
+    from shared.durable_jsonl_sink import DurableJsonlSink, validate_chain
+
     config = _config([_decl(credential_names=["kimi-api-key"])])
-    out = tmp_path / "out"
+    out, sink_root = tmp_path / "out", tmp_path / "sink"
+    sink_root.mkdir()
+    stream = DurableJsonlSink(sink_root).path_for_stream(census.HISTORY_STREAM)
     first = _run(
         config, holdings=[_holdings(filestore=("kimi-api-key",))], now=NOW - timedelta(hours=1)
     )
     attach_history(first, now=NOW - timedelta(hours=1), prior=[], demand={}, witness={})
-    write_outputs(first, output_root=out, projection_md=None, now=NOW - timedelta(hours=1))
-    line_one = (out / "history.jsonl").read_text(encoding="utf-8")
+    write_outputs(
+        first,
+        output_root=out,
+        projection_md=None,
+        now=NOW - timedelta(hours=1),
+        history_sink_root=sink_root,
+    )
+    line_one = stream.read_text(encoding="utf-8")
 
     second = _run(config, holdings=[_holdings(filestore=("kimi-api-key",))])
-    attach_history(
-        second, now=NOW, prior=load_history(out / "history.jsonl", now=NOW), demand={}, witness={}
-    )
-    write_outputs(second, output_root=out, projection_md=None, now=NOW)
-    text = (out / "history.jsonl").read_text(encoding="utf-8")
+    attach_history(second, now=NOW, prior=load_history(stream, now=NOW), demand={}, witness={})
+    write_outputs(second, output_root=out, projection_md=None, now=NOW, history_sink_root=sink_root)
+    text = stream.read_text(encoding="utf-8")
     assert text.startswith(line_one) and len(text.splitlines()) == 2
+    assert not validate_chain(stream, stream_id=census.HISTORY_STREAM).issues
     assert render_view(second, now=NOW)["trend"]["points"] == 2
 
     leaky = _run(config, holdings=[_holdings(filestore=("kimi-api-key",))])
     leaky.secrets.remember(SECRET)
     attach_history(leaky, now=NOW, prior=[], demand={"queued": {"note": SECRET}}, witness={})
     with pytest.raises(SecretLeakError):
-        write_outputs(leaky, output_root=out, projection_md=None, now=NOW)
-    assert (out / "history.jsonl").read_text(encoding="utf-8") == text
+        write_outputs(
+            leaky, output_root=out, projection_md=None, now=NOW, history_sink_root=sink_root
+        )
+    assert stream.read_text(encoding="utf-8") == text
+
+
+def test_history_reader_accepts_the_pre_sink_plain_records(tmp_path: Path) -> None:
+    plain = tmp_path / "history.jsonl"
+    plain.write_text(
+        json.dumps(_record(NOW, windows={"kimi.subscription.weekly": 45.0})) + "\n",
+        encoding="utf-8",
+    )
+    assert load_history(plain, now=NOW)[0]["windows"][0][1] == 45.0
+
+
+# --- utilization per entitlement (operator-accepted 2026-09-25T10:15Z: "underuse is the failure to
+# surface"; Featherless $200/month prepaid, Verboo flat-price) -----------------------------------------
+
+
+def _kimi_weekly(used: float, elapsed_pct: float) -> dict[str, Any]:
+    reset = NOW + timedelta(minutes=10080 * (1 - elapsed_pct / 100))
+    return {
+        "usage": {
+            "limit": "100",
+            "used": str(used),
+            "remaining": "0",
+            "resetTime": reset.isoformat().replace("+00:00", "Z"),
+        }
+    }
+
+
+def _kimi_run(used: float, elapsed_pct: float):
+    config = _config(
+        [
+            _decl(
+                credential_names=["kimi-api-key"],
+                monthly_cost_usd=39.0,
+                readbacks=[{"readback_id": "kimi_usages", "secret": "kimi-api-key"}],
+            )
+        ]
+    )
+    http = FakeHttp({READBACKS["kimi_usages"].url: _ok(_kimi_weekly(used, elapsed_pct))})
+    return _run(config, holdings=[_holdings(filestore=("kimi-api-key",))], http=http)
+
+
+def test_window_well_below_pace_is_underuse() -> None:
+    utilization = _row(_kimi_run(used=5, elapsed_pct=80), "kimi").utilization
+    assert utilization["basis"] == "window_pace"
+    assert utilization["underuse"] is True
+    assert utilization["pace_ratio"] == pytest.approx(5 / 80, abs=0.01)
+
+
+def test_window_on_pace_is_not_underuse() -> None:
+    assert _row(_kimi_run(used=45, elapsed_pct=30), "kimi").utilization["underuse"] is False
+
+
+def test_early_window_is_not_judged() -> None:
+    utilization = _row(_kimi_run(used=1, elapsed_pct=10), "kimi").utilization
+    assert utilization["underuse"] is None
+
+
+def test_no_usage_evidence_is_unjudged_never_silently_fine() -> None:
+    run = _run(
+        _config(
+            [
+                _decl(
+                    "cohere",
+                    provider="cohere",
+                    cost_class="unobserved",
+                    credential_names=["cohere-api-key"],
+                )
+            ]
+        ),
+        holdings=[_holdings(filestore=("cohere-api-key",))],
+    )
+    utilization = _row(run, "cohere").utilization
+    assert utilization["basis"] == "none" and utilization["underuse"] is None
+
+
+def _ledger_decl(entitlement_id: str, **fields: Any) -> dict[str, Any]:
+    return _decl(
+        entitlement_id, provider=entitlement_id, usage_ledger=True, renewal_day=19, **fields
+    )
+
+
+def test_prepaid_with_zero_recorded_calls_is_underuse() -> None:
+    config = _config([_ledger_decl("featherless", cost_class="prepaid", monthly_cost_usd=200.0)])
+    run = _run(config, provider_calls={})
+    utilization = _row(run, "featherless").utilization
+    assert utilization["basis"] == "per_call_ledger"
+    assert utilization["calls"] == 0 and utilization["underuse"] is True
+    assert "0 calls recorded" in utilization["reason"]
+
+
+def test_flat_price_slots_utilization_is_busy_time_over_slot_capacity() -> None:
+    config = _config([_ledger_decl("verboo", monthly_cost_usd=269.0, concurrency_slots=2)])
+    # Period renews on the 19th: 2026-09-19T00:00Z to NOW is 6 d 1 h.
+    elapsed = (NOW - datetime(2026, 9, 19, tzinfo=UTC)).total_seconds()
+    light = _run(
+        config, provider_calls={"verboo": {"calls": 3, "tokens": 900, "busy_seconds": 3600.0}}
+    )
+    heavy_busy = 0.25 * 2 * elapsed
+    heavy = _run(
+        config, provider_calls={"verboo": {"calls": 400, "tokens": 9e5, "busy_seconds": heavy_busy}}
+    )
+    assert _row(light, "verboo").utilization["used_pct"] == pytest.approx(
+        3600 / (2 * elapsed) * 100, abs=0.01
+    )
+    assert _row(light, "verboo").utilization["underuse"] is True
+    assert _row(heavy, "verboo").utilization["used_pct"] == pytest.approx(25.0, abs=0.01)
+    assert _row(heavy, "verboo").utilization["underuse"] is False
+
+
+def test_underuse_is_surfaced_first_ranked_by_monthly_cost() -> None:
+    config = _config(
+        [
+            _ledger_decl("featherless", cost_class="prepaid", monthly_cost_usd=200.0),
+            _ledger_decl("verboo", monthly_cost_usd=269.0, concurrency_slots=2),
+            _decl(
+                "cohere",
+                provider="cohere",
+                cost_class="unobserved",
+                credential_names=["cohere-api-key"],
+            ),
+        ]
+    )
+    view = render_view(_run(config, provider_calls={}), now=NOW)
+    assert [u["entitlement_id"] for u in view["underuse"]] == ["verboo", "featherless"]
+    assert view["utilization_unjudged"] >= 1
+    md = render_markdown(view)
+    assert md.index("## Underuse") < md.index("## Cognition")
+
+
+def test_provider_call_ledger_reads_counts_only(tmp_path: Path) -> None:
+    from shared.durable_jsonl_sink import DurableJsonlSink
+
+    root = tmp_path / "sink"
+    root.mkdir()
+    sink = DurableJsonlSink(root)
+
+    def row(call_id: str, phase: str, started: str, **final: Any) -> None:
+        # dev22's contract (lanebus/dev16/20260925T102149Z): a write-ahead pair per call, the
+        # "attempted" row before egress and the "final" row after, sharing call_id.
+        sink.append(
+            stream_id=census.PROVIDER_CALLS_STREAM,
+            data_class="provider_call",
+            source_receipt_ref="test",
+            payload={
+                "provider": "verboo",
+                "entitlement_id": "verboo",
+                "call_id": call_id,
+                "phase": phase,
+                "started_at": started,
+                "status": None,
+                "http_status": None,
+                "ended_at": None,
+                "tokens_in": None,
+                "tokens_out": None,
+                "prompt": "private prose " + SECRET,
+                **final,
+            },
+        )
+
+    row("a", "attempted", "2026-09-24T10:00:00Z")
+    row(
+        "a",
+        "final",
+        "2026-09-24T10:00:00Z",
+        status="ok",
+        http_status=200,
+        ended_at="2026-09-24T10:00:30Z",
+        tokens_in=100,
+        tokens_out=50,
+    )
+    row("b", "attempted", "2026-09-24T11:00:00Z")  # crashed mid-call: no final row
+    row("c", "attempted", "2026-09-18T10:00:00Z")  # before the period
+    row(
+        "c",
+        "final",
+        "2026-09-18T10:00:00Z",
+        status="ok",
+        ended_at="2026-09-18T10:05:00Z",
+        tokens_in=1,
+        tokens_out=1,
+    )
+    calls = census.read_provider_calls(
+        sink.path_for_stream(census.PROVIDER_CALLS_STREAM),
+        since=datetime(2026, 9, 19, tzinfo=UTC),
+        until=NOW,
+    )
+    # An attempted call with no final still counts, so utilization never under-reports.
+    assert calls == {
+        "verboo": {
+            "calls": 2,
+            "tokens": 150,
+            "busy_seconds": 30.0,
+            "errors": 0,
+            "incomplete": 1,
+            "last_at": "2026-09-24T11:00:00Z",
+        }
+    }
+    assert SECRET not in json.dumps(calls)
 
 
 def test_queued_demand_counts_task_row_status(tmp_path: Path) -> None:

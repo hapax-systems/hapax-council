@@ -39,10 +39,17 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.capability_surface_delta import task_filename_for_delta  # noqa: E402
+from shared.durable_jsonl_sink import (  # noqa: E402
+    DurableJsonlSink,
+    DurableSinkAppendError,
+    DurableSinkChainError,
+    DurableSinkPathError,
+)
 from shared.entitlement_census import (  # noqa: E402
     DEFAULT_OUTPUT_ROOT,
     ENTITLEMENT_CENSUS_CONFIG,
-    HISTORY_FILE,
+    HISTORY_STREAM,
+    PROVIDER_CALLS_STREAM,
     CensusConfig,
     CensusConfigError,
     HostHoldings,
@@ -54,6 +61,7 @@ from shared.entitlement_census import (  # noqa: E402
     load_census_config,
     load_history,
     load_registry,
+    provider_calls_for,
     read_dispatched_demand,
     read_queued_demand,
     read_wall_witness,
@@ -307,6 +315,17 @@ def main(argv: list[str] | None = None) -> int:
     ledger_path = args.ledger or Path(
         os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV) or DEFAULT_QUOTA_SPEND_LEDGER_LIVE
     )
+    # The durable sink holds this producer's history and the per-call ledger (dev22's channel).
+    # An unusable root leaves the ledger unread (utilization unjudged, never "zero calls").
+    try:
+        stream_path = DurableJsonlSink().path_for_stream
+    except DurableSinkPathError:
+        stream_path = None
+    provider_calls = (
+        provider_calls_for(config, stream_path(PROVIDER_CALLS_STREAM), now=now)
+        if stream_path
+        else None
+    )
     run = run_census(
         config,
         now=now,
@@ -321,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         gpu_probe=None if args.no_remote else _gpu_probe,
         deadline=deadline,
         clock=time.monotonic,
+        provider_calls=provider_calls,
     )
 
     projection: Path | None = None
@@ -335,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
         attach_history(
             run,
             now=now,
-            prior=load_history(args.output_root / HISTORY_FILE, now=now),
+            prior=load_history(stream_path(HISTORY_STREAM), now=now) if stream_path else [],
             demand=_demand(config, now),
             witness=_witness(config),
         )
@@ -346,6 +366,13 @@ def main(argv: list[str] | None = None) -> int:
         except SecretLeakError as exc:
             print(str(exc), file=sys.stderr)
             return EXIT_REFUSED
+        except (DurableSinkPathError, DurableSinkAppendError, DurableSinkChainError) as exc:
+            print(
+                f"history append to the durable sink failed ({type(exc).__name__}: {exc}); the view "
+                "was written. Next action: repair the sink root or stream, then rerun",
+                file=sys.stderr,
+            )
+            return EXIT_INTAKE_FAILED
         if "surface-deltas.json" in outputs and not args.no_intake:
             intake = _intake(outputs["surface-deltas.json"], run.deltas)
     else:
