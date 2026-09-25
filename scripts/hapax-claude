@@ -13,6 +13,16 @@
 #      optionally a foot window with that class, so hapax-claude-send
 #      can find the lane via either transport.
 #
+# A launch is not a dispatch. Before spawning, the launcher marks the working
+# directory trusted in Claude Code's global config (operator 2026-09-24T19:06Z:
+# "yes trust the folders always"). After spawning a tmux/foot lane it waits for a
+# readiness witness, and exits nonzero with the pane text when a blocking modal
+# shows instead. Identity is never inherited from a parent session: the dispatch
+# task comes only from --task, and the session id only from --session-id or a
+# fresh mint. (2026-09-24: three lanes sat 50-65 min at the trust dialog while the
+# seat counted them dispatched, and a seat-launched dev6 tried to claim the seat's
+# own charter because it inherited HAPAX_METHODOLOGY_DISPATCH_TASK.)
+#
 # We do NOT bake MCP server config into the spawn — Claude Code reads
 # ~/.claude/settings.json + .claude.json itself. We do NOT hard-fail
 # on a stale relay marker; the cleanup is the operator's call. We do
@@ -26,7 +36,7 @@ usage() {
   cat <<'EOF'
 usage: hapax-claude [--role alpha|…|theta | dev|dev2|…] [--cd DIR]
                     [--terminal none|tmux|foot] [--force] [--task TASK_ID|--readonly]
-                    [--continue] [--] [claude args...]
+                    [--result-json PATH] [--continue] [--] [claude args...]
 
 Roles:
   - greek alpha..theta : the supervised headless reform lanes
@@ -35,7 +45,31 @@ Roles:
                          required; defaults its worktree to the current dir.
 
 Defaults:
-  - role inferred from HAPAX_AGENT_NAME / CLAUDE_ROLE / cwd basename
+  - role inferred from HAPAX_AGENT_NAME / CLAUDE_ROLE / cwd basename, for
+    --terminal none only; a tmux/foot spawn must name its role
+  - dispatch task only from --task (or the role's own active claim); an
+    inherited HAPAX_METHODOLOGY_DISPATCH_TASK is ignored
+  - HAPAX_SESSION_ID minted fresh per launch; an inherited one is ignored
+  - the working directory is marked trusted in ${CLAUDE_CONFIG_DIR:-~}/.claude.json
+    before claude starts, only when it lies under a declared lane root: the
+    vault (~/Documents/Personal), ~/projects, /store-fast/tmp/hapax-wt, or a
+    line in ${XDG_CONFIG_HOME:-~/.config}/hapax/claude-trust-roots. Anything
+    else is refused loudly and left to Claude's own dialog
+  - the soft open-file limit is raised to min(hard, 65536), never lowered
+  - tmux/foot: wait up to HAPAX_CLAUDE_READY_TIMEOUT seconds (default 45, at
+    most 3600; 0 disables it and the launch is unwitnessed) for the witness.
+    A launch with a brief is ready only when the lane's own transcript
+    records the brief; the screen does not count. A launch without one is
+    ready at the idle REPL. A blocking modal on the pane fails either. Exit
+    20 = a modal is showing, 21 = no witness in time, 22 = the lane died
+    first, 23 = --force --terminal foot onto a live session with a brief,
+    which cannot be delivered. The pane text goes to stderr, and the session
+    is left alive to inspect or answer. The timeout applies to this launch
+    only and is never inherited by the lane
+  - --result-json PATH (tmux/foot only): also write the launch outcome as one
+    JSON object (outcome, role, tmux_session, session ids, trace_path,
+    readiness, modal, child_nofile_soft, claude_version). PATH must lie under
+    ${XDG_CACHE_HOME:-~/.cache}/hapax/launch-results/ and must not be a symlink
   - worktree selected from the role when --cd is omitted
   - terminal=none: exec claude in the current terminal
   - terminal=tmux: detach into a tmux session named hapax-claude-<role>
@@ -50,7 +84,11 @@ WORKDIR=""
 WORKDIR_EXPLICIT=0
 TERMINAL="${HAPAX_CLAUDE_TERMINAL:-none}"
 FORCE=0
-CLAUDE_TASK="${HAPAX_METHODOLOGY_DISPATCH_TASK:-}"
+# Never seeded from the environment. A launch from inside a session inherits that
+# session's HAPAX_METHODOLOGY_DISPATCH_TASK, and seeding from it made a child claim
+# its parent's task under its own role.
+CLAUDE_TASK=""
+RESULT_JSON=""
 READONLY=0
 CLAUDE_EXTRA=()
 
@@ -94,6 +132,19 @@ while [ $# -gt 0 ]; do
       CLAUDE_TASK="${1#--task=}"
       shift
       ;;
+    --result-json|--result-json=*)
+      if [ "$1" = "--result-json" ]; then
+        RESULT_JSON="${2:-}"
+        shift $(($# > 1 ? 2 : 1))
+      else
+        RESULT_JSON="${1#--result-json=}"
+        shift
+      fi
+      if [ -z "$RESULT_JSON" ]; then
+        echo "hapax-claude: --result-json needs a PATH under ${XDG_CACHE_HOME:-$HOME/.cache}/hapax/launch-results/" >&2
+        exit 2
+      fi
+      ;;
     --readonly|--read-only)
       READONLY=1
       shift
@@ -126,6 +177,28 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ -n "${HAPAX_METHODOLOGY_DISPATCH_TASK:-}" ] && [ "$HAPAX_METHODOLOGY_DISPATCH_TASK" != "$CLAUDE_TASK" ]; then
+  echo "hapax-claude: ignoring inherited HAPAX_METHODOLOGY_DISPATCH_TASK='$HAPAX_METHODOLOGY_DISPATCH_TASK' (a parent's task); pass --task to bind one" >&2
+fi
+# Scrub the parent's per-session identity so nothing below, nor the claude this
+# process execs, can read it. The runner script repeats the scrub, because a tmux
+# pane's environment comes from the tmux server, not from this process.
+PARENT_IDENTITY_VARS=(
+  HAPAX_METHODOLOGY_DISPATCH_TASK HAPAX_SESSION_ID
+  HAPAX_PARENT_AGENT_INTERFACE HAPAX_PARENT_AGENT_NAME
+  CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID CLAUDE_CODE_CHILD_SESSION
+  CLAUDE_CODE_SESSION_ATTENDED CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN
+  CLAUDE_PID
+)
+unset "${PARENT_IDENTITY_VARS[@]}"
+
+if [ -z "$ROLE" ] && [ "$TERMINAL" != "none" ]; then
+  # The env-inferred role below is the caller's OWN identity. That is right when a
+  # lane relaunches itself in place (--terminal none) and wrong for a spawn, which
+  # would be born with its parent's role.
+  echo "hapax-claude: --terminal $TERMINAL needs an explicit --role; refusing to spawn a lane under the caller's inherited identity" >&2
+  exit 2
+fi
 if [ -z "$ROLE" ]; then
   ROLE="${HAPAX_AGENT_NAME:-${CLAUDE_ROLE:-${HAPAX_AGENT_ROLE:-}}}"
 fi
@@ -159,6 +232,49 @@ case "$TERMINAL" in
     exit 2
     ;;
 esac
+
+READY_TIMEOUT="${HAPAX_CLAUDE_READY_TIMEOUT:-45}"
+case "$READY_TIMEOUT" in
+  ''|*[!0-9]*|?????*)
+    echo "hapax-claude: invalid HAPAX_CLAUDE_READY_TIMEOUT '$READY_TIMEOUT' (whole seconds, 0..3600; 0 disables the readiness witness)" >&2
+    exit 2
+    ;;
+esac
+READY_TIMEOUT=$((10#$READY_TIMEOUT)) # base 10: a leading zero ("08") is not octal
+if [ "$READY_TIMEOUT" -gt 3600 ]; then
+  echo "hapax-claude: invalid HAPAX_CLAUDE_READY_TIMEOUT '$READY_TIMEOUT' (whole seconds, 0..3600; 0 disables the readiness witness)" >&2
+  exit 2
+fi
+# The timeout configures THIS launch only. Once read, it is unset here and again in the
+# runner, so neither the lane nor anything its tools launch inherits it. Otherwise one
+# stray export of 0 would silently unwitness every launch downstream of it.
+unset HAPAX_CLAUDE_READY_TIMEOUT
+
+# --result-json writes only under one declared directory, never through a symlink,
+# and only where there is a witness to report.
+RESULT_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/launch-results"
+if [ -n "$RESULT_JSON" ]; then
+  if [ "$TERMINAL" = "none" ]; then
+    echo "hapax-claude: --result-json needs --terminal tmux|foot; --terminal none execs claude in place, so there is no witness to report" >&2
+    exit 2
+  fi
+  mkdir -p "$RESULT_DIR"
+  result_dir_real="$(realpath -e -- "$RESULT_DIR")"
+  result_real="$(realpath -m -- "$RESULT_JSON")"
+  case "$result_real" in
+    "$result_dir_real"/?*) ;;
+    *)
+      echo "hapax-claude: refusing --result-json '$RESULT_JSON': it must lie under $RESULT_DIR/" >&2
+      exit 2
+      ;;
+  esac
+  if [ -L "$RESULT_JSON" ] || [ -d "$result_real" ]; then
+    echo "hapax-claude: refusing --result-json '$RESULT_JSON': it is a symlink or a directory" >&2
+    exit 2
+  fi
+  RESULT_JSON="$result_real"
+  mkdir -p "$(dirname -- "$RESULT_JSON")"
+fi
 
 claude_default_worktree() {
   local role="$1"
@@ -289,7 +405,13 @@ fi
 # can read either CLAUDE_ROLE or HAPAX_AGENT_NAME).
 # Per-session id (coordination reform Phase 1): a stable uuid so the gate keys a
 # claim lease to THIS session — two same-role sessions never collide (FM-2).
-SESSION_UUID="${HAPAX_SESSION_ID:-$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || printf '%s-%s' "$ROLE" "$$")}"
+# Minted, never inherited: HAPAX_SESSION_ID was scrubbed above, because a lane
+# launched from inside another session would otherwise share that session's lease.
+mint_uuid() {
+  cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || true
+}
+SESSION_UUID="$(mint_uuid)"
+[ -n "$SESSION_UUID" ] || SESSION_UUID="$ROLE-$$-$(date -u +%s)"
 export HAPAX_AGENT_INTERFACE="claude"
 export HAPAX_AGENT_NAME="$ROLE"
 export CLAUDE_ROLE="$ROLE"
@@ -345,6 +467,301 @@ if [ -n "$CLAUDE_TASK" ]; then
   export HAPAX_METHODOLOGY_DISPATCH_TASK="$CLAUDE_TASK"
 fi
 
+# ── Workspace trust ─────────────────────────────────────────────────────────
+# Claude Code stops at "Yes, I trust this folder" before it reads its first prompt,
+# and emits nothing while it waits. It skips the dialog when
+# projects[<cwd>].hasTrustDialogAccepted is true in its global config, or when an
+# ancestor up to the git root has it (measured in 2.1.281). The key is the
+# PHYSICAL cwd, because process.cwd() resolves symlinks.
+#
+# Scope: the dialog guards project-local hooks, MCP servers and settings, so the
+# launcher pre-accepts only directories under a declared lane root (see
+# trust_roots). The operator ruled "trust the folders always" for lane folders
+# (2026-09-24T19:06Z); that is not a licence for any caller-supplied --cd. Anything
+# else is refused loudly, and Claude's own dialog then asks, which the readiness
+# witness reports as a modal.
+#
+# Write: under the same lock Claude Code 2.1.281 takes for its own config writes
+# (proper-lockfile: mkdir "<config>.lock", stale after 10 s, which the holder
+# renews while it holds the lock). So the read-modify-write is atomic with respect
+# to every Claude process. It also re-checks the bytes before replacing them,
+# for writers that do not lock. Every other key and the file mode are kept, the
+# write never goes through a symlink, and it never creates or repairs the file.
+# Credentials live in ~/.claude/.credentials.json and are never opened. A failure
+# does not stop the launch; the readiness witness reports the dialog if it appears.
+TRUST_PY='
+import json, os, sys, tempfile, time
+
+path, key = sys.argv[1], sys.argv[2]
+# The entry Claude Code itself creates for an unseen project (its project defaults).
+DEFAULT = {
+    "allowedTools": [], "mcpContextUris": [], "mcpServers": {},
+    "enabledMcpjsonServers": [], "disabledMcpjsonServers": [],
+    "hasTrustDialogAccepted": False,
+    "hasClaudeMdExternalIncludesApproved": False,
+    "hasClaudeMdExternalIncludesWarningShown": False,
+}
+
+LOCK_STALE_S = 10  # proper-lockfile default, as Claude Code uses it
+LOCK_WAIT_S = 15  # longer than a stale lock lives, shorter than any sane launch
+
+def refuse(msg):
+    print(msg)
+    sys.exit(3)
+
+def acquire(lock):
+    deadline = time.monotonic() + LOCK_WAIT_S
+    while True:
+        try:
+            os.mkdir(lock)
+            return
+        except FileExistsError:
+            pass
+        try:
+            age = time.time() - os.stat(lock).st_mtime
+        except FileNotFoundError:
+            continue
+        if age > LOCK_STALE_S:
+            try:
+                os.rmdir(lock)  # what proper-lockfile does with a stale lock
+            except OSError:
+                pass
+            continue
+        if time.monotonic() > deadline:
+            refuse(f"{lock} is held and renewed for over {LOCK_WAIT_S}s; trust not written")
+        time.sleep(0.05)
+
+def write_trust():
+    for _attempt in range(5):
+        with open(path, "rb") as fh:
+            before = fh.read()
+        try:
+            data = json.loads(before)
+        except ValueError as exc:
+            refuse(f"{path} is not valid JSON ({exc}); left untouched")
+        if not isinstance(data, dict) or not isinstance(data.setdefault("projects", {}), dict):
+            refuse(f"{path} has no projects object; left untouched")
+        entry = data["projects"].get(key)
+        if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted") is True:
+            return "already"
+        if entry is None:
+            entry = dict(DEFAULT)
+        elif not isinstance(entry, dict):
+            refuse(f"{path}: projects[{key!r}] is not an object; left untouched")
+        entry["hasTrustDialogAccepted"] = True
+        data["projects"][key] = entry
+        mode = os.stat(path).st_mode & 0o7777
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".claude.json.hapax-trust.")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2, ensure_ascii=False)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp, mode)
+            with open(path, "rb") as fh:
+                changed = fh.read() != before  # a writer that does not take the lock
+            if changed:
+                os.unlink(tmp)
+                continue
+            os.replace(tmp, path)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+        with open(path, "rb") as fh:
+            after = json.loads(fh.read())
+        if ((after.get("projects") or {}).get(key) or {}).get("hasTrustDialogAccepted") is True:
+            return "trusted"
+    refuse(f"{path} kept changing under a writer that ignores the lock; trust not persisted")
+
+if os.path.islink(path):
+    refuse(f"{path} is a symlink; not writing through it")
+if not os.path.exists(path):
+    refuse(f"{path} does not exist (Claude Code has not run under this HOME)")
+lock = path + ".lock"
+acquire(lock)
+try:
+    result = write_trust()
+finally:
+    os.rmdir(lock)
+print(result)
+'
+TRUST_STATE="not_attempted"
+TRUST_ROOTS_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/hapax/claude-trust-roots"
+
+# The lane roots whose folders are pre-accepted: the vault, the project checkouts,
+# the governed clone area, and any absolute path listed in $TRUST_ROOTS_FILE (one
+# per line, '#' comments). This bound protects against accidents, not intent. HOME,
+# XDG_CONFIG_HOME and CLAUDE_CONFIG_DIR locate these files and the config, and they
+# are the one principal's own environment; a caller that sets them on purpose is
+# that principal. (Same stance as the 2026-09-20 ruling on the cc-task gate:
+# accidents do not evade it, and intent is out of scope.)
+trust_roots() {
+  printf '%s\n' "$HOME/Documents/Personal" "$HOME/projects" /store-fast/tmp/hapax-wt
+  if [ -r "$TRUST_ROOTS_FILE" ]; then
+    sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$TRUST_ROOTS_FILE" | grep '^/' || true
+  fi
+}
+
+under_declared_root() {
+  local key="$1" root real
+  while IFS= read -r root; do
+    real="$(realpath -e -- "$root" 2>/dev/null)" || continue
+    case "$key/" in
+      "$real"/*) return 0 ;;
+    esac
+  done < <(trust_roots)
+  return 1
+}
+
+preaccept_workspace_trust() {
+  local config="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" key home_key out rc=0
+  key="$(cd "$WORKDIR" && pwd -P)"
+  home_key="$(cd "$HOME" 2>/dev/null && pwd -P || true)"
+  if [ "$key" = "$home_key" ]; then
+    # Claude Code keeps trust for the home directory per session only; a persisted
+    # flag there is ignored, so writing it would only look like a fix.
+    TRUST_STATE="home_session_only"
+    echo "hapax-claude: not pre-accepting trust for \$HOME ($key): Claude Code honours home trust per session only. Launch from a project directory; the readiness witness will report the dialog" >&2
+    return 0
+  fi
+  if ! under_declared_root "$key"; then
+    TRUST_STATE="refused_undeclared_root"
+    {
+      echo "hapax-claude: REFUSING to pre-accept workspace trust for $key: it is not under a declared lane root."
+      echo "  Declared roots: $(trust_roots | tr '\n' ' ')"
+      echo "  Claude will show its own trust dialog, and the readiness witness reports it."
+      echo "  Next: launch from a lane folder, or add its root to $TRUST_ROOTS_FILE."
+    } >&2
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    TRUST_STATE="failed"
+    echo "hapax-claude: python3 not found; workspace trust for $key not pre-accepted (next: install python3)" >&2
+    return 0
+  fi
+  # stdout is the state word (or the refusal); Python's own stderr passes through.
+  out="$(python3 -c "$TRUST_PY" "$config" "$key")" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    TRUST_STATE="$out"
+  else
+    TRUST_STATE="failed"
+    echo "hapax-claude: could not pre-accept workspace trust for $key: $out. Launching anyway; the readiness witness reports the dialog if it appears" >&2
+  fi
+}
+preaccept_workspace_trust
+
+# ── Harness session id ──────────────────────────────────────────────────────
+# Pin Claude Code's own session id, so the transcript this lane writes can be
+# found and followed. Skipped when the caller resumes or picks a session itself.
+#
+# Where the transcript lives: $PROJECTS_ROOT/<slug>/<session>.jsonl. The slug is the
+# physical cwd with every non-alphanumeric character replaced by '-', and a slug
+# over 200 characters is cut to 200 and given a hash suffix. That is Claude Code
+# 2.1.281's encoder (uC/k in the binary). Older versions kept '.', '_' and '@',
+# and this host still holds both kinds of directory. So a pinned session is found
+# by its unique id under ANY project directory, and the slug is used only for a
+# resumed session, whose id Claude picks.
+HARNESS_SESSION_ID=""
+PROJECTS_ROOT="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
+TRACE_SLUG="$(cd "$WORKDIR" && pwd -P | sed 's/[^A-Za-z0-9]/-/g')"
+TRACE_PATH=""
+pin_harness_session=1
+for arg in "${CLAUDE_EXTRA[@]}"; do
+  case "$arg" in
+    -c|--continue|-r|--resume|--resume=*|--session-id|--session-id=*|--fork-session|--from-pr|--from-pr=*)
+      pin_harness_session=0
+      ;;
+  esac
+done
+if [ "$pin_harness_session" -eq 1 ]; then
+  HARNESS_SESSION_ID="$(mint_uuid)"
+  if [ -z "$HARNESS_SESSION_ID" ]; then
+    echo "hapax-claude: could not mint a session id (no /proc/sys/kernel/random/uuid, no uuidgen); the witness falls back to this workdir's transcripts (next: install util-linux)" >&2
+  fi
+fi
+if [ -n "$HARNESS_SESSION_ID" ]; then
+  CLAUDE_DEFAULT_ARGS+=("--session-id" "$HARNESS_SESSION_ID")
+  if [ "${#TRACE_SLUG}" -le 200 ]; then
+    TRACE_PATH="$PROJECTS_ROOT/$TRACE_SLUG/$HARNESS_SESSION_ID.jsonl" # expected; the witness reports the one found
+  fi
+fi
+
+# The brief, when the launch carries one: claude's positional prompt, parsed the way
+# its option parser (commander) reads the argv. An option's value is never the brief.
+# The option lists come from `claude --help` (2.1.281). A variadic option (<x...>)
+# takes every following argument up to the next option; an optional one ([x]) takes
+# the next argument unless it is an option; `--` ends the options. An option missing
+# from these lists can only make its value look like a brief, which fails the
+# launch with no witness (21) rather than reporting a lane ready that is not.
+CLAUDE_VALUE_OPTS=" --agent --agents --append-system-prompt --append-system-prompt-file
+  --autocompact --debug-file --effort --environment --fallback-model --input-format
+  --json-schema --max-budget-usd --model -n --name --output-format --permission-mode
+  --permission-prompts --plugin-dir --plugin-url --remote-control-session-name-prefix
+  --session-id --setting-sources --settings --system-prompt --system-prompt-file
+  --system-prompt-snapshot --cloud -d --debug --from-pr --prompt-suggestions
+  --remote-control -r --resume --teleport -w --worktree "
+CLAUDE_VARIADIC_OPTS=" --add-dir --allowedTools --allowed-tools --betas --disallowedTools
+  --disallowed-tools --file --mcp-config --tools "
+BRIEF=""
+expect=""
+options_ended=0
+for arg in "${CLAUDE_EXTRA[@]}"; do
+  if [ "$options_ended" -eq 0 ]; then
+    case "$arg" in
+      --)
+        options_ended=1
+        continue
+        ;;
+      --*=*)
+        expect=""
+        continue
+        ;;
+      -*)
+        case "$CLAUDE_VARIADIC_OPTS" in
+          *[[:space:]]"$arg"[[:space:]]*) expect="variadic" ;;
+          *)
+            case "$CLAUDE_VALUE_OPTS" in
+              *[[:space:]]"$arg"[[:space:]]*) expect="value" ;;
+              *) expect="" ;;
+            esac
+            ;;
+        esac
+        continue
+        ;;
+    esac
+    case "$expect" in
+      value)
+        expect=""
+        continue
+        ;;
+      variadic) continue ;;
+    esac
+  fi
+  BRIEF="$arg"
+done
+
+# ── Open-file limit ─────────────────────────────────────────────────────────
+# A lane must not start at soft nofile 1024. The claim inspector opens every claim
+# journal and hit EMFILE there (measured 2026-09-24 20:05Z on resumed codex/fugu
+# lanes: their claims failed as claim_publication_inspection_failed). The estate
+# tmux server itself runs at soft 1024, and a pane inherits the server's limits,
+# not this process's. So the raise runs here for --terminal none, and again inside
+# the runner. It raises the soft limit to min(hard, 65536) and never lowers one
+# that is already higher.
+NOFILE_TARGET_MAX=65536
+NOFILE_RAISE='nofile_target='"$NOFILE_TARGET_MAX"'
+nofile_hard="$(ulimit -Hn)"
+if [ "$nofile_hard" != unlimited ] && [ "$nofile_hard" -lt "$nofile_target" ]; then
+  nofile_target="$nofile_hard"
+fi
+nofile_soft="$(ulimit -Sn)"
+if [ "$nofile_soft" != unlimited ] && [ "$nofile_soft" -lt "$nofile_target" ]; then
+  ulimit -Sn "$nofile_target" 2>/dev/null ||
+    echo "hapax-claude: could not raise the soft open-file limit from $nofile_soft to $nofile_target" >&2
+fi'
+eval "$NOFILE_RAISE"
+
 RELAY_RETIRE="$COUNCIL_DIR/scripts/hapax-relay-retire"
 
 if [ "$TERMINAL" = "none" ]; then
@@ -353,17 +770,22 @@ if [ "$TERMINAL" = "none" ]; then
   exec "$CLAUDE_BIN" "${CLAUDE_DEFAULT_ARGS[@]}" "${CLAUDE_EXTRA[@]}"
 fi
 
-# tmux/foot path: build a runner script that re-execs hapax-claude with
-# --terminal none so the inner process inherits identity. Mirrors the
-# codex idiom.
+# tmux/foot path: build a runner script that execs claude with this launch's
+# identity written into it. The runner does not inherit this process's
+# environment: a tmux pane gets the tmux server's, which can carry a parent
+# session's identity. So the runner unsets the parent identity first.
 SPAWN_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/hapax/claude-spawns"
 mkdir -p "$SPAWN_DIR"
-RUNNER="$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE.sh"
+# Created exclusively (mktemp, O_EXCL) with a random suffix: two launches of one role
+# in the same second must never write over a runner the other pane is executing.
+RUNNER="$(mktemp "$SPAWN_DIR/run-$(date -u +%Y%m%dT%H%M%SZ)-$ROLE-XXXXXX.sh")"
 {
   printf '%s\n' '#!/usr/bin/env bash'
   printf '%s\n' 'set -euo pipefail'
+  printf '%s\n' "$NOFILE_RAISE"
   printf 'trap '\''%q %q --reason "clean exit (tmux)" 2>/dev/null || true'\'' EXIT\n' "$RELAY_RETIRE" "$ROLE"
   printf 'cd %q\n' "$WORKDIR"
+  printf 'unset %s HAPAX_CLAUDE_READY_TIMEOUT\n' "${PARENT_IDENTITY_VARS[*]}"
   printf 'export HAPAX_AGENT_INTERFACE=claude\n'
   printf 'export HAPAX_AGENT_NAME=%q\n' "$ROLE"
   printf 'export CLAUDE_ROLE=%q\n' "$ROLE"
@@ -417,9 +839,305 @@ tmux_new_lane_session() {
     echo "hapax-claude: could not set remain-on-exit on $TMUX_NAME; the lane is running but a bad death will leave no pane to inspect. next: check \`tmux -V\` (remain-on-exit=failed needs tmux >= 3.2), then \`tmux show-options -w -t =$TMUX_NAME: remain-on-exit\`" >&2
 }
 
+# ── Readiness witness ───────────────────────────────────────────────────────
+# A spawned pane is not a working lane, and a screen that shows the brief is not
+# delivery. On 2026-09-24, pasted notes sat unsubmitted in seven input boxes for
+# about 14 minutes while the screens looked delivered. So:
+#   * a launch that carries a brief is ready only when the lane's own transcript
+#     has a user record newer than the launch that carries the brief. That is the
+#     pinned $TRACE_PATH, or for a resumed session any transcript in $TRACE_DIR
+#     written since the launch;
+#   * a launch without a brief delivered nothing, so it is ready at the idle REPL
+#     (its footer on the pane);
+#   * either way, a blocking modal on the pane fails the launch. A modal is looked
+#     for only in the text AFTER the rendered brief, so a brief that quotes a
+#     modal's wording does not read as one. Pane matching ignores case and
+#     whitespace, because the TUI re-wraps the brief to the pane width.
+WITNESS_PY='
+import datetime, glob, json, os, re, sys
+
+brief, projects_root, session, slug = sys.argv[1:5]
+launched = float(sys.argv[5])
+pane = sys.stdin.read()
+
+def norm(text):
+    return re.sub(r"\s+", "", text).lower()
+
+def record_epoch(stamp):
+    try:
+        return datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+def record_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            block.get("text", "") for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+def transcripts():
+    if session:  # pinned: unique id, whatever the project directory is called
+        return glob.glob(os.path.join(glob.escape(projects_root), "*", glob.escape(session) + ".jsonl"))
+    dirs = [os.path.join(projects_root, slug)]
+    if len(slug) > 200:  # Claude cuts a long slug to 200 and adds a hash suffix
+        dirs = glob.glob(os.path.join(glob.escape(projects_root), glob.escape(slug[:200]) + "-*"))
+    return [p for d in dirs for p in glob.glob(os.path.join(glob.escape(d), "*.jsonl"))]
+
+def brief_in_transcript(want):
+    for path in transcripts():
+        try:
+            if os.stat(path).st_mtime < launched:
+                continue
+            fh = open(path, encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                if "\"user\"" not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict) or rec.get("type") != "user" or rec.get("isMeta"):
+                    continue
+                stamp = record_epoch(rec.get("timestamp"))
+                if stamp is None or stamp < launched:
+                    continue
+                if want in norm(record_text((rec.get("message") or {}).get("content"))):
+                    return path
+    return None
+
+# Blocking texts, from the 2.1.281 binary and panes measured on this host. The
+# safeguard needle is the pausing modal ("<model> safeguards flagged this message",
+# measured 2026-09-16), not the word. "<model> safeguards stopped the response
+# above, continuing once" is a notice that continues by itself, and a lane may say
+# "safeguard" in its own output. An unknown future wording fails closed: 21 (no
+# witness), never ready.
+MODALS = (
+    ("trust", ("trustthisfolder", "doyoutrustthefiles", "isthisaprojectyoutrust")),
+    ("confirm", ("entertoconfirm", "esctocancel", "yes,iaccept")),
+    ("limit", ("hityourlimit",)),
+    ("safeguard", ("safeguardsflaggedthismessage",)),
+)
+REPL_FOOTER = ("?forshortcuts", "bypasspermissionson", "shift+tabtocycle", "accepteditson", "planmodeon")
+
+p, b = norm(pane), norm(brief)
+scan, brief_seen = p, None
+if b:
+    lo, hi = 0, len(b)
+    while lo < hi:  # the longest prefix of the brief that the pane shows
+        mid = (lo + hi + 1) // 2
+        if b[:mid] in p:
+            lo = mid
+        else:
+            hi = mid - 1
+    brief_seen = lo >= min(len(b), 32)
+    if brief_seen:
+        scan = p[p.rfind(b[:lo]) + lo:]
+for kind, needles in MODALS:
+    if any(n in scan for n in needles):
+        print("blocked " + kind)
+        sys.exit(0)
+if b:
+    found = brief_in_transcript(b)  # the whole brief: two briefs may share a prefix
+    if found:
+        print("ready transcript_user_record " + found)
+        sys.exit(0)
+elif any(f in p for f in REPL_FOOTER):
+    print("ready repl_idle")
+    sys.exit(0)
+print("wait")
+'
+OUTCOME="launched"
+MODAL=""
+READY_EVIDENCE=""
+READY_AT=""
+# Whole seconds, rounded down: a record from the launch's own second still counts.
+LAUNCHED_EPOCH="$(date +%s)"
+LAUNCHED_AT="$(TZ=UTC printf '%(%Y-%m-%dT%H:%M:%SZ)T' "$LAUNCHED_EPOCH")"
+WITNESS_ERR=""
+WITNESS_ERR_FILE=""
+
+CHILD_NOFILE_SOFT=""
+
+# The soft open-file limit the lane's claude process actually runs with, read from
+# /proc/<pane pid>/limits. The runner execs claude, so the pane's pid is claude's.
+record_child_nofile() {
+  local pid
+  pid="$("$TMUX_BIN" display-message -p -t "=$TMUX_NAME:" '#{pane_pid}' 2>/dev/null || true)"
+  case "$pid" in '' | *[!0-9]*) return 0 ;; esac
+  CHILD_NOFILE_SOFT="$(awk '/^Max open files/ { print $4 }' "/proc/$pid/limits" 2>/dev/null || true)"
+  case "$CHILD_NOFILE_SOFT" in
+    '' | unlimited) ;;
+    *)
+      if [ "$CHILD_NOFILE_SOFT" -lt "$NOFILE_TARGET_MAX" ]; then
+        echo "hapax-claude: $TMUX_NAME runs with soft nofile $CHILD_NOFILE_SOFT (< $NOFILE_TARGET_MAX); claim inspection can hit EMFILE (next: raise the hard limit for this user)" >&2
+      fi
+      ;;
+  esac
+}
+
+show_unready_pane() {
+  local pane="$1"
+  {
+    echo "hapax-claude: $TMUX_NAME is NOT ready ($OUTCOME${MODAL:+: $MODAL}). The pane shows:"
+    echo "----- pane $TMUX_NAME -----"
+    printf '%s\n' "$pane"
+    echo "----- end pane -----"
+    if [ -n "$WITNESS_ERR" ]; then
+      echo "  The witness itself failed on its last read: $WITNESS_ERR"
+    fi
+    echo "  Do not count this lane as dispatched. The session is left alive: attach with"
+    echo "  \`tmux attach -t =$TMUX_NAME\` and answer or clear what it shows, or kill the session and relaunch."
+  } >&2
+}
+
+await_lane_ready() {
+  local deadline pane dead verdict blocked_polls=0
+  if [ "$READY_TIMEOUT" -eq 0 ]; then
+    OUTCOME="unwitnessed"
+    echo "hapax-claude: readiness witness disabled (HAPAX_CLAUDE_READY_TIMEOUT=0); $TMUX_NAME is launched but UNWITNESSED, so do not count it as dispatched" >&2
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    OUTCOME="readiness_timeout"
+    echo "hapax-claude: python3 not found, so $TMUX_NAME cannot be witnessed; treat it as not dispatched (next: install python3)" >&2
+    return 21
+  fi
+  WITNESS_ERR_FILE="$(mktemp "${TMPDIR:-/tmp}/hapax-claude-witness.XXXXXX")"
+  # shellcheck disable=SC2064 # expand now: the path is fixed for this launch
+  trap "rm -f '$WITNESS_ERR_FILE'" EXIT
+  deadline=$((SECONDS + READY_TIMEOUT))
+  while :; do
+    if ! "$TMUX_BIN" has-session -t "=$TMUX_NAME" 2>/dev/null; then
+      OUTCOME="launch_failed"
+      show_unready_pane "(session gone: claude exited before it was ready)"
+      return 22
+    fi
+    dead="$("$TMUX_BIN" display-message -p -t "=$TMUX_NAME:" '#{pane_dead}' 2>/dev/null || true)"
+    pane="$("$TMUX_BIN" capture-pane -p -J -t "=$TMUX_NAME:" 2>/dev/null || true)"
+    if [ "$dead" = "1" ]; then
+      OUTCOME="launch_failed"
+      show_unready_pane "$pane"
+      return 22
+    fi
+    # A witness error is not a verdict: keep waiting, and show the error if the wait
+    # ends without one.
+    if ! verdict="$(printf '%s' "$pane" | python3 -c "$WITNESS_PY" "$BRIEF" "$PROJECTS_ROOT" \
+      "$HARNESS_SESSION_ID" "$TRACE_SLUG" "$LAUNCHED_EPOCH" 2>"$WITNESS_ERR_FILE")"; then
+      verdict="wait"
+      WITNESS_ERR="$(tail -n 3 "$WITNESS_ERR_FILE" 2>/dev/null || true)"
+    fi
+    case "$verdict" in
+      ready\ *)
+        OUTCOME="ready"
+        READY_EVIDENCE="${verdict#ready }"
+        if [ "${READY_EVIDENCE%% *}" = "transcript_user_record" ]; then
+          TRACE_PATH="${READY_EVIDENCE#transcript_user_record }"
+          READY_EVIDENCE="transcript_user_record"
+        fi
+        READY_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        record_child_nofile
+        return 0
+        ;;
+      blocked\ *)
+        # Two consecutive sightings, so a frame caught mid-redraw is not a verdict.
+        blocked_polls=$((blocked_polls + 1))
+        if [ "$blocked_polls" -ge 2 ]; then
+          OUTCOME="modal_blocked"
+          MODAL="${verdict#blocked }"
+          show_unready_pane "$pane"
+          return 20
+        fi
+        ;;
+      *) blocked_polls=0 ;;
+    esac
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      OUTCOME="readiness_timeout"
+      show_unready_pane "$pane"
+      return 21
+    fi
+    sleep 1
+  done
+}
+
+write_launch_result() {
+  local rc="$1"
+  [ -n "$RESULT_JSON" ] || return 0
+  RC="$rc" OUTCOME="$OUTCOME" ROLE="$ROLE" TMUX_NAME="$TMUX_NAME" LAUNCHED_AT="$LAUNCHED_AT" \
+    SESSION_UUID="$SESSION_UUID" HARNESS_SESSION_ID="$HARNESS_SESSION_ID" TRACE_PATH="$TRACE_PATH" \
+    READY_AT="$READY_AT" READY_EVIDENCE="$READY_EVIDENCE" MODAL="$MODAL" TRUST_STATE="$TRUST_STATE" \
+    WORKDIR="$WORKDIR" RESULT_JSON="$RESULT_JSON" BRIEF_SENT="${BRIEF:+1}" \
+    CHILD_NOFILE_SOFT="$CHILD_NOFILE_SOFT" \
+    CLAUDE_VERSION="$("$CLAUDE_BIN" --version 2>/dev/null | head -n 1 || true)" python3 -c '
+import json, os, tempfile
+e = os.environ
+witnessed = e["OUTCOME"].startswith("ready")
+result = {
+    "outcome": e["OUTCOME"],
+    "exit_code": int(e["RC"]),
+    "role": e["ROLE"],
+    "tmux_session": e["TMUX_NAME"],
+    "workdir": e["WORKDIR"],
+    "launched_at": e["LAUNCHED_AT"],
+    "hapax_session_id": e["SESSION_UUID"],
+    "harness_session_id": e["HARNESS_SESSION_ID"] or None,
+    "trace_path": e["TRACE_PATH"] or None,
+    "workspace_trust": e["TRUST_STATE"],
+    "readiness": {
+        "witnessed": witnessed,
+        "at": e["READY_AT"] or None,
+        "evidence": e["READY_EVIDENCE"] or None,
+    },
+    "modal": e["MODAL"] or None,
+    "brief_sent": bool(e["BRIEF_SENT"]),
+    "brief_delivered": e["READY_EVIDENCE"] == "transcript_user_record",
+    # The lane process own soft nofile, from /proc/<pid>/limits; null if unread.
+    "child_nofile_soft": (
+        int(e["CHILD_NOFILE_SOFT"]) if e["CHILD_NOFILE_SOFT"].isdigit()
+        else (e["CHILD_NOFILE_SOFT"] or None)
+    ),
+    # The modal and footer texts are matched against this version.
+    "claude_version": e["CLAUDE_VERSION"] or None,
+}
+# An exclusive temp file beside the target, then a rename: never through a
+# symlink, never a partial file.
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(e["RESULT_JSON"]), prefix=".launch-result.")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(result, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, e["RESULT_JSON"])
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
+' || echo "hapax-claude: could not write --result-json $RESULT_JSON" >&2
+}
+
+# Spawn, witness, report. Exit status is the witness's; stdout carries the session
+# name only when the lane is ready (or explicitly unwitnessed), as before.
+spawn_and_witness() {
+  local rc=0
+  tmux_new_lane_session || {
+    rc=$?
+    OUTCOME="launch_failed"
+    write_launch_result "$rc"
+    exit "$rc"
+  }
+  await_lane_ready || rc=$?
+  write_launch_result "$rc"
+  return "$rc"
+}
+
 case "$TERMINAL" in
   tmux)
-    tmux_new_lane_session
+    spawn_and_witness || exit $?
     printf '%s\n' "$TMUX_NAME"
     ;;
   foot)
@@ -428,8 +1146,32 @@ case "$TERMINAL" in
       echo "hapax-claude: footclient/foot not found" >&2
       exit 10
     fi
+    foot_rc=0
     if ! "$TMUX_BIN" has-session -t "=$TMUX_NAME" 2>/dev/null; then
-      tmux_new_lane_session
+      # Witness before opening the window; the window then shows the operator the
+      # same pane either way.
+      spawn_and_witness || foot_rc=$?
+    elif [ -n "$BRIEF" ]; then
+      # --force onto a session that already exists, with a brief: a launch delivers
+      # its brief as claude's argv, and that session's claude is already running, so
+      # this brief cannot arrive. Fail (23); never drop the brief and report ready.
+      # Typing into a running pane is the send helper's job (hapax-claude-send).
+      OUTCOME="brief_not_delivered"
+      HARNESS_SESSION_ID=""
+      TRACE_PATH=""
+      foot_rc=23
+      echo "hapax-claude: $TMUX_NAME already exists, so this launch's brief was NOT delivered (exit 23). Next: send it with hapax-claude-send, or kill the session and relaunch." >&2
+      write_launch_result "$foot_rc"
+    else
+      # --force onto a session that already exists, no brief: nothing was launched,
+      # but the caller still gets that pane's state, never a bare success. It may
+      # be a lane stuck at a dialog, or a dead one.
+      echo "hapax-claude: $TMUX_NAME already exists; not launching, witnessing its current state" >&2
+      HARNESS_SESSION_ID=""
+      TRACE_PATH=""
+      await_lane_ready || foot_rc=$?
+      [ "$OUTCOME" != "ready" ] || OUTCOME="ready_existing_session"
+      write_launch_result "$foot_rc"
     fi
     # `=`: attach the operator to THIS lane and refuse otherwise. Measured on 3.7c with
     # only `hapax-probe-delta-2` running: `attach-session -t hapax-probe-delta` resolved
@@ -453,5 +1195,6 @@ case "$TERMINAL" in
           "$TMUX_BIN" attach-session -t "=$TMUX_NAME" >/dev/null 2>&1
         ;;
     esac
+    exit "$foot_rc"
     ;;
 esac

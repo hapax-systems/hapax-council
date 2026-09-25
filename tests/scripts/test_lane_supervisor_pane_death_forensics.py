@@ -306,6 +306,9 @@ def _claude_launcher_env(tmp_path: Path, **overrides: str) -> tuple[dict[str, st
             "PATH": f"{bin_dir}:{env['PATH']}",
             "HAPAX_COUNCIL_DIR": str(REPO_ROOT),
             "HAPAX_CLAUDE_TERMINAL": "none",
+            # The fake tmux has no pane to witness; readiness is pinned in
+            # test_hapax_claude_launch_readiness.py.
+            "HAPAX_CLAUDE_READY_TIMEOUT": "0",
             "TMUX_CALL_LOG": str(log),
         }
     )

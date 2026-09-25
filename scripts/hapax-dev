@@ -329,7 +329,20 @@ cmd_launch() {
 
   # Spawn the detached session through the real spawner (identity + governance
   # + tmux all happen there). The fresh session id is exported into its env.
-  HAPAX_SESSION_ID="$session_id" "${spawn_cmd[@]}"
+  local spawn_rc=0
+  HAPAX_SESSION_ID="$session_id" "${spawn_cmd[@]}" || spawn_rc=$?
+  if [ "$spawn_rc" -ne 0 ]; then
+    # hapax-claude's readiness witness: 20 = a dialog holds the pane, 21 = no witness in
+    # time. The session is alive either way, and in the default attach mode the
+    # operator is here to answer it, so attach. Detach and window modes have nobody
+    # at the pane, so they report the failure.
+    if [ "$platform" = claude ] && [ "$detach" -eq 0 ] && [ "$window" -eq 0 ] &&
+      { [ "$spawn_rc" -eq 20 ] || [ "$spawn_rc" -eq 21 ]; } && tmux_session_live "$tmux_session"; then
+      echo "$PROG: $platform '$name' is not ready yet (rc=$spawn_rc, see above); attaching so you can answer it." >&2
+      exec "$TMUX_BIN" attach -t "=$tmux_session"
+    fi
+    exit "$spawn_rc"
+  fi
 
   if [ "$detach" -eq 1 ]; then
     echo "$PROG: $platform '$name' started detached."

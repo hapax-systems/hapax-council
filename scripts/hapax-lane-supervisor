@@ -71,6 +71,17 @@ RESTART_COOLDOWN_S="${HAPAX_SUPERVISOR_RESTART_COOLDOWN_S:-120}"
 BURST_LIMIT="${HAPAX_SUPERVISOR_BURST_LIMIT:-5}"
 BURST_WINDOW_S="${HAPAX_SUPERVISOR_BURST_WINDOW_S:-600}"
 LAUNCH_TIMEOUT_S="${HAPAX_SUPERVISOR_LAUNCH_TIMEOUT_S:-60}"
+# hapax-claude waits for its readiness witness before it returns. Two bounds keep that
+# wait inside this oneshot unit's TimeoutStartSec=120:
+#   - each claude respawn gets CLAUDE_READY_TIMEOUT_S, well under LAUNCH_TIMEOUT_S, so
+#     the `timeout` kill (rc=124) stays an exception;
+#   - a claude respawn that could run past CYCLE_BUDGET_S into this cycle is deferred
+#     to the next cycle (the timer runs every 60 s). It is never launched unwitnessed.
+CLAUDE_READY_TIMEOUT_S="${HAPAX_SUPERVISOR_CLAUDE_READY_TIMEOUT_S:-30}"
+CYCLE_BUDGET_S="${HAPAX_SUPERVISOR_CYCLE_BUDGET_S:-90}"
+case "$CLAUDE_READY_TIMEOUT_S" in
+  '' | *[!0-9]* | 0) CLAUDE_READY_TIMEOUT_S=30 ;; # 0 would switch the witness off
+esac
 DRY_RUN="${HAPAX_SUPERVISOR_DRY_RUN:-0}"
 
 CLAUDE_HEADLESS_BIN="${HAPAX_CLAUDE_HEADLESS_BIN:-$HOME/.local/bin/hapax-claude-headless}"
@@ -655,9 +666,15 @@ respawn_sync() {
   local lane="$1"; shift
   local rc=0
   timeout "$LAUNCH_TIMEOUT_S" "$@" >"/tmp/hapax-supervisor-$lane.log" 2>&1 || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    log "$lane: respawn command exited rc=$rc — see /tmp/hapax-supervisor-$lane.log"
-  fi
+  # hapax-claude's exit codes: 20 a dialog holds the pane, 21 no readiness witness in
+  # time, 22 the lane died first, 23 a brief could not be delivered. 124 is timeout(1)
+  # killing the launcher itself: no verdict at all.
+  case "$rc" in
+    0) ;;
+    124) log "$lane: respawn launcher killed by timeout after ${LAUNCH_TIMEOUT_S}s (rc=124): no readiness verdict; its session may still be starting and is counted as NOT launched — see /tmp/hapax-supervisor-$lane.log" ;;
+    20 | 21 | 22 | 23) log "$lane: respawned lane is NOT ready (rc=$rc; the pane text is in /tmp/hapax-supervisor-$lane.log); counted as not launched" ;;
+    *) log "$lane: respawn command exited rc=$rc — see /tmp/hapax-supervisor-$lane.log" ;;
+  esac
   return "$rc"
 }
 
@@ -747,8 +764,13 @@ guard() {
       else
         # Headless launcher is default-deny without a governed task; bring the
         # lane up read-only so the process exists and awaits governed dispatch.
+        if [ $((SECONDS + CLAUDE_READY_TIMEOUT_S + 10)) -gt "$CYCLE_BUDGET_S" ]; then
+          log "$lane ($kind): DEAD with no active task — respawn DEFERRED to the next cycle (this cycle is ${SECONDS}s in; a witnessed respawn could run past its ${CYCLE_BUDGET_S}s budget)"
+          return 0
+        fi
         log "$lane ($kind): DEAD with no active task — respawning read-only (idle-await)"
-        respawn_sync "$lane" "$CLAUDE_BIN" --role "$lane" --terminal tmux --readonly || respawn_rc=$?
+        respawn_sync "$lane" env HAPAX_CLAUDE_READY_TIMEOUT="$CLAUDE_READY_TIMEOUT_S" \
+          "$CLAUDE_BIN" --role "$lane" --terminal tmux --readonly || respawn_rc=$?
         respawn_tracked=1
       fi
       ;;

@@ -50,6 +50,11 @@ SKIP_LANES="${HAPAX_IDLE_SKIP_LANES:-alpha}"
 REQUIRED_CLAUDE_LANES="${HAPAX_REQUIRED_CLAUDE_LANES:-beta gamma delta epsilon}"
 REQUIRED_CODEX_LANES="${HAPAX_REQUIRED_CODEX_LANES:-cx-cpu-bridge cx-effect-drift-current cx-preset-storm cx-visual-bandwidth}"
 CLAUDE_LAUNCHER="${HOME}/.local/bin/hapax-claude"
+# hapax-claude waits for its readiness witness before it returns (default 45 s). This
+# unit runs under TimeoutStartSec=90 and launches up to 2 lanes a tick, so each
+# launch gets at most 30 s: two lanes that never become ready take 60 s and are
+# reported, rather than letting systemd kill the tick part-way through.
+LAUNCH_READY_TIMEOUT=30
 CODEX_LAUNCHER="${HOME}/projects/hapax-council/scripts/hapax-codex"
 
 log() { echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) lane-idle: $*"; }
@@ -334,7 +339,8 @@ if [ "$LOCAL_DEV_MAINTENANCE_MODE" != "appendix-only" ] && [ "$SDLC_ADMISSION" !
                 log "LAUNCHING missing lane: $role (headroom left=${HEADROOM_BUDGET})"
                 echo "$now" > "$cooldown_file"
                 launch_err="$STATE_DIR/${session}.launch.err"
-                if "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux --readonly >"$launch_err" 2>&1; then
+                if HAPAX_CLAUDE_READY_TIMEOUT="$LAUNCH_READY_TIMEOUT" \
+                    "$CLAUDE_LAUNCHER" --role "$role" --terminal tmux --readonly >"$launch_err" 2>&1; then
                     launched_lanes=$((launched_lanes + 1))
                     governor_record "lane:$role" ok
                     curl -sf -d "Lane idle watchdog: launched $role (session missing)" \

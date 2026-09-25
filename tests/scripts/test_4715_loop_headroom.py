@@ -9,6 +9,7 @@ controllable load, and assert the loop honors the budget.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import textwrap
 from pathlib import Path
@@ -50,6 +51,10 @@ def _base(tmp_path: Path, **overrides: str) -> dict[str, str]:
     env = {
         "PATH": f"{bin_dir}:/usr/bin:/bin",
         "HOME": str(home),
+        # Private cooldown state. The default is the host's /tmp/hapax-lane-idle-state:
+        # there, a run's 5-minute launch cooldowns made the next run launch nothing,
+        # so these tests passed vacuously.
+        "HAPAX_IDLE_STATE_DIR": str(tmp_path / "idle-state"),
         "HAPAX_REQUIRED_CLAUDE_LANES": "alpha beta gamma",
         "HAPAX_REQUIRED_CODEX_LANES": "",
         "HAPAX_LOCAL_DEV_MAINTENANCE_MODE": "local",
@@ -107,8 +112,9 @@ def test_real_loop_respects_budget_cap_of_two(tmp_path: Path) -> None:
     assert "launch headroom budget=2" in out, out
     launched = _launched(env)
     launching_lines = [ln for ln in out.splitlines() if "LAUNCHING" in ln]
-    assert len(launching_lines) <= 2, (launching_lines, out)
-    assert len(launched) <= 2, (launched, out)
+    # Exactly 2: three lanes are missing, and the cap, not an empty loop, stops the third.
+    assert len(launching_lines) == 2, (launching_lines, out)
+    assert len(launched) == 2, (launched, out)
 
 
 def test_real_loop_logs_budget_and_pool(tmp_path: Path) -> None:
@@ -116,3 +122,26 @@ def test_real_loop_logs_budget_and_pool(tmp_path: Path) -> None:
     out = _run_watchdog(env, load1="1.00", nproc="4")
     assert "launch headroom budget=" in out, out
     assert "alpha beta gamma" in out, out
+
+
+def test_launch_witness_waits_fit_inside_the_units_start_timeout(tmp_path: Path) -> None:
+    """hapax-claude now waits for its readiness witness before it returns. At the
+    budget cap (2 launches a tick), two lanes that never become ready must still
+    finish inside the unit's TimeoutStartSec, or systemd kills the tick part-way."""
+    env = _base(tmp_path)
+    calls_txt = tmp_path / "calls" / "calls.txt"
+    _write_executable(
+        Path(env["HOME"]) / ".local" / "bin" / "hapax-claude",
+        "#!/usr/bin/env bash\n"
+        f"printf 'LAUNCHED ready_timeout=%s\\n' \"${{HAPAX_CLAUDE_READY_TIMEOUT:-unset}}\""
+        f' >> "{calls_txt}"\n',
+    )
+    out = _run_watchdog(env, load1="0.01", nproc="32")
+    launched = _launched(env)
+    assert len(launched) == 2, (launched, out)
+    unit = (REPO_ROOT / "systemd" / "units" / "hapax-lane-idle-watchdog.service").read_text()
+    match = re.search(r"^TimeoutStartSec=(\d+)$", unit, re.MULTILINE)
+    assert match, "the unit no longer declares TimeoutStartSec"
+    waits = [int(line.split("ready_timeout=")[1]) for line in launched]
+    assert all(w > 0 for w in waits), launched  # a bounded witness, never switched off
+    assert sum(waits) < int(match.group(1)), (waits, match.group(1))
