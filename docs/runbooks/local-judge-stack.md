@@ -60,21 +60,20 @@ Protected model staging is the first separately measured phase of that mandatory
 canary, not an activation side effect. The block below runs
 `--measure-protected-local-judge-model` against the root-owned content address
 before starting the disposable container and writes the candidate cap receipt
-only after both staging and the workload pass. Authenticated installation and
-activation each verify that exact-SHA receipt before their first mutation, so a
-skipped or incomplete staging canary is rejected before the durable unit can be
-started.
+only after both staging and the workload pass. The root-owned package broker and
+the separate activation fence each verify that exact-SHA receipt before their
+first mutation, so a skipped or incomplete staging canary is rejected before the
+durable unit can be started.
 
 The active task must authorize every semantic effect listed in the candidate
 `config/root-required/oom-containment.effects`, plus the canary, activation, and
-managed-recheck effects used below. The authenticated helper reads that exact-SHA
-descriptor and validates the complete set in one task parse before sudo, after
-sudo, and after live verification immediately before receipt advancement and
-deferral drain.
-Source-file paths are package inventory, not runtime authority.
-This is a cooperative single-operator boundary: the active task and cap receipt
-are caller-owned evidence, while root-owned model staging and installed artifacts
-prevent later account-level substitution.
+managed-recheck effects used below. The exact-SHA helper validates that task only
+as advisory narrowing. It cannot grant production effects and never executes the
+interpreted installer in production. The independently installed root-owned
+package broker must derive authority, package bytes, destinations, and the fixed
+effect transaction again at the privileged boundary.
+Source-file paths, caller-owned task rows, cap receipts, sealed descriptors, and
+helper results are evidence, not bearer authority.
 
 ### Required pre-deploy cap canary
 
@@ -640,13 +639,20 @@ echo "local-judge cap canary accepted: $canary_receipt"
 HAPAX_LOCAL_JUDGE_CAP_CANARY
 ```
 
-### Authenticated package installation
+### Broker-gated package installation
+
+This source task does not install the broker. Before attempting the live command,
+require `/usr/local/sbin/hapax-root-required-package-apply` to be a single-link,
+root-owned executable beneath root-owned non-writable ancestors. If it is absent,
+stop and dispatch a separately runtime-authorized broker-bootstrap task. The
+desired receipt and `RUNBOOK.txt` must remain pending; do not restore the retired
+Bash production path for continuity.
 
 ```bash
-# Re-emit the authenticated command after runtime authority is granted. Never
+# Re-emit the broker-gated command after runtime authority is granted. Never
 # execute RUNBOOK.txt, copy the judge unit, or reproduce the authentication flow.
-# The emitted helper validates every scope in the exact release's
-# oom-containment.effects. No source-file path is accepted as runtime authority.
+# The emitted helper may narrow or refuse. Only the root-owned broker can apply,
+# and it independently validates the exact release and effect transaction.
 set -euo pipefail
 account_uid="$(/usr/bin/id -u)"
 account_name="$(/usr/bin/id -un)"
@@ -735,7 +741,7 @@ HAPAX_LOCAL_JUDGE_AUTHENTICATED_INSTALL
 ```
 
 Execute only the live terminal `next action: run:` line emitted by that command.
-After it returns successfully, verify the authenticated completion and installed
+After it returns successfully, verify the broker-authenticated completion and installed
 receipt in a new shell:
 
 ```bash
