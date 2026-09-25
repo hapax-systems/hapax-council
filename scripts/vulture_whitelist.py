@@ -5259,6 +5259,61 @@ _ = (
     _charter_obligation_breaches,
 )
 
+# Entitlement census producer: these are called only from the extensionless
+# ``scripts/hapax-entitlement-census`` (a determination-producers.json row), which
+# the project vulture pass does not scan.
+from shared.entitlement_census import (
+    attach_history as _census_attach_history,
+)
+from shared.entitlement_census import (
+    collect_holdings as _census_collect_holdings,
+)
+from shared.entitlement_census import (
+    default_http_get as _census_default_http_get,
+)
+from shared.entitlement_census import (
+    default_resolve_secret as _census_default_resolve_secret,
+)
+from shared.entitlement_census import (
+    load_census_config as _census_load_census_config,
+)
+from shared.entitlement_census import (
+    load_history as _census_load_history,
+)
+from shared.entitlement_census import (
+    load_registry as _census_load_registry,
+)
+from shared.entitlement_census import (
+    provider_calls_for as _census_provider_calls_for,
+)
+from shared.entitlement_census import (
+    read_dispatched_demand as _census_read_dispatched_demand,
+)
+from shared.entitlement_census import (
+    read_queued_demand as _census_read_queued_demand,
+)
+from shared.entitlement_census import (
+    read_wall_witness as _census_read_wall_witness,
+)
+from shared.entitlement_census import (
+    run_census as _census_run_census,
+)
+
+_ = (
+    _census_attach_history,
+    _census_load_history,
+    _census_provider_calls_for,
+    _census_read_dispatched_demand,
+    _census_read_queued_demand,
+    _census_read_wall_witness,
+    _census_collect_holdings,
+    _census_default_http_get,
+    _census_default_resolve_secret,
+    _census_load_census_config,
+    _census_load_registry,
+    _census_run_census,
+)
+
 # ENCOUNTERED-MACHINERY auditor. The pure evaluation module is called only by the extensionless
 # producer `scripts/hapax-encountered-machinery-audit` (declared in
 # config/determination-producers.json and run by hapax-determine). Vulture does not scan that

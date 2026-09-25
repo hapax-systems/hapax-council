@@ -1,0 +1,454 @@
+{
+  "schema": "hapax.entitlement_census.v1",
+  "description": [
+    "Declared inputs of scripts/hapax-entitlement-census: which entitlements the estate knows it holds, where their",
+    "credentials live (NAMES only), and which spend-free readback each one may use. The readback allow-list itself",
+    "(URL, method, header shape) lives in shared/entitlement_census.py, so this file can only choose among",
+    "allow-listed readbacks by id; it cannot add an endpoint. Credential names absent from this catalogue are",
+    "listed by the producer as unidentified, never dropped. Source: frame/ENTITLEMENT-CENSUS-R2-20260924.md",
+    "sections 2-3 (E0, accepted 2026-09-24T20:21Z)."
+  ],
+  "hosts": [
+    {"host_id": "appendix", "transport": "local"},
+    {"host_id": "podium", "transport": "ssh_batch", "target": "hapax-podium.local"}
+  ],
+  "vendor_cache_max_age_seconds": 86400,
+  "projection_markdown": "Documents/Personal/30-areas/hapax/frame/ENTITLEMENT-CENSUS-LIVE.md",
+  "trend_sources": {
+    "task_rows": "Documents/Personal/20-projects/hapax-cc-tasks/active",
+    "route_decisions": ".cache/hapax/orchestration/route-decisions.jsonl",
+    "wall_witness": ".cache/hapax/review-team/family-outage.json"
+  },
+  "serving_endpoints": [
+    {"endpoint_id": "appendix-5000", "host_id": "appendix", "base_url": "http://127.0.0.1:5000", "models_path": "/v1/models"},
+    {"endpoint_id": "appendix-5001", "host_id": "appendix", "base_url": "http://127.0.0.1:5001", "models_path": "/v1/models"},
+    {"endpoint_id": "appendix-ollama", "host_id": "appendix", "base_url": "http://127.0.0.1:11434", "models_path": "/api/tags"},
+    {"endpoint_id": "appendix-litellm", "host_id": "appendix", "base_url": "http://127.0.0.1:4000", "models_path": "/v1/models"},
+    {"endpoint_id": "podium-5100", "host_id": "podium", "base_url": "http://hapax-podium.local:5100", "models_path": "/v1/models"},
+    {"endpoint_id": "podium-litellm", "host_id": "podium", "base_url": "http://hapax-podium.local:4000", "models_path": "/v1/models"},
+    {"endpoint_id": "spark-01df-8000", "host_id": "spark-01df", "base_url": "http://spark-01df:8000", "models_path": "/v1/models"},
+    {"endpoint_id": "spark-01df-5201", "host_id": "spark-01df", "base_url": "http://spark-01df:5201", "models_path": "/v1/models"},
+    {"endpoint_id": "gx10-b941-5200", "host_id": "gx10-b941", "base_url": "http://gx10-b941:5200", "models_path": "/v1/models"},
+    {"endpoint_id": "evo-x2-8081", "host_id": "evo-x2", "base_url": "http://evo-x2:8081", "models_path": "/v1/models"},
+    {"endpoint_id": "evo-x2-2-8081", "host_id": "evo-x2-2", "base_url": "http://evo-x2-2:8081", "models_path": "/v1/models"}
+  ],
+  "metal": {
+    "scout_report": {"host_id": "podium", "path": "projects/hapax-council/profiles/scout-report.json", "components": ["local-llm-coding", "local-llm-reasoning", "local-llm-general", "embedding-model"]},
+    "hardware": [
+      {"host_id": "podium", "device": "RTX 5090 32 GB + RTX 5060 Ti 16 GB (discrete)", "memory_gb": 48, "availability": "available", "source": "frame/FLEET-INVENTORY-vram-and-appliances.md#1", "recorded_at": "2026-09-21T00:00:00Z", "expires_at": "2026-10-21T00:00:00Z"},
+      {"host_id": "appendix", "device": "RTX 3090 24 GB + RTX 5060 Ti 16 GB (discrete)", "memory_gb": 40, "availability": "available", "source": "frame/FLEET-INVENTORY-vram-and-appliances.md#1", "recorded_at": "2026-09-21T00:00:00Z", "expires_at": "2026-10-21T00:00:00Z"},
+      {"host_id": "evo-x2", "device": "Strix Halo unified (gtt)", "memory_gb": 124, "availability": "available", "source": "frame/FLEET-INVENTORY-vram-and-appliances.md#1", "recorded_at": "2026-09-21T00:00:00Z", "expires_at": "2026-10-21T00:00:00Z"},
+      {"host_id": "evo-x2-2", "device": "Strix Halo unified (gtt)", "memory_gb": 124, "availability": "available", "source": "frame/FLEET-INVENTORY-vram-and-appliances.md#1", "recorded_at": "2026-09-21T00:00:00Z", "expires_at": "2026-10-21T00:00:00Z"},
+      {"host_id": "gx10-b941", "device": "NVIDIA GB10 unified", "memory_gb": 121, "availability": "available", "source": "frame/FLEET-INVENTORY-vram-and-appliances.md#1", "recorded_at": "2026-09-21T00:00:00Z", "expires_at": "2026-10-21T00:00:00Z"},
+      {"host_id": "spark-01df", "device": "NVIDIA GB10 unified", "memory_gb": 121, "availability": "available", "source": "frame/FLEET-INVENTORY-vram-and-appliances.md#1", "recorded_at": "2026-09-21T00:00:00Z", "expires_at": "2026-10-21T00:00:00Z"},
+      {"host_id": "beelink1", "device": "Strix Halo unified host memory (gtt)", "memory_gb": 124, "availability": "available", "source": "frame/FLEET-INVENTORY-vram-and-appliances.md#1; operator 2026-09-25T00:03Z (host capacity unaffected)", "recorded_at": "2026-09-25T00:03:00Z", "expires_at": "2026-10-25T00:03:00Z"},
+      {"host_id": "beelink1", "device": "RTX 5060 Ti 16 GB eGPU", "memory_gb": 16, "availability": "unavailable", "enumerate_gpu": "5060 Ti", "until": "a readback shows it enumerated; needs an operator-present physical session (never repaired)", "source": "operator 2026-09-25T00:03Z; frame/FLEET-INVENTORY-vram-and-appliances.md#1", "recorded_at": "2026-09-25T00:03:00Z", "expires_at": "2026-10-25T00:03:00Z"},
+      {"host_id": "aperture", "device": "Strix Halo unified (gtt misconfigured: 8 of ~124 GB)", "memory_gb": 8, "availability": "degraded", "until": "gttsize fix (+116 GB)", "source": "frame/FLEET-INVENTORY-vram-and-appliances.md#3", "recorded_at": "2026-09-21T00:00:00Z", "expires_at": "2026-10-21T00:00:00Z"},
+      {"host_id": "aperture", "device": "RTX 5070 Ti 16 GB eGPU", "memory_gb": 16, "availability": "unavailable", "enumerate_gpu": "5070 Ti", "until": "a readback shows it enumerated (disconnected)", "source": "frame/FLEET-INVENTORY-vram-and-appliances.md#1", "recorded_at": "2026-09-21T00:00:00Z", "expires_at": "2026-10-21T00:00:00Z"}
+    ],
+    "trial_records": [
+      {"model": "qwen3.8-flash", "stage": "deployed", "evidence": "frame/qwen38-trial/purpose-floors-qwen38-v1.json", "recorded_at": "2026-09-17T00:00:00Z", "expires_at": "2026-10-17T00:00:00Z"}
+    ]
+  },
+  "withheld_name_tokens": ["ssn", "legal-name", "operator-address", "operator-name", "-ach-", "-ein", "name-control"],
+  "entitlements": [
+    {
+      "entitlement_id": "anthropic-claude-max",
+      "provider": "anthropic",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "login_files": [".claude/.credentials.json"],
+      "harness_bins": ["claude"],
+      "registry_platforms": ["claude"],
+      "ledger_providers": ["anthropic-claude-subscription"],
+      "declared_refs": [
+        {"fact": "Max 20x, billed via google_play_subscription", "source": "frame/ENTITLEMENT-CENSUS-R2-20260924.md#2", "recorded_at": "2026-09-24T19:22:28Z", "expires_at": "2026-10-24T19:22:28Z"}
+      ],
+      "notes": "Window quantities come from A1's passive stream-json reading into the quota ledger; this producer never probes Claude."
+    },
+    {
+      "entitlement_id": "openai-chatgpt-pro-codex",
+      "provider": "openai",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "login_files": [".codex/auth.json"],
+      "harness_bins": ["codex"],
+      "registry_platforms": ["codex"],
+      "ledger_providers": ["codex-subscription"],
+      "notes": "Weekly wall and reset come from A1's native rollout reader."
+    },
+    {
+      "entitlement_id": "moonshot-kimi-code",
+      "provider": "moonshot",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "credential_names": ["kimi-api-key"],
+      "login_files": [".kimi-code/credentials"],
+      "harness_bins": ["kimi"],
+      "readbacks": [{"readback_id": "kimi_usages", "secret": "kimi-api-key"}],
+      "measurement_prefixes": ["kimi.subscription."],
+      "registry_platforms": ["kimi"],
+      "ledger_providers": ["moonshot-kimi-code-managed"]
+    },
+    {
+      "entitlement_id": "moonshot-kimi-booster-wallet",
+      "provider": "moonshot",
+      "kind": "cognition",
+      "cost_class": "prepaid",
+      "credential_names": ["kimi-api-key"],
+      "readbacks": [{"readback_id": "kimi_usages", "secret": "kimi-api-key"}],
+      "measurement_prefixes": ["kimi.booster."],
+      "notes": "Balance unit scale unverified (E0); recorded raw, never converted."
+    },
+    {
+      "entitlement_id": "zai-glm-coding-plan",
+      "provider": "z.ai",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "credential_names": ["glmcp-api-key", "glmcp-api"],
+      "env_names": ["GLM_API_KEY"],
+      "login_files": [".local/share/opencode/auth.json"],
+      "harness_bins": ["opencode"],
+      "readbacks": [{"readback_id": "glm_quota_limit", "secret": "glmcp-api-key"}],
+      "registry_platforms": ["glmcp"],
+      "ledger_providers": ["z_ai-glm-coding-plan"]
+    },
+    {
+      "entitlement_id": "zai-payg-cash-balance",
+      "provider": "z.ai",
+      "kind": "cognition",
+      "cost_class": "payg",
+      "declared_refs": [
+        {"fact": "$76.54 cash balance; burn authorized to zero, no top-ups", "source": "operator console, frame/ENTITLEMENT-CENSUS-R2-20260924.md#2 row 6", "recorded_at": "2026-09-24T18:00:00Z", "expires_at": "2026-10-01T18:00:00Z"}
+      ]
+    },
+    {
+      "entitlement_id": "sakana-fugu-max",
+      "provider": "sakana",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "credential_names": ["sakana-fugu-apikey", "sakana-api-key"],
+      "harness_bins": ["codex-fugu", "claude-fugu"],
+      "readbacks": [{"readback_id": "sakana_usage", "secret": "sakana-fugu-apikey"}],
+      "registry_shape_ids": ["local_compute.ornith_fugu_sakana_surface", "model_provider.sakana_fugu_subscription"],
+      "expected_shape_class": "model_provider",
+      "notes": "Registry files this remote subscription as local_compute (E0 O3)."
+    },
+    {
+      "entitlement_id": "mistral-team",
+      "provider": "mistral",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "credential_names": ["mistral-api-key", "api-mistral"],
+      "env_names": ["MISTRAL_API_KEY"],
+      "login_files": [".vibe/.env"],
+      "harness_bins": ["vibe"],
+      "readbacks": [{"readback_id": "mistral_models", "secret": "mistral-api-key"}],
+      "vendor_cache": "vibe_whoami_cache",
+      "registry_platforms": ["vibe"],
+      "declared_refs": [
+        {"fact": "Vibe EUR 510 + API EUR 51 per month, resets the 1st; PAYG off", "source": "operator console 2026-09-19", "recorded_at": "2026-09-19T00:00:00Z", "expires_at": "2026-10-01T00:00:00Z"}
+      ]
+    },
+    {
+      "entitlement_id": "xai-supergrok-heavy",
+      "registry_shape_ids": ["model_provider.xai_supergrok_heavy"],
+      "provider": "xai",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "login_files": [".grok/auth.json"],
+      "harness_bins": ["grok"],
+      "vendor_cache": "grok_settings_cache"
+    },
+    {
+      "entitlement_id": "google-agy-antigravity",
+      "provider": "google",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "login_files": [".gemini/antigravity-cli/antigravity-oauth-token"],
+      "harness_bins": ["agy", "gemini"],
+      "registry_platforms": ["agy"],
+      "ledger_providers": ["google-antigravity-cli-agy"],
+      "notes": "Tier unobserved; no public quota endpoint."
+    },
+    {
+      "entitlement_id": "google-gemini-api-key",
+      "provider": "google",
+      "kind": "cognition",
+      "cost_class": "unobserved",
+      "credential_names": ["api-google"],
+      "env_names": ["GOOGLE_API_KEY"],
+      "readbacks": [{"readback_id": "google_models", "secret": "api-google"}],
+      "notes": "Billing tier unobserved (PAYG or free tier)."
+    },
+    {
+      "entitlement_id": "meta-muse",
+      "registry_shape_ids": ["model_provider.meta_muse"],
+      "provider": "meta",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "login_files": [".config/muse/auth.json"],
+      "harness_bins": ["muse"]
+    },
+    {
+      "entitlement_id": "xiaomi-mimo-pro-gui",
+      "registry_shape_ids": ["model_provider.xiaomi_mimo"],
+      "monthly_cost_usd": 200,
+      "provider": "xiaomi",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "declared_refs": [
+        {"fact": "$200/mo, GUI-only on the rig; burn then cancel", "source": "vault record 2026-09-23", "recorded_at": "2026-09-23T00:00:00Z", "expires_at": "2026-10-23T00:00:00Z"}
+      ]
+    },
+    {
+      "entitlement_id": "xiaomi-mimo-token-plan",
+      "registry_shape_ids": ["model_provider.xiaomi_mimo"],
+      "provider": "xiaomi",
+      "kind": "cognition",
+      "cost_class": "unobserved",
+      "login_files": [".local/share/mimocode/auth.json"],
+      "harness_bins": ["mimo"]
+    },
+    {
+      "entitlement_id": "qwen-cloud-coding-plan-pro",
+      "registry_shape_ids": ["model_provider.qwen_cloud_coding_plan"],
+      "monthly_cost_usd": 50,
+      "provider": "alibaba",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "credential_names": ["qwencloud-apikey"],
+      "terms_restricted": true,
+      "declared_refs": [
+        {"fact": "$50/mo; 6k per 5 h, 45k per week, 90k per month", "source": "vault record 2026-09-02", "recorded_at": "2026-09-02T00:00:00Z", "expires_at": "2026-10-02T00:00:00Z"}
+      ],
+      "notes": "Terms forbid scripted calls: never probed by this producer."
+    },
+    {
+      "entitlement_id": "verboo-code-ultra",
+      "registry_shape_ids": ["model_provider.verboo_code_ultra"],
+      "provider": "verboo",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "credential_names": ["verboo-api-key"],
+      "readbacks": [{"readback_id": "verboo_models", "secret": "verboo-api-key"}],
+      "monthly_cost_usd": 269,
+      "usage_ledger": true,
+      "concurrency_slots": 2,
+      "renewal_day": 19,
+      "declared_refs": [
+        {"fact": "$269/mo, 2 concurrent, renews 2026-10-19", "source": "operator console 2026-09-19", "recorded_at": "2026-09-19T00:00:00Z", "expires_at": "2026-10-19T00:00:00Z"}
+      ]
+    },
+    {
+      "entitlement_id": "featherless-request-pricing",
+      "registry_shape_ids": ["model_provider.featherless_request_pricing"],
+      "provider": "featherless",
+      "kind": "cognition",
+      "cost_class": "prepaid",
+      "credential_names": ["featherless-api-key"],
+      "readbacks": [{"readback_id": "featherless_plan", "secret": "featherless-api-key"}],
+      "monthly_cost_usd": 200,
+      "usage_ledger": true,
+      "renewal_day": 19,
+      "declared_refs": [
+        {"fact": "$200/mo prepaid, rolls over, renews 2026-10-19, auto top-up off", "source": "operator console 2026-09-19", "recorded_at": "2026-09-19T00:00:00Z", "expires_at": "2026-10-19T00:00:00Z"}
+      ]
+    },
+    {
+      "entitlement_id": "perplexity-max-gui",
+      "registry_shape_ids": ["model_provider.perplexity"],
+      "provider": "perplexity",
+      "kind": "grounding",
+      "cost_class": "subscription",
+      "declared_refs": [
+        {"fact": "Max (GUI and Comet on the rig); operator 2026-09-16: going to drop", "source": "vault record 2026-09-23", "recorded_at": "2026-09-23T00:00:00Z", "expires_at": "2026-09-30T00:00:00Z"}
+      ]
+    },
+    {
+      "entitlement_id": "perplexity-api-credits",
+      "registry_shape_ids": ["model_provider.perplexity"],
+      "provider": "perplexity",
+      "kind": "grounding",
+      "cost_class": "prepaid",
+      "credential_names": ["perplexity-api-key"],
+      "env_names": ["PERPLEXITY_API_KEY"],
+      "harness_bins": ["pplx"],
+      "declared_refs": [
+        {"fact": "$161.67 budget, $104.53 spent (ppx-bridge LEDGER.jsonl sum); Sonar supported until 2026-09-27", "source": "frame/ppx-bridge/LEDGER.jsonl", "recorded_at": "2026-09-23T20:50:00Z", "expires_at": "2026-09-27T00:00:00Z"}
+      ]
+    },
+    {
+      "entitlement_id": "openrouter-prepaid",
+      "provider": "openrouter",
+      "kind": "cognition",
+      "cost_class": "prepaid",
+      "credential_names": ["openrouter-api"],
+      "env_names": ["OPENROUTER_API_KEY"],
+      "readbacks": [
+        {"readback_id": "openrouter_credits", "secret": "openrouter-api"},
+        {"readback_id": "openrouter_key", "secret": "openrouter-api"}
+      ],
+      "registry_route_ids": ["api.headless.openrouter"],
+      "registry_shape_ids": ["model_provider.openrouter_gateway_surface"],
+      "notes": "Spend not authorized; E0 section 2a records $0.12 unattributed spend this week."
+    },
+    {
+      "entitlement_id": "huggingface-pro",
+      "registry_shape_ids": ["model_provider.huggingface_pro"],
+      "provider": "huggingface",
+      "kind": "cognition",
+      "cost_class": "subscription",
+      "credential_names": ["api-huggingface"],
+      "harness_bins": ["hf", "tiny-agents"],
+      "readbacks": [{"readback_id": "hf_whoami", "secret": "api-huggingface"}]
+    },
+    {
+      "entitlement_id": "anthropic-api",
+      "provider": "anthropic",
+      "kind": "cognition",
+      "cost_class": "payg",
+      "credential_names": ["api-anthropic"],
+      "env_names": ["ANTHROPIC_API_KEY"],
+      "readbacks": [{"readback_id": "anthropic_models", "secret": "api-anthropic"}],
+      "registry_route_ids": ["api.headless.api_frontier"]
+    },
+    {
+      "entitlement_id": "openai-api",
+      "provider": "openai",
+      "kind": "cognition",
+      "cost_class": "payg",
+      "credential_names": ["api-openai"],
+      "env_names": ["OPENAI_API_KEY"],
+      "readbacks": [{"readback_id": "openai_models", "secret": "api-openai"}],
+      "registry_route_ids": ["api.headless.api_frontier"]
+    },
+    {
+      "entitlement_id": "cohere",
+      "registry_shape_ids": ["model_provider.cohere"],
+      "provider": "cohere",
+      "kind": "cognition",
+      "cost_class": "unobserved",
+      "credential_names": ["cohere-api-key"],
+      "readbacks": [{"readback_id": "cohere_models", "secret": "cohere-api-key"}]
+    },
+    {
+      "entitlement_id": "meta-developer-key",
+      "provider": "meta",
+      "kind": "cognition",
+      "cost_class": "unobserved",
+      "credential_names": ["meta-dev-api-key"],
+      "readbacks": [{"readback_id": "llama_models", "secret": "meta-dev-api-key"}],
+      "notes": "Purpose unverified: a 401 is dead on api.llama.com only."
+    },
+    {
+      "entitlement_id": "github-copilot",
+      "provider": "github",
+      "kind": "cognition",
+      "cost_class": "unobserved",
+      "harness_bins": ["copilot", "gh-copilot"],
+      "notes": "E0: no client, extension or config on either host; the account's Copilot billing was not read."
+    },
+    {
+      "entitlement_id": "local-fleet",
+      "provider": "owned",
+      "kind": "local",
+      "cost_class": "local",
+      "harness_bins": ["llama-server", "ollama"],
+      "registry_platforms": ["local_tool"],
+      "ledger_providers": ["tabbyapi"],
+      "notes": "Each serving endpoint is its own row (serving.*); the metal funnel is the potential face."
+    },
+    {
+      "entitlement_id": "tavily",
+      "provider": "tavily",
+      "kind": "grounding",
+      "cost_class": "subscription",
+      "credential_names": ["tavily-api-key", "api-tavily", "tavily-mcp-link"],
+      "readbacks": [{"readback_id": "tavily_usage", "secret": "tavily-api-key"}]
+    },
+    {
+      "entitlement_id": "firecrawl",
+      "provider": "firecrawl",
+      "kind": "grounding",
+      "cost_class": "subscription",
+      "credential_names": ["firecrawl-api-token", "firecrawl-webhook-signing-secret"],
+      "readbacks": [{"readback_id": "firecrawl_credit_usage", "secret": "firecrawl-api-token"}]
+    },
+    {
+      "entitlement_id": "context7",
+      "provider": "context7",
+      "kind": "grounding",
+      "cost_class": "unobserved",
+      "credential_names": ["context7-api-key"]
+    },
+    {
+      "entitlement_id": "elevenlabs",
+      "provider": "elevenlabs",
+      "kind": "modality",
+      "cost_class": "subscription",
+      "credential_names": ["elevenlabs-api-key"],
+      "readbacks": [{"readback_id": "elevenlabs_subscription", "secret": "elevenlabs-api-key"}]
+    },
+    {"entitlement_id": "picovoice", "provider": "picovoice", "kind": "modality", "cost_class": "unobserved", "credential_names": ["picovoice-access-key"]},
+    {"entitlement_id": "acoustid", "provider": "acoustid", "kind": "modality", "cost_class": "unobserved", "credential_names": ["acoustid-api-key"]},
+    {"entitlement_id": "acrcloud", "provider": "acrcloud", "kind": "modality", "cost_class": "unobserved", "credential_names": ["acrcloud-access-key", "acrcloud-access-secret", "acrcloud-api-token", "acrcloud-host"]},
+    {
+      "entitlement_id": "epidemic-sound",
+      "provider": "epidemic",
+      "kind": "modality",
+      "cost_class": "subscription",
+      "credential_names": ["epidemic-mcp-key"],
+      "declared_refs": [
+        {"fact": "subscription recorded", "source": "warehouse-entitlement-supply-model-2026-07-02.md", "recorded_at": "2026-07-02T00:00:00Z", "expires_at": "2026-08-02T00:00:00Z"}
+      ]
+    },
+    {"entitlement_id": "reverb", "provider": "reverb", "kind": "modality", "cost_class": "unobserved", "credential_names": ["reverb-api-key"]},
+    {"entitlement_id": "semgrep", "provider": "semgrep", "kind": "resource", "cost_class": "unobserved", "credential_names": ["semgrep-app_token", "semgrep-SEMGREP_APP_TOKEN"]},
+    {"entitlement_id": "codecov", "provider": "codecov", "kind": "resource", "cost_class": "unobserved", "credential_names": ["codecove-api-key"]},
+    {"entitlement_id": "edge-tts", "provider": "microsoft", "kind": "modality", "cost_class": "free", "harness_bins": ["edge-tts"]},
+    {
+      "entitlement_id": "obsidian-sync",
+      "provider": "obsidian",
+      "kind": "resource",
+      "cost_class": "subscription",
+      "credential_names": ["obsidian-vault-alliant", "obsidian-vault-complete"]
+    },
+    {
+      "entitlement_id": "github",
+      "provider": "github",
+      "kind": "resource",
+      "cost_class": "unobserved",
+      "credential_names": ["github-apps-hapax-reviewer-private-key", "github-codex-personal-access-token", "hapax-github-hapax-systems-admin-token", "hapax-reviewer-org"],
+      "login_files": [".config/gh/hosts.yml"],
+      "harness_bins": ["gh"]
+    },
+    {
+      "entitlement_id": "canva-connector",
+      "provider": "canva",
+      "kind": "resource",
+      "cost_class": "unobserved",
+      "declared_refs": [
+        {"fact": "claude.ai connector connected (session roster)", "source": "frame/ENTITLEMENT-CENSUS-R2-20260924.md#4", "recorded_at": "2026-09-24T19:06:17Z", "expires_at": "2026-10-24T19:06:17Z"}
+      ]
+    },
+    {
+      "entitlement_id": "figma-connector",
+      "provider": "figma",
+      "kind": "resource",
+      "cost_class": "unobserved",
+      "declared_refs": [
+        {"fact": "claude.ai connector connected (session roster)", "source": "frame/ENTITLEMENT-CENSUS-R2-20260924.md#4", "recorded_at": "2026-09-24T19:06:17Z", "expires_at": "2026-10-24T19:06:17Z"}
+      ]
+    },
+    {
+      "entitlement_id": "sentry-connector",
+      "provider": "sentry",
+      "kind": "resource",
+      "cost_class": "unobserved",
+      "declared_refs": [
+        {"fact": "claude.ai connector connected (session roster)", "source": "frame/ENTITLEMENT-CENSUS-R2-20260924.md#4", "recorded_at": "2026-09-24T19:06:17Z", "expires_at": "2026-10-24T19:06:17Z"}
+      ]
+    }
+  ]
+}

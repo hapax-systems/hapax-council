@@ -1,0 +1,426 @@
+#!/usr/bin/env python3
+"""Keep the single entitlement view complete: held x holds-now x declared, on cadence.
+
+Registered as one row in ``config/determination-producers.json``, so ``hapax-determine`` runs and
+witnesses it. Each run:
+
+1. reads credential NAMES, login-file existence and mtime, and harness binaries on every declared
+   host (remote hosts through a non-interactive ``ssh -o BatchMode=yes`` binding);
+2. performs only the allow-listed, spend-free readbacks in ``shared.entitlement_census.READBACKS``;
+3. joins them with the platform registry and the quota ledger;
+4. emits capability_surface_delta rows through the existing intake
+   (``scripts/hapax-capability-surface-delta-intake``) and classifies newly minted ones through the
+   onboarding discover bridge;
+5. writes quantities in the quota ledger's measurement shape for the ledger's readers;
+6. regenerates the projection (JSON view, which is also a Reins capability-surface pack, and a
+   Markdown page in the vault).
+
+Nothing is written if any rendered artifact contains secret material.
+
+Exit codes: 0 complete; 3 complete but a declared host was unreachable (its rows are marked
+unobserved: healthy bad news); 2 declaration invalid or secret material detected; 1 the intake failed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import subprocess
+import sys
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.capability_surface_delta import task_filename_for_delta  # noqa: E402
+from shared.durable_jsonl_sink import (  # noqa: E402
+    DurableJsonlSink,
+    DurableSinkAppendError,
+    DurableSinkChainError,
+    DurableSinkPathError,
+)
+from shared.entitlement_census import (  # noqa: E402
+    DEFAULT_OUTPUT_ROOT,
+    ENTITLEMENT_CENSUS_CONFIG,
+    HISTORY_STREAM,
+    PRE_SINK_HISTORY_FILE,
+    PROVIDER_CALLS_STREAM,
+    CensusConfig,
+    CensusConfigError,
+    HostHoldings,
+    SecretLeakError,
+    attach_history,
+    collect_holdings,
+    default_http_get,
+    default_resolve_secret,
+    load_census_config,
+    load_history,
+    load_registry,
+    provider_calls_for,
+    read_dispatched_demand,
+    read_queued_demand,
+    read_wall_witness,
+    render_view,
+    run_census,
+    write_outputs,
+)
+from shared.platform_capability_registry import PLATFORM_CAPABILITY_REGISTRY  # noqa: E402
+from shared.quota_spend_ledger import (  # noqa: E402
+    DEFAULT_QUOTA_SPEND_LEDGER_LIVE,
+    QUOTA_SPEND_LEDGER_LIVE_ENV,
+)
+
+INTAKE = REPO_ROOT / "scripts" / "hapax-capability-surface-delta-intake"
+EXIT_HOST_UNREACHABLE = 3
+EXIT_REFUSED = 2
+EXIT_INTAKE_FAILED = 1
+
+#: One budget for every network step: host reads, secret resolution, readbacks, serving GETs, the
+#: scout read and GPU probes. Each step is capped by what is left, and one in-flight step can
+#: overshoot by at most about 20 s, so the network phase ends by about 260 s. With the intake's 120 s
+#: the run ends by about 390 s, under the determine row's 480 s timeout.
+NETWORK_BUDGET_S = 240.0
+HOST_READ_TIMEOUT_S = 30.0
+SCOUT_TIMEOUT_S = 20.0
+INTAKE_TIMEOUT_S = 120
+
+
+def _now(value: str | None) -> datetime:
+    if not value:
+        return datetime.now(UTC).replace(microsecond=0)
+    parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).astimezone(UTC)
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _read_home_file(rel: str) -> bytes | None:
+    path = Path.home() / rel
+    try:
+        return path.read_bytes() if path.is_file() else None
+    except OSError:
+        return None
+
+
+def _scout_report(config: CensusConfig, timeout: float) -> dict[str, Any] | None:
+    binding_ref = config.metal.scout_report
+    if binding_ref is None or timeout < 1:
+        return None
+    host = next((h for h in config.hosts if h.host_id == binding_ref.host_id), None)
+    if host is None:
+        return None
+    if host.transport == "local":
+        return _read_json(Path.home() / binding_ref.path)
+    assert host.target is not None
+    try:
+        result = subprocess.run(
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=8",
+                "--",
+                host.target,
+                "cat -- " + shlex.quote(binding_ref.path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        data = json.loads(result.stdout) if result.returncode == 0 else None
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _hostname() -> str:
+    return os.uname().nodename
+
+
+def _home_path(rel: str | None) -> Path | None:
+    return Path.home() / rel if rel else None
+
+
+def _demand(config: CensusConfig, now: datetime) -> dict[str, Any]:
+    sources = config.trend_sources
+    tasks, routes = _home_path(sources.task_rows), _home_path(sources.route_decisions)
+    return {
+        "queued": read_queued_demand(tasks) if tasks else {"note": "no task_rows binding"},
+        "dispatched": read_dispatched_demand(routes, now=now)
+        if routes
+        else {"note": "no route_decisions binding", "stale": True},
+    }
+
+
+def _ratchet(trend: dict[str, Any]) -> dict[str, Any]:
+    """The one-line answer to 'are we ratcheting up?' for the determine run log."""
+    if not trend.get("points"):
+        return {"points": 0}
+    return {
+        "points": trend["points"],
+        "span_hours": trend["span_hours"],
+        "availability": trend["availability"]["direction"],
+        "usage": trend["usage"]["direction"],
+        "queued_demand": trend["demand"]["queued_direction"],
+        "dispatch_record_stale": trend["demand"]["dispatch_record_stale"],
+        "wall_episodes_by_pool": trend["walls"]["by_pool"],
+    }
+
+
+def _witness(config: CensusConfig) -> dict[str, Any]:
+    path = _home_path(config.trend_sources.wall_witness)
+    return read_wall_witness(path) if path else {}
+
+
+def _gpu_probe(host_id: str) -> tuple[bool, list[str]]:
+    from shared.estate_host_inventory import probe_host
+
+    facts = probe_host({"name": host_id, "os": "linux"}, self_name=_hostname())
+    return facts.reachable, list(facts.gpus)
+
+
+def _intake(deltas_path: Path, run_deltas: list[Any]) -> dict[str, Any]:
+    result = subprocess.run(
+        [sys.executable, str(INTAKE), "--fixtures", str(deltas_path), "--apply", "--json"],
+        capture_output=True,
+        text=True,
+        timeout=INTAKE_TIMEOUT_S,
+        check=False,
+    )
+    try:
+        payload = json.loads(result.stdout)
+    except ValueError:
+        return {"ok": False, "error": f"intake exit {result.returncode}; unparseable output"}
+    written = {Path(p).name for p in payload.get("written") or []}
+    minted = [d for d in run_deltas if task_filename_for_delta(d) in written]
+    discovered = 0
+    if minted:
+        from shared.capability_onboarding_discover import discover_from_deltas
+
+        discovered = len(discover_from_deltas(minted, source_ref="entitlement-census"))
+    return {
+        "ok": bool(payload.get("ok")),
+        "written": sorted(written),
+        "skipped_existing": len(payload.get("skipped_existing") or []),
+        "ignored_evidence_only": len(payload.get("ignored_evidence_only") or []),
+        "discovered": discovered,
+        "error": payload.get("error"),
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--config", type=Path, default=ENTITLEMENT_CENSUS_CONFIG)
+    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
+    parser.add_argument(
+        "--projection-md",
+        type=Path,
+        default=None,
+        help="Markdown projection path (default: the declaration's projection_markdown under $HOME)",
+    )
+    parser.add_argument(
+        "--no-projection-md", action="store_true", help="Do not write the Markdown projection"
+    )
+    parser.add_argument("--registry", type=Path, default=PLATFORM_CAPABILITY_REGISTRY)
+    parser.add_argument("--ledger", type=Path, default=None)
+    parser.add_argument(
+        "--no-intake", action="store_true", help="Write deltas but do not run the intake"
+    )
+    parser.add_argument(
+        "--no-remote", action="store_true", help="Skip ssh hosts (their rows read unobserved)"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Observe and render; write nothing")
+    parser.add_argument("--now", default=None, help="Override the run time (ISO-8601)")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--run-on-host",
+        default=None,
+        help="Run only on this host name; elsewhere exit 0 'skipped' (hapax-determine runs on every "
+        "host, and the census bindings are written from the FileStore host's point of view)",
+    )
+    args = parser.parse_args(argv)
+
+    if args.run_on_host and _hostname() != args.run_on_host:
+        skipped = {"ok": True, "skipped": True, "host": _hostname(), "runs_on": args.run_on_host}
+        print(
+            json.dumps(skipped) if args.json else f"skipped: this census runs on {args.run_on_host}"
+        )
+        return 0
+
+    try:
+        config = load_census_config(args.config)
+        registry = load_registry(args.registry)
+    except CensusConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_REFUSED
+    now = _now(args.now)
+    deadline = time.monotonic() + NETWORK_BUDGET_S
+
+    def left(cap: float) -> float:
+        return max(0.0, min(cap, deadline - time.monotonic()))
+
+    login_files = sorted({f for d in config.entitlements for f in d.login_files})
+    harness_bins = sorted({b for d in config.entitlements for b in d.harness_bins})
+    holdings = []
+    for binding in config.hosts:
+        if args.no_remote and binding.transport != "local":
+            holdings.append(
+                HostHoldings(
+                    host_id=binding.host_id,
+                    reachable=False,
+                    observed_at=None,
+                    error="skipped (--no-remote)",
+                )
+            )
+            continue
+        budget = left(HOST_READ_TIMEOUT_S)
+        if budget < 1:
+            holdings.append(
+                HostHoldings(
+                    host_id=binding.host_id,
+                    reachable=False,
+                    observed_at=None,
+                    error="run_deadline_reached",
+                )
+            )
+            continue
+        holdings.append(
+            collect_holdings(
+                binding,
+                login_files=login_files,
+                harness_bins=harness_bins,
+                now=now,
+                timeout=budget,
+            )
+        )
+
+    ledger_path = args.ledger or Path(
+        os.environ.get(QUOTA_SPEND_LEDGER_LIVE_ENV) or DEFAULT_QUOTA_SPEND_LEDGER_LIVE
+    )
+    # The durable sink holds this producer's history and the per-call ledger (dev22's channel).
+    # An unusable root leaves the ledger unread (utilization unjudged, never "zero calls").
+    try:
+        stream_path = DurableJsonlSink().path_for_stream
+    except DurableSinkPathError:
+        stream_path = None
+    provider_calls = (
+        provider_calls_for(config, stream_path(PROVIDER_CALLS_STREAM), now=now)
+        if stream_path
+        else None
+    )
+    run = run_census(
+        config,
+        now=now,
+        holdings=holdings,
+        registry=registry,
+        ledger=_read_json(ledger_path),
+        prior_view=_read_json(args.output_root / "view.json"),
+        resolve_secret=default_resolve_secret,
+        http_get=default_http_get,
+        read_home_file=_read_home_file,
+        scout_report=None if args.no_remote else _scout_report(config, left(SCOUT_TIMEOUT_S)),
+        gpu_probe=None if args.no_remote else _gpu_probe,
+        deadline=deadline,
+        clock=time.monotonic,
+        provider_calls=provider_calls,
+    )
+
+    projection: Path | None = None
+    if not args.no_projection_md:
+        projection = args.projection_md or (
+            Path.home() / config.projection_markdown if config.projection_markdown else None
+        )
+    outputs: dict[str, Path] = {}
+    intake: dict[str, Any] | None = None
+    if not args.dry_run:
+        # Clause (8): one line of the append-only series per real run, and the trend it implies.
+        prior = load_history(args.output_root / PRE_SINK_HISTORY_FILE, now=now)
+        if stream_path:
+            prior += load_history(stream_path(HISTORY_STREAM), now=now)
+        attach_history(
+            run,
+            now=now,
+            prior=prior,
+            demand=_demand(config, now),
+            witness=_witness(config),
+        )
+        try:
+            outputs = write_outputs(
+                run, output_root=args.output_root, projection_md=projection, now=now
+            )
+        except SecretLeakError as exc:
+            print(str(exc), file=sys.stderr)
+            return EXIT_REFUSED
+        except (DurableSinkPathError, DurableSinkAppendError, DurableSinkChainError) as exc:
+            print(
+                f"history append to the durable sink failed ({type(exc).__name__}: {exc}); the view "
+                "was written. Next action: repair the sink root or stream, then rerun",
+                file=sys.stderr,
+            )
+            return EXIT_INTAKE_FAILED
+        if "surface-deltas.json" in outputs and not args.no_intake:
+            intake = _intake(outputs["surface-deltas.json"], run.deltas)
+    else:
+        view_text = json.dumps(render_view(run, now=now))
+        try:
+            run.secrets.require_clean(view_text, label="dry-run view")
+        except SecretLeakError as exc:
+            print(str(exc), file=sys.stderr)
+            return EXIT_REFUSED
+
+    unreachable = [h.host_id for h in run.holdings if not h.reachable]
+    view = render_view(run, now=now)
+    summary = {
+        "ok": intake is None or intake["ok"],
+        "generated_at": view["generated_at"],
+        "summary": view["summary"],
+        "unreachable_hosts": unreachable,
+        "outputs": {name: str(path) for name, path in outputs.items()},
+        "intake": intake,
+        "dry_run": args.dry_run,
+        "ratchet": _ratchet(view.get("trend") or {}),
+    }
+    text = json.dumps(summary, indent=2, sort_keys=True)
+    try:
+        run.secrets.require_clean(text, label="stdout summary")
+    except SecretLeakError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_REFUSED
+    if args.json:
+        print(text)
+    else:
+        print(
+            f"entitlement census: {view['summary']['rows']} rows {view['summary']['by_state']}; "
+            f"{view['summary']['deltas']} deltas; unreachable {unreachable or 'none'}"
+        )
+    if intake is not None and not intake["ok"]:
+        print(
+            f"intake failed: {intake.get('error')}; next action: run the intake by hand on "
+            f"{outputs.get('surface-deltas.json')} and read its error",
+            file=sys.stderr,
+        )
+        return EXIT_INTAKE_FAILED
+    return EXIT_HOST_UNREACHABLE if unreachable else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

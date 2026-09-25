@@ -55,6 +55,20 @@
       "declined_exit_codes": [],
       "notes": "Evaluates the MECHANISM-DISPOSITION-THRESHOLDS ladder (T1-T9: T8 is entries unjudged after 7 d, T9 is judgments resting on unjudged or accidental walls) over ENCOUNTERED-MACHINERY plus its class ledger. The primary metric is the accidental share. It mints offered reduction rows (authority unset, WIP cap 3), posts one lanebus drop to the seat when the flag set changes, and rewrites the derived ENCOUNTERED-MACHINERY-PILE-STATUS.md only when its content changes. Hourly because the ladder's tightest clocks are 'same working day' (T2) and 24 h (T3): hourly gives a same-day row at least 20 chances and bounds T3 lateness to 1 h, at a cost of about 1 s plus two local git reads. Minutes would only rewrite an NFS file and reread history for nothing. The TTL of 3 h tolerates two missed runs before the pile status is stale. --run-on-host: every host runs hapax-determine against the one shared vault, and a second writer would double-post and race the mint. Podium holds the vault on local disk, so it avoids the NFS client stalls of M100/M107. On any other host the run exits 0 with 'skipped'. rc 1 means an action failed (mint, post, write) and the next run retries; rc 2 means the inputs were unreadable. Both page, correctly.",
       "timeout_seconds": 180
+    },
+    {
+      "id": "entitlement-census",
+      "property": "entitlement_view",
+      "subjects": ["entitlement-census"],
+      "command": ["scripts/hapax-entitlement-census", "--run-on-host", "hapax-appendix", "--json", "--no-intake"],
+      "cadence_seconds": 1800,
+      "evidence_ttl_seconds": 3600,
+      "provenance": "mechanical",
+      "host_scope": "designated_host",
+      "success_exit_codes": [0],
+      "declined_exit_codes": [3],
+      "notes": "--run-on-host hapax-appendix: hapax-determine runs on every host (podium too), but the census bindings are written from the FileStore host's side (appendix is 'local', podium is read over ssh), so on any other host the run exits 0 'skipped' and reads and writes nothing. --no-intake is deliberate and owed (seat decision 2026-09-25T01:46Z): deltas are still written to surface-deltas.json, but the intake is not applied until grok-registry's provider declarations merge, which makes most new_capability rows moot; the flip is exit-predicate item (7) of entitlement-census-producer-20260924. The single entitlement view (row entitlement-census-producer-20260924): held x holds-now x declared on every declared host, spend-free allow-listed readbacks only (never a completion, never a Claude probe), deltas through the existing capability-surface intake, quantities in the quota ledger's measurement shape, projection to ~/.cache/hapax/entitlement-census/view.json and the vault. 3 = a declared host was unreachable: its rows read unobserved, which is healthy bad news. 2 = the declaration is invalid or a rendered artifact carried secret material (nothing written): a failure that must page. Runtime: one 240 s network budget covers host reads, secret resolution, readbacks, serving GETs, the scout read and GPU probes. Each step is capped by what is left, and one in-flight step can overshoot by at most about 20 s. The intake adds at most 120 s. Worst case is about 390 s; a normal run takes about 40 s (measured 2026-09-25). An unreadable platform registry exits 2 and writes nothing.",
+      "timeout_seconds": 480
     }
   ]
 }
