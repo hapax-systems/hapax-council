@@ -93,7 +93,8 @@ def test_non_interactive_build_service_refuses_instead_of_building_an_unauthenti
     message = str(excinfo.value)
     assert "'google/token'" in message
     assert "Next action" in message
-    assert "scripts/mint-google-token.py --pass-key google/token" in message
+    assert "get_google_credentials" in message
+    assert "mint-google-token.py" not in message
 
 
 def _recovery_command_argv(message: str) -> list[str]:
@@ -102,32 +103,67 @@ def _recovery_command_argv(message: str) -> list[str]:
     return shlex.split(message.split(marker, maxsplit=1)[1])
 
 
-def test_shared_token_recovery_command_explicitly_requests_every_shared_scope():
-    """Recovery must not replace ``google/token`` with YouTube-only credentials."""
-    from shared.google_auth import ALL_SCOPES, GoogleCredentialsUnavailable, build_service
+def _refusal(pass_key: str, scopes: list[str]) -> str:
+    from shared.google_auth import GoogleCredentialsUnavailable, build_service
 
     with patch("shared.google_auth._load_token", return_value=None):
         with pytest.raises(GoogleCredentialsUnavailable) as excinfo:
-            build_service("drive", "v3", [_DRIVE_RO], interactive=False)
-
-    command = _recovery_command_argv(str(excinfo.value))
-    scopes_index = command.index("--scopes")
-    assert command[scopes_index + 1 :] == ALL_SCOPES
+            build_service("drive", "v3", scopes, pass_key=pass_key, interactive=False)
+    return str(excinfo.value)
 
 
-def test_recovery_command_scopes_match_the_interactive_consent_union():
-    """The suggested mint command must retain requested scopes beyond ``ALL_SCOPES``."""
-    from shared.google_auth import ALL_SCOPES, GoogleCredentialsUnavailable, build_service
+def _main_account_consent_scopes(command: list[str]) -> list[str]:
+    """The scope list passed to the shared client's interactive consent in a `python -c` remedy."""
+    import ast
+
+    assert command[:4] == ["uv", "run", "python", "-c"], command
+    tree = ast.parse(command[4])
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "get_google_credentials"
+    ]
+    assert len(calls) == 1, command[4]
+    call = calls[0]
+    # The default pass key is google/token and the default is interactive: the remedy must not
+    # override either, or it would not be the main-account consent it claims to be.
+    assert not call.keywords, command[4]
+    return ast.literal_eval(call.args[0])
+
+
+def test_main_token_recovery_never_routes_through_the_sub_channel_mint_script():
+    """Review finding at a9c30e854 (major): the refusal for ``google/token`` named
+    ``mint-google-token.py``, whose prompt says to pick the YouTube SUB-CHANNEL and whose
+    docstring promises it never touches ``google/token``. Following the instruction would
+    replace the main-account credential shared by gmail, calendar and drive."""
+    command = _recovery_command_argv(_refusal("google/token", [_DRIVE_RO]))
+    assert "scripts/mint-google-token.py" not in command
+    assert "--pass-key" not in command
+
+
+def test_main_token_recovery_requests_the_interactive_consent_union():
+    """The remedy for ``google/token`` is the shared client's own consent flow, with requested
+    scopes beyond ``ALL_SCOPES`` retained, in the flow's deterministic order."""
+    from shared.google_auth import ALL_SCOPES
 
     requested_scopes = [_DRIVE_RO, "https://www.googleapis.com/auth/example.extra"]
-    with patch("shared.google_auth._load_token", return_value=None):
-        with pytest.raises(GoogleCredentialsUnavailable) as excinfo:
-            build_service("example", "v1", requested_scopes, interactive=False)
+    command = _recovery_command_argv(_refusal("google/token", requested_scopes))
+    assert _main_account_consent_scopes(command) == list(
+        dict.fromkeys([*requested_scopes, *ALL_SCOPES])
+    )
 
-    command = _recovery_command_argv(str(excinfo.value))
+
+def test_scoped_token_recovery_keeps_the_sub_channel_mint_script():
+    """A sub-channel key is what ``mint-google-token.py`` exists for, so its remedy is unchanged."""
+    from shared.google_auth import ALL_SCOPES, YOUTUBE_STREAMING_TOKEN_PASS_KEY
+
+    command = _recovery_command_argv(_refusal(YOUTUBE_STREAMING_TOKEN_PASS_KEY, [_DRIVE_RO]))
+    assert command[:4] == ["uv", "run", "python", "scripts/mint-google-token.py"]
+    assert command[command.index("--pass-key") + 1] == YOUTUBE_STREAMING_TOKEN_PASS_KEY
     scopes_index = command.index("--scopes")
-    expected_scopes = list(dict.fromkeys([*requested_scopes, *ALL_SCOPES]))
-    assert command[scopes_index + 1 :] == expected_scopes
+    assert command[scopes_index + 1 :] == list(dict.fromkeys([_DRIVE_RO, *ALL_SCOPES]))
 
 
 def test_unattended_google_callers_use_the_shared_client_non_interactively():

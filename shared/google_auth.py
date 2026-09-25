@@ -192,22 +192,37 @@ def build_service(
     """
     creds = get_google_credentials(scopes, pass_key=pass_key, interactive=interactive)
     if creds is None:
-        mint_command = shlex.join(
-            [
-                "uv",
-                "run",
-                "python",
-                "scripts/mint-google-token.py",
-                "--pass-key",
-                pass_key,
-                "--scopes",
-                *_consent_scopes(scopes),
-            ]
-        )
         raise GoogleCredentialsUnavailable(
             f"No usable Google credential for {api} {version} at pass key "
             f"{pass_key!r} and the interactive consent flow is disabled. "
             "Next action: mint the token once, interactively, on this host: "
-            f"{mint_command}"
+            f"{_recovery_command(pass_key, scopes)}"
         )
     return discovery_build(api, version, credentials=creds)
+
+
+def _recovery_command(pass_key: str, scopes: list[str]) -> str:
+    """The shell-safe command that re-mints the token at ``pass_key``.
+
+    The main-account token is re-minted by this module's own interactive consent flow, never by
+    ``scripts/mint-google-token.py``. That script's prompt tells the operator to pick a YouTube
+    SUB-CHANNEL, and it promises never to touch ``google/token``; routing the main token through
+    it would replace the credential gmail, calendar and drive share with a sub-channel token.
+    Scoped sub-channel keys are what that script exists for, so they keep it.
+    """
+    consent = _consent_scopes(scopes)
+    if pass_key == TOKEN_PASS_KEY:
+        code = f"from shared.google_auth import get_google_credentials; get_google_credentials({consent!r})"
+        return shlex.join(["uv", "run", "python", "-c", code])
+    return shlex.join(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/mint-google-token.py",
+            "--pass-key",
+            pass_key,
+            "--scopes",
+            *consent,
+        ]
+    )
