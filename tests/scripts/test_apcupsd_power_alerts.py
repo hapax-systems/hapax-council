@@ -1164,6 +1164,8 @@ def test_production_apcupsd_install_functionally_refuses_before_lock() -> None:
             "--user",
             "--map-root-user",
             "--",
+            "/usr/bin/bash",
+            "-x",
             str(INSTALLER),
             "--source",
             "/nonexistent-apcupsd-source",
@@ -1180,6 +1182,14 @@ def test_production_apcupsd_install_functionally_refuses_before_lock() -> None:
     assert "production APC installation is unavailable" in result.stderr
     assert "no lock, sudo command, live mutation" in result.stderr
     assert "missing source" not in result.stderr
+    trace_lines = [
+        line.removeprefix("+ ") for line in result.stderr.splitlines() if line.startswith("+ ")
+    ]
+    assert "configure_root_required_state_domain" in trace_lines
+    assert "refuse_unbrokered_production_install" in trace_lines
+    assert "reexec_with_safe_root_required_lock" not in trace_lines
+    assert "acquire_root_required_lock" not in trace_lines
+    assert not any(line.startswith("/usr/bin/sudo ") for line in trace_lines)
 
 
 def test_apcupsd_repair_guidance_never_advertises_retired_bare_install() -> None:
