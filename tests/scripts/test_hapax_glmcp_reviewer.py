@@ -1334,12 +1334,12 @@ def test_call_glm_payg_actual_above_reservation_freezes_spend_at_the_actual(
     module = _load_module()
     ledger_path, _receipt_dir, seen_urls = _live_payg_setup(module, monkeypatch, tmp_path)
     body = _payg_reply("glm-5.3")
-    body["usage"]["prompt_tokens"] = 100_000
+    body["usage"]["prompt_tokens"] = 200_000
     body["usage"]["prompt_tokens_details"]["cached_tokens"] = 0
     monkeypatch.setattr(module, "open_no_redirect", _walled_then(body, seen_urls))
     config = _payg_config(module)
-    # (100000 x 1.40 + 300 x 4.40) / 1M
-    actual = Decimal("0.141320")
+    # (200000 x 1.40 + 300 x 4.40) / 1M; above a reservation priced at the PAYG thinking floor
+    actual = Decimal("0.281320")
     assert actual > module._payg_reservation_usd("review prompt", config)
 
     reply = module.call_glm("review prompt", config, "test-secret-token")
@@ -1420,7 +1420,8 @@ def test_call_glm_payg_billed_empty_reply_is_reconciled_not_left_pending(
     # A prompt large enough for the reported 1200 prompt tokens, so the byte bound holds.
     prompt = "x" * 2_000
 
-    with pytest.raises(module.ApiError, match="reasoning_content was present"):
+    # finish_reason "length" with only reasoning is the named budget-exhaustion shape
+    with pytest.raises(module.ApiError, match="reasoning_budget_exhausted"):
         module.call_glm(prompt, _payg_config(module), "test-secret-token")
 
     [receipt] = _glmcp_receipts(module, ledger_path)
@@ -2873,3 +2874,204 @@ def test_empty_content_with_reasoning_points_to_disabled_thinking(
 
     with pytest.raises(module.ApiError, match="HAPAX_GLMCP_REVIEW_THINKING=disabled"):
         module.call_glm("review prompt", config, "test-secret-token")
+
+
+# --- PAYG thinking needs a real token budget (2026-09-25) ------------------------------------
+# docs.z.ai/guides/overview/concept-param (read 2026-09-25): GLM-5.3 uses forced thinking,
+# reasoning_effort defaults to max, and max output is 128K. Measured the same day: a
+# 9195-token review packet spent 8187 of 8192 completion tokens on reasoning, returned no
+# content, and billed $0.048772 for an unusable seat (#4759 glm-1).
+
+
+def _capturing_walled_then(payg_body: dict, sent: list[dict]) -> object:
+    """Coding Plan quota-walls; every request body is recorded; PAYG answers ``payg_body``."""
+
+    def fake_open(request: object, *, timeout: float) -> FakeResponse:
+        sent.append({"url": request.full_url, **json.loads(request.data.decode("utf-8"))})
+        if request.full_url == "https://api.z.ai/api/coding/paas/v4/chat/completions":
+            body = {"error": {"code": "1310", "message": "Quota exhausted."}}
+            raise urllib.error.HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                {},
+                io.BytesIO(json.dumps(body).encode()),
+            )
+        return FakeResponse(payg_body)
+
+    return fake_open
+
+
+def _budget_exhausted_body() -> dict:
+    body = _payg_reply("glm-5.3", content="")
+    body["choices"][0]["message"]["reasoning_content"] = "thinking..."
+    body["choices"][0]["finish_reason"] = "length"
+    body["usage"]["completion_tokens"] = 8192
+    body["usage"]["completion_tokens_details"]["reasoning_tokens"] = 8187
+    return body
+
+
+def test_payg_thinking_request_gets_at_least_the_floor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unsafe case: a PAYG request that must think inherits the Coding Plan's small budget and
+    spends all of it on reasoning."""
+    module = _load_module()
+    _ledger_path, _receipt_dir, _seen = _live_payg_setup(module, monkeypatch, tmp_path)
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        module, "open_no_redirect", _capturing_walled_then(_payg_reply("glm-5.3"), sent)
+    )
+
+    module.call_glm("x" * 2_000, _payg_config(module, thinking="enabled"), "test-secret-token")
+
+    coding, payg = sent
+    assert coding["max_tokens"] == 123  # the Coding Plan request is not widened
+    assert payg["url"].startswith(module.DEFAULT_PAYG_BASE_URL)
+    assert payg["thinking"] == {"type": "enabled"}
+    assert payg["max_tokens"] >= module.PAYG_THINKING_MIN_MAX_TOKENS >= 32_768
+
+
+def test_payg_1210_translation_to_thinking_gets_at_least_the_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_module()
+    seen: list[tuple[str, int]] = []
+
+    def fake_open(request: object, *, timeout: float) -> FakeResponse:
+        body = json.loads(request.data.decode("utf-8"))
+        seen.append((body["thinking"]["type"], body["max_tokens"]))
+        if len(seen) == 1:
+            payload = {"error": {"code": "1310", "message": "Quota exhausted."}}
+            raise urllib.error.HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                {},
+                io.BytesIO(json.dumps(payload).encode()),
+            )
+        if len(seen) == 2:
+            payload = {
+                "error": {"code": "1210", "message": "This model always engages in thinking"}
+            }
+            raise urllib.error.HTTPError(
+                request.full_url, 400, "Bad Request", {}, io.BytesIO(json.dumps(payload).encode())
+            )
+        return FakeResponse(_payg_reply("glm-5.3"))
+
+    monkeypatch.setattr(module, "open_no_redirect", fake_open)
+    monkeypatch.setattr(
+        module,
+        "_require_payg_spend_gate",
+        lambda **_kwargs: module.PaygSpendGate(
+            state="eligible_active_budget",
+            budget_id="tb-20260706-zai-glmcp-payg-review",
+            budget_authority_case="CASE-CAPACITY-ROUTING-GLMCP-PAYG-20260706",
+            cap_remaining_usd="99.95",
+            ledger_source="live",
+            ledger_path=Path("quota-spend-ledger-live.json"),
+        ),
+    )
+    monkeypatch.setattr(
+        module, "_reserve_payg_spend_receipt", lambda **_kwargs: _payg_reservation(module)
+    )
+    monkeypatch.setattr(
+        module, "_mark_payg_spend_receipt_succeeded", lambda reservation, **_kwargs: reservation
+    )
+
+    module.call_glm("review prompt", _payg_config(module, thinking="disabled"), "test-secret-token")
+
+    assert seen[0] == ("disabled", 123)  # Coding Plan: unchanged
+    assert seen[1] == ("disabled", 123)  # PAYG, thinking disabled: unchanged, rejected with 1210
+    assert seen[2][0] == "enabled"
+    assert seen[2][1] >= module.PAYG_THINKING_MIN_MAX_TOKENS
+
+
+def test_payg_reservation_prices_the_thinking_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unsafe case: the spend gate admits the call on a reservation priced at 8192 output tokens,
+    while the thinking request may bill up to the floor."""
+    module = _load_module()
+    config = _payg_config(module, thinking="disabled")
+    reserved = module._payg_reservation_usd("review prompt", config)
+    expected = module.glmcp_payg_reservation_usd(
+        model="glm-5.3",
+        prompt_utf8_bytes=len(module.SYSTEM_PROMPT.encode("utf-8")) + len(b"review prompt"),
+        max_tokens=module.PAYG_THINKING_MIN_MAX_TOKENS,
+        attempts=2,
+    )
+    assert reserved == expected
+
+
+def test_reasoning_that_exhausts_the_budget_fails_loudly_as_budget_exhausted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Unsafe case: the seat that spent its whole budget thinking is reported as unparseable
+    output and advised to set a flag that is already set."""
+    module = _load_module()
+    ledger_path, _receipt_dir, _seen = _live_payg_setup(module, monkeypatch, tmp_path)
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        module, "open_no_redirect", _capturing_walled_then(_budget_exhausted_body(), sent)
+    )
+
+    with pytest.raises(module.ApiError) as info:
+        module.call_glm("x" * 2_000, _payg_config(module, thinking="enabled"), "test-secret-token")
+
+    # call_glm wraps the fallback failure; the named cause and its marker cross that boundary
+    cause = info.value.__cause__
+    assert isinstance(cause, module.ReasoningBudgetExhausted)
+    message = str(info.value)
+    assert module.REASONING_BUDGET_EXHAUSTED in message
+    assert "completion_tokens=8192" in message
+    assert "reasoning_tokens=8187" in message
+    assert "THINKING=disabled" not in str(cause)
+    # still a billed, unusable reply: the spend is reconciled, never left pending
+    assert isinstance(cause, module.ProviderReplyUnusable)
+    [receipt] = _glmcp_receipts(module, ledger_path)
+    assert receipt.reconciliation_state is module.SpendReconciliationState.RECONCILED
+
+
+def test_an_empty_reply_that_did_not_hit_the_budget_is_not_called_budget_exhausted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The classification is only as strong as its evidence: a reply that stopped on its own
+    with tokens to spare is some other failure."""
+    module = _load_module()
+    _ledger_path, _receipt_dir, _seen = _live_payg_setup(module, monkeypatch, tmp_path)
+    body = _payg_reply("glm-5.3", content="")
+    body["choices"][0]["message"]["reasoning_content"] = "thinking..."
+    sent: list[dict] = []
+    monkeypatch.setattr(module, "open_no_redirect", _capturing_walled_then(body, sent))
+
+    with pytest.raises(module.ApiError) as info:
+        module.call_glm("x" * 2_000, _payg_config(module, thinking="enabled"), "test-secret-token")
+
+    cause = info.value.__cause__
+    assert isinstance(cause, module.ProviderReplyUnusable)
+    assert not isinstance(cause, module.ReasoningBudgetExhausted)
+    assert module.REASONING_BUDGET_EXHAUSTED not in str(info.value)
+
+
+def test_main_reports_budget_exhaustion_with_its_marker_on_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = _load_module()
+    monkeypatch.setattr(module, "load_config", lambda: _payg_config(module, thinking="enabled"))
+    monkeypatch.setattr(module, "read_secret", lambda _entry: "test-secret-token")
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO("review prompt"))
+
+    def exhausted(*_args: object, **_kwargs: object) -> str:
+        # as call_glm raises it: the fallback failure wrapped, its message free of the marker,
+        # so the marker on stderr must come from the exception's type, not its text
+        cause = module.ReasoningBudgetExhausted(
+            "budget gone",
+            observation=module.ProviderObservation(completion_tokens=8192, reasoning_tokens=8187),
+        )
+        raise module.ApiError("Coding Plan quota fallback to Z.ai PAYG API failed") from cause
+
+    monkeypatch.setattr(module, "call_glm", exhausted)
+
+    assert module.main([]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith(f"hapax-glmcp-reviewer: {module.REASONING_BUDGET_EXHAUSTED}: ")
+    assert "Coding Plan quota fallback to Z.ai PAYG API failed" in err
