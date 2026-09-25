@@ -1542,6 +1542,9 @@ sync_dependency_environment() {
 sync_dependency_environment "$candidate_worktree"
 run_activation_health_probes "$candidate_worktree"
 LOCAL_BIN="${HAPAX_SOURCE_ACTIVATE_LOCAL_BIN:-$HOME/.local/bin}"
+# The cc-* tools the runbooks name, symlinked from the release (M79; a test pins this
+# list against docs/runbooks). A new tool is added here deliberately, never by glob.
+MANAGED_CC_TOOLS=(cc-cascade-unblock cc-claim cc-close cc-scope-widen cc-stage-advance cc-task-lint cc-task-offer-ready cc-task-repair)
 if ! mkdir -p "$LOCAL_BIN"; then
     write_receipt "failed" "not_started" "2" "managed launcher directory unavailable"
     echo "hapax-source-activate: unable to prepare managed launcher directory $LOCAL_BIN; next action: repair its permissions or free space, then rerun governed source activation" >&2
@@ -1577,7 +1580,7 @@ snapshot_managed_launchers() {
             }
             managed["$base"]=1
         done
-        for base in cc-claim cc-close; do
+        for base in "${MANAGED_CC_TOOLS[@]}"; do
             [[ -f "$root/scripts/$base" ]] && managed["$base"]=1
         done
     done
@@ -1825,7 +1828,7 @@ prepare_active_runtime_surface() {
     for script in "$ACTIVE_WORKTREE"/scripts/hapax-*; do
         link_active_script "$script" || return 1
     done
-    for script in cc-claim cc-close; do
+    for script in "${MANAGED_CC_TOOLS[@]}"; do
         link_active_script "$ACTIVE_WORKTREE/scripts/$script" || return 1
     done
     sync_active_config \
