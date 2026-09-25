@@ -148,13 +148,26 @@ Publication errors report the original role, session, epoch, intent and binding
 hash, plus read-only journal observations. An observation can be terminal
 applied, terminal aborted, held or unknown; preserve held/unknown evidence and
 reconcile it before choosing another session. Both ordinary and explicit
-`cc-claim --recover-claim-publications <task-id>` return
-`claim_publication_recovery_authority_unverified` for otherwise valid pending
-journals. Caller role/session coordinates are identifiers, not independently
+`cc-claim --recover-claim-publications <task-id>` reconcile an otherwise valid
+pending journal by observation only, under its role and note locks, and write no
+projection:
+
+- every live projection at its preimage and no receipt: `aborted`
+  (`claim_publication_reconciled_before_projection`);
+- every live projection at its postimage and the exact receipt present:
+  `applied` (`claim_publication_reconciled_postimage`), kept only if the full
+  applied readback then passes;
+- any mixed vector: held with `claim_publication_recovery_authority_unverified`.
+
+An applied journal whose projections drifted is `superseded`
+(`claim_publication_superseded_by_later_applied`) only when the latest later
+applied publication for the same task passes its full readback; otherwise it
+holds with `claim_publication_postimage_drift`.
+Caller role/session coordinates are identifiers, not independently
 verified authority. Matching the recorded owner (including a forged retry) does
 not permit replay. The former owner-mismatch response that disclosed journal
 owner coordinates has been removed. The compatibility API still requires well-formed coordinates, but
-applied/aborted results are observations and incomplete publications stay held.
+applied/aborted results are observations and mixed publications stay held.
 This is an intentional availability limitation until a governed producer can
 supply independently verified recovery authority at use. Preserve all journals,
 receipts and partial projections; do not reconstruct markers or choose a fresh
@@ -451,11 +464,52 @@ Record why the fallback was used in the task session log or relay status. The
 verification proves only a legacy claim write; it is not admitted-publication
 evidence.
 
+## Governed Release And Rebind
+
+A different role takes over a claimed task in two steps. First a governed release
+frees the holder's lease. Then the successor claims through the ordinary admitted
+publication. No hand edit is involved:
+
+```bash
+# release to a named successor (merge-ready rows keep status; others become offered)
+cc-claim --release <task_id> --witness <kind> [--to <role>] [--authority-ref <note>]
+# release to this role and claim in one command
+cc-claim --rebind <task_id> --witness <kind> [--authority-ref <note>]
+```
+
+The release takes the incumbent's role lock and then the task-note lock (the
+admitted order). It records a pending intent, archives every sidecar it removes
+under `_lineage/<task>/governed-release-<id>/sidecars/` before the unlink, and
+rewrites the note. A crash after the intent is recorded is rolled forward by the
+next call. The witness must be one of these kinds:
+
+| witness | proves | when |
+|---|---|---|
+| `self_yield` | the caller is the exact incumbent role and session | a planned hand-over |
+| `terminal_task` | the note is closed or refused | residue of finished work, including epoch-only residue |
+| `provider_wall` | a live provider wall began strictly after the holder's last served turn, in the same provider pool | a walled holder; needs the shared wall and turn readers, and is typed `witness_verifier_unavailable` until they are installed |
+| `operator_release` | a recorded authorization note (`kind: claim-release-authorization`, `task_id`, `incumbent_role`, `incumbent_session_id`, `authorized_by`, `authority`) names this exact lease | an authority act, not a liveness claim |
+
+It refuses with no effect on any of the following:
+
+- an unknown witness
+- a note that names no holder, or has an unsupported status
+- more than one incumbent session or epoch
+- an unsafe sidecar
+- a pending publication journal for the task (reconcile it first with
+  `cc-claim --recover-claim-publications <task_id>`)
+- a held role or note lock
+
+After a release, the old holder's `cc-claim` resume is refused (the note no
+longer names it) and its markers are gone. A holder that wakes after a wall reset
+is fenced by the claim plane.
+
 ## Manual Stale-Lease Release
 
-Governed release is scheduled for a later Gate-0B slice. Until then, use this
-manual procedure only with operator approval when a stale claim HOLD names an
-exact `cc-active-task-*` path:
+Prefer the governed release above. This manual procedure predates it. Use it only
+with operator approval, when the installed `cc-claim` has no `--release` or no
+witness applies, and when a stale claim HOLD names an exact `cc-active-task-*`
+path:
 
 ```bash
 set -euo pipefail

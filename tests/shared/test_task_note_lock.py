@@ -882,9 +882,12 @@ def test_claim_publication_takes_the_projection_lock_in_one_direction_only() -> 
     source = Path(sdlc_claim.__file__).read_text(encoding="utf-8")
     stripped = "\n".join(re.sub(r"(^|\s)#.*$", "", line) for line in source.splitlines())
 
+    # Four takers: publication, recovery, activation rehydration, and the governed release of
+    # another holder's lease. The release goes through this same helper precisely so the
+    # ordering argument below (one role-then-note acquisition site) is unchanged.
     takers = re.findall(r"with _claim_publication_lock\(", stripped)
-    assert len(takers) == 3, (
-        f"the role lock is now taken in {len(takers)} places, not 3 — re-derive the ordering "
+    assert len(takers) == 4, (
+        f"the role lock is now taken in {len(takers)} places, not 4 — re-derive the ordering "
         "argument before assuming role-then-note is still the only direction"
     )
 
