@@ -137,7 +137,43 @@ def test_critical_floor_risk_represents_stale_ceiling_against_profile() -> None:
     assert signal.pressure_class == MemoryPressureClass.CRITICAL_FLOOR_RISK
     assert signal.state == ResourceState.RED
     assert "memory_max_below_profile_limit" in signal.raw["reasons"]
-    assert "oom_score_less_protected_than_profile" in signal.raw["reasons"]
+    assert "oom_score_adjust_drift" in signal.raw["reasons"]
+
+
+def test_critical_floor_matches_exact_delegated_oom_policy() -> None:
+    profile = DEFAULT_SERVICE_PROFILES["hapax-daimonion"]
+    properties = SystemdMemoryProperties(
+        service_name="hapax-daimonion.service",
+        memory_max_bytes=12 * BYTES_PER_GIB,
+        oom_score_adjust=100,
+    )
+
+    signal = classify_critical_floor_risk(
+        "hapax-daimonion",
+        properties,
+        profile=profile,
+    )
+
+    assert signal.state == ResourceState.GREEN
+    assert signal.raw["reasons"] == []
+
+
+def test_critical_floor_rejects_historical_negative_delegated_score() -> None:
+    profile = DEFAULT_SERVICE_PROFILES["hapax-daimonion"]
+    properties = SystemdMemoryProperties(
+        service_name="hapax-daimonion.service",
+        memory_max_bytes=12 * BYTES_PER_GIB,
+        oom_score_adjust=-500,
+    )
+
+    signal = classify_critical_floor_risk(
+        "hapax-daimonion",
+        properties,
+        profile=profile,
+    )
+
+    assert signal.state == ResourceState.YELLOW
+    assert signal.raw["reasons"] == ["oom_score_adjust_drift"]
 
 
 def test_parsers_preserve_raw_memory_evidence() -> None:

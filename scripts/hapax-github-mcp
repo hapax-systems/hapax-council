@@ -11,6 +11,8 @@ export PATH
 
 readonly GITHUB_MCP_IMAGE_DIGEST="sha256:30197479d8036c7811892bc07e06f9a05c9ef3cdd79bc59f256d50647f95788c"
 readonly GITHUB_MCP_IMAGE="ghcr.io/github/github-mcp-server@$GITHUB_MCP_IMAGE_DIGEST"
+readonly GITHUB_MCP_LAUNCH_LABEL="org.hapax.github-mcp.launch"
+readonly GITHUB_MCP_SERVER_PATH="/server/github-mcp-server"
 readonly MAX_SECRET_BYTES=8192
 
 if ! PASSWD_ENTRY="$(/usr/bin/getent passwd "$EUID")"; then
@@ -144,7 +146,6 @@ LOG_DIR="$HOME/.cache/hapax/mcp-logs"
 /usr/bin/mkdir -p "$LOG_DIR"
 /usr/bin/chmod 0700 "$LOG_DIR"
 LOG_FILE="$LOG_DIR/github-mcp.log"
-CONTAINER_NAME="hapax-github-mcp-$EUID-$$"
 TOOLS="${HAPAX_GITHUB_MCP_TOOLS:-search_pull_requests,pull_request_read,merge_pull_request,add_issue_comment,create_pull_request}"
 FILTER_ARGS=()
 if [ -n "${HAPAX_GITHUB_MCP_TOOLSETS:-}" ]; then
@@ -195,15 +196,36 @@ launch_local_docker() {
     "$@"
 }
 
-IMAGE_ID="$(local_docker image inspect --format '{{.Id}}' "$GITHUB_MCP_IMAGE")" || {
+IMAGE_RECORD="$(
+  local_docker image inspect \
+    --format '{{.Id}}{{range .RepoDigests}}{{printf "\n%s" .}}{{end}}' \
+    "$GITHUB_MCP_IMAGE"
+)" || {
   echo "hapax-github-mcp: pinned GitHub MCP image is unavailable from the local Docker content store; next action: provision the reviewed digest separately, then rerun" >&2
   exit 2
 }
-if [ "$IMAGE_ID" != "$GITHUB_MCP_IMAGE_DIGEST" ]; then
-  echo "hapax-github-mcp: local Docker resolved the pinned GitHub MCP image to an unexpected content ID; refusing token release" >&2
+if [[ "$IMAGE_RECORD" != *$'\n'* ]]; then
+  echo "hapax-github-mcp: local Docker did not report an exact RepoDigest for the pinned GitHub MCP image; refusing token release" >&2
   exit 2
 fi
-unset IMAGE_ID
+GITHUB_MCP_LOCAL_IMAGE_ID="${IMAGE_RECORD%%$'\n'*}"
+IMAGE_REPO_DIGESTS="${IMAGE_RECORD#*$'\n'}"
+if ! [[ "$GITHUB_MCP_LOCAL_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "hapax-github-mcp: local Docker reported a malformed config image ID for the pinned GitHub MCP image; refusing token release" >&2
+  exit 2
+fi
+REPO_DIGEST_MATCH=0
+while IFS= read -r repo_digest; do
+  if [ "$repo_digest" = "$GITHUB_MCP_IMAGE" ]; then
+    REPO_DIGEST_MATCH=1
+  fi
+done <<< "$IMAGE_REPO_DIGESTS"
+if [ "$REPO_DIGEST_MATCH" -ne 1 ]; then
+  echo "hapax-github-mcp: local Docker RepoDigests do not contain the exact reviewed GitHub MCP image reference; refusing token release" >&2
+  exit 2
+fi
+readonly GITHUB_MCP_LOCAL_IMAGE_ID
+unset IMAGE_RECORD IMAGE_REPO_DIGESTS REPO_DIGEST_MATCH repo_digest
 
 bounded_reason() {
   local reason="$1"
@@ -220,6 +242,74 @@ cleanup_failure() {
     >>"$LOG_FILE" 2>/dev/null || true
 }
 
+EXACT_NAME_ID=""
+EXACT_NAME_ERROR=""
+query_exact_container_name() {
+  local output
+  EXACT_NAME_ID=""
+  EXACT_NAME_ERROR=""
+  if ! output="$(
+    local_docker ps -aq --no-trunc --filter "name=^/${CONTAINER_NAME}$"
+  )"; then
+    EXACT_NAME_ERROR="$(bounded_reason "$output")"
+    return 1
+  fi
+  if [ -n "$output" ] && ! [[ "$output" =~ ^[0-9a-f]{64}$ ]]; then
+    EXACT_NAME_ERROR="unexpected bounded exact-name inventory"
+    return 1
+  fi
+  EXACT_NAME_ID="$output"
+}
+
+EXACT_ID_MATCH=""
+EXACT_ID_ERROR=""
+query_exact_container_id() {
+  local container_id="$1" output
+  EXACT_ID_MATCH=""
+  EXACT_ID_ERROR=""
+  if ! output="$(local_docker ps -aq --no-trunc --filter "id=$container_id")"; then
+    EXACT_ID_ERROR="$(bounded_reason "$output")"
+    return 1
+  fi
+  if [ -n "$output" ] && [ "$output" != "$container_id" ]; then
+    EXACT_ID_ERROR="unexpected bounded immutable-ID inventory"
+    return 1
+  fi
+  EXACT_ID_MATCH="$output"
+}
+
+LAUNCH_IDENTITY_ERROR=""
+validate_launch_container_identity() {
+  local container_id="$1" output
+  local actual_id actual_name actual_launch actual_image actual_config_image actual_path extra
+  LAUNCH_IDENTITY_ERROR=""
+  if ! output="$(
+    local_docker inspect --format \
+      '{{.Id}}{{printf "\t"}}{{.Name}}{{printf "\t"}}{{index .Config.Labels "org.hapax.github-mcp.launch"}}{{printf "\t"}}{{.Image}}{{printf "\t"}}{{.Config.Image}}{{printf "\t"}}{{.Path}}' \
+      "$container_id"
+  )"; then
+    LAUNCH_IDENTITY_ERROR="$(bounded_reason "$output")"
+    return 1
+  fi
+  if [[ "$output" == *$'\n'* ]]; then
+    LAUNCH_IDENTITY_ERROR="unexpected multiline inspect record"
+    return 1
+  fi
+  IFS=$'\t' read -r \
+    actual_id actual_name actual_launch actual_image actual_config_image actual_path extra \
+    <<< "$output"
+  if [ -n "$extra" ] \
+    || [ "$actual_id" != "$container_id" ] \
+    || [ "$actual_name" != "/$CONTAINER_NAME" ] \
+    || [ "$actual_launch" != "$LAUNCH_ID" ] \
+    || [ "$actual_image" != "$GITHUB_MCP_LOCAL_IMAGE_ID" ] \
+    || [ "$actual_config_image" != "$GITHUB_MCP_IMAGE" ] \
+    || [ "$actual_path" != "$GITHUB_MCP_SERVER_PATH" ]; then
+    LAUNCH_IDENTITY_ERROR="immutable launch signature mismatch"
+    return 1
+  fi
+}
+
 CID_DIR="$(/usr/bin/mktemp -d -p "$LOG_DIR" github-mcp.XXXXXXXXXX)"
 CID_FILE="$CID_DIR/container.cid"
 if [ "$(/usr/bin/stat -c %u -- "$CID_DIR")" != "$EUID" ] \
@@ -227,37 +317,79 @@ if [ "$(/usr/bin/stat -c %u -- "$CID_DIR")" != "$EUID" ] \
   echo "hapax-github-mcp: unsafe immutable-ID scratch directory: $CID_DIR" >&2
   exit 2
 fi
+LAUNCH_SUFFIX="${CID_DIR##*.}"
+if ! [[ "$LAUNCH_SUFFIX" =~ ^[A-Za-z0-9]{10}$ ]]; then
+  echo "hapax-github-mcp: malformed launch identity from private scratch directory" >&2
+  /usr/bin/rmdir -- "$CID_DIR" 2>/dev/null || true
+  exit 2
+fi
+readonly LAUNCH_ID="$EUID-$LAUNCH_SUFFIX"
+readonly CONTAINER_NAME="hapax-github-mcp-$LAUNCH_ID"
+LAUNCH_ATTEMPTED=0
 
 cleanup() {
   local rc=$?
-  local cid="" matches="" remove_error="" recheck=""
+  local cid="" cid_state="absent" candidate="" remove_error=""
   local cleanup_failed=0
   trap - EXIT
   set +e
 
-  if [ -e "$CID_FILE" ] || [ -L "$CID_FILE" ]; then
-    if [ ! -f "$CID_FILE" ] || [ -L "$CID_FILE" ] \
-      || [ "$(/usr/bin/stat -c %u -- "$CID_FILE" 2>/dev/null)" != "$EUID" ] \
-      || [ "$(/usr/bin/stat -c %h -- "$CID_FILE" 2>/dev/null)" != "1" ] \
-      || [ "$(/usr/bin/stat -c %s -- "$CID_FILE" 2>/dev/null)" != "64" ] \
-      || ! cid="$(/usr/bin/cat -- "$CID_FILE")" \
-      || ! [[ "$cid" =~ ^[0-9a-f]{64}$ ]]; then
-      cleanup_failed=1
-      cleanup_failure "hapax-github-mcp: refused unsafe immutable-ID scratch $CID_FILE; next action: inspect the retained scratch and local Docker inventory, then remove only a proven full container ID"
-    elif ! matches="$(local_docker ps -aq --no-trunc --filter "id=$cid" 2>&1)"; then
-      cleanup_failed=1
-      cleanup_failure "hapax-github-mcp: cannot prove cleanup state for immutable ID $cid: $(bounded_reason "$matches"); next action: restore the pinned local Docker socket and inspect that exact ID; retained scratch: $CID_FILE"
-    elif [ -n "$matches" ] && [ "$matches" != "$cid" ]; then
-      cleanup_failed=1
-      cleanup_failure "hapax-github-mcp: Docker returned an unexpected identity while cleaning $cid; next action: inspect the retained scratch and full local inventory without removing by name; retained scratch: $CID_FILE"
-    elif [ "$matches" = "$cid" ]; then
-      remove_error="$(local_docker rm -f "$cid" 2>&1)"
-      if ! recheck="$(local_docker ps -aq --no-trunc --filter "id=$cid" 2>&1)"; then
+  if [ "$LAUNCH_ATTEMPTED" -eq 1 ]; then
+    if [ -e "$CID_FILE" ] || [ -L "$CID_FILE" ]; then
+      if [ ! -f "$CID_FILE" ] || [ -L "$CID_FILE" ] \
+        || [ "$(/usr/bin/stat -c %u -- "$CID_FILE" 2>/dev/null)" != "$EUID" ] \
+        || [ "$(/usr/bin/stat -c %h -- "$CID_FILE" 2>/dev/null)" != "1" ] \
+        || [ "$(/usr/bin/stat -c %s -- "$CID_FILE" 2>/dev/null)" != "64" ] \
+        || ! cid="$(/usr/bin/cat -- "$CID_FILE")" \
+        || ! [[ "$cid" =~ ^[0-9a-f]{64}$ ]]; then
+        cid_state="unsafe"
         cleanup_failed=1
-        cleanup_failure "hapax-github-mcp: immutable-ID cleanup for $cid could not be rechecked: $(bounded_reason "$remove_error $recheck"); next action: restore Docker and inspect that exact ID; retained scratch: $CID_FILE"
-      elif [ -n "$recheck" ]; then
+        cleanup_failure "hapax-github-mcp: refused unsafe immutable-ID scratch $CID_FILE; next action: inspect the retained scratch and local Docker inventory, then remove only a proven full container ID"
+      else
+        cid_state="valid"
+      fi
+    fi
+
+    if ! query_exact_container_name; then
+      cleanup_failed=1
+      cleanup_failure "hapax-github-mcp: cannot prove exact-name cleanup state for $CONTAINER_NAME: $EXACT_NAME_ERROR; next action: restore the pinned local Docker socket and inspect the retained launch identity; retained scratch: $CID_FILE"
+    elif [ -n "$EXACT_NAME_ID" ]; then
+      candidate="$EXACT_NAME_ID"
+    fi
+
+    if [ "$cid_state" = "valid" ]; then
+      if ! query_exact_container_id "$cid"; then
         cleanup_failed=1
-        cleanup_failure "hapax-github-mcp: immutable-ID cleanup failed and $cid remains: $(bounded_reason "$remove_error"); next action: inspect and remove that exact ID without using its name; retained scratch: $CID_FILE"
+        cleanup_failure "hapax-github-mcp: cannot prove cleanup state for immutable ID $cid: $EXACT_ID_ERROR; next action: restore the pinned local Docker socket and inspect that exact ID; retained scratch: $CID_FILE"
+      elif [ -n "$EXACT_ID_MATCH" ] && [ "$candidate" != "$cid" ]; then
+        cleanup_failed=1
+        cleanup_failure "hapax-github-mcp: cidfile and exact-name discovery disagree for immutable ID $cid; refusing name-based cleanup; retained scratch: $CID_FILE"
+      elif [ -z "$EXACT_ID_MATCH" ] && [ -n "$candidate" ] && [ "$candidate" = "$cid" ]; then
+        cleanup_failed=1
+        cleanup_failure "hapax-github-mcp: exact-name discovery raced with immutable ID $cid; refusing ambiguous cleanup; retained scratch: $CID_FILE"
+      fi
+    fi
+
+    if [ -n "$candidate" ]; then
+      if ! validate_launch_container_identity "$candidate"; then
+        cleanup_failed=1
+        cleanup_failure "hapax-github-mcp: refused cleanup of unproven immutable ID $candidate: $LAUNCH_IDENTITY_ERROR; next action: inspect that exact ID without exposing its environment; retained scratch: $CID_FILE"
+      else
+        remove_error="$(local_docker rm -f "$candidate")"
+        if ! query_exact_container_id "$candidate"; then
+          cleanup_failed=1
+          cleanup_failure "hapax-github-mcp: immutable-ID cleanup for $candidate could not be rechecked: $(bounded_reason "$remove_error $EXACT_ID_ERROR"); retained scratch: $CID_FILE"
+        elif [ -n "$EXACT_ID_MATCH" ]; then
+          cleanup_failed=1
+          cleanup_failure "hapax-github-mcp: immutable-ID cleanup failed and $candidate remains: $(bounded_reason "$remove_error"); retained scratch: $CID_FILE"
+        fi
+        if ! query_exact_container_name; then
+          cleanup_failed=1
+          cleanup_failure "hapax-github-mcp: exact-name absence after cleanup could not be rechecked: $EXACT_NAME_ERROR; retained scratch: $CID_FILE"
+        elif [ -n "$EXACT_NAME_ID" ]; then
+          cleanup_failed=1
+          cleanup_failure "hapax-github-mcp: a container remains at exact launch name $CONTAINER_NAME after immutable-ID cleanup; refusing replacement cleanup; retained scratch: $CID_FILE"
+        fi
       fi
     fi
   fi
@@ -269,7 +401,7 @@ cleanup() {
       cleanup_failure "hapax-github-mcp: container absence is proven but scratch cleanup failed: $CID_DIR; next action: inspect and remove only this account-owned directory"
     }
   fi
-  if [ "$cleanup_failed" -ne 0 ] && [ "$rc" -eq 0 ]; then
+  if [ "$cleanup_failed" -ne 0 ]; then
     rc=2
   fi
   exit "$rc"
@@ -279,10 +411,21 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
+if ! query_exact_container_name; then
+  echo "hapax-github-mcp: cannot prove launch-name availability for $CONTAINER_NAME: $EXACT_NAME_ERROR; refusing token release" >&2
+  exit 2
+fi
+if [ -n "$EXACT_NAME_ID" ]; then
+  echo "hapax-github-mcp: generated launch name unexpectedly exists at immutable ID $EXACT_NAME_ID; refusing token release" >&2
+  exit 2
+fi
+
+LAUNCH_ATTEMPTED=1
 launch_local_docker run -i --rm \
   --pull=never \
   --cidfile "$CID_FILE" \
   --name "$CONTAINER_NAME" \
+  --label "$GITHUB_MCP_LAUNCH_LABEL=$LAUNCH_ID" \
   --memory 512M \
   --memory-swap 768M \
   --log-driver none \
