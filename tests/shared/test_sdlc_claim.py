@@ -2166,6 +2166,17 @@ def test_intent_requires_explicit_claimable_true(tmp_path: Path) -> None:
     assert raised.value.reason_code == "claim_publication_task_not_claimable"
 
 
+def test_resume_of_an_owned_row_does_not_require_the_claimable_field(tmp_path: Path) -> None:
+    """`claimable` governs fresh claims; it must not block an owning lane's resume (#4700).
+
+    A lane returning to its own merge-ready row for a review round is the normal loop,
+    and rows minted before the field existed are ordinary (eta #4668, zeta #4676).
+    """
+    fixture = _fixture(tmp_path, resume=True, claimable=False)
+
+    assert fixture.intent.claim_mode == "resume"
+
+
 def test_claim_and_resume_intents_bind_exact_preimages(tmp_path: Path) -> None:
     claim = _fixture(tmp_path / "claim")
     resume = _fixture(tmp_path / "resume", resume=True)

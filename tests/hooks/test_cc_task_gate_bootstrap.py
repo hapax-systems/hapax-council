@@ -91,6 +91,7 @@ title: "Perspective PR merge to main"
 status: offered
 blocked_reason: null
 assigned_to: unassigned
+claimable: true
 priority: p0
 wsjf: 18.0
 effort_class: standard
@@ -233,6 +234,33 @@ def test_no_claim_blocks_invalid_task_bootstrap(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "invalid unclaimed governance bootstrap" in result.stderr
     assert "status" in result.stderr
+
+
+def test_no_claim_blocks_task_bootstrap_without_claimable(tmp_path: Path) -> None:
+    """A note born `offered` + `unassigned` without `claimable` cannot be claimed (#4700, M77)."""
+    request_root = tmp_path / "Documents/Personal/20-projects/hapax-requests/active"
+    request_root.mkdir(parents=True)
+    request_path = request_root / "REQ-20260517150000-perspective-merge-remediation.md"
+    request_path.write_text(_request_note("REQ-20260517150000"), encoding="utf-8")
+    task_root = tmp_path / "Documents/Personal/20-projects/hapax-cc-tasks/active"
+    task_root.mkdir(parents=True)
+    task_path = task_root / "perspective-pr-merge-to-main.md"
+    without_claimable = _task_note("perspective-pr-merge-to-main", request_path).replace(
+        "claimable: true\n", ""
+    )
+    assert "claimable" not in without_claimable
+
+    result = _run_hook(
+        tmp_path,
+        {
+            "tool_name": "Write",
+            "tool_input": {"file_path": str(task_path), "content": without_claimable},
+        },
+    )
+
+    assert result.returncode == 2
+    assert "invalid unclaimed governance bootstrap" in result.stderr
+    assert "claimable" in result.stderr
 
 
 def test_no_claim_blocks_existing_governance_note_edit(tmp_path: Path) -> None:

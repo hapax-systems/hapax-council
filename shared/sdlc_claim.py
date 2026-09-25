@@ -316,12 +316,6 @@ class ClaimPublicationIntent:
             )
         from_status = str(task.frontmatter.get("status") or "offered").strip()
         assigned_to = str(task.frontmatter.get("assigned_to") or "").strip()
-        if task.frontmatter.get("claimable") is not True:
-            raise ClaimPublicationError(
-                "claim_publication_task_not_claimable",
-                "advance the task through a lawful claimable lifecycle projection",
-                f"{task.task_id}:claimable={task.frontmatter.get('claimable')!r}",
-            )
         if from_status in TASK_CLAIMABLE_STATUSES and assigned_to.lower() in {
             "",
             "none",
@@ -329,6 +323,15 @@ class ClaimPublicationIntent:
             "unassigned",
             "~",
         }:
+            # `claimable` governs FRESH claims only (#4700). Tested ahead of the
+            # claim-vs-resume split it also gated resume, stranding an owning lane on its
+            # own merge-ready row minted before the field existed.
+            if task.frontmatter.get("claimable") is not True:
+                raise ClaimPublicationError(
+                    "claim_publication_task_not_claimable",
+                    "advance the task through a lawful claimable lifecycle projection",
+                    f"{task.task_id}:claimable={task.frontmatter.get('claimable')!r}",
+                )
             claim_mode = "claim"
             to_status = "claimed"
         elif from_status in TASK_RESUMABLE_STATUSES and assigned_to == binding.lane:
@@ -6306,6 +6309,109 @@ def archive_dispatch_only_claim_residue(
     return archived
 
 
+def _task_scalar_for_any_state(vault_root: Path, observed_task_id: str, key: str) -> str:
+    task_path = _task_note_path_for_any_state(vault_root, observed_task_id)
+    if task_path is None:
+        return ""
+    text = task_path.read_text(encoding="utf-8")
+    match = re.search(rf"^{re.escape(key)}:[ \t]*(.*)$", text, re.MULTILINE)
+    return match.group(1).strip() if match else ""
+
+
+def archive_epoch_only_claim_residue(
+    *,
+    vault_root: Path,
+    cache_dir: Path,
+    role: str,
+    session_id: str,
+    current_task_id: str,
+    observed_at: str,
+) -> list[tuple[Path, Literal["terminal", "lapsed"]]]:
+    """Archive epoch sidecars that outlived their claim marker into the task lineage.
+
+    The mirror of :func:`archive_dispatch_only_claim_residue`, and it must run first:
+    that pass skips any key whose epoch still exists. A close, quarantine or partial
+    reap removes ``cc-active-task-<key>`` and leaves the epoch, and cc-claim enters
+    applied-publication resolution when ANY sidecar exists, so the leftover wedged
+    every later claim by the role (#4700; M104b).
+
+    Only this role's own two keys are examined, never a prefix glob, because another
+    role's keys can share the prefix. An epoch is archived when its task is terminal
+    ("terminal"), or when it is this lane's lapsed lease on the task it is resuming
+    now: same task, row assigned to this role and resumable, and no claim marker or
+    dispatch binding for either key ("lapsed"; the resume republishes). Anything else is
+    a live stale lease and raises :class:`ClaimResidueArchiveHold` with nothing moved.
+    """
+
+    keys = (role, f"{role}-{session_id}")
+    marker_present = any((cache_dir / f"cc-active-task-{key}").exists() for key in keys)
+    binding_present = any(claim_dispatch_binding_path(cache_dir, key).exists() for key in keys)
+    epoch_only: list[tuple[str, Path, str, Literal["terminal", "lapsed"]]] = []
+    for claim_key in keys:
+        epoch_path = cache_dir / f"cc-claim-epoch-{claim_key}"
+        if not epoch_path.exists() or (cache_dir / f"cc-active-task-{claim_key}").exists():
+            continue
+        try:
+            epoch_text, epoch_task = epoch_path.read_text(encoding="utf-8").split()
+            int(epoch_text)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ClaimResidueArchiveHold(
+                f"HOLD - malformed epoch sidecar with no claim marker at {epoch_path}. "
+                "Next action: inspect it, then archive it through the task lineage "
+                "before retrying."
+            ) from exc
+        status = _task_status_for_any_state(vault_root, epoch_task)
+        kind: Literal["terminal", "lapsed"]
+        if status in TASK_TERMINAL_STATUSES:
+            kind = "terminal"
+        elif (
+            epoch_task == current_task_id
+            and status in TASK_RESUMABLE_STATUSES
+            and _task_scalar_for_any_state(vault_root, epoch_task, "assigned_to") == role
+            and not marker_present
+            and not binding_present
+        ):
+            kind = "lapsed"
+        else:
+            raise ClaimResidueArchiveHold(
+                "HOLD - epoch-only claim residue belongs to a live task "
+                f"(task_id={epoch_task}, status={status}) at {epoch_path}. Next action: "
+                "close or release that task through the governed lifecycle; this is a "
+                "stale lease, not residue, and nothing has been moved."
+            )
+        epoch_only.append((claim_key, epoch_path, epoch_task, kind))
+
+    archived: list[tuple[Path, Literal["terminal", "lapsed"]]] = []
+    for claim_key, epoch_path, epoch_task, kind in epoch_only:
+        lineage_dir = (
+            vault_root
+            / "_lineage"
+            / _safe_lineage_component(epoch_task)
+            / (
+                "removed-epoch-residue-"
+                f"{_safe_lineage_component(observed_at)}-"
+                f"{_safe_lineage_component(claim_key)}"
+            )
+        )
+        lineage_dir.mkdir(parents=True, exist_ok=True)
+        destination = lineage_dir / epoch_path.name
+        if epoch_path.exists():
+            shutil.move(str(epoch_path), str(destination))
+        (lineage_dir / "README.md").write_text(
+            "Archived epoch-only claim residue before an admitted claim.\n"
+            f"task_id: {epoch_task}\n"
+            f"claim_key: {claim_key}\n"
+            f"source: {epoch_path}\n"
+            f"archived_at: {observed_at}\n"
+            f"kind: {kind}\n"
+            "reason: the claim marker was removed (close, quarantine or partial reap) "
+            "and the epoch sidecar outlived it, wedging every later claim by this role.\n",
+            encoding="utf-8",
+        )
+        archived.append((destination, kind))
+    return archived
+
+
 __all__ = [
     "ADMITTED_CLAIM_PUBLICATION_RECEIPT_SCHEMA",
     "ADMITTED_CLAIM_PUBLICATION_SCHEMA",
@@ -6324,6 +6430,7 @@ __all__ = [
     "ClaimResidueArchiveHold",
     "admitted_claim_publication_id",
     "archive_dispatch_only_claim_residue",
+    "archive_epoch_only_claim_residue",
     "admitted_claim_publication_id",
     "claim_publication_id",
     "claim_publication_mutation_scope_address",

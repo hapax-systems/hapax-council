@@ -209,6 +209,10 @@ def _validate_task(path: Path, fields: dict[str, Any], present: set[str], body: 
         errors.append("new cc-task bootstrap notes must use `status: offered`")
     if _as_scalar(fields, "assigned_to") != "unassigned":
         errors.append("new cc-task bootstrap notes must use `assigned_to: unassigned`")
+    # Born offered and unassigned means available for a fresh claim, which cc-claim's
+    # publication path gates on `claimable: true` (#4700, M77): require it at birth.
+    if _as_scalar(fields, "claimable") != "true":
+        errors.append("new cc-task bootstrap notes must use `claimable: true`")
 
     authority_case = _as_scalar(fields, "authority_case")
     if authority_case and not re.match(r"^CASE-[A-Z0-9-]+$", authority_case):
