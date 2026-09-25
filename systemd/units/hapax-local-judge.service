@@ -29,7 +29,6 @@ Environment=JUDGE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:841b199aed2649a748875b
 # manager's docker.service. A bounded first preflight probes the pinned local daemon;
 # Restart=always/RestartSec=5 retries persistent cross-manager unavailability while
 # static image and model failures remain explicit preflight errors in the journal.
-Environment=DOCKER_HOST=unix:///var/run/docker.sock
 RuntimeDirectory=hapax-local-judge
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
@@ -46,7 +45,14 @@ ExecStartPre=/home/hapax/.local/bin/hapax-local-judge-container-id preflight \
     --model-size-bytes ${JUDGE_MODEL_SIZE_BYTES}
 # Docker writes the immutable full ID before attach. A foreign same-name
 # container makes run fail without cleanup; stop/restart never targets the name.
-ExecStart=/usr/bin/docker run --pull=never --rm --cidfile %t/hapax-local-judge/container.cid \
+# Clear ambient manager selectors before launch, then pin the same local daemon
+# and private config root that preflight assumes.
+ExecStart=/usr/bin/env -i \
+    HOME=%h LANG=C.UTF-8 LC_ALL=C.UTF-8 LOGNAME=%u PATH=/usr/bin:/bin USER=%u \
+    /usr/bin/docker \
+    --host=unix:///var/run/docker.sock \
+    --config=%t/hapax-local-judge/docker-config \
+    run --pull=never --rm --cidfile %t/hapax-local-judge/container.cid \
     --name hapax-local-judge \
     --memory 4G --memory-swap 6G \
     --gpus device=${JUDGE_GPU_UUID} \
