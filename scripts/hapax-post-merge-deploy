@@ -324,19 +324,20 @@ verify_runtime_authority() {
         echo "hapax-post-merge-deploy: runtime authority release HEAD is not the exact package SHA $expected_sha; next action: reconcile source activation and retry" >&2
         return 2
     fi
-    /usr/bin/python3 -I - "$repo" "$git_head" "$task" "$active_root" "${scopes[@]}" <<'RUNTIME_AUTHORITY_PY'
+    /usr/bin/python3 -I -S - "$repo" "$git_head" "$task" "$active_root" "${scopes[@]}" <<'RUNTIME_AUTHORITY_PY'
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
+import json
 import os
 import re
+import site
 import stat
 import subprocess
 import sys
 import types
 from pathlib import Path
-
-import yaml
 
 
 TASK_MUTABLE_STATUSES = {
@@ -354,7 +355,187 @@ TASK_MUTABLE_STATUSES = {
 PINNED_ROUTE_MODULE_SHA256 = {
     "shared/agentic_trust_boundary.py": "033aa92bf3044201fafee5f62334329782e955301b784fce06b42130c72ebed5",
     "shared/route_metadata_schema.py": "af5c8122917a67dafa69469a22a0b0cf50468aff0d2e60ac49aadea5b0d7b20a",
+    "config/coordination-canon/runtime-dependency-release-set.json": "53992f0baa435161f2bb1cfc5a3e5c7e8afd3fabf62966d38c1e38919bec84ab",
 }
+RUNTIME_AUTHORITY_DEPENDENCY_MANIFEST_HASH = (
+    "304536345ed31660035e5feb867735d4bb51d8e5213f28f364677d83e8c59f9d"
+)
+RUNTIME_AUTHORITY_DEPENDENCIES = {
+    "annotated-types": ("0.7.0", ("annotated_types",)),
+    "pydantic": ("2.13.4", ("pydantic",)),
+    "pydantic-core": ("2.46.4", ("pydantic_core",)),
+    "pyyaml": ("6.0.3", ("yaml",)),
+    "typing-extensions": ("4.15.0", ("typing_extensions.py",)),
+    "typing-inspection": ("0.4.2", ("typing_inspection",)),
+}
+RUNTIME_AUTHORITY_DEDICATED_SITE = Path(
+    "/opt/hapax/runtime-authority-python/site-packages"
+)
+MAX_DEPENDENCY_TREE_ENTRIES = 20_000
+
+
+def refuse(reason: str) -> None:
+    print(
+        f"runtime authority refused: {reason}; next action: use the owning active cc-task "
+        "with explicit implementation, runtime, case, parent-spec, route, and mutation-scope authority",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
+def canonical_distribution_name(value: str) -> str:
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def trusted_inode(path: Path, label: str) -> os.stat_result:
+    try:
+        inode = path.lstat()
+    except OSError as exc:
+        refuse(f"{label} is unavailable: {exc}")
+    if stat.S_ISLNK(inode.st_mode):
+        refuse(f"{label} contains a symlink: {path}")
+    if inode.st_uid != 0 or inode.st_mode & 0o022:
+        refuse(f"{label} is not root-owned and non-writable: {path}")
+    if not stat.S_ISDIR(inode.st_mode) and not stat.S_ISREG(inode.st_mode):
+        refuse(f"{label} contains an unsupported filesystem object: {path}")
+    return inode
+
+
+def validate_trusted_path(path: Path, label: str, *, directory: bool) -> None:
+    if not path.is_absolute() or ".." in path.parts:
+        refuse(f"{label} is not an absolute normalized path: {path}")
+    current = Path(path.anchor)
+    anchor_inode = trusted_inode(current, label)
+    if not stat.S_ISDIR(anchor_inode.st_mode):
+        refuse(f"{label} has a non-directory anchor: {current}")
+    for part in path.parts[1:]:
+        current /= part
+        inode = trusted_inode(current, label)
+        if current != path and not stat.S_ISDIR(inode.st_mode):
+            refuse(f"{label} has a non-directory ancestor: {current}")
+    final = trusted_inode(path, label)
+    if directory and not stat.S_ISDIR(final.st_mode):
+        refuse(f"{label} is not a directory: {path}")
+    if not directory and not stat.S_ISREG(final.st_mode):
+        refuse(f"{label} is not a regular file: {path}")
+
+
+def validate_trusted_tree(root: Path, label: str) -> None:
+    root_inode = trusted_inode(root, label)
+    validate_trusted_path(root, label, directory=stat.S_ISDIR(root_inode.st_mode))
+    pending = [root]
+    entries = 0
+    while pending:
+        path = pending.pop()
+        inode = trusted_inode(path, label)
+        entries += 1
+        if entries > MAX_DEPENDENCY_TREE_ENTRIES:
+            refuse(f"{label} exceeds the bounded filesystem census")
+        if not stat.S_ISDIR(inode.st_mode):
+            continue
+        try:
+            children = list(os.scandir(path))
+        except OSError as exc:
+            refuse(f"{label} cannot be enumerated safely: {exc}")
+        pending.extend(Path(child.path) for child in children)
+
+
+def distributions_in(root: Path) -> dict[str, importlib.metadata.Distribution]:
+    selected: dict[str, importlib.metadata.Distribution] = {}
+    duplicates: set[str] = set()
+    try:
+        distributions = importlib.metadata.distributions(path=[str(root)])
+        for distribution in distributions:
+            name = canonical_distribution_name(distribution.metadata.get("Name", ""))
+            if name not in RUNTIME_AUTHORITY_DEPENDENCIES:
+                continue
+            if name in selected:
+                duplicates.add(name)
+            selected[name] = distribution
+    except Exception as exc:
+        refuse(f"runtime-authority dependency metadata cannot be read: {type(exc).__name__}: {exc}")
+    if duplicates:
+        refuse(f"runtime-authority dependency root has duplicate distributions: {sorted(duplicates)}")
+    return selected
+
+
+def select_dependency_root() -> tuple[Path, dict[str, importlib.metadata.Distribution]]:
+    if RUNTIME_AUTHORITY_DEDICATED_SITE.exists() or RUNTIME_AUTHORITY_DEDICATED_SITE.is_symlink():
+        validate_trusted_path(
+            RUNTIME_AUTHORITY_DEDICATED_SITE,
+            "dedicated runtime-authority dependency root",
+            directory=True,
+        )
+        selected = distributions_in(RUNTIME_AUTHORITY_DEDICATED_SITE)
+        if set(selected) != set(RUNTIME_AUTHORITY_DEPENDENCIES):
+            refuse("dedicated runtime-authority dependency root is incomplete")
+        return RUNTIME_AUTHORITY_DEDICATED_SITE, selected
+
+    complete: list[tuple[Path, dict[str, importlib.metadata.Distribution]]] = []
+    for value in dict.fromkeys(site.getsitepackages()):
+        root = Path(value)
+        if not root.exists() and not root.is_symlink():
+            continue
+        validate_trusted_path(root, "system Python dependency root", directory=True)
+        selected = distributions_in(root)
+        if set(selected) == set(RUNTIME_AUTHORITY_DEPENDENCIES):
+            complete.append((root, selected))
+    if len(complete) != 1:
+        refuse(
+            "system Python must expose exactly one complete runtime-authority dependency root"
+        )
+    return complete[0]
+
+
+def distribution_metadata_root(
+    distribution: importlib.metadata.Distribution,
+    name: str,
+) -> Path:
+    metadata_files = [
+        item
+        for item in (distribution.files or ())
+        if item.name == "METADATA"
+        and any(part.endswith(".dist-info") for part in item.parts[:-1])
+    ]
+    if len(metadata_files) != 1:
+        refuse(f"runtime-authority dependency has no unique METADATA file: {name}")
+    metadata_root = Path(distribution.locate_file(metadata_files[0])).parent
+    if metadata_root.parent != Path(distribution.locate_file("")):
+        refuse(f"runtime-authority dependency metadata root is not direct: {name}")
+    return metadata_root
+
+
+def admit_runtime_authority_dependencies() -> None:
+    root, selected = select_dependency_root()
+    for name, (expected_version, import_roots) in RUNTIME_AUTHORITY_DEPENDENCIES.items():
+        distribution = selected[name]
+        if distribution.version != expected_version:
+            refuse(
+                f"runtime-authority dependency version mismatch: "
+                f"{name}={distribution.version!r} expected={expected_version!r}"
+            )
+        metadata_root = distribution_metadata_root(distribution, name)
+        try:
+            metadata_root.relative_to(root)
+        except ValueError:
+            refuse(f"runtime-authority dependency metadata escapes its root: {name}")
+        validate_trusted_tree(metadata_root, f"runtime-authority dependency metadata {name}")
+        for relative_path in import_roots:
+            import_root = root / relative_path
+            try:
+                import_root.relative_to(root)
+            except ValueError:
+                refuse(f"runtime-authority dependency import root escapes its root: {name}")
+            validate_trusted_tree(import_root, f"runtime-authority dependency import {name}")
+    sys.path.append(str(root))
+
+
+admit_runtime_authority_dependencies()
+
+try:
+    import yaml
+except Exception as exc:
+    refuse(f"runtime-authority dependency import failed: {type(exc).__name__}: {exc}")
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
@@ -392,15 +573,6 @@ UniqueKeyLoader.add_constructor(
     yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
     construct_unique_mapping,
 )
-
-
-def refuse(reason: str) -> None:
-    print(
-        f"runtime authority refused: {reason}; next action: use the owning active cc-task "
-        "with explicit implementation, runtime, case, parent-spec, route, and mutation-scope authority",
-        file=sys.stderr,
-    )
-    raise SystemExit(2)
 
 
 if len(sys.argv) < 6:
@@ -541,19 +713,19 @@ def git_blob(relative_path: str) -> str:
             timeout=15,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        refuse(f"canonical route-schema blob cannot be read: {exc}")
+        refuse(f"runtime-authority compatibility blob cannot be read: {exc}")
     if result.returncode != 0:
-        refuse(f"canonical route-schema blob is unavailable: {relative_path}")
+        refuse(f"runtime-authority compatibility blob is unavailable: {relative_path}")
     expected_sha256 = PINNED_ROUTE_MODULE_SHA256.get(relative_path)
     if expected_sha256 is None or hashlib.sha256(result.stdout).hexdigest() != expected_sha256:
         refuse(
-            f"canonical route-schema blob is unsupported by this installed validator: "
+            f"runtime-authority compatibility blob is unsupported by this installed validator: "
             f"{relative_path}"
         )
     try:
         return result.stdout.decode("utf-8")
     except UnicodeDecodeError as exc:
-        refuse(f"canonical route-schema blob is not UTF-8: {relative_path}: {exc}")
+        refuse(f"runtime-authority compatibility blob is not UTF-8: {relative_path}: {exc}")
 
 
 def load_git_module(module_name: str, relative_path: str) -> types.ModuleType:
@@ -566,6 +738,41 @@ def load_git_module(module_name: str, relative_path: str) -> types.ModuleType:
     return module
 
 
+def validate_dependency_manifest(blob: str) -> None:
+    try:
+        manifest = json.loads(blob)
+    except (TypeError, json.JSONDecodeError) as exc:
+        refuse(f"runtime-authority dependency manifest is malformed: {exc}")
+    if not isinstance(manifest, dict) or (
+        manifest.get("manifest_hash") != RUNTIME_AUTHORITY_DEPENDENCY_MANIFEST_HASH
+    ):
+        refuse("runtime-authority dependency manifest identity is unsupported")
+    items = manifest.get("dependencies")
+    if not isinstance(items, list):
+        refuse("runtime-authority dependency manifest has no dependency set")
+    observed: dict[str, tuple[str, tuple[str, ...]]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            refuse("runtime-authority dependency manifest has a malformed entry")
+        name = canonical_distribution_name(str(item.get("distribution", "")))
+        if name not in RUNTIME_AUTHORITY_DEPENDENCIES:
+            continue
+        if name in observed:
+            refuse(f"runtime-authority dependency manifest has a duplicate entry: {name}")
+        import_root = item.get("import_root")
+        version = item.get("version")
+        if not isinstance(import_root, str) or not isinstance(version, str):
+            refuse(f"runtime-authority dependency manifest entry is incomplete: {name}")
+        if name == "typing-extensions":
+            import_root += ".py"
+        observed[name] = (version, (import_root,))
+    if observed != RUNTIME_AUTHORITY_DEPENDENCIES:
+        refuse("runtime-authority dependency manifest does not match the sealed closure")
+
+
+validate_dependency_manifest(
+    git_blob("config/coordination-canon/runtime-dependency-release-set.json")
+)
 try:
     shared_package = types.ModuleType("shared")
     shared_package.__path__ = []
