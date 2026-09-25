@@ -5,7 +5,75 @@ ORIGINAL_ARGS=("$@")
 PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/bin
 export PATH
 
-if [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" != "1" ]; then
+AUDIT_TEST_MODE=0
+authorize_isolated_test_mode() {
+    [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" = "1" ] || return 0
+    local invoked invoked_real argv0_real resolved source_root git_root owner mode trusted_path
+    invoked="${BASH_SOURCE[0]}"
+    if [ "$(/usr/bin/id -u)" = 0 ] || [ -L "$invoked" ] || [ -L "$0" ] \
+        || ! invoked_real="$(/usr/bin/realpath -e -- "$invoked")" \
+        || ! argv0_real="$(/usr/bin/realpath -e -- "$0")" \
+        || [ "$invoked_real" != "$argv0_real" ]; then
+        echo "root-required audit refuses test mode unless a non-root caller directly executes the real repository script" >&2
+        echo "  next action: invoke scripts/hapax-root-required-deploy-audit directly, never through source, a symlink, sudo, or a copied install" >&2
+        return 1
+    fi
+    if ! resolved="$(/usr/bin/realpath -e -- "$invoked")"; then
+        echo "root-required audit refuses test mode because its invoked source cannot be resolved: $invoked" >&2
+        echo "  next action: run the repository-owned scripts/hapax-root-required-deploy-audit directly from a real Git worktree" >&2
+        return 1
+    fi
+    source_root="$(/usr/bin/dirname -- "$(/usr/bin/dirname -- "$resolved")")"
+    if [ "$resolved" != "$source_root/scripts/hapax-root-required-deploy-audit" ] \
+        || { [ ! -d "$source_root/.git" ] && [ ! -f "$source_root/.git" ]; }; then
+        echo "root-required audit refuses test mode outside its physical repository script path: $resolved" >&2
+        echo "  next action: run isolated fixtures through the repository-owned script, never an installed or copied audit" >&2
+        return 1
+    fi
+    for trusted_path in "$source_root" "$source_root/scripts" "$resolved"; do
+        owner="$(/usr/bin/stat -c %u -- "$trusted_path" 2>/dev/null || true)"
+        mode="$(/usr/bin/stat -c %a -- "$trusted_path" 2>/dev/null || true)"
+        if [ "$owner" != "$(/usr/bin/id -u)" ] || ! [[ "$mode" =~ ^[0-7]+$ ]] \
+            || (( (8#$mode & 022) != 0 )); then
+            echo "root-required audit refuses test mode from an untrusted repository path: $trusted_path" >&2
+            echo "  next action: restore caller ownership and remove group/other write access from the worktree root, scripts directory, and audit" >&2
+            return 1
+        fi
+    done
+    if ! git_root="$(
+        /usr/bin/env -i \
+            HOME=/nonexistent \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            LC_ALL=C.UTF-8 \
+            GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_CONFIG_NOSYSTEM=1 \
+            GIT_NO_REPLACE_OBJECTS=1 \
+            GIT_OPTIONAL_LOCKS=0 \
+            /usr/bin/git -C "$source_root" rev-parse --show-toplevel
+    )" || ! git_root="$(/usr/bin/realpath -e -- "$git_root")" \
+        || [ "$git_root" != "$source_root" ] \
+        || ! /usr/bin/env -i \
+            HOME=/nonexistent \
+            PATH=/usr/bin:/bin \
+            LANG=C.UTF-8 \
+            LC_ALL=C.UTF-8 \
+            GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_CONFIG_NOSYSTEM=1 \
+            GIT_NO_REPLACE_OBJECTS=1 \
+            GIT_OPTIONAL_LOCKS=0 \
+            /usr/bin/git -C "$source_root" ls-files --error-unmatch -- \
+                scripts/hapax-root-required-deploy-audit >/dev/null; then
+        echo "root-required audit refuses test mode because the physical source is not a real Git worktree root: $source_root" >&2
+        echo "  next action: restore the repository checkout and rerun isolated fixtures from its scripts path" >&2
+        return 1
+    fi
+    AUDIT_TEST_MODE=1
+}
+authorize_isolated_test_mode || exit 1
+readonly AUDIT_TEST_MODE
+
+if [ "$AUDIT_TEST_MODE" != "1" ]; then
     if ! CANONICAL_ACCOUNT_HOME="$(/usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')" \
         || [ -z "$CANONICAL_ACCOUNT_HOME" ] \
         || [ -z "${HOME:-}" ] \
@@ -38,6 +106,7 @@ fi
 ROOT_FAILURE_INTAKE_DEST="${HAPAX_ROOT_FAILURE_INTAKE_DEST:-/usr/local/sbin/hapax-root-failure-intake}"
 OOM_POLICY_AUDIT_DEST="${HAPAX_OOM_POLICY_AUDIT_DEST:-/usr/local/sbin/hapax-oom-policy-audit}"
 ROOT_REQUIRED_AUDIT_DEST="${HAPAX_ROOT_REQUIRED_AUDIT_DEST:-/usr/local/sbin/hapax-root-required-deploy-audit}"
+LOCAL_JUDGE_CONTAINER_ID_DEST="${HAPAX_LOCAL_JUDGE_CONTAINER_ID_DEST:-$HOME/.local/bin/hapax-local-judge-container-id}"
 OOM_PROFILE_TABLE_DEST="${HAPAX_OOM_PROFILE_TABLE_DEST:-/usr/local/share/hapax/root-required/oom-host-profiles.tsv}"
 ZRAM_POLICY_DEST="${HAPAX_OOM_ZRAM_POLICY_DEST:-/etc/systemd/zram-generator.conf}"
 LEGACY_ZRAM_POLICY_DEST="${HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST:-/etc/systemd/zram-generator.conf.d/90-hapax-host-policy.conf}"
@@ -77,6 +146,65 @@ LOCAL_JUDGE_DOCKER_MEMORY="4G"
 LOCAL_JUDGE_DOCKER_MEMORY_SWAP="6G"
 GOVERNED_MEMORY_KEYS=(MemoryHigh MemoryMax MemorySwapMax MemoryLow MemoryMin)
 
+validate_isolated_test_sudo() {
+    [ "$AUDIT_TEST_MODE" = "1" ] || return 0
+    local validated_sudo
+    if ! validated_sudo="$(/usr/bin/python3 -I - "$SUDO" <<'PY'
+from __future__ import annotations
+
+import os
+import stat
+import sys
+from pathlib import Path
+
+
+def refuse(detail: str) -> None:
+    print(f"root-required audit refuses {detail}", file=sys.stderr)
+    print(
+        "  next action: set HAPAX_ROOT_AUDIT_SUDO to a caller-owned, single-link, "
+        "non-set-ID executable regular file with no group/other write bits",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+selected = Path(sys.argv[1])
+try:
+    resolved = selected.resolve(strict=True)
+except OSError as exc:
+    refuse(f"an unavailable isolated-test sudo selector: {selected}: {exc}")
+
+production_sudo = Path("/usr/bin/sudo")
+if resolved == production_sudo or resolved == production_sudo.resolve(strict=False):
+    refuse(f"real sudo in isolated test mode: selected={selected} resolved={resolved}")
+
+try:
+    inode = selected.lstat()
+except OSError as exc:
+    refuse(f"an unreadable isolated-test sudo selector: {selected}: {exc}")
+
+mode = inode.st_mode
+if (
+    not stat.S_ISREG(mode)
+    or inode.st_uid != os.getuid()
+    or inode.st_nlink != 1
+    or (mode & stat.S_IXUSR) == 0
+    or mode & (stat.S_ISUID | stat.S_ISGID | stat.S_IWGRP | stat.S_IWOTH)
+):
+    refuse(
+        "unsafe fake sudo in isolated test mode: "
+        f"path={selected} owner={inode.st_uid} links={inode.st_nlink} "
+        f"mode={stat.S_IMODE(mode):04o}"
+    )
+
+print(resolved)
+PY
+    )"; then
+        return 1
+    fi
+    SUDO="$validated_sudo"
+}
+
 root_required_git() {
     /usr/bin/env -i \
         HOME=/nonexistent \
@@ -99,7 +227,7 @@ validate_root_required_git_repo() {
         return 1
     fi
     canonical_alias="$account_home/.cache/hapax/source-activation/worktree"
-    if [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" != "1" ]; then
+    if [ "$AUDIT_TEST_MODE" != "1" ]; then
         if [ "${HAPAX_ROOT_REQUIRED_GIT_REPO+x}" = "x" ]; then
             echo "root-required audit refuses an explicit production Git repository selector: $ROOT_REQUIRED_GIT_REPO" >&2
             echo "  next action: remove HAPAX_ROOT_REQUIRED_GIT_REPO and rerun the installed audit against $canonical_alias" >&2
@@ -398,6 +526,7 @@ PY
 
 oom_package_files=(
     config/root-required/oom-containment.files
+    config/root-required/oom-containment.effects
     config/root-required/oom-host-profiles.tsv
     config/root-required/oom-host-policy/appendix/app.slice.conf
     config/root-required/oom-host-policy/appendix/user-1000.slice.conf
@@ -406,6 +535,7 @@ oom_package_files=(
     config/root-required/oom-host-policy/podium/zram-generator.conf
     scripts/install-p0-oom-containment
     scripts/hapax-root-required-deferred-install
+    scripts/hapax-local-judge-container-id
     config/root-required/hapax-oom-score-enforce.sudoers
     scripts/hapax-oom-score-enforce
     scripts/hapax-oom-score-trigger
@@ -443,6 +573,7 @@ oom_package_files=(
 )
 apcupsd_package_files=(
     config/root-required/apcupsd-power-alerts.files
+    config/root-required/apcupsd-power-alerts.effects
     scripts/install-apcupsd-power-alerts
     config/apcupsd/apcupsd.conf
     config/apcupsd/hapax-power-event.py
@@ -474,6 +605,7 @@ refuse_production_test_overrides() {
         HAPAX_ROOT_FAILURE_INTAKE_DEST
         HAPAX_OOM_POLICY_AUDIT_DEST
         HAPAX_ROOT_REQUIRED_AUDIT_DEST
+        HAPAX_LOCAL_JUDGE_CONTAINER_ID_DEST
         HAPAX_OOM_PROFILE_TABLE_DEST
         HAPAX_OOM_ZRAM_POLICY_DEST
         HAPAX_OOM_LEGACY_ZRAM_POLICY_DEST
@@ -512,7 +644,7 @@ refuse_production_test_overrides() {
         HAPAX_ROOT_AUDIT_TEST_CANONICAL_UPS_LOG_IDENTITY
         HAPAX_ROOT_REQUIRED_LOCK_HELD
     )
-    if [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" != "1" ]; then
+    if [ "$AUDIT_TEST_MODE" != "1" ]; then
         for name in "${selectors[@]}"; do
             if [[ -v $name ]]; then
                 present+=("$name")
@@ -525,6 +657,8 @@ refuse_production_test_overrides() {
         fi
         return 0
     fi
+
+    validate_isolated_test_sudo || return 1
 
     local -a path_lists=(
         "$ZRAM_DROPIN_DIRS"
@@ -847,7 +981,7 @@ selected_zram_source_rel() {
 governed_system_unit_search_paths() {
     local discovered override="${HAPAX_ROOT_AUDIT_SYSTEM_UNIT_PATHS:-}"
     if [ -n "$override" ]; then
-        if [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" != "1" ]; then
+        if [ "$AUDIT_TEST_MODE" != "1" ]; then
             echo "root-required install drift: governed system unit-path override is test-only" >&2
             echo "  next action: unset HAPAX_ROOT_AUDIT_SYSTEM_UNIT_PATHS outside test mode and rerun the installed audit" >&2
             return 1
@@ -869,7 +1003,7 @@ governed_system_unit_search_paths() {
 governed_user_unit_search_paths() {
     local discovered override="${HAPAX_ROOT_AUDIT_USER_UNIT_PATHS:-}"
     if [ -n "$override" ]; then
-        if [ "${HAPAX_ROOT_AUDIT_TEST_MODE:-0}" != "1" ]; then
+        if [ "$AUDIT_TEST_MODE" != "1" ]; then
             echo "root-required install drift: governed user unit-path override is test-only" >&2
             echo "  next action: unset HAPAX_ROOT_AUDIT_USER_UNIT_PATHS outside test mode and rerun the installed audit" >&2
             return 1
@@ -1196,7 +1330,7 @@ expected_install_mode() {
         config/root-required/hapax-oom-score-enforce.sudoers)
             printf '440\n'
             ;;
-        scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+        scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|scripts/hapax-local-judge-container-id|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
             printf '755\n'
             ;;
         *)
@@ -1686,6 +1820,7 @@ audit_root_installs() {
         "scripts/hapax-root-failure-intake|$ROOT_FAILURE_INTAKE_DEST"
         "scripts/hapax-oom-policy-audit|$OOM_POLICY_AUDIT_DEST"
         "scripts/hapax-root-required-deploy-audit|$ROOT_REQUIRED_AUDIT_DEST"
+        "scripts/hapax-local-judge-container-id|$LOCAL_JUDGE_CONTAINER_ID_DEST"
         "config/root-required/oom-host-profiles.tsv|$OOM_PROFILE_TABLE_DEST"
         "$(selected_zram_source_rel)|$ZRAM_POLICY_DEST"
         "config/earlyoom/default|$EARLYOOM_DEST"
@@ -1731,7 +1866,7 @@ audit_root_installs() {
         compare_root_file "$rel" "$dest" || failed=1
         audit_root_artifact_trust "$dest" || failed=1
         case "$rel" in
-            scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
+            scripts/hapax-oom-score-enforce|scripts/hapax-oom-score-trigger|scripts/hapax-root-failure-intake|scripts/hapax-oom-policy-audit|scripts/hapax-root-required-deploy-audit|scripts/hapax-local-judge-container-id|config/apcupsd/hapax-power-event.py|config/apcupsd/onbattery|config/apcupsd/offbattery|config/apcupsd/doshutdown)
                 verify_executable "$rel" "$dest" || failed=1
                 ;;
         esac

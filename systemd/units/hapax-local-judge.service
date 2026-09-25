@@ -15,31 +15,46 @@ Environment=JUDGE_GPU_UUID=GPU-347222d9-00af-5a94-a365-c57c09dfddcd
 Environment=JUDGE_MODEL=/models/CompassVerifier-7B.Q5_K_M.gguf
 # The canary stages and hashes this model under a root-owned, non-writable
 # content address. The durable service never mounts the mutable source copy.
+# Recheck the protected file after staging with the exact-release helper:
+# account_home="$(/usr/bin/getent passwd "$(/usr/bin/id -u)" | /usr/bin/cut -d: -f6)" && \
+# "$account_home/.cache/hapax/source-activation/worktree/scripts/hapax-post-merge-deploy" --measure-protected-local-judge-model /store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db/CompassVerifier-7B.Q5_K_M.gguf
 Environment=JUDGE_MODEL_SHA256=d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db
 Environment=JUDGE_MODEL_SIZE_BYTES=5444831808
 Environment=JUDGE_MODEL_HOST_DIR=/store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db
+Environment=JUDGE_MODEL_HOST=/store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db/CompassVerifier-7B.Q5_K_M.gguf
 # Canary and durable service use the same immutable image digest. Updating this
 # digest requires a fresh cap canary and candidate-SHA receipt.
 Environment=JUDGE_IMAGE=ghcr.io/ggml-org/llama.cpp@sha256:841b199aed2649a748875b043b32fed2e8c2d4d87e1d563556817fb7fa44b72b
-# The governed name is reserved for this unit. Docker must fail the start if an
-# unknown same-name container exists; automatic cleanup would destroy work the
-# user manager did not launch. On collision, follow local-judge-stack.md: stop
-# this unit, inspect the audit-reported immutable ID, and `docker rm <ID>` only
-# after confirming that exact non-running container owns /hapax-local-judge.
-# The resulting Restart=always name-conflict loop is intentional and loud: the
-# recurring OOM audit reports the immutable conflicting ID until it is reconciled.
-# The 4G/6G cap remains a candidate until the separately authorized load canary passes.
-ExecStart=/usr/bin/docker run --rm --name hapax-local-judge \
+# A user unit cannot order the system manager's docker.service. The pinned socket
+# plus Restart=always is the cross-manager availability contract; static image and
+# model failures remain explicit preflight errors in the journal.
+Environment=DOCKER_HOST=unix:///var/run/docker.sock
+RuntimeDirectory=hapax-local-judge
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+ExecStartPre=/home/hapax/.local/bin/hapax-local-judge-container-id prepare \
+    --cidfile %t/hapax-local-judge/container.cid
+ExecStartPre=/home/hapax/.local/bin/hapax-local-judge-container-id preflight \
+    --cidfile %t/hapax-local-judge/container.cid \
+    --image ${JUDGE_IMAGE} \
+    --model-host ${JUDGE_MODEL_HOST} \
+    --model-sha256 ${JUDGE_MODEL_SHA256} \
+    --model-size-bytes ${JUDGE_MODEL_SIZE_BYTES}
+# Docker writes the immutable full ID before attach. A foreign same-name
+# container makes run fail without cleanup; stop/restart never targets the name.
+ExecStart=/usr/bin/docker run --pull=never --rm --cidfile %t/hapax-local-judge/container.cid \
+    --name hapax-local-judge \
     --memory 4G --memory-swap 6G \
     --gpus device=${JUDGE_GPU_UUID} \
-    -v ${JUDGE_MODEL_HOST_DIR}:/models:ro \
+    --mount type=bind,src=${JUDGE_MODEL_HOST_DIR},dst=/models,readonly \
     -p 5001:5001 \
     ${JUDGE_IMAGE} \
     -m ${JUDGE_MODEL} -a compassverifier-7b \
     -c 65536 -np 8 -cb -ngl 99 --host 0.0.0.0 --port 5001
-ExecStop=/usr/bin/docker stop hapax-local-judge
-# A user manager cannot order the system manager's docker.service. Failures while
-# the Docker socket is unavailable stay loud and retry through this restart loop.
+ExecStop=/home/hapax/.local/bin/hapax-local-judge-container-id stop \
+    --cidfile %t/hapax-local-judge/container.cid
+ExecStopPost=/home/hapax/.local/bin/hapax-local-judge-container-id prepare \
+    --cidfile %t/hapax-local-judge/container.cid
 Restart=always
 RestartSec=5
 

@@ -38,6 +38,26 @@ frontmatter explicitly grants `runtime_mutation_authorized: true`. A source-only
 task stops here. The disposable canary uses the exact proposed `4G/6G` limits and
 must pass before the authenticated package command is requested.
 
+Protected model staging is the first separately measured phase of that mandatory
+canary, not an activation side effect. The block below runs
+`--measure-protected-local-judge-model` against the root-owned content address
+before starting the disposable container and writes the candidate cap receipt
+only after both staging and the workload pass. Authenticated installation and
+activation each verify that exact-SHA receipt before their first mutation, so a
+skipped or incomplete staging canary is rejected before the durable unit can be
+started.
+
+The active task must authorize every semantic effect listed in the candidate
+`config/root-required/oom-containment.effects`, plus the canary, activation, and
+managed-recheck effects used below. The authenticated helper reads that exact-SHA
+descriptor and validates the complete set in one task parse before sudo, after
+sudo, and after live verification immediately before receipt advancement and
+deferral drain.
+Source-file paths are package inventory, not runtime authority.
+This is a cooperative single-operator boundary: the active task and cap receipt
+are caller-owned evidence, while root-owned model staging and installed artifacts
+prevent later account-level substitution.
+
 ### Required pre-deploy cap canary
 
 This canary temporarily stops the managed judge if it is active, starts an
@@ -53,6 +73,8 @@ benchmark.
 account_uid="$(/usr/bin/id -u)"
 account_name="$(/usr/bin/id -un)"
 account_home="$(/usr/bin/getent passwd "$account_uid" | /usr/bin/cut -d: -f6)"
+test -n "$account_home"
+test "$account_home" = "$(/usr/bin/realpath -e -- "$account_home")"
 runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
 /usr/bin/env -i \
   HOME="$account_home" \
@@ -72,12 +94,6 @@ DOCKER_HOST=unix:///var/run/docker.sock
 export DOCKER_HOST
 test -S /var/run/docker.sock
 runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-authority_check="$HOME/.local/bin/hapax-post-merge-deploy"
-test -f "$authority_check"
-test ! -L "$authority_check"
-"$authority_check" --verify-runtime-authority \
-  "$runtime_task" systemd/units/hapax-local-judge.service
-
 repo_alias="$HOME/.cache/hapax/source-activation/worktree"
 repo="$(/usr/bin/realpath -e -- "$repo_alias")"
 release_root="$HOME/.cache/hapax/source-activation/releases"
@@ -97,6 +113,39 @@ candidate_git() {
     GIT_OPTIONAL_LOCKS=0 \
     /usr/bin/git -C "$repo" "$@"
 }
+test "$(candidate_git rev-parse --verify 'HEAD^{commit}')" = "$candidate_sha"
+verifier_oid="$(candidate_git rev-parse --verify "$candidate_sha:scripts/hapax-post-merge-deploy")"
+[[ "$verifier_oid" =~ ^[0-9a-f]{40}$ ]]
+candidate_verify() {
+  candidate_git cat-file blob "$verifier_oid" | \
+    /usr/bin/env -i \
+      HOME="$HOME" \
+      USER="$USER" \
+      LOGNAME="$LOGNAME" \
+      PATH=/usr/bin:/bin \
+      LANG=C.UTF-8 \
+      LC_ALL=C.UTF-8 \
+      XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+      DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+      DOCKER_HOST="$DOCKER_HOST" \
+      HAPAX_RUNTIME_AUTHORITY_TASK="$runtime_task" \
+      REPO="$repo" \
+      /usr/bin/bash --noprofile --norc -p -s -- "$@"
+}
+canary_scopes=(
+  runtime:docker:pull:ghcr.io/ggml-org/llama.cpp@sha256:841b199aed2649a748875b043b32fed2e8c2d4d87e1d563556817fb7fa44b72b
+  runtime:docker:run-remove:hapax-local-judge-cap-canary
+  runtime:root-directory:ensure-root-0755:/store-fast/hapax-models
+  runtime:root-directory:ensure-root-0755:/store-fast/hapax-models/sha256
+  runtime:root-directory:ensure-root-0755:/store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db
+  runtime:root-file:stage-content-addressed:/store-fast/hapax-models/sha256/d6d6fba56c25d2d0f1b2cc8ee261b209b77729510b3d770d43ccb6e741dff0db/CompassVerifier-7B.Q5_K_M.gguf
+  runtime:state:write-local-judge-cap-receipt
+  runtime:state:write-remove-canary-scratch:/store-fast/tmp
+  runtime:systemd-user:stop-restore:hapax-local-judge.service
+)
+candidate_verify --verify-runtime-authority-for-release \
+  "$candidate_sha" "$runtime_task" "${canary_scopes[@]}"
+
 state="$HOME/.local/state/hapax/root-required"
 desired_receipt="$state/desired-receipts/oom-containment.sha"
 test -f "$desired_receipt"
@@ -109,7 +158,7 @@ test "$(/usr/bin/wc -c < "$desired_receipt")" = 41
 IFS= read -r desired_sha < "$desired_receipt"
 test "$desired_sha" = "$candidate_sha"
 source_unit_text="$(candidate_git show "$candidate_sha:systemd/units/hapax-local-judge.service")"
-for key in JUDGE_GPU_UUID JUDGE_MODEL JUDGE_MODEL_SHA256 JUDGE_MODEL_SIZE_BYTES JUDGE_MODEL_HOST_DIR JUDGE_IMAGE; do
+for key in JUDGE_GPU_UUID JUDGE_MODEL JUDGE_MODEL_SHA256 JUDGE_MODEL_SIZE_BYTES JUDGE_MODEL_HOST_DIR JUDGE_MODEL_HOST JUDGE_IMAGE; do
   test "$(printf '%s\n' "$source_unit_text" | grep -c "^Environment=$key=")" -eq 1
 done
 judge_gpu_uuid="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_GPU_UUID=//p')"
@@ -117,24 +166,18 @@ judge_model="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_
 expected_model_sha256="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_MODEL_SHA256=//p')"
 expected_model_size_bytes="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_MODEL_SIZE_BYTES=//p')"
 model_host_dir="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_MODEL_HOST_DIR=//p')"
+declared_model_host="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_MODEL_HOST=//p')"
 image="$(printf '%s\n' "$source_unit_text" | sed -n 's/^Environment=JUDGE_IMAGE=//p')"
 [[ "$judge_model" =~ ^/models/[A-Za-z0-9._-]+\.gguf$ ]]
 [[ "$expected_model_sha256" =~ ^[0-9a-f]{64}$ ]]
 [[ "$expected_model_size_bytes" =~ ^[0-9]{1,20}$ ]]
 test "$model_host_dir" = "/store-fast/hapax-models/sha256/$expected_model_sha256"
+test "$declared_model_host" = "$model_host_dir/${judge_model##*/}"
 [[ "$image" =~ ^ghcr\.io/ggml-org/llama\.cpp@sha256:[0-9a-f]{64}$ ]]
 nvidia-smi --query-gpu=uuid --format=csv,noheader | grep -Fqx "$judge_gpu_uuid"
-workload_oid="$(candidate_git rev-parse --verify "$candidate_sha:scripts/hapax-post-merge-deploy")"
-[[ "$workload_oid" =~ ^[0-9a-f]{40}$ ]]
-workload_source="$(candidate_git cat-file blob "$workload_oid")"
-test "$(printf '%s\n' "$workload_source" | candidate_git hash-object --stdin)" = "$workload_oid"
+workload_oid="$verifier_oid"
 candidate_workload() {
-  /usr/bin/env -i \
-    HOME="$HOME" \
-    PATH=/usr/bin:/bin \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
-    /usr/bin/bash --noprofile --norc -p -s -- "$@" <<<"$workload_source"
+  candidate_verify "$@"
 }
 model_source_path="$HOME/models/compassverifier-7b/${judge_model##*/}"
 model_host_path="$model_host_dir/${judge_model##*/}"
@@ -181,6 +224,7 @@ if [ ! -e "$model_host_path" ] && [ ! -L "$model_host_path" ]; then
       || [ "$stage_size_bytes" != "$expected_model_size_bytes" ]; then
     sudo /usr/bin/rm -f -- "$model_stage"
     echo "protected model staging did not match the candidate digest and size" >&2
+    echo "next action: quarantine the partial staged file, verify the source model, and rerun this exact-SHA canary" >&2
     exit 1
   fi
   sudo /usr/bin/mv -T -- "$model_stage" "$model_host_path"
@@ -189,14 +233,22 @@ model_evidence="$(candidate_workload --measure-protected-local-judge-model "$mod
 model_sha256="$(printf '%s\n' "$model_evidence" | sed -n 's/^model_sha256=//p')"
 model_size_bytes="$(printf '%s\n' "$model_evidence" | sed -n 's/^model_size_bytes=//p')"
 model_identity="$(printf '%s\n' "$model_evidence" | sed -n 's/^model_identity=//p')"
-test "$model_sha256" = "$expected_model_sha256"
-test "$model_size_bytes" = "$expected_model_size_bytes"
+if [ "$model_sha256" != "$expected_model_sha256" ] \
+    || [ "$model_size_bytes" != "$expected_model_size_bytes" ]; then
+  echo "protected model does not match the candidate digest and size" >&2
+  echo "next action: stop activation, quarantine $model_host_path, and rerun the authorized exact-SHA staging canary" >&2
+  exit 1
+fi
 [[ "$model_identity" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]]
 
 was_active="$(systemctl --user show "$unit" -p ActiveState --value)"
 case "$was_active" in
   active|inactive|failed) ;;
-  *) echo "refusing transitional or unknown $unit state: $was_active" >&2; exit 1 ;;
+  *)
+    echo "refusing transitional or unknown $unit state: $was_active" >&2
+    echo "next action: inspect systemctl --user status $unit, let transitions settle, and rerun preflight" >&2
+    exit 1
+    ;;
 esac
 if ! port_probe="$(/usr/bin/ss -H -ltn 'sport = :15001')"; then
   echo "cannot prove canary port 15001 availability" >&2
@@ -345,10 +397,10 @@ fi
 managed_ids="$(docker ps -aq --filter 'name=^/hapax-local-judge$')"
 test -z "$managed_ids"
 
-docker run --cidfile "$canary_cidfile" -d --rm --name "$canary_name" \
+docker run --pull=never --cidfile "$canary_cidfile" -d --rm --name "$canary_name" \
   --memory 4G --memory-swap 6G \
   --gpus "device=$judge_gpu_uuid" \
-  -v "$model_host_dir:/models:ro" \
+  --mount "type=bind,src=$model_host_dir,dst=/models,readonly" \
   -p 127.0.0.1:15001:5001 \
   "$image_id" \
   -m "$judge_model" -a compassverifier-7b \
@@ -444,13 +496,73 @@ HAPAX_LOCAL_JUDGE_CAP_CANARY
 ```bash
 # Re-emit the authenticated command after runtime authority is granted. Never
 # execute RUNBOOK.txt, copy the judge unit, or reproduce the authentication flow.
+# The emitted helper validates every scope in the exact release's
+# oom-containment.effects. No source-file path is accepted as runtime authority.
 set -euo pipefail
+account_uid="$(/usr/bin/id -u)"
+account_name="$(/usr/bin/id -un)"
+account_home="$(/usr/bin/getent passwd "$account_uid" | /usr/bin/cut -d: -f6)"
+test -n "$account_home"
+test "$account_home" = "$(/usr/bin/realpath -e -- "$account_home")"
 runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-authority_check="$HOME/.local/bin/hapax-post-merge-deploy"
-test -f "$authority_check"
-test ! -L "$authority_check"
-"$authority_check" --verify-runtime-authority \
-  "$runtime_task" systemd/units/hapax-local-judge.service
+/usr/bin/env -i \
+  HOME="$account_home" \
+  USER="$account_name" \
+  LOGNAME="$account_name" \
+  PATH=/usr/bin:/bin \
+  LANG=C.UTF-8 \
+  LC_ALL=C.UTF-8 \
+  XDG_RUNTIME_DIR="/run/user/$account_uid" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$account_uid/bus" \
+  HAPAX_RUNTIME_AUTHORITY_TASK="$runtime_task" \
+  /usr/bin/bash --noprofile --norc -p -s <<'HAPAX_LOCAL_JUDGE_AUTHENTICATED_INSTALL'
+set -euo pipefail
+PATH=/usr/bin:/bin
+export PATH
+inner_account_home="$(/usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+  /usr/bin/python3 -I -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')"
+if [ "$HOME" != "$inner_account_home" ]; then
+  echo "local-judge authenticated install: HOME does not match the passwd-backed account home; next action: rerun the complete outer fence rather than the heredoc body" >&2
+  exit 2
+fi
+runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
+repo_alias="$HOME/.cache/hapax/source-activation/worktree"
+repo="$(/usr/bin/realpath -e -- "$repo_alias")"
+release_root="$HOME/.cache/hapax/source-activation/releases"
+test "${repo%/*}" = "$release_root"
+[[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]
+test "$(/usr/bin/stat -c %u -- "$repo")" = "$(/usr/bin/id -u)"
+release_sha="${repo##*/}"
+release_git() {
+  /usr/bin/env -i \
+    HOME=/nonexistent \
+    PATH=/usr/bin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_OPTIONAL_LOCKS=0 \
+    /usr/bin/git -C "$repo" "$@"
+}
+test "$(release_git rev-parse --verify 'HEAD^{commit}')" = "$release_sha"
+verifier_oid="$(release_git rev-parse --verify "$release_sha:scripts/hapax-post-merge-deploy")"
+[[ "$verifier_oid" =~ ^[0-9a-f]{40}$ ]]
+release_verify() {
+  release_git cat-file blob "$verifier_oid" | \
+    /usr/bin/env -i \
+      HOME="$HOME" \
+      USER="$USER" \
+      LOGNAME="$LOGNAME" \
+      PATH=/usr/bin:/bin \
+      LANG=C.UTF-8 \
+      LC_ALL=C.UTF-8 \
+      XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+      DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+      HAPAX_RUNTIME_AUTHORITY_TASK="$runtime_task" \
+      REPO="$repo" \
+      /usr/bin/bash --noprofile --norc -p -s -- "$@"
+}
 state="$HOME/.local/state/hapax/root-required"
 receipt="$state/desired-receipts/oom-containment.sha"
 test -f "$receipt"
@@ -459,7 +571,8 @@ test "$(/usr/bin/stat -c %h -- "$receipt")" = 1
 test "$(/usr/bin/wc -c < "$receipt")" = 41
 IFS= read -r sha < "$receipt"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
-"$authority_check" --verify-local-judge-cap-receipt "$sha" candidate
+test "$sha" = "$release_sha"
+release_verify --verify-local-judge-cap-receipt "$sha" candidate
 stage="$HOME/.cache/hapax/post-merge-root-required/$sha/oom-containment"
 runbook="$stage/RUNBOOK.txt"
 test -f "$runbook"
@@ -468,7 +581,8 @@ test ! -x "$runbook"
 grep -Fqx 'DO NOT EXECUTE THIS FILE OR COPY A COMMAND FROM IT. It is caller-owned pending-state' "$runbook"
 # Run hapax-post-merge-deploy for "$sha" and execute only its live terminal line
 # beginning "next action: run:". The pending RUNBOOK is metadata, not code.
-~/.local/bin/hapax-post-merge-deploy "$sha"
+release_verify "$sha"
+HAPAX_LOCAL_JUDGE_AUTHENTICATED_INSTALL
 ```
 
 Execute only the live terminal `next action: run:` line emitted by that command.
@@ -477,12 +591,56 @@ receipt in a new shell:
 
 ```bash
 set -euo pipefail
-runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-authority_check="$HOME/.local/bin/hapax-post-merge-deploy"
-test -f "$authority_check"
-test ! -L "$authority_check"
-"$authority_check" --verify-runtime-authority \
-  "$runtime_task" systemd/units/hapax-local-judge.service
+account_uid="$(/usr/bin/id -u)"
+account_name="$(/usr/bin/id -un)"
+account_home="$(/usr/bin/getent passwd "$account_uid" | /usr/bin/cut -d: -f6)"
+test -n "$account_home"
+test "$account_home" = "$(/usr/bin/realpath -e -- "$account_home")"
+/usr/bin/env -i \
+  HOME="$account_home" \
+  USER="$account_name" \
+  LOGNAME="$account_name" \
+  PATH=/usr/bin:/bin \
+  LANG=C.UTF-8 \
+  LC_ALL=C.UTF-8 \
+  /usr/bin/bash --noprofile --norc -p -s <<'HAPAX_LOCAL_JUDGE_INSTALLED_VERIFY'
+set -euo pipefail
+PATH=/usr/bin:/bin
+export PATH
+repo_alias="$HOME/.cache/hapax/source-activation/worktree"
+repo="$(/usr/bin/realpath -e -- "$repo_alias")"
+release_root="$HOME/.cache/hapax/source-activation/releases"
+test "${repo%/*}" = "$release_root"
+[[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]
+test "$(/usr/bin/stat -c %u -- "$repo")" = "$(/usr/bin/id -u)"
+release_sha="${repo##*/}"
+release_git() {
+  /usr/bin/env -i \
+    HOME=/nonexistent \
+    PATH=/usr/bin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_OPTIONAL_LOCKS=0 \
+    /usr/bin/git -C "$repo" "$@"
+}
+test "$(release_git rev-parse --verify 'HEAD^{commit}')" = "$release_sha"
+verifier_oid="$(release_git rev-parse --verify "$release_sha:scripts/hapax-post-merge-deploy")"
+[[ "$verifier_oid" =~ ^[0-9a-f]{40}$ ]]
+release_verify() {
+  release_git cat-file blob "$verifier_oid" | \
+    /usr/bin/env -i \
+      HOME="$HOME" \
+      USER="$USER" \
+      LOGNAME="$LOGNAME" \
+      PATH=/usr/bin:/bin \
+      LANG=C.UTF-8 \
+      LC_ALL=C.UTF-8 \
+      REPO="$repo" \
+      /usr/bin/bash --noprofile --norc -p -s -- "$@"
+}
 state="$HOME/.local/state/hapax/root-required"
 receipt="$state/desired-receipts/oom-containment.sha"
 test -f "$receipt"
@@ -490,12 +648,14 @@ test ! -L "$receipt"
 test "$(/usr/bin/wc -c < "$receipt")" = 41
 IFS= read -r sha < "$receipt"
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
-"$authority_check" --verify-local-judge-cap-receipt "$sha" installed
+test "$sha" = "$release_sha"
+release_verify --verify-local-judge-cap-receipt "$sha" installed
 stage="$HOME/.cache/hapax/post-merge-root-required/$sha/oom-containment"
 /usr/bin/grep -Fqx \
   "hapax-root-required-deferred-install: completed authenticated package=oom-containment sha=$sha" \
   "$stage/AUTHENTICATED-INSTALL.log"
 /usr/bin/grep -Fqx "$sha" "$state/installed-receipts/oom-containment.sha"
+HAPAX_LOCAL_JUDGE_INSTALLED_VERIFY
 ```
 
 ### Separate activation and recheck
@@ -506,39 +666,182 @@ limits and the recurring audit.
 
 ```bash
 set -euo pipefail
+account_uid="$(/usr/bin/id -u)"
+account_name="$(/usr/bin/id -un)"
+account_home="$(/usr/bin/getent passwd "$account_uid" | /usr/bin/cut -d: -f6)"
+test -n "$account_home"
+test "$account_home" = "$(/usr/bin/realpath -e -- "$account_home")"
 runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-authority_check="$HOME/.local/bin/hapax-post-merge-deploy"
-test -f "$authority_check"
-test ! -L "$authority_check"
-"$authority_check" --verify-runtime-authority \
-  "$runtime_task" systemd/units/hapax-local-judge.service
-state="$HOME/.local/state/hapax/root-required"
-receipt="$state/desired-receipts/oom-containment.sha"
-test -f "$receipt"
-test ! -L "$receipt"
-test "$(/usr/bin/stat -c %h -- "$receipt")" = 1
-test "$(/usr/bin/wc -c < "$receipt")" = 41
-IFS= read -r sha < "$receipt"
-[[ "$sha" =~ ^[0-9a-f]{40}$ ]]
-"$authority_check" --verify-local-judge-cap-receipt "$sha" installed
-systemctl --user daemon-reload
-exec_start="$(systemctl --user show hapax-local-judge.service -p ExecStart --value)"
+/usr/bin/env -i \
+  HOME="$account_home" \
+  USER="$account_name" \
+  LOGNAME="$account_name" \
+  PATH=/usr/bin:/bin \
+  LANG=C.UTF-8 \
+  LC_ALL=C.UTF-8 \
+  XDG_RUNTIME_DIR="/run/user/$account_uid" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$account_uid/bus" \
+  HAPAX_RUNTIME_AUTHORITY_TASK="$runtime_task" \
+  /usr/bin/bash --noprofile --norc -p -s -- \
+    /usr/bin/systemctl \
+    /usr/bin/curl \
+    /usr/bin/nvidia-smi \
+    /usr/local/sbin/hapax-oom-policy-audit <<'HAPAX_LOCAL_JUDGE_ACTIVATION'
+set -euo pipefail
+PATH=/usr/bin:/bin
+export PATH
+systemctl_bin="$1"
+curl_bin="$2"
+nvidia_smi_bin="$3"
+oom_audit_bin="$4"
+for executable in "$systemctl_bin" "$curl_bin" "$nvidia_smi_bin" "$oom_audit_bin"; do
+  test -x "$executable"
+  test ! -L "$executable"
+done
+runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
+repo_alias="$HOME/.cache/hapax/source-activation/worktree"
+repo="$(/usr/bin/realpath -e -- "$repo_alias")"
+release_root="$HOME/.cache/hapax/source-activation/releases"
+test "${repo%/*}" = "$release_root"
+[[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]
+test "$(/usr/bin/stat -c %u -- "$repo")" = "$(/usr/bin/id -u)"
+sha="${repo##*/}"
+release_git() {
+  /usr/bin/env -i \
+    HOME=/nonexistent \
+    PATH=/usr/bin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_OPTIONAL_LOCKS=0 \
+    /usr/bin/git -C "$repo" "$@"
+}
+test "$(release_git rev-parse --verify 'HEAD^{commit}')" = "$sha"
+verifier_oid="$(release_git rev-parse --verify "$sha:scripts/hapax-post-merge-deploy")"
+[[ "$verifier_oid" =~ ^[0-9a-f]{40}$ ]]
+release_verify() {
+  release_git cat-file blob "$verifier_oid" | \
+    /usr/bin/env -i \
+      HOME="$HOME" \
+      USER="$USER" \
+      LOGNAME="$LOGNAME" \
+      PATH=/usr/bin:/bin \
+      LANG=C.UTF-8 \
+      LC_ALL=C.UTF-8 \
+      XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+      DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+      REPO="$repo" \
+      /usr/bin/bash --noprofile --norc -p -s -- "$@"
+}
+activation_scopes=(
+  runtime:systemd-user:daemon-reload
+  runtime:systemd-user:enable:hapax-local-judge.service
+  runtime:systemd-user:restart:hapax-local-judge.service
+  runtime:state:write-local-judge-activation-result
+)
+release_verify --verify-runtime-authority-for-release \
+  "$sha" "$runtime_task" "${activation_scopes[@]}"
+release_verify --verify-local-judge-cap-receipt "$sha" installed
+
+result_dir="$HOME/.local/state/hapax/local-judge-activation"
+result="$result_dir/latest.env"
+/usr/bin/mkdir -p -- "$result_dir"
+test -d "$result_dir"
+test ! -L "$result_dir"
+test "$(/usr/bin/stat -c %u -- "$result_dir")" = "$(/usr/bin/id -u)"
+result_mode="$(/usr/bin/stat -c %a -- "$result_dir")"
+(( (8#$result_mode & 022) == 0 ))
+write_activation_result() {
+  local status="$1" phase="$2" service_mutation_started="$3" tmp
+  tmp="$(/usr/bin/mktemp -p "$result_dir" .latest.env.XXXXXX)"
+  /usr/bin/chmod 0600 "$tmp"
+  /usr/bin/printf '%s\n' \
+    'schema=1' \
+    "candidate_sha=$sha" \
+    "status=$status" \
+    "phase=$phase" \
+    "service_mutation_started=$service_mutation_started" \
+    "recorded_at_epoch=$(/usr/bin/date +%s)" \
+    'next_action=inspect-service-and-journal-then-rerun-authorized-fence' > "$tmp"
+  /usr/bin/mv -fT -- "$tmp" "$result"
+}
+activation_phase=authorized
+service_mutation_started=false
+on_activation_exit() {
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then
+    return
+  fi
+  set +e
+  status=failed_pre_mutation
+  if [ "$service_mutation_started" = true ]; then
+    status=partial_success
+  fi
+  write_activation_result "$status" "$activation_phase" "$service_mutation_started"
+  /usr/bin/printf '%s\n' \
+    "local-judge activation $status: phase=$activation_phase candidate_sha=$sha service_mutation_started=$service_mutation_started receipt=$result; next action: inspect '$systemctl_bin --user status hapax-local-judge.service' and 'journalctl --user -u hapax-local-judge.service', repair the failed phase, then rerun this separately authorized fence" >&2
+  exit "$rc"
+}
+trap on_activation_exit EXIT
+write_activation_result in_progress "$activation_phase" "$service_mutation_started"
+
+activation_phase=daemon_reload
+write_activation_result in_progress "$activation_phase" "$service_mutation_started"
+service_mutation_started=true
+"$systemctl_bin" --user daemon-reload
+activation_phase=effective_unit
+write_activation_result in_progress "$activation_phase" "$service_mutation_started"
+exec_start="$("$systemctl_bin" --user show hapax-local-judge.service -p ExecStart --value)"
 [[ "$exec_start" == *" --memory 4G "* ]]
 [[ "$exec_start" == *" --memory-swap 6G "* ]]
-systemctl --user enable hapax-local-judge.service
-systemctl --user restart hapax-local-judge.service
-# verify model loaded on GPU1 and 3090 VRAM unchanged:
-curl -s http://localhost:5001/v1/models | grep compassverifier
-nvidia-smi --query-gpu=index,name,memory.used --format=csv,noheader
-/usr/local/sbin/hapax-oom-policy-audit
+activation_phase=enable
+write_activation_result in_progress "$activation_phase" "$service_mutation_started"
+"$systemctl_bin" --user enable hapax-local-judge.service
+activation_phase=restart
+write_activation_result in_progress "$activation_phase" "$service_mutation_started"
+"$systemctl_bin" --user restart hapax-local-judge.service
+activation_phase=model_api
+write_activation_result in_progress "$activation_phase" "$service_mutation_started"
+models="$("$curl_bin" --fail --silent --show-error --max-time 30 \
+  http://127.0.0.1:5001/v1/models)"
+/usr/bin/grep -Fq compassverifier <<<"$models"
+activation_phase=gpu_inventory
+write_activation_result in_progress "$activation_phase" "$service_mutation_started"
+"$nvidia_smi_bin" --query-gpu=index,name,memory.used --format=csv,noheader
+activation_phase=oom_audit
+write_activation_result in_progress "$activation_phase" "$service_mutation_started"
+"$oom_audit_bin"
+activation_phase=complete
+write_activation_result accepted "$activation_phase" "$service_mutation_started"
+trap - EXIT
+/usr/bin/printf 'local-judge activation accepted: candidate_sha=%s receipt=%s\n' "$sha" "$result"
+HAPAX_LOCAL_JUDGE_ACTIVATION
 ```
 
-The name `hapax-local-judge` is reserved for the systemd unit. It refuses to
-delete an unknown same-name container. A user manager cannot order the system
+Every authorized attempt updates
+`~/.local/state/hapax/local-judge-activation/latest.env` atomically. A failure
+before `daemon-reload` records `failed_pre_mutation`; any later failure records
+`partial_success` with the exact failed phase. Treat `partial_success` as a live
+runtime change: inspect the service and journal named by the terminal diagnostic,
+repair that phase, and rerun this separately authorized fence rather than assuming
+the failed command rolled activation back.
+
+The name `hapax-local-judge` is reserved for the systemd unit. Docker writes the
+unit-owned full ID to `%t/hapax-local-judge/container.cid`; stop and restart use
+only that ID and retain the cidfile whenever absence cannot be proven. The unit
+refuses to delete an unknown same-name container. A user manager cannot order the system
 manager's `docker.service`, so the unit deliberately declares no inert
 cross-manager dependency. `Restart=always` with `RestartSec=5s` is the explicit
-Docker-socket readiness path. A same-name collision therefore causes an
-intentional, audit-visible restart loop until reconciled.
+Docker-socket readiness path. During boot, the journal may therefore show one or
+more five-second preflight failures until the system Docker socket is ready. If
+they continue after `systemctl is-active docker.service` reports `active`, inspect
+`journalctl --user -u hapax-local-judge.service` for the socket, image, model, or
+same-name-container refusal before restarting anything. Its preflight also requires the exact digest image
+to be locally staged and the root-owned content-addressed model to match the
+candidate size before `docker run --pull=never`. A same-name collision therefore
+causes an intentional, audit-visible restart loop until reconciled.
 
 The recurring OOM audit requires a present judge container to be `running`. If
 it reports that a non-running container holds the name, stop the unit, inspect
@@ -635,12 +938,29 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
 
   ```bash
   set -euo pipefail
+  account_uid="$(/usr/bin/id -u)"
+  account_name="$(/usr/bin/id -un)"
+  account_home="$(/usr/bin/getent passwd "$account_uid" | /usr/bin/cut -d: -f6)"
+  test -n "$account_home"
+  test "$account_home" = "$(/usr/bin/realpath -e -- "$account_home")"
   runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
-  authority_check="$HOME/.local/bin/hapax-post-merge-deploy"
-  test -f "$authority_check"
-  test ! -L "$authority_check"
-  "$authority_check" --verify-runtime-authority \
-    "$runtime_task" systemd/units/hapax-local-judge.service
+  /usr/bin/env -i \
+    HOME="$account_home" \
+    USER="$account_name" \
+    LOGNAME="$account_name" \
+    PATH=/usr/bin:/bin \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    XDG_RUNTIME_DIR="/run/user/$account_uid" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$account_uid/bus" \
+    DOCKER_HOST=unix:///var/run/docker.sock \
+    HAPAX_RUNTIME_AUTHORITY_TASK="$runtime_task" \
+    /usr/bin/bash --noprofile --norc -p -s <<'HAPAX_LOCAL_JUDGE_MANAGED_RECHECK'
+  set -euo pipefail
+  PATH=/usr/bin:/bin
+  export PATH
+  runtime_task="${HAPAX_RUNTIME_AUTHORITY_TASK:?set to the authorized cc-task note}"
+  test -S /var/run/docker.sock
   repo_alias="$HOME/.cache/hapax/source-activation/worktree"
   repo="$(/usr/bin/realpath -e -- "$repo_alias")"
   release_root="$HOME/.cache/hapax/source-activation/releases"
@@ -648,59 +968,98 @@ The adapter ships `shadow=True`. Before any gate acts on a local verdict:
   [[ "${repo##*/}" =~ ^[0-9a-f]{40}$ ]]
   test "$(/usr/bin/stat -c %u -- "$repo")" = "$(/usr/bin/id -u)"
   sha="${repo##*/}"
-  "$authority_check" --verify-local-judge-cap-receipt "$sha" installed
-  test -d "$repo/scripts/cost-offload"
+  release_git() {
+    /usr/bin/env -i \
+      HOME=/nonexistent \
+      PATH=/usr/bin:/bin \
+      LANG=C.UTF-8 \
+      LC_ALL=C.UTF-8 \
+      GIT_CONFIG_GLOBAL=/dev/null \
+      GIT_CONFIG_NOSYSTEM=1 \
+      GIT_NO_REPLACE_OBJECTS=1 \
+      GIT_OPTIONAL_LOCKS=0 \
+      /usr/bin/git -C "$repo" "$@"
+  }
+  test "$(release_git rev-parse --verify 'HEAD^{commit}')" = "$sha"
+  verifier_oid="$(release_git rev-parse --verify "$sha:scripts/hapax-post-merge-deploy")"
+  [[ "$verifier_oid" =~ ^[0-9a-f]{40}$ ]]
+  release_verify() {
+    release_git cat-file blob "$verifier_oid" | \
+      /usr/bin/env -i \
+        HOME="$HOME" \
+        USER="$USER" \
+        LOGNAME="$LOGNAME" \
+        PATH=/usr/bin:/bin \
+        LANG=C.UTF-8 \
+        LC_ALL=C.UTF-8 \
+        XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+        DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+        DOCKER_HOST=unix:///var/run/docker.sock \
+        REPO="$repo" \
+        /usr/bin/bash --noprofile --norc -p -s -- "$@"
+  }
+  managed_recheck_scopes=(
+    runtime:state:write-remove-managed-recheck:/store-fast/tmp
+    runtime:workload:run-local-judge-managed-recheck:requests-24:workers-8
+  )
+  release_verify --verify-runtime-authority-for-release \
+    "$sha" "$runtime_task" "${managed_recheck_scopes[@]}"
+  release_verify --verify-local-judge-cap-receipt "$sha" installed
   unit=hapax-local-judge.service
-  test "$(systemctl --user show "$unit" -p NeedDaemonReload --value)" = no
-  test "$(systemctl --user show "$unit" -p FragmentPath --value)" = \
+  test "$(/usr/bin/systemctl --user show "$unit" -p NeedDaemonReload --value)" = no
+  test "$(/usr/bin/systemctl --user show "$unit" -p FragmentPath --value)" = \
     "$HOME/.config/systemd/user/$unit"
-  test -z "$(systemctl --user show "$unit" -p DropInPaths --value)"
-  exec_start="$(systemctl --user show "$unit" -p ExecStart --value)"
+  test -z "$(/usr/bin/systemctl --user show "$unit" -p DropInPaths --value)"
+  exec_start="$(/usr/bin/systemctl --user show "$unit" -p ExecStart --value)"
   [[ "$exec_start" == *"argv[]=/usr/bin/docker run "* ]]
   [[ "$exec_start" == *" --name hapax-local-judge "* ]]
   [[ "$exec_start" == *" --memory 4G "* ]]
   [[ "$exec_start" == *" --memory-swap 6G "* ]]
   container=hapax-local-judge
-  oom_kill_disable="$(docker inspect --format '{{json .HostConfig.OomKillDisable}}' "$container")"
+  oom_kill_disable="$(/usr/bin/docker inspect --format '{{json .HostConfig.OomKillDisable}}' "$container")"
   [[ "$oom_kill_disable" == null || "$oom_kill_disable" == false ]]
-  pid="$(docker inspect --format '{{.State.Pid}}' "$container")"
+  pid="$(/usr/bin/docker inspect --format '{{.State.Pid}}' "$container")"
   test "$pid" -gt 1
-  cgroup="$(awk -F: '$1 == "0" {print $3; exit}' "/proc/$pid/cgroup")"
+  cgroup="$(/usr/bin/awk -F: '$1 == "0" {print $3; exit}' "/proc/$pid/cgroup")"
   events="/sys/fs/cgroup${cgroup}/memory.events"
   memory_peak_path="/sys/fs/cgroup${cgroup}/memory.peak"
   swap_peak_path="/sys/fs/cgroup${cgroup}/memory.swap.peak"
   test -r "$events"
   test -r "$memory_peak_path"
   test -r "$swap_peak_path"
-  before_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
-  before_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
+  before_state="$(/usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
+  before_oom="$(/usr/bin/awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
   results="/store-fast/tmp/local-judge-managed-recheck-$$.jsonl"
   test -d /store-fast/tmp
   test ! -e "$results"
-  trap 'rm -f "$results"' EXIT
-  (
-    cd "$repo/scripts/cost-offload"
-    uv run --with pandas --with pyarrow --with requests \
-      python run_verifierbench.py --endpoint http://localhost:5001 \
-      --n 24 --workers 8 --out "$results"
-  )
-  jq -e -s 'length == 24 and all(.[]; type == "object" and has("error") and has("pred") and .error == null and (.pred == "A" or .pred == "B" or .pred == "C"))' \
+  trap '/usr/bin/rm -f "$results"' EXIT
+  release_verify --run-local-judge-cap-workload http://127.0.0.1:5001 "$results"
+  /usr/bin/jq -e -s 'length == 24 and all(.[]; type == "object" and has("error") and has("pred") and .error == null and (.pred == "A" or .pred == "B" or .pred == "C"))' \
     "$results" >/dev/null
-  after_state="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
-  after_oom="$(awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
-  memory_peak="$(cat "$memory_peak_path")"
-  swap_peak="$(cat "$swap_peak_path")"
+  after_state="$(/usr/bin/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}|{{.RestartCount}}|{{.State.OOMKilled}}' "$container")"
+  after_oom="$(/usr/bin/awk '$1 == "oom" || $1 == "oom_kill" {print}' "$events")"
+  memory_peak="$(/usr/bin/cat "$memory_peak_path")"
+  swap_peak="$(/usr/bin/cat "$swap_peak_path")"
   test "$before_state" = "$after_state"
   test "$before_oom" = "$after_oom"
   test "$memory_peak" -le 3221225472
   test "$swap_peak" -le 1073741824
-  rm -f "$results"
+  /usr/bin/rm -f "$results"
   trap - EXIT
+HAPAX_LOCAL_JUDGE_MANAGED_RECHECK
   ```
 - **Throughput:** 8 continuous-batch slots × 8192 ctx; ~137 tok/s decode, ~800 tok/s
   prompt. 127/2817 (4.5%) VerifierBench items exceed an 8192-token slot and are
   reported as context-skips by the harness — the longest/pathological inputs; raise
   `-c`÷`-np` per slot to score them if a full-coverage number is wanted.
-- **Fallback drill:** `docker stop hapax-local-judge`, then a `local-judge` call
-  through `:4000` should return a `claude-haiku` answer without a hard error; restart
-  with `systemctl --user start hapax-local-judge`.
+- **Fallback drill:** stop the lifecycle owner with
+  `systemctl --user stop hapax-local-judge.service`; require
+  `systemctl --user show hapax-local-judge.service -p ActiveState --value` to
+  return `inactive`, require
+  `$XDG_RUNTIME_DIR/hapax-local-judge/container.cid` to be absent,
+  and require `docker ps -aq --no-trunc --filter 'name=^/hapax-local-judge$'`
+  to return no ID. Only then send a `local-judge`
+  request through `:4000` and require a `claude-haiku` answer without a hard
+  error. Restore the lifecycle owner with
+  `systemctl --user start hapax-local-judge.service`; never stop or remove this
+  container by mutable name during the drill.

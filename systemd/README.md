@@ -141,6 +141,8 @@ Recheck these four corrected hard limits with `systemctl --user show logos-api.s
   `config/root-required/oom-host-policy/appendix/`. Both sets and the profile
   table are listed in the same ownership manifest, copied into the installed
   source snapshot, and byte-compared with the installed Git receipt commit.
+  Recheck the shipped table and selected package without runtime mutation with
+  `scripts/install-p0-oom-containment --check --no-runtime`.
 - **Kernel reclaim tuning** (`/etc/sysctl.d/99-hapax-memory.conf`):
   - `vm.min_free_kbytes=524288` — 512MB allocation buffer (raised from default 66MB) to prevent cascade OOM under transient spikes
   - `vm.watermark_scale_factor=100` — kswapd reclaims at 1% pressure (default 10 is too late under zram+heavy-IO)
@@ -186,11 +188,19 @@ Recheck these four corrected hard limits with `systemctl --user show logos-api.s
 not host mutation authority. A runtime-authorized follow-on task must first
 record a read-only receipt:
 
+- `/usr/bin/hostname`
+- `/usr/bin/awk '$1 == "MemTotal:" {print $2; exit}' /proc/meminfo`
 - `free -h`
 - `zramctl --raw --output NAME,DISKSIZE,DATA,COMPR,ALGORITHM,PRIO`
 - `cat /proc/swaps`
 - `cat /proc/sys/vm/swappiness`
 - `systemctl --user show stimmung-sync.service -p MemoryHigh -p MemoryMax -p MemoryPeak -p NRestarts -p ActiveState -p Result --no-pager`
+
+Capture the canonical hostname and raw `MemTotal` on both `hapax-appendix` and
+`hapax-podium` immediately before each host's first authenticated deferred
+drain. Require the raw value to select exactly one row in the installed
+`oom-host-profiles.tsv`; a source-table invariant or a witness from the other
+host is not evidence of the target host's installed RAM class.
 
 Only that separate runtime path may perform sysctl writes, zram-generator
 changes, daemon reloads, unit installation, or service restarts.
