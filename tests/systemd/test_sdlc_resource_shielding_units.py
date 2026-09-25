@@ -602,6 +602,8 @@ def test_local_judge_runbook_has_read_only_protected_model_recheck_before_mutati
     )
     assert "without staging, starting, stopping, or replacing anything" in flattened
     assert "An unrecognized option means source activation is stale" in flattened
+    assert "A missing protected path means the model has not yet been staged" in flattened
+    assert "before an authorized canary and is not an integrity failure" in flattened
     assert f"{measure} {environment['JUDGE_MODEL_HOST']}" in flattened
     assert Path(environment["JUDGE_MODEL_HOST"]).parent == Path(environment["JUDGE_MODEL_HOST_DIR"])
     assert environment["JUDGE_MODEL_SHA256"] in environment["JUDGE_MODEL_HOST"]
