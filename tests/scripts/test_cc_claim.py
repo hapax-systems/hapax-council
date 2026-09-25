@@ -1143,6 +1143,108 @@ def test_recover_reports_applied_journal_superseded_by_later_owner_not_drift(
     assert f"cc-claim: recovery {successor}:applied" in result.stdout
 
 
+def test_manual_stale_lease_release_does_not_hold_the_successor_claim(tmp_path: Path) -> None:
+    # Live specimen 2026-09-25T01:24:54Z (U4, claim-pub-475f9501): the Manual Stale-Lease
+    # Release runbook archived every sidecar of a walled holder and re-offered its note by
+    # hand, leaving the holder's applied journal behind. The cc-claim installed that night
+    # held every successor on it. Here the successor must claim, and the released journal
+    # must read as superseded by the successor's applied publication, not as a live blocker.
+    home = tmp_path / "home"
+    task_id = "manually-released"
+    note = _write_task(home, "active", task_id)
+    first = _claim(home, task_id, dispatch=False)
+    assert first.returncode == 0, first.stderr
+    cache = home / ".cache" / "hapax"
+    archive = tmp_path / "lineage" / "manual-stale-lease-release"
+    archive.mkdir(parents=True)
+    released = sorted(
+        path
+        for pattern in (
+            "cc-active-task-cx-test*",
+            "cc-claim-epoch-cx-test*",
+            "cc-claim-dispatch-cx-test*",
+        )
+        for path in cache.glob(pattern)
+    )
+    assert released
+    for sidecar in released:
+        sidecar.rename(archive / sidecar.name)
+    _reoffer(note, "cx-test")
+    note.write_text(
+        note.read_text(encoding="utf-8")
+        + "- grok-pubtakeover: stale-lease release of walled cx-test; sidecars archived\n",
+        encoding="utf-8",
+    )
+    first_manifest = (
+        home
+        / ".local/share/hapax/claim-publications/gate0b-claim-publish-v1"
+        / _journal_for_role(home, "cx-test")
+        / "manifest.json"
+    )
+    first_epoch = json.loads(first_manifest.read_text(encoding="ascii"))["intent"]["claim_epoch"]
+    while int(time.time()) <= first_epoch:
+        time.sleep(0.05)
+
+    second = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        session_id=_NEXT_SESSION_ID,
+        extra_env=_NEXT_ROLE_ENV,
+    )
+
+    assert second.returncode == 0, second.stdout + second.stderr
+    recovered = _claim(
+        home,
+        task_id,
+        dispatch=False,
+        install_gate0b=False,
+        session_id=_NEXT_SESSION_ID,
+        extra_env=_NEXT_ROLE_ENV,
+        extra_args=["--recover-claim-publications"],
+    )
+    predecessor = _journal_for_role(home, "cx-test")
+    successor = _journal_for_role(home, "cx-next")
+    assert recovered.returncode == 0, recovered.stdout + recovered.stderr
+    assert (
+        f"cc-claim: recovery {predecessor}:superseded:"
+        f"claim_publication_superseded_by_later_applied ({successor})"
+    ) in recovered.stdout
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "known limitation M132: a same-session re-claim reuses the receipt that names its own "
+        "quarantined journal (fs_snapshot_directory_missing). Class 2 reopens only on a "
+        "post-#4726 specimen; a fix needs per-attempt receipts or a fresh legitimate binding"
+    ),
+)
+def test_claimant_reclaim_after_its_own_journal_is_quarantined(tmp_path: Path) -> None:
+    # Live specimen 2026-09-25T03:22:57Z (M132, U4, claim-pub-c876e2e0): the claimant's own
+    # journal was quarantined by hand ahead of a re-claim. The manual binding is a pure function
+    # of (role, session, task, AuthorityCase) and the receipt locator a pure function of the
+    # binding, so the same-session re-claim reuses the receipt that names the quarantined
+    # journal and cannot proceed.
+    home = tmp_path / "home"
+    task_id = "own-journal-quarantined"
+    _write_task(home, "active", task_id)
+    first = _claim(home, task_id, dispatch=False)
+    assert first.returncode == 0, first.stderr
+    journal = (
+        home
+        / ".local/share/hapax/claim-publications/gate0b-claim-publish-v1"
+        / _journal_for_role(home, "cx-test")
+    )
+    journal.rename(journal.with_name(journal.name + ".quarantined-20260925T031057Z"))
+
+    again = _claim(home, task_id, dispatch=False, install_gate0b=False)
+
+    assert again.returncode == 0, again.stdout + again.stderr
+
+
 def _reoffer(note: Path, role: str) -> None:
     note.write_text(
         note.read_text(encoding="utf-8")
