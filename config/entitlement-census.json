@@ -14,6 +14,11 @@
   ],
   "vendor_cache_max_age_seconds": 86400,
   "projection_markdown": "Documents/Personal/30-areas/hapax/frame/ENTITLEMENT-CENSUS-LIVE.md",
+  "trend_sources": {
+    "task_rows": "Documents/Personal/20-projects/hapax-cc-tasks/active",
+    "route_decisions": ".cache/hapax/orchestration/route-decisions.jsonl",
+    "wall_witness": ".cache/hapax/review-team/family-outage.json"
+  },
   "serving_endpoints": [
     {"endpoint_id": "appendix-5000", "host_id": "appendix", "base_url": "http://127.0.0.1:5000", "models_path": "/v1/models"},
     {"endpoint_id": "appendix-5001", "host_id": "appendix", "base_url": "http://127.0.0.1:5001", "models_path": "/v1/models"},

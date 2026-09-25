@@ -33,11 +33,17 @@ from shared.entitlement_census import (
     HttpResponse,
     SecretLeakError,
     SecretRegister,
+    attach_history,
+    compute_trend,
     default_http_get,
     holdings_command,
     load_census_config,
+    load_history,
     load_registry,
     parse_holdings,
+    read_dispatched_demand,
+    read_queued_demand,
+    read_wall_witness,
     render_markdown,
     render_view,
     run_census,
@@ -1216,3 +1222,187 @@ def test_past_the_run_deadline_nothing_more_is_probed() -> None:
     assert any("deadline" in reason for reason in _row(run, "kimi").reasons)
     assert _row(run, "serving.appendix-5000").state is EntitlementState.UNOBSERVED
     assert any("deadline" in r for r in _row(run, "serving.appendix-5000").reasons)
+
+
+# --- clause (8): the trend face ("are we ratcheting up our capability usage and availability for
+# demand?", operator 2026-09-24T23:33:04Z), with wall events per pool (seat 2026-09-25T05:12Z) -----
+
+
+def _record(
+    ts: datetime,
+    *,
+    windows: dict[str, float],
+    live: int = 1,
+    queued: int = 10,
+    dispatched: int = 0,
+    witness: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    states = {f"e{i}": "live" for i in range(live)}
+    return {
+        "ts": ts.isoformat().replace("+00:00", "Z"),
+        "states": states,
+        "windows": [[cid, q, "percent_used", "300m", None] for cid, q in windows.items()],
+        "demand": {
+            "queued": {"queued": queued, "by_status": {"offered": queued}},
+            "dispatched": {
+                "total": dispatched,
+                "by_platform": {},
+                "stale": False,
+                "last_record_at": None,
+            },
+        },
+        "witness": witness or {},
+    }
+
+
+def test_trend_reads_ratchet_direction_on_every_axis() -> None:
+    history = [
+        _record(
+            NOW - timedelta(hours=6), windows={"kimi.subscription.weekly": 5.0}, live=20, queued=800
+        ),
+        _record(
+            NOW - timedelta(hours=3),
+            windows={"kimi.subscription.weekly": 10.0},
+            live=20,
+            queued=850,
+        ),
+        _record(NOW, windows={"kimi.subscription.weekly": 20.0}, live=21, queued=900),
+    ]
+    trend = compute_trend(history, now=NOW)
+    assert trend["usage"]["direction"] == "up"
+    assert trend["availability"]["direction"] == "up"
+    assert trend["demand"]["queued_direction"] == "up"
+    assert trend["windows"]["kimi.subscription.weekly"]["first"] == 5.0
+    assert trend["windows"]["kimi.subscription.weekly"]["last"] == 20.0
+
+
+def test_a_snapshot_is_insufficient_history_never_a_direction() -> None:
+    trend = compute_trend([_record(NOW, windows={"glm.subscription.weekly": 100.0})], now=NOW)
+    assert trend["usage"]["direction"] == "insufficient_history"
+    assert trend["availability"]["direction"] == "insufficient_history"
+
+
+def test_wall_events_are_counted_per_pool_as_episodes() -> None:
+    k5, gw = "kimi.subscription.five_hour", "glm.subscription.weekly"
+    history = [
+        _record(NOW - timedelta(hours=4), windows={k5: 40.0, gw: 100.0}),
+        _record(NOW - timedelta(hours=3), windows={k5: 100.0, gw: 100.0}),
+        _record(NOW - timedelta(hours=2), windows={k5: 100.0, gw: 100.0}),
+        _record(NOW - timedelta(hours=1), windows={k5: 30.0, gw: 100.0}),
+        _record(
+            NOW,
+            windows={k5: 100.0, gw: 100.0},
+            witness={"codex": {"cause": "quota_wall", "outage_started_at": "2026-09-25T03:21:11Z"}},
+        ),
+    ]
+    walls = compute_trend(history, now=NOW)["walls"]
+    assert walls["by_window"][k5]["episodes"] == 2
+    assert walls["by_window"][k5]["at_wall_now"] is True
+    assert walls["by_window"][gw]["episodes"] == 1
+    assert walls["by_pool"]["kimi.subscription"] == 2
+    assert walls["witness"]["codex"]["cause"] == "quota_wall"
+
+
+def test_trend_ignores_history_outside_its_window() -> None:
+    old = _record(NOW - timedelta(days=30), windows={"kimi.subscription.weekly": 90.0})
+    recent = [
+        _record(NOW - timedelta(hours=2), windows={"kimi.subscription.weekly": 10.0}),
+        _record(NOW, windows={"kimi.subscription.weekly": 10.0}),
+    ]
+    trend = compute_trend([old, *recent], now=NOW)
+    assert trend["windows"]["kimi.subscription.weekly"]["first"] == 10.0
+    assert trend["usage"]["direction"] == "flat"
+
+
+def test_history_is_append_only_across_runs_and_secret_scanned(tmp_path: Path) -> None:
+    config = _config([_decl(credential_names=["kimi-api-key"])])
+    out = tmp_path / "out"
+    first = _run(
+        config, holdings=[_holdings(filestore=("kimi-api-key",))], now=NOW - timedelta(hours=1)
+    )
+    attach_history(first, now=NOW - timedelta(hours=1), prior=[], demand={}, witness={})
+    write_outputs(first, output_root=out, projection_md=None, now=NOW - timedelta(hours=1))
+    line_one = (out / "history.jsonl").read_text(encoding="utf-8")
+
+    second = _run(config, holdings=[_holdings(filestore=("kimi-api-key",))])
+    attach_history(
+        second, now=NOW, prior=load_history(out / "history.jsonl", now=NOW), demand={}, witness={}
+    )
+    write_outputs(second, output_root=out, projection_md=None, now=NOW)
+    text = (out / "history.jsonl").read_text(encoding="utf-8")
+    assert text.startswith(line_one) and len(text.splitlines()) == 2
+    assert render_view(second, now=NOW)["trend"]["points"] == 2
+
+    leaky = _run(config, holdings=[_holdings(filestore=("kimi-api-key",))])
+    leaky.secrets.remember(SECRET)
+    attach_history(leaky, now=NOW, prior=[], demand={"queued": {"note": SECRET}}, witness={})
+    with pytest.raises(SecretLeakError):
+        write_outputs(leaky, output_root=out, projection_md=None, now=NOW)
+    assert (out / "history.jsonl").read_text(encoding="utf-8") == text
+
+
+def test_queued_demand_counts_task_row_status(tmp_path: Path) -> None:
+    for name, status in (("a", "offered"), ("b", "ready"), ("c", "in_progress"), ("d", "offered")):
+        (tmp_path / f"{name}.md").write_text(
+            f"---\nstatus: {status}\n---\n# x\nstatus: done\n", "utf-8"
+        )
+    demand = read_queued_demand(tmp_path)
+    assert demand["by_status"] == {"offered": 2, "ready": 1, "in_progress": 1}
+    assert demand["queued"] == 3 and demand["in_flight"] == 1
+
+
+def test_dispatched_demand_carries_its_own_staleness(tmp_path: Path) -> None:
+    path = tmp_path / "route-decisions.jsonl"
+    rows = [
+        {
+            "created_at": "2026-09-23T14:07:49Z",
+            "platform": "codex",
+            "route_id": "codex.headless.full",
+        },
+        {
+            "created_at": "2026-09-25T00:30:00Z",
+            "platform": "claude",
+            "route_id": "claude.headless.full",
+        },
+        {
+            "created_at": "2026-09-25T00:40:00Z",
+            "platform": "claude",
+            "route_id": "claude.headless.full",
+        },
+    ]
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    fresh = read_dispatched_demand(path, now=NOW)
+    assert fresh["by_platform"] == {"claude": 2} and fresh["stale"] is False
+    later = read_dispatched_demand(path, now=NOW + timedelta(days=3))
+    assert later["total"] == 0 and later["stale"] is True
+    assert later["last_record_at"] == "2026-09-25T00:40:00Z"
+    assert read_dispatched_demand(tmp_path / "absent.jsonl", now=NOW)["stale"] is True
+
+
+def test_wall_witness_projects_timestamps_and_cause_only(tmp_path: Path) -> None:
+    path = tmp_path / "family-outage.json"
+    path.write_text(
+        json.dumps(
+            {
+                "codex": {
+                    "observed_at": "2026-09-25T04:41:52+00:00",
+                    "outage_started_at": "2026-09-25T03:21:11+00:00",
+                    "cause": "quota_wall",
+                    "note": "free prose " + SECRET,
+                    "wall_evidence": {
+                        "source": "local-trace:codex_rollout_token_count:05418909e0e96dce"
+                    },
+                },
+                "claude": "2026-09-16T13:18:09Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    witness = read_wall_witness(path)
+    assert witness["codex"] == {
+        "observed_at": "2026-09-25T04:41:52Z",
+        "outage_started_at": "2026-09-25T03:21:11Z",
+        "cause": "quota_wall",
+    }
+    assert witness["claude"] == {"observed_at": "2026-09-16T13:18:09Z"}
+    assert SECRET not in json.dumps(witness)

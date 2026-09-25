@@ -201,6 +201,25 @@ def test_on_another_host_the_run_is_skipped_and_touches_nothing(
     assert cli.calls["hosts"]
 
 
+def test_real_runs_append_the_series_and_dry_runs_never_do(
+    cli, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    paths = _files(tmp_path, remote=False)
+    history = paths["out"] / "history.jsonl"
+    assert cli.main(_argv(paths, "--dry-run")) == 0
+    assert not history.exists()
+
+    cli.main(_argv(paths, "--no-intake", "--now", "2026-09-25T01:00:00Z"))
+    capsys.readouterr()  # discard the first run's plain-text line
+    cli.main(_argv(paths, "--no-intake", "--now", "2026-09-25T03:00:00Z", "--json"))
+    assert len(history.read_text(encoding="utf-8").splitlines()) == 2
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["ratchet"]["points"] == 2
+    assert summary["ratchet"]["availability"] == "flat"
+    view = json.loads((paths["out"] / "view.json").read_text(encoding="utf-8"))
+    assert view["trend"]["points"] == 2
+
+
 def test_host_reads_are_capped_by_the_budget(cli, tmp_path: Path) -> None:
     paths = _files(tmp_path)
     cli.main(_argv(paths, "--no-intake"))

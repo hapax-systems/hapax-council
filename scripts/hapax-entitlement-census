@@ -42,15 +42,21 @@ from shared.capability_surface_delta import task_filename_for_delta  # noqa: E40
 from shared.entitlement_census import (  # noqa: E402
     DEFAULT_OUTPUT_ROOT,
     ENTITLEMENT_CENSUS_CONFIG,
+    HISTORY_FILE,
     CensusConfig,
     CensusConfigError,
     HostHoldings,
     SecretLeakError,
+    attach_history,
     collect_holdings,
     default_http_get,
     default_resolve_secret,
     load_census_config,
+    load_history,
     load_registry,
+    read_dispatched_demand,
+    read_queued_demand,
+    read_wall_witness,
     render_view,
     run_census,
     write_outputs,
@@ -137,6 +143,41 @@ def _scout_report(config: CensusConfig, timeout: float) -> dict[str, Any] | None
 
 def _hostname() -> str:
     return os.uname().nodename
+
+
+def _home_path(rel: str | None) -> Path | None:
+    return Path.home() / rel if rel else None
+
+
+def _demand(config: CensusConfig, now: datetime) -> dict[str, Any]:
+    sources = config.trend_sources
+    tasks, routes = _home_path(sources.task_rows), _home_path(sources.route_decisions)
+    return {
+        "queued": read_queued_demand(tasks) if tasks else {"note": "no task_rows binding"},
+        "dispatched": read_dispatched_demand(routes, now=now)
+        if routes
+        else {"note": "no route_decisions binding", "stale": True},
+    }
+
+
+def _ratchet(trend: dict[str, Any]) -> dict[str, Any]:
+    """The one-line answer to 'are we ratcheting up?' for the determine run log."""
+    if not trend.get("points"):
+        return {"points": 0}
+    return {
+        "points": trend["points"],
+        "span_hours": trend["span_hours"],
+        "availability": trend["availability"]["direction"],
+        "usage": trend["usage"]["direction"],
+        "queued_demand": trend["demand"]["queued_direction"],
+        "dispatch_record_stale": trend["demand"]["dispatch_record_stale"],
+        "wall_episodes_by_pool": trend["walls"]["by_pool"],
+    }
+
+
+def _witness(config: CensusConfig) -> dict[str, Any]:
+    path = _home_path(config.trend_sources.wall_witness)
+    return read_wall_witness(path) if path else {}
 
 
 def _gpu_probe(host_id: str) -> tuple[bool, list[str]]:
@@ -290,6 +331,14 @@ def main(argv: list[str] | None = None) -> int:
     outputs: dict[str, Path] = {}
     intake: dict[str, Any] | None = None
     if not args.dry_run:
+        # Clause (8): one line of the append-only series per real run, and the trend it implies.
+        attach_history(
+            run,
+            now=now,
+            prior=load_history(args.output_root / HISTORY_FILE, now=now),
+            demand=_demand(config, now),
+            witness=_witness(config),
+        )
         try:
             outputs = write_outputs(
                 run, output_root=args.output_root, projection_md=projection, now=now
@@ -317,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
         "outputs": {name: str(path) for name, path in outputs.items()},
         "intake": intake,
         "dry_run": args.dry_run,
+        "ratchet": _ratchet(view.get("trend") or {}),
     }
     text = json.dumps(summary, indent=2, sort_keys=True)
     try:

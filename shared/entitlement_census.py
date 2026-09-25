@@ -383,6 +383,14 @@ class MetalConfig(_Strict):
     trial_records: tuple[TrialRecord, ...] = ()
 
 
+class TrendSources(_Strict):
+    """Home-relative bindings the trend face reads. Existing estate records, never a new store."""
+
+    task_rows: str | None = None  # active task-row directory: queued demand
+    route_decisions: str | None = None  # dispatch route-decision JSONL: dispatched demand
+    wall_witness: str | None = None  # review plane's per-family outage witness
+
+
 class EntitlementDecl(_Strict):
     entitlement_id: str = Field(pattern=_ID_RE.pattern)
     provider: str = Field(min_length=1)
@@ -434,6 +442,7 @@ class CensusConfig(_Strict):
     withheld_name_tokens: tuple[str, ...] = ()
     serving_endpoints: tuple[ServingEndpoint, ...] = ()
     metal: MetalConfig = MetalConfig()
+    trend_sources: TrendSources = TrendSources()
     entitlements: tuple[EntitlementDecl, ...]
 
     @model_validator(mode="after")
@@ -1441,6 +1450,9 @@ class CensusRun:
     deltas: list[CapabilitySurfaceDelta]
     measurements: list[dict[str, Any]]
     secrets: SecretRegister
+    #: Set by attach_history: this run's line in the append-only series, and the trend it implies.
+    history_record: dict[str, Any] | None = None
+    trend: dict[str, Any] | None = None
 
 
 def _registry_rows(registry: Mapping[str, Any], key: str) -> list[dict[str, Any]]:
@@ -2192,6 +2204,308 @@ def run_census(
     )
 
 
+# --- trend: are we ratcheting up capability usage and availability for demand? --------------------
+#
+# Operator, 2026-09-24T23:33:04Z: "I want to know if we are ratcheting up our capability usage and
+# availability for demand." A snapshot cannot answer that. Each run appends one compact record to an
+# append-only series (``history.jsonl``). The trend is computed from that series:
+# - availability: entitlements live or held;
+# - usage: the mean used-% of the window readings;
+# - demand: queued task rows, and dispatched route decisions carrying their own staleness;
+# - wall events per pool: windows at >= 100 %, plus the estate's wall witness.
+# In USE-method terms these are utilization, saturation and errors.
+
+HISTORY_FILE = "history.jsonl"
+HISTORY_ROTATE_BYTES = 32_000_000  # rotated to a dated file past this size, never deleted
+TREND_WINDOW = timedelta(days=7)
+DEMAND_WINDOW = timedelta(hours=24)
+MIN_TREND_SPAN = timedelta(hours=1)
+_ROUTE_TAIL_BYTES = 8_000_000
+_QUEUED_STATUSES = frozenset({"offered", "ready"})
+_IN_FLIGHT_STATUSES = frozenset({"claimed", "in_progress", "pr_open"})
+_STATUS_RE = re.compile(r"^status:\s*([a-z_]+)\s*$", re.MULTILINE)
+
+
+def read_queued_demand(active_dir: Path) -> dict[str, Any]:
+    """Status counts of active task rows (the first ``status:`` line of each row's frontmatter)."""
+    counts: dict[str, int] = {}
+    try:
+        paths = sorted(active_dir.glob("*.md"))
+    except OSError:
+        return {
+            "by_status": {},
+            "queued": None,
+            "in_flight": None,
+            "error": "task_store_unreadable",
+        }
+    for path in paths:
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")[:4096]
+        except OSError:
+            continue
+        frontmatter = head.split("\n---", 1)[0] if head.startswith("---") else ""
+        match = _STATUS_RE.search(frontmatter)
+        if match:
+            counts[match.group(1)] = counts.get(match.group(1), 0) + 1
+    return {
+        "by_status": dict(sorted(counts.items())),
+        "queued": sum(n for s, n in counts.items() if s in _QUEUED_STATUSES),
+        "in_flight": sum(n for s, n in counts.items() if s in _IN_FLIGHT_STATUSES),
+    }
+
+
+def read_dispatched_demand(
+    path: Path, *, now: datetime, window: timedelta = DEMAND_WINDOW
+) -> dict[str, Any]:
+    """Route decisions per platform in the trailing window, with the record's own freshness.
+
+    The record is stale when its newest decision is older than the window: dispatch is then not
+    being recorded, which is itself a finding, never a zero."""
+    counts: dict[str, int] = {}
+    last: datetime | None = None
+    try:
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            stream.seek(max(0, size - _ROUTE_TAIL_BYTES))
+            tail = stream.read()
+    except OSError:
+        return {
+            "by_platform": {},
+            "total": 0,
+            "last_record_at": None,
+            "stale": True,
+            "error": "route_decisions_unreadable",
+        }
+    lines = tail.splitlines()
+    if size > _ROUTE_TAIL_BYTES:
+        lines = lines[1:]  # the read began mid-line
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        at = _instant(record.get("created_at")) if isinstance(record, dict) else None
+        if at is None:
+            continue
+        last = max(last or at, at)
+        platform = _safe_fact(record.get("platform"))
+        if now - window <= at <= now and isinstance(platform, str):
+            counts[platform] = counts.get(platform, 0) + 1
+    return {
+        "by_platform": dict(sorted(counts.items())),
+        "total": sum(counts.values()),
+        "last_record_at": _iso(last),
+        "stale": last is None or now - last > window,
+    }
+
+
+def read_wall_witness(path: Path) -> dict[str, dict[str, Any]]:
+    """The estate's per-family outage witness, projected to timestamps and cause only."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    witness: dict[str, dict[str, Any]] = {}
+    for family, value in payload.items() if isinstance(payload, dict) else ():
+        if not isinstance(family, str) or not _SAFE_TEXT.match(family):
+            continue
+        if isinstance(value, str):
+            at = _instant(value)
+            witness[family] = {"observed_at": _iso(at)} if at else {}
+        elif isinstance(value, dict):
+            entry: dict[str, Any] = {}
+            for key in ("observed_at", "outage_started_at", "until"):
+                at = _instant(value.get(key))
+                if at is not None:
+                    entry[key] = _iso(at)
+            cause = _safe_fact(value.get("cause"))
+            if isinstance(cause, str):
+                entry["cause"] = cause
+            witness[family] = entry
+    return witness
+
+
+def load_history(
+    path: Path, *, now: datetime, window: timedelta = TREND_WINDOW
+) -> list[dict[str, Any]]:
+    """The records of the append-only series inside the trend window (a torn tail line is skipped)."""
+    records: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return records
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        at = _instant(record.get("ts")) if isinstance(record, dict) else None
+        if at is not None and now - window <= at <= now:
+            records.append(record)
+    return records
+
+
+def _direction(
+    first: float | None, last: float | None, span: timedelta, points: int, tolerance: float = 0.0
+) -> str:
+    if first is None or last is None or points < 2 or span < MIN_TREND_SPAN:
+        return "insufficient_history"
+    if last - first > tolerance:
+        return "up"
+    if first - last > tolerance:
+        return "down"
+    return "flat"
+
+
+def _walls_of(record: Mapping[str, Any]) -> set[str]:
+    return {
+        w[0]
+        for w in record.get("windows") or []
+        if isinstance(w, list)
+        and len(w) >= 3
+        and w[2] == "percent_used"
+        and isinstance(w[1], int | float)
+        and w[1] >= 100
+    }
+
+
+def compute_trend(
+    records: Sequence[Mapping[str, Any]], *, now: datetime, window: timedelta = TREND_WINDOW
+) -> dict[str, Any]:
+    series = sorted(
+        (
+            r
+            for r in records
+            if (at := _instant(r.get("ts"))) is not None and now - window <= at <= now
+        ),
+        key=lambda r: str(r.get("ts")),
+    )
+    points = len(series)
+    if not series:
+        return {"points": 0, "window_days": window.days, "note": "no history yet"}
+    first, last = series[0], series[-1]
+    span = (_instant(last["ts"]) or now) - (_instant(first["ts"]) or now)
+
+    def available(record: Mapping[str, Any]) -> int:
+        return sum(1 for s in (record.get("states") or {}).values() if s in {"live", "held"})
+
+    def readings(record: Mapping[str, Any]) -> dict[str, float]:
+        return {
+            w[0]: float(w[1])
+            for w in record.get("windows") or []
+            if isinstance(w, list)
+            and len(w) >= 3
+            and w[2] == "percent_used"
+            and isinstance(w[1], int | float)
+        }
+
+    shared = sorted(set(readings(first)) & set(readings(last)))
+    usage_first = sum(readings(first)[c] for c in shared) / len(shared) if shared else None
+    usage_last = sum(readings(last)[c] for c in shared) / len(shared) if shared else None
+
+    windows: dict[str, dict[str, Any]] = {}
+    for record in series:
+        for capacity_id, quantity in readings(record).items():
+            entry = windows.setdefault(
+                capacity_id, {"first": quantity, "min": quantity, "max": quantity}
+            )
+            entry["last"] = quantity
+            entry["min"] = min(entry["min"], quantity)
+            entry["max"] = max(entry["max"], quantity)
+    for entry in windows.values():
+        entry["direction"] = _direction(entry["first"], entry["last"], span, points, tolerance=0.5)
+
+    by_window: dict[str, dict[str, Any]] = {}
+    previous: set[str] = set()
+    for record in series:
+        walls = _walls_of(record)
+        for capacity_id in walls:
+            entry = by_window.setdefault(
+                capacity_id, {"episodes": 0, "records_at_wall": 0, "first_at": record["ts"]}
+            )
+            entry["records_at_wall"] += 1
+            entry["last_at"] = record["ts"]
+            if capacity_id not in previous:
+                entry["episodes"] += 1
+        previous = walls
+    for capacity_id, entry in by_window.items():
+        entry["at_wall_now"] = capacity_id in _walls_of(last)
+    by_pool: dict[str, int] = {}
+    for capacity_id, entry in by_window.items():
+        pool = ".".join(capacity_id.split(".")[:2])
+        by_pool[pool] = by_pool.get(pool, 0) + entry["episodes"]
+
+    def demand(record: Mapping[str, Any], key: str, field_name: str) -> float | None:
+        value = ((record.get("demand") or {}).get(key) or {}).get(field_name)
+        return float(value) if isinstance(value, int | float) else None
+
+    dispatched_last = (last.get("demand") or {}).get("dispatched") or {}
+    return {
+        "window_days": window.days,
+        "points": points,
+        "since": first["ts"],
+        "until": last["ts"],
+        "span_hours": round(span.total_seconds() / 3600, 2),
+        "availability": {
+            "first": available(first),
+            "last": available(last),
+            "direction": _direction(available(first), available(last), span, points),
+        },
+        "usage": {
+            "first_mean_used_pct": usage_first,
+            "last_mean_used_pct": usage_last,
+            "windows_compared": len(shared),
+            "direction": _direction(usage_first, usage_last, span, points, tolerance=0.5),
+        },
+        "demand": {
+            "queued_first": demand(first, "queued", "queued"),
+            "queued_last": demand(last, "queued", "queued"),
+            "queued_direction": _direction(
+                demand(first, "queued", "queued"), demand(last, "queued", "queued"), span, points
+            ),
+            "dispatched_24h_first": demand(first, "dispatched", "total"),
+            "dispatched_24h_last": demand(last, "dispatched", "total"),
+            "dispatch_record_stale": dispatched_last.get("stale"),
+            "dispatch_record_last_at": dispatched_last.get("last_record_at"),
+        },
+        "walls": {
+            "by_window": dict(sorted(by_window.items())),
+            "by_pool": dict(sorted(by_pool.items())),
+            "witness": last.get("witness") or {},
+        },
+        "windows": dict(sorted(windows.items())),
+    }
+
+
+def history_record(
+    run: CensusRun, *, now: datetime, demand: Mapping[str, Any], witness: Mapping[str, Any]
+) -> dict[str, Any]:
+    """One compact line of the append-only series: states, window readings, demand, walls."""
+    return {
+        "ts": _iso(now),
+        "states": {row.entitlement_id: row.state.value for row in run.rows},
+        "windows": [
+            [m["capacity_id"], m["quantity"], m["unit"], m["window"], m["resets_at"]]
+            for m in run.measurements
+        ],
+        "demand": dict(demand),
+        "witness": dict(witness),
+    }
+
+
+def attach_history(
+    run: CensusRun,
+    *,
+    now: datetime,
+    prior: Sequence[Mapping[str, Any]],
+    demand: Mapping[str, Any],
+    witness: Mapping[str, Any],
+) -> None:
+    run.history_record = history_record(run, now=now, demand=demand, witness=witness)
+    run.trend = compute_trend([*prior, run.history_record], now=now)
+
+
 # --- projection -----------------------------------------------------------------------------------
 
 
@@ -2247,6 +2561,9 @@ def render_view(run: CensusRun, *, now: datetime) -> dict[str, Any]:
         "rows": [_row_view(row) for row in run.rows],
         "unclassified_names": run.unclassified,
         "potential": run.potential,
+        "trend": run.trend
+        if run.trend is not None
+        else {"points": 0, "note": "history not attached to this run (dry run or direct call)"},
         "deltas": [
             {"delta_id": d.delta_id, "surface_id": d.surface_id, "delta_kind": d.delta_kind.value}
             for d in run.deltas
@@ -2345,6 +2662,7 @@ def render_markdown(view: Mapping[str, Any]) -> str:
     lines += [
         f"- `{d['surface_id']}`: {d['delta_kind']} (`{d['delta_id']}`)" for d in view["deltas"]
     ] or ["- none"]
+    lines += _trend_markdown(view.get("trend") or {})
     pot = view["potential"]
     lines += [
         "",
@@ -2381,6 +2699,70 @@ def render_markdown(view: Mapping[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _trend_markdown(trend: Mapping[str, Any]) -> list[str]:
+    lines = [
+        "",
+        "## Ratchet: usage and availability against demand",
+        "",
+        '*"I want to know if we are ratcheting up our capability usage and availability for demand."* '
+        "(operator, 2026-09-24T23:33:04Z)",
+        "",
+    ]
+    if not trend.get("points"):
+        return [*lines, f"No trend yet: {trend.get('note', 'no history')}."]
+    availability, usage, demand = trend["availability"], trend["usage"], trend["demand"]
+    lines += [
+        f"Window: {trend['points']} runs from {trend['since']} to {trend['until']} "
+        f"({trend['span_hours']} h, trend window {trend['window_days']} d).",
+        "",
+        "| axis | first | last | direction |",
+        "|---|---|---|---|",
+        f"| availability (entitlements live or held) | {availability['first']} | {availability['last']} | "
+        f"{availability['direction']} |",
+        f"| usage (mean used-% over {usage['windows_compared']} windows) | "
+        f"{_cell(usage['first_mean_used_pct'])} | {_cell(usage['last_mean_used_pct'])} | {usage['direction']} |",
+        f"| queued demand (offered + ready task rows) | {_cell(demand['queued_first'])} | "
+        f"{_cell(demand['queued_last'])} | {demand['queued_direction']} |",
+        f"| dispatched demand (route decisions, 24 h) | {_cell(demand['dispatched_24h_first'])} | "
+        f"{_cell(demand['dispatched_24h_last'])} | "
+        + (
+            "record STALE since " + str(demand["dispatch_record_last_at"])
+            if demand.get("dispatch_record_stale")
+            else "record fresh"
+        )
+        + " |",
+        "",
+        "**Wall events per pool** (windows at 100 % used; an episode is one run of consecutive readings at the wall):",
+        "",
+        "| window | episodes | readings at wall | first | last | at wall now |",
+        "|---|---|---|---|---|---|",
+    ]
+    by_window = trend["walls"]["by_window"]
+    lines += [
+        f"| {cid} | {w['episodes']} | {w['records_at_wall']} | {w['first_at']} | {w['last_at']} | "
+        f"{w['at_wall_now']} |"
+        for cid, w in by_window.items()
+    ] or ["| none in window | | | | | |"]
+    pools = ", ".join(f"{pool}: {n}" for pool, n in trend["walls"]["by_pool"].items()) or "none"
+    witness = (
+        "; ".join(
+            f"{family} {' '.join(f'{k}={v}' for k, v in entry.items())}"
+            for family, entry in trend["walls"]["witness"].items()
+        )
+        or "none"
+    )
+    lines += [
+        "",
+        f"Episodes per pool: {pools}. Estate wall witness (review plane): {_cell(witness)}.",
+    ]
+    lines += ["", "| window | first | last | min | max | direction |", "|---|---|---|---|---|---|"]
+    lines += [
+        f"| {cid} | {w['first']:g} | {w['last']:g} | {w['min']:g} | {w['max']:g} | {w['direction']} |"
+        for cid, w in trend["windows"].items()
+    ]
+    return lines
+
+
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
@@ -2411,11 +2793,35 @@ def write_outputs(
         rendered[output_root / "surface-deltas.json"] = deltas.model_dump_json(indent=2) + "\n"
     if projection_md is not None:
         rendered[projection_md] = render_markdown(view)
+    history_line = (
+        json.dumps(run.history_record, sort_keys=True, separators=(",", ":")) + "\n"
+        if run.history_record is not None
+        else None
+    )
     for path, text in rendered.items():
         run.secrets.require_clean(text, label=path.name)
+    if history_line is not None:
+        run.secrets.require_clean(history_line, label=HISTORY_FILE)
     for path, text in rendered.items():
         _atomic_write(path, text)
-    return {path.name: path for path in rendered}
+    written = {path.name: path for path in rendered}
+    if history_line is not None:
+        written[HISTORY_FILE] = _append_history(output_root / HISTORY_FILE, history_line, now=now)
+    return written
+
+
+def _append_history(path: Path, line: str, *, now: datetime) -> Path:
+    """Append one line. Past the size bound the file is renamed with a date suffix (kept, never
+    deleted) and a new one is started: the series stays append-only."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.stat().st_size > HISTORY_ROTATE_BYTES:
+            path.rename(path.with_name(f"history-{now.strftime('%Y%m%dT%H%M%SZ')}.jsonl"))
+    except FileNotFoundError:
+        pass
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(line)
+    return path
 
 
 _PYDANTIC_DYNAMIC_ENTRYPOINTS = (
