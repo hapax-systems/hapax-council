@@ -232,8 +232,9 @@ def test_scoped_token_recovery_keeps_the_sub_channel_mint_script():
 def test_unattended_google_callers_use_the_shared_client_non_interactively():
     """The retired ``agents._google_auth`` parked daemons on a browser consent flow.
 
-    Every unattended caller now goes through the shared client with the flow
-    disabled, and no module under ``agents/`` may import the legacy path again.
+    The five callers this change converted go through the shared client with the flow
+    disabled, and no module under ``agents/`` may import the legacy path again. This is NOT
+    a claim about every unattended caller: see the pinned inventory below.
     """
     repo = Path(__file__).resolve().parents[1]
     assert not (repo / "agents" / "_google_auth.py").exists()
@@ -257,6 +258,71 @@ def test_unattended_google_callers_use_the_shared_client_non_interactively():
         assert calls, rel
         for call in calls:
             assert "interactive=False" in call, (rel, call)
+
+
+# Review finding at a9c30e854 (major): the caller inventory was incomplete. Other unattended
+# callers still reach the shared client with its interactive default, so this change does NOT
+# establish that every unattended caller refuses a browser flow. The remainder is pinned here
+# by name, so the gap is visible and cannot grow silently; converting one of them means
+# removing it from this set.
+OPERATOR_RUN_CONSENT = frozenset(
+    {
+        # Run by the operator at a terminal, precisely to perform consent.
+        "scripts/youtube-auth.py",
+    }
+)
+KNOWN_INTERACTIVE_DEFAULT_CALLERS = frozenset(
+    {
+        "agents/publication_bus/youtube_live_chat_publisher.py",
+        "agents/studio_compositor/youtube_description.py",
+        "agents/thumbnail_rotator/rotator.py",
+        "agents/youtube_telemetry/client.py",
+        "scripts/hapax-youtube-viewer-count-producer",
+    }
+)
+
+
+def _interactive_default_callers(repo: Path) -> set[str]:
+    """Files under agents/ and scripts/ calling the shared client WITHOUT interactive=False."""
+    import ast
+
+    candidates = [*repo.joinpath("agents").rglob("*.py"), *repo.joinpath("scripts").iterdir()]
+    found: set[str] = set()
+    for path in candidates:
+        if not path.is_file():
+            continue
+        source = path.read_text(encoding="utf-8", errors="replace")
+        if path.suffix != ".py" and not source.startswith("#!/usr/bin/env python"):
+            continue
+        if "build_service(" not in source and "get_google_credentials(" not in source:
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name not in {"build_service", "get_google_credentials"}:
+                continue
+            flow_disabled = any(
+                keyword.arg == "interactive"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is False
+                for keyword in node.keywords
+            )
+            if not flow_disabled:
+                found.add(str(path.relative_to(repo)))
+    found.discard("shared/google_auth.py")
+    return found
+
+
+def test_interactive_default_callers_are_exactly_the_pinned_inventory():
+    repo = Path(__file__).resolve().parents[1]
+    assert _interactive_default_callers(repo) == (
+        OPERATOR_RUN_CONSENT | KNOWN_INTERACTIVE_DEFAULT_CALLERS
+    )
 
 
 def test_load_token_reads_the_secret_and_absent_is_none(monkeypatch):
