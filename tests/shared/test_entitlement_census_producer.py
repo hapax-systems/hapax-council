@@ -600,6 +600,18 @@ def test_every_declared_entitlement_has_a_row_even_without_evidence() -> None:
     assert row.freshness is not None
 
 
+def test_determine_row_holds_the_intake_until_the_registry_declarations_merge() -> None:
+    """Seat decision 2026-09-25T01:46Z (option a). The flip is exit-predicate item (7) of
+    entitlement-census-producer-20260924: once grok-registry's provider declarations merge, the
+    flip PR removes --no-intake and must change this pin on purpose, so the flip is never silent."""
+    registry = json.loads(
+        (Path(census.REPO_ROOT) / "config" / "determination-producers.json").read_text()
+    )
+    row = next(p for p in registry["producers"] if p["id"] == "entitlement-census")
+    assert "--no-intake" in row["command"]
+    assert row["cadence_seconds"] < row["evidence_ttl_seconds"]
+
+
 def test_shipped_config_loads_and_names_every_census_provider() -> None:
     shipped = load_census_config(ENTITLEMENT_CENSUS_CONFIG)
     ids = [e.entitlement_id for e in shipped.entitlements]
