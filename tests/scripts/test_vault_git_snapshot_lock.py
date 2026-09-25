@@ -31,9 +31,7 @@ def _bash(snippet: str, env: dict[str, str] | None = None) -> str:
 
 
 def _decision(age: int, interval: int, local: int, remote: str) -> str:
-    return _bash(
-        f"vault_snapshot_reap_decision {age} {interval} {local} {remote}"
-    )
+    return _bash(f"vault_snapshot_reap_decision {age} {interval} {local} {remote}")
 
 
 def test_live_local_git_does_not_reap() -> None:
@@ -66,9 +64,7 @@ def test_apply_reap_renames_and_keeps_bytes(tmp_path: Path) -> None:
     lock = tmp_path / "index.lock"
     lock.write_bytes(b"evidence-bytes")
     evidence = tmp_path / "evidence"
-    moved = _bash(
-        f"vault_snapshot_apply_reap {lock} {evidence} reap"
-    )
+    moved = _bash(f"vault_snapshot_apply_reap {lock} {evidence} reap")
     dest = Path(moved)
     assert dest.is_file()
     assert dest.read_bytes() == b"evidence-bytes"
@@ -120,9 +116,7 @@ def test_scanner_counts_a_live_git_in_the_repo_and_ignores_another(tmp_path: Pat
             _bash(f"vault_snapshot_count_git_holders {here} {here / '.git' / 'index.lock'}")
         )
         count_there_only = int(
-            _bash(
-                f"vault_snapshot_count_git_holders {there} {there / '.git' / 'index.lock'}"
-            )
+            _bash(f"vault_snapshot_count_git_holders {there} {there / '.git' / 'index.lock'}")
         )
         assert count_here >= 1
         assert count_there_only >= 1
