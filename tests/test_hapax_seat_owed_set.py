@@ -228,6 +228,8 @@ def test_session_start_injects_owed_block_for_incumbent(tmp_path: Path) -> None:
     seat = tmp_path / "30-areas" / "hapax" / "frame" / "COORDINATOR-SEAT.md"
     seat.parent.mkdir(parents=True, exist_ok=True)
     seat.write_text("| incumbent | claude/dev1 — session `test` |\n", encoding="utf-8")
+    refreshed = _run(tmp_path, "--refresh-cache")
+    assert refreshed.returncode == 0, refreshed.stderr
     env = os.environ.copy()
     env["HAPAX_AGENT_ROLE"] = "dev1"
     proc = subprocess.run(
@@ -244,6 +246,29 @@ def test_session_start_injects_owed_block_for_incumbent(tmp_path: Path) -> None:
     assert "SEAT section 5 is the control point" not in text
     assert "OWED BY THE SEAT (" in text
     assert "lane-row" in text
+
+
+def test_missing_cache_emits_unavailable_inside_two_seconds(tmp_path: Path) -> None:
+    import time
+
+    _seat(tmp_path, "| incumbent | claude/dev1 — The process role is `dev1-seat`. |")
+    env = os.environ.copy()
+    env["HAPAX_AGENT_ROLE"] = "dev1-seat"
+    started = time.perf_counter()
+    proc = subprocess.run(
+        ["python3", str(SCRIPT), "--vault", str(tmp_path), "--session-start"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    elapsed = time.perf_counter() - started
+    assert proc.returncode == 0, proc.stderr
+    assert elapsed < 2
+    text = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert text.startswith("OWED BY THE SEAT (unavailable:")
+    assert "seat-owed-set.txt" in text
+    assert "\n" not in text
 
 
 def test_session_start_silent_for_other_roles(tmp_path: Path) -> None:
@@ -461,6 +486,8 @@ def test_process_role_dev1_seat_injects_and_keeps_dev1_inbox(tmp_path: Path) -> 
         tmp_path,
         "| incumbent | claude/dev1 — session `test`. The process role is `dev1-seat`. |",
     )
+    refreshed = _run(tmp_path, "--refresh-cache")
+    assert refreshed.returncode == 0, refreshed.stderr
     env = os.environ.copy()
     env["HAPAX_AGENT_ROLE"] = "dev1-seat"
     proc = subprocess.run(

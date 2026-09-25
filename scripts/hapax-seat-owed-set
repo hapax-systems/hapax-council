@@ -490,15 +490,22 @@ def _display_path(path: Path) -> str:
     return "~/" + relative.as_posix()
 
 
-def write_full_list(vault: Path, result: dict) -> str:
+def cache_dir(vault: Path) -> Path:
     if vault.resolve() == DEFAULT_VAULT.resolve():
-        path = Path.home() / ".cache" / "hapax" / "seat-owed-set.txt"
-    else:
-        path = vault / ".cache" / "seat-owed-set.txt"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(owed_block(result) + "\n", encoding="utf-8")
-    shown = _display_path(path)
+        return Path.home() / ".cache" / "hapax"
+    return vault / ".cache"
+
+
+def write_full_list(vault: Path, result: dict, *, generated_at: datetime | None = None) -> str:
+    directory = cache_dir(vault)
+    directory.mkdir(parents=True, exist_ok=True)
+    full = directory / "seat-owed-set.txt"
+    summary = directory / "seat-owed-set-summary.txt"
+    shown = _display_path(full)
     result["full_list_path"] = shown
+    full.write_text(owed_block(result) + "\n", encoding="utf-8")
+    stamp = (generated_at or datetime.now(UTC)).isoformat()
+    summary.write_text(f"generated_at: {stamp}\n{summary_block(result)}\n", encoding="utf-8")
     return shown
 
 
@@ -541,10 +548,46 @@ def incumbent_identity(vault: Path) -> tuple[str, str]:
     return process, inbox
 
 
+def _hook_json(text: str) -> str:
+    return json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": text,
+            }
+        },
+        ensure_ascii=True,
+    )
+
+
+def _unavailable_line(vault: Path) -> str:
+    shown = _display_path(cache_dir(vault) / "seat-owed-set.txt")
+    return f"OWED BY THE SEAT (unavailable: no precomputed set; full list: {shown})"
+
+
 def session_start_payload(vault: Path) -> str:
-    process, inbox = incumbent_identity(vault)
+    """Read the precomputed summary. Do not scan the task store on this path.
+
+    A live project() opened 1908 files and took 13.60s on 2026-09-25T03:04Z,
+    which is past the 10s SessionStart budget. The 15-minute staleness sweep
+    refreshes the file.
+    """
+    process, _inbox = incumbent_identity(vault)
     if not process or os.environ.get("HAPAX_AGENT_ROLE", "") != process:
         return ""
+    summary = cache_dir(vault) / "seat-owed-set-summary.txt"
+    try:
+        raw = summary.read_text(encoding="utf-8")
+    except OSError:
+        return _hook_json(_unavailable_line(vault))
+    if not raw.startswith("generated_at:"):
+        return _hook_json(_unavailable_line(vault))
+    header, _, body = raw.partition("\n")
+    generated = parse_ts(header.split(":", 1)[1].strip())
+    age = ""
+    if generated is not None:
+        seconds = max(0, int((datetime.now(UTC) - generated).total_seconds()))
+        age = f" Precomputed {seconds}s ago."
     intro = (
         "Take the coordinator seat: read ~/Documents/Personal/30-areas/hapax/frame/"
         "COORDINATOR-SEAT.md. "
@@ -553,34 +596,9 @@ def session_start_payload(vault: Path) -> str:
         "The owed set is the control point; §5 is narrative. "
         "New items are owed a disposition within 30 minutes. "
         "Backlog items are owed one disposition within 24 hours of this activation. "
-        "Update the section 0 heartbeat row with your new transcript path."
+        "Update the section 0 heartbeat row with your new transcript path." + age
     )
-    try:
-        now = datetime.now(UTC)
-        result = project(
-            vault,
-            "WORKTREE",
-            seat=inbox or process,
-            at=now,
-            bus_until="",
-            activation=now - timedelta(hours=48),
-            off=set(),
-            process_role=process,
-        )
-        write_full_list(vault, result)
-        block = summary_block(result)
-    except Exception as exc:  # the seat's session start must still receive the control sentence
-        block = f"OWED BY THE SEAT (unavailable: {exc.__class__.__name__})"
-    body = intro + "\n\n" + block
-    return json.dumps(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": body,
-            }
-        },
-        ensure_ascii=True,
-    )
+    return _hook_json(intro + "\n\n" + body.strip())
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -596,6 +614,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--text-block", action="store_true")
     parser.add_argument("--session-start", action="store_true")
+    parser.add_argument("--refresh-cache", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
     vault = Path(args.vault) if args.vault else DEFAULT_VAULT
@@ -605,10 +624,36 @@ def main(argv: list[str] | None = None) -> int:
             # A closed hook pipe must not skip the owed-set injection below.
             with contextlib.suppress(OSError):
                 sys.stdin.read()
-        payload = session_start_payload(vault)
+        try:
+            payload = session_start_payload(vault)
+        except Exception as exc:  # a hook failure must still print one line
+            payload = _hook_json(
+                "OWED BY THE SEAT (unavailable: "
+                f"{exc.__class__.__name__}; full list: "
+                f"{_display_path(cache_dir(vault) / 'seat-owed-set.txt')})"
+            )
         sys.stdout.write(payload)
-        if not sys.stdout.isatty():
+        if payload and not sys.stdout.isatty():
             sys.stdout.write("\n")
+        sys.stdout.flush()
+        return 0
+
+    if args.refresh_cache:
+        process, inbox = incumbent_identity(vault)
+        now = datetime.now(UTC)
+        result = project(
+            vault,
+            "WORKTREE",
+            seat=inbox or args.seat,
+            at=now,
+            bus_until="",
+            activation=now - timedelta(hours=48),
+            off=set(),
+            process_role=process or args.seat,
+        )
+        shown = write_full_list(vault, result, generated_at=now)
+        sys.stdout.write(f"refreshed {shown}\n")
+        sys.stdout.flush()
         return 0
 
     if not args.commit:
