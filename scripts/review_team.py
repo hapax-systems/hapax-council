@@ -89,8 +89,20 @@ LENS_DIR = REPO_ROOT / "config" / "review-lenses"
 #: Dossier filename suffix; the dossier lives beside the task note.
 REVIEW_DOSSIER_SUFFIX = ".review-dossier.yaml"
 
-#: The only dossier verdict that admits a PR.
+#: The only dossier verdict that admits a PR, except under the seat's T2 rule below.
 QUORUM_ACCEPT = "quorum-accept"
+
+#: The seat's T2 release rule (dev1-seat, 2026-09-25T00:24Z; encoded by
+#: admission-encode-seat-t2-release-rule-20260925). For a T2 row reviewed as t2_standard,
+#: the accept quorum with at least one accept from a family other than the writer's
+#: satisfies the every-seat-voted family floor and the ``no-quorum`` that floor recorded.
+#: It satisfies nothing else: a reseat, a short quorum, too few accept families, a
+#: writer-family majority and a named critical still block, and T1 keeps its floor.
+T2_FAMILY_FLOOR_RELEASE_RULE = "seat-t2-distinct-family-accept-20260925T0024Z"
+T2_FAMILY_FLOOR_RELEASE_AUTHORITY = (
+    "vault:30-areas/hapax/frame/COORDINATOR-SEAT.md 'Review rule (00:24Z)'; "
+    "narrow tier ruling dev1-seat 2026-09-25T09:24:38Z"
+)
 
 #: Reviewer verdicts that count toward the accept quorum.
 ACCEPT_VERDICTS = frozenset({"accept", "accept-with-findings"})
@@ -1827,6 +1839,67 @@ def _family_floor(reviews: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def t2_family_floor_release(
+    dossier: Mapping[str, Any],
+    *,
+    frontmatter: Mapping[str, Any] | None,
+    registry: Mapping[str, Any],
+    accepts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Evidence that the seat's T2 rule stands in for the every-seat-voted floor, else None.
+
+    ``accepts`` are the checklist-complete accepts the admission gate counted. The rule
+    holds only for a row whose ``risk_tier`` is T2 reviewed by a ``t2_standard`` team, with
+    the accept quorum met and at least one accept from a family other than the writer's.
+    The writer's families are the dossier's recorded ones plus the row's lane; an
+    unresolvable lane refuses the rule.
+    """
+
+    if frontmatter is None:
+        return None
+    row_tier = str(frontmatter.get("risk_tier") or "").strip().upper()
+    team_class = str(dossier.get("team_class") or "")
+    if row_tier != "T2" or team_class != "t2_standard":
+        return None
+    try:
+        quorum = int(registry["sizing"][team_class]["quorum_accept"])
+        row_writer = writer_family_for_lane(str(frontmatter.get("assigned_to") or ""), registry)
+    except (KeyError, TypeError, ValueError):
+        return None
+    writer_families = {
+        str(dossier.get(field) or "").strip()
+        for field in ("writer_family", "constitution_writer_family")
+    } | {row_writer}
+    writer_families.discard("")
+    distinct = [r for r in accepts if str(r.get("family")) not in writer_families]
+    if len(accepts) < quorum or not distinct:
+        return None
+    reviews = [r for r in dossier.get("reviewers") or [] if isinstance(r, Mapping)]
+    floor = _family_floor(reviews)
+    return {
+        "rule": T2_FAMILY_FLOOR_RELEASE_RULE,
+        "authority": T2_FAMILY_FLOOR_RELEASE_AUTHORITY,
+        "tier": {"row_risk_tier": row_tier, "team_class": team_class},
+        "writer_families": sorted(writer_families),
+        "quorum_required": quorum,
+        "accept_count": len(accepts),
+        "distinct_family_accepts": [
+            {"id": str(r.get("id")), "family": str(r.get("family"))} for r in distinct
+        ],
+        "seated_families": floor["seated_families"],
+        "voting_families": floor["voting_families"],
+        "non_voting_seats": [
+            {
+                "id": str(r.get("id")),
+                "family": str(r.get("family")),
+                "verdict": str(r.get("verdict")),
+            }
+            for r in reviews
+            if str(r.get("verdict") or "").lower() not in VOTING_VERDICTS
+        ],
+    }
+
+
 # --- Admission gate (consumed by scripts/cc-pr-autoqueue.py) ------------------
 
 
@@ -1849,7 +1922,11 @@ def _dossier_validity_blockers(
     outage_state_path: Path | None = None,
     admission_time: datetime | str | None = None,
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
+    floor_release_out: dict[str, Any] | None = None,
 ) -> tuple[str, ...]:
+    """Blockers for a recorded dossier; ``floor_release_out`` receives the T2 rule's evidence
+    when the rule stood in for the family floor (the dossier may still carry other blockers)."""
+
     blockers: list[str] = []
     scoped_files = (
         tuple(f.strip() for f in changed_files if f and f.strip())
@@ -2119,11 +2196,9 @@ def _dossier_validity_blockers(
     if reseated:
         blockers.append("review_dossier_same_family_reseat:" + ",".join(reseated))
     floor = _family_floor(reviews)
-    if not reseated and not floor["met"]:
-        blockers.append(
-            "review_dossier_below_family_floor:"
-            f"voting={len(floor['voting_families'])}/seated={len(seated_families)}"
-        )
+    # A T2 row may satisfy the floor under the seat's rule, which needs the accepts counted
+    # below; the blocker keeps this position in the list whenever the rule does not hold.
+    floor_blocker_at = len(blockers) if not reseated and not floor["met"] else None
 
     # go-gate: drop literal-defect phantoms only against a checkout proven to be
     # the reviewed head. Local autoqueue often runs outside the PR checkout, so
@@ -2159,6 +2234,19 @@ def _dossier_validity_blockers(
 
     quorum_reviews = _reviews_for_quorum(reviews, criticals, phantoms)
     accepts = _checklist_complete_accepts(quorum_reviews, lenses)
+    floor_release = None
+    if floor_blocker_at is not None:
+        floor_release = t2_family_floor_release(
+            dossier, frontmatter=frontmatter, registry=registry, accepts=accepts
+        )
+        if floor_release is None:
+            blockers.insert(
+                floor_blocker_at,
+                "review_dossier_below_family_floor:"
+                f"voting={len(floor['voting_families'])}/seated={len(seated_families)}",
+            )
+        elif floor_release_out is not None:
+            floor_release_out.update(floor_release)
     unknown_accept_families = {str(r.get("family")) for r in accepts} - roster
     if unknown_accept_families:
         blockers.append(
@@ -2201,7 +2289,9 @@ def _dossier_validity_blockers(
             )
 
     verdict = str(dossier.get("review_team_verdict") or "missing").lower()
-    if verdict != QUORUM_ACCEPT:
+    # The synthesizer records no-quorum for a team below the floor; the T2 rule, recomputed
+    # here, is the only thing that excuses that verdict, and never a blocked one.
+    if verdict != QUORUM_ACCEPT and not (floor_release is not None and verdict == "no-quorum"):
         blockers.append(f"review_team_verdict_not_quorum_accept:{verdict}")
     return tuple(blockers)
 
@@ -2218,8 +2308,13 @@ def review_dossier_validity_blockers(
     outage_state_path: Path | None = None,
     admission_time: datetime | str | None = None,
     route_blocked_families: Mapping[str, Sequence[str]] | None = None,
+    floor_release_out: dict[str, Any] | None = None,
 ) -> tuple[str, ...]:
-    """Validate a recorded review dossier without honoring any gate killswitch."""
+    """Validate a recorded review dossier without honoring any gate killswitch.
+
+    ``floor_release_out`` receives the seat's T2 rule evidence when the rule stood in for
+    the family floor, so a receipt minted on these blockers can record it.
+    """
 
     task_id = str(frontmatter.get("task_id") or "").strip()
     if not task_id:
@@ -2252,6 +2347,7 @@ def review_dossier_validity_blockers(
         outage_state_path=outage_state_path,
         admission_time=admission_time,
         route_blocked_families=route_blocked_families,
+        floor_release_out=floor_release_out,
     )
 
 

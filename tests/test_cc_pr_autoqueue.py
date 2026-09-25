@@ -247,6 +247,63 @@ class TestReviewTeamGate:
         assert decision.action == "blocked"
         assert "review_dossier_quorum_not_met:1/2" in decision.reasons
 
+    # admission-encode-seat-t2-release-rule-20260925: the seat's T2 rule, read by admission.
+    WRITER_SEAT_DEAD = (
+        ("gemini", "accept"),
+        ("codex", "accept"),
+        ("claude", "invalid-output"),
+    )
+
+    def _writer_seat_dead_dossier(self, vault: Path) -> None:
+        _write_review_dossier(
+            vault,
+            "task-a",
+            head_sha="sha-42",
+            verdict="no-quorum",
+            reviewers=[
+                {
+                    "id": f"{family}-1",
+                    "family": family,
+                    "verdict": verdict,
+                    "findings": [],
+                    "checklist": COMPLETE_ALWAYS_ON_CHECKLIST if verdict == "accept" else {},
+                }
+                for family, verdict in self.WRITER_SEAT_DEAD
+            ],
+        )
+
+    @pytest.mark.parametrize(("risk_tier", "action"), [("T2", "queue"), ("T1", "blocked")])
+    def test_a_writer_seat_below_the_floor_admits_only_a_t2_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, risk_tier: str, action: str
+    ) -> None:
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42, extra_frontmatter={"risk_tier": risk_tier})
+        self._writer_seat_dead_dossier(vault)
+        decision = self._classify(vault, _pr(42))
+        assert decision.action == action, decision.reasons
+
+    def test_the_t2_rule_is_not_quorum_evidence_for_sensitive_auto_arm(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Governance-, public-claim- and live-egress-sensitive rows auto-arm only on a real
+        # quorum-accept; under the T2 rule the seat's release stamp still releases them.
+        monkeypatch.delenv("HAPAX_REVIEW_TEAM_GATE_OFF", raising=False)
+        vault = _make_vault(tmp_path)
+        _write_task(vault, task_id="task-a", pr=42, extra_frontmatter={"risk_tier": "T2"})
+        self._writer_seat_dead_dossier(vault)
+        task = autoqueue.load_task_notes(vault)[0]
+        verified = autoqueue._release_mitigation_verified_checks(
+            set(),
+            task,
+            task.frontmatter,
+            pr_number=42,
+            pr_head_sha="sha-42",
+            changed_files=("shared/foo.py",),
+            changed_file_count=1,
+        )
+        assert autoqueue.REVIEW_TEAM_QUORUM_EVIDENCE not in verified
+
     def test_killswitch_admits_without_dossier(self, tmp_path: Path) -> None:
         # autouse fixture sets HAPAX_REVIEW_TEAM_GATE_OFF=1
         vault = _make_vault(tmp_path)

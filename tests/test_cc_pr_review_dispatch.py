@@ -3337,6 +3337,64 @@ public_gate_authority:
         _, _, _, note = _review(tmp_path)  # frontier_required, not review floor
         assert not (note.parent / "task-a.acceptance.yaml").is_file()
 
+    # admission-encode-seat-t2-release-rule-20260925: the seat's T2 rule mints the receipt.
+    REVIEW_FLOOR = {"quality_floor": "frontier_review_required"}
+
+    def test_a_no_quorum_the_t2_rule_does_not_excuse_mints_no_receipt(self, tmp_path: Path) -> None:
+        reviewers = RecordingReviewers(replies={"glm": "no verdict", "codex": "no verdict"})
+        result, _, _, note = _review(tmp_path, task_kwargs=self.REVIEW_FLOOR, reviewers=reviewers)
+        assert result["dossier"]["review_team_verdict"] == "no-quorum"
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+
+    def test_a_floor_met_receipt_records_no_release_rule(self, tmp_path: Path) -> None:
+        _, _, _, note = _review(tmp_path, task_kwargs=self.REVIEW_FLOOR)
+        receipt = yaml.safe_load((note.parent / "task-a.acceptance.yaml").read_text())
+        assert receipt["review_team_verdict"] == "quorum-accept"
+        assert "review_team_release_rule" not in receipt
+
+    def test_t2_rule_receipt_records_the_rule_the_tier_and_the_evidence(
+        self, tmp_path: Path
+    ) -> None:
+        # glm-1 names no verdict, so the team is below its floor; the T2 row's gemini and
+        # codex accepts are distinct from the claude writer (lane zeta).
+        reviewers = RecordingReviewers(replies={"glm": "no verdict"})
+        result, _, _, note = _review(tmp_path, task_kwargs=self.REVIEW_FLOOR, reviewers=reviewers)
+        assert result["dossier"]["review_team_verdict"] == "no-quorum"
+        receipt = yaml.safe_load((note.parent / "task-a.acceptance.yaml").read_text())
+        assert receipt["verdict"] == "accepted"
+        assert receipt["review_team_verdict"] == "no-quorum"  # the dossier's, recorded truly
+        rule = receipt["review_team_release_rule"]
+        assert rule["rule"] == dispatch.review_team.T2_FAMILY_FLOOR_RELEASE_RULE
+        assert rule["tier"] == {"row_risk_tier": "T2", "team_class": "t2_standard"}
+        assert rule["writer_families"] == ["claude"]
+        assert {a["family"] for a in rule["distinct_family_accepts"]} == {"codex", "gemini"}
+        assert rule["non_voting_seats"] == [
+            {"id": "glm-1", "family": "glm", "verdict": "invalid-output"}
+        ]
+
+    def test_a_t1_row_below_its_floor_mints_no_receipt(self, tmp_path: Path) -> None:
+        reviewers = RecordingReviewers(replies={"glm": "no verdict"})
+        result, _, _, note = _review(
+            tmp_path, task_kwargs={**self.REVIEW_FLOOR, "risk_tier": "T1"}, reviewers=reviewers
+        )
+        assert result["dossier"]["review_team_verdict"] == "no-quorum"
+        assert not (note.parent / "task-a.acceptance.yaml").exists()
+
+    def test_an_existing_t2_rule_dossier_mints_its_receipt_without_reviewers(
+        self, tmp_path: Path
+    ) -> None:
+        # A dossier written before the rule was encoded: the replay mints the receipt from the
+        # recorded reviews; no seat is dispatched again.
+        reviewers = RecordingReviewers(replies={"glm": "no verdict"})
+        _, _, _, note = _review(tmp_path, task_kwargs=self.REVIEW_FLOOR, reviewers=reviewers)
+        receipt_path = note.parent / "task-a.acceptance.yaml"
+        receipt_path.unlink()
+        replay = RecordingReviewers()
+        result, _, _, _ = _review(tmp_path, task_kwargs=self.REVIEW_FLOOR, reviewers=replay)
+        assert replay.invocations == []
+        assert result["status"] == "skipped_fresh"
+        assert receipt_path.is_file()
+
     def test_block_with_critical_fires_auto_wake(self, tmp_path: Path) -> None:
         sent: list[list[str]] = []
         reviewers = RecordingReviewers(replies={"glm": BLOCK_REPLY})
@@ -6224,7 +6282,13 @@ class TestWalledFamilySubstitution:
             "met": False,
         }
         assert dossier["authority_issuer"] == "review-team:codex,gemini"
-        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        # Below the floor, the receipt exists only by the seat's T2 rule (this row is T2 and
+        # both accepts are distinct from the claude writer), and it names the walled seat.
+        receipt = yaml.safe_load((note.parent / "task-a.acceptance.yaml").read_text())
+        assert receipt["acceptor"] == "review-team:codex,gemini"
+        assert receipt["review_team_release_rule"]["non_voting_seats"] == [
+            {"id": "glm-1", "family": "glm", "verdict": "quota-wall"}
+        ]
 
     def test_walled_seat_is_never_counted_in_the_authority_issuer(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -6247,7 +6311,9 @@ class TestWalledFamilySubstitution:
     )
 
     @pytest.mark.parametrize("reply", ["", "JETSKI"])
-    def test_gemini_no_output_is_an_outage_and_no_receipt(self, tmp_path: Path, reply: str) -> None:
+    def test_gemini_no_output_is_an_outage_and_only_the_t2_rule_mints_a_receipt(
+        self, tmp_path: Path, reply: str
+    ) -> None:
         reviewers = RecordingReviewers(replies={"gemini": self.JETSKI if reply == "JETSKI" else ""})
         result, _, _, note = _review(
             tmp_path, reviewers=reviewers, task_kwargs={"quality_floor": "frontier_review_required"}
@@ -6258,7 +6324,11 @@ class TestWalledFamilySubstitution:
         assert all(r["outage_cause"] == "empty_output" for r in gemini)
         assert dossier["review_team_verdict"] == "no-quorum"
         assert dossier["family_floor"]["met"] is False
-        assert not (note.parent / "task-a.acceptance.yaml").exists()
+        receipt = yaml.safe_load((note.parent / "task-a.acceptance.yaml").read_text())
+        assert receipt["review_team_release_rule"]["non_voting_seats"] == [
+            {"id": r["id"], "family": "gemini", "verdict": "reviewer-route-unavailable"}
+            for r in gemini
+        ]
         state = json.loads(dispatch.FAMILY_OUTAGE_STATE.read_text(encoding="utf-8"))
         assert state["gemini"]["cause"] == "seat_output"
 
