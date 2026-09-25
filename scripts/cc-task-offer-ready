@@ -378,6 +378,7 @@ def rewrite_note(
     dry_run: bool,
     vault_root: Path,
     log_event: str = "promoted ready -> offered by cc-task-offer-ready",
+    require_unset_claimable: bool = False,
 ) -> int:
     from shared.task_note_lock import TaskNoteLockError
 
@@ -394,6 +395,7 @@ def rewrite_note(
             dry_run=dry_run,
             vault_root=vault_root,
             log_event=log_event,
+            require_unset_claimable=require_unset_claimable,
         )
     except TaskNoteLockError as exc:
         # An operator-facing refusal, not a crash: executive_function requires the message
@@ -412,6 +414,7 @@ def _promote_under_lock(
     dry_run: bool,
     vault_root: Path,
     log_event: str,
+    require_unset_claimable: bool = False,
 ) -> int:
     from shared.task_note_lock import projected_path_lock
 
@@ -459,6 +462,17 @@ def _promote_under_lock(
                 file=sys.stderr,
             )
             return 4
+        # An explicit `claimable` is somebody's decision. The offered -> claimable path checked
+        # for one before this lock existed; a hold written in that window must stop it here.
+        claimable_now = _explicit_claimable(current)
+        if require_unset_claimable and claimable_now is not None:
+            print(
+                f"cc-task-offer-ready: '{task_id}' gained an explicit `claimable: "
+                f"{claimable_now}` while acquiring its lock — not marking it; clear the hold "
+                "through its owner",
+                file=sys.stderr,
+            )
+            return 4
         try:
             _rewrite_note_locked(
                 path=path,
@@ -478,6 +492,18 @@ def _promote_under_lock(
         return 0
 
 
+def _explicit_claimable(text: str) -> str | None:
+    """The note's explicit frontmatter `claimable` value, or None when absent or null."""
+
+    lines, _suffix = split_frontmatter(text)
+    for line in lines:
+        match = re.match(r"^claimable:\s*(.*?)\s*$", line)
+        if match:
+            value = match.group(1).strip("'\"")
+            return None if value in ("", "null", "~") else value
+    return None
+
+
 def _rewrite_note_locked(
     *,
     path: Path,
@@ -493,8 +519,10 @@ def _rewrite_note_locked(
     lines, suffix = split_frontmatter(text)
     replace_or_insert_scalar(lines, "status", status)
     # cc-claim requires an explicit `claimable: true`; this promotion is the
-    # lifecycle projection that grants it (M77: nothing else ever wrote it).
-    replace_or_insert_scalar(lines, "claimable", "true")
+    # lifecycle projection that grants it (M77: nothing else ever wrote it). It
+    # only fills an absent value: an explicit one, `false` above all, is a hold.
+    if _explicit_claimable(text) is None:
+        replace_or_insert_scalar(lines, "claimable", "true")
     replace_or_insert_scalar(lines, "assigned_to", "unassigned")
     replace_or_insert_scalar(lines, "updated_at", timestamp)
     replace_or_insert_scalar(lines, "claimed_at", "null")
@@ -586,6 +614,7 @@ def mark_offered_claimable(
         dry_run=dry_run,
         vault_root=vault_root,
         log_event="marked claimable by cc-task-offer-ready (offered row lacked claimable: true)",
+        require_unset_claimable=True,
     )
     if rc != 0:
         return rc
