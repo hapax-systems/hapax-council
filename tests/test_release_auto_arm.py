@@ -894,3 +894,25 @@ def test_unvalidated_route_metadata_keeps_the_keyword_derivation() -> None:
     assessment = assess_release_auto_arm(fm)
 
     assert f"risk_flag:{_EGRESS}" in assessment.blockers
+
+
+@pytest.mark.parametrize(
+    ("top_level", "nested", "held"),
+    [
+        pytest.param(True, False, True, id="top-level-true-beats-nested-false"),
+        pytest.param(False, True, False, id="top-level-false-beats-nested-true"),
+    ],
+)
+def test_top_level_risk_flags_win_a_conflict_with_nested(
+    top_level: bool, nested: bool, held: bool
+) -> None:
+    # The veto reads exactly the payload the model validates, where a top-level
+    # ``risk_flags`` replaces ``route_metadata.risk_flags`` wholesale.
+    fm = _live_verb_frontmatter(
+        risk_flags={_EGRESS: top_level},
+        route_metadata={"risk_flags": {_EGRESS: nested}},
+    )
+
+    assessment = assess_release_auto_arm(fm)
+
+    assert (f"risk_flag:{_EGRESS}" in assessment.blockers) is held
